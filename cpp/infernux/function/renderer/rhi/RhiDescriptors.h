@@ -309,6 +309,30 @@ struct SamplerDesc
     float minLod = 0.0f;
     float maxLod = 0.0f;
     float maxAnisotropy = 1.0f;
+    bool compareEnabled = false;
+    CompareFunction compare = CompareFunction::LessEqual;
+};
+
+enum class TextureSampleType : uint8_t
+{
+    Float,
+    UnfilterableFloat,
+    Sint,
+    Uint,
+};
+
+enum class StorageTextureAccess : uint8_t
+{
+    WriteOnly,
+    ReadOnly,
+    ReadWrite,
+};
+
+enum class SamplerBindingType : uint8_t
+{
+    Filtering,
+    NonFiltering,
+    Comparison,
 };
 
 struct BindingLayoutEntry
@@ -324,6 +348,13 @@ struct BindingLayoutEntry
     // Storage-buffer access is part of the immutable WebGPU binding layout.
     // Vulkan uses the same descriptor type for both access modes.
     bool readOnlyStorage = false;
+    TextureViewDimension viewDimension = TextureViewDimension::Texture2D;
+    TextureSampleType sampleType = TextureSampleType::Float;
+    bool multisampled = false;
+    PixelFormat storageFormat = PixelFormat::Undefined;
+    StorageTextureAccess storageAccess = StorageTextureAccess::WriteOnly;
+    SamplerBindingType samplerType = SamplerBindingType::Filtering;
+    uint64_t minBufferBindingSize = 0;
 };
 
 struct TextureBinding

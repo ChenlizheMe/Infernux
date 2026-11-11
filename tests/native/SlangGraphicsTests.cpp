@@ -29,12 +29,15 @@ ConstantBuffer<Parameters> params;
 RWStructuredBuffer<float4> positions;
 Texture2D<float4> albedo;
 SamplerState albedoSampler;
+[format("rgba8")] WTexture2D<float4> generated;
+Texture2D<float4> generatedImage;
 
 [shader("compute")]
 [numthreads(4, 1, 1)]
 void prepare_vertices(uint3 id : SV_DispatchThreadID)
 {
     positions[id.x] = float4(float(id.x & 1) * 2.0 - 1.0, float(id.x >> 1) * 2.0 - 1.0, 0.0, 1.0);
+    generated.Store(int2(id.x & 1, id.x >> 1), float4(0.25, 0.5, 0.75, 1.0));
 }
 
 struct VertexInput { float3 position : POSITION; float2 uv : TEXCOORD0; };
@@ -53,7 +56,7 @@ struct Targets { float4 color : SV_Target0; uint2 identity : SV_Target1; };
 Targets mesh_fragment(Varyings input)
 {
     Targets result;
-    result.color = albedo.Sample(albedoSampler, input.uv) * params.tint;
+    result.color = albedo.Sample(albedoSampler, input.uv) * params.tint * generatedImage.Sample(albedoSampler, input.uv);
     result.identity = uint2(params.objectId, 0xfedcba98u);
     return result;
 }
@@ -168,6 +171,18 @@ void Run()
     samplerDesc.magFilter = samplerDesc.minFilter = rhi::FilterMode::Nearest;
     samplerDesc.addressU = samplerDesc.addressV = rhi::AddressMode::ClampToEdge;
     const auto sampler = device.CreateSampler(samplerDesc);
+    rhi::TextureDesc generatedDesc;
+    generatedDesc.width = generatedDesc.height = 2;
+    generatedDesc.format = rhi::PixelFormat::RGBA8UNorm;
+    generatedDesc.usage = rhi::TextureUsageFlags::Storage | rhi::TextureUsageFlags::Sampled;
+    const auto generated = device.CreateTexture(generatedDesc);
+    rhi::TextureViewDesc generatedViewDesc;
+    generatedViewDesc.texture = generated;
+    generatedViewDesc.usage = rhi::TextureUsageFlags::Storage;
+    const auto generatedStorage = device.CreateTextureView(generatedViewDesc);
+    generatedViewDesc.usage = rhi::TextureUsageFlags::Sampled;
+    const auto generatedSampled = device.CreateTextureView(generatedViewDesc);
+    Require(generatedStorage.IsValid() && generatedSampled.IsValid(), "Compute-to-sampled image views failed");
     std::array<uint8_t, 512> texels{};
     const std::array<uint8_t, 8> top{128, 64, 192, 255, 255, 128, 64, 255};
     const std::array<uint8_t, 8> bottom{64, 255, 128, 255, 192, 128, 255, 255};
@@ -188,10 +203,14 @@ void Run()
             if (type == rhi::BindingType::UniformBuffer || type == rhi::BindingType::StorageBuffer)
                 groupDesc.buffers[groupDesc.bufferCount++] = {binding, type,
                                                               resource.name == "params" ? uniform : vertices};
-            else
+            else {
+                const auto image = resource.name == "generated"        ? generatedStorage
+                                   : resource.name == "generatedImage" ? generatedSampled
+                                                                       : sourceView;
                 groupDesc.textures[groupDesc.textureCount++] = {
-                    binding, type, type == rhi::BindingType::SampledTexture ? sourceView : rhi::TextureViewHandle{},
+                    binding, type, type != rhi::BindingType::Sampler ? image : rhi::TextureViewHandle{},
                     type == rhi::BindingType::Sampler ? sampler : rhi::SamplerHandle{}};
+            }
         }
         groupDesc.layout = selected.GetBindingLayouts()[0];
         const auto group = device.CreateBindGroup(groupDesc);
@@ -291,9 +310,15 @@ void Run()
                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
     vk::VulkanComputeCommandContext computeContext;
     const auto computeCommands = device.MakeComputeCommandEncoder(computeContext, commands);
+    ImageBarrier(commands, device.Resolve(generated), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                 VK_ACCESS_SHADER_WRITE_BIT);
     computeCommands.BindPipeline(compute);
     computeCommands.BindGroup(compute, 0, computeGroup);
     computeCommands.Dispatch(1);
+    ImageBarrier(commands, device.Resolve(generated), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
     VkMemoryBarrier vertexReady{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     vertexReady.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     vertexReady.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
@@ -349,7 +374,8 @@ void Run()
             for (size_t channel = 0; channel < 3; ++channel) {
                 const auto srgb = encoded[channel] / 255.0f;
                 const auto linear = srgb <= 0.04045f ? srgb / 12.92f : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
-                const auto expected = std::lround(linear * tint[channel] * 255.0f);
+                const std::array<float, 3> generatedValue{64.0f / 255.0f, 128.0f / 255.0f, 191.0f / 255.0f};
+                const auto expected = std::lround(linear * tint[channel] * generatedValue[channel] * 255.0f);
                 Require(std::abs(int(colorBytes[y * 256 + x * 4 + channel]) - expected) <= 1,
                         "sRGB sampling/varying/color mismatch");
             }

@@ -109,6 +109,22 @@ void derivative(uint3 id : SV_DispatchThreadID)
             }
         }
 
+        const auto depthProgram = compiler.Compile({"depth", "depth.frag.py", R"(
+DepthTexture2D sceneDepth;
+SamplerComparisonState depthSampler;
+[shader("fragment")]
+float4 shadow(float2 uv : TEXCOORD0) : SV_Target0
+{
+    return sceneDepth.SampleCmpLevelZero(depthSampler, uv, 0.5).xxxx;
+}
+)"},
+                                                   {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : depthProgram.targets) {
+            Require(target.resources.size() == 2 && target.resources[0].binding.depthRead &&
+                        target.resources[1].binding.samplerType == rhi::SamplerBindingType::Comparison,
+                    "Depth texture and comparison sampler lost their target binding types");
+        }
+
         // A changed revision with the same virtual module name must not reuse
         // the module cached inside an earlier Slang session.
         const auto previous = result.targets[0].entries[1].code;

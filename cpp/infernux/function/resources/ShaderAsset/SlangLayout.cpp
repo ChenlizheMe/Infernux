@@ -3,6 +3,7 @@
 #include <slang.h>
 
 #include <stdexcept>
+#include <string_view>
 
 namespace infernux
 {
@@ -133,6 +134,43 @@ rhi::TextureViewDimension TextureDimension(SlangResourceShape shape)
         throw std::runtime_error("Shader image shape has no engine texture view representation");
     }
 }
+
+rhi::PixelFormat ImageFormat(SlangImageFormat format)
+{
+    using Format = rhi::PixelFormat;
+    switch (format) {
+    case SLANG_IMAGE_FORMAT_rgba32f:
+        return Format::RGBA32SFloat;
+    case SLANG_IMAGE_FORMAT_rgba16f:
+        return Format::RGBA16SFloat;
+    case SLANG_IMAGE_FORMAT_rg16f:
+        return Format::RG16SFloat;
+    case SLANG_IMAGE_FORMAT_r32f:
+        return Format::R32SFloat;
+    case SLANG_IMAGE_FORMAT_r16f:
+        return Format::R16SFloat;
+    case SLANG_IMAGE_FORMAT_rgba16:
+        return Format::RGBA16UNorm;
+    case SLANG_IMAGE_FORMAT_rgb10_a2:
+        return Format::RGB10A2UNorm;
+    case SLANG_IMAGE_FORMAT_rgba8:
+        return Format::RGBA8UNorm;
+    case SLANG_IMAGE_FORMAT_rg8:
+        return Format::RG8UNorm;
+    case SLANG_IMAGE_FORMAT_r8:
+        return Format::R8UNorm;
+    case SLANG_IMAGE_FORMAT_rgba32ui:
+        return Format::RGBA32UInt;
+    case SLANG_IMAGE_FORMAT_rg32ui:
+        return Format::RG32UInt;
+    case SLANG_IMAGE_FORMAT_bgra8:
+        return Format::BGRA8UNorm;
+    case SLANG_IMAGE_FORMAT_unknown:
+        return Format::Undefined;
+    default:
+        throw std::runtime_error("Shader storage image format has no engine pixel format representation");
+    }
+}
 } // namespace
 
 std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout)
@@ -158,6 +196,7 @@ std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflect
             case slang::BindingType::ConstantBuffer:
                 resource.binding.type = rhi::BindingType::UniformBuffer;
                 resource.value = ValueLayout(type->getElementTypeLayout());
+                resource.binding.minBufferBindingSize = resource.value.byteSize;
                 break;
             case slang::BindingType::RawBuffer:
             case slang::BindingType::MutableRawBuffer:
@@ -171,12 +210,26 @@ std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflect
                 resource.binding.type = type->getResourceAccess() == SLANG_RESOURCE_ACCESS_READ
                                             ? rhi::BindingType::SampledTexture
                                             : rhi::BindingType::StorageTexture;
-                resource.dimension = TextureDimension(type->getResourceShape());
-                resource.multisampled = (type->getResourceShape() & SLANG_TEXTURE_MULTISAMPLE_FLAG) != 0;
+                resource.binding.viewDimension = TextureDimension(type->getResourceShape());
+                resource.binding.multisampled = (type->getResourceShape() & SLANG_TEXTURE_MULTISAMPLE_FLAG) != 0;
                 resource.binding.depthRead = (type->getResourceShape() & SLANG_TEXTURE_SHADOW_FLAG) != 0;
+                if (auto *value = type->getResourceResultType()) {
+                    if (value->getScalarType() == slang::TypeReflection::Int32)
+                        resource.binding.sampleType = rhi::TextureSampleType::Sint;
+                    else if (value->getScalarType() == slang::TypeReflection::UInt32)
+                        resource.binding.sampleType = rhi::TextureSampleType::Uint;
+                }
+                if (resource.binding.type == rhi::BindingType::StorageTexture) {
+                    resource.binding.storageFormat = ImageFormat(layout->getBindingRangeImageFormat(index));
+                    resource.binding.storageAccess = type->getResourceAccess() == SLANG_RESOURCE_ACCESS_WRITE
+                                                         ? rhi::StorageTextureAccess::WriteOnly
+                                                         : rhi::StorageTextureAccess::ReadWrite;
+                }
                 break;
             case slang::BindingType::Sampler:
                 resource.binding.type = rhi::BindingType::Sampler;
+                if (std::string_view(type->getName()) == "SamplerComparisonState")
+                    resource.binding.samplerType = rhi::SamplerBindingType::Comparison;
                 break;
             default:
                 throw std::runtime_error("Shader descriptor has no engine binding representation: " + resource.name);

@@ -116,8 +116,13 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                     item["visibility"] = static_cast<uint8_t>(resource.binding.visibility);
                     item["read_only"] = resource.binding.readOnlyStorage;
                     item["depth"] = resource.binding.depthRead;
-                    item["dimension"] = static_cast<uint8_t>(resource.dimension);
-                    item["multisampled"] = resource.multisampled;
+                    item["dimension"] = static_cast<uint8_t>(resource.binding.viewDimension);
+                    item["multisampled"] = resource.binding.multisampled;
+                    item["sample_type"] = static_cast<uint8_t>(resource.binding.sampleType);
+                    item["storage_format"] = static_cast<uint8_t>(resource.binding.storageFormat);
+                    item["storage_access"] = static_cast<uint8_t>(resource.binding.storageAccess);
+                    item["sampler_type"] = static_cast<uint8_t>(resource.binding.samplerType);
+                    item["min_buffer_binding_size"] = resource.binding.minBufferBindingSize;
                     item["value"] = ValueLayout(resource.value);
                     resources.append(std::move(item));
                 }

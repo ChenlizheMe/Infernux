@@ -1721,7 +1721,8 @@ rhi::SamplerHandle VulkanRhiDevice::CreateSampler(const rhi::SamplerDesc &desc)
     createInfo.addressModeW = ToVkAddressMode(desc.addressW);
     createInfo.anisotropyEnable = desc.maxAnisotropy > 1.0f ? VK_TRUE : VK_FALSE;
     createInfo.maxAnisotropy = desc.maxAnisotropy;
-    createInfo.compareEnable = VK_FALSE;
+    createInfo.compareEnable = desc.compareEnabled ? VK_TRUE : VK_FALSE;
+    createInfo.compareOp = ToVkCompareOp(desc.compare);
     createInfo.minLod = desc.minLod;
     createInfo.maxLod = desc.maxLod;
     createInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;

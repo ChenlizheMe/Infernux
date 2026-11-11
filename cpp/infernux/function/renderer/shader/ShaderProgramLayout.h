@@ -66,8 +66,6 @@ struct ShaderResourceLayout
     std::string name;
     uint32_t set = 0;
     rhi::BindingLayoutEntry binding;
-    rhi::TextureViewDimension dimension = rhi::TextureViewDimension::Texture2D;
-    bool multisampled = false;
     /// Uniform contents, or a structured buffer's element layout. Raw byte
     /// buffers and images carry no value layout.
     ShaderValueLayout value;

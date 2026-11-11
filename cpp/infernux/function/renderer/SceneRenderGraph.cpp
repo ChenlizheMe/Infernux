@@ -4809,7 +4809,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         FullscreenInput item;
                         item.name = name;
                         item.binding = static_cast<uint32_t>(declaredInputs.size());
-                        item.multisampled = resource->multisampled;
+                        item.multisampled = resource->binding.multisampled;
                         declaredInputs.push_back(std::move(item));
                     }
                 } else {
