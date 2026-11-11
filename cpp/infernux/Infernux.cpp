@@ -3757,7 +3757,7 @@ struct InstanceData { column_major float4x4 model; };
 [[vk::binding(1, 2)]] StructuredBuffer<InstanceData> instances;
 
 [shader("vertex")]
-float4 main(float3 position : POSITION, uint instance : SV_InstanceID) : SV_Position
+float4 main(float3 position : POSITION, uint instance : SV_VulkanInstanceID) : SV_Position
 {
     float4 clip = mul(camera.projection, mul(camera.view, mul(instances[instance].model, float4(position, 1.0))));
     // This native camera buffer still stores the Vulkan viewport projection.

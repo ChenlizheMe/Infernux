@@ -557,12 +557,13 @@ FullscreenRenderer::PrepareParameters(const FullscreenProgram &program,
         {"vec2", Kind::Vector2}, {"vec3", Kind::Vector3}, {"vec4", Kind::Vector4}, {"color", Kind::Vector4},
         {"mat3", Kind::Matrix3}, {"mat4", Kind::Matrix4},
     };
-    for (const auto &[name, value] : parameters) {
+    for (const auto &parameter : parameters) {
+        const auto &name = parameter.first;
         const auto declaration = std::find_if(declarations.begin(), declarations.end(),
                                               [&](const auto &item) { return item.at("name") == name; });
         if (declaration == declarations.end())
             throw std::invalid_argument("Fullscreen parameter is not declared: " + name);
-        result.values.push_back(value.ConvertTo(kinds.at(declaration->at("kind").get<std::string>())));
+        result.values.push_back(parameter.second.ConvertTo(kinds.at(declaration->at("kind").get<std::string>())));
         result.copies.emplace_back(fieldByName(name));
         result.copies.back().Write(result.defaults.data(), result.values.back().Data());
     }

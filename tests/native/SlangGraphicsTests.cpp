@@ -51,13 +51,14 @@ void prepare_vertices(uint3 id : SV_DispatchThreadID)
 }
 
 struct VertexInput { float3 position : POSITION; float2 uv : TEXCOORD0; };
-struct Varyings { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+struct Varyings { float4 position : SV_Position; float2 uv : TEXCOORD0; nointerpolation uint instance : TEXCOORD1; };
 [shader("vertex")]
-Varyings mesh_vertex(VertexInput input)
+Varyings mesh_vertex(VertexInput input, uint instance : SV_VulkanInstanceID)
 {
     Varyings result;
     result.position = float4(input.position, 1.0);
     result.uv = input.uv;
+    result.instance = instance;
     return result;
 }
 
@@ -69,7 +70,7 @@ Targets mesh_fragment(Varyings input)
     result.color = scene.material.albedo.Sample(scene.material.albedoSampler, input.uv) * scene.material.tint
         * scene.material.generatedImage.Sample(scene.material.albedoSampler, input.uv) * scene.exposure;
     result.color.rgb = mul(scene.material.channelTransform, result.color.rgb) * scene.material.weights[1];
-    result.identity = uint2(scene.material.objectId, 0xfedcba98u);
+    result.identity = uint2(scene.material.objectId + input.instance, 0xfedcba98u);
     return result;
 }
 )";
@@ -371,7 +372,7 @@ void Run()
     draw.BindVertexBuffer(0, vertices);
     draw.BindVertexBuffer(1, uvBuffer);
     draw.BindIndexBuffer(indexBuffer, rhi::IndexFormat::Uint16);
-    draw.DrawIndexed(6);
+    draw.DrawIndexed(6, 1, 0, 0, 7);
     vkCmdEndRenderPass(commands);
     for (const auto target : targets)
         ImageBarrier(commands, device.Resolve(target), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -420,7 +421,8 @@ void Run()
             }
             uint32_t identity[2];
             std::memcpy(identity, idBytes.data() + y * 256 + x * 8, sizeof(identity));
-            Require(identity[0] == objectId && identity[1] == 0xfedcba98u, "Integer MRT was changed or averaged");
+            Require(identity[0] == objectId + 7 && identity[1] == 0xfedcba98u,
+                    "Integer MRT or absolute first-instance index was changed");
         }
     }
     std::cout << "Slang indexed mesh, varying, reflected uniform/texture/sampler, UNORM-storage+sRGB-sampled view, "

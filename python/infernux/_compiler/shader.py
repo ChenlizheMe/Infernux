@@ -192,7 +192,7 @@ class _Author(ShaderEmitter):
 _FULLSCREEN_VERTEX = """
 struct FullscreenVertex { float4 position : SV_Position; float2 uv : TEXCOORD0; };
 [shader("vertex")]
-FullscreenVertex vertex_main(uint id : SV_VertexID)
+FullscreenVertex vertex_main(uint id : SV_VulkanVertexID)
 {
     float2 uv = float2((id << 1) & 2, id & 2);
     FullscreenVertex result;

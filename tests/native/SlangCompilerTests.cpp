@@ -54,7 +54,7 @@ RWStructuredBuffer<float> outputValues;
 [Differentiable]
 float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 [shader("vertex")]
-float4 triangle(uint id : SV_VertexID) : SV_Position
+float4 triangle(uint id : SV_VulkanVertexID) : SV_Position
 {
     return float4(float(id & 1) * 2.0 - 1.0, float(id >> 1) * 2.0 - 1.0, 0.0, 1.0);
 }
