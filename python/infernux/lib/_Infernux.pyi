@@ -17,6 +17,7 @@ Provides IDE auto-completion and type checking for:
 from __future__ import annotations
 
 from collections.abc import Buffer
+import numpy
 from infernux.components.builtin.collider import Collider as _PublicCollider
 from infernux.components.builtin.rigidbody import Rigidbody as _PublicRigidbody
 from infernux.components.builtin.camera import Camera as _PublicCamera

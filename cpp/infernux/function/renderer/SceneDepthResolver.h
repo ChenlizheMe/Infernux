@@ -14,6 +14,8 @@ namespace infernux
 {
 
 struct SceneDepthResolveProgram;
+struct ShaderTargetCode;
+class GpuRetirementQueue;
 
 /// RHI compute implementation of the scene-depth sampling contract. It
 /// converts a multisampled depth attachment into a single-sample R32F texture
@@ -27,22 +29,18 @@ class SceneDepthResolver
     SceneDepthResolver(const SceneDepthResolver &) = delete;
     SceneDepthResolver &operator=(const SceneDepthResolver &) = delete;
 
-    [[nodiscard]] INFERNUX_RENDER_CORE_API bool Initialize(rhi::Device &device, const uint32_t *spirv,
-                                                           size_t wordCount);
     [[nodiscard]] INFERNUX_RENDER_CORE_API static std::shared_ptr<const SceneDepthResolveProgram>
-    CreateProgram(rhi::Device &device, const uint32_t *spirv, size_t wordCount);
-    [[nodiscard]] INFERNUX_RENDER_CORE_API bool Initialize(std::shared_ptr<const SceneDepthResolveProgram> program);
+    CreateProgram(rhi::Device &device, const ShaderTargetCode &code);
+    INFERNUX_RENDER_CORE_API void Initialize(std::shared_ptr<const SceneDepthResolveProgram> program);
     INFERNUX_RENDER_CORE_API void Destroy() noexcept;
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool IsValid() const noexcept;
-    [[nodiscard]] INFERNUX_RENDER_CORE_API bool Record(const rhi::ComputeCommandEncoder &encoder,
-                                                       rhi::TextureViewHandle sourceDepth,
-                                                       rhi::TextureViewHandle resolvedDepth, uint32_t width,
-                                                       uint32_t height, uint32_t sampleCount);
+    INFERNUX_RENDER_CORE_API void Record(const rhi::ComputeCommandEncoder &encoder, rhi::TextureViewHandle sourceDepth,
+                                         rhi::TextureViewHandle resolvedDepth, uint32_t width, uint32_t height,
+                                         uint32_t sampleCount);
 
-    /// Detach graph-specific descriptor groups so the caller can retire them
-    /// after in-flight command buffers finish using the previous graph.
-    [[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<rhi::BindGroupHandle> TakeBindGroups();
+    /// Groups and their immutable constants share the previous graph's GPU lifetime.
+    INFERNUX_RENDER_CORE_API void RetireBindings(GpuRetirementQueue &queue);
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API static std::string_view ShaderSource() noexcept;
 
@@ -51,11 +49,16 @@ class SceneDepthResolver
     {
         rhi::TextureViewHandle sourceDepth;
         rhi::TextureViewHandle resolvedDepth;
+        uint32_t width;
+        uint32_t height;
+        uint32_t sampleCount;
         rhi::BindGroupHandle group;
+        rhi::BufferHandle constants;
     };
 
     [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::TextureViewHandle sourceDepth,
-                                                        rhi::TextureViewHandle resolvedDepth);
+                                                        rhi::TextureViewHandle resolvedDepth, uint32_t width,
+                                                        uint32_t height, uint32_t sampleCount);
 
     rhi::Device *m_device = nullptr;
     std::shared_ptr<const SceneDepthResolveProgram> m_program;

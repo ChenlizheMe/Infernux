@@ -459,8 +459,7 @@ bool SceneRenderGraph::EnsureViewGpuResources()
     const auto depthResolveSupport = vkCore->GetDeviceContext().GetCapabilities().CheckFormat(
         rhi::PixelFormat::R32SFloat, rhi::FormatFeature::Sampled | rhi::FormatFeature::Storage);
     if (depthResolveSupport.IsSupported()) {
-        if (!m_sceneDepthResolver.Initialize(vkCore->GetSceneDepthResolveProgram()))
-            return false;
+        m_sceneDepthResolver.Initialize(vkCore->GetSceneDepthResolveProgram());
     } else {
         INXLOG_WARN("SceneRenderGraph: R32SFloat sampled-storage textures are unavailable; MSAA soft particles are "
                     "disabled on this adapter");
@@ -3519,14 +3518,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
     }
 
     RetireImportedTextureAssets();
-    auto retiredDepthResolveGroups = m_sceneDepthResolver.TakeBindGroups();
-    if (!retiredDepthResolveGroups.empty()) {
-        rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
-        m_vkCore->GetRetirementQueue().Retire([device, groups = std::move(retiredDepthResolveGroups)]() mutable {
-            for (const auto group : groups)
-                device->Release(group);
-        });
-    }
+    m_sceneDepthResolver.RetireBindings(m_vkCore->GetRetirementQueue());
     m_renderGraph->Reset();
     m_graphBuilt = false;
     m_authorPassIndices.clear();
@@ -4726,11 +4718,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             const auto outputDepth = resolvedParticleSceneDepth;
                             return [this, sourceDepth, outputDepth, width, height,
                                     sampleCount = static_cast<uint32_t>(msaaSamples)](vk::RenderContext &ctx) {
-                                const bool recorded = m_sceneDepthResolver.Record(
+                                m_sceneDepthResolver.Record(
                                     ctx.GetComputeCommandEncoder(), ctx.GetTextureView(sourceDepth),
                                     ctx.GetTextureView(outputDepth), width, height, sampleCount);
-                                if (!recorded)
-                                    INXLOG_ERROR("SceneRenderGraph: failed to record the MSAA scene-depth resolve");
                             };
                         });
                         resolvedParticleDepthSource = sourceDepth;
@@ -5016,10 +5006,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 const auto outputDepth = resolvedParticleSceneDepth;
                                 return [this, source, outputDepth, inputWidth, inputHeight,
                                         samples](vk::RenderContext &ctx) {
-                                    if (!m_sceneDepthResolver.Record(
-                                            ctx.GetComputeCommandEncoder(), ctx.GetTextureView(source),
-                                            ctx.GetTextureView(outputDepth), inputWidth, inputHeight, samples))
-                                        INXLOG_ERROR("SceneRenderGraph: failed to record the MSAA scene-depth resolve");
+                                    m_sceneDepthResolver.Record(
+                                        ctx.GetComputeCommandEncoder(), ctx.GetTextureView(source),
+                                        ctx.GetTextureView(outputDepth), inputWidth, inputHeight, samples);
                                 };
                             });
                             resolvedParticleDepthSource = source;

@@ -16,6 +16,7 @@
 #include "gui/GPUMeshPreview.h"
 #include "lighting/ForwardPlusLightGrid.h"
 #include "vk/RhiVulkanTypes.h"
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -112,12 +113,11 @@ InxVkCoreModular::InxVkCoreModular(vk::VulkanBackendContext &backend, int maxFra
 std::shared_ptr<const SceneDepthResolveProgram> InxVkCoreModular::GetSceneDepthResolveProgram()
 {
     if (!m_sceneDepthProgram) {
-        const auto spirv =
-            CompileBuiltinComputeProgram(SceneDepthResolver::ShaderSource(), "Infernux/SceneDepthResolve.comp");
-        m_sceneDepthProgram =
-            SceneDepthResolver::CreateProgram(GetDeviceContext().GetRhiDevice(), spirv.data(), spirv.size());
-        if (!m_sceneDepthProgram)
-            throw std::runtime_error("Failed to create the built-in scene-depth program");
+        const auto program =
+            SlangCompiler::Get().Compile({"inx_scene_depth_resolve", "Infernux/SceneDepthResolve.compute.py",
+                                          std::string(SceneDepthResolver::ShaderSource())},
+                                         {}, {ShaderCodeTarget::SpirV});
+        m_sceneDepthProgram = SceneDepthResolver::CreateProgram(GetDeviceContext().GetRhiDevice(), program.targets[0]);
     }
     return m_sceneDepthProgram;
 }

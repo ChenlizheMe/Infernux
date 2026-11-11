@@ -18,6 +18,7 @@
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -203,12 +204,8 @@ struct FakeDevice final : rhi::Device
     {
         if (desc.bindingLayoutCount > maxBindingLayouts)
             return {};
-        assert(desc.computeShader.IsValid() &&
-               (desc.bindingLayoutCount == 1 || desc.bindingLayoutCount == 2 || desc.bindingLayoutCount == 4 ||
-                desc.bindingLayoutCount == 5 || desc.bindingLayoutCount == 6 || desc.bindingLayoutCount == 7 ||
-                desc.bindingLayoutCount == 8) &&
-               (desc.pushConstantBytes == 16 || desc.pushConstantBytes == 32 || desc.pushConstantBytes == 48 ||
-                desc.pushConstantBytes == 64 || desc.pushConstantBytes == 80 || desc.pushConstantBytes == 112));
+        assert(desc.computeShader.IsValid() && desc.bindingLayoutCount > 0 &&
+               desc.bindingLayoutCount <= rhi::ComputePipelineDesc::MaxBindingLayouts);
         computePipelineDescs.push_back(desc);
         ++pipelineCreates;
         return {nextIndex++, 1};
@@ -1385,12 +1382,17 @@ int main()
 
     {
         FakeDevice resolveDevice;
-        std::array<uint32_t, 5> shader = {0x07230203u, 0u, 0u, 0u, 0u};
+        const auto compiled = SlangCompiler::Get().Compile(
+            {"scene_depth", "SceneDepthResolve.compute.py", std::string(SceneDepthResolver::ShaderSource())}, {},
+            {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        const auto &code = compiled.targets[0];
         SceneDepthResolver resolver;
-        assert(resolver.Initialize(resolveDevice, shader.data(), shader.size()));
-        assert(resolveDevice.layouts.size() == 1 && resolveDevice.layouts[0].entryCount == 2);
-        assert(resolveDevice.layouts[0].entries[0].type == rhi::BindingType::CombinedTextureSampler);
-        assert(resolveDevice.layouts[0].entries[1].type == rhi::BindingType::StorageTexture);
+        resolver.Initialize(SceneDepthResolver::CreateProgram(resolveDevice, code));
+        assert(resolveDevice.layouts.size() == 1 && resolveDevice.layouts[0].entryCount == 3);
+        assert(resolveDevice.layouts[0].entries[0].type == rhi::BindingType::UniformBuffer);
+        assert(resolveDevice.layouts[0].entries[1].type == rhi::BindingType::SampledTexture);
+        assert(resolveDevice.layouts[0].entries[1].depthRead && resolveDevice.layouts[0].entries[1].multisampled);
+        assert(resolveDevice.layouts[0].entries[2].type == rhi::BindingType::StorageTexture);
 
         DepthResolveTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
@@ -1399,24 +1401,34 @@ int main()
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         const rhi::TextureViewHandle source{101, 1};
         const rhi::TextureViewHandle destination{102, 1};
-        assert(resolver.Record(encoder, source, destination, 1919, 1079, 4));
+        resolver.Record(encoder, source, destination, 1919, 1079, 4);
         assert(resolveDevice.groupCreates == 1 && resolveDevice.bindGroups[0].textureCount == 2);
         assert(resolveDevice.bindGroups[0].textures[0].depthRead);
         assert(resolveDevice.bindGroups[0].textures[1].type == rhi::BindingType::StorageTexture);
-        assert((trace.constants == std::array<uint32_t, 4>{1919, 1079, 4, 0}));
+        std::array<uint32_t, 4> constants;
+        std::memcpy(constants.data(), resolveDevice.initialBufferBytes.back().data(), sizeof(constants));
+        assert((constants == std::array<uint32_t, 4>{1919, 1079, 4, 0}));
         assert((trace.dispatch == std::array<uint32_t, 3>{240, 135, 1}));
-        assert(resolver.Record(encoder, source, destination, 1919, 1079, 4));
+        resolver.Record(encoder, source, destination, 1919, 1079, 4);
         assert(resolveDevice.groupCreates == 1);
-        const auto groups = resolver.TakeBindGroups();
-        assert(groups.size() == 1 && groups[0].IsValid());
-        resolveDevice.Release(groups[0]);
+        GpuRetirementQueue retirement;
+        retirement.BindSerialSource([] { return 7; });
+        const auto buffers = resolveDevice.bufferReleases;
+        const auto groups = resolveDevice.groupReleases;
+        resolver.RetireBindings(retirement);
+        assert(retirement.Collect(6) == 0 && resolveDevice.bufferReleases == buffers &&
+               resolveDevice.groupReleases == groups);
+        assert(retirement.Collect(7) == 1 && resolveDevice.bufferReleases == buffers + 1 &&
+               resolveDevice.groupReleases == groups + 1);
         resolver.Destroy();
     }
 
     {
         FakeDevice sharedDevice;
-        std::array<uint32_t, 5> shader = {0x07230203u, 0u, 0u, 0u, 0u};
-        auto program = SceneDepthResolver::CreateProgram(sharedDevice, shader.data(), shader.size());
+        const auto compiled = SlangCompiler::Get().Compile(
+            {"scene_depth", "SceneDepthResolve.compute.py", std::string(SceneDepthResolver::ShaderSource())}, {},
+            {ShaderCodeTarget::SpirV});
+        auto program = SceneDepthResolver::CreateProgram(sharedDevice, compiled.targets[0]);
         assert(program);
         DepthResolveTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
@@ -1424,21 +1436,22 @@ int main()
             &DepthResolveTrace::Dispatch,     &DepthResolveTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         SceneDepthResolver retained;
-        assert(retained.Initialize(program));
+        retained.Initialize(program);
         for (uint32_t cycle = 0; cycle < 60; ++cycle) {
             SceneDepthResolver view;
-            assert(view.Initialize(program));
-            assert(view.Record(encoder, {101 + cycle, 1}, {201 + cycle, 1}, 64, 64, 4));
+            view.Initialize(program);
+            view.Record(encoder, {101 + cycle, 1}, {201 + cycle, 1}, 64, 64, 4);
             assert(sharedDevice.pipelineCreates == 1 && sharedDevice.layoutCreates == 1);
         }
         assert(sharedDevice.groupCreates == 60 && sharedDevice.groupReleases == 60);
         assert(sharedDevice.pipelineReleases == 0 && sharedDevice.samplerReleases == 0);
         program.reset();
-        assert(retained.Record(encoder, {301, 1}, {302, 1}, 128, 128, 4));
+        retained.Record(encoder, {301, 1}, {302, 1}, 128, 128, 4);
         retained.Destroy();
         assert(!retained.IsValid());
         assert(sharedDevice.pipelineReleases == 1 && sharedDevice.layoutReleases == 1 &&
-               sharedDevice.samplerReleases == 1 && sharedDevice.groupReleases == 61);
+               sharedDevice.samplerReleases == 0 && sharedDevice.groupReleases == 61 &&
+               sharedDevice.bufferReleases == 61);
     }
 
     {
