@@ -28,10 +28,10 @@
     },
     {
       "kind": "hub-installer",
-      "name": "InfernuxHubInstaller-0.4.8-2-linux-x64",
-      "size_bytes": 278378712,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHubInstaller-0.4.8-2-linux-x64",
-      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHubInstaller-0.4.8-2-linux-x64"
+      "name": "InfernuxHubInstaller-0.4.8-3-linux-x64",
+      "size_bytes": 278374616,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-linux-x64",
+      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-linux-x64"
     },
     {
       "kind": "python-wheel",
