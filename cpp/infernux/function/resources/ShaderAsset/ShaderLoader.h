@@ -19,6 +19,7 @@ class ShaderLoader final : public IAssetLoader
   public:
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
     void OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath) override;
+    void OnPublished(const RuntimeAssetPayload &payload, const std::string &guid, AssetDatabase *adb) override;
     [[nodiscard]] bool SupportsWorkerLoad() const noexcept override
     {
         return true;

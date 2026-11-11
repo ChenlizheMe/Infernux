@@ -155,16 +155,17 @@ class LibraryGraph:
                         functions[(alias.asname or alias.name) + "." + name] = function
         return functions, tuple(dict.fromkeys(dependencies))
 
-    def load(self, path, owner, location):
+    def load(self, path, owner, location, *, source=None):
         path = path.resolve()
         if path in self.loading:
             owner.error(location, "ShaderLib import cycle reaches " + str(path))
         if path in self.modules:
             return self.modules[path]
-        try:
-            source = self.reader(str(path))
-        except FileNotFoundError:
-            owner.error(location, "ShaderLib source does not exist: " + str(path))
+        if source is None:
+            try:
+                source = self.reader(str(path))
+            except FileNotFoundError:
+                owner.error(location, "ShaderLib source does not exist: " + str(path))
         if source is None:
             owner.error(location, "ShaderLib source does not exist: " + str(path))
         source = source.removeprefix("\ufeff")

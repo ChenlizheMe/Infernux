@@ -430,6 +430,7 @@ void AssetRegistry::PublishShader(const std::string &guid, std::shared_ptr<Shade
     }
     ++m_assetMutationGenerations[guid];
     ++m_assetContentGenerations[guid];
+    m_loaders.at(ResourceType::Shader)->OnPublished(m_loadedAssets.at(guid).payload, guid, m_assetDb.get());
     (void)TrimCpuBudget();
 }
 

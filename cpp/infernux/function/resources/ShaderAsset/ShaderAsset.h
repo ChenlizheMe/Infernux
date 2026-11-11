@@ -1,10 +1,11 @@
 #pragma once
 
 #include <core/types/ShaderTypes.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
-#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,17 +25,14 @@ struct ShaderStageVariant
     }
 };
 
-/// Compiled shader asset — the product of InxShaderLoader compilation.
-///
-/// Holds explicit pass variants for one authored stage and the render-state
-/// annotations parsed from the source file.
-/// Loaded and cached by ShaderLoader via AssetRegistry.
+/// ShaderLoader's prepared source publication: typed author programs and
+/// libraries, or the existing standalone pass variants during their migration.
 struct ShaderAsset
 {
     /// Shader identity (e.g. "pbr", "unlit", "surface_water")
     std::string shaderId;
 
-    /// "vertex" or "fragment"
+    /// Author source kind.
     std::string shaderType;
 
     /// Source file path (for hot-reload cache key)
@@ -54,6 +52,7 @@ struct ShaderAsset
     /// fields. Device publication chooses the target without recompiling.
     std::shared_ptr<const ShaderCompilation> program;
     std::string authoringSchema;
+    std::vector<std::string> sourceDependencies;
 
     [[nodiscard]] const ShaderStageVariant *FindVariant(ShaderCompileTarget target) const noexcept
     {
@@ -96,6 +95,9 @@ struct ShaderAsset
         for (const auto &variant : variants)
             bytes += variant.spirv.capacity();
         bytes += authoringSchema.capacity();
+        bytes += sourceDependencies.capacity() * sizeof(std::string);
+        for (const auto &dependency : sourceDependencies)
+            bytes += dependency.capacity();
         if (program) {
             bytes += program->diagnostics.capacity() + program->targets.capacity() * sizeof(ShaderTargetCode);
             for (const auto &target : program->targets) {

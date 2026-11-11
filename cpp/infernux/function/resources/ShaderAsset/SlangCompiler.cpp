@@ -181,9 +181,6 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
     auto *module = loadModule(source);
 
     const auto entryCount = module->getDefinedEntryPointCount();
-    if (entryCount == 0)
-        throw std::runtime_error(source.path + ": program has no shader entry points");
-
     std::vector<Slang::ComPtr<slang::IEntryPoint>> entries(static_cast<size_t>(entryCount));
     std::vector<slang::IComponentType *> components{module};
     for (SlangInt32 index = 0; index < entryCount; ++index) {

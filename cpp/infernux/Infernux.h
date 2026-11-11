@@ -494,6 +494,7 @@ class Infernux
     };
 
     std::string ReloadShaderDependencies(const std::string &shaderPath, const std::string &previousSourcePath);
+    std::string ReloadShaderAuthorSource(const std::string &shaderPath);
     std::string ReloadShaderSourceBatch(const std::vector<std::string> &roots);
     // Sources checked by the last synchronous candidate publication. Diagnostic
     // owners use this receipt to retire only errors resolved by that result.

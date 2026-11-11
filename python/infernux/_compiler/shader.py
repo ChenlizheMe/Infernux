@@ -220,6 +220,18 @@ def read_shader(path: Path, module_name: str) -> ShaderDefinition:
 
 def _prepare_source(source, source_path, module_name, reader):
     """Return a plain native preparation snapshot; no Python object enters GPU work."""
+    from infernux._source_kinds import source_extension
+
+    if source_extension(source_path) == ".shaderlib.py":
+        graph = LibraryGraph(reader)
+        owner = ShaderEmitter(source, source_path)
+        module = graph.load(Path(source_path), owner, ast.Constant(lineno=1, col_offset=0), source=source)
+        schema = {"name": Path(source_path).name[:-len(".shaderlib.py")], "domain": "library",
+                  "parameters": [], "inputs": [],
+                  "functions": [{"name": name, "return_type": function.result, "arguments": function.arguments}
+                                for name, function in module.functions.items()]}
+        libraries = tuple(item for item in graph.sources() if item[0] != module.name)
+        return module.source, libraries, json.dumps(schema, ensure_ascii=False)
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
     schema = {"name": definition.name, "domain": "fullscreen",
               "parameters": [asdict(field) for field in definition.parameters],

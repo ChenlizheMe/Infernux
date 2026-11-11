@@ -2,10 +2,12 @@
 
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <platform/filesystem/InxPath.h>
 
@@ -51,6 +53,13 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->descriptor.filePath = filePath;
         asset->descriptor.fileExtension = kind->suffix;
         asset->authoringSchema = prepared.schema;
+        for (const auto &library : prepared.libraries) {
+            if (!asset_formats::FindShaderSourceKind(library.path))
+                continue;
+            auto dependency = adb->GetGuidFromPath(library.path);
+            if (!dependency.empty())
+                asset->sourceDependencies.push_back(std::move(dependency));
+        }
         asset->program = std::make_shared<ShaderCompilation>(
             compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
         return asset;
@@ -194,6 +203,17 @@ RuntimeAssetPayload ShaderLoader::Load(const std::string &filePath, const std::s
     return CompileShaderAsset(filePath, guid, adb);
 }
 
+void ShaderLoader::OnPublished(const RuntimeAssetPayload &payload, const std::string &guid, AssetDatabase *adb)
+{
+    const auto asset = payload.Get<ShaderAsset>();
+    if (!asset->program)
+        return;
+    auto &graph = *adb->GetDependencyGraph();
+    graph.ClearRuntimeDependenciesOf(guid);
+    for (const auto &dependency : asset->sourceDependencies)
+        graph.AddRuntimeDependency(guid, dependency);
+}
+
 // =============================================================================
 // Reload — recompile and replace in-place
 // =============================================================================
@@ -218,7 +238,7 @@ bool ShaderLoader::Reload(const RuntimeAssetPayload &existing, const std::string
 }
 
 // =============================================================================
-// ScanDependencies — shaders have no outgoing asset dependencies
+// Prepared source dependencies are published with the accepted program.
 // =============================================================================
 
 size_t ShaderLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const
