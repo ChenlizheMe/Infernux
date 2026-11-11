@@ -538,12 +538,24 @@ void BindSceneManager(py::module_ &m)
             [](const SceneManager &manager) {
                 const auto &profile = manager.GetLastFrameProfile();
                 py::dict result;
+                result["editor_camera_ms"] = profile.editorCameraMs;
+                result["editor_update_ms"] = profile.editorUpdateMs;
+                result["pending_starts_ms"] = profile.pendingStartsMs;
+                result["sync_external_moves_ms"] = profile.syncExternalMovesMs;
                 result["sync_colliders_ms"] = profile.syncCollidersMs;
                 result["fixed_update_ms"] = profile.fixedUpdateMs;
                 result["physics_step_ms"] = profile.physicsStepMs;
+                result["physics_prepare_ms"] = profile.physicsPrepareMs;
+                result["physics_ccd_ms"] = profile.physicsCCDMs;
+                result["physics_jolt_ms"] = profile.physicsJoltMs;
+                result["physics_finish_ms"] = profile.physicsFinishMs;
                 result["physics_events_ms"] = profile.physicsEventsMs;
                 result["sync_rigidbodies_ms"] = profile.syncRigidbodiesMs;
                 result["interpolation_ms"] = profile.interpolationMs;
+                result["gameplay_update_ms"] = profile.gameplayUpdateMs;
+                result["late_update_ms"] = profile.lateUpdateMs;
+                result["audio_ms"] = profile.audioMs;
+                result["end_frame_ms"] = profile.endFrameMs;
                 result["fixed_steps"] = profile.fixedSteps;
                 result["collider_sync_candidates"] = profile.colliderSyncCandidates;
                 result["rigidbody_sync_candidates"] = profile.rigidbodySyncCandidates;

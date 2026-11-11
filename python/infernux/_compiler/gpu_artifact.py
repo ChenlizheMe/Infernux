@@ -47,6 +47,8 @@ def _require_separate_f32_ops(payload):
         instructions.append((opcode, words[cursor + 1:cursor + size]))
         cursor += size
     f32 = {args[0] for op, args in instructions if op == 22 and args[1] == 32}  # OpTypeFloat
+    if f32 and not any(op == 16 and args[1:] == (4461, 32) for op, args in instructions):
+        raise ValueError("GPU f32 artifact must preserve signed zero, infinity and NaN; recompile this model")
     f32.update(args[0] for op, args in instructions if op == 23 and args[1] in f32)  # OpTypeVector
     glsl = {args[0] for op, args in instructions if op == 11 and struct.pack(
         f"<{len(args) - 1}I", *args[1:]).split(b"\0", 1)[0] == b"GLSL.std.450"}
@@ -224,7 +226,7 @@ class CompilerArtifact:
                         if expected_access is None or binding["access"] != expected_access or binding["is_grad"]:
                             raise ValueError("GPU continuation resource access disagrees with its row proof")
 
-    def range_bounds(self, params, *, begin=None, end=None, host=None):
+    def range_bounds(self, params, *, begin=None, end=None, host=None, _validate_resources=True):
         from infernux.compute import Buffer
 
         contract = self.continuation
@@ -253,6 +255,19 @@ class CompilerArtifact:
         begin, end = int(begin), int(end)
         if not 0 <= begin <= end <= size:
             raise ValueError(f"GPU continuation range [{begin},{end}) is outside [0,{size})")
+        if not _validate_resources:
+            return begin, end
+        self.validate_resources(params, size, host=host)
+        return begin, end
+
+    def validate_resources(self, params, size, *, host):
+        from infernux.compute import Buffer
+
+        contract = self.continuation
+        if not contract.eligible:
+            return
+        inner = contract.inner_range
+        domain = params[self.domain_parameter]
         buffers = {}
         owner = domain._host if host is None else host
         owner_identity = None if owner is None else owner.identity
@@ -287,7 +302,6 @@ class CompilerArtifact:
             for other_index, (other_resource, other_left, other_right) in buffers.items():
                 if index != other_index and resource == other_resource and left < other_right and other_left < right:
                     raise ValueError("GPU continuation output overlaps another buffer range")
-        return begin, end
 
     def argument_bytes(self, params, *, bounds, gradients=None, host=None) -> bytes:
         from infernux.compute import Buffer

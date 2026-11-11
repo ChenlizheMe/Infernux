@@ -31,6 +31,9 @@ class ModelSaveRequest(CpuRequest):
     saved_steps: int | None = None
     entry_layout: tuple = ()
 
+    def _prepared_transfer(self):
+        return self.cursor
+
     @classmethod
     def create(cls, owner, facts, model, optimizer, path):
         from infernux.nn.modules import Module
@@ -206,7 +209,7 @@ class ModelSaveRequest(CpuRequest):
             native.extend(c.native_blocks)
             reserve = max(reserve, c.reserved_bytes)
             peak = c.prepare_bytes if self.packet is None and not c.readback_ready and not c.done else 0
-        return _RequestStorage(retained, private, reserve, prepare_bytes=peak, native_blocks=native)
+        return _RequestStorage(retained, compute._storage_blocks(private), reserve, prepare_bytes=peak, native_blocks=native)
 
     def _is_current(self, owner):
         if self.model is not None:
@@ -408,6 +411,9 @@ class ModelLoadRequest(CpuRequest):
     program_input: object = None
     read_recipes: tuple = ()
 
+    def _prepared_transfer(self):
+        return self.cursor
+
     def _io_tasks(self):
         tasks = () if self.file is None else (self.file,)
         if self.program_input is not None and self.program_input.task is not None:
@@ -598,7 +604,7 @@ class ModelLoadRequest(CpuRequest):
             retained.extend(program_retained)
             native.extend(program_native)
             peak += program_peak
-        return _RequestStorage(retained, private, reservation, prepare_bytes=peak, native_blocks=native)
+        return _RequestStorage(retained, compute._storage_blocks(private), reservation, prepare_bytes=peak, native_blocks=native)
 
     def _is_current(self, owner):
         return self.cursor is None or self.cursor.is_current()

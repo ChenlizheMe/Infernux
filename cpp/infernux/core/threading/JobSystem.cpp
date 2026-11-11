@@ -546,7 +546,9 @@ void JobSystem::ReleasePermit(JobDomain domain) noexcept
     }
     // Returning an unlimited permit cannot make work runnable.
     if (limited) {
-        m_queueCv.notify_all();
+        // One returned permit admits one queued task. Waking the entire pool
+        // for each short physics job creates contention on the shared queue.
+        m_queueCv.notify_one();
         m_permitCv.notify_all();
     }
 }
@@ -597,12 +599,9 @@ bool JobSystem::DequeueTask(Task &task, const std::function<bool(const Task &)> 
                 bestQueue = queueIndex;
                 bestIndex = index;
             }
-            // The first eligible task dominates later tasks at this priority.
-            // Owner help must look past WorkerOnly heads, without scanning an
-            // entire ordinary queue when there are no other restrictions.
-            if (fastPath) {
-                break;
-            }
+            // Queues are sequence ordered. The first eligible task is at
+            // least as old as every successor at the same base priority.
+            break;
         }
     }
 
@@ -896,6 +895,51 @@ uint32_t JobSystem::RunPendingJobs(uint32_t maxJobs)
     return completed;
 }
 
+uint32_t JobSystem::RunPendingJobs(TaskGroup &group, uint32_t maxJobs)
+{
+    const auto fence = group.Fence();
+    const bool suspended = SuspendCurrentPermit();
+    uint32_t completed = 0;
+    while ((maxJobs == 0 || completed < maxJobs) && TryRunOneForWait(fence, WaitPolicy::HelpDependency))
+        ++completed;
+    if (suspended)
+        ResumeCurrentPermit();
+    return completed;
+}
+
+void JobSystem::RunInDomain(JobDomain domain, const JobFn &job)
+{
+    auto *previous = s_currentContext;
+    if (previous && previous->system == this && previous->domain == domain && previous->ownsPermit) {
+        job();
+        return;
+    }
+    const bool suspended = SuspendCurrentPermit();
+    {
+        std::unique_lock<std::mutex> lock(m_queueMutex);
+        m_permitCv.wait(lock, [this, domain] { return CanRunDomainLocked(domain); });
+        AcquirePermitLocked(domain);
+    }
+    const bool inherit = previous && previous->system == this;
+    ExecutionContext context{this, domain, inherit ? previous->state : nullptr,
+                             inherit ? previous->groupState : nullptr, true};
+    s_currentContext = &context;
+    const auto finish = [&] {
+        if (context.ownsPermit)
+            ReleasePermit(domain);
+        s_currentContext = previous;
+        if (suspended)
+            ResumeCurrentPermit();
+    };
+    try {
+        job();
+    } catch (...) {
+        finish();
+        throw;
+    }
+    finish();
+}
+
 size_t JobSystem::GetQueuedTaskCount() const
 {
     std::lock_guard<std::mutex> guard(m_queueMutex);
@@ -994,6 +1038,9 @@ void JobSystem::Execute(Task task, bool helped) noexcept
         }
     }
 
+    // Completion also retires the callback's captures. A group fence must
+    // not release an engine owner while its last task still owns resources.
+    task.fn = {};
     if (context.ownsPermit) {
         context.ownsPermit = false;
         ReleasePermit(task.domain);

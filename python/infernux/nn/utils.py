@@ -3,6 +3,7 @@ from infernux._work import _Operation, _ValueLayout
 from contextlib import nullcontext
 from dataclasses import dataclass
 import math
+import weakref
 from types import SimpleNamespace
 
 import numpy as np
@@ -32,11 +33,8 @@ def _clip_work(facts, max_norm, empty, bind):
             count = value.element_count
             width = min(count, _TILE)
             output = empty(((count + width - 1) // width,))
-            maxima = empty(output.shape)
-            program = bind(p.maximum_tiles, (value, maxima), _COUNT=count, _WIDTH=width)
-            operations.append(_Operation(program, (value, maxima)))
-            program = bind(p.norm_tiles, (value, maxima, output), _COUNT=count, _WIDTH=width, _MAXIMUM=_FLOAT_MAX)
-            operations.append(_Operation(program, (value, maxima, output)))
+            program = bind(p.norm_tiles, (value, output), _COUNT=count, _WIDTH=width, _MAXIMUM=_FLOAT_MAX)
+            operations.append(_Operation(program, (value, output)))
             value = output
             if value.element_count == 1:
                 break
@@ -66,6 +64,9 @@ def _clip_work(facts, max_norm, empty, bind):
 class _ClipPrograms:
     def __init__(self, device, source=None):
         self.device, self.source, self._programs = device, source, {}
+        self._storage_sizes = {}
+        self._prepared_shapes = set()
+        self._host = None
 
     @property
     def programs(self):
@@ -79,6 +80,16 @@ class _ClipPrograms:
         return self._programs[self._key(function, facts)]
 
     def prepare(self, parameters, *, native_entries=False):
+        parameters = tuple(parameters)
+        if self.device == "gpu":
+            from infernux.compute import _native_compute_host
+            host = _native_compute_host()
+            if self._host is None or self._host() is not host:
+                self._prepared_shapes.clear()
+                self._host = weakref.ref(host)
+        signature = tuple(parameter.shape for parameter in parameters), native_entries
+        if signature in self._prepared_shapes:
+            return
         temporary = []
         def empty(shape):
             value = _empty(shape, self.device)
@@ -89,6 +100,8 @@ class _ClipPrograms:
             if key not in self._programs:
                 self._programs[key] = p.prepare(function, arguments, own_deferred_samples=True,
                                                source=self.source, **facts)
+            elif self.device == "gpu":
+                p._prepare_gpu_family(self._programs[key], arguments, own_deferred_samples=True)
             return self._programs[key]
         try:
             facts = tuple((parameter, SimpleNamespace(_data=parameter._data)) for parameter in parameters)
@@ -99,10 +112,15 @@ class _ClipPrograms:
                 for declaration in self.programs:
                     for program in p.program_family(declaration):
                         program._native_entry()
+            if self.device != "gpu" or p._deferred_prepares() is None:
+                self._prepared_shapes.add(signature)
         finally:
             p.retire(temporary, flush=False)
 
     def storage_bytes(self, shapes, term_limit):
+        key = tuple(shapes), term_limit
+        if key in self._storage_sizes:
+            return self._storage_sizes[key]
         total = 0
         def empty(shape):
             nonlocal total
@@ -115,7 +133,19 @@ class _ClipPrograms:
         rows = max((domain[1] for operation in work.operations
                     if (domain := p.inner_domain(operation.program, operation.params)) is not None
                     and domain[0] > term_limit), default=0)
-        return total + 8 * rows + (8 if rows and self.device == "cpu" else 0)
+        size = total + 8 * rows + (8 if rows and self.device == "cpu" else 0)
+        self._storage_sizes[key] = size
+        return size
+
+
+def _clip_programs(root, device):
+    """One model-owned compiler catalogue for ordinary and managed clipping."""
+    if root is None:
+        return _ClipPrograms(device)
+    programs = root._clip_programs.get(device)
+    if programs is None:
+        programs = root._clip_programs[device] = _ClipPrograms(device, root._program_source)
+    return programs
 
 
 def clip_grad_norm_(parameters, max_norm, norm_type=2.0, error_if_nonfinite=False, foreach=None):
@@ -149,7 +179,7 @@ def clip_grad_norm_(parameters, max_norm, norm_type=2.0, error_if_nonfinite=Fals
         _check_options(None, device)
         if values:
             _check_storage(values)
-        programs = _ClipPrograms(device, None if root is None else root._program_source)
+        programs = _clip_programs(root, device)
         programs.prepare(tuple(parameter for parameter, gradient in facts if gradient is not None))
         pending, gradients, result = [], [], None
         published = False

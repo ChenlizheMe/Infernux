@@ -369,6 +369,7 @@ def _artifact_key(function, definition, helpers, params, compile_values, *, auto
         "abi": _CACHE_ABI,
         "fast_math": WORK_ITEM_FAST_MATH,
         "float_not_equal": "unordered",
+        "float32_semantics": "signed-zero-inf-nan-preserve",
         "module": function.__module__,
         "qualname": function.__qualname__,
         "source": ast.dump(source_tree, include_attributes=False),

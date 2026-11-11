@@ -52,6 +52,8 @@ class ExecutionCosts:
         self.host_samples = OrderedDict()
         self.io_samples = OrderedDict()
         self.packet_ratios = deque(maxlen=8)
+        self.revision = 0
+        self._curves = {}
 
     @staticmethod
     def _packet_key(costs):
@@ -71,6 +73,7 @@ class ExecutionCosts:
         # Every actual receipt ages old composition samples, including single
         # operations. A slow packet can therefore be measured again later.
         self.packet_ratios.append((self._packet_key(costs), ratio))
+        self.revision += 1
 
     def needs_probe(self, key, limit):
         samples = self.samples.get(key)
@@ -78,7 +81,11 @@ class ExecutionCosts:
                     and all(rows == samples[0][0] for rows, _ in samples))
 
     def curve(self, key):
-        return _upper_curve(self.samples.get(key))
+        if key not in self.samples:
+            return None
+        if key not in self._curves:
+            self._curves[key] = _upper_curve(self.samples.get(key))
+        return self._curves[key]
 
     def observe_io_span(self, key, sample):
         if sample.calls <= 0 or sample.units <= 0:
@@ -134,6 +141,8 @@ class ExecutionCosts:
     def observe(self, key, rows, elapsed, *, lag=None, separate_initial=False):
         if elapsed is None or elapsed <= 0 or rows == 0:
             return
+        self.revision += 1
+        self._curves.pop(key, None)
         values = self.samples.pop(key, None)
         initial = values is None
         if initial:
@@ -148,8 +157,10 @@ class ExecutionCosts:
         if len(self.samples) > 256:
             old, _ = self.samples.popitem(last=False)
             self.lags.pop(old, None)
+            self._curves.pop(old, None)
 
     def observe_lag(self, key, lag):
+        self.revision += 1
         self.lags.setdefault(key, deque(maxlen=8)).append(lag)
 
     def lag(self, key):
@@ -157,6 +168,8 @@ class ExecutionCosts:
         return None if not values else max(values)
 
     def observe_host(self, key, elapsed):
+        if key != ('owner', 'service_planning'):
+            self.revision += 1
         values = self.host_samples.pop(key, deque(maxlen=8))
         values.append(elapsed)
         self.host_samples[key] = values
@@ -268,7 +281,7 @@ def _dispatch_rows(rows, grain):
 
 class GpuSegment:
     """Select a measured dispatch prefix within the GPU and transfer allowance."""
-    def __init__(self, owner, *, host_allowance, execution_allowance=None, transfer_allowance=None,
+    def __init__(self, owner, *, execution_allowance=None, transfer_allowance=None,
                  pending_profiles=()):
         self._costs = owner._costs
         self._budget = owner.budget
@@ -278,8 +291,6 @@ class GpuSegment:
         self.preparation = self._costs.host(("gpu", "prepare-operation"))
         self._pending_profiles = pending_profiles
         self.limit = owner.budget.segment_operations
-        if self.preparation:
-            self.limit = min(self.limit, max(1, int(host_allowance / self.preparation)))
         self.costs = []
         self.target = self.remaining = 0
         self.replay_end = 0
@@ -321,8 +332,8 @@ class GpuSegment:
             # make the dispatch cheaper. Bound useful work and the entire packet.
             self.target = self.remaining = self._costs.gpu_target(key, self._budget.gpu_slice_ns, self.allowance)
         else:
-            minimum = self._costs.predict(key, dispatch_grain)
-            if whole or argument_bytes > self.transfer_remaining or minimum is None or minimum > self.remaining:
+            minimum = self._costs.predict(key, minimum_units)
+            if argument_bytes > self.transfer_remaining or minimum is None or minimum > self.remaining:
                 return None
         if whole:
             rows, prediction = priced_extent, self._costs.predict(key, priced_extent)
@@ -411,7 +422,7 @@ def gpu_service(owner, costs, *, transfer_bytes=0, indivisible=False, transfer_i
 
 
 def _gpu_dispatch_prefix(owner, span, begin):
-    segment = GpuSegment(owner, host_allowance=owner._max_background_credit())
+    segment = GpuSegment(owner)
     ends = segment.select_rows(span.key, begin, span.rows,
                                argument_bytes=span.argument_bytes,
                                max_dispatch_rows=span.max_dispatch_rows, dispatch_grain=span.dispatch_grain,
@@ -419,14 +430,35 @@ def _gpu_dispatch_prefix(owner, span, begin):
     return segment, ends
 
 
+def _gpu_preparation_service(owner, operations, total_operations, estimate=0):
+    """Binding and sealing are indivisible host actions, not divisible time."""
+    unit = owner._costs.host(('gpu', 'prepare-operation'))
+    seal = owner._costs.predict(('host-service', 'gpu', 'seal'), total_operations)
+    if unit is None or seal is None:
+        return ServiceDemand(reason="GPU binding preparation or sealing is unprofiled")
+    allowance = owner._max_background_credit()
+    unit = max(unit, (estimate - seal) / operations) if operations else unit
+    if operations and unit > allowance or seal > allowance:
+        return ServiceDemand(reason="GPU preparation action exceeds the host opportunity allowance", failure="host_target")
+    groups = []
+    if operations:
+        per_step = max(1, int(allowance // unit))
+        full, tail = divmod(operations, per_step)
+        if full:
+            groups.append(ServiceGroup('host', full, 0, per_step * unit))
+        if tail:
+            groups.append(ServiceGroup('host', 1, 0, tail * unit))
+    groups.append(ServiceGroup('host', 1, 0, seal))
+    return ServiceDemand(tuple(groups))
+
+
 def _gpu_dispatch_span(owner, span, begin, segment, end, estimate):
     groups = []
     while True:
         costs = tuple(segment.costs)
-        preparation = max(estimate, (segment.preparation or 0) * len(costs))
-        if preparation > owner._max_background_credit():
-            return ServiceDemand(reason="GPU segment preparation exceeds the host opportunity allowance",
-                                 failure="host_target"), None
+        preparation = _gpu_preparation_service(owner, len(costs), len(costs), estimate)
+        if preparation.reason:
+            return preparation, None
         demand = gpu_service(owner, costs,
             transfer_bytes=owner.budget.transfer_frame_bytes - segment.transfer_remaining,
             indivisible=segment.indivisible,
@@ -435,7 +467,7 @@ def _gpu_dispatch_span(owner, span, begin, segment, end, estimate):
             return demand, None
         width = end - begin
         repeats = 1 + (span.rows - segment.replay_end) // width
-        groups.append(ServiceCycle((ServiceGroup('host', 1, 0, preparation), *demand.groups), repeats))
+        groups.append(ServiceCycle((*preparation.groups, *demand.groups), repeats))
         begin += repeats * width
         if begin == span.rows:
             return ServiceDemand(tuple(groups)), segment
@@ -461,13 +493,34 @@ class ServiceSpan:
 
 
 def model_spans(plan, optimizer, facts, lr, record_loss, entries, term_limit, objective="mse", clear_grad=False,
-                *, output_index=None):
+                *, output_index=None, frontier=None):
     """Consume the sole operation builders; retain numeric facts only."""
     return operation_spans(plan._workload(optimizer, facts, lr, record_loss=record_loss,
-        objective=objective, clear_grad=clear_grad, output_index=output_index), entries, plan.device, term_limit)
+        objective=objective, clear_grad=clear_grad, output_index=output_index), entries, plan.device, term_limit,
+        frontier=frontier)
 
 
-def operation_spans(operations, entries, device, term_limit):
+def _inner_pieces(count, limit, begin=0, pending_end=0):
+    pieces = []
+    if pending_end > begin:
+        kind = 'initial' if begin == 0 else 'final' if pending_end == count else 'resume'
+        pieces.append((kind, begin, pending_end - begin, 1))
+        begin = pending_end
+    if begin == 0:
+        end = min(count, limit)
+        pieces.append(('initial', 0, end, 1))
+        begin = end
+    if begin < count:
+        full, tail = divmod(count - begin, limit)
+        middle = full if tail else full - 1
+        if middle:
+            pieces.append(('resume', begin, limit, middle))
+            begin += middle * limit
+        pieces.append(('final', begin, count - begin, 1))
+    return pieces
+
+
+def operation_spans(operations, entries, device, term_limit, *, frontier=None):
     from infernux._work import inner_range, _ValueLayout
     result, indices = [], {}
     for phase, operation in operations:
@@ -489,19 +542,20 @@ def operation_spans(operations, entries, device, term_limit):
             entry = program
             rows = params[program.domain_parameter].element_count
         control = None if operation.reverse else inner_range(program)
-        if control is None or control.count <= term_limit:
+        cursor = frontier[1] if frontier is not None and frontier[0] == phase else None
+        at_frontier = cursor is not None and cursor.index == node
+        current = at_frontier and cursor.carry
+        unsplit = at_frontier and (cursor.completed_end or any(
+            work.index == node and work.operation.program is program for work in frontier[2]))
+        if control is None or not current and (control.count <= term_limit or unsplit):
             result.append(ServiceSpan(phase, node, execution_key(entry, params), rows, operation.reverse,
                 argument_bytes=0 if not entries else int(entry.artifact.argument_layout['size']),
                 max_dispatch_rows=entry.max_dispatch_rows if entries else None,
                 dispatch_grain=entry.dispatch_grain if entries else 1))
             continue
         carry = tuple(_ValueLayout((rows,), device) for _ in range(2))
-        full, tail = divmod(control.count, term_limit)
-        pieces = [("initial", 0, term_limit, 1)]
-        final_begin = (full if tail else full-1) * term_limit
-        if final_begin > term_limit:
-            pieces.append(("resume", term_limit, term_limit, final_begin // term_limit - 1))
-        pieces.append(("final", final_begin, tail or term_limit, 1))
+        pieces = _inner_pieces(control.count, term_limit,
+            cursor.inner_begin if current else 0, cursor.inner_end if current else 0)
         for kind, begin, terms, repeats in pieces:
             variant = program._inner_variants[kind]
             entry = entries[variant, False] if entries else variant
@@ -779,16 +833,43 @@ def remaining_model_service(request, owner, opportunity, *, capacity_bytes):
 def remaining_work_service(request, cursor, owner, opportunity, phase="compute", phases=("compute",), *,
                            availability=None, active=True, publish=True):
     """Price the same confirmed cursor used by any numerical request."""
-    phases = {name: index for index, name in enumerate(phases)}
-    node = 0 if cursor is None else cursor.index
-    inner = 0 if cursor is None else cursor.inner_begin
-    begin = 0 if cursor is None else cursor.completed_end
     if availability is None:
         availability = _service_availability(request, owner, opportunity)
     if availability.reason:
         return availability
-    prepared = active and request.packet is not None and request.packet.completion is None
+    preparation = request.gpu_preparation
+    key = (owner._costs.revision, owner.budget, phase, phases, active, publish,
+           None if cursor is None else (id(cursor), cursor.index, cursor.inner_begin, cursor.inner_end,
+                                        cursor.inner_count, cursor.completed_end),
+           None if preparation is None else preparation.index,
+           request.packet is not None, request.packet is not None and request.packet.completion is not None,
+           request.transfer_bytes, request.indivisible, request.transfer_indivisible, bool(availability.occupied),
+           tuple((value.index, value.begin, value.end, value.count) for value in request.ranges))
+    if key != request._forecast_key:
+        request._forecast_work = _remaining_work_service(request, cursor, owner, opportunity, phase, phases,
+            availability=ServiceDemand(occupied=availability.occupied), active=active, publish=publish)
+        request._forecast_key = key
+    # Completion observations and their current host boundary are always fresh;
+    # only the unchanged numeric work description is reused.
+    return combine_services(availability, (request._forecast_work,))
+
+
+def _remaining_work_service(request, cursor, owner, opportunity, phase, phases, *,
+                            availability, active, publish):
+    phases = {name: index for index, name in enumerate(phases)}
+    node = 0 if cursor is None else cursor.index
+    inner = 0 if cursor is None else cursor.inner_begin
+    begin = 0 if cursor is None else cursor.completed_end
+    preparing = active and request.gpu_preparation is not None
+    prepared = preparing or active and request.packet is not None and request.packet.completion is None
     groups, atom = [], 0
+    if preparing:
+        preparation = request.gpu_preparation
+        remaining = _gpu_preparation_service(owner, len(preparation.launches) - preparation.index,
+                                              len(preparation.launches))
+        if remaining.reason:
+            return remaining
+        groups.extend(remaining.groups)
     if prepared:
         demand = gpu_service(owner, request.execution_costs, transfer_bytes=request.transfer_bytes,
                              indivisible=request.indivisible,
@@ -857,13 +938,14 @@ def remaining_work_service(request, cursor, owner, opportunity, phase="compute",
         estimate = owner._costs.host(gpu_prepare_key(host_key) if span.key[0] == 'gpu' else host_key)
         if estimate is None:
             return ServiceDemand(reason="host preparation or publication timing is unprofiled")
-        if estimate > owner._max_background_credit():
+        if estimate > owner._max_background_credit() and (span.key[0] != 'gpu' or span.copy):
             return ServiceDemand(reason="host preparation cannot fit the configured opportunity allowance", failure="host_target")
         if span.key[0] == 'gpu' and not span.copy:
             cpu_segment = None
-            packable = not (span.whole or span.terms)
+            packable = not span.terms
             ends = (gpu_segment.select_rows(span.key, first, span.rows, argument_bytes=span.argument_bytes,
-                                           max_dispatch_rows=span.max_dispatch_rows, dispatch_grain=span.dispatch_grain)
+                                           max_dispatch_rows=span.max_dispatch_rows, dispatch_grain=span.dispatch_grain,
+                                           whole=span.whole)
                     if packable and gpu_segment is not None and gpu_phase == span.phase else ())
             following = bool(ends)
             if following:
@@ -871,7 +953,8 @@ def remaining_work_service(request, cursor, owner, opportunity, phase="compute",
                 previous = groups.pop()
                 if previous.repeats > 1:
                     groups.append(ServiceCycle(previous.groups, previous.repeats - 1))
-                estimate = max(estimate, previous.groups[0].owner_ns)
+                estimate = max(estimate, sum(group.owner_ns * group.steps for group in previous.groups
+                                             if group.domain == 'host'))
             else:
                 segment, ends = _gpu_dispatch_prefix(owner, span, first)
             demand, tail = _gpu_dispatch_span(owner, span, first, segment, ends[-1], estimate)

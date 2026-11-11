@@ -610,26 +610,20 @@ def copy_values(x, output):
     output[i] = x[i]
 
 
-def maximum_tiles(x, output):
+def norm_tiles(x, output):
     # Bounded rows: scale before squaring so large finite gradients do not
     # overflow merely because their squares exceed float32.
     i = inx.compute.index(output)
     maximum = 0.0
-    for k in range(_WIDTH):
-        value = x[(i * _WIDTH + k) % _COUNT] if i * _WIDTH + k < _COUNT else 0.0
-        magnitude = value if value >= 0.0 else -value
-        maximum = magnitude if magnitude != magnitude or magnitude > maximum else maximum
-    output[i] = maximum
-
-
-def norm_tiles(x, maxima, output):
-    i = inx.compute.index(output)
-    maximum = maxima[i]
     total = 0.0
     for k in range(_WIDTH):
         value = x[(i * _WIDTH + k) % _COUNT] if i * _WIDTH + k < _COUNT else 0.0
+        magnitude = value if value >= 0.0 else -value
+        larger = magnitude != magnitude or magnitude > maximum
+        ratio = maximum / magnitude if larger and magnitude > 0.0 and magnitude <= _MAXIMUM else 1.0
+        maximum = magnitude if larger else maximum
         scaled = value / maximum if maximum > 0.0 and maximum <= _MAXIMUM else 0.0
-        total += scaled * scaled
+        total = total * ratio * ratio + 1.0 if larger else total + scaled * scaled
     output[i] = maximum * math.sqrt(total) if maximum <= _MAXIMUM else maximum
 
 
@@ -866,11 +860,14 @@ def prepare(function, params, *, own_deferred_samples=False, source=None, **fact
     return program
 
 
-def run(program, *params, reverse=False):
+def run(program, *params, reverse=False, executable=None):
     if isinstance(program, inx.compute.Kernel):
         arguments, gradients = gpu_arguments(params, reverse=reverse)
-        inx.compute.launch(program, arguments,
-                           autodiff_mode="reverse" if reverse else "none", gradients=gradients)
+        if executable is None:
+            inx.compute.launch(program, arguments,
+                               autodiff_mode="reverse" if reverse else "none", gradients=gradients)
+        else:
+            inx.compute._launch_executable(executable, arguments, gradients=gradients)
     else:
         program(*params, begin=0, end=len(params[program.domain_parameter]))
 

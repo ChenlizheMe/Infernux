@@ -137,7 +137,8 @@ void HingeJoint::SetMotorTargetAngle(float degrees)
     if (!std::isfinite(degrees))
         throw std::invalid_argument("hinge motor target angle must be finite");
     m_motorTargetAngle = degrees;
-    UpdateConstraintMotor();
+    if (m_constraintId != 0)
+        PhysicsWorld::Instance().UpdateHingeConstraintTarget(m_constraintId, GetClampedMotorTargetRadians());
 }
 
 void HingeJoint::SetMotorStiffness(float stiffness)
@@ -188,16 +189,19 @@ void HingeJoint::SetArmature(float inertia)
     UpdateConstraintMotor();
 }
 
+float HingeJoint::GetClampedMotorTargetRadians() const
+{
+    // The authored full-range limit still clamps, even when Jolt treats it as unlimited.
+    return glm::radians(m_useLimits ? std::clamp(m_motorTargetAngle, m_minimumAngle, m_maximumAngle)
+                                    : m_motorTargetAngle);
+}
+
 void HingeJoint::UpdateConstraintMotor()
 {
     if (m_constraintId != 0) {
-        // Jolt treats [-pi, pi] as an unlimited hinge. The authored use_limits
-        // contract still clamps the target even at that full-range boundary.
-        const float target =
-            m_useLimits ? std::clamp(m_motorTargetAngle, m_minimumAngle, m_maximumAngle) : m_motorTargetAngle;
-        PhysicsWorld::Instance().UpdateHingeConstraintMotor(m_constraintId, m_motorEnabled, glm::radians(target),
-                                                            m_motorStiffness, m_motorDamping, m_motorMaxTorque,
-                                                            m_jointDamping, m_frictionTorque, m_armature);
+        PhysicsWorld::Instance().UpdateHingeConstraintMotor(
+            m_constraintId, m_motorEnabled, GetClampedMotorTargetRadians(), m_motorStiffness, m_motorDamping,
+            m_motorMaxTorque, m_jointDamping, m_frictionTorque, m_armature);
     }
 }
 

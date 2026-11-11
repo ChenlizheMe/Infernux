@@ -1157,8 +1157,16 @@ void PhysicsWorld::SettleKinematicMoves()
     }
 }
 
-void PhysicsWorld::Step(float deltaTime)
+void PhysicsWorld::Step(float deltaTime, PhysicsStepProfile *profile)
 {
+    using StepClock = std::chrono::steady_clock;
+    const auto started = profile ? StepClock::now() : StepClock::time_point{};
+    const auto elapsedNs = [](auto start) {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(StepClock::now() - start).count());
+    };
+    if (profile)
+        *profile = {};
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
     m_poseReadbackBodyIds.clear();
     m_contactImpulses.clear();
@@ -1219,6 +1227,8 @@ void PhysicsWorld::Step(float deltaTime)
     constexpr int kMaxDynamicCCDSplits = 8;
     constexpr float kTOIPadding = 1e-4f;
     constexpr float kMinStepDuration = 1e-6f;
+    if (profile)
+        profile->prepareNs = elapsedNs(started);
     auto physicsGroup = JobSystem::Get().CreateTaskGroup(JobDomain::Physics, JobPriority::Critical);
     m_jobSystem->BeginFrame(physicsGroup);
     float remainingTime = deltaTime;
@@ -1252,7 +1262,13 @@ void PhysicsWorld::Step(float deltaTime)
             coldSettings.mConstraintWarmStart = false;
             m_physicsSystem->SetPhysicsSettings(coldSettings);
         }
-        const auto error = m_physicsSystem->Update(duration, collisionSteps, m_tempAllocator.get(), m_jobSystem.get());
+        const auto nativeStarted = profile ? StepClock::now() : StepClock::time_point{};
+        JPH::EPhysicsUpdateError error;
+        JobSystem::Get().RunInDomain(JobDomain::Physics, [&] {
+            error = m_physicsSystem->Update(duration, collisionSteps, m_tempAllocator.get(), m_jobSystem.get());
+        });
+        if (profile)
+            profile->joltNs += elapsedNs(nativeStarted);
         if (resetWarmStart)
             m_physicsSystem->SetPhysicsSettings(settings);
         m_previousSolverStepDuration = stepDuration;
@@ -1263,8 +1279,11 @@ void PhysicsWorld::Step(float deltaTime)
     };
     try {
         while (remainingTime > kMinStepDuration) {
+            const auto ccdStarted = profile ? StepClock::now() : StepClock::time_point{};
             const float hitFraction =
                 std::min(FindEarliestStaticCCDFraction(remainingTime), FindEarliestDynamicCCDFraction(remainingTime));
+            if (profile)
+                profile->ccdNs += elapsedNs(ccdStarted);
             if (hitFraction >= 1.0f || dynamicCCDSplits >= kMaxDynamicCCDSplits) {
                 updateSolver(remainingTime, EngineConfig::Get().physicsCollisionSteps);
                 remainingTime = 0.0f;
@@ -1312,6 +1331,8 @@ void PhysicsWorld::Step(float deltaTime)
     // solver write.
     if (!activeBefore.empty() || !activeAfter.empty())
         m_queryGeneration.fetch_add(1, std::memory_order_release);
+    if (profile)
+        profile->finishNs = elapsedNs(started) - profile->prepareNs - profile->ccdNs - profile->joltNs;
 }
 
 static void PublishRaycastSubShape(const JPH::Body &body, const JPH::SubShapeID &subShapeId, RaycastHit &outHit)

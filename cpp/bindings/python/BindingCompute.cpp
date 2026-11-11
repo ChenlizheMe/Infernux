@@ -4,15 +4,61 @@
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/rhi/RhiUpload.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <map>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <tuple>
+#include <unordered_set>
 
 using namespace infernux;
 namespace py = pybind11;
 
 namespace
 {
+using ComputeStorage = std::map<std::tuple<uintptr_t, uint32_t, uint32_t>, uint64_t>;
+
+void AppendComputeStorage(ComputeStorage &blocks, const std::shared_ptr<rhi::ComputeBuffer> &buffer)
+{
+    // Resolve the current allocation, including copy-on-write replacement.
+    const auto allocation = buffer->GetAllocation();
+    const auto handle = allocation->GetBuffer();
+    blocks[{reinterpret_cast<uintptr_t>(&buffer->GetHost().queue), handle.index, handle.generation}] =
+        allocation->GetByteSize();
+}
+
+py::dict ComputeStorageDictionary(const ComputeStorage &blocks)
+{
+    py::dict result;
+    for (const auto &[key, bytes] : blocks)
+        result[py::make_tuple("gpu", std::get<0>(key), std::get<1>(key), std::get<2>(key))] = bytes;
+    return result;
+}
+
+class ComputeStorageGroup
+{
+  public:
+    explicit ComputeStorageGroup(const std::vector<std::shared_ptr<rhi::ComputeBuffer>> &buffers)
+    {
+        std::unordered_set<rhi::ComputeBuffer *> seen;
+        for (const auto &buffer : buffers)
+            if (seen.insert(buffer.get()).second)
+                m_buffers.push_back(buffer);
+    }
+
+    py::dict Blocks() const
+    {
+        ComputeStorage blocks;
+        for (const auto &entry : m_buffers)
+            if (const auto buffer = entry.lock())
+                AppendComputeStorage(blocks, buffer);
+        return ComputeStorageDictionary(blocks);
+    }
+
+  private:
+    // Accounting must neither pin a dead buffer nor freeze a writer's storage.
+    std::vector<std::weak_ptr<rhi::ComputeBuffer>> m_buffers;
+};
+
 auto SubmissionIdentity(rhi::SubmissionTicket ticket)
 {
     return py::make_tuple(ticket.device, static_cast<uint32_t>(ticket.queue), ticket.serial);
@@ -209,6 +255,15 @@ std::vector<rhi::ComputeBufferCopy> DecodeComputeCopies(py::iterable values)
 
 void infernux::RegisterComputeBindings(py::module_ &m)
 {
+    py::class_<ComputeStorageGroup>(m, "_ComputeStorageGroup")
+        .def(py::init<const std::vector<std::shared_ptr<rhi::ComputeBuffer>> &>())
+        .def_property_readonly("storage_blocks", &ComputeStorageGroup::Blocks);
+    m.def("_compute_buffer_storage", [](const std::vector<std::shared_ptr<rhi::ComputeBuffer>> &buffers) {
+        ComputeStorage blocks;
+        for (const auto &buffer : buffers)
+            AppendComputeStorage(blocks, buffer);
+        return ComputeStorageDictionary(blocks);
+    });
     m.def("_compute_upload_staging_bytes",
           [](uint64_t bytes) { return bytes > rhi::InlineBufferUpdateBytes ? rhi::UploadStagingClass(bytes) : 0; });
     py::enum_<rhi::ComputeScalarType>(m, "ComputeScalarType")
@@ -440,7 +495,34 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                                    return result;
                                })
         .def_property_readonly("dispatch_count",
-                               [](const rhi::ComputeWorkRecipe &work) { return work.GetDispatches().size(); });
+                               [](const rhi::ComputeWorkRecipe &work) { return work.GetDispatches().size(); })
+        .def("instantiate", [](const rhi::ComputeWorkRecipe &work,
+                               const std::map<std::string, std::shared_ptr<rhi::ComputeBuffer>> &values) {
+            work.GetHost().Queue().RecordNativeBoundary();
+            std::vector<rhi::ComputeWorkInput> inputs;
+            for (const auto &[name, buffer] : values)
+                inputs.push_back({name, buffer});
+            return work.Instantiate(std::move(inputs));
+        });
+
+    py::class_<rhi::ComputeWorkInstance, std::shared_ptr<rhi::ComputeWorkInstance>>(m, "_ComputeWorkInstance")
+        .def("rebind",
+             [](const rhi::ComputeWorkInstance &work,
+                const std::map<std::string, std::shared_ptr<rhi::ComputeBuffer>> &values) {
+                 work.GetRecipe().GetHost().Queue().RecordNativeBoundary();
+                 std::vector<rhi::ComputeWorkInput> inputs;
+                 for (const auto &[name, buffer] : values)
+                     inputs.push_back({name, buffer});
+                 return work.Rebind(std::move(inputs));
+             })
+        .def("buffer", [](const rhi::ComputeWorkInstance &work, size_t slot) { return work.GetBuffers().at(slot); })
+        .def(
+            "prepare_batch",
+            [](const rhi::ComputeWorkInstance &work, py::iterable updates) {
+                work.GetRecipe().GetHost().Queue().RecordNativeBoundary();
+                return work.PrepareBatch(DecodeComputeUpdates(updates));
+            },
+            py::arg("updates") = py::tuple());
 
     py::class_<rhi::ComputeCompletion>(m, "_ComputeCompletion")
         .def_property_readonly(
@@ -511,6 +593,11 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                                [](const rhi::PreparedComputeBatch &batch) { return batch.GetSubmission().serial; });
 
     py::class_<rhi::ComputeHost>(m, "_ComputeHost")
+        .def_property_readonly("shader_float32_preserve",
+                               [](rhi::ComputeHost &host) {
+                                   host.RequireAlive();
+                                   return host.device.GetCapabilities().portable.shaderFloat32Preserve;
+                               })
         .def_property_readonly("shader_int64",
                                [](rhi::ComputeHost &host) {
                                    host.RequireAlive();

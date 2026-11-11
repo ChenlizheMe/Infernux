@@ -12,6 +12,9 @@ _VECTOR_FIELDS = {
     4: ("x", "y", "z", "w"),
 }
 
+_CPU_RANGE_KINDS = {"array_f32":0, "array_i32":1, "array_u32":2,
+                    "array_i64":3, "float32":4, "int32":5}
+
 
 @lru_cache(maxsize=1)
 def _vector_layouts():
@@ -89,6 +92,8 @@ class CpuRangeProgram(_CpuArguments):
         self.domain_parameter = domain_parameter
         self.continuation_plan = plan
         self._inner_variants = {}
+        self._native_layout = tuple((_CPU_RANGE_KINDS[kind], name in plan.outputs)
+                                    for name,kind in zip(self.parameter_names,self.parameter_kinds))
 
     @property
     def native_blocks(self):
@@ -132,18 +137,19 @@ class CpuRangeProgram(_CpuArguments):
             control.validate(values[control.begin_parameter], values[control.end_parameter])
         for extent in self.continuation_plan.resource_extents:
             extent.validate(count, len(arrays[extent.parameter]))
+        ranges = {index:(int(array.__array_interface__["data"][0]), array.nbytes)
+                  for index, array in arrays.items()}
         for index, array in arrays.items():
             if self.parameter_names[index] not in self.continuation_plan.outputs:
                 continue
-            start = int(array.__array_interface__["data"][0])
-            for other_index, other in arrays.items():
+            start, size = ranges[index]
+            for other_index, (other_start, other_size) in ranges.items():
                 if other_index == index:
                     continue
-                other_start = int(other.__array_interface__["data"][0])
-                if array.nbytes and other.nbytes and start < other_start + other.nbytes and other_start < start + array.nbytes:
+                if size and other_size and start < other_start + other_size and other_start < start + size:
                     raise ValueError(f"continuation output '{self.parameter_names[index]}' overlaps buffer '{self.parameter_names[other_index]}'")
         for index, array in arrays.items():
-            if self.parameter_names[index] not in self.continuation_plan.outputs:
+            if self.parameter_names[index] not in self.continuation_plan.outputs and array.flags.writeable:
                 array = array.view()
                 array.flags.writeable = False
                 values[index] = array
@@ -257,16 +263,15 @@ class _CpuRangeTask:
 
     @property
     def storage(self):
-        return tuple(value for _, _, storage, _, _ in self._owners or () for value in storage)
+        return () if self._owners is None else self._owners.storage
 
     @property
     def scalar_storage(self):
-        return tuple(value for compiled, _, storage, _, _ in self._owners or ()
-                     for index, value in enumerate(storage) if index not in compiled.array_parameters)
+        return () if self._owners is None else self._owners.scalar_storage
 
     @property
     def native_blocks(self):
-        return tuple(block for compiled, _, _, _, _ in self._owners or () for block in compiled.native_blocks)
+        return () if self._owners is None else self._owners.native_blocks
 
     @property
     def scalar_storage_bytes(self):
@@ -299,6 +304,96 @@ def _range_payload(compiled, params, begin, end):
     return storage, borrowed, slots, count, begin, end
 
 
+class _CpuRangeBinding:
+    """Current call's owners and typed operands over the common native range loop."""
+    def __init__(self, ranges):
+        self.programs, self.entries, self.params = [], [], []
+        self.values, self.arrays, self.scalars = [], (), None
+        self._consumed = False
+        try:
+            self._prepare(ranges)
+        except BaseException:
+            self._release()
+            raise
+
+    def _prepare(self, ranges):
+        import numpy as np
+        from infernux.compute import Buffer
+        from infernux.lib import _Infernux as native
+
+        kinds, operations, selections, arrays = [], [], [], {}
+        for compiled, params, begin, end in ranges:
+            if not isinstance(compiled, CpuRangeProgram) or len(params) != len(compiled.parameter_names):
+                raise TypeError('CPU ranges require the prepared program argument layout')
+            for bound in (begin,end):
+                if isinstance(bound,(bool,np.bool_)) or not isinstance(bound,(int,np.integer)):
+                    raise TypeError('CPU range bounds require integers')
+            control=compiled.continuation_plan.inner_range
+            if control is not None:
+                control.validate(params[control.begin_parameter],params[control.end_parameter])
+            entry=compiled._native_entry()
+            self.programs.append(compiled); self.entries.append(entry); self.params.append(tuple(params))
+            operands=[]
+            for value,(kind,writable) in zip(params,compiled._native_layout):
+                if kind<4:
+                    if isinstance(value,Buffer):
+                        value._require_open()
+                        if value.device!='cpu':
+                            raise RuntimeError('CPU ranges require CPU buffers')
+                        value=value._array
+                    key=(kind,id(value))
+                    if key not in arrays:
+                        arrays[key]=len(self.values);self.values.append(value);kinds.append(kind)
+                    slot=arrays[key]
+                else:
+                    slot=len(self.values);self.values.append(value);kinds.append(kind)
+                operands.append((slot,writable))
+            value=None
+            selections.append((len(operations),int(begin),int(end)))
+            operations.append((entry.address,operands,compiled.domain_parameter))
+        self.recipe=native._CpuRangeRecipe(kinds,operations)
+        self.ranges=selections
+        self.arrays=tuple(value for value,kind in zip(self.values,kinds) if kind<4)
+        self.scalars=None
+
+    def execute(self):
+        self._claim()
+        try:
+            return self.recipe.execute(self.values,self.ranges)
+        finally:
+            self._release()
+
+    def bind(self):
+        self._claim()
+        try:
+            native,self.values,self.scalars=self.recipe.bind(self.values,self.ranges)
+            return native
+        except BaseException:
+            self._release()
+            raise
+
+    def _claim(self):
+        if self._consumed:
+            raise RuntimeError('CPU range bindings can only be consumed once')
+        self._consumed=True
+
+    def _release(self):
+        self.values,self.arrays,self.params=(),(),()
+        self.programs,self.entries,self.scalars=(),(),None
+
+    @property
+    def storage(self):
+        return self.arrays if self.scalars is None else (*self.arrays,self.scalars)
+
+    @property
+    def scalar_storage(self):
+        return () if self.scalars is None else (self.scalars,)
+
+    @property
+    def native_blocks(self):
+        return tuple(block for program in self.programs for block in program.native_blocks)
+
+
 def _prepare_cpu_range(compiled, *params, begin, end):
     """Prepare one retained ticket without admitting a native job.
 
@@ -313,26 +408,13 @@ def _prepare_cpu_ranges(ranges):
     """Prepare a bounded ordered segment, pinned until one native job retires."""
     from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
     from infernux.application import Application
-    from infernux import lib
 
     assert_runtime_owner_thread()
     engine = Application._current_engine()
     if engine is None or not engine._cpu_range_accepting:
         raise RuntimeError("CPU range submission requires an active accepting Engine owner")
-    native, owners = None, []
-    for compiled, params, begin, end in ranges:
-        if not isinstance(compiled, CpuRangeProgram):
-            raise TypeError("CPU range submission requires a proven compiled work item")
-        storage, borrowed, slots, count, begin, end = _range_payload(compiled, params, begin, end)
-        entry = compiled._native_entry()  # Preparation never enters the worker.
-        owners.append((compiled, entry, storage, borrowed, slots))
-        if native is None:
-            native = lib._Infernux._CpuRangeSlice(entry.address, slots, count, begin, end)
-        else:
-            native.append(entry.address, slots, count, begin, end)
-    if native is None:
-        raise ValueError('a CPU segment requires at least one range')
-    return _CpuRangeTask(engine, native, tuple(owners))
+    binding = _CpuRangeBinding(ranges)
+    return _CpuRangeTask(engine, binding.bind(), binding)
 
 
 def _submit_cpu_range(compiled, *params, begin, end):

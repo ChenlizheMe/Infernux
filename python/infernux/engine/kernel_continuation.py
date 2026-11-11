@@ -23,7 +23,6 @@ class KernelRequest(CpuRequest):
     ranges: tuple = ()
     service_spans: tuple = ()
     service_signature: tuple = ()
-    prepare_peak_bytes: int = 0
 
     @classmethod
     def create(cls, owner, facts, prepared, params):
@@ -57,7 +56,7 @@ class KernelRequest(CpuRequest):
             request.params = tuple(values)
             if prepared.device == "gpu":
                 sources = tuple(request.params[index] for index in prepared.reads if isinstance(request.params[index], compute.Buffer))
-                request.prepare_peak_bytes = owner._gpu_admission(prepared.entries, sources)
+                request.gpu_argument_bytes = owner._gpu_admission(prepared.entries, sources)
                 request.host = prepared.entries[prepared.program, False].host
             pending = {index: value for index, value in enumerate(request.params) if isinstance(value, BufferSource)}
             if pending:
@@ -119,6 +118,7 @@ class KernelRequest(CpuRequest):
         self.service_signature = ("kernel", execution_key(entry, self.params))
         self.service_spans = operation_spans((("compute", operation),), prepared.entries,
                                              prepared.device, owner.budget.range_terms)
+        self.service_terms = owner.budget.range_terms
 
     def _bind_gpu_work(self, term_limit):
         params, outputs = list(self.params), []
@@ -146,8 +146,8 @@ class KernelRequest(CpuRequest):
         carry = () if self.cursor is None else self.cursor.carry
         blocks = (() if self.prepared.device == "gpu" else
                   tuple(block for variant in program_family(self.prepared.program) for block in variant.native_blocks))
-        return _RequestStorage((*values, *carry), (*self.private, *carry), self.reserved_bytes,
-            prepare_bytes=self.prepare_peak_bytes if self.packet is None and not self._complete() else 0,
+        return _RequestStorage((*values, *carry), compute._storage_blocks((*self.private, *carry)), self.reserved_bytes,
+            prepare_bytes=self._gpu_preparation_bytes() if self.packet is None and not self._complete() else 0,
             native_blocks=blocks)
 
     def _service_host_key(self):
@@ -157,6 +157,12 @@ class KernelRequest(CpuRequest):
         return _observed_numerical_host_key(self, key, progress)
 
     def _service_demand(self, owner, opportunity, *, capacity_bytes=None):
+        if self.service_terms != owner.budget.range_terms:
+            self.service_spans = operation_spans((("compute", _Operation(self.prepared.program, self.params)),),
+                self.prepared.entries, self.prepared.device, owner.budget.range_terms,
+                frontier=('compute', self.cursor, self.ranges))
+            self.service_terms = owner.budget.range_terms
+            self._forecast_key = ()
         return remaining_work_service(self, self.cursor, owner, opportunity)
 
     def _is_current(self, owner):
@@ -212,4 +218,4 @@ class KernelRequest(CpuRequest):
         self.private.clear()
         self.params = self.ranges = self.source_versions = self.service_spans = self.service_signature = ()
         self.cursor = self.prepared = None
-        self.prepare_peak_bytes = 0
+        self.gpu_argument_bytes = 0

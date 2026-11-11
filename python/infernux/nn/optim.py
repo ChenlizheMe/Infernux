@@ -7,7 +7,7 @@ import weakref
 import numpy as np
 
 from . import _primitives as p
-from ._tensor import Parameter, Tensor, _empty, _check_options, _check_storage, _copy_storage
+from ._tensor import Parameter, Tensor, _empty, _check_options, _check_storage, _copy_storage_batch
 from ._plan import _bind_cursor, _execute_work, _grad_facts, _grads_current
 
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
@@ -34,24 +34,22 @@ class _StepWork:
 
 
 def _copy_optimizer_state(state, device):
-    result, owned = [], []
+    result, views, owned = [], [], ()
     try:
+        owned = _copy_storage_batch((value for entry in state if entry is not None for value in entry[1:]), device)
+        views = [value.view(readonly=True) for value in owned]
+        storage = iter(views)
         for entry in state:
             if entry is None:
                 result.append(None)
                 continue
-            values = []
-            for value in entry[1:]:
-                storage = _copy_storage(value, device)
-                view = storage.view(readonly=True)
-                owned.append(view)
-                storage.close()
-                values.append(view)
-            result.append((entry[0], *values))
+            result.append((entry[0], next(storage), next(storage)))
         return tuple(result)
     except BaseException:
-        p.retire(owned)
+        p.retire(views, flush=False)
         raise
+    finally:
+        p.retire(owned, flush=False)
 
 
 def _step_work(optimizer, state, facts, spec, empty, prepare, borrow=lambda value: value):
@@ -362,9 +360,9 @@ class Optimizer:
                 temporary.append(updated)
                 self._prepare_update(current, current, updated, self._learning_rate(), native_entry=native_entries)
                 if max_norm is not None:
-                    from .utils import _ClipPrograms
+                    from .utils import _clip_programs
                     if self._clip is None:
-                        self._clip = _ClipPrograms(plan.device, root._program_source)
+                        self._clip = _clip_programs(root, plan.device)
                     self._clip.prepare(self._params, native_entries=native_entries)
                 if plan.device == "gpu":
                     self._gpu_training_entries(plan, record_loss=record_loss, required=False, objective=objective,

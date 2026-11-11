@@ -44,6 +44,10 @@ class SceneManager
         double syncCollidersMs = 0.0;
         double fixedUpdateMs = 0.0;
         double physicsStepMs = 0.0;
+        double physicsPrepareMs = 0.0;
+        double physicsCCDMs = 0.0;
+        double physicsJoltMs = 0.0;
+        double physicsFinishMs = 0.0;
         double physicsEventsMs = 0.0;
         double syncRigidbodiesMs = 0.0;
         double interpolationMs = 0.0;
@@ -658,6 +662,7 @@ class SceneManager
         SceneScripts,
         Control,
         Integration,
+        Failed,
         Publication,
         PostNotification,
         PostStep

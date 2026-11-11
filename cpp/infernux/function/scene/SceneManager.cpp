@@ -652,6 +652,8 @@ void SceneManager::EndFrame(bool completeStep)
 
 void SceneManager::Play()
 {
+    if (m_fixedPhase == FixedPhase::Failed)
+        throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
     Scene::RequireNoWorldRetirement();
     // Only reset accumulator on initial play, not on resume-from-pause.
     const bool fresh = !m_isPlaying;
@@ -840,6 +842,8 @@ void SceneManager::Pause()
 
 void SceneManager::Step(float deltaTime)
 {
+    if (m_fixedPhase == FixedPhase::Failed)
+        throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
     if (!m_isPaused || !m_isPlaying || (m_scenes.empty() && !m_runtimePersistentScene))
         return;
     if (m_isStepping || (m_stepFrameOpen && !m_pausedStepPending))
@@ -863,6 +867,7 @@ void SceneManager::Step(float deltaTime)
             return;
     }
     m_lastFrameProfile = {};
+    auto phaseStarted = ProfileClock::now();
     for (const auto &scene : m_scenes) {
         if (GetSimulationState() != admittedState)
             return;
@@ -875,6 +880,7 @@ void SceneManager::Step(float deltaTime)
         m_runtimePersistentScene->ProcessPendingStarts();
     if (GetSimulationState() != admittedState)
         return;
+    m_lastFrameProfile.pendingStartsMs += ProfileMsSince(phaseStarted);
     const bool useRuntimeScheduler =
         m_runtimeLifecycleSchedulerEnabled &&
         (m_runtimeLifecycleWorkAvailable || HasPendingFixedStep() || m_runtimeResultConsumersPresent);
@@ -890,10 +896,13 @@ void SceneManager::Step(float deltaTime)
     if (GetSimulationState() != admittedState || !RunFixedSimulationStep(useRuntimeScheduler, admittedState))
         return;
     m_pausedStepPending = false;
+    phaseStarted = ProfileClock::now();
     ApplyInterpolatedRigidbodies(1.0f);
+    m_lastFrameProfile.interpolationMs += ProfileMsSince(phaseStarted);
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
     if (GetSimulationState() != admittedState)
         return;
+    phaseStarted = ProfileClock::now();
     if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
         if (auto callback = m_runtimeLifecycleUpdate)
             callback(deltaTime);
@@ -912,6 +921,8 @@ void SceneManager::Step(float deltaTime)
         return;
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
+    m_lastFrameProfile.gameplayUpdateMs += ProfileMsSince(phaseStarted);
+    phaseStarted = ProfileClock::now();
     for (const auto &scene : m_scenes) {
         if (GetSimulationState() != admittedState)
             return;
@@ -924,6 +935,8 @@ void SceneManager::Step(float deltaTime)
         m_runtimePersistentScene->ProcessPendingStarts();
     if (GetSimulationState() != admittedState)
         return;
+    m_lastFrameProfile.pendingStartsMs += ProfileMsSince(phaseStarted);
+    phaseStarted = ProfileClock::now();
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationEvaluation);
     if (GetSimulationState() != admittedState)
         return;
@@ -943,7 +956,9 @@ void SceneManager::Step(float deltaTime)
         m_runtimePersistentScene->LateUpdate(deltaTime);
     if (GetSimulationState() != admittedState)
         return;
+    m_lastFrameProfile.lateUpdateMs += ProfileMsSince(phaseStarted);
     ++m_runtimeFrameCount;
+    phaseStarted = ProfileClock::now();
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
     for (const auto &scene : m_scenes)
@@ -956,6 +971,7 @@ void SceneManager::Step(float deltaTime)
     PublishSkeletonPoses();
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationTimeline);
+    m_lastFrameProfile.endFrameMs += ProfileMsSince(phaseStarted);
     // Keep the lifecycle frame open. The renderer still has to publish
     // RenderExtraction, RenderGraph and Snapshot before EndFrame owns pending
     // destruction and retirement, exactly like an ordinary Play frame.
@@ -1266,6 +1282,8 @@ void SceneManager::PublishAuthoredTransformsToPhysics()
 
 bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const SimulationState &admittedState)
 {
+    if (m_fixedPhase == FixedPhase::Failed)
+        throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
     if (m_fixedExecuting)
         throw std::logic_error("a fixed simulation step cannot be reentered");
     m_fixedExecuting = true;
@@ -1341,8 +1359,22 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     if (m_fixedPhase == FixedPhase::Integration) {
         if (PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
             const auto phaseStart = ProfileClock::now();
-            PhysicsWorld::Instance().Step(m_admittedFixedDeltaTime);
+            PhysicsStepProfile profile;
+            try {
+                PhysicsWorld::Instance().Step(m_admittedFixedDeltaTime, &profile);
+            } catch (...) {
+                // Jolt may already have changed internal bodies. Preserve the
+                // last published world and never replay this admitted step.
+                m_fixedPhase = FixedPhase::Failed;
+                m_pausedStepPending = false;
+                Pause();
+                throw;
+            }
             m_lastFrameProfile.physicsStepMs += ProfileMsSince(phaseStart);
+            m_lastFrameProfile.physicsPrepareMs += profile.prepareNs * 1e-6;
+            m_lastFrameProfile.physicsCCDMs += profile.ccdNs * 1e-6;
+            m_lastFrameProfile.physicsJoltMs += profile.joltNs * 1e-6;
+            m_lastFrameProfile.physicsFinishMs += profile.finishNs * 1e-6;
             m_lastFrameProfile.dynamicCCDSplits +=
                 static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
         }

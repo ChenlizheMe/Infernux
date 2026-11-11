@@ -306,6 +306,10 @@ class JobSystem
 
     /** Execute queued work on the calling thread. Zero drains the queue. */
     INFERNUX_FOUNDATION_API uint32_t RunPendingJobs(uint32_t maxJobs = 0);
+    /** Help this group through the same affinity and domain permits as workers. */
+    INFERNUX_FOUNDATION_API uint32_t RunPendingJobs(TaskGroup &group, uint32_t maxJobs = 0);
+    /** Execute a synchronous native scope under the shared domain permit. */
+    INFERNUX_FOUNDATION_API void RunInDomain(JobDomain domain, const JobFn &job);
 
     [[nodiscard]] bool IsInline() const noexcept
     {

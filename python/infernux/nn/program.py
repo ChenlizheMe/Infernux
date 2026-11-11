@@ -5,7 +5,7 @@ from functools import update_wrapper
 import inspect
 
 from . import _primitives as p
-from ._tensor import Parameter, Tensor, _empty
+from ._tensor import Parameter, Tensor, _empty, _to_device_batch
 from ._grad import _enabled, is_grad_enabled
 from ._plan import _map_result, _result_values
 from .sources import (
@@ -81,16 +81,19 @@ class _Prepared:
             self.plan._check_current()
             if self.clear_grad:
                 self.optimizer.zero_grad()
-            inputs = tuple((arguments[name].detach() if detached else arguments[name]).to(self.plan.device)
+            inputs = tuple(arguments[name].detach() if detached else arguments[name]
                            for name, detached in zip(self.inputs, self.detach_inputs))
+            target = None if self.target is None else arguments[self.target]
+            if target is not None and self.detach_target:
+                target = target.detach()
+            moved = _to_device_batch(inputs if target is None else (*inputs, target), self.plan.device)
+            inputs = moved[:len(inputs)]
+            target = None if target is None else moved[-1]
             values = dict(zip(_result_values(self.plan.result), _result_values(model(*inputs))))
             if self.optimizer is None:
                 return _map_result(self.predictions,
                     lambda prediction: values[prediction.index].detach() if prediction.detached else values[prediction.index])
             prediction = values[self.output_index]
-            target = None if self.target is None else arguments[self.target]
-            if target is not None:
-                target = (target.detach() if self.detach_target else target).to(self.plan.device)
             if self.record_loss:
                 result = self.plan.loss(prediction._run, target, self.objective, output_index=self.output_index)
                 result.backward()

@@ -2,10 +2,11 @@
 from collections import OrderedDict, namedtuple
 from functools import wraps
 import threading
+import weakref
 
 import numpy as np
 
-from ._tensor import Parameter, Tensor, _check_options, _copy_storage
+from ._tensor import Parameter, Tensor, _check_options, _copy_storage_batch, _to_device_batch
 
 _IncompatibleKeys = namedtuple("IncompatibleKeys", "missing_keys unexpected_keys")
 
@@ -41,6 +42,7 @@ class Module:
         self._named = ()
         self._optimizer = None
         self._program_source = None
+        self._clip_programs = {}
         self._lock = threading.RLock()
         self.training = True
 
@@ -126,8 +128,20 @@ class Module:
         return self
 
     def _plan_key(self, inputs, device=None):
-        return id(self), tuple((value.shape, value.device if device is None else device,
-                               value.requires_grad, value.dtype.name) for value in inputs)
+        target = inputs[0].device if device is None else device
+        host_identity = None
+        if target == "gpu":
+            from infernux import compute
+            # Deferred BufferSource inputs have layout before they have data.
+            # Their eventual lease validates the producer; preparation targets
+            # the active host without materializing that source here.
+            host = (inputs[0]._data._host if isinstance(inputs[0], Tensor) and inputs[0].device == "gpu"
+                    else compute._native_compute_host())
+            # Queue addresses may be reused after engine shutdown. A weak host
+            # identity distinguishes lifetimes without retaining a device lease.
+            host_identity = None if host is None else weakref.ref(host)
+        return id(self), host_identity, tuple((value.shape, value.device if device is None else device,
+                                              value.requires_grad, value.dtype.name) for value in inputs)
 
     def _prepared_plan(self, inputs, device=None):
         root = self._root_owner or self
@@ -135,6 +149,7 @@ class Module:
 
     def _clear_plans(self):
         for plan in self._plans.values():
+            plan.release_scratch()
             plan.entry._plan = None
         self._plans.clear()
 
@@ -225,6 +240,8 @@ class Module:
                         program._native_entry()
             else:
                 plan._prepare_gpu_forward(required=False)
+                if plan._gpu_forward_executables is not None:
+                    plan._prepare_native_forward(example_inputs)
             root._plans[plan.key] = plan
             self._plan = plan
         return self
@@ -318,23 +335,29 @@ class Module:
         with root._lock:
             if set(state_dict) != {name for name, _ in root._named}:
                 raise ValueError("state_dict keys must exactly match all named parameters")
-            candidates = []
+            candidates, storage = [None] * len(root._named), []
             for name, parameter in root._named:
                 value = state_dict[name]
                 if not isinstance(value, Tensor) or value.shape != parameter.shape or value.dtype != parameter.dtype:
                     raise ValueError(f"state_dict shape/type mismatch for {name}")
             from . import _primitives as p
             try:
-                for name, parameter in root._named:
-                    storage = _copy_storage(state_dict[name]._data, parameter.device)
-                    candidates.append(storage.view(readonly=True))
-                    p.retire((storage,))
+                groups = {}
+                for index, (name, parameter) in enumerate(root._named):
+                    groups.setdefault(parameter.device, []).append((index, state_dict[name]._data))
+                for device, values in groups.items():
+                    copied = _copy_storage_batch((value for _, value in values), device)
+                    storage.extend(copied)
+                    for (index, _), value in zip(values, copied, strict=True):
+                        candidates[index] = value.view(readonly=True)
                 root._state = tuple(candidates)
                 root._parameter_version += 1
             except BaseException:
                 p.retire(candidates)
                 candidates.clear()
                 raise
+            finally:
+                p.retire(storage, flush=False)
         return _IncompatibleKeys([], [])
 
     def to(self, device):
@@ -354,13 +377,13 @@ class Module:
             if all(value.device == device for value in root._state):
                 return self
             from . import _primitives as p
-            candidates, gradients = [], []
+            candidates, gradients, storage, moved = [], [], (), None
             try:
-                for (_, parameter), value in zip(root._named, root._state):
-                    storage = _copy_storage(value, device)
-                    candidates.append(storage.view(readonly=True))
-                    p.retire((storage,))
-                    gradients.append(None if parameter.grad is None else parameter.grad.to(device))
+                storage = _copy_storage_batch(root._state, device)
+                candidates.extend(value.view(readonly=True) for value in storage)
+                present = [parameter.grad for _, parameter in root._named if parameter.grad is not None]
+                moved = iter(_to_device_batch(present, device))
+                gradients = [None if parameter.grad is None else next(moved) for _, parameter in root._named]
                 optimizer = None if root._optimizer is None else root._optimizer()
                 optimizer_state = None if optimizer is None else optimizer._copy_state(device)
                 root._state = tuple(candidates)
@@ -375,6 +398,9 @@ class Module:
                 candidates.clear()
                 gradients.clear()
                 raise
+            finally:
+                p.retire(storage, flush=False)
+                moved = None
         return self
 
     def cpu(self):

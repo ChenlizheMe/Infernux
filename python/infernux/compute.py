@@ -10,8 +10,9 @@ engine phase.  CPU function compilation is deliberately separate at
 from collections import OrderedDict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
-from functools import wraps
+from functools import lru_cache, wraps
 from itertools import count
+from queue import Empty, SimpleQueue
 import math
 import os
 import threading
@@ -37,6 +38,7 @@ _cpu_dirty_transform_bindings = weakref.WeakSet()
 _buffer_generations = count(1)
 _command_source_ids = count(1)
 _retiring_native_kernels = {}
+_retired_launch_generations = SimpleQueue()
 _cpu_statistics = {
     "submission_count": 0,
     "dispatch_count": 0,
@@ -418,16 +420,45 @@ def _native_storage_blocks(host_identity, native):
             for index, generation, size in blocks)
 
 
+class _StorageGroup:
+    """A stable binding list; allocations and released owners stay live facts."""
+    def __init__(self, values):
+        from infernux.lib import _Infernux as _native
+
+        cpu, gpu = {}, {}
+        for value in values:
+            if value is None:
+                continue
+            if value._array is not None:
+                cpu[id(value)] = weakref.ref(value)
+            elif value._native is not None:
+                gpu[id(value._native)] = value._native
+        self._cpu = tuple(cpu.values())
+        self._gpu = _native._ComputeStorageGroup(tuple(gpu.values())) if gpu else None
+
+    @property
+    def storage_blocks(self):
+        blocks = _storage_blocks(value for reference in self._cpu if (value := reference()) is not None)
+        if self._gpu is not None:
+            blocks.update(self._gpu.storage_blocks)
+        return blocks
+
+
 def _storage_blocks(values):
     """Backing allocation identities/capacities shared by graph lifetime and budgets."""
     blocks = {}
+    native_buffers = {}
     for value in values:
         if value is None:
             continue
+        if isinstance(value, _StorageGroup):
+            blocks.update(value.storage_blocks)
+            continue
         array = value if isinstance(value, np.ndarray) else value._array
         if array is None:
-            if value._native is not None:
-                blocks.update(_native_storage_blocks(int(value._host.identity), value._native))
+            native = value._native
+            if native is not None:
+                native_buffers[id(native)] = native
             continue
         base = root = array
         while True:
@@ -445,6 +476,9 @@ def _storage_blocks(values):
             except TypeError:
                 base, size = root, root.nbytes
         blocks[id(base)] = int(size)
+    if native_buffers:
+        from infernux.lib import _Infernux as _native
+        blocks.update(_native._compute_buffer_storage(tuple(native_buffers.values())))
     return blocks
 
 
@@ -469,30 +503,61 @@ def _iter_open_writes(stream):
         yield value._native
 
 
-def _prepare_work_commands(launches):
-    """Prepare one detached, ordered dispatch segment on the original queue."""
-    assert_runtime_owner_thread()
-    if _recording_depth():
-        raise RuntimeError("managed GPU work cannot prepare inside compute.recording")
-    commands = {"updates": [], "dispatches": [], "updated": set(), "mesh_attributes": {}}
-    executable = params = gradients = None
-    try:
-        host = launches[0][0].host
-        for executable, params, bounds, gradients in launches:
-            if executable.host is not host:
+class _WorkPreparation:
+    """Prepare an ordered GPU segment over as many host slices as needed.
+
+    The caller reserves three copies of the segment's argument payload while
+    this builder owns bindings. Nothing is submitted and the numerical cursor
+    stays put until the sealed packet actually executes.
+    """
+    def __init__(self, launches):
+        assert_runtime_owner_thread()
+        if _recording_depth():
+            raise RuntimeError("managed GPU work cannot prepare inside compute.recording")
+        self.launches = tuple(launches)
+        self.reservation_bytes = 3 * sum(int(entry.artifact.argument_layout['size']) for entry, _, _, _ in self.launches)
+        self.host = self.launches[0][0].host
+        self.index = 0
+        self.packet = None
+        self.binding_ns = 0
+        self.seal_ns = None
+        self.commands = {"updates": [], "dispatches": [], "updated": set(), "mesh_attributes": {}}
+
+    def advance(self, allowance_ns, operation_ns, seal_ns=0):
+        started = perf_counter_ns()
+        before = self.index
+        self.seal_ns = None
+        while self.index < len(self.launches):
+            remaining = allowance_ns - (perf_counter_ns() - started)
+            if remaining <= 0 or self.index != before and operation_ns > remaining:
+                break
+            executable, params, bounds, gradients = self.launches[self.index]
+            if executable.host is not self.host:
                 raise ValueError("one managed GPU segment requires one compute host")
-            _append_kernel_commands(
-                commands, executable, params, gradients=gradients, bounds=bounds, cache=False,
-            )
-        packet = _prepare_commands(host, commands)
-        if packet is None:
-            raise ComputeExecutionError("managed GPU operation produced no work")
-        return packet
-    finally:
-        for values in commands.values():
+            _append_kernel_commands(self.commands, executable, params,
+                                    gradients=gradients, bounds=bounds, cache=False)
+            self.index += 1
+        self.binding_ns = perf_counter_ns() - started
+        remaining = allowance_ns - self.binding_ns
+        # A seal is one atomic action. If it did not fit after bindings, it
+        # gets its own later slice; an old timing sample cannot forbid that
+        # smallest remaining action forever.
+        if self.index == len(self.launches) and remaining > 0 and (before == self.index or seal_ns <= remaining):
+            sealing = perf_counter_ns()
+            self.packet = _prepare_commands(self.host, self.commands)
+            self.seal_ns = perf_counter_ns() - sealing
+            if self.packet is None:
+                raise ComputeExecutionError("managed GPU operation produced no work")
+            for values in self.commands.values():
+                values.clear()
+        return self.index - before
+
+    def close(self):
+        for values in self.commands.values():
             values.clear()
-        commands.clear()
-        launches = executable = params = gradients = host = None
+        self.commands.clear()
+        self.launches = ()
+        self.host = self.packet = None
 
 
 def _cancel_work_commands(host, packet):
@@ -533,6 +598,11 @@ def _drain_commands(stream: dict, *, block: bool, until=None, max_submissions=No
     from infernux.application import Application
     engine = Application._current_engine()
     owner = None if engine is None else engine._cpu_work()
+    if owner is not None:
+        # Completion is a queue fact, independent of a new host frame. Offline
+        # synchronous loops must retire receipts too, or capacity accounting
+        # repeatedly walks an ever-growing list of already completed work.
+        owner._collect_background_receipt()
     while pending:
         packet = pending[0]
         if not packet.native.has_work:
@@ -544,8 +614,6 @@ def _drain_commands(stream: dict, *, block: bool, until=None, max_submissions=No
         if packet.needs_preparation:
             if owner is not None and not block and owner._frame.active:
                 return False  # The common owner prepares this head in its host lane.
-            if owner is not None and block:
-                owner._collect_background_receipt()
             if owner is None:
                 ready = packet.prepare_storage(65536, managed=not block)
             else:
@@ -707,15 +775,39 @@ def _flush_cpu_transform_bindings() -> None:
 
 def _collect_retiring_native_kernels() -> None:
     """Poll only kernels that own bindings for wrappers already closed."""
+    _collect_launch_retirements()
     for identity, native in tuple(_retiring_native_kernels.items()):
         native.collect()
         if int(native.pending_dispatch_count) == 0:
             _retiring_native_kernels.pop(identity, None)
 
 
+def _retire_launch_generation(generation, owners) -> None:
+    for executable in tuple(owners):
+        executable.discard_buffer_generation(generation)
+    owners.clear()
+
+
+def _enqueue_launch_retirement(generation, owners) -> None:
+    # A Buffer may lose its final Python owner on a worker. All mutation of
+    # executable bindings and all native collection stays on the owner thread.
+    _retired_launch_generations.put((generation, owners))
+
+
+def _collect_launch_retirements() -> None:
+    while True:
+        try:
+            generation, owners = _retired_launch_generations.get_nowait()
+        except Empty:
+            return
+        _retire_launch_generation(generation, owners)
+
+
 def _discard_buffer_launches(value: "Buffer") -> None:
-    for declaration in tuple(_kernel_declarations):
-        declaration._discard_buffer_launches(value)
+    # A short-lived activation only invalidates executables that used it.
+    # Walking every compiled declaration makes retirement scale with the
+    # number of unrelated models loaded by the application.
+    _retire_launch_generation(value._generation, value._launch_owners)
 
 
 def _validate_reads(host, reads) -> None:
@@ -912,26 +1004,37 @@ class _BufferDType:
         return int(self.scalar.itemsize) * self.lanes
 
 
-def _buffer_dtype(value) -> _BufferDType:
-    if isinstance(value, _BufferDType):
-        return value
+@lru_cache(maxsize=1)
+def _buffer_dtypes():
+    """Fixed scalar/vector layouts; no invocation storage is retained."""
     from infernux.math import vector2, vector3, vector4
 
-    vectors = {
+    layouts = {}
+    for kind in ('float32', 'int32', 'uint32', 'int64'):
+        dtype = np.dtype(kind)
+        layouts[dtype] = layouts[kind] = _BufferDType(kind, dtype)
+    layouts.update({
         vector2: _BufferDType("vector2", np.dtype(np.float32), 2),
         vector3: _BufferDType("vector3", np.dtype(np.float32), 3),
         vector4: _BufferDType("vector4", np.dtype(np.float32), 4),
-    }
-    if value in vectors:
-        return vectors[value]
+    })
+    return layouts
+
+
+def _buffer_dtype(value) -> _BufferDType:
+    if isinstance(value, _BufferDType):
+        return value
+    layouts = _buffer_dtypes()
     if value is float:
         value = np.float32
     elif value is int:
         value = np.int32
-    dtype = np.dtype(value)
-    if dtype not in {np.dtype(np.float32), np.dtype(np.int32), np.dtype(np.uint32), np.dtype(np.int64)}:
+    if value in layouts:
+        return layouts[value]
+    dtype = layouts.get(np.dtype(value))
+    if dtype is None:
         raise TypeError("inx.buffer scalar dtype must be float32, int32, uint32, or int64")
-    return _BufferDType(dtype.name, dtype)
+    return dtype
 
 
 def _logical_shape(value) -> tuple[int, ...]:
@@ -983,7 +1086,6 @@ class Buffer:
         result = object.__new__(cls)
         result._configure(array.shape, array.dtype, "cpu")
         result._array = array
-        result._description = result._build_description()
         return result
 
     def _configure(self, shape, dtype, device):
@@ -1001,6 +1103,8 @@ class Buffer:
         self._cpu_mesh_binding = None
         self._mesh_attribute_state = None
         self._dependent_resources = []
+        self._launch_owners = weakref.WeakSet()
+        self._launch_finalizer = None
         self._generation = next(_buffer_generations)
         self._byte_offset = 0
         self._ownership = "owned"
@@ -1020,7 +1124,6 @@ class Buffer:
             raise ValueError("GPU value layout exceeds its actual scalar storage")
         result._host, result._native = host, native
         result._byte_offset, result._readonly, result._ownership = byte_offset, True, "borrowed"
-        result._description = result._build_description()
         _gpu_buffers.add(result)
         return result
 
@@ -1030,17 +1133,18 @@ class Buffer:
 
         initial = None
         if data is not None:
-            # Every owned buffer has independent storage.  A contiguous input
-            # array may otherwise be returned unchanged by ``ascontiguousarray``;
-            # that would make multiple Web CPU mappings alias one authored GPU
-            # upload even though native GPU buffers always copy the payload.
-            initial = self._coerce_data(data).copy(order="C")
+            initial = self._coerce_data(data)
+            # Host-backed ownership needs an independent ndarray. Vulkan takes
+            # its immutable byte snapshot below, without another array copy.
+            if device == "cpu" or self._cpu_mapped:
+                initial = initial.copy(order="C")
         elif initialize:
             initial = np.zeros(self._storage_shape, dtype=self._dtype.scalar)
         if device == "cpu" or self._cpu_mapped:
             self._array = np.empty(self._storage_shape, dtype=self._dtype.scalar) if initial is None else initial
         else:
             self._host = _native_compute_host()
+            _collect_launch_retirements()
             layout = self.element_count, self._dtype.scalar.name, self._dtype.lanes
             self._native = self._host.create_buffer(*layout, managed=True) if managed else self._host.create_buffer(*layout)
             if self._native is None:
@@ -1048,7 +1152,6 @@ class Buffer:
             _gpu_buffers.add(self)
             if initial is not None:
                 _queue_buffer_update(self, initial.tobytes(order="C"), 0)
-        self._description = self._build_description()
         return True
 
     @property
@@ -1087,7 +1190,7 @@ class Buffer:
         asset reference. Closing the buffer invalidates use of the resource
         but does not mutate this immutable description snapshot.
         """
-        if self._native is not None:
+        if self._description is None or self._native is not None:
             self._description = self._build_description()
         return self._description
 
@@ -1313,10 +1416,13 @@ class Buffer:
         result._cpu_mapped = self._cpu_mapped
         result._cpu_mesh_binding = None
         result._dependent_resources = []
+        result._launch_owners = weakref.WeakSet()
+        result._launch_finalizer = None
         result._generation = next(_buffer_generations)
         result._byte_offset = self._byte_offset + offset * self._dtype.itemsize
         result._ownership = "borrowed"
         result._readonly = self._readonly or readonly
+        result._description = None
         if self._array is None:
             result._array = None
         else:
@@ -1333,7 +1439,6 @@ class Buffer:
                 # NumPy slices and cooked CPU kernels inherit the same flag
                 # without checks or copies on each access.
                 result._array.flags.writeable = False
-        result._description = result._build_description()
         if result._device == "gpu":
             _gpu_buffers.add(result)
         return result
@@ -1384,6 +1489,9 @@ class Buffer:
             if flush:
                 _flush_commands(self._host)
             _discard_buffer_launches(self)
+            if self._launch_finalizer is not None:
+                self._launch_finalizer.detach()
+                self._launch_finalizer = None
         attribute_state = self._mesh_attribute_state
         self._mesh_attribute_state = None
         if attribute_state is not None:
@@ -1531,7 +1639,7 @@ def _freeze_cpu_buffer(source, frame_work):
         np.copyto(snapshot._array, source._array.reshape(snapshot._storage_shape), casting="no")
         snapshot._array.flags.writeable = False
         snapshot._readonly = True
-        snapshot._description = snapshot._build_description()
+        snapshot._description = None
         return snapshot
     except BaseException:
         if snapshot is not None:
@@ -1552,7 +1660,7 @@ def _freeze_gpu_storage(source):
     value = source.view(readonly=True)
     try:
         value._native = source._native.freeze()
-        value._description = value._build_description()
+        value._description = None
         return value
     except BaseException:
         value._close(flush=False)
@@ -1843,6 +1951,12 @@ class _TransferCursor:
         else:
             self.readback_ready = True
 
+    def discard_prepared(self):
+        if self.readback is not None:
+            self.readback.cancel()
+            self.readback = None
+        self.pending_end = 0
+
     def materialize(self):
         """Only called with owner credit after the exact copy completion."""
         scalar_bytes = int(self.dtype.scalar.itemsize)
@@ -1901,25 +2015,73 @@ def _copy_gpu_into(source, target):
 
 
 @_automatic_cost
-def _copy_gpu_buffer(source):
-    """Explicit same-device copy, in author order, without a copy-only shader."""
-    source._require_open()
-    if _recording_depth():
-        raise RuntimeError("owned GPU copies cannot start inside compute.recording")
-    host = source._host
-    target = Buffer._empty(shape=source.shape, dtype=source._dtype, device="gpu")
-    packet = None
+def _copy_buffers(sources, device):
+    """Copy an independent value set at one ordinary FIFO boundary.
+
+    New destinations cannot alias the sources. Uploads and device copies may
+    therefore share a packet; GPU reads share one snapshot packet. Managed
+    transfers continue to use their resumable transfer cursor and frame budget.
+    """
+    sources = tuple(sources)
+    for source in sources:
+        source._require_open()
+    if not sources:
+        return ()
+    targets, reads, updates, copies = [], [], [], []
+    packet = host = None
     try:
-        packet = _copy_gpu_into(source, target)
-        _flush_commands(host, block=True)
-        return target
+        if device == "cpu":
+            moving = tuple((index, source) for index, source in enumerate(sources) if source._array is None)
+            targets = [None] * len(sources)
+            for index, source in enumerate(sources):
+                if source._array is not None:
+                    targets[index] = Buffer(shape=source.element_count, dtype=source._dtype,
+                                             device="cpu", data=source.numpy(copy=False))
+            if moving:
+                host = moving[0][1]._host
+                stream, packet, reads = _prepare_readbacks(host,
+                    ((source, source._byte_offset, source.nbytes) for _, source in moving),
+                    ((source._dtype, source.shape) for _, source in moving))
+                _drain_commands(stream, block=True, until=packet)
+                _remove_empty_stream(stream)
+                for (index, _), read in zip(moving, reads, strict=True):
+                    targets[index] = read.get_data()
+        elif device == "gpu":
+            if _recording_depth():
+                raise RuntimeError("owned GPU copies cannot start inside compute.recording")
+            host = _native_compute_host()
+            for source in sources:
+                target = Buffer._empty(shape=source.element_count if source._array is not None else source.shape,
+                                       dtype=source._dtype, device="gpu")
+                targets.append(target)
+                if source._array is not None:
+                    updates.append((target._native, source._array.tobytes(order="C"), 0))
+                else:
+                    copies.append((source._native, target._native, source._byte_offset, 0, source.nbytes))
+            stream = _command_stream(host)
+            _seal_commands(stream)
+            packet = _seal_commands(stream,
+                source=dict(updates=updates, dispatches=[], updated=set(), mesh_attributes={}), copies=copies)
+            _record_activity()
+            _drain_commands(stream, block=True, until=packet)
+            _remove_empty_stream(stream)
+        else:
+            raise ValueError("copy device must be 'cpu' or 'gpu'")
+        return tuple(targets)
     except BaseException:
-        if packet is not None:
+        for read in reads:
+            read.cancel()
+        if packet is not None and packet.completion is None:
             _cancel_work_commands(host, packet)
-        target._close(flush=False)
+        for target in targets:
+            if target is not None:
+                target._close(flush=False)
         raise
     finally:
-        source = target = host = packet = None
+        updates.clear()
+        copies.clear()
+        sources = targets = reads = ()
+        packet = host = None
 
 
 class Readback:
@@ -2544,6 +2706,8 @@ class _KernelExecutable:
         import hashlib
         from infernux._compiler.gpu_artifact import _specialization_identity
 
+        if not host.shader_float32_preserve:
+            raise ComputeCapabilityError("native compute requires signed-zero, infinity and NaN preservation for float32")
         if any(isinstance(value, Buffer) and value._dtype.scalar == np.dtype(np.int64) for value in params) and not host.shader_int64:
             raise ComputeCapabilityError("this Vulkan device has no enabled shaderInt64 capability")
 
@@ -2607,22 +2771,36 @@ class _KernelExecutable:
         return tuple(key)
 
     def prepare(self, params, *, gradients=None, begin=None, end=None, cache=True):
-        bounds = self.artifact.range_bounds(params, begin=begin, end=end, host=self.host)
-        # Gradient permissions, host and physical aliasing must also be checked
-        # on an LRU hit. The frontend owns the same ABI validation as AOT use.
-        arguments = None
-        if self.artifact.gradient_parameters or gradients is not None:
-            arguments = self.artifact.argument_bytes(
-                params, bounds=bounds, gradients=gradients, host=self.host,
-            )
+        _collect_launch_retirements()
+        bounds = self.artifact.range_bounds(params, begin=begin, end=end, host=self.host,
+                                            _validate_resources=not cache)
+        if gradients is not None:
+            if (any(type(index) is not int for index in gradients)
+                    or set(gradients) != set(self.artifact.gradient_parameters)):
+                raise ValueError("Gradient bindings must exactly match the compiled gradient parameters")
+            if any(not isinstance(value, Buffer) for value in gradients.values()):
+                raise ValueError("Gradient buffers must match their primal buffer shape and dtype")
         if bounds is not None and bounds[0] == bounds[1]:
+            self.artifact.validate_resources(params, params[self.artifact.domain_parameter].element_count, host=self.host)
             return (), ()
         launch_key = self._launch_key(params, bounds, gradients) if cache else None
         prepared = self._prepared_launches.pop(launch_key, None) if cache else None
         if prepared is None:
-            if arguments is None:
-                arguments = self.artifact.argument_bytes(params, bounds=bounds)
+            if cache:
+                size = params[self.artifact.domain_parameter].element_count
+                self.artifact.validate_resources(params, size, host=self.host)
+            arguments = self.artifact.argument_bytes(params, bounds=bounds, gradients=gradients, host=self.host)
             prepared = self._prepare_launch(params, bounds, arguments, gradients=gradients)
+            # Buffer layout, permissions and host are immutable for its unique
+            # generation. close() invalidates these entries; native preparation
+            # still resolves and validates the actual allocation on every use.
+            for value in (*params, *(gradients.values() if gradients else ())):
+                if isinstance(value, Buffer) and value.device == "gpu":
+                    value._launch_owners.add(self)
+                    if value._launch_finalizer is None:
+                        value._launch_finalizer = weakref.finalize(value, _enqueue_launch_retirement,
+                                                                  value._generation, value._launch_owners)
+                        value._launch_finalizer.atexit = False
             if cache and len(self._prepared_launches) >= 64:
                 self._prepared_launches.popitem(last=False)[1].clear()
         if cache:
@@ -2690,7 +2868,10 @@ class _KernelExecutable:
             native = resources = None
 
     def discard_buffer_launches(self, value: Buffer) -> None:
-        token = ("buffer", value._generation)
+        self.discard_buffer_generation(value._generation)
+
+    def discard_buffer_generation(self, generation) -> None:
+        token = ("buffer", generation)
         for key in tuple(self._prepared_launches):
             if token not in key:
                 continue
@@ -3065,6 +3246,7 @@ class Function:
 def _release_engine_resources() -> None:
     """Release module-level GPU declarations before native renderer teardown."""
     assert_runtime_owner_thread()
+    _collect_launch_retirements()
     from infernux.application import Application
 
     engine = Application._current_engine()
@@ -3269,7 +3451,14 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
     This can wait for admission when that queue is full, but does not wait for
     the prepared work to execute, dispatch inference or read GPU results.
     """
+    return _prepare_work(operations, private_buffers=private_buffers, inputs=inputs, outputs=outputs)
+
+
+def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_ports=None, logical_slots=None):
+    """Common recipe builder; invocation uniforms may be private input ports."""
     assert_runtime_owner_thread()
+    argument_ports = {} if argument_ports is None else argument_ports
+    logical_slots = {} if logical_slots is None else logical_slots
     operations = tuple(operations)
     private_buffers = tuple(private_buffers)
     inputs, outputs = dict(inputs), dict(outputs)
@@ -3288,30 +3477,33 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
            for value in (*private_buffers, *inputs.values(), *outputs.values())):
         raise ValueError("compute work storage must belong to one host")
 
-    def identity(native):
-        return int(native.resource_index), int(native.resource_generation)
+    def identity(value):
+        # Slots describe logical endpoints. Frozen values may share storage
+        # now and diverge after a later writer without becoming the same slot.
+        return logical_slots.get(value._generation, id(value._native))
 
-    private_keys = {identity(value._native) for value in private_buffers}
-    if any(identity(value._native) not in private_keys for value in (*inputs.values(), *outputs.values())):
+    private_keys = {identity(value) for value in private_buffers}
+    if any(identity(value) not in private_keys for value in (*inputs.values(), *outputs.values())):
         raise ValueError("compute work ports must name declared per-instance allocations")
     slots, ports, work_dispatches, argument_updates = [], [], [], []
+    argument_templates = {}
     private_views = list(private_buffers)
     slot_indices, updated = {}, set()
     executable = native_recipe = declaration = effective = task = dispatch = resource = resources = None
     updates = dispatches = None
 
-    def slot_for(native):
-        key = identity(native)
+    def slot_for(native, *, key=None, private_argument=False):
+        key = id(native) if key is None else key
         if key not in slot_indices:
             slot_indices[key] = len(slots)
-            slots.append((native, key in private_keys))
+            slots.append((native, key in private_keys or private_argument))
         return slot_indices[key]
 
     try:
         # Admit older authored writes before inspecting immutable argument
         # initialization serials. Preparation never jumps ahead of that FIFO.
         _flush_commands(host, block=True)
-        for declaration, params in operations:
+        for operation_index, (declaration, params) in enumerate(operations):
             if not isinstance(declaration, Kernel) or not isinstance(params, tuple):
                 raise TypeError("compute work operations must contain a Kernel and a params tuple")
             if isinstance(declaration, _BoundKernel):
@@ -3320,7 +3512,7 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
                 effective = params
                 executable = declaration._executable(effective)
             for value in effective:
-                if isinstance(value, Buffer) and value._native is not None and identity(value._native) in private_keys:
+                if isinstance(value, Buffer) and value._native is not None and identity(value) in private_keys:
                     private_views.append(value)
             if not isinstance(executable, _KernelExecutable) or int(executable.host.identity) != int(host.identity):
                 raise ComputeCapabilityError("compute work requires compiled kernels on the same native GPU host")
@@ -3332,7 +3524,7 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
                 raise ValueError("compute work execution domain must be positive")
             updates, dispatches = executable.prepare(effective, begin=0, end=domain_count)
             for update in updates:
-                key = identity(update[0])
+                key = id(update[0])
                 if key not in updated:
                     argument_updates.append(update)
                     updated.add(key)
@@ -3340,13 +3532,19 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
                 native_kernel, resources, accesses, constants, gx, gy, gz, proof = dispatch
                 bindings = []
                 for position, (metadata, resource, access) in enumerate(zip(task[1], resources, accesses, strict=True)):
-                    slot = slot_for(resource)
                     kind = metadata["resource_kind"]
+                    dynamic_argument = kind == "arguments" and operation_index in argument_ports
                     if kind == "arguments":
+                        slot = slot_for(resource, private_argument=dynamic_argument)
                         offset, length = 0, int(resource.byte_size)
+                        if dynamic_argument and operation_index not in argument_templates:
+                            arguments = artifact.argument_bytes(effective, bounds=(0, domain_count), host=host)
+                            argument_templates[operation_index] = slot, arguments
+                            ports.append((argument_ports[operation_index], slot, offset, length, True))
                     elif kind == "external_buffer":
                         parameter = executable._argument_index(metadata)
                         value = effective[parameter]
+                        slot = slot_for(resource, key=identity(value))
                         offset, length = int(value.description.byte_offset), value.nbytes
                     else:
                         raise TypeError(f"compute work does not support compiler resource kind {kind!r}")
@@ -3356,11 +3554,13 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
             raise ValueError("compute work private allocations must participate in its operations")
         for is_input, values in ((True, inputs), (False, outputs)):
             for name, value in values.items():
-                ports.append((name, slot_indices[identity(value._native)], int(value.description.byte_offset),
+                ports.append((name, slot_indices[identity(value)], int(value.description.byte_offset),
                               value.nbytes, is_input))
         _admit_work_arguments(host, argument_updates)
         native_recipe = host.prepare_work(slots, ports, work_dispatches)
-        return Work(native_recipe, host)
+        work = Work(native_recipe, host)
+        work._argument_templates = argument_templates
+        return work
     finally:
         # The recipe owns only real native kernels/external resources, not a
         # prototype Run or its private launch-cache pins. Do not close user data.
@@ -3380,6 +3580,25 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
         params = value = host = artifact = None
         executable = native_recipe = declaration = effective = task = dispatch = resource = resources = None
         updates = dispatches = native_kernel = update = None
+
+
+def _execute_work_instance(instance, host, updates=()):
+    """Submit a bound graph through the ordinary FIFO and wait this result."""
+    stream = _command_stream(host)
+    packet = None
+    try:
+        _seal_commands(stream)
+        packet = _PreparedCommands(instance.prepare_batch(updates), int(host.identity))
+        stream["pending"].append(packet)
+        _drain_commands(stream, block=True, until=packet)
+        packet.completion.wait()
+    except Exception as error:
+        _fail_command_stream(stream, error)
+        raise
+    finally:
+        _remove_empty_stream(stream)
+        packet = instance = host = stream = None
+        updates = ()
 
 
 @kernel
@@ -3671,6 +3890,12 @@ def launch(declaration: Kernel, params, *, autodiff_mode="none", gradients=None)
     else:
         executable = declaration._executable(params, **request)
         effective_params = params
+    _launch_executable(executable, effective_params, gradients=gradients)
+
+
+@_automatic_cost
+def _launch_executable(executable, effective_params, *, gradients=None):
+    """Record a cold-bound signature through the same authoring FIFO."""
     if isinstance(executable, _CpuKernelExecutable):
         executable.execute(effective_params)
         if _recording_depth() == 0:

@@ -48,6 +48,7 @@ namespace infernux
 
 class GameObject;
 class Component;
+class HingeJoint;
 class Collider;
 class BoxCollider;
 class Rigidbody;
@@ -197,6 +198,15 @@ struct RaycastHit
     uint64_t colliderId = 0;
 };
 
+/// Fixed-step wall time. Jolt includes its collision/solver jobs and their wait.
+struct PhysicsStepProfile
+{
+    uint64_t prepareNs = 0;
+    uint64_t ccdNs = 0;
+    uint64_t joltNs = 0;
+    uint64_t finishNs = 0;
+};
+
 /// Optional diagnostic counters for one RaycastBatch call. Timings inside
 /// parallel workers are summed CPU time; dispatchWallNs is caller wall time.
 /// A null profile pointer keeps the hot path free of clock reads.
@@ -248,7 +258,7 @@ class PhysicsWorld
     }
 
     /// Advance the simulation by one fixed step.
-    void Step(float deltaTime);
+    void Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
 
     /// Bodies that were active immediately before or after the latest step.
     /// The union includes bodies that entered sleep during the step so their
@@ -436,6 +446,7 @@ class PhysicsWorld
     void UpdateHingeConstraintMotor(uint64_t constraintId, bool enabled, float targetAngle, float stiffness,
                                     float damping, float maxTorque, float jointDamping, float frictionTorque,
                                     float armature);
+    void UpdateHingeConstraintTarget(uint64_t constraintId, float targetAngle);
     void UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
                                         bool enableCollision);
     [[nodiscard]] float GetHingeConstraintAngle(uint64_t constraintId) const;
@@ -682,6 +693,10 @@ class PhysicsWorld
     }
 
   private:
+    friend class HingeJointBatch;
+    void ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const;
+    void SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets);
+
     // Callers must hold m_querySnapshotMutex exclusively. Keeping the lock at
     // the public-operation boundary lets compound mutations publish as one
     // query epoch without recursively locking std::shared_mutex.

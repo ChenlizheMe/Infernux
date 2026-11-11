@@ -248,6 +248,20 @@ class Engine():
         return owner
 
     @property
+    def work_budget(self):
+        """Shared host-work limits for compute and IO.
+
+        Assign a new Budget to tune running work. Accepted work keeps its
+        completion ticket; increasing an allowance takes effect next frame.
+        Individual submit calls inherit this policy when budget is omitted.
+        """
+        return self._cpu_work().budget
+
+    @work_budget.setter
+    def work_budget(self, budget):
+        self._cpu_work().set_budget(budget)
+
+    @property
     def _service_opportunity(self):
         return self._frame_work.opportunity
 

@@ -350,6 +350,7 @@ class Rigidbody : public Component
     /// Notify all sibling Colliders to rebuild their Jolt body type.
     void NotifyCollidersBodyTypeChanged(bool refreshShape = true);
     void CacheActorPose(const glm::vec3 &position, const glm::quat &rotation);
+    void PublishPhysicsPose(const glm::vec3 &position, const glm::quat &rotation);
 
     /// Apply drag damping (called via Jolt motion properties).
     void ApplyDragSettings();

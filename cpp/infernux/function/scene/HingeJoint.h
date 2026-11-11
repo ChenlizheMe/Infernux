@@ -99,6 +99,7 @@ class HingeJoint final : public Joint
     uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId) override;
     void UpdateConstraintSettings() override;
     void UpdateConstraintMotor();
+    [[nodiscard]] float GetClampedMotorTargetRadians() const;
     void OnConstraintCreated() override
     {
         UpdateConstraintMotor();

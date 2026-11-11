@@ -992,6 +992,7 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.features.dedicatedTransferQueue = m_hasDedicatedTransferQueue;
     capabilities.features.multisampleTextureCopies = true;
     m_vulkanFeatures.PublishShaderCapabilities(capabilities.portable);
+    capabilities.portable.shaderFloat32Preserve = vulkan12Properties.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     capabilities.portable.maxBindlessSampledTextures =
         m_descriptorIndexingEnabled ? VulkanBindlessTextureTable::SelectCapacity(m_vulkanFeatures.descriptorLimits) : 0;
     capabilities.portable.asyncCompute = m_hasIndependentComputeQueue;

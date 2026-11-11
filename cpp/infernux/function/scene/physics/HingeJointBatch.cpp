@@ -68,11 +68,7 @@ uint64_t HingeJointBatch::ReadMotion(float *output, size_t count) const
     if (count != 2 * m_joints.size())
         throw std::invalid_argument("hinge motion output requires two floats per joint");
     const auto joints = Resolve();
-    for (size_t row = 0; row < joints.size(); ++row) {
-        const auto state = joints[row]->GetMotionState();
-        output[2 * row] = state.x;
-        output[2 * row + 1] = state.y;
-    }
+    PhysicsWorld::Instance().ReadHingeMotion(joints, output);
     return SceneManager::Instance().GetCompletedFixedStepIndex();
 }
 
@@ -86,7 +82,6 @@ void HingeJointBatch::SetMotorTargets(const float *targets, size_t count, std::o
     for (size_t row = 0; row < count; ++row)
         if (!std::isfinite(targets[row]) || !std::isfinite(glm::degrees(targets[row])))
             throw std::invalid_argument("hinge motor targets must be finite representable radians");
-    for (size_t row = 0; row < joints.size(); ++row)
-        joints[row]->SetMotorTargetAngle(glm::degrees(targets[row]));
+    PhysicsWorld::Instance().SetHingeMotorTargets(joints, targets);
 }
 } // namespace infernux

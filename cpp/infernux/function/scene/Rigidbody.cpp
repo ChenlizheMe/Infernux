@@ -33,12 +33,6 @@ namespace infernux
 namespace
 {
 
-static uint32_t GetPrimaryBodyId(GameObject *go)
-{
-    auto *body = go ? go->GetComponent<Rigidbody>() : nullptr;
-    return body ? body->GetBodyId() : 0xFFFFFFFF;
-}
-
 static bool RotationChanged(const glm::quat &current, const glm::quat &previous)
 {
     // q and -q represent the same orientation. Compare aligned components:
@@ -195,7 +189,7 @@ template <typename Fn> void Rigidbody::ForEachBody(Fn &&fn)
     auto *pw = GetActivePhysicsWorld(go);
     if (!pw)
         return;
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF)
         fn(*pw, bodyId);
 }
@@ -221,7 +215,7 @@ void Rigidbody::TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3
         d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
         d.hasSyncedOnce = true;
     }
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF) {
         pw.SetBodyPosition(bodyId, pos, rot, publishTransform);
         pw.ActivateBody(bodyId);
@@ -417,7 +411,7 @@ void Rigidbody::SetIsKinematic(bool kinematic)
     if (wasKinematic && !kinematic) {
         auto *go = GetGameObject();
         if (go) {
-            uint32_t bid = GetPrimaryBodyId(go);
+            uint32_t bid = GetBodyId();
             if (bid != 0xFFFFFFFF) {
                 auto &pw = PhysicsWorld::Instance();
                 glm::vec3 bodyPos = pw.GetBodyPosition(bid);
@@ -478,6 +472,8 @@ void Rigidbody::SetInterpolation(int mode)
         mode > static_cast<int>(RigidbodyInterpolation::Interpolate))
         throw std::invalid_argument("interpolation must be None or Interpolate");
     auto &d = DataMut();
+    if (d.interpolation == mode)
+        return;
     d.interpolation = mode;
 }
 
@@ -503,7 +499,7 @@ void Rigidbody::SetMaxLinearVelocity(float vel)
 
 glm::vec3 Rigidbody::GetVelocity() const
 {
-    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    uint32_t bid = GetBodyId();
     return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().GetBodyLinearVelocity(bid) : Data().linearVelocity;
 }
 
@@ -517,7 +513,7 @@ void Rigidbody::SetVelocity(const glm::vec3 &vel)
     auto *go = GetGameObject();
     if (go) {
         auto &pw = PhysicsWorld::Instance();
-        const uint32_t bodyId = GetPrimaryBodyId(go);
+        const uint32_t bodyId = GetBodyId();
         if (bodyId != 0xFFFFFFFF) {
             pw.SetBodyLinearVelocity(bodyId, vel);
             data.hasLinearVelocity = false;
@@ -528,7 +524,7 @@ void Rigidbody::SetVelocity(const glm::vec3 &vel)
 
 glm::vec3 Rigidbody::GetAngularVelocity() const
 {
-    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    uint32_t bid = GetBodyId();
     return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().GetBodyAngularVelocity(bid) : Data().angularVelocity;
 }
 
@@ -542,7 +538,7 @@ void Rigidbody::SetAngularVelocity(const glm::vec3 &vel)
     auto *go = GetGameObject();
     if (go) {
         auto &pw = PhysicsWorld::Instance();
-        const uint32_t bodyId = GetPrimaryBodyId(go);
+        const uint32_t bodyId = GetBodyId();
         if (bodyId != 0xFFFFFFFF) {
             pw.SetBodyAngularVelocity(bodyId, vel);
             data.hasAngularVelocity = false;
@@ -587,7 +583,7 @@ void Rigidbody::SubmitForceCommand(ForceCommand command)
 {
     if (command.value == glm::vec3(0.0f))
         return;
-    const uint32_t bodyId = GetPrimaryBodyId(GetGameObject());
+    const uint32_t bodyId = GetBodyId();
     auto &world = PhysicsWorld::Instance();
     if (!world.IsBodyInBroadphase(bodyId)) {
         m_pendingForceCommands.push_back(std::move(command));
@@ -654,7 +650,7 @@ void Rigidbody::FlushPendingForceCommands()
 {
     if (m_pendingForceCommands.empty())
         return;
-    const uint32_t bodyId = GetPrimaryBodyId(GetGameObject());
+    const uint32_t bodyId = GetBodyId();
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("cannot flush force commands without a physics body");
 
@@ -687,7 +683,7 @@ void Rigidbody::MovePosition(const glm::vec3 &position)
     // Use current fixed timestep from SceneManager.
     float dt = SceneManager::Instance().GetFixedTimeStep();
 
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("MovePosition requires a resident Rigidbody");
 
@@ -707,7 +703,7 @@ void Rigidbody::MoveRotation(const glm::quat &rotation)
         throw std::logic_error("MoveRotation requires an active physics world");
 
     float dt = SceneManager::Instance().GetFixedTimeStep();
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("MoveRotation requires a resident Rigidbody");
 
@@ -720,7 +716,7 @@ void Rigidbody::MoveRotation(const glm::quat &rotation)
 
 glm::vec3 Rigidbody::GetWorldCenterOfMass() const
 {
-    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    uint32_t bid = GetBodyId();
     return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().GetBodyCenterOfMassPosition(bid) : glm::vec3(0.0f);
 }
 
@@ -807,7 +803,7 @@ glm::vec3 Rigidbody::GetPosition() const
     if (!go)
         return glm::vec3(0.0f);
 
-    uint32_t bid = GetPrimaryBodyId(go);
+    uint32_t bid = GetBodyId();
     if (bid == 0xFFFFFFFF) {
         if (auto *tf = go->GetTransform())
             return tf->GetPosition();
@@ -829,7 +825,7 @@ void Rigidbody::SetPosition(const glm::vec3 &position)
         throw std::logic_error("Rigidbody owner has no Transform");
 
     auto &world = PhysicsWorld::Instance();
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     const bool hasBody = world.IsInitialized() && bodyId != 0xFFFFFFFF;
     const glm::quat rotation =
         hasBody ? glm::normalize(world.GetBodyRotation(bodyId)) : glm::normalize(transform->GetWorldRotation());
@@ -855,7 +851,7 @@ glm::quat Rigidbody::GetRotation() const
     if (!go)
         return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
 
-    uint32_t bid = GetPrimaryBodyId(go);
+    uint32_t bid = GetBodyId();
     if (bid == 0xFFFFFFFF) {
         if (auto *tf = go->GetTransform())
             return tf->GetWorldRotation();
@@ -878,7 +874,7 @@ void Rigidbody::SetRotation(const glm::quat &rotation)
 
     const glm::quat normalized = glm::normalize(rotation);
     auto &world = PhysicsWorld::Instance();
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     const bool hasBody = world.IsInitialized() && bodyId != 0xFFFFFFFF;
     const glm::vec3 position = hasBody ? world.GetBodyPosition(bodyId) : transform->GetPosition();
     if (hasBody) {
@@ -903,7 +899,7 @@ void Rigidbody::SetRotation(const glm::quat &rotation)
 
 bool Rigidbody::IsSleeping() const
 {
-    uint32_t bid = GetPrimaryBodyId(GetGameObject());
+    uint32_t bid = GetBodyId();
     return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().IsBodySleeping(bid) : true;
 }
 
@@ -914,7 +910,7 @@ void Rigidbody::WakeUp()
         return;
 
     auto &pw = PhysicsWorld::Instance();
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF)
         pw.ActivateBody(bodyId);
 }
@@ -926,7 +922,7 @@ void Rigidbody::Sleep()
         return;
 
     auto &pw = PhysicsWorld::Instance();
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF)
         pw.DeactivateBody(bodyId);
 }
@@ -942,7 +938,7 @@ void Rigidbody::SyncPhysicsToTransform()
     if (!go)
         return;
 
-    uint32_t bid = GetPrimaryBodyId(go);
+    uint32_t bid = GetBodyId();
     if (bid == 0xFFFFFFFF)
         return;
 
@@ -974,26 +970,10 @@ void Rigidbody::SyncPhysicsToTransform()
     d.currentPhysicsRotation = bodyRot;
     d.hasPhysicsPose = true;
 
-    const bool rotFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
-                           static_cast<int>(RigidbodyConstraints::FreezeRotation);
-
-    if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose) {
-        tf->ApplyWorldPoseFromPhysics(bodyPos, bodyRot, !rotFrozen);
-        d.lastSyncedPosition = bodyPos;
-        // Always read back the reconstructed rotation from the Transform so
-        // that the cached value matches what SyncExternalMovesToPhysics() will
-        // later read via GetWorldRotation() (avoids float round-trip mismatch).
-        d.lastSyncedRotation = tf->GetWorldRotation();
-        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
-        d.hasSyncedOnce = true;
-    }
-
-    CacheActorPose((d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
-                       ? bodyPos
-                       : d.lastSyncedPosition,
-                   d.lastSyncedRotation);
     if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
-        PreserveDescendantPhysicsPoses();
+        PublishPhysicsPose(bodyPos, bodyRot);
+    else
+        CacheActorPose(d.lastSyncedPosition, d.lastSyncedRotation);
 }
 
 void Rigidbody::ApplyInterpolatedTransform(float alpha)
@@ -1002,6 +982,39 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     if (!d.hasPhysicsPose)
         return;
 
+    if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None)) {
+        // A normal fixed-step publication has already written this pose. A
+        // mode handoff may still need the complete sample, but must not consume
+        // a newer authored Transform before its normal physics boundary.
+        const bool rotationFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
+                                    static_cast<int>(RigidbodyConstraints::FreezeRotation);
+        if (d.currentPhysicsPosition == d.lastSyncedPosition &&
+            (rotationFrozen || !RotationChanged(d.currentPhysicsRotation, d.lastSyncedRotation)))
+            return;
+        auto *go = GetGameObject();
+        auto *transform = go ? go->GetTransform() : nullptr;
+        if (!transform || TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle()) !=
+                              d.lastAuthoredPoseRevision)
+            return;
+        // Actor authoring dirtiness includes ancestors. Do not infer it from
+        // world/local floating-point reconstruction differences.
+        auto &physics = PhysicsECSStore::Instance();
+        if (!physics.IsValid(d.actorHandle) || physics.GetActor(d.actorHandle).centerTransformDirty)
+            return;
+        PublishPhysicsPose(d.currentPhysicsPosition, d.currentPhysicsRotation);
+        return;
+    }
+
+    const float t = std::clamp(alpha, 0.0f, 1.0f);
+    const glm::vec3 presentedPos = glm::mix(d.previousPhysicsPosition, d.currentPhysicsPosition, t);
+    const glm::quat presentedRot = glm::normalize(
+        glm::slerp(glm::normalize(d.previousPhysicsRotation), glm::normalize(d.currentPhysicsRotation), t));
+    PublishPhysicsPose(presentedPos, presentedRot);
+}
+
+void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::quat &presentedRot)
+{
+    auto &d = DataMut();
     auto *go = GetGameObject();
     if (!go)
         return;
@@ -1009,16 +1022,6 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     Transform *tf = go->GetTransform();
     if (!tf)
         return;
-
-    glm::vec3 presentedPos = d.currentPhysicsPosition;
-    glm::quat presentedRot = glm::normalize(d.currentPhysicsRotation);
-
-    if (d.interpolation == static_cast<int>(RigidbodyInterpolation::Interpolate)) {
-        float t = std::clamp(alpha, 0.0f, 1.0f);
-        presentedPos = glm::mix(d.previousPhysicsPosition, d.currentPhysicsPosition, t);
-        presentedRot = glm::normalize(
-            glm::slerp(glm::normalize(d.previousPhysicsRotation), glm::normalize(d.currentPhysicsRotation), t));
-    }
 
     const bool rotFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
                            static_cast<int>(RigidbodyConstraints::FreezeRotation);
@@ -1052,7 +1055,7 @@ void Rigidbody::PreserveDescendantPhysicsPoses()
             // authoritative. Do not replace it with an older interpolation
             // sample. Its own publication already handled its descendants.
             if (!transforms.IsFrameCacheActiveFor(handle) || !transforms.HasFrameCacheWorldPoseOverride(handle))
-                body->ApplyInterpolatedTransform(1.0f);
+                body->PublishPhysicsPose(body->Data().currentPhysicsPosition, body->Data().currentPhysicsRotation);
             return;
         }
         for (size_t i = 0; i < child->GetChildCount(); ++i)
@@ -1095,7 +1098,7 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
         if (!pw.IsInitialized())
             return;
 
-        const uint32_t bodyId = GetPrimaryBodyId(go);
+        const uint32_t bodyId = GetBodyId();
         if (bodyId == 0xFFFFFFFF)
             return;
 
@@ -1133,7 +1136,7 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     if (!pw.IsInitialized())
         return;
 
-    const uint32_t bodyId = GetPrimaryBodyId(go);
+    const uint32_t bodyId = GetBodyId();
     if (bodyId == 0xFFFFFFFF)
         return;
 
@@ -1162,7 +1165,7 @@ bool Rigidbody::HasBody() const
     if (!go)
         return false;
 
-    return GetPrimaryBodyId(go) != 0xFFFFFFFF;
+    return GetBodyId() != 0xFFFFFFFF;
 }
 
 // ============================================================================

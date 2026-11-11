@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -335,6 +336,10 @@ class ComputeWorkRecipe final : public std::enable_shared_from_this<ComputeWorkR
     {
         return m_host;
     }
+    [[nodiscard]] const ComputeHost &GetHost() const noexcept
+    {
+        return m_host;
+    }
     /// Reuse matching real input owners before allocating remaining private
     /// slots. Returns null when storage cannot be admitted. No GPU work is submitted.
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeWorkInstance>
@@ -347,6 +352,8 @@ class ComputeWorkRecipe final : public std::enable_shared_from_this<ComputeWorkR
     ComputeHost m_host;
     std::vector<ComputeWorkSlot> m_slots;
     std::vector<ComputeWorkPort> m_ports;
+    std::unordered_map<std::string, size_t> m_portIndices;
+    std::vector<ComputeWorkRange> m_requiredInputs;
     std::vector<ComputeWorkDispatch> m_dispatches;
 };
 
@@ -359,14 +366,17 @@ class ComputeWorkInstance final
     /// Rebuild immutable dispatch bindings while reusing existing private slots.
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeWorkInstance>
     Rebind(std::vector<ComputeWorkInput> inputs) const;
+    /// Lower the bound recipe through the same batch preparation and writer
+    /// versioning used by individual compute dispatches. Does not submit work.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<PreparedComputeBatch>
+    PrepareBatch(std::vector<ComputeBufferUpdate> updates = {}) const;
     [[nodiscard]] const std::vector<std::shared_ptr<ComputeBuffer>> &GetBuffers() const noexcept
     {
         return m_buffers;
     }
-    [[nodiscard]] const std::vector<ComputeKernel::PreparedDispatch> &GetDispatches() const noexcept
-    {
-        return m_dispatches;
-    }
+    /// Graphics recording needs immutable bindings; batch execution prepares
+    /// its own writer versions. Materialize these only for the recording path.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API const std::vector<ComputeKernel::PreparedDispatch> &GetDispatches() const;
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<ComputeWorkRange> GetRequiredInputs() const;
     [[nodiscard]] const ComputeWorkRecipe &GetRecipe() const noexcept
     {
@@ -376,11 +386,10 @@ class ComputeWorkInstance final
   private:
     friend class ComputeWorkRecipe;
     ComputeWorkInstance(std::shared_ptr<const ComputeWorkRecipe> recipe,
-                        std::vector<std::shared_ptr<ComputeBuffer>> buffers,
-                        std::vector<ComputeKernel::PreparedDispatch> dispatches);
+                        std::vector<std::shared_ptr<ComputeBuffer>> buffers);
     std::shared_ptr<const ComputeWorkRecipe> m_recipe;
     std::vector<std::shared_ptr<ComputeBuffer>> m_buffers;
-    std::vector<ComputeKernel::PreparedDispatch> m_dispatches;
+    mutable std::vector<ComputeKernel::PreparedDispatch> m_dispatches;
 };
 
 /// One accepted compute submission, independent of its originating batch.

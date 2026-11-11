@@ -74,6 +74,7 @@ class InfernuxJoltJobSystemAdapter final : public JPH::JobSystem
 
     void QueueOne(AdapterJob *job);
     void RecordCaughtException() noexcept;
+    void NotifyProgress();
 
     infernux::JobSystem *m_jobSystem = nullptr;
     uint32_t m_maxJobs = 0;
@@ -82,11 +83,14 @@ class InfernuxJoltJobSystemAdapter final : public JPH::JobSystem
 
     mutable std::mutex m_stateMutex;
     TaskGroup *m_activeFrameGroup = nullptr;
+    bool m_sequentialFrame = false;
     std::vector<std::unique_ptr<BarrierImpl>> m_barriers;
     std::atomic<bool> m_accepting{true};
     std::atomic<uint32_t> m_liveJobs{0};
     std::atomic<uint64_t> m_caughtExceptions{0};
     std::condition_variable m_jobCapacityCv;
+    std::condition_variable m_progressCv;
+    uint64_t m_progress = 0;
 };
 
 } // namespace infernux

@@ -44,7 +44,7 @@ class CpuWorkBudget:
     max_requests: int = 8
     snapshot_rows: int = 4096
     snapshot_ns_per_row: int = 500
-    range_elements: int = 1024
+    range_elements: int = 64 * 1024
     range_terms: int = 1024
     snapshot_bytes: int = 1024 * 1024
     transfer_bytes: int = 1024 * 1024
@@ -84,7 +84,7 @@ def _metrics():
 @dataclass(slots=True)
 class _RequestStorage:
     retained: object
-    private: object
+    private_blocks: dict
     reservation_bytes: int
     cold: object = None
     prepare_bytes: int = 0
@@ -131,6 +131,8 @@ class CpuRequest:
     task_end: int = 0
     submitted_ns: int | None = None
     packet: object = None
+    gpu_preparation: object = None
+    gpu_argument_bytes: int = 0
     host: object = None
     range_count: int = 0
     execution_costs: tuple = ()
@@ -149,6 +151,9 @@ class CpuRequest:
     metrics: dict = field(default_factory=_metrics)
     input_bindings: object = None
     _retired: bool = field(default=False, init=False)
+    _forecast_key: tuple = field(default=(), init=False, repr=False)
+    _forecast_work: object = field(default=None, init=False, repr=False)
+    service_terms: int = 0
 
     @property
     def done(self):
@@ -223,6 +228,45 @@ class CpuRequest:
 
     def _domain(self):
         return "cpu"
+
+    def _gpu_preparation_bytes(self):
+        if self.gpu_preparation is not None:
+            return self.gpu_preparation.reservation_bytes
+        return self._owner().budget.segment_operations * self.gpu_argument_bytes
+
+    def _prepared_transfer(self):
+        return None
+
+    def _discard_preparation(self, owner):
+        if self.packet is not None and self.packet.completion is not None:
+            return
+        if self.task is not None and (self.task._native is None or self.task._native.submitted):
+            return
+        if self.gpu_preparation is None and self.packet is None and self.task is None:
+            return
+        if self.task is not None:
+            self.task.cancel()
+            self.task._poll()
+            self.task = None
+        if self.gpu_preparation is not None:
+            self.gpu_preparation.close()
+            self.gpu_preparation = None
+        if self.packet is not None:
+            from infernux.compute import _cancel_work_commands
+            owner._gpu_busy_packets.pop(self.packet, None)
+            _cancel_work_commands(self.host, self.packet)
+            self.packet = None
+            cursor = self._prepared_transfer()
+            if cursor is not None:
+                cursor.discard_prepared()
+        # Re-select only unexecuted work. Confirmed rows, carry, transfer
+        # storage and accepted tickets keep their original positions.
+        self.ranges = self.execution_costs = ()
+        self.execution_prediction = self.gpu_calibration_floor_ns = self.transfer_bytes = 0
+        self.indivisible = self.transfer_indivisible = False
+        self.preparation_key = self.preparation_units = None
+        self.preparation_ns = 0
+        self.metrics['preparation_replans'] = self.metrics.get('preparation_replans', 0) + 1
 
     def _service_demand(self, owner, opportunity, *, capacity_bytes=None):
         return ServiceDemand(reason="request stages do not yet have a complete service profile")
@@ -343,9 +387,11 @@ def _confirm_work_ranges(request, cursor):
 
 
 def _prepare_gpu_work_ranges(request, cursor, entries, owner):
-    from infernux.compute import _prepare_work_commands
+    from infernux.compute import _WorkPreparation
     from infernux._work import gpu_arguments
 
+    if request.gpu_preparation is not None:
+        return _advance_gpu_preparation(request, owner)
     pending_profiles = set()
     for pending in owner.requests:
         packet = pending.packet
@@ -356,7 +402,7 @@ def _prepare_gpu_work_ranges(request, cursor, entries, owner):
         key, rows, _ = pending.execution_costs[0]
         if owner._costs.needs_probe(key, rows):
             pending_profiles.add(key)
-    segment = GpuSegment(owner, host_allowance=owner._remaining_credit(background=True),
+    segment = GpuSegment(owner,
                          execution_allowance=owner._frame.resource_remaining(owner._resource('gpu')),
                          transfer_allowance=owner._frame.resource_remaining(owner._resource('transfer')),
                          pending_profiles=pending_profiles)
@@ -382,15 +428,30 @@ def _prepare_gpu_work_ranges(request, cursor, entries, owner):
         entry = entries[operation.program, operation.reverse]
         launches.append((entry, arguments, None if operation.reverse else (value.begin, value.end), gradients))
     _seal_gpu_costs(request, segment.costs, owner._costs)
-    started = perf_counter_ns()
-    request.packet = _prepare_work_commands(launches)
-    request.transfer_bytes = request.packet.transfer_bytes
+    request.transfer_bytes = sum(int(entry.artifact.argument_layout['size']) for entry, _, _, _ in launches)
     request.transfer_indivisible = len(launches) == 1
-    elapsed = perf_counter_ns() - started
-    owner._costs.observe_host(("gpu", "prepare-operation"), elapsed / len(launches))
-    request.metrics["prepared_operations"] = request.metrics.get("prepared_operations", 0) + len(launches)
+    request.gpu_preparation = _WorkPreparation(launches)
     request.metrics["max_segment_operations"] = max(request.metrics.get("max_segment_operations", 0), len(launches))
+    return _advance_gpu_preparation(request, owner)
+
+
+def _advance_gpu_preparation(request, owner):
+    preparation = request.gpu_preparation
+    operations = preparation.advance(owner._remaining_credit(background=True), owner._gpu_prepare_unit_ns,
+        owner._costs.predict(('host-service', 'gpu', 'seal'), len(preparation.launches)) or 0)
+    if operations:
+        owner._costs.observe_host(("gpu", "prepare-operation"), preparation.binding_ns / operations)
+        request.metrics["prepared_operations"] = request.metrics.get("prepared_operations", 0) + operations
+    if preparation.seal_ns is not None:
+        owner._costs.observe(('host-service', 'gpu', 'seal'), len(preparation.launches), preparation.seal_ns)
+    if preparation.packet is None:
+        return bool(operations)
+    request.packet = preparation.packet
+    request.transfer_bytes = request.packet.transfer_bytes
+    request.transfer_indivisible = len(preparation.launches) == 1
     request.metrics["prepared_argument_bytes"] = request.metrics.get("prepared_argument_bytes", 0) + request.packet.payload_bytes
+    preparation.close()
+    request.gpu_preparation = None
     return True
 
 
@@ -472,7 +533,6 @@ class NnRequest(CpuRequest):
     phase: str = "forward"
     grad_published: bool = False
     gpu_executables: dict = field(default_factory=dict)
-    gpu_prepare_peak_bytes: int = 0
     result_device: str | None = None
     outputs: int | tuple[int, ...] | None = None
     output_index: int | None = None
@@ -599,11 +659,17 @@ class NnRequest(CpuRequest):
         if self.sources is not None and not self.sources.done:
             return ServiceDemand(reason="scene source snapshot has not completed")
         self._service_host_key()
-        if not self.service_spans:
+        if not self.service_spans or self.service_terms != owner.budget.range_terms:
             self.service_spans = model_spans(self.plan, self.optimizer, self.grad_facts,
                 self.update_spec, self.record_loss, self.gpu_executables, owner.budget.range_terms, self.objective,
-                self.clear_grad, output_index=self.output_index)
+                self.clear_grad, output_index=self.output_index,
+                frontier=None if self.run is None else (self.run.phase, self.run.cursor, self.ranges))
+            self.service_terms = owner.budget.range_terms
+            self._forecast_key = ()
         return remaining_model_service(self, owner, opportunity, capacity_bytes=capacity_bytes)
+
+    def _prepared_transfer(self):
+        return self.io[0][1] if self.io else None if self.run is None else self.run.cursor.transfer
 
     def _model_access(self, root):
         return "train" if self.optimizer is not None and self.plan is not None and self.plan.root is root else None
@@ -660,7 +726,7 @@ class NnRequest(CpuRequest):
             if self.input_bindings is not None:
                 capacity -= self.input_bindings.extra_bytes
             peak = max(cursor.prepare_bytes for _, cursor in self.io)
-            available = owner.budget.capacity_bytes - capacity + max(0, peak - self.gpu_prepare_peak_bytes)
+            available = owner.budget.capacity_bytes - capacity + max(0, peak - self._gpu_preparation_bytes())
             for _, cursor in self.io:
                 cursor.limit_chunk(available)
 
@@ -706,24 +772,26 @@ class NnRequest(CpuRequest):
             if not cursor.readback_ready and not cursor.done and self.packet is None:
                 io_peak = max(io_peak, cursor.prepare_bytes)
         if self.run is not None:
-            values.extend(self.run.live_values())
-            private.extend(self.run.private_values())
+            live_group, private_group = self.run.storage_groups()
+            values.extend((live_group, *self.run.cursor.carry))
+            private.extend((private_group, *self.run.cursor.carry))
         if self.optimizer is not None:
             if self.target is not None and not isinstance(self.target, BufferSource):
                 values.append(self.target._data)
             values.extend(self.optimizer._state_values(self.update_spec.state))
             values.extend(gradient._data for _, gradient in self.grad_facts if gradient is not None)
         cold = (self.plan, self.plan._first_outputs or ()) if self.run is None else None
-        peak = self.gpu_prepare_peak_bytes if (self.gpu_executables and self.packet is None
+        peak = self._gpu_preparation_bytes() if (self.gpu_executables and self.packet is None
             and self.status == "pending" and not self._compute_complete()) else 0
-        reservation = self._reservation(private)
-        return _RequestStorage(values, private, reservation, cold, max(peak, io_peak), native_blocks)
+        private_blocks = _storage_blocks(private)
+        reservation = self._reservation(private_blocks)
+        return _RequestStorage(values, private_blocks, reservation, cold, max(peak, io_peak), native_blocks)
 
-    def _reservation(self, private):
+    def _reservation(self, private_blocks):
         run = self.run
         if run is None or (self.optimizer is not None and run.phase in ("forward", "loss")):
             return self.reserved_bytes
-        current = sum(_storage_blocks(private).values())
+        current = sum(private_blocks.values())
         carry = sum(_storage_blocks(run.cursor.carry).values())
         owner = self._owner()
         scratch = run.cursor.scratch_reservation(owner.budget.range_terms)
@@ -765,9 +833,6 @@ class NnRequest(CpuRequest):
                  and (self.optimizer is None or root._state is expected_state)
                  and all(not value._data.closed for value in self.inputs or () if not isinstance(value, BufferSource))
                  and all(cursor.is_current() for _, cursor in self.io))
-        if self.gpu_executables:
-            valid = valid and all(entry.artifact is not None and entry.host is not None and entry.tasks
-                                  for entry in self.gpu_executables.values())
         if self.optimizer is not None:
             from infernux.nn._plan import _grads_current
             facts = self.grad_facts if self.run is None else self.run.grad_facts
@@ -879,8 +944,6 @@ class NnRequest(CpuRequest):
         self._confirm_ranges()
 
     def _prepare_gpu(self, owner, work):
-        from infernux.compute import _prepare_work_commands
-        from infernux.nn._primitives import gpu_arguments
         if self.io:
             if _prepare_transfer(self, owner, self.io[0][1], work):
                 self.metrics["io_prepared_bytes"] = self.metrics.get("io_prepared_bytes", 0) + self.packet.payload_bytes
@@ -963,7 +1026,7 @@ class NnRequest(CpuRequest):
             self.sources = None
         self.grad_facts = ()
         self.gpu_executables = {}
-        self.gpu_prepare_peak_bytes = 0
+        self.gpu_argument_bytes = 0
         self.ranges = self.execution_costs = ()
         self.service_spans = ()
         self.service_signature = ()
@@ -974,6 +1037,9 @@ class TransferRequest(CpuRequest):
     cursor: object
     destination: str | None = None
     chunk_bytes: int = 0
+
+    def _prepared_transfer(self):
+        return self.cursor
 
     def _bind_inputs(self, values, owner):
         from infernux.compute import _TransferCursor
@@ -1005,9 +1071,9 @@ class TransferRequest(CpuRequest):
     def _resources(self):
         c = self.cursor
         if c is None:
-            return _RequestStorage((), (), self.reserved_bytes)
+            return _RequestStorage((), {}, self.reserved_bytes)
         peak = c.prepare_bytes if self.packet is None and not c.readback_ready and not self._complete() else 0
-        return _RequestStorage((c.source, c.target), (c.snapshot, c.target), self.reserved_bytes,
+        return _RequestStorage((c.source, c.target), _storage_blocks((c.snapshot, c.target)), self.reserved_bytes,
                                prepare_bytes=peak, native_blocks=c.native_blocks)
 
     def _is_current(self, owner):
@@ -1203,17 +1269,28 @@ class CpuWorkOwner:
         self._frame.wake(self._commands_source)
 
     def configure_budget(self, budget):
+        if isinstance(budget, CpuWorkBudget) and self._budget_locked and budget != self.budget:
+            raise ValueError("all CPU requests share one fixed owner budget")
+        self.set_budget(budget)
+
+    def set_budget(self, budget):
         self._check_owner()
         if not isinstance(budget, CpuWorkBudget):
-            raise TypeError("CPU work requires CpuWorkBudget")
-        if self._budget_locked and budget != self.budget:
-            raise ValueError("all CPU requests share one fixed owner budget")
+            raise TypeError("host work requires CpuWorkBudget")
+        smaller_segment = any(getattr(budget, name) < getattr(self.budget, name) for name in
+            ('cpu_frame_ns', 'cpu_slice_ns', 'gpu_frame_ns', 'gpu_slice_ns',
+             'transfer_frame_bytes', 'segment_operations', 'range_elements'))
+        if (smaller_segment or budget.range_terms != self.budget.range_terms or
+                budget.owner_ns - budget.foreground_reserve_ns < self._max_background_credit()):
+            for request in self.requests:
+                request._discard_preparation(self)
         # Automatic maintenance may already have spent this opportunity.
         # Selecting a custom budget never recharges an opportunity in progress.
         self._frame.configure(budget.owner_ns, budget.foreground_reserve_ns)
         self.budget = budget
         self._budget_locked = True
         self._configure_resources()
+        self._plan_dirty = True
 
     def _charge_admission(self, started, result):
         elapsed = self._charge_host_interval(started, result)
@@ -1344,16 +1421,16 @@ class CpuWorkOwner:
                     native_blocks.update(lease.storage_claims)
             values.extend(facts.retained)
             native_blocks.update(facts.native_blocks)
-            private = list(facts.private)
+            private = dict(facts.private_blocks)
             if facts.cold is not None:
                 identity, buffers = facts.cold
                 if identity not in credited_cold:
-                    private.extend(buffers)
+                    private.update(_storage_blocks(buffers))
                     credited_cold.add(identity)
             if request.task is not None and request.task._owners is not None:
                 values.extend(request.task.storage)
-                private.extend(request.task.scalar_storage)
-            future += max(0, facts.reservation_bytes - sum(_storage_blocks(private).values()))
+                private.update(_storage_blocks(request.task.scalar_storage))
+            future += max(0, facts.reservation_bytes - sum(private.values()))
             future += facts.prepare_bytes
             if request.packet is not None:
                 native_blocks.update(request.packet.storage_blocks)
@@ -1770,8 +1847,7 @@ class CpuWorkOwner:
         if any(int(value._native.last_write_serial) == 0 or not value._native.has_initialized_range(
                 value._byte_offset, value.nbytes) for value in sources):
             raise ValueError("GPU inputs, parameters and gradients require an accepted producer for their complete logical range")
-        return self.budget.segment_operations * max(3 * int(entry.artifact.argument_layout["size"])
-                                                     for entry in entries.values())
+        return max(3 * int(entry.artifact.argument_layout["size"]) for entry in entries.values())
 
     @_admission_cost
     def release_kernel(self, prepared, params, *, window_opportunities, finish_within_ms=None):
@@ -1972,7 +2048,7 @@ class CpuWorkOwner:
                 request = NnRequest(**facts, plan=plan, state=root._state, parameter_version=root.parameter_version, inputs=tuple(frozen_inputs),
                     optimizer=optimizer, target=frozen_target, update_spec=None if not training else optimizer._step_spec(max_norm),
                     grad_facts=grads, record_loss=record_loss, objective=objective, clear_grad=clear_grad, reserved_bytes=reserve,
-                    gpu_executables=entries, gpu_prepare_peak_bytes=gpu_peak, host=host, sources=sources,
+                    gpu_executables=entries, gpu_argument_bytes=gpu_peak, host=host, sources=sources,
                     outputs=outputs, output_index=output_index)
                 pending = {name: value for name, value in (*enumerate(request.inputs), ('target', request.target))
                            if isinstance(value, BufferSource)}
@@ -2230,9 +2306,13 @@ class CpuWorkOwner:
                 self._observe_io(task, observation)
                 del self._io_observations[task]
         request._release_input_bindings()
+        if request.gpu_preparation is not None:
+            request.gpu_preparation.close()
+            request.gpu_preparation = None
         request._release_private()
         self._gpu_busy_packets.pop(request, None)
         request.task = request.packet = request.host = None
+        request._forecast_key, request._forecast_work = (), None
         request.reserved_bytes = 0
         if request in self.requests:
             self.requests.remove(request)
@@ -2296,21 +2376,23 @@ class CpuWorkOwner:
         self._record_wait(selected, "host_budget", "no background host credit remains")
         return False
 
+    def _check_working_capacity(self, request):
+        capacity = self._capacity()
+        request.metrics["payload_peak_bytes"] = max(request.metrics["payload_peak_bytes"], capacity)
+        if capacity > self.budget.capacity_bytes:
+            raise ValueError("prepared numerical work exceeds numerical capacity")
+
     @_service_cost
     def _advance_request(self, selected, opportunity, engine, *, parallel_io=False):
         if not self._execution_active(selected, opportunity):
             return False
-        if self._capacity() > self.budget.capacity_bytes:
-            self._cancel(selected, "failed", "retained storage exceeds numerical capacity")
-            self._retire(selected)
-            return True
         if not selected._is_current(self):
             self._cancel(selected, "cancelled", "source or model changed before work")
             self._retire(selected)
             return True
         if parallel_io:
             progressed = selected._advance_parallel_io(self, opportunity)
-            selected.metrics["payload_peak_bytes"] = max(selected.metrics["payload_peak_bytes"], self._capacity())
+            self._check_working_capacity(selected)
             return progressed
         if selected.input_bindings is not None:
             if not selected.input_bindings.ready or not self._can_continue(selected, opportunity):
@@ -2318,6 +2400,7 @@ class CpuWorkOwner:
             selected.input_bindings.bind(selected, self)
             selected._release_input_bindings()
             selected.metrics['input_bindings_completed'] = selected.metrics.get('input_bindings_completed', 0) + 1
+            self._check_working_capacity(selected)
             return True
         if selected.packet is not None:
             # Mutable transfer sources are rechecked adjacent to the actual Try,
@@ -2341,32 +2424,30 @@ class CpuWorkOwner:
                 self._gpu_busy_packets.pop(selected, None)
         if selected.status != "pending":
             return True  # Work may cancel at its last admission gate.
-        selected.metrics["payload_peak_bytes"] = max(selected.metrics["payload_peak_bytes"], self._capacity())
-        if selected._complete():
+        complete = selected._complete()
+        advance = not complete and work is not None and self._can_continue(selected, opportunity)
+        if selected.status != "pending":
+            return True
+        if advance:
+            if domain == "gpu":
+                progressed |= selected._prepare_gpu(self, work)
+            elif not engine._cpu_range_tasks and selected.task is None:
+                progressed |= selected._prepare_cpu(self, work)
+        # Binding and packet preparation are one owner-thread transaction.
+        # Account their final working set once, before execution/publication.
+        self._check_working_capacity(selected)
+        if complete:
             if self._available(background=True):
                 progressed |= self._publish(selected, opportunity)
                 if selected.status != "pending":
                     progressed |= self._retire(selected)
             return progressed
-        if work is None or not self._can_continue(selected, opportunity):
+        if not advance:
             return progressed or selected.status != "pending"
         if domain == "gpu":
-            progressed |= selected._prepare_gpu(self, work)
-            capacity = self._capacity()
-            selected.metrics["payload_peak_bytes"] = max(selected.metrics["payload_peak_bytes"], capacity)
-            if capacity > self.budget.capacity_bytes:
-                raise ValueError("prepared GPU segment exceeds numerical capacity")
             return progressed or selected.status != "pending"
-        if engine._cpu_range_tasks:
+        if engine._cpu_range_tasks or not self._available(background=True):
             return progressed
-        if selected.task is None:
-            progressed |= selected._prepare_cpu(self, work)
-            capacity = self._capacity()
-            selected.metrics["payload_peak_bytes"] = max(selected.metrics["payload_peak_bytes"], capacity)
-            if capacity > self.budget.capacity_bytes:
-                raise ValueError("prepared CPU segment exceeds numerical capacity")
-            if not self._available(background=True):
-                return progressed
         if not self._execution_active(selected, opportunity) or not self._can_admit_execution(selected, 'cpu'):
             return progressed
         submitted = perf_counter_ns()
@@ -2515,8 +2596,9 @@ class CpuWorkOwner:
         return stream if stream is not None and stream["failure"] is None and stream["pending"] else None
 
     def _gpu_pressure_state(self, pressure):
-        return (self._frame.gpu_foreground_blocked, pressure.get("compute_submissions", 0),
-                bool(pressure.get("older_pending_frames") or pressure.get("recording_frames")))
+        blocked = self._frame.gpu_foreground_blocked
+        return (blocked, pressure.get("compute_submissions", 0),
+                bool(pressure.get("recording_frames") or blocked and pressure.get("older_pending_frames")))
 
     def _observe_gpu_pressure(self, host):
         pressure = {} if host is None else host.queue_pressure
@@ -2744,6 +2826,8 @@ class CpuWorkOwner:
                 key = gpu_prepare_key(key)
         estimate = (None if key is None else self._costs.host(key) if units is None else
                     self._costs.predict(("host-service", *key), max(1, units)))
+        if request.gpu_preparation is not None and estimate is not None:
+            estimate = min(estimate, self._max_background_credit())
         booked = None
         if self._reserved_service():
             lane = 'gpu' if request.packet is not None else 'host' if request._execution_domain() == 'gpu' else None

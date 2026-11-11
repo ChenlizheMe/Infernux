@@ -184,6 +184,7 @@ struct PortableCaps final
     bool shaderInt16 = false;
     bool shaderInt64 = false;
     bool shaderFloat64 = false;
+    bool shaderFloat32Preserve = false;
     uint32_t maxWorkgroupSize[3] = {};
     uint32_t maxWorkgroupInvocations = 0;
     /// Maximum byte range of one storage-buffer binding, not a binding count.

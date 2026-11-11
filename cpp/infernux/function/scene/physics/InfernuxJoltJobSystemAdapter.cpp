@@ -54,32 +54,12 @@ class InfernuxJoltJobSystemAdapter::AdapterJob final : public JPH::JobSystem::Jo
             std::lock_guard<std::mutex> lock(m_executionMutex);
             m_execution = std::move(handle);
         }
-        m_executionCv.notify_all();
     }
 
     infernux::JobHandle WaitForExecutionHandle()
     {
         std::lock_guard<std::mutex> lock(m_executionMutex);
         return m_execution;
-    }
-
-    void WaitUntilQueued()
-    {
-        std::unique_lock<std::mutex> lock(m_executionMutex);
-        m_executionCv.wait_for(lock, std::chrono::milliseconds(1),
-                               [this] { return m_execution.IsValid() || IsDone(); });
-    }
-
-    void SetBarrierOwner(BarrierImpl *barrier)
-    {
-        std::lock_guard<std::mutex> lock(m_executionMutex);
-        m_barrierOwner = barrier;
-    }
-
-    BarrierImpl *GetBarrierOwner()
-    {
-        std::lock_guard<std::mutex> lock(m_executionMutex);
-        return m_barrierOwner;
     }
 
     InfernuxJoltJobSystemAdapter *Owner() const noexcept
@@ -90,9 +70,7 @@ class InfernuxJoltJobSystemAdapter::AdapterJob final : public JPH::JobSystem::Jo
   private:
     InfernuxJoltJobSystemAdapter *m_owner = nullptr;
     mutable std::mutex m_executionMutex;
-    std::condition_variable m_executionCv;
     infernux::JobHandle m_execution;
-    BarrierImpl *m_barrierOwner = nullptr;
 };
 
 class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::Barrier
@@ -119,15 +97,14 @@ class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::B
         }
 
         job->AddExternalReference();
-        job->SetBarrierOwner(this);
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_jobs.push_back(job);
-            if (m_finished.erase(job) == 0) {
+            if (m_finished.find(job) == m_finished.end()) {
                 ++m_pending;
             }
         }
-        m_cv.notify_all();
+        m_owner->NotifyProgress();
     }
 
     void AddJobs(const JPH::JobSystem::JobHandle *handles, uint32_t count) override
@@ -141,6 +118,13 @@ class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::B
     {
         for (;;) {
             std::vector<AdapterJob *> jobs;
+            uint64_t generation;
+            TaskGroup *group;
+            {
+                std::lock_guard<std::mutex> lock(m_owner->m_stateMutex);
+                group = m_owner->m_activeFrameGroup;
+                generation = m_owner->m_progress;
+            }
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
                 if (m_pending == 0) {
@@ -150,6 +134,8 @@ class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::B
                 jobs = m_jobs;
             }
 
+            if (group && m_owner->m_jobSystem->RunPendingJobs(*group, 1))
+                continue;
             bool helped = false;
             for (AdapterJob *job : jobs) {
                 if (job == nullptr || job->IsDone()) {
@@ -157,6 +143,16 @@ class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::B
                 }
                 const infernux::JobHandle execution = job->WaitForExecutionHandle();
                 if (execution.IsValid()) {
+                    if (group) {
+                        // A skipped wrapper still owes Jolt its terminal
+                        // state. Ordinary ready work is helped by the shared
+                        // group above, under its original concurrency limit.
+                        if (execution.IsComplete() && execution.IsCancellationRequested()) {
+                            m_owner->m_jobSystem->RunInDomain(JobDomain::Physics, [job] { job->Run(); });
+                            helped = true;
+                        }
+                        continue;
+                    }
                     try {
                         m_owner->m_jobSystem->Wait(execution);
                     } catch (const JobCancelled &) {
@@ -165,21 +161,24 @@ class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::B
                         // execute the guarded Jolt job so its dependency and
                         // barrier state reaches cDoneState.
                         if (!job->IsDone()) {
-                            job->Run();
+                            m_owner->m_jobSystem->RunInDomain(JobDomain::Physics, [job] { job->Run(); });
                         }
                     }
                     helped = true;
-                } else {
-                    job->WaitUntilQueued();
                 }
             }
 
+            if (!helped) {
+                std::unique_lock<std::mutex> lock(m_owner->m_stateMutex);
+                // Ready jobs and Jolt completions wake this wait directly.
+                // A shared callback skipped by cancellation has no Jolt
+                // completion notification; observe that ticket on timeout.
+                m_owner->m_progressCv.wait_for(lock, std::chrono::milliseconds(1),
+                                               [this, generation] { return m_owner->m_progress != generation; });
+            }
             {
-                std::unique_lock<std::mutex> lock(m_mutex);
+                std::lock_guard<std::mutex> lock(m_mutex);
                 ReleaseCompletedLocked();
-                if (m_pending != 0 && !helped) {
-                    m_cv.wait_for(lock, std::chrono::milliseconds(1));
-                }
             }
         }
     }
@@ -187,6 +186,7 @@ class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::B
   protected:
     void OnJobFinished(JPH::JobSystem::Job *job) override
     {
+        auto *owner = m_owner;
         auto *adapterJob = static_cast<AdapterJob *>(job);
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -198,27 +198,24 @@ class InfernuxJoltJobSystemAdapter::BarrierImpl final : public JPH::JobSystem::B
                 m_finished.insert(adapterJob);
             }
         }
-        m_cv.notify_all();
+        owner->NotifyProgress();
     }
 
   private:
     void ReleaseCompletedLocked()
     {
-        auto it = m_jobs.begin();
-        while (it != m_jobs.end()) {
-            AdapterJob *job = *it;
+        const auto end = std::remove_if(m_jobs.begin(), m_jobs.end(), [this](AdapterJob *job) {
             if (job != nullptr && m_finished.erase(job) != 0) {
                 job->ReleaseExternalReference();
-                it = m_jobs.erase(it);
-            } else {
-                ++it;
+                return true;
             }
-        }
+            return false;
+        });
+        m_jobs.erase(end, m_jobs.end());
     }
 
     InfernuxJoltJobSystemAdapter *m_owner = nullptr;
     std::mutex m_mutex;
-    std::condition_variable m_cv;
     std::vector<AdapterJob *> m_jobs;
     std::unordered_set<AdapterJob *> m_finished;
     uint32_t m_pending = 0;
@@ -340,12 +337,14 @@ void InfernuxJoltJobSystemAdapter::BeginFrame(TaskGroup &group)
         throw std::logic_error("Jolt adapter frame group is unavailable");
     }
     m_activeFrameGroup = &group;
+    m_sequentialFrame = GetMaxConcurrency() == 1;
 }
 
 void InfernuxJoltJobSystemAdapter::EndFrame()
 {
     std::lock_guard<std::mutex> lock(m_stateMutex);
     m_activeFrameGroup = nullptr;
+    m_sequentialFrame = false;
 }
 
 void InfernuxJoltJobSystemAdapter::Shutdown() noexcept
@@ -375,31 +374,33 @@ void InfernuxJoltJobSystemAdapter::QueueOne(AdapterJob *job)
     }
 
     TaskGroup *group = nullptr;
+    bool sequential;
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         group = m_activeFrameGroup;
+        sequential = m_sequentialFrame;
     }
 
-    job->AddExternalReference();
+    const JPH::JobSystem::JobHandle reference(job);
+    if (sequential) {
+        m_jobSystem->RunInDomain(JobDomain::Physics,
+                                 [reference] { static_cast<AdapterJob *>(reference.GetPtr())->Run(); });
+        return;
+    }
     try {
         infernux::JobHandle execution;
         if (group != nullptr) {
-            execution = m_jobSystem->Schedule(*group, [job] {
-                job->Run();
-                job->ReleaseExternalReference();
-            });
+            execution =
+                m_jobSystem->Schedule(*group, [reference] { static_cast<AdapterJob *>(reference.GetPtr())->Run(); });
         } else {
-            execution = m_jobSystem->Schedule(
-                [job] {
-                    job->Run();
-                    job->ReleaseExternalReference();
-                },
-                JobDomain::Physics, JobPriority::Critical);
+            execution = m_jobSystem->Schedule([reference] { static_cast<AdapterJob *>(reference.GetPtr())->Run(); },
+                                              JobDomain::Physics, JobPriority::Critical);
         }
         job->PublishExecution(std::move(execution));
+        NotifyProgress();
     } catch (...) {
-        job->ReleaseExternalReference();
-        job->Run();
+        m_jobSystem->RunInDomain(JobDomain::Physics,
+                                 [reference] { static_cast<AdapterJob *>(reference.GetPtr())->Run(); });
     }
 }
 
@@ -413,6 +414,15 @@ void InfernuxJoltJobSystemAdapter::FreeJob(JPH::JobSystem::Job *rawJob)
 void InfernuxJoltJobSystemAdapter::RecordCaughtException() noexcept
 {
     m_caughtExceptions.fetch_add(1, std::memory_order_relaxed);
+}
+
+void InfernuxJoltJobSystemAdapter::NotifyProgress()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        ++m_progress;
+    }
+    m_progressCv.notify_all();
 }
 
 } // namespace infernux

@@ -334,7 +334,6 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
         const char *buildError = nullptr;
         const auto buildResult = builder.Initialize(kMaxConvexVerts, 1.0e-3f, buildError);
         JPH::Array<JPH::Vec3> hullPoints;
-        std::unordered_map<int, uint32_t> originalToCompact;
 
         if (buildResult == JPH::ConvexHullBuilder::EResult::Success ||
             buildResult == JPH::ConvexHullBuilder::EResult::MaxVerticesReached) {
@@ -349,27 +348,7 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
             for (size_t index = 0; index < allPoints.size(); ++index) {
                 if (!used[index])
                     continue;
-                originalToCompact[static_cast<int>(index)] = static_cast<uint32_t>(hullPoints.size());
                 hullPoints.push_back(allPoints[index]);
-            }
-
-            const float inverseX = worldScale.x != 0.0f ? 1.0f / worldScale.x : 1.0f;
-            const float inverseY = worldScale.y != 0.0f ? 1.0f / worldScale.y : 1.0f;
-            const float inverseZ = worldScale.z != 0.0f ? 1.0f / worldScale.z : 1.0f;
-            cooked->hullPositions.reserve(hullPoints.size());
-            for (const auto &point : hullPoints) {
-                cooked->hullPositions.emplace_back(point.GetX() * inverseX, point.GetY() * inverseY,
-                                                   point.GetZ() * inverseZ);
-            }
-            for (const auto *face : builder.GetFaces()) {
-                const auto *edge = face->mFirstEdge;
-                do {
-                    const uint32_t start = originalToCompact.at(edge->mStartIdx);
-                    const uint32_t end = originalToCompact.at(edge->mNextEdge->mStartIdx);
-                    cooked->hullEdges.push_back(start);
-                    cooked->hullEdges.push_back(end);
-                    edge = edge->mNextEdge;
-                } while (edge != face->mFirstEdge);
             }
         }
 
@@ -378,7 +357,29 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
         JPH::ConvexHullShapeSettings settings(hullPoints);
         // Keep the rounded support and the actual hull within narrow-phase accuracy.
         settings.mMaxErrorConvexRadius = JPH::cDefaultCollisionTolerance;
-        return finish(settings.Create(), "convex mesh cooking failed");
+        const auto result = settings.Create();
+        if (result.HasError())
+            return finish(result, "convex mesh cooking failed");
+        // Queries and gizmos describe the final cooked hull, including Jolt's
+        // second hull construction, rather than the simplification prototype.
+        const auto *hull = static_cast<const JPH::ConvexHullShape *>(result.Get().GetPtr());
+        const glm::vec3 inverseScale(worldScale.x != 0.0f ? 1.0f / worldScale.x : 1.0f,
+                                     worldScale.y != 0.0f ? 1.0f / worldScale.y : 1.0f,
+                                     worldScale.z != 0.0f ? 1.0f / worldScale.z : 1.0f);
+        cooked->hullPositions.reserve(hull->GetNumPoints());
+        for (uint32_t index = 0; index < hull->GetNumPoints(); ++index) {
+            const auto point = hull->GetPoint(index) + hull->GetCenterOfMass();
+            cooked->hullPositions.emplace_back(glm::vec3(point.GetX(), point.GetY(), point.GetZ()) * inverseScale);
+        }
+        uint32_t faceVertices[JPH::ConvexHullShape::cMaxPointsInHull];
+        for (uint32_t face = 0; face < hull->GetNumFaces(); ++face) {
+            const uint32_t count = hull->GetFaceVertices(face, JPH::ConvexHullShape::cMaxPointsInHull, faceVertices);
+            for (uint32_t index = 0; index < count; ++index) {
+                cooked->hullEdges.push_back(faceVertices[index]);
+                cooked->hullEdges.push_back(faceVertices[(index + 1) % count]);
+            }
+        }
+        return finish(result, "convex mesh cooking failed");
     }
 
     CookMeshGeometry(vertices, indices);

@@ -285,22 +285,36 @@ class _WorkRange:
     count: int
 
 
-def _operation_access(operation):
+def _binding_storage_blocks():
+    """Read allocation identity once per value while constructing one binding."""
+    blocks = {}
+    def storage(value):
+        identity = id(value)
+        if identity not in blocks:
+            blocks[identity] = value, tuple(_storage_blocks((value,)))
+        return blocks[identity][1]
+    return storage
+
+
+def _operation_access(operation, storage):
     reads, writes = ((0,), (1,)) if operation.copy else accesses(operation.program, reverse=operation.reverse)
     def keys(indices):
         return frozenset(key for index in indices if isinstance(operation.params[index], Buffer)
-                         for key in _storage_blocks((operation.params[index],)))
+                         for key in storage(operation.params[index]))
     return Access(keys(reads), keys(writes))
 
 
 class _WorkCursor:
     """Bound operations only; synchronous callers or the existing owner drive them."""
-    def __init__(self, operations, *, retained=(), release=None):
+    def __init__(self, operations, *, retained=(), release=None, graph=None, storage=None):
         self.operations = tuple(operations)
-        accesses = tuple(_operation_access(operation) for operation in self.operations)
-        writes = frozenset(key for access in accesses for key in access.writes)
-        initialized = frozenset(key for access in accesses for key in access.reads) - writes
-        self.graph = Dataflow(accesses, initialized=initialized)
+        if graph is None:
+            storage = _binding_storage_blocks() if storage is None else storage
+            accesses = tuple(_operation_access(operation, storage) for operation in self.operations)
+            writes = frozenset(key for access in accesses for key in access.writes)
+            initialized = frozenset(key for access in accesses for key in access.reads) - writes
+            graph = Dataflow(accesses, initialized=initialized)
+        self.graph = graph
         self._flow = self.graph.cursor(retained=retained)
         self._release = release
         self.completed_end = 0
@@ -348,7 +362,8 @@ class _WorkCursor:
         """Preview a fixed topological prefix, without completing or releasing it.
 
         A successor reads whole views, so its producer must finish its full row
-        domain in this segment. Copies, whole VJPs and carry changes are cuts.
+        domain in this segment. Copies and carry changes are cuts. A whole
+        VJP stays indivisible but may share an ordered GPU packet with peers.
         ``select`` returns successive row ends within the segment allowance.
         A packet that splits a row domain stays within that operation.
         """
@@ -357,7 +372,7 @@ class _WorkCursor:
             if len(result) == limit:
                 break
             operation = first if offset == 0 else self.operations[index]
-            if operation.copy or (offset and (operation.reverse or inner_range(operation.program) is not None
+            if operation.copy or (offset and (inner_range(operation.program) is not None
                                              and inner_range(operation.program).count > term_limit)):
                 break
             count, begin = domain(operation), self.completed_end if offset == 0 else 0
@@ -367,7 +382,7 @@ class _WorkCursor:
             for end in ends:
                 result.append(_WorkRange(index, operation, begin, end, count))
                 begin = end
-            if len(ends) > 1 or end != count or operation.reverse or (offset == 0 and self.carry):
+            if len(ends) > 1 or end != count or (offset == 0 and self.carry):
                 break
         return tuple(result)
 
@@ -386,7 +401,7 @@ class _WorkCursor:
         if operation.copy:
             return operation
         control = None if operation.reverse else inner_range(operation.program)
-        if control is None or (not self.carry and control.count <= term_limit):
+        if control is None or (not self.carry and (control.count <= term_limit or self.completed_end)):
             return operation
         if not self.carry:
             domain = operation.params[domain_parameter(operation.program)]

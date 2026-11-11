@@ -943,6 +943,9 @@ bool SceneRenderGraph::PrepareGraphBuffers()
             for (const auto &buffer : m_pythonGraphDesc.buffers)
                 if (buffer.workBinding == binding.name)
                     owners[buffer.name] = instance->GetBuffers().at(buffer.workSlot);
+            // A resource-only rebind can keep the compiled passes. Prepare its
+            // immutable graphics bindings here, before any recording callback.
+            (void)instance->GetDispatches();
             instances.emplace(binding.name, std::move(instance));
         }
         RetireWorkInstances();

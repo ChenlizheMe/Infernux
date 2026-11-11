@@ -63,13 +63,44 @@ def _copy_storage(source, device, dtype=None):
         finally:
             if moved is not source:
                 p.retire((moved,))
-    if device == "cpu":
-        if source.device == "gpu":
-            return source.get_data()
-        return compute.Buffer(shape=source.element_count, dtype=source.dtype, device="cpu", data=source.numpy(copy=False))
-    if source.device == "cpu":
-        return compute.Buffer(shape=source.element_count, dtype=source.dtype, device="gpu", data=source.numpy(copy=False))
-    return compute._copy_gpu_buffer(source)
+    return compute._copy_buffers((source,), device)[0]
+
+
+def _copy_storage_batch(sources, device):
+    sources = tuple(sources)
+    _check_options(None, device)
+    for source in sources:
+        _check_options(None, source.device)
+    return compute._copy_buffers(sources, device)
+
+
+def _to_device_batch(values, device):
+    """Move program operands together, preserving ordinary Tensor.to semantics."""
+    values = tuple(values)
+    _check_options(None, device)
+    moving = []
+    for index, value in enumerate(values):
+        if value.device == device:
+            continue
+        if (value._run is not None or value._loss is not None) and value.dtype == np.dtype(np.float32):
+            raise RuntimeError("detach a computed Tensor before moving it between devices")
+        moving.append(index)
+    storage = _copy_storage_batch((values[index]._data for index in moving), device)
+    results = list(values)
+    try:
+        for index, buffer in zip(moving, storage, strict=True):
+            value = values[index]
+            results[index] = Tensor._from_buffer(buffer, value.shape, requires_grad=value.requires_grad)
+        return tuple(results)
+    except BaseException:
+        for index in moving:
+            if results[index] is not values[index]:
+                results[index]._data._close(flush=False)
+        results.clear()
+        raise
+    finally:
+        for buffer in storage:
+            buffer._close(flush=False)
 
 
 class Tensor:
@@ -361,7 +392,7 @@ def as_tensor(data, *, dtype=None, device=None):
             storage._dtype = compute._buffer_dtype(data._dtype.scalar)
             if storage._array is not None:
                 storage._array = storage._array.reshape(storage._shape)
-            storage._description = storage._build_description()
+            storage._description = None
     elif isinstance(data, np.ndarray):
         shape = data.shape
         chosen = data.dtype if dtype is None else np.dtype(dtype)
@@ -374,7 +405,6 @@ def as_tensor(data, *, dtype=None, device=None):
         storage._array = array.reshape(storage._storage_shape).view()
         storage._readonly = not array.flags.writeable
         storage._ownership = 'borrowed'
-        storage._description = storage._build_description()
     if storage is None:
         return Tensor(data, dtype=dtype, device=device)
     try:

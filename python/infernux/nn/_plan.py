@@ -12,8 +12,9 @@ import numpy as np
 from . import _primitives as p
 from ._tensor import Tensor, _empty, _check_options, _check_storage
 from ._grad import is_grad_enabled
-from infernux.compute import Buffer, _storage_blocks
-from infernux._work import _Operation, _ValueLayout, _WorkRange, _WorkCursor
+from infernux.compute import Buffer, _storage_blocks, _automatic_cost
+from infernux._work import _Operation, _ValueLayout, _WorkRange, _WorkCursor, _binding_storage_blocks
+from infernux._compiler.dataflow import Access, Dataflow
 
 _capture = ContextVar("infernux_nn_capture", default=None)
 
@@ -704,47 +705,74 @@ class _Definition:
 def _bind_cursor(operations, *, private=(), retained=()):
     """Release only private allocations after all their real consumers finish."""
     groups = {}
+    storage = _binding_storage_blocks()
     for value in private:
-        for key in _storage_blocks((value,)):
+        for key in storage(value):
             groups.setdefault(key, {})[id(value)] = value
     def release(keys):
         values = {}
         for key in keys:
             values.update(groups.pop(key, {}))
         p.retire(values.values(), flush=False)
-    return _WorkCursor(operations, retained=_storage_blocks(retained), release=release)
+    return _WorkCursor(operations, retained=(key for value in retained for key in storage(value)),
+                       release=release, storage=storage)
 
 
-def _execute_work(cursor, device, programs):
+def _execute_cpu_work(cursor):
+    from infernux.cpu_execution import _CpuRangeBinding
+
+    while cursor.current() is not None:
+        if cursor.current().copy:
+            source,target=cursor.current().params
+            np.copyto(target._array,source._array,casting="no")
+            cursor.complete()
+            continue
+        ranges=[]
+        binding=None
+        try:
+            for index in cursor.graph.order[cursor._flow.completed:]:
+                operation=cursor.operations[index]
+                if operation.copy:
+                    break
+                program=operation.program
+                ranges.append((program,operation.params,0,len(operation.params[program.domain_parameter])))
+            binding=_CpuRangeBinding(ranges)
+            status,_,durations=binding.execute()
+            completed=len(ranges) if status==0 else len(durations)-1
+            for _ in range(completed):
+                cursor.complete()
+            if status:
+                raise RuntimeError(f"native CPU range failed with status {status}; output is invalid")
+        finally:
+            ranges.clear()
+            binding=None
+
+
+def _execute_work(cursor, device, programs, *, gpu_entries=None):
     """The existing synchronous boundary consumes the same bound operations."""
+    if device=="cpu":
+        _execute_cpu_work(cursor)
+        return
     copies = []
     def execute(operation):
         if operation.copy:
             source, target = operation.params
-            if device == "gpu":
-                from infernux.compute import _copy_gpu_into
-                copies.append(_copy_gpu_into(source, target))
-            else:
-                np.copyto(target._array, source._array, casting="no")
+            from infernux.compute import _copy_gpu_into
+            copies.append(_copy_gpu_into(source, target))
         else:
-            p.run(operation.program, *operation.params, reverse=operation.reverse)
+            p.run(operation.program, *operation.params, reverse=operation.reverse,
+                  executable=None if gpu_entries is None else gpu_entries[operation.program, operation.reverse])
     with p.stage(device, programs):
-        if device == "gpu":
-            # Offline GPU execution lowers a whole graph into the existing
-            # ordered recording path. Recording does not complete consumers.
-            for index in cursor.graph.order:
-                execute(cursor.operations[index])
-        else:
-            while (operation := cursor.current()) is not None:
-                execute(operation)
-                cursor.complete()
-    if device == "gpu":
-        for packet in copies:
-            if not packet.completion.done:
-                packet.completion.wait()
-        # p.stage completed the kernels; copy-only graphs also waited above.
-        while cursor.current() is not None:
-            cursor.complete()
+        # Offline GPU execution lowers a whole graph into the existing
+        # ordered recording path. Recording does not complete consumers.
+        for index in cursor.graph.order:
+            execute(cursor.operations[index])
+    for packet in copies:
+        if not packet.completion.done:
+            packet.completion.wait()
+    # p.stage completed the kernels; copy-only graphs also waited above.
+    while cursor.current() is not None:
+        cursor.complete()
 
 
 def _grad_facts(destinations):
@@ -1111,6 +1139,13 @@ class Plan:
                                           separators=(",", ":")).encode("utf-8")
         self.service_identity = hashlib.sha256(self.definition_bytes).hexdigest()
         self.layers = layers = definition.layers
+        # Forward values are SSA slots: inputs/parameters are read-only and
+        # every activation has its own allocation. Compile dependency/lifetime
+        # structure once; binding another invocation need not rediscover it
+        # from physical addresses.
+        self.forward_graph = Dataflow(tuple(Access(frozenset(layer.inputs), frozenset((index + self.input_count,)))
+                                            for index, layer in enumerate(layers)),
+                                      initialized=range(self.input_count))
         self.result = definition.result
         self.random_layers = tuple((index, math.prod(layer.output_shape)) for index, layer in enumerate(layers)
                                    if layer.kind == "random_uniform")
@@ -1171,12 +1206,26 @@ class Plan:
         self.add = self.zero = None
         self.backward_operations = None
         self._gpu_forward_executables = None
+        self._native_forward = None
         self._gpu_reverse_programs = ()
+        self._forward_scratch = {}
+        self._forward_scratch_version = None
+
+    def release_scratch(self):
+        if self._native_forward is not None:
+            self._native_forward.close()
+            self._native_forward = None
+        p.retire(self._forward_scratch.values(), flush=False)
+        self._forward_scratch.clear()
+        self._forward_scratch_version = None
 
     @property
     def native_blocks(self):
         source = self.root._program_source
-        return () if source is None else source.native_blocks
+        blocks = () if source is None else source.native_blocks
+        if self._native_forward is not None:
+            blocks = (*blocks, *self._native_forward.storage.storage_blocks.items())
+        return blocks
 
     def _gpu_entries(self, programs, *, reverse_programs=(), required=True):
         """Read the exact cold role closure; never compile during admission."""
@@ -1211,6 +1260,16 @@ class Plan:
         entries = self._gpu_entries(programs, required=required)
         if entries is not None:
             self._gpu_forward_executables = entries
+
+    def _prepare_native_forward(self, inputs, *, run=None):
+        from ._gpu_forward import GpuForward
+
+        if self._native_forward is None or self._native_forward.layout != GpuForward.input_layout(inputs):
+            if self._native_forward is not None:
+                self._native_forward.close()
+                self._native_forward = None
+            self._native_forward = GpuForward(self, inputs, run=run)
+        return self._native_forward
 
     def _prepare(self, function, params, **facts):
         native = p.prepare(function, params, own_deferred_samples=True, source=self.root._program_source, **facts)
@@ -1455,29 +1514,54 @@ class Plan:
     def _is_current(self):
         return not self.root._dirty and self.root._plans.get(self.key) is self
 
-    def _new_activations(self, *, managed=False):
+    def _new_activations(self, *, managed=False, reuse_scratch=False):
         values = []
         try:
-            values.extend(_empty(layer.output_shape, self.device, layer.dtype, managed=managed)
-                          for layer in self.layers)
+            for index, layer in enumerate(self.layers):
+                value = self._forward_scratch.get(index) if reuse_scratch else None
+                if value is None:
+                    value = _empty(layer.output_shape, self.device, layer.dtype, managed=managed)
+                    if reuse_scratch and index + self.input_count not in self.result_specs:
+                        self._forward_scratch[index] = value
+                values.append(value)
             return tuple(values)
         except BaseException:
-            p.retire(values, flush=False)
+            scratch = {id(value) for value in self._forward_scratch.values()}
+            p.retire((value for value in values if id(value) not in scratch), flush=False)
             raise
 
-    def _bind_forward(self, inputs, *, state, retain_for_backward=True, managed=False):
+    def _check_forward_inputs(self, inputs, *, state=None):
         self._check_current()
         if (tuple(_InputSpec.from_value(x) for x in inputs) != self.inputs
                 or any(x.device != self.device for x in inputs)):
             raise ValueError("input shape/device/gradient requirements differ from capture; call recompile()")
         if any(x._run is not None for x in inputs):
             raise ValueError("chaining separately compiled models is not supported; use one Module tree")
-        _check_storage((*(x._data for x in inputs), *state))
+        _check_storage((*(x._data for x in inputs), *(self.root._state if state is None else state)))
+
+    def _bind_forward(self, inputs, *, state, retain_for_backward=True, managed=False, reuse_scratch=False):
+        self._check_forward_inputs(inputs, state=state)
+        if reuse_scratch and self._forward_scratch_version != self.root.parameter_version:
+            # Stable intermediates may cache native bindings, but must not pin
+            # a succession of parameter publications behind a live model.
+            p.release_bindings(self._forward_scratch.values())
+            self._forward_scratch_version = self.root.parameter_version
         outputs, self._first_outputs = self._first_outputs, None
         if outputs is None:
-            outputs = self._new_activations(managed=managed)
-        return _Run(self, state, inputs, (*(x._data.view(readonly=True) for x in inputs), *outputs),
-                    retain_for_backward=retain_for_backward, managed=managed)
+            outputs = self._new_activations(managed=managed, reuse_scratch=reuse_scratch)
+        elif reuse_scratch:
+            self._forward_scratch.update((index, value) for index, value in enumerate(outputs)
+                                         if index + self.input_count not in self.result_specs)
+        # Synchronous no-grad inputs already expose read-only storage. Borrow
+        # those wrappers until this call completes: another identical alias
+        # only rebuilds native launch bindings and must then be retired again.
+        # Writable inputs and retained/managed runs still get their own views.
+        shared_inputs = tuple(x._data for x in inputs if x._data.readonly) if reuse_scratch else ()
+        values = tuple(x._data if reuse_scratch and x._data.readonly else x._data.view(readonly=True)
+                       for x in inputs)
+        return _Run(self, state, inputs, (*values, *outputs),
+                    retain_for_backward=retain_for_backward, managed=managed,
+                    borrowed=(*self._forward_scratch.values(), *shared_inputs) if reuse_scratch else ())
 
     def _forward_operation(self, run, index):
         """The sole forward argument binding for synchronous and bounded drivers."""
@@ -1537,12 +1621,23 @@ class Plan:
         operations.extend(("update", operation) for operation in steps.operations)
         return tuple(operations)
 
+    @_automatic_cost
     def forward(self, inputs):
         gradients = is_grad_enabled()
         track = gradients and any(spec.requires_grad for spec in self.result_specs.values())
-        run = self._bind_forward(inputs, state=self.root._state, retain_for_backward=track)
+        if self.device == "gpu" and not track:
+            self._check_forward_inputs(inputs)
+            if self._gpu_forward_executables is None:
+                self._prepare_gpu_forward()
+            return self._prepare_native_forward(inputs).forward(inputs)
+        run = self._bind_forward(inputs, state=self.root._state, retain_for_backward=track, reuse_scratch=not track)
         try:
-            _execute_work(run.cursor, self.device, self.programs)
+            if self.device == "gpu" and self._gpu_forward_executables is None:
+                self._prepare_gpu_forward()
+            if self.device == "gpu":
+                self._prepare_native_forward(inputs, run=run).forward_run(run)
+            else:
+                _execute_work(run.cursor, self.device, self.programs)
             def tensor(index):
                 result = self.result_specs[index]
                 requires_grad = gradients and result.requires_grad
@@ -1550,10 +1645,10 @@ class Plan:
                                            run=run if requires_grad else None, value_plan=self, value_index=index)
             return _map_result(self.result, tensor)
         except BaseException:
-            p.retire(run.values)
+            p.retire(run.owned_values)
             raise
         finally:
-            p.release_bindings(run.values)
+            p.release_bindings(run.owned_values)
             if not track:
                 run.retire()
 
@@ -1716,22 +1811,27 @@ class _BackwardBindings:
 
 class _Run:
     """One execution's storage and operation cursor, never an executor or queue."""
-    def __init__(self, plan, state, inputs, values, *, retain_for_backward, managed):
+    def __init__(self, plan, state, inputs, values, *, retain_for_backward, managed, borrowed=()):
         self.plan, self.state, self.inputs, self.values = plan, state, inputs, values
+        self._borrowed = frozenset(id(value) for value in borrowed)
         self.managed = managed
         self.output_index = None
         from ._random import _default
         keys = _default.reserve_many(tuple(count for _, count in plan.random_layers))
         self.random_keys = {index:key for (index, _), key in zip(plan.random_layers, keys)}
-        retained = [values[index] for index in plan.result_specs]
+        retained = set(plan.result_specs)
         if retain_for_backward:
-            retained.extend(values[source] for layer in plan.layers if layer.kind != "add" for source in layer.inputs)
-            retained.extend(values[index + plan.input_count] for index, layer in enumerate(plan.layers)
+            retained.update(source for layer in plan.layers if layer.kind != "add" for source in layer.inputs)
+            retained.update(index + plan.input_count for index, layer in enumerate(plan.layers)
                             if layer.kind in _UNARY and (_UNARY[layer.kind].output_gradient
                                 or plan.device == "gpu" and _UNARY[layer.kind].local_ad))
-        self.cursor = _bind_cursor((_Operation(*plan._forward_operation(self, index))
-                                   for index in range(len(plan.operations))),
-                                  private=values[plan.input_count:], retained=retained)
+        private = {index:value for index,value in enumerate(values) if index >= plan.input_count
+                   and id(value) not in self._borrowed}
+        def release(indices):
+            p.retire((private.pop(index) for index in indices if index in private), flush=False)
+        self.cursor = _WorkCursor((_Operation(*plan._forward_operation(self, index))
+                                  for index in range(len(plan.operations))),
+                                 retained=retained, release=release, graph=plan.forward_graph)
         self.consumed = False
         self.phase = "forward"
         self.optimizer = self.target = self.update_spec = self.loss_output = None
@@ -1742,6 +1842,12 @@ class _Run:
         self.record_loss = self.grad_published = False
         self.published_state = None
         self.training_gradients = ()
+        self._storage_cursor = None
+        self._storage_groups = ()
+
+    @property
+    def owned_values(self):
+        return (value for value in self.values if id(value) not in self._borrowed)
 
     @property
     def completed_end(self):
@@ -1832,6 +1938,16 @@ class _Run:
             values.extend(self.step_bindings.live_values())
         return values
 
+    def storage_groups(self):
+        # Each phase binds its complete work set once. Weak native endpoints
+        # observe retirement and allocation replacement without a Python scan.
+        from infernux.compute import _StorageGroup
+
+        if self._storage_cursor is not self.cursor:
+            self._storage_groups = (_StorageGroup(self.live_values()), _StorageGroup(self.private_values()))
+            self._storage_cursor = self.cursor
+        return self._storage_groups
+
     def private_values(self):
         values = [*self.values[self.plan.input_count:], self.loss_output, *self.loss_scratch, *self.training_gradients, *self.cursor.carry]
         if self.backward_bindings is not None:
@@ -1847,13 +1963,15 @@ class _Run:
             self.backward_bindings.retire(flush=flush)
         if self.step_bindings is not None:
             self.step_bindings.retire(flush=flush)
-        p.retire((*self.values, self.loss_output, *self.loss_scratch, None if self.target is None else self.target._data), flush=flush)
+        p.retire((*self.owned_values, self.loss_output, *self.loss_scratch, None if self.target is None else self.target._data), flush=flush)
         self.values = ()
         self.state = self.inputs = self.target = self.loss_output = None
         self.cursor = self.backward_bindings = self.step_bindings = None
         self.optimizer = self.update_spec = None
         self.grad_facts = ()
         self.training_gradients = ()
+        self._storage_cursor = None
+        self._storage_groups = ()
         self.loss_scratch.clear()
         self.consumed = True
 

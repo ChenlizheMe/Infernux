@@ -106,7 +106,9 @@ set(USE_FMADD OFF CACHE BOOL "" FORCE)
 set(CROSS_PLATFORM_DETERMINISTIC ON CACHE BOOL "" FORCE)
 set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)   # pybind11 requires /MD (dynamic CRT)
 set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)                # Don't override parent project's CXX flags
-set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)      # Avoid LTO issues with pybind11 module
+# Jolt is a separate shared library with explicit exports. Optimize its Release
+# solver across translation units; Python bindings only consume the import ABI.
+set(INTERPROCEDURAL_OPTIMIZATION "${INFERNUX_RELEASE_LTO}" CACHE BOOL "" FORCE)
 set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)                  # Single precision (matches GLM default)
 set(GENERATE_DEBUG_SYMBOLS ON CACHE BOOL "" FORCE)
 set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "" FORCE)               # Avoid Jolt /Wall /WX breaking our build

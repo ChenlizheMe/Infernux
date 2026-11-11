@@ -6,6 +6,15 @@ Infernux 0.4.8 brings model authoring, native execution, and checkpoint export i
 
 [Compare with v0.4.3-v8](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.4.8)
 
+### Unreleased runtime improvements
+
+- Execute synchronous and managed CPU neural operations through the same native range recipe, retaining storage and compiled code until actual completion. Batch ordinary tensor, parameter and optimizer-state transfers through the shared CPU/Vulkan IO boundary.
+- Reuse native GPU forward recipes for inference and tracked training activations. Preserve input snapshots, aliased views, random-state ownership and complete model-parameter publication while retiring completed queue receipts and unused launch bindings.
+- Expose the shared host-work budget through `Engine.work_budget`. Budget changes reselect unsubmitted compute and model transfers without replaying accepted work or losing cross-frame progress.
+- Share gradient-clipping preparation between ordinary calls and training programs. Preserve strict float32 signed-zero, infinity and NaN behavior in generated SPIR-V and Vulkan capability checks.
+- Reduce repeated rigidbody pose publication and joint-batch overhead, share the engine worker pool with Jolt, and enable supported Release link-time optimization for the Jolt library. Convex-collider queries and gizmos now use the final cooked hull.
+- Pause a failed physical step before publishing its results and require Stop before restarting, preventing partial integration from being replayed. Sample project model architectures remain unchanged.
+
 ### Hub 0.4.8-3 runtime selection hotfix
 
 - Engine upgrades and hotfixes now replace the project's old runtime and install the selected engine, instead of only changing the project version record. Runtime replacement runs in a background worker with progress reporting. A Reinstall Project Runtime action repairs projects whose version record was already changed by an earlier Hub.

@@ -1104,15 +1104,15 @@ FrameGpuAvailability Infernux::BackgroundGpuAvailability(bool foregroundReady)
     if (!m_gpuServices)
         return foregroundReady ? FrameGpuAvailability::Ready : FrameGpuAvailability::ForegroundDeferred;
     m_gpuServices->CollectComputeResources();
-    // Asset/preview occupancy is reported by sources and refreshed each round.
-    // A skipped draw can itself be the result of occupied graphics slots.
+    // A successful foreground submission owns the front of this opportunity.
+    // Older in-flight frames are normal pipelining, not a requirement to drain
+    // the entire graphics queue before admitting one bounded compute segment.
     const auto pressure = m_gpuServices->Queues().GetFramePressure();
     if (pressure.recordingFrames)
         return FrameGpuAvailability::ForegroundRecording;
-    if (pressure.olderPendingFrames)
-        return FrameGpuAvailability::ForegroundBacklog;
     if (!foregroundReady)
-        return FrameGpuAvailability::ForegroundDeferred;
+        return pressure.olderPendingFrames ? FrameGpuAvailability::ForegroundBacklog
+                                           : FrameGpuAvailability::ForegroundDeferred;
     if (m_gpuServices->Compute().GetPendingSubmissionCount())
         return FrameGpuAvailability::BackgroundPending;
     return FrameGpuAvailability::Ready;

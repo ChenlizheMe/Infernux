@@ -84,34 +84,33 @@ void CpuRangeSlice::Submit()
         throw std::runtime_error("CPU range execution requires the engine worker JobSystem");
     auto state = m_state;
     state->operationNanoseconds.reserve(state->operations.size());
-    m_job = JobSystem::Get().Schedule(
-        [state] {
-            state->worker = std::this_thread::get_id();
-            // The generated entry catches native numerical exceptions into status.
-            // A failed range may have written a prefix; it is never replayed here.
-            const auto started = std::chrono::steady_clock::now();
-            int32_t result = 0;
-            for (auto &operation : state->operations) {
-                if (state->cancelRequested.load(std::memory_order_acquire)) {
-                    result = -1;
-                    break;
-                }
-                const auto operationStarted = std::chrono::steady_clock::now();
-                result = operation.entry(operation.slots.data(), operation.lengths.data(), operation.count,
-                                         operation.begin, operation.end);
-                state->operationNanoseconds.push_back(
-                    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                              std::chrono::steady_clock::now() - operationStarted)
-                                              .count()));
-                if (result != 0)
-                    break;
-            }
-            state->executionNanoseconds = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started)
-                    .count());
-            state->result.store(result, std::memory_order_release);
-        },
-        JobDomain::Runtime, JobPriority::Normal, JobAffinity::WorkerOnly);
+    m_job = JobSystem::Get().Schedule([state] { Execute(*state); }, JobDomain::Runtime, JobPriority::Normal,
+                                      JobAffinity::WorkerOnly);
+}
+
+void CpuRangeSlice::Execute(State &state)
+{
+    state.worker = std::this_thread::get_id();
+    // A failed range may have written a prefix; it is never replayed here.
+    const auto started = std::chrono::steady_clock::now();
+    int32_t result = 0;
+    for (auto &operation : state.operations) {
+        if (state.cancelRequested.load(std::memory_order_acquire)) {
+            result = -1;
+            break;
+        }
+        const auto operationStarted = std::chrono::steady_clock::now();
+        result = operation.entry(operation.slots.data(), operation.lengths.data(), operation.count, operation.begin,
+                                 operation.end);
+        state.operationNanoseconds.push_back(static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - operationStarted)
+                .count()));
+        if (result != 0)
+            break;
+    }
+    state.executionNanoseconds = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+    state.result.store(result, std::memory_order_release);
 }
 
 bool CpuRangeSlice::Cancel()
@@ -173,6 +172,85 @@ void CpuRangeSlice::WaitForCompletion()
 {
     if (IsSubmitted() && !m_job.IsComplete())
         JobSystem::Get().WaitPassiveCompletion(m_job);
+}
+
+CpuRangeRecipe::CpuRangeRecipe(std::vector<CpuRangeValueKind> kinds, std::vector<CpuRangeOperation> operations)
+    : m_kinds(std::move(kinds)), m_operations(std::move(operations))
+{
+    if (m_operations.empty())
+        throw std::invalid_argument("CPU recipe requires at least one operation");
+    for (const auto kind : m_kinds)
+        if (kind > CpuRangeValueKind::Int32)
+            throw std::invalid_argument("unknown CPU operand kind");
+    for (const auto &operation : m_operations) {
+        if (!operation.entry || operation.domainParameter >= operation.operands.size())
+            throw std::invalid_argument("CPU recipe requires a compiled entry and an array domain");
+        for (const auto &operand : operation.operands)
+            if (operand.binding >= m_kinds.size() ||
+                (operand.writable && m_kinds[operand.binding] >= CpuRangeValueKind::Float32))
+                throw std::invalid_argument("CPU recipe operand does not name a matching storage slot");
+        if (m_kinds[operation.operands[operation.domainParameter].binding] >= CpuRangeValueKind::Float32)
+            throw std::invalid_argument("CPU recipe domain must be an array");
+    }
+}
+
+std::shared_ptr<CpuRangeSlice> CpuRangeRecipe::Bind(const std::vector<CpuRangeSlot> &bindings,
+                                                    const std::vector<CpuRangeSelection> &ranges) const
+{
+    if (bindings.size() != m_kinds.size())
+        throw std::invalid_argument("CPU recipe requires one value per declared binding");
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        const auto kind = m_kinds[i];
+        if (bindings[i].scalar != (kind >= CpuRangeValueKind::Float32) ||
+            bindings[i].elementBytes != (kind == CpuRangeValueKind::Int64Array ? 8 : 4))
+            throw std::invalid_argument("CPU recipe binding has a different POD layout");
+    }
+    std::shared_ptr<CpuRangeSlice> slice;
+    const auto append = [&](uint32_t index, int32_t begin, std::optional<int32_t> end) {
+        const auto &operation = m_operations.at(index);
+        std::vector<CpuRangeSlot> slots;
+        slots.reserve(operation.operands.size());
+        for (const auto &operand : operation.operands) {
+            auto slot = bindings[operand.binding];
+            if (operand.writable && !slot.writable)
+                throw std::invalid_argument("CPU recipe output is read-only");
+            slot.writable = operand.writable;
+            slots.push_back(slot);
+        }
+        const auto &domain = slots[operation.domainParameter];
+        const auto count = domain.byteSize / domain.elementBytes;
+        if (count > static_cast<size_t>(std::numeric_limits<int32_t>::max()))
+            throw std::invalid_argument("CPU recipe domain exceeds the i32 range");
+        const auto stop = end.value_or(static_cast<int32_t>(count));
+        if (!slice)
+            slice = std::make_shared<CpuRangeSlice>(operation.entry, slots, static_cast<int32_t>(count), begin, stop);
+        else
+            slice->Append(operation.entry, slots, static_cast<int32_t>(count), begin, stop);
+    };
+    if (ranges.empty()) {
+        for (uint32_t i = 0; i < m_operations.size(); ++i)
+            append(i, 0, std::nullopt);
+    } else {
+        for (const auto &range : ranges)
+            append(range.operation, range.begin, range.end);
+    }
+    // Compiler entries validate extents for an empty range without entering the
+    // numerical body. Reject the whole binding before any operation can write.
+    for (auto &operation : slice->m_state->operations)
+        if (operation.entry(operation.slots.data(), operation.lengths.data(), operation.count, 0, 0) != 0)
+            throw std::invalid_argument("CPU recipe bindings violate the compiled resource contract");
+    return slice;
+}
+
+CpuRangeExecution CpuRangeRecipe::Execute(const std::vector<CpuRangeSlot> &bindings,
+                                          const std::vector<CpuRangeSelection> &ranges) const
+{
+    auto slice = Bind(bindings, ranges);
+    auto &state = *slice->m_state;
+    state.operationNanoseconds.reserve(state.operations.size());
+    CpuRangeSlice::Execute(state);
+    return {state.result.load(std::memory_order_acquire), state.executionNanoseconds,
+            std::move(state.operationNanoseconds)};
 }
 
 } // namespace infernux

@@ -10,6 +10,7 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include "../Collider.h"
 #include "../GameObject.h"
+#include "../HingeJoint.h"
 #include "../Transform.h"
 #include "JointSettings.h"
 #include "PhysicsContactListener.h"
@@ -439,6 +440,80 @@ void PhysicsWorld::UpdateHingeConstraintMotor(uint64_t constraintId, bool enable
         hinge->SetArmature(armature);
     hinge->SetMotorState(enabled ? JPH::EMotorState::Position : JPH::EMotorState::Off);
     ActivateConstraintBodies(record);
+}
+
+void PhysicsWorld::UpdateHingeConstraintTarget(uint64_t constraintId, float targetAngle)
+{
+    const auto &record = m_constraints.at(constraintId);
+    if (record.constraint->GetSubType() != JPH::EConstraintSubType::Hinge)
+        throw std::logic_error("constraint is not a hinge");
+    auto &hinge = *static_cast<JPH::HingeConstraint *>(record.constraint);
+    const float previous = hinge.GetTargetAngle();
+    hinge.SetTargetAngle(targetAngle);
+    if (hinge.GetMotorState() != JPH::EMotorState::Off && hinge.GetTargetAngle() != previous)
+        ActivateConstraintBodies(record);
+}
+
+void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets)
+{
+    std::vector<JPH::BodyID> bodies;
+    bodies.reserve(2 * joints.size());
+    for (size_t row = 0; row < joints.size(); ++row) {
+        auto &joint = *joints[row];
+        joint.m_motorTargetAngle = glm::degrees(targets[row]);
+        const auto &record = m_constraints.at(joint.GetPhysicsConstraintId());
+        auto &hinge = *static_cast<JPH::HingeConstraint *>(record.constraint);
+        const float previous = hinge.GetTargetAngle();
+        hinge.SetTargetAngle(joint.GetClampedMotorTargetRadians());
+        if (hinge.GetMotorState() == JPH::EMotorState::Off || hinge.GetTargetAngle() == previous)
+            continue;
+        bodies.emplace_back(record.bodyIdA);
+        if (record.bodyIdB != 0xFFFFFFFF)
+            bodies.emplace_back(record.bodyIdB);
+    }
+    if (bodies.empty())
+        return;
+    std::sort(bodies.begin(), bodies.end());
+    bodies.erase(std::unique(bodies.begin(), bodies.end()), bodies.end());
+    JPH::BodyLockMultiWrite lock(m_physicsSystem->GetBodyLockInterface(), bodies.data(), int(bodies.size()));
+    std::vector<JPH::BodyID> sleeping;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        auto *body = lock.GetBody(int(i));
+        if (!body || !body->IsInBroadPhase() || body->IsStatic())
+            continue;
+        if (body->IsActive())
+            body->ResetSleepTimer();
+        else
+            sleeping.push_back(body->GetID());
+    }
+    // Active bodies need no active-list lock; all body locks are already held.
+    if (!sleeping.empty())
+        m_physicsSystem->GetBodyInterfaceNoLock().ActivateBodies(sleeping.data(), int(sleeping.size()));
+}
+
+void PhysicsWorld::ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const
+{
+    std::vector<JPH::BodyID> bodies;
+    std::vector<const JPH::HingeConstraint *> hinges;
+    bodies.reserve(2 * joints.size());
+    hinges.reserve(joints.size());
+    for (auto *joint : joints) {
+        const auto &record = m_constraints.at(joint->GetPhysicsConstraintId());
+        bodies.emplace_back(record.bodyIdA);
+        bodies.emplace_back(record.bodyIdB);
+        hinges.push_back(static_cast<const JPH::HingeConstraint *>(record.constraint));
+    }
+    // MultiRead merges mutex masks, including shared endpoints between edges.
+    JPH::BodyLockMultiRead lock(m_physicsSystem->GetBodyLockInterface(), bodies.data(), int(bodies.size()));
+    for (size_t row = 0; row < joints.size(); ++row) {
+        const auto &hinge = *hinges[row];
+        const auto &owner = *lock.GetBody(int(2 * row));
+        const auto *connected =
+            bodies[2 * row + 1].IsInvalid() ? &JPH::Body::sFixedToWorld : lock.GetBody(int(2 * row + 1));
+        const auto axis = owner.GetRotation() * hinge.GetLocalSpaceHingeAxis2();
+        output[2 * row] = hinge.GetCurrentAngle();
+        output[2 * row + 1] = (owner.GetAngularVelocity() - connected->GetAngularVelocity()).Dot(axis);
+    }
 }
 
 void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,

@@ -418,17 +418,20 @@ bool ComputeKernel::RecordBatch(ComputeRecordingContext &context, const Prepared
     for (const auto &update : updates)
         update.allocation->RecordUpload(context, update.offset, update.data.data(), update.data.size());
     if (!prepared.empty()) {
+        // Compiler arguments are uniform buffers; ShaderRead only covers
+        // storage/image reads and does not make uploaded uniforms visible.
+        constexpr auto computeAccess = Access::UniformRead | Access::ShaderRead | Access::ShaderWrite;
         if (!updates.empty())
             context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, PipelineStage::ComputeShader,
-                                    Access::ShaderRead | Access::ShaderWrite);
+                                    computeAccess);
         context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, PipelineStage::ComputeShader,
-                                Access::ShaderRead | Access::ShaderWrite);
+                                computeAccess);
         const auto encoder = context.Compute();
         for (size_t index = 0; index < prepared.size(); ++index) {
             const auto &dispatch = prepared[index];
             if (dispatch.barrierBefore)
                 context.PipelineBarrier(PipelineStage::ComputeShader, Access::ShaderWrite, PipelineStage::ComputeShader,
-                                        Access::ShaderRead | Access::ShaderWrite);
+                                        computeAccess);
             if (!dispatch.work.RecordOne(encoder))
                 return false;
         }
@@ -1205,25 +1208,57 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
                            const std::vector<ComputeWorkDispatch> &dispatches,
                            const std::vector<BufferHandle> &identities)
 {
+    struct AllocationUses
+    {
+        bool aliases = false, external = false;
+        std::vector<const ComputeWorkBinding *> bindings;
+        std::vector<const ComputeWorkRange *> ports;
+    };
+    // Most instances bind distinct allocations. Compare logical lifetimes only
+    // within an allocation that is actually shared, not across the whole graph.
+    std::unordered_map<BufferHandle, AllocationUses, HandleHash<BufferTag>> allocations;
+    allocations.reserve(slots.size());
+    for (size_t index = 0; index < slots.size(); ++index) {
+        if (!identities[index].IsValid())
+            continue;
+        auto [entry, inserted] = allocations.try_emplace(identities[index]);
+        auto &uses = entry->second;
+        uses.aliases |= !inserted;
+        uses.external |= bool(slots[index].external);
+    }
     for (const auto &dispatch : dispatches) {
         for (const auto &binding : dispatch.bindings) {
-            if (!Writes(binding.access) || !identities[binding.range.slot].IsValid())
-                continue;
             const auto identity = identities[binding.range.slot];
-            for (size_t slot = 0; slot < slots.size(); ++slot)
-                if (slots[slot].external && identities[slot] == identity)
-                    throw std::invalid_argument("Compute work input binding aliases read-only external storage");
+            if (!identity.IsValid())
+                continue;
+            auto &uses = allocations.at(identity);
+            if (uses.aliases)
+                uses.bindings.push_back(&binding);
+        }
+    }
+    for (const auto &port : ports) {
+        const auto identity = identities[port.range.slot];
+        if (identity.IsValid()) {
+            auto &uses = allocations.at(identity);
+            if (uses.aliases)
+                uses.ports.push_back(&port.range);
+        }
+    }
+    for (const auto &allocation : allocations) {
+        const auto &uses = allocation.second;
+        for (const auto *binding : uses.bindings) {
+            if (!Writes(binding->access))
+                continue;
+            if (uses.external)
+                throw std::invalid_argument("Compute work input binding aliases read-only external storage");
             const auto conflicts = [&](const ComputeWorkRange &other) {
-                return other.slot != binding.range.slot && identities[other.slot] == identity &&
-                       Overlaps(binding.range, other);
+                return other.slot != binding->range.slot && Overlaps(binding->range, other);
             };
-            for (const auto &otherDispatch : dispatches)
-                for (const auto &other : otherDispatch.bindings)
-                    if (conflicts(other.range))
-                        throw std::invalid_argument(
-                            "Compute work input bindings alias distinct logical slot lifetimes");
-            for (const auto &port : ports)
-                if (conflicts(port.range))
+            for (const auto *other : uses.bindings)
+                if (conflicts(other->range))
+                    throw std::invalid_argument("Compute work input bindings alias distinct logical slot lifetimes");
+            for (const auto *other : uses.ports)
+                if (conflicts(*other))
                     throw std::invalid_argument("Compute work input binding aliases another logical port");
         }
     }
@@ -1262,10 +1297,11 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
         if (range.offset > capacity || range.byteSize > capacity - range.offset)
             throw std::out_of_range("Compute work binding range exceeds its allocation");
     };
-    std::unordered_map<std::string, bool> names;
-    for (const auto &port : m_ports) {
+    m_portIndices.reserve(m_ports.size());
+    for (size_t index = 0; index < m_ports.size(); ++index) {
+        const auto &port = m_ports[index];
         validateRange(port.range);
-        if (port.name.empty() || !names.emplace(port.name, true).second)
+        if (port.name.empty() || !m_portIndices.emplace(port.name, index).second)
             throw std::invalid_argument("Compute work port names must be nonempty and unique");
         if (port.input) {
             if (m_slots[port.range.slot].external)
@@ -1321,6 +1357,19 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
         if (!port.input && !intervals::Contains(initialized[port.range.slot], port.range.offset,
                                                 port.range.offset + port.range.byteSize))
             throw std::invalid_argument("Compute work output lacks a complete writer for its entire port range");
+    const auto include = [&](const ComputeWorkRange &range) {
+        if (std::none_of(m_requiredInputs.begin(), m_requiredInputs.end(), [&](const ComputeWorkRange &other) {
+                return other.slot == range.slot && other.offset == range.offset && other.byteSize == range.byteSize;
+            }))
+            m_requiredInputs.push_back(range);
+    };
+    for (const auto &port : m_ports)
+        if (port.input)
+            include(port.range);
+    for (const auto &dispatch : m_dispatches)
+        for (const auto &binding : dispatch.bindings)
+            if (m_slots[binding.range.slot].external && Reads(binding.access))
+                include(binding.range);
 }
 
 std::shared_ptr<ComputeWorkInstance> ComputeWorkRecipe::Instantiate(std::vector<ComputeWorkInput> inputs) const
@@ -1338,17 +1387,19 @@ ComputeWorkRecipe::Bind(std::vector<ComputeWorkInput> inputs,
     buffers.reserve(m_slots.size());
     for (const auto &slot : m_slots)
         buffers.push_back(slot.external);
-    std::unordered_map<std::string, bool> names;
+    std::vector<bool> provided(m_ports.size());
     for (const auto &input : inputs) {
-        const auto port = std::find_if(m_ports.begin(), m_ports.end(), [&](const ComputeWorkPort &item) {
-            return item.input && item.name == input.port;
-        });
-        if (port == m_ports.end() || !names.emplace(input.port, true).second || !input.buffer ||
-            !input.buffer->GetHost().SharesServicesWith(m_host) || !input.buffer->GetBuffer().IsValid() ||
-            !SameAllocationLayout(m_slots[port->range.slot].allocation, input.buffer->GetDesc()))
+        const auto found = m_portIndices.find(input.port);
+        if (found == m_portIndices.end())
+            throw std::invalid_argument("Compute work input does not name a declared port");
+        const auto &port = m_ports[found->second];
+        if (provided[found->second] || !input.buffer || !input.buffer->GetHost().SharesServicesWith(m_host) ||
+            !input.buffer->GetBuffer().IsValid() ||
+            !SameAllocationLayout(m_slots[port.range.slot].allocation, input.buffer->GetDesc()))
             throw std::invalid_argument(
                 "Compute work input must bind one matching real owner to a declared input port");
-        auto &target = buffers[port->range.slot];
+        provided[found->second] = true;
+        auto &target = buffers[port.range.slot];
         if (target && target->GetBuffer() != input.buffer->GetBuffer())
             throw std::invalid_argument("Compute work ports sharing one slot cannot bind different allocations");
         target = input.buffer;
@@ -1370,27 +1421,33 @@ ComputeWorkRecipe::Bind(std::vector<ComputeWorkInput> inputs,
         if (!buffers[index])
             return {};
     }
+    return std::shared_ptr<ComputeWorkInstance>(new ComputeWorkInstance(shared_from_this(), std::move(buffers)));
+}
+
+const std::vector<ComputeKernel::PreparedDispatch> &ComputeWorkInstance::GetDispatches() const
+{
+    if (!m_dispatches.empty())
+        return m_dispatches;
     std::vector<ComputeKernel::PreparedDispatch> prepared;
-    prepared.reserve(m_dispatches.size());
-    for (const auto &dispatch : m_dispatches) {
+    prepared.reserve(m_recipe->GetDispatches().size());
+    for (const auto &dispatch : m_recipe->GetDispatches()) {
         std::vector<std::shared_ptr<ComputeBuffer>> resources;
         std::vector<ComputeBufferAccess> accesses;
         for (const auto &binding : dispatch.bindings) {
-            resources.push_back(buffers[binding.range.slot]);
+            resources.push_back(m_buffers[binding.range.slot]);
             accesses.push_back(binding.access);
         }
         prepared.push_back(dispatch.kernel->PrepareDispatch(std::move(resources), std::move(accesses),
                                                             dispatch.pushConstants, dispatch.groupCountX,
                                                             dispatch.groupCountY, dispatch.groupCountZ));
     }
-    return std::shared_ptr<ComputeWorkInstance>(
-        new ComputeWorkInstance(shared_from_this(), std::move(buffers), std::move(prepared)));
+    m_dispatches = std::move(prepared);
+    return m_dispatches;
 }
 
 ComputeWorkInstance::ComputeWorkInstance(std::shared_ptr<const ComputeWorkRecipe> recipe,
-                                         std::vector<std::shared_ptr<ComputeBuffer>> buffers,
-                                         std::vector<ComputeKernel::PreparedDispatch> dispatches)
-    : m_recipe(std::move(recipe)), m_buffers(std::move(buffers)), m_dispatches(std::move(dispatches))
+                                         std::vector<std::shared_ptr<ComputeBuffer>> buffers)
+    : m_recipe(std::move(recipe)), m_buffers(std::move(buffers))
 {
 }
 
@@ -1399,23 +1456,37 @@ std::shared_ptr<ComputeWorkInstance> ComputeWorkInstance::Rebind(std::vector<Com
     return m_recipe->Bind(std::move(inputs), m_buffers);
 }
 
+std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vector<ComputeBufferUpdate> updates) const
+{
+    std::vector<ComputeDispatchDesc> dispatches;
+    dispatches.reserve(m_recipe->GetDispatches().size());
+    for (const auto &operation : m_recipe->GetDispatches()) {
+        ComputeDispatchDesc dispatch;
+        dispatch.kernel = operation.kernel;
+        dispatch.pushConstants = operation.pushConstants;
+        dispatch.groupCountX = operation.groupCountX;
+        dispatch.groupCountY = operation.groupCountY;
+        dispatch.groupCountZ = operation.groupCountZ;
+        dispatch.proof.emplace();
+        dispatch.proof->writes = operation.completeWrites;
+        dispatch.buffers.reserve(operation.bindings.size());
+        dispatch.bufferAccesses.reserve(operation.bindings.size());
+        for (uint32_t index = 0; index < operation.bindings.size(); ++index) {
+            const auto &binding = operation.bindings[index];
+            dispatch.buffers.push_back(m_buffers[binding.range.slot]);
+            dispatch.bufferAccesses.push_back(binding.access);
+            if (Reads(binding.access))
+                dispatch.proof->reads.push_back({index, binding.range.offset, binding.range.byteSize});
+        }
+        dispatches.push_back(std::move(dispatch));
+    }
+    auto host = m_recipe->m_host;
+    return PrepareComputeBatch(host, std::move(updates), std::move(dispatches));
+}
+
 std::vector<ComputeWorkRange> ComputeWorkRecipe::GetRequiredInputs() const
 {
-    std::vector<ComputeWorkRange> result;
-    const auto include = [&](const ComputeWorkRange &range) {
-        if (std::none_of(result.begin(), result.end(), [&](const ComputeWorkRange &other) {
-                return other.slot == range.slot && other.offset == range.offset && other.byteSize == range.byteSize;
-            }))
-            result.push_back(range);
-    };
-    for (const auto &port : m_ports)
-        if (port.input)
-            include(port.range);
-    for (const auto &dispatch : m_dispatches)
-        for (const auto &binding : dispatch.bindings)
-            if (m_slots[binding.range.slot].external && Reads(binding.access))
-                include(binding.range);
-    return result;
+    return m_requiredInputs;
 }
 
 std::vector<ComputeWorkRange> ComputeWorkInstance::GetRequiredInputs() const
