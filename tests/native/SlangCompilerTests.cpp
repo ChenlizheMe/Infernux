@@ -83,6 +83,14 @@ void derivative(uint3 id : SV_DispatchThreadID)
         Require(result.targets.size() == 2, "Both targets must be generated");
         for (const auto &target : result.targets) {
             Require(target.entries.size() == 4, "The module's four entries must be retained");
+            Require(target.resources.size() == 3, "Typed resource reflection is missing");
+            const auto &parameters = target.resources[0];
+            Require(parameters.name == "params" && parameters.binding.type == rhi::BindingType::UniformBuffer &&
+                        parameters.value.byteSize == 16 && parameters.value.fields.size() == 3 &&
+                        parameters.value.fields[2].name == "bias" && parameters.value.fields[2].offset == 8,
+                    "Target parameter block layout changed");
+            Require(target.resources[1].binding.readOnlyStorage && !target.resources[2].binding.readOnlyStorage,
+                    "Storage access qualifiers changed");
             Require(target.reflection.find("params") != std::string::npos, "Constant-buffer reflection is missing");
             Require(target.reflection.find("outputValues") != std::string::npos, "Storage reflection is missing");
             for (const auto &entry : target.entries) {

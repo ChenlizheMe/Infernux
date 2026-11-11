@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ShaderCompilerApi.h"
-#include <function/renderer/rhi/RhiDescriptors.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <array>
 #include <cstdint>
@@ -14,12 +14,6 @@
 namespace infernux
 {
 
-enum class ShaderCodeTarget : uint8_t
-{
-    SpirV,
-    Wgsl,
-};
-
 /// A generated module. Source paths are retained in compiler diagnostics;
 /// module names identify static imports, independently of physical files.
 struct ShaderSourceModule
@@ -27,30 +21,6 @@ struct ShaderSourceModule
     std::string name;
     std::string path;
     std::string source;
-};
-
-struct ShaderEntryPointCode
-{
-    std::string name;
-    rhi::ShaderStage stage = rhi::ShaderStage::Compute;
-    std::array<uint32_t, 3> workgroupSize{1, 1, 1};
-    /// Actual descriptor set/binding pairs retained by this target entry.
-    std::vector<std::array<uint32_t, 2>> bindings;
-    std::vector<char> code;
-};
-
-struct ShaderTargetCode
-{
-    ShaderCodeTarget target = ShaderCodeTarget::SpirV;
-    std::vector<ShaderEntryPointCode> entries;
-    /// Target-specific linked layout, including nested fields and strides.
-    std::string reflection;
-};
-
-struct ShaderCompilation
-{
-    std::vector<ShaderTargetCode> targets;
-    std::string diagnostics;
 };
 
 struct ShaderAuthorSource

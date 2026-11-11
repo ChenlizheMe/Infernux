@@ -154,3 +154,10 @@ class Grayscale(shader.fullscreen):
         vertex, fragment = target["entries"]
         assert not vertex["bindings"]
         assert len(fragment["bindings"]) == 3  # image, sampler, parameter block
+        image, sampler, parameters = target["resources"]
+        assert image["name"] == "inx_image.texture"
+        assert sampler["name"] == "inx_image.sampler"
+        assert image["binding"] != sampler["binding"]
+        offset, strength = parameters["value"]["fields"]
+        assert (offset["name"], offset["columns"], offset["offset"]) == ("offset", 2, 0)
+        assert (strength["name"], strength["offset"]) == ("strength", 8)

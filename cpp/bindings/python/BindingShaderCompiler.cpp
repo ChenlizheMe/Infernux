@@ -11,6 +11,28 @@ namespace py = pybind11;
 
 namespace infernux
 {
+namespace
+{
+py::dict ValueLayout(const ShaderValueLayout &value)
+{
+    py::dict result;
+    result["name"] = value.name;
+    result["kind"] = static_cast<uint8_t>(value.kind);
+    result["scalar"] = static_cast<uint8_t>(value.scalar);
+    result["offset"] = value.offset;
+    result["byte_size"] = value.byteSize;
+    result["stride"] = value.stride;
+    result["rows"] = value.rows;
+    result["columns"] = value.columns;
+    result["element_count"] = value.elementCount;
+    result["row_major"] = value.rowMajor;
+    py::list fields;
+    for (const auto &field : value.fields)
+        fields.append(ValueLayout(field));
+    result["fields"] = std::move(fields);
+    return result;
+}
+} // namespace
 
 void RegisterShaderCompilerBindings(py::module_ &m)
 {
@@ -83,6 +105,23 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                 py::dict program;
                 program["target"] = target.target == ShaderCodeTarget::SpirV ? "spirv" : "wgsl";
                 program["reflection"] = target.reflection;
+                py::list resources;
+                for (const auto &resource : target.resources) {
+                    py::dict item;
+                    item["name"] = resource.name;
+                    item["set"] = resource.set;
+                    item["binding"] = resource.binding.binding;
+                    item["type"] = static_cast<uint8_t>(resource.binding.type);
+                    item["count"] = resource.binding.count;
+                    item["visibility"] = static_cast<uint8_t>(resource.binding.visibility);
+                    item["read_only"] = resource.binding.readOnlyStorage;
+                    item["depth"] = resource.binding.depthRead;
+                    item["dimension"] = static_cast<uint8_t>(resource.dimension);
+                    item["multisampled"] = resource.multisampled;
+                    item["value"] = ValueLayout(resource.value);
+                    resources.append(std::move(item));
+                }
+                program["resources"] = std::move(resources);
                 py::list entries;
                 for (const auto &entry : target.entries) {
                     py::dict item;

@@ -1,8 +1,10 @@
 #include "SlangCompiler.h"
+#include "SlangLayout.h"
 
 #include <slang-com-ptr.h>
 #include <slang.h>
 
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
@@ -210,6 +212,7 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
         if (!layout)
             throw std::runtime_error("Reflect " + source.path + ":\n" + BlobText(diagnostics));
         result.diagnostics += BlobText(diagnostics);
+        target.resources = ReflectSlangResources(layout->getGlobalParamsTypeLayout());
 
         for (SlangInt entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
             Slang::ComPtr<slang::IBlob> code;
@@ -255,6 +258,13 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
             if (precise && target.target == ShaderCodeTarget::SpirV)
                 PreserveNumericalFloat32(artifact.code);
             target.entries.push_back(std::move(artifact));
+        }
+        for (auto &resource : target.resources) {
+            for (const auto &entry : target.entries) {
+                const std::array<uint32_t, 2> key{resource.set, resource.binding.binding};
+                if (std::find(entry.bindings.begin(), entry.bindings.end(), key) != entry.bindings.end())
+                    resource.binding.visibility = resource.binding.visibility | entry.stage;
+            }
         }
         Slang::ComPtr<slang::IBlob> reflection;
         CheckCompilation(layout->toJson(reflection.writeRef()), "Serialize target layout", nullptr);

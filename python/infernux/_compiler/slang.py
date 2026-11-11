@@ -453,10 +453,9 @@ void main(uint3 tid : SV_DispatchThreadID) {{
 def _artifact(compiled, emitter, plan, params, function):
     from infernux.compute import Buffer
 
-    reflection = json.loads(compiled["reflection"])
-    resources = {item["name"]: item for item in reflection["parameters"]}
-    arguments = resources["inx_args"]["type"]["elementVarLayout"]
-    fields = {field["name"]: field["binding"] for field in arguments["type"]["fields"]}
+    resources = {item["name"]: item for item in compiled["resources"]}
+    arguments = resources["inx_args"]["value"]
+    fields = {field["name"]: field for field in arguments["fields"]}
     layouts = []
     for index, (name, value) in enumerate(zip(emitter.names, params)):
         if isinstance(value, Buffer):
@@ -470,12 +469,12 @@ def _artifact(compiled, emitter, plan, params, function):
             layouts.append({"kind": "int32" if emitter.types[name] == "int" else "float32", "offset": fields[name]["offset"]})
     if plan.continuation.eligible:
         layouts.extend({"kind": "int32", "offset": fields[name]["offset"]} for name in ("inx_range_begin", "inx_range_end"))
-    bindings = [{"binding": resources["inx_args"]["binding"]["index"], "binding_type": "uniform", "resource_kind": "arguments", "access": 1}]
+    bindings = [{"binding": resources["inx_args"]["binding"], "binding_type": "uniform", "resource_kind": "arguments", "access": 1}]
     for name, access in emitter.accesses.items():
-        bindings.append({"binding": resources[name]["binding"]["index"], "binding_type": "storage" if access & 2 else "read_only_storage",
+        bindings.append({"binding": resources[name]["binding"], "binding_type": "storage" if access & 2 else "read_only_storage",
                          "resource_kind": "external_buffer", "argument_indices": [emitter.names.index(name)], "is_grad": False, "access": access})
     for name, access in emitter.gradient_accesses.items():
-        bindings.append({"binding": resources["inx_grad_" + name]["binding"]["index"], "binding_type": "storage" if access & 2 else "read_only_storage",
+        bindings.append({"binding": resources["inx_grad_" + name]["binding"], "binding_type": "storage" if access & 2 else "read_only_storage",
                          "resource_kind": "external_buffer", "argument_indices": [emitter.names.index(name)], "is_grad": True, "access": access})
     entry = compiled["entries"][0]
     metadata = {"entry_point": entry["name"], "threads_per_group": entry["workgroup_size"][0], "buffer_bindings": bindings,
@@ -485,7 +484,7 @@ def _artifact(compiled, emitter, plan, params, function):
     if plan.continuation.inner_range is not None:
         identity += "#" + plan.continuation.inner_range.kind
     return CompilerArtifact(spirv_tasks=(entry["code"],), task_metadata=(metadata,), domain_parameter=plan.domain_parameter,
-        argument_layout={"size": arguments["binding"]["size"], "parameters": layouts},
+        argument_layout={"size": arguments["byte_size"], "parameters": layouts},
         required_capabilities={"shader_int64": any(isinstance(value, Buffer) and value._dtype.scalar.name == "int64" for value in params)},
         diagnostic_locations=({"entry_point": entry["name"], "path": str(function.__code__.co_filename),
                                "line": function.__code__.co_firstlineno, "column": 0,

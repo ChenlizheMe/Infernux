@@ -1,9 +1,9 @@
 #include <SDL3/SDL.h>
+#include <function/renderer/shader/DeviceShaderProgram.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -119,16 +119,8 @@ void Run()
     const auto compiled = SlangCompiler::Get().Compile({"mesh", "mesh.compute.py", kProgram}, {},
                                                        {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
     const auto &program = compiled.targets[0];
-    const auto reflection = nlohmann::json::parse(program.reflection);
-    std::array<rhi::ShaderModuleHandle, 3> shaders{};
-    std::array<std::string, 3> entryNames{};
-    for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto &entry = program.entries[index];
-        shaders[index] =
-            device.CreateShaderModule({rhi::ShaderSourceLanguage::SpirV, entry.code.data(), entry.code.size()});
-        entryNames[index] = entry.name;
-        Require(shaders[index].IsValid(), "Slang shader module creation failed");
-    }
+    DeviceShaderProgram computeProgram(device, program, {0});
+    DeviceShaderProgram graphicsProgram(device, program, {1, 2});
     auto buffer = [&](uint64_t bytes, rhi::BufferUsageFlags usage, rhi::BufferMemory memory,
                       const void *initial = nullptr) {
         rhi::BufferDesc desc;
@@ -149,13 +141,13 @@ void Run()
     const auto indexBuffer =
         buffer(sizeof(indices), rhi::BufferUsageFlags::Index, rhi::BufferMemory::Upload, indices.data());
 
-    const auto &uniformLayout = reflection["parameters"][0]["type"]["elementVarLayout"]["type"];
-    const auto &fields = uniformLayout["fields"];
-    std::array<char, 32> constants{};
+    const auto &uniformLayout = program.resources[0].value;
+    const auto &fields = uniformLayout.fields;
+    std::vector<char> constants(uniformLayout.byteSize);
     const std::array<float, 4> tint{0.5f, 0.75f, 1.0f, 1.0f};
     const uint32_t objectId = 0x1020304;
-    std::memcpy(constants.data() + fields[0]["binding"]["offset"].get<size_t>(), tint.data(), sizeof(tint));
-    std::memcpy(constants.data() + fields[1]["binding"]["offset"].get<size_t>(), &objectId, sizeof(objectId));
+    std::memcpy(constants.data() + fields[0].offset, tint.data(), sizeof(tint));
+    std::memcpy(constants.data() + fields[1].offset, &objectId, sizeof(objectId));
     const auto uniform =
         buffer(constants.size(), rhi::BufferUsageFlags::Uniform, rhi::BufferMemory::Upload, constants.data());
 
@@ -188,44 +180,28 @@ void Run()
     // a writable Compute output cannot remain in a Draw bind group even when
     // its binding has Compute-only visibility: WebGPU counts the whole group
     // in the render-pass usage scope.
-    auto bindingsFor = [&](bool graphics) {
-        rhi::BindingLayoutDesc bindingDesc;
+    auto bindingsFor = [&](const DeviceShaderProgram &selected) {
         rhi::BindGroupDesc groupDesc;
-        const std::array<rhi::BindingType, 4> types{rhi::BindingType::UniformBuffer, rhi::BindingType::StorageBuffer,
-                                                    rhi::BindingType::SampledTexture, rhi::BindingType::Sampler};
-        for (size_t index = 0; index < types.size(); ++index) {
-            const uint32_t binding = reflection["parameters"][index]["binding"]["index"];
-            rhi::ShaderStage visibility = rhi::ShaderStage::None;
-            const size_t first = graphics ? 1 : 0;
-            const size_t end = graphics ? 3 : 1;
-            for (size_t entryIndex = first; entryIndex < end; ++entryIndex) {
-                const auto &entry = program.entries[entryIndex];
-                const std::array<uint32_t, 2> key{0, binding};
-                if (std::find(entry.bindings.begin(), entry.bindings.end(), key) != entry.bindings.end())
-                    visibility = visibility | entry.stage;
-            }
-            if (visibility == rhi::ShaderStage::None)
-                continue;
-            bindingDesc.entries[bindingDesc.entryCount++] = {binding, types[index], visibility, 1};
-            if (index < 2)
-                groupDesc.buffers[groupDesc.bufferCount++] = {binding, types[index], index == 0 ? uniform : vertices};
+        for (const auto &resource : selected.GetResources()) {
+            const auto type = resource.binding.type;
+            const uint32_t binding = resource.binding.binding;
+            if (type == rhi::BindingType::UniformBuffer || type == rhi::BindingType::StorageBuffer)
+                groupDesc.buffers[groupDesc.bufferCount++] = {binding, type,
+                                                              resource.name == "params" ? uniform : vertices};
             else
-                groupDesc.textures[groupDesc.textureCount++] = {binding, types[index],
-                                                                index == 2 ? sourceView : rhi::TextureViewHandle{},
-                                                                index == 3 ? sampler : rhi::SamplerHandle{}};
+                groupDesc.textures[groupDesc.textureCount++] = {
+                    binding, type, type == rhi::BindingType::SampledTexture ? sourceView : rhi::TextureViewHandle{},
+                    type == rhi::BindingType::Sampler ? sampler : rhi::SamplerHandle{}};
         }
-        groupDesc.layout = device.CreateBindingLayout(bindingDesc);
+        groupDesc.layout = selected.GetBindingLayouts()[0];
         const auto group = device.CreateBindGroup(groupDesc);
         Require(groupDesc.layout.IsValid() && group.IsValid(), "Reflected RHI bindings failed");
-        return std::pair{groupDesc.layout, group};
+        return group;
     };
-    const auto [computeLayout, computeGroup] = bindingsFor(false);
-    const auto [graphicsLayout, graphicsGroup] = bindingsFor(true);
+    const auto computeGroup = bindingsFor(computeProgram);
+    const auto graphicsGroup = bindingsFor(graphicsProgram);
     rhi::ComputePipelineDesc computeDesc;
-    computeDesc.computeShader = shaders[0];
-    computeDesc.entryPoint = entryNames[0].c_str();
-    computeDesc.bindingLayouts[0] = computeLayout;
-    computeDesc.bindingLayoutCount = 1;
+    computeProgram.Apply(computeDesc);
     const auto compute = device.CreateComputePipeline(computeDesc);
     Require(compute.IsValid(), "Slang compute pipeline failed");
 
@@ -274,14 +250,9 @@ void Run()
     Require(vkCreateFramebuffer(nativeDevice, &framebuffer, nullptr, &fixture.framebuffer) == VK_SUCCESS,
             "Framebuffer failed");
     rhi::GraphicsPipelineDesc graphicsDesc;
-    graphicsDesc.vertexShader = shaders[1];
-    graphicsDesc.fragmentShader = shaders[2];
-    graphicsDesc.vertexEntryPoint = entryNames[1].c_str();
-    graphicsDesc.fragmentEntryPoint = entryNames[2].c_str();
+    graphicsProgram.Apply(graphicsDesc);
     graphicsDesc.renderTargetLayout = device.RegisterRenderTargetLayout(fixture.renderPass);
     graphicsDesc.raster.cullMode = rhi::CullMode::None;
-    graphicsDesc.bindingLayouts[0] = graphicsLayout;
-    graphicsDesc.bindingLayoutCount = 1;
     graphicsDesc.colorTargetCount = 2;
     graphicsDesc.colorTargets[0].format = formats[0];
     graphicsDesc.colorTargets[1].format = formats[1];

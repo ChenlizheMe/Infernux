@@ -65,6 +65,7 @@ set(INFERNUX_PARTICLE_RUNTIME_SOURCES
 # Device-bound shader programs are compiled into the Runtime source set.
 set(INFERNUX_SHADER_COMPILER_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/SlangCompiler.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/SlangLayout.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderReflection.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/GlslStageInterfaceEmitter.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderInfoSchema.cpp"
@@ -80,6 +81,7 @@ set(INFERNUX_RENDER_CORE_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiDeviceIdentity.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiRenderTexture.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/DeviceShaderProgram.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.cpp"
 )
 
