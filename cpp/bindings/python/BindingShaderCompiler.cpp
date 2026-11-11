@@ -74,6 +74,10 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         py::arg("guid"), py::call_guard<py::gil_scoped_release>());
     m.def("_slang_version", [] { return SlangCompiler::Get().GetVersion(); }, py::call_guard<py::gil_scoped_release>());
     m.def(
+        "_set_shader_module_directory",
+        [](const std::string &directory) { SlangCompiler::Get().SetStandardModuleDirectory(directory); },
+        py::call_guard<py::gil_scoped_release>());
+    m.def(
         "_compile_shader_program",
         [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,
            const std::vector<std::tuple<std::string, std::string, std::string>> &libraries,
@@ -123,6 +127,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                     item["storage_access"] = static_cast<uint8_t>(resource.binding.storageAccess);
                     item["sampler_type"] = static_cast<uint8_t>(resource.binding.samplerType);
                     item["min_buffer_binding_size"] = resource.binding.minBufferBindingSize;
+                    item["element_stride"] = resource.elementStride;
                     item["value"] = ValueLayout(resource.value);
                     resources.append(std::move(item));
                 }

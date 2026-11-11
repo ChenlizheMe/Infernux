@@ -66,6 +66,8 @@ struct ShaderResourceLayout
     std::string name;
     uint32_t set = 0;
     rhi::BindingLayoutEntry binding;
+    /// Structured-buffer element spacing, including trailing alignment.
+    uint64_t elementStride = 0;
     /// Uniform contents, or a structured buffer's element layout. Raw byte
     /// buffers and images carry no value layout.
     ShaderValueLayout value;

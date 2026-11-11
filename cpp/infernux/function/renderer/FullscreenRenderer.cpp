@@ -517,11 +517,12 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
     auto &bytes = m_impl->frameParameters[frame].scratch;
     bytes.assign(entry.parameterDefaults.begin(), entry.parameterDefaults.end());
     for (size_t index = 0; index < parameters.size(); ++index) {
-        const auto &[name, value] = parameters[index];
+        const auto &parameter = parameters[index];
+        const auto value = parameter.second;
         const auto field = std::find_if(entry.parameterFields.begin(), entry.parameterFields.end(),
-                                        [&](const auto &item) { return item.name == name; });
+                                        [&](const auto &item) { return item.name == parameter.first; });
         if (field == entry.parameterFields.end() || field->kind != ShaderValueKind::Scalar)
-            throw std::invalid_argument("Fullscreen scalar parameter is not declared: " + name);
+            throw std::invalid_argument("Fullscreen scalar parameter is not declared: " + parameter.first);
         StoreParameter(bytes.data() + field->offset, field->scalar, values ? values[index] : value);
     }
     const auto uniform =

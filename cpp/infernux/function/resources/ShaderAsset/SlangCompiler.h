@@ -42,6 +42,7 @@ class SlangCompiler
   public:
     static INFERNUX_SHADER_COMPILER_API SlangCompiler &Get();
     static INFERNUX_SHADER_COMPILER_API const char *GetStandardModuleName() noexcept;
+    INFERNUX_SHADER_COMPILER_API void SetStandardModuleDirectory(std::string directory);
     INFERNUX_SHADER_COMPILER_API void SetAuthorFrontend(ShaderAuthorFrontend frontend);
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderAuthorSource PrepareAuthorSource(const ShaderSourceModule &source,
                                                                                       const ShaderTextReader &reader);

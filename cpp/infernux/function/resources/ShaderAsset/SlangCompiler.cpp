@@ -76,6 +76,7 @@ struct SlangCompiler::Impl
 {
     Slang::ComPtr<slang::IGlobalSession> global;
     std::string version;
+    std::string standardModuleDirectory;
     ShaderAuthorFrontend authorFrontend;
     // Slang sessions that share a global session must be used serially. The
     // Python caller releases the GIL before entering this compilation owner.
@@ -107,6 +108,12 @@ SlangCompiler::~SlangCompiler() = default;
 const std::string &SlangCompiler::GetVersion() const noexcept
 {
     return impl->version;
+}
+
+void SlangCompiler::SetStandardModuleDirectory(std::string directory)
+{
+    std::lock_guard lock(impl->mutex);
+    impl->standardModuleDirectory = std::move(directory);
 }
 
 void SlangCompiler::SetAuthorFrontend(ShaderAuthorFrontend frontend)
@@ -162,6 +169,9 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
     description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
     description.compilerOptionEntries = options;
     description.compilerOptionEntryCount = 3;
+    const char *moduleDirectory = impl->standardModuleDirectory.c_str();
+    description.searchPaths = &moduleDirectory;
+    description.searchPathCount = impl->standardModuleDirectory.empty() ? 0 : 1;
 
     Slang::ComPtr<slang::ISession> session;
     CheckCompilation(impl->global->createSession(description, session.writeRef()), "Create shader session", nullptr);
@@ -235,20 +245,13 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
             status =
                 program->getEntryPointMetadata(entryIndex, targetIndex, metadata.writeRef(), diagnostics.writeRef());
             CheckCompilation(status, "Reflect entry resource use " + source.path, diagnostics);
-            auto *resources = layout->getGlobalParamsTypeLayout();
-            for (SlangInt set = 0; set < resources->getDescriptorSetCount(); ++set) {
-                const auto space = static_cast<uint32_t>(resources->getDescriptorSetSpaceOffset(set));
-                for (SlangInt range = 0; range < resources->getDescriptorSetDescriptorRangeCount(set); ++range) {
-                    const auto binding =
-                        static_cast<uint32_t>(resources->getDescriptorSetDescriptorRangeIndexOffset(set, range));
-                    const auto category = static_cast<SlangParameterCategory>(
-                        resources->getDescriptorSetDescriptorRangeCategory(set, range));
-                    bool used = false;
-                    CheckCompilation(metadata->isParameterLocationUsed(category, space, binding, used),
-                                     "Reflect descriptor use " + source.path, nullptr);
-                    if (used)
-                        artifact.bindings.push_back({space, binding});
-                }
+            for (const auto &resource : target.resources) {
+                bool used = false;
+                CheckCompilation(metadata->isParameterLocationUsed(SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT,
+                                                                   resource.set, resource.binding.binding, used),
+                                 "Reflect descriptor use " + source.path, nullptr);
+                if (used)
+                    artifact.bindings.push_back({resource.set, resource.binding.binding});
             }
             const auto *bytes = static_cast<const char *>(code->getBufferPointer());
             artifact.code.assign(bytes, bytes + code->getBufferSize());

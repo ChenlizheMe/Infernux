@@ -2,8 +2,10 @@
 
 #include <slang.h>
 
+#include <algorithm>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 
 namespace infernux
 {
@@ -74,7 +76,10 @@ ShaderValueLayout ValueLayout(slang::TypeLayoutReflection *type, std::string nam
         result.columns = type->getColumnCount();
         result.scalar = ScalarKind(type->getScalarType());
         result.rowMajor = type->getMatrixLayoutMode() == SLANG_MATRIX_LAYOUT_ROW_MAJOR;
-        result.stride = type->getElementStride(SLANG_PARAMETER_CATEGORY_UNIFORM);
+        // Matrix getElementStride() is not defined by Slang. Its full storage
+        // stride includes the padding of every row/column in the major axis.
+        result.stride =
+            type->getStride(SLANG_PARAMETER_CATEGORY_UNIFORM) / (result.rowMajor ? result.rows : result.columns);
         break;
     case Kind::Vector:
         result.kind = ShaderValueKind::Vector;
@@ -106,11 +111,8 @@ void ResourceNames(slang::TypeLayoutReflection *type, SlangInt base, const std::
         }
     } else if (type->getKind() == Kind::Array) {
         ResourceNames(type->getElementTypeLayout(), base, path, names);
-    } else {
+    } else
         names.at(static_cast<size_t>(base)) = path;
-        if (type->getKind() == Kind::ConstantBuffer && type->getBindingRangeCount() > 1)
-            ResourceNames(type->getElementTypeLayout(), base + 1, path, names);
-    }
 }
 
 rhi::TextureViewDimension TextureDimension(SlangResourceShape shape)
@@ -171,15 +173,59 @@ rhi::PixelFormat ImageFormat(SlangImageFormat format)
         throw std::runtime_error("Shader storage image format has no engine pixel format representation");
     }
 }
-} // namespace
-
-std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout)
+struct BindingOffset
 {
+    uint32_t set = 0;
+    uint32_t binding = 0;
+
+    [[nodiscard]] BindingOffset At(slang::VariableLayoutReflection *variable) const
+    {
+        return {set + static_cast<uint32_t>(variable->getOffset(SLANG_PARAMETER_CATEGORY_SUB_ELEMENT_REGISTER_SPACE) +
+                                            variable->getBindingSpace(SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT)),
+                binding + static_cast<uint32_t>(variable->getOffset(SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT))};
+    }
+};
+
+void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, const std::string &path,
+                  std::vector<ShaderResourceLayout> &result);
+
+void ReflectContainer(slang::TypeLayoutReflection *container, BindingOffset offset, const std::string &path,
+                      std::vector<ShaderResourceLayout> &result)
+{
+    if (container->getKind() == Kind::ParameterBlock)
+        offset.binding = 0; // A parameter block owns its descriptor set.
+    auto *element = container->getElementVarLayout();
+    auto *value = element->getTypeLayout();
+    if (value->getSize(SLANG_PARAMETER_CATEGORY_UNIFORM) != 0) {
+        const auto location = offset.At(container->getContainerVarLayout());
+        ShaderResourceLayout resource;
+        resource.name = path.empty() ? "$global" : path;
+        resource.set = location.set;
+        resource.binding.binding = location.binding;
+        resource.binding.type = rhi::BindingType::UniformBuffer;
+        resource.value = ValueLayout(value);
+        resource.binding.minBufferBindingSize = resource.value.byteSize;
+        result.push_back(std::move(resource));
+    }
+    // The element variable holds offsets relative to the container. Its type
+    // is unadjusted; getElementTypeLayout() already folds these offsets in.
+    ReflectValue(value, offset.At(element), path, result);
+}
+
+void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, const std::string &path,
+                  std::vector<ShaderResourceLayout> &result)
+{
+    if (layout->getKind() == Kind::ConstantBuffer || layout->getKind() == Kind::ParameterBlock) {
+        ReflectContainer(layout, offset, path, result);
+        return;
+    }
     const auto rangeCount = layout->getBindingRangeCount();
     std::vector<std::string> names(static_cast<size_t>(rangeCount));
-    ResourceNames(layout, 0, {}, names);
-    std::vector<ShaderResourceLayout> result;
+    ResourceNames(layout, 0, path, names);
     for (SlangInt index = 0; index < rangeCount; ++index) {
+        const auto bindingType = layout->getBindingRangeType(index);
+        if (bindingType == slang::BindingType::ConstantBuffer || bindingType == slang::BindingType::ParameterBlock)
+            continue; // Container ranges are traversed once below, including their implicit uniform data.
         const auto set = layout->getBindingRangeDescriptorSetIndex(index);
         const auto first = layout->getBindingRangeFirstDescriptorRangeIndex(index);
         const auto count = layout->getBindingRangeDescriptorRangeCount(index);
@@ -187,23 +233,20 @@ std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflect
         for (SlangInt range = first; range < first + count; ++range) {
             ShaderResourceLayout resource;
             resource.name = names[index];
-            resource.set = static_cast<uint32_t>(layout->getDescriptorSetSpaceOffset(set));
+            resource.set = offset.set + static_cast<uint32_t>(layout->getDescriptorSetSpaceOffset(set));
             resource.binding.binding =
-                static_cast<uint32_t>(layout->getDescriptorSetDescriptorRangeIndexOffset(set, range));
+                offset.binding + static_cast<uint32_t>(layout->getDescriptorSetDescriptorRangeIndexOffset(set, range));
             resource.binding.count =
                 static_cast<uint32_t>(layout->getDescriptorSetDescriptorRangeDescriptorCount(set, range));
             switch (layout->getDescriptorSetDescriptorRangeType(set, range)) {
-            case slang::BindingType::ConstantBuffer:
-                resource.binding.type = rhi::BindingType::UniformBuffer;
-                resource.value = ValueLayout(type->getElementTypeLayout());
-                resource.binding.minBufferBindingSize = resource.value.byteSize;
-                break;
             case slang::BindingType::RawBuffer:
             case slang::BindingType::MutableRawBuffer:
                 resource.binding.type = rhi::BindingType::StorageBuffer;
                 resource.binding.readOnlyStorage = type->getResourceAccess() == SLANG_RESOURCE_ACCESS_READ;
-                if ((type->getResourceShape() & SLANG_RESOURCE_BASE_SHAPE_MASK) == SLANG_STRUCTURED_BUFFER)
+                if ((type->getResourceShape() & SLANG_RESOURCE_BASE_SHAPE_MASK) == SLANG_STRUCTURED_BUFFER) {
                     resource.value = ValueLayout(type->getElementTypeLayout());
+                    resource.elementStride = type->getElementTypeLayout()->getStride(SLANG_PARAMETER_CATEGORY_UNIFORM);
+                }
                 break;
             case slang::BindingType::Texture:
             case slang::BindingType::MutableTexture:
@@ -237,6 +280,23 @@ std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflect
             result.push_back(std::move(resource));
         }
     }
+    for (SlangInt index = 0; index < layout->getSubObjectRangeCount(); ++index) {
+        const auto range = layout->getSubObjectRangeBindingRangeIndex(index);
+        const auto type = layout->getBindingRangeType(range);
+        if (type == slang::BindingType::ConstantBuffer || type == slang::BindingType::ParameterBlock)
+            ReflectContainer(layout->getBindingRangeLeafTypeLayout(range),
+                             offset.At(layout->getSubObjectRangeOffset(index)), names[range], result);
+    }
+}
+} // namespace
+
+std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout)
+{
+    std::vector<ShaderResourceLayout> result;
+    ReflectValue(layout, {}, {}, result);
+    std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
+        return std::tie(left.set, left.binding.binding) < std::tie(right.set, right.binding.binding);
+    });
     return result;
 }
 

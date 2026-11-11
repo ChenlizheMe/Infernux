@@ -306,6 +306,13 @@ except (ModuleNotFoundError, ImportError, OSError) as _initial_native_error:
         _raise_native_import_error(_last_native_error)
 
 _export_native_module(_native_module)
+if sys.platform == "emscripten":
+    _shader_module_root = "/infernux"
+elif hasattr(sys, "getandroidapilevel"):
+    _shader_module_root = lib_dir
+else:
+    _shader_module_root = native_dir
+_native_module._set_shader_module_directory(os.path.join(_shader_module_root, _native_module._slang_standard_module_name))
 
 from ._Infernux import (
     AssetRegistry, CollisionInfo, GameObject, InvalidNativeObjectError,

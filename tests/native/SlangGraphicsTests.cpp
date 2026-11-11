@@ -1,4 +1,3 @@
-#include <SDL3/SDL.h>
 #include <function/renderer/shader/DeviceShaderProgram.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDeviceContext.h>
@@ -24,20 +23,28 @@ void Require(bool result, const char *message)
 }
 
 constexpr const char *kProgram = R"(
-struct Parameters { float4 tint; uint objectId; };
-ConstantBuffer<Parameters> params;
+struct Material {
+    float4 tint; uint objectId;
+    Texture2D<float4> albedo;
+    SamplerState albedoSampler;
+    Texture2D<float4> generatedImage;
+};
+struct Scene { float exposure; ParameterBlock<Material> material; };
+ParameterBlock<Scene> scene;
 RWStructuredBuffer<float4> positions;
-Texture2D<float4> albedo;
-SamplerState albedoSampler;
 [format("rgba8")] WTexture2D<float4> generated;
-Texture2D<float4> generatedImage;
+
+[Differentiable]
+float sigmoid(float x) { return 1.0 / (1.0 + exp(-x)); }
 
 [shader("compute")]
 [numthreads(4, 1, 1)]
 void prepare_vertices(uint3 id : SV_DispatchThreadID)
 {
     positions[id.x] = float4(float(id.x & 1) * 2.0 - 1.0, float(id.x >> 1) * 2.0 - 1.0, 0.0, 1.0);
-    generated.Store(int2(id.x & 1, id.x >> 1), float4(0.25, 0.5, 0.75, 1.0));
+    DifferentialPair<float> value = diffPair(float(id.x) - 1.5, 0.0);
+    bwd_diff(sigmoid)(value, 1.0);
+    generated.Store(int2(id.x & 1, id.x >> 1), float4(value.d, sigmoid(value.p), 1.0 - value.d, 1.0));
 }
 
 struct VertexInput { float3 position : POSITION; float2 uv : TEXCOORD0; };
@@ -56,15 +63,15 @@ struct Targets { float4 color : SV_Target0; uint2 identity : SV_Target1; };
 Targets mesh_fragment(Varyings input)
 {
     Targets result;
-    result.color = albedo.Sample(albedoSampler, input.uv) * params.tint * generatedImage.Sample(albedoSampler, input.uv);
-    result.identity = uint2(params.objectId, 0xfedcba98u);
+    result.color = scene.material.albedo.Sample(scene.material.albedoSampler, input.uv) * scene.material.tint
+        * scene.material.generatedImage.Sample(scene.material.albedoSampler, input.uv) * scene.exposure;
+    result.identity = uint2(scene.material.objectId, 0xfedcba98u);
     return result;
 }
 )";
 
 struct Fixture
 {
-    SDL_Window *window = nullptr;
     vk::VkDeviceContext context;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -86,9 +93,6 @@ struct Fixture
                 vkDestroyCommandPool(device, pool, nullptr);
             context.Destroy();
         }
-        if (window)
-            SDL_DestroyWindow(window);
-        SDL_Quit();
     }
 };
 
@@ -111,12 +115,11 @@ void ImageBarrier(VkCommandBuffer commands, VkImage image, VkImageLayout before,
 void Run()
 {
     Fixture fixture;
-    Require(SDL_Init(SDL_INIT_VIDEO), SDL_GetError());
-    fixture.window = SDL_CreateWindow("Slang RHI mesh", 32, 32, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
-    Require(fixture.window != nullptr, SDL_GetError());
     vk::DeviceConfig config;
     config.enableValidationLayers = true;
-    Require(fixture.context.Initialize(fixture.window, config), "Vulkan initialization failed");
+    config.presentation = false;
+    Require(fixture.context.InitializeInstance(config) && fixture.context.InitializeDevice(VK_NULL_HANDLE, config),
+            "Vulkan initialization failed");
     auto &device = fixture.context.GetRhiDevice();
     const auto nativeDevice = fixture.context.GetDevice();
     const auto compiled = SlangCompiler::Get().Compile({"mesh", "mesh.compute.py", kProgram}, {},
@@ -144,7 +147,10 @@ void Run()
     const auto indexBuffer =
         buffer(sizeof(indices), rhi::BufferUsageFlags::Index, rhi::BufferMemory::Upload, indices.data());
 
-    const auto &uniformLayout = program.resources[0].value;
+    const auto &uniformLayout =
+        std::find_if(program.resources.begin(), program.resources.end(), [](const auto &resource) {
+            return resource.name == "scene.material";
+        })->value;
     const auto &fields = uniformLayout.fields;
     std::vector<char> constants(uniformLayout.byteSize);
     const std::array<float, 4> tint{0.5f, 0.75f, 1.0f, 1.0f};
@@ -153,6 +159,9 @@ void Run()
     std::memcpy(constants.data() + fields[1].offset, &objectId, sizeof(objectId));
     const auto uniform =
         buffer(constants.size(), rhi::BufferUsageFlags::Uniform, rhi::BufferMemory::Upload, constants.data());
+    const float exposure = 1.0f;
+    const auto sceneUniform = buffer(16, rhi::BufferUsageFlags::Uniform, rhi::BufferMemory::Upload);
+    Require(device.WriteBuffer(sceneUniform, 0, &exposure, sizeof(exposure)), "Scene uniform write failed");
 
     rhi::TextureDesc sourceDesc;
     sourceDesc.width = sourceDesc.height = 2;
@@ -196,26 +205,34 @@ void Run()
     // its binding has Compute-only visibility: WebGPU counts the whole group
     // in the render-pass usage scope.
     auto bindingsFor = [&](const DeviceShaderProgram &selected) {
-        rhi::BindGroupDesc groupDesc;
-        for (const auto &resource : selected.GetResources()) {
-            const auto type = resource.binding.type;
-            const uint32_t binding = resource.binding.binding;
-            if (type == rhi::BindingType::UniformBuffer || type == rhi::BindingType::StorageBuffer)
-                groupDesc.buffers[groupDesc.bufferCount++] = {binding, type,
-                                                              resource.name == "params" ? uniform : vertices};
-            else {
-                const auto image = resource.name == "generated"        ? generatedStorage
-                                   : resource.name == "generatedImage" ? generatedSampled
-                                                                       : sourceView;
-                groupDesc.textures[groupDesc.textureCount++] = {
-                    binding, type, type != rhi::BindingType::Sampler ? image : rhi::TextureViewHandle{},
-                    type == rhi::BindingType::Sampler ? sampler : rhi::SamplerHandle{}};
+        std::vector<rhi::BindGroupHandle> groups;
+        for (uint32_t set = 0; set < selected.GetBindingLayouts().size(); ++set) {
+            rhi::BindGroupDesc groupDesc;
+            for (const auto &resource : selected.GetResources()) {
+                if (resource.set != set)
+                    continue;
+                const auto type = resource.binding.type;
+                const uint32_t binding = resource.binding.binding;
+                if (type == rhi::BindingType::UniformBuffer || type == rhi::BindingType::StorageBuffer) {
+                    const auto value = resource.name == "scene.material" ? uniform
+                                       : resource.name == "scene"        ? sceneUniform
+                                                                         : vertices;
+                    groupDesc.buffers[groupDesc.bufferCount++] = {binding, type, value};
+                } else {
+                    const auto image = resource.name == "generated"                       ? generatedStorage
+                                       : resource.name == "scene.material.generatedImage" ? generatedSampled
+                                                                                          : sourceView;
+                    groupDesc.textures[groupDesc.textureCount++] = {
+                        binding, type, type != rhi::BindingType::Sampler ? image : rhi::TextureViewHandle{},
+                        type == rhi::BindingType::Sampler ? sampler : rhi::SamplerHandle{}};
+                }
             }
+            groupDesc.layout = selected.GetBindingLayouts()[set];
+            const auto group = device.CreateBindGroup(groupDesc);
+            Require(groupDesc.layout.IsValid() && group.IsValid(), "Reflected RHI bindings failed");
+            groups.push_back(group);
         }
-        groupDesc.layout = selected.GetBindingLayouts()[0];
-        const auto group = device.CreateBindGroup(groupDesc);
-        Require(groupDesc.layout.IsValid() && group.IsValid(), "Reflected RHI bindings failed");
-        return group;
+        return groups;
     };
     const auto computeGroup = bindingsFor(computeProgram);
     const auto graphicsGroup = bindingsFor(graphicsProgram);
@@ -314,7 +331,8 @@ void Run()
                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                  VK_ACCESS_SHADER_WRITE_BIT);
     computeCommands.BindPipeline(compute);
-    computeCommands.BindGroup(compute, 0, computeGroup);
+    for (uint32_t set = 0; set < computeGroup.size(); ++set)
+        computeCommands.BindGroup(compute, set, computeGroup[set]);
     computeCommands.Dispatch(1);
     ImageBarrier(commands, device.Resolve(generated), VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
@@ -340,7 +358,8 @@ void Run()
     const auto draw = device.MakeGraphicsCommandEncoder(graphicsContext, commands);
     Require(draw.HasCompleteDispatch(), "Mesh command table is incomplete");
     draw.BindPipeline(graphics);
-    draw.BindGroup(graphics, 0, graphicsGroup);
+    for (uint32_t set = 0; set < graphicsGroup.size(); ++set)
+        draw.BindGroup(graphics, set, graphicsGroup[set]);
     draw.BindVertexBuffer(0, vertices);
     draw.BindVertexBuffer(1, uvBuffer);
     draw.BindIndexBuffer(indexBuffer, rhi::IndexFormat::Uint16);
@@ -374,7 +393,12 @@ void Run()
             for (size_t channel = 0; channel < 3; ++channel) {
                 const auto srgb = encoded[channel] / 255.0f;
                 const auto linear = srgb <= 0.04045f ? srgb / 12.92f : std::pow((srgb + 0.055f) / 1.055f, 2.4f);
-                const std::array<float, 3> generatedValue{64.0f / 255.0f, 128.0f / 255.0f, 191.0f / 255.0f};
+                const auto texel = float((x / 8) + ((size - 1 - y) / 8) * 2);
+                const auto sigmoid = 1.0f / (1.0f + std::exp(-(texel - 1.5f)));
+                const auto derivative = sigmoid * (1.0f - sigmoid);
+                const std::array<float, 3> generatedValue{std::round(derivative * 255.0f) / 255.0f,
+                                                          std::round(sigmoid * 255.0f) / 255.0f,
+                                                          std::round((1.0f - derivative) * 255.0f) / 255.0f};
                 const auto expected = std::lround(linear * tint[channel] * generatedValue[channel] * 255.0f);
                 Require(std::abs(int(colorBytes[y * 256 + x * 4 + channel]) - expected) <= 1,
                         "sRGB sampling/varying/color mismatch");

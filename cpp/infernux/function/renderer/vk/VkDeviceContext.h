@@ -89,7 +89,7 @@ class VkDeviceContext
      * @param config Device configuration options
      * @return true if instance creation succeeded
      */
-    bool InitializeInstance(const DeviceConfig &config = DeviceConfig{});
+    INFERNUX_VULKAN_BACKEND_API bool InitializeInstance(const DeviceConfig &config = DeviceConfig{});
 
     /**
      * @brief Complete initialization with an external surface (split initialization - step 2)

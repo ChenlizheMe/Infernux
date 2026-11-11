@@ -79,6 +79,7 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterRuntimeNumericsBindings(module);
     infernux::RegisterFrameWorkBindings(module);
     infernux::RegisterTextBindings(module);
+    infernux::RegisterShaderCompilerBindings(module);
 #if defined(INFERNUX_PYBIND_WEB_PLAYER)
     module.attr("__runtime_profile__") = "web-player";
     infernux::RegisterVector2Bindings(module);
@@ -117,7 +118,6 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterSceneBindings(module);
     infernux::RegisterTagLayerBindings(module);
     infernux::RegisterRhiBindings(module);
-    infernux::RegisterShaderCompilerBindings(module);
     infernux::RegisterRenderGraphBindings(module);
     infernux::RegisterCommandBufferBindings(module);
     infernux::RegisterRenderPipelineBindings(module);

@@ -125,6 +125,64 @@ float4 shadow(float2 uv : TEXCOORD0) : SV_Target0
                     "Depth texture and comparison sampler lost their target binding types");
         }
 
+        const auto blocks = compiler.Compile({"blocks", "blocks.compute.py", R"(
+struct Material { float3 tint; float weight; Texture2D<float4> image; SamplerState sampler; };
+struct Scene { float4x4 world; float2 offsets[3]; ParameterBlock<Material> material; };
+ParameterBlock<Scene> scene;
+float gain;
+RWStructuredBuffer<float4> output;
+[shader("compute")][numthreads(1,1,1)]
+void main()
+{
+    output[0] = mul(scene.world, float4(scene.material.tint, gain)) * scene.material.weight
+        + scene.material.image.SampleLevel(scene.material.sampler, scene.offsets[1], 0);
+}
+)"},
+                                             {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : blocks.targets) {
+            Require(target.resources.size() == 6 && target.entries[0].bindings.size() == 6,
+                    "Nested blocks or implicit globals lost a descriptor or entry use");
+            const auto find = [&](const std::string &name) -> const ShaderResourceLayout & {
+                for (const auto &resource : target.resources)
+                    if (resource.name == name)
+                        return resource;
+                throw std::runtime_error("Missing logical resource: " + name);
+            };
+            const auto &scene = find("scene");
+            const auto &material = find("scene.material");
+            Require(find("$global").set == 0 && find("output").binding.binding == 1 && scene.set == 1 &&
+                        scene.binding.binding == 0 && material.set == 2 && material.binding.binding == 0 &&
+                        find("scene.material.image").binding.binding == 1 &&
+                        find("scene.material.sampler").binding.binding == 2,
+                    "Container offsets were applied twice or nested spaces were flattened");
+            Require(scene.value.byteSize == 112 && scene.value.fields.size() == 2 &&
+                        scene.value.fields[0].kind == ShaderValueKind::Matrix && scene.value.fields[0].stride == 16 &&
+                        scene.value.fields[1].kind == ShaderValueKind::Array && scene.value.fields[1].offset == 64 &&
+                        scene.value.fields[1].stride == 16 && material.value.fields[1].offset == 12,
+                    "Matrix, array or nested uniform contents lost the target's physical layout");
+        }
+
+        const auto matrices = compiler.Compile({"matrices", "matrices.compute.py", R"(
+struct Values { float3x3 rotation; column_major float2x3 rectangular; };
+ConstantBuffer<Values> uniforms;
+StructuredBuffer<Values> records;
+StructuredBuffer<float3> directions;
+RWStructuredBuffer<float> output;
+[shader("compute")][numthreads(1,1,1)]
+void main() { output[0] = uniforms.rotation[1][2] + uniforms.rectangular[1][2] + records[1].rectangular[1][2] + directions[1].x; }
+)"},
+                                               {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : matrices.targets) {
+            const auto &uniforms = target.resources[0].value.fields;
+            const auto &records = target.resources[1];
+            Require(uniforms[0].stride == 16 && uniforms[0].rowMajor && uniforms[1].stride == 16 &&
+                        !uniforms[1].rowMajor && records.value.fields[1].stride == 8 &&
+                        !records.value.fields[1].rowMajor && records.elementStride == 80 &&
+                        records.value.byteSize == 80 && target.resources[2].value.byteSize == 12 &&
+                        target.resources[2].elementStride == 16,
+                    "Rectangular matrices or structured-buffer tail padding lost their target layout");
+        }
+
         // A changed revision with the same virtual module name must not reuse
         // the module cached inside an earlier Slang session.
         const auto previous = result.targets[0].entries[1].code;
