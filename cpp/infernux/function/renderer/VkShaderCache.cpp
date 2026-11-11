@@ -230,7 +230,9 @@ bool VkShaderCache::PrepareProgramArtifact(const ShaderProgramArtifact &artifact
 
     const ShaderProgramVariantKey forwardKey{artifact.key, ShaderCompileTarget::Forward};
     ShaderProgramPublication forwardProgram =
-        m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv);
+        m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv,
+                                          {artifact.domain, forward->vertexEntryPoint, forward->fragmentEntryPoint,
+                                           forward->vertexTarget.get(), forward->fragmentTarget.get()});
     if (!forwardProgram || !forwardProgram->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
         (void)m_programCache.TakePrograms(artifact.key);
@@ -291,8 +293,10 @@ ShaderProgramPublication VkShaderCache::MaterializeProgramVariant(const ShaderSt
         return nullptr;
 
     const ShaderProgramVariantKey key{artifact->second->key, target};
-    ShaderProgramPublication program =
-        m_programCache.GetOrCreateProgram(key, variant->vertexSpirv, variant->fragmentSpirv);
+    ShaderProgramPublication program = m_programCache.GetOrCreateProgram(
+        key, variant->vertexSpirv, variant->fragmentSpirv,
+        {artifact->second->domain, variant->vertexEntryPoint, variant->fragmentEntryPoint, variant->vertexTarget.get(),
+         variant->fragmentTarget.get()});
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to lazily materialize shader program variant '", key.ToString(), "'");
         return nullptr;

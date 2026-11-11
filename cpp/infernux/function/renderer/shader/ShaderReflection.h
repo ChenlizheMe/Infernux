@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ShaderProgramLayout.h"
 #include <cstdint>
 #include <function/resources/ShaderAsset/ShaderCompilerApi.h>
 #include <string>
@@ -25,18 +26,6 @@ enum class ShaderResourceType
 };
 
 /**
- * @brief A single uniform member within a UBO
- */
-struct UniformMember
-{
-    std::string name;
-    uint32_t offset;
-    uint32_t size;
-    uint32_t arraySize; // 1 for non-array
-    VkFormat format;    // Inferred from type
-};
-
-/**
  * @brief A uniform buffer descriptor
  */
 struct UniformBufferInfo
@@ -46,7 +35,7 @@ struct UniformBufferInfo
     uint32_t set;
     uint32_t size;
     VkShaderStageFlags stageFlags;
-    std::vector<UniformMember> members;
+    std::vector<ShaderValueLayout> members;
 };
 
 enum class ReflectedImageDimension : uint8_t
@@ -114,7 +103,7 @@ struct PushConstantInfo
     uint32_t offset;
     uint32_t size;
     VkShaderStageFlags stageFlags;
-    std::vector<UniformMember> members;
+    std::vector<ShaderValueLayout> members;
 };
 
 /**

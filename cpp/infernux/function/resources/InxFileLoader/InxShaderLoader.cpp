@@ -371,7 +371,7 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
             auto validateMember = [&](const std::string &name, uint32_t expectedOffset) {
                 const auto member =
                     std::find_if(uniformBuffer->members.begin(), uniformBuffer->members.end(),
-                                 [&](const UniformMember &candidate) { return candidate.name == name; });
+                                 [&](const ShaderValueLayout &candidate) { return candidate.name == name; });
                 if (member == uniformBuffer->members.end()) {
                     errors.push_back(stageName + " MaterialProperties is missing member '" + name + "'");
                 } else if (member->offset != expectedOffset) {
@@ -422,9 +422,9 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
         for (const auto &property : artifact.properties) {
             if (!property.textureSlot || !HasVisibility(property.visibility, stage))
                 continue;
-            const auto member =
-                std::find_if(indexBuffer->members.begin(), indexBuffer->members.end(),
-                             [&](const UniformMember &candidate) { return candidate.name == property.schema.name; });
+            const auto member = std::find_if(
+                indexBuffer->members.begin(), indexBuffer->members.end(),
+                [&](const ShaderValueLayout &candidate) { return candidate.name == property.schema.name; });
             if (member == indexBuffer->members.end()) {
                 errors.push_back(stageName + " bindless texture-index block is missing member '" +
                                  property.schema.name + "'");
@@ -569,7 +569,7 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderPr
     const auto requireMember = [&](const char *name, uint32_t offset, uint32_t size) {
         const auto found = std::find_if(push[0].members.begin(), push[0].members.end(),
                                         [name](const auto &member) { return member.name == name; });
-        if (found == push[0].members.end() || found->offset != offset || found->size != size)
+        if (found == push[0].members.end() || found->offset != offset || found->byteSize != size)
             errors.push_back("UI " + stageName + " push constant '" + name + "' has an invalid offset");
     };
     if (world) {

@@ -199,6 +199,8 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
         const auto target = static_cast<int32_t>(variant->target);
         hash = AppendBytes(hash, &target, sizeof(target));
         hash = AppendBytes(hash, &variant->compatibilitySignature, sizeof(variant->compatibilitySignature));
+        hash = AppendString(hash, variant->vertexEntryPoint);
+        hash = AppendString(hash, variant->fragmentEntryPoint);
         const uint64_t vertexSize = variant->vertexSpirv.size();
         hash = AppendBytes(hash, &vertexSize, sizeof(vertexSize));
         hash = AppendBytes(hash, variant->vertexSpirv.data(), variant->vertexSpirv.size());

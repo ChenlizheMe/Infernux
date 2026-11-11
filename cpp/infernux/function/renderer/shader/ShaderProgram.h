@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ShaderProgramCode.h"
 #include "ShaderReflection.h"
 #include <core/types/ShaderProgramArtifact.h>
 #include <memory>
@@ -36,20 +37,18 @@ struct MaterialUBOLayout
 {
     uint32_t binding;
     uint32_t size;
-    std::vector<UniformMember> members;
+    std::vector<ShaderValueLayout> members;
+};
 
-    // Get offset and size for a named property
-    bool GetMemberInfo(const std::string &name, uint32_t &offset, uint32_t &size) const
-    {
-        for (const auto &member : members) {
-            if (member.name == name) {
-                offset = member.offset;
-                size = member.size;
-                return true;
-            }
-        }
-        return false;
-    }
+/// Input metadata is borrowed only during native program creation. Publications
+/// own their entry names and parameter layouts independently of the compiler.
+struct ShaderProgramMetadata
+{
+    ShaderProgramDomain domain = ShaderProgramDomain::Mesh;
+    std::string_view vertexEntryPoint = "main";
+    std::string_view fragmentEntryPoint = "main";
+    const ShaderTargetCode *vertexTarget = nullptr;
+    const ShaderTargetCode *fragmentTarget = nullptr;
 };
 
 /**
@@ -94,7 +93,7 @@ class ShaderProgram
      * @return true if creation succeeded
      */
     bool Create(VkDevice device, const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
-                const ShaderProgramVariantKey &variantKey);
+                const ShaderProgramVariantKey &variantKey, const ShaderProgramMetadata &metadata = {});
 
     /**
      * @brief Destroy all Vulkan resources
@@ -136,6 +135,15 @@ class ShaderProgram
     [[nodiscard]] VkShaderModule GetFragmentModule() const
     {
         return m_fragModule;
+    }
+
+    [[nodiscard]] const std::string &GetVertexEntryPoint() const noexcept
+    {
+        return m_vertexEntryPoint;
+    }
+    [[nodiscard]] const std::string &GetFragmentEntryPoint() const noexcept
+    {
+        return m_fragmentEntryPoint;
     }
 
     [[nodiscard]] VkDescriptorSetLayout GetDescriptorSetLayout(uint32_t set = 0) const
@@ -251,6 +259,9 @@ class ShaderProgram
     // Shader modules
     VkShaderModule m_vertModule = VK_NULL_HANDLE;
     VkShaderModule m_fragModule = VK_NULL_HANDLE;
+    std::string m_vertexEntryPoint;
+    std::string m_fragmentEntryPoint;
+    ShaderProgramDomain m_domain = ShaderProgramDomain::Mesh;
 
     // Reflection data
     ShaderReflection m_vertReflection;
@@ -297,7 +308,7 @@ class ShaderProgram
     /**
      * @brief Extract the canonical MaterialProperties UBO layout.
      */
-    void ExtractMaterialUBOLayout();
+    void ExtractMaterialUBOLayout(const ShaderProgramMetadata &metadata);
 
     /**
      * @brief Validate vertex output / fragment input interface compatibility
@@ -352,10 +363,9 @@ class ShaderProgramCache
     /**
      * @brief Get or create a shader program
      */
-    ShaderProgramPublication GetOrCreateProgram(const ShaderProgramKey &programKey, const std::vector<char> &vertSpirv,
-                                                const std::vector<char> &fragSpirv);
     ShaderProgramPublication GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
-                                                const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv);
+                                                const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
+                                                const ShaderProgramMetadata &metadata = {});
 
     /**
      * @brief Get existing program

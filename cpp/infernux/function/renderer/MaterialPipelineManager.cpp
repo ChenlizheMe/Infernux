@@ -431,9 +431,8 @@ bool MaterialPipelineManager::IsMaterialDescriptorSetCompatible(const ShaderProg
             return false;
         for (const auto &member : lhs->members) {
             const auto other = std::find_if(rhs->members.begin(), rhs->members.end(),
-                                            [&](const UniformMember &value) { return value.name == member.name; });
-            if (other == rhs->members.end() || other->offset != member.offset || other->size != member.size ||
-                other->arraySize != member.arraySize || other->format != member.format)
+                                            [&](const ShaderValueLayout &value) { return value.name == member.name; });
+            if (other == rhs->members.end() || !(*other == member))
                 return false;
         }
         return true;
@@ -552,7 +551,7 @@ VkPipeline MaterialPipelineManager::GetCachedPipeline(size_t pipelineHash) const
 
 MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection(
     std::shared_ptr<InxMaterial> material, const std::vector<char> &vertShaderCode,
-    const std::vector<char> &fragShaderCode, const ShaderProgramKey &programKey)
+    const std::vector<char> &fragShaderCode, const ShaderProgramKey &programKey, const ShaderProgramMetadata &metadata)
 {
     if (!material) {
         INXLOG_ERROR("Cannot create render data for null material");
@@ -628,8 +627,8 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     };
 
     // Get or create shader program (with reflection)
-    ShaderProgramPublication program =
-        m_shaderProgramCache->GetOrCreateProgram(programKey, vertShaderCode, fragShaderCode);
+    ShaderProgramPublication program = m_shaderProgramCache->GetOrCreateProgram(
+        {programKey, ShaderCompileTarget::Forward}, vertShaderCode, fragShaderCode, metadata);
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("Failed to get shader program for material: ", name);
         return keepLastKnownGood();
@@ -746,7 +745,9 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
         effectiveState.stencilTestEnable = false;
 
     // Shader stages
-    auto shaderStages = vkrender::MakeVertFragStages(program->GetVertexModule(), program->GetFragmentModule());
+    auto shaderStages =
+        vkrender::MakeVertFragStages(program->GetVertexModule(), program->GetFragmentModule(),
+                                     program->GetVertexEntryPoint().c_str(), program->GetFragmentEntryPoint().c_str());
 
     // Dynamic state
     vkrender::DynamicViewportScissorState dynVpScissor;

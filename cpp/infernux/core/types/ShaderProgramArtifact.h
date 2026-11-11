@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -13,6 +14,8 @@
 
 namespace infernux
 {
+
+struct ShaderTargetCode;
 
 struct ShaderStagePair
 {
@@ -174,6 +177,10 @@ struct ShaderProgramArtifact
         uint64_t compatibilitySignature = 0;
         std::vector<char> vertexSpirv;
         std::vector<char> fragmentSpirv;
+        std::string vertexEntryPoint = "main";
+        std::string fragmentEntryPoint = "main";
+        std::shared_ptr<const ShaderTargetCode> vertexTarget;
+        std::shared_ptr<const ShaderTargetCode> fragmentTarget;
 
         [[nodiscard]] bool IsValid() const noexcept
         {

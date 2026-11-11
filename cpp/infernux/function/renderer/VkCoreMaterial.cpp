@@ -472,8 +472,11 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     const ShaderProgramKey programKey = artifact ? artifact->key : ShaderProgramKey{stages, 0};
 
     if (vertCode && fragCode && m_materialPipelineManagerInitialized) {
-        auto *renderData =
-            m_materialPipelineManager.GetOrCreateRenderDataWithReflection(material, *vertCode, *fragCode, programKey);
+        auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
+            material, *vertCode, *fragCode, programKey,
+            {artifact ? artifact->domain : ShaderProgramDomain::Mesh, forward ? forward->vertexEntryPoint : "main",
+             forward ? forward->fragmentEntryPoint : "main", forward ? forward->vertexTarget.get() : nullptr,
+             forward ? forward->fragmentTarget.get() : nullptr});
 
         bool forwardOk = renderData && renderData->isValid;
         if (forwardOk)

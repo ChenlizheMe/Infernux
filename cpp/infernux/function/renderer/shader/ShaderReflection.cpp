@@ -117,6 +117,78 @@ VkFormat StageIoFormat(const spirv_cross::SPIRType &type)
     }
     return VK_FORMAT_UNDEFINED;
 }
+
+ShaderScalarKind ScalarKind(spirv_cross::SPIRType::BaseType type)
+{
+    using T = spirv_cross::SPIRType;
+    switch (type) {
+    case T::Boolean:
+        return ShaderScalarKind::Bool;
+    case T::SByte:
+        return ShaderScalarKind::Int8;
+    case T::UByte:
+        return ShaderScalarKind::UInt8;
+    case T::Short:
+        return ShaderScalarKind::Int16;
+    case T::UShort:
+        return ShaderScalarKind::UInt16;
+    case T::Int:
+        return ShaderScalarKind::Int32;
+    case T::UInt:
+        return ShaderScalarKind::UInt32;
+    case T::Int64:
+        return ShaderScalarKind::Int64;
+    case T::UInt64:
+        return ShaderScalarKind::UInt64;
+    case T::Half:
+        return ShaderScalarKind::Float16;
+    case T::Float:
+        return ShaderScalarKind::Float32;
+    case T::Double:
+        return ShaderScalarKind::Float64;
+    default:
+        return ShaderScalarKind::None;
+    }
+}
+
+// Temporary SPIR-V producer for the remaining legacy programs. Both compiler
+// paths publish the same physical layout; material upload never guesses std140.
+ShaderValueLayout ReflectValue(spirv_cross::Compiler &compiler, spirv_cross::TypeID id, uint32_t matrixStride = 0,
+                               bool rowMajor = false)
+{
+    const auto &type = compiler.get_type(id);
+    ShaderValueLayout value;
+    if (!type.array.empty()) {
+        value.kind = ShaderValueKind::Array;
+        value.elementCount = type.array.back();
+        value.stride = compiler.get_decoration(id, spv::DecorationArrayStride);
+        value.fields.push_back(ReflectValue(compiler, type.parent_type, matrixStride, rowMajor));
+        value.byteSize = value.elementCount * value.stride;
+    } else if (type.basetype == spirv_cross::SPIRType::Struct) {
+        value.kind = ShaderValueKind::Struct;
+        value.byteSize = compiler.get_declared_struct_size(type);
+        for (uint32_t index = 0; index < type.member_types.size(); ++index) {
+            auto member = ReflectValue(compiler, type.member_types[index],
+                                       compiler.get_member_decoration(type.self, index, spv::DecorationMatrixStride),
+                                       compiler.has_member_decoration(type.self, index, spv::DecorationRowMajor));
+            member.name = compiler.get_member_name(type.self, index);
+            member.offset = compiler.type_struct_member_offset(type, index);
+            member.byteSize = compiler.get_declared_struct_member_size(type, index);
+            value.fields.push_back(std::move(member));
+        }
+    } else {
+        value.scalar = ScalarKind(type.basetype);
+        value.rowMajor = rowMajor;
+        value.rows = type.columns > 1 ? type.vecsize : 1;
+        value.columns = type.columns > 1 ? type.columns : type.vecsize;
+        value.kind = type.columns > 1 ? ShaderValueKind::Matrix
+                                      : (type.vecsize > 1 ? ShaderValueKind::Vector : ShaderValueKind::Scalar);
+        value.stride = matrixStride;
+        value.byteSize = type.columns > 1 ? matrixStride * (rowMajor ? value.rows : value.columns)
+                                          : (type.width / 8u) * type.vecsize;
+    }
+    return value;
+}
 } // namespace
 
 bool ShaderReflection::Reflect(const std::vector<char> &spirvCode, VkShaderStageFlagBits stage)
@@ -185,56 +257,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             const auto &type = compiler.get_type(ubo.base_type_id);
             info.size = static_cast<uint32_t>(compiler.get_declared_struct_size(type));
 
-            // Get member info
-            uint32_t memberCount = static_cast<uint32_t>(type.member_types.size());
-            for (uint32_t i = 0; i < memberCount; ++i) {
-                UniformMember member;
-                member.name = compiler.get_member_name(ubo.base_type_id, i);
-                member.offset = compiler.type_struct_member_offset(type, i);
-                member.size = static_cast<uint32_t>(compiler.get_declared_struct_member_size(type, i));
-
-                // Get array size if applicable
-                const auto &memberType = compiler.get_type(type.member_types[i]);
-                member.arraySize = memberType.array.empty() ? 1 : memberType.array[0];
-
-                // Infer VkFormat from type
-                member.format = VK_FORMAT_UNDEFINED;
-                if (memberType.basetype == spirv_cross::SPIRType::Float) {
-                    if (memberType.columns == 1) {
-                        switch (memberType.vecsize) {
-                        case 1:
-                            member.format = VK_FORMAT_R32_SFLOAT;
-                            break;
-                        case 2:
-                            member.format = VK_FORMAT_R32G32_SFLOAT;
-                            break;
-                        case 3:
-                            member.format = VK_FORMAT_R32G32B32_SFLOAT;
-                            break;
-                        case 4:
-                            member.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-                            break;
-                        }
-                    }
-                } else if (memberType.basetype == spirv_cross::SPIRType::Int) {
-                    switch (memberType.vecsize) {
-                    case 1:
-                        member.format = VK_FORMAT_R32_SINT;
-                        break;
-                    case 2:
-                        member.format = VK_FORMAT_R32G32_SINT;
-                        break;
-                    case 3:
-                        member.format = VK_FORMAT_R32G32B32_SINT;
-                        break;
-                    case 4:
-                        member.format = VK_FORMAT_R32G32B32A32_SINT;
-                        break;
-                    }
-                }
-
-                info.members.push_back(member);
-            }
+            info.members = ReflectValue(compiler, ubo.base_type_id).fields;
 
             m_uniformBuffers.push_back(info);
         }
@@ -348,20 +371,7 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
             info.size = static_cast<uint32_t>(compiler.get_declared_struct_size(type));
             info.offset = 0; // Push constants start at offset 0
 
-            // Get member info
-            uint32_t memberCount = static_cast<uint32_t>(type.member_types.size());
-            for (uint32_t i = 0; i < memberCount; ++i) {
-                UniformMember member;
-                member.name = compiler.get_member_name(pc.base_type_id, i);
-                member.offset = compiler.type_struct_member_offset(type, i);
-                member.size = static_cast<uint32_t>(compiler.get_declared_struct_member_size(type, i));
-
-                const auto &memberType = compiler.get_type(type.member_types[i]);
-                member.arraySize = memberType.array.empty() ? 1 : memberType.array[0];
-                member.format = VK_FORMAT_UNDEFINED;
-
-                info.members.push_back(member);
-            }
+            info.members = ReflectValue(compiler, pc.base_type_id).fields;
 
             m_pushConstants.push_back(info);
         }

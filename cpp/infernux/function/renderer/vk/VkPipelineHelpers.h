@@ -9,7 +9,7 @@ namespace vkrender
 {
 
 /// Create a VkPipelineShaderStageCreateInfo for a single stage.
-/// Reusable across all pipeline creators that use "main" as entry point.
+/// Entry names belong to the compiled program and stay alive during creation.
 inline VkPipelineShaderStageCreateInfo MakeShaderStageInfo(VkShaderStageFlagBits stage, VkShaderModule module,
                                                            const char *entryPoint = "main")
 {
@@ -22,10 +22,12 @@ inline VkPipelineShaderStageCreateInfo MakeShaderStageInfo(VkShaderStageFlagBits
 }
 
 /// Build a vert+frag shader stage pair.
-inline std::array<VkPipelineShaderStageCreateInfo, 2> MakeVertFragStages(VkShaderModule vert, VkShaderModule frag)
+inline std::array<VkPipelineShaderStageCreateInfo, 2> MakeVertFragStages(VkShaderModule vert, VkShaderModule frag,
+                                                                         const char *vertexEntryPoint = "main",
+                                                                         const char *fragmentEntryPoint = "main")
 {
-    return {MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vert),
-            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, frag)};
+    return {MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vert, vertexEntryPoint),
+            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, frag, fragmentEntryPoint)};
 }
 
 /// Dynamic viewport + scissor state (used by virtually every pipeline).

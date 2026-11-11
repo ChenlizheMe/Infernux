@@ -51,6 +51,13 @@ struct ShaderValueLayout
     bool rowMajor = true;
     std::vector<ShaderValueLayout> fields;
 
+    friend bool operator==(const ShaderValueLayout &a, const ShaderValueLayout &b) noexcept
+    {
+        return a.name == b.name && a.kind == b.kind && a.scalar == b.scalar && a.offset == b.offset &&
+               a.byteSize == b.byteSize && a.stride == b.stride && a.rows == b.rows && a.columns == b.columns &&
+               a.elementCount == b.elementCount && a.rowMajor == b.rowMajor && a.fields == b.fields;
+    }
+
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept
     {
         size_t bytes = sizeof(*this) + name.capacity() + fields.capacity() * sizeof(ShaderValueLayout);

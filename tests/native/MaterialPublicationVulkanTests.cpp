@@ -2,8 +2,10 @@
 #include <SDL3/SDL.h>
 #include <function/renderer/MaterialDescriptor.h>
 #include <function/renderer/vk/VkDeviceContext.h>
+#include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -11,27 +13,38 @@
 #include <array>
 #include <cassert>
 #include <cmath>
-#include <fstream>
 #include <iostream>
 
 using namespace infernux;
 
-static std::vector<char> ReadSpirv(const char *path)
+static constexpr const char *VertexSource = R"(
+struct VertexMaterial { float vertexGain; };
+[[vk::binding(14, 0)]] ConstantBuffer<VertexMaterial> MaterialProperties;
+struct Varying { float4 position : SV_Position; float gain : TEXCOORD0; };
+[shader("vertex")]
+Varying material_vertex(uint id : SV_VulkanVertexID)
 {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    assert(file);
-    std::vector<char> bytes(static_cast<size_t>(file.tellg()));
-    file.seekg(0);
-    file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    assert(file && !bytes.empty());
-    return bytes;
-}
+    Varying result;
+    result.position = float4(float2((id << 1) & 2, id & 2) * 2.0 - 1.0, 0, 1);
+    result.gain = MaterialProperties.vertexGain;
+    return result;
+})";
+
+static constexpr const char *FragmentSource = R"(
+struct FragmentMaterial { float4 tint; float fragmentGain; row_major float4x4 colorTransform; float gains[2]; };
+[[vk::binding(0, 0)]] ConstantBuffer<FragmentMaterial> MaterialProperties;
+[shader("fragment")]
+float4 material_fragment(float gain : TEXCOORD0) : SV_Target0
+{
+    float3 color = mul(MaterialProperties.colorTransform, float4(MaterialProperties.tint.rgb, 0.0)).rgb;
+    return float4(color * MaterialProperties.fragmentGain * gain * MaterialProperties.gains[1], MaterialProperties.tint.a);
+})";
 
 int main(int argc, char **argv)
 {
-    assert(argc == 5);
-    const uint32_t count = static_cast<uint32_t>(std::stoi(argv[3]));
-    const bool queued = std::string(argv[4]) == "queued";
+    assert(argc == 3);
+    const uint32_t count = static_cast<uint32_t>(std::stoi(argv[1]));
+    const bool queued = std::string(argv[2]) == "queued";
     assert(count >= 1 && count <= 4);
     assert(SDL_Init(SDL_INIT_VIDEO));
     auto *window = SDL_CreateWindow("Immutable material publications", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
@@ -53,10 +66,19 @@ int main(int argc, char **argv)
 
     ShaderProgram program;
     ShaderProgramVariantKey key;
-    key.program.stages = {"Tests/MaterialPublication.vert", "Tests/MaterialPublication.frag"};
+    key.program.stages = {"Tests/MaterialPublication.vert.py", "Tests/MaterialPublication.frag.py"};
     key.program.revision = 1;
     key.target = ShaderCompileTarget::Forward;
-    assert(program.Create(vkDevice, ReadSpirv(argv[1]), ReadSpirv(argv[2]), key));
+    auto &compiler = SlangCompiler::Get();
+    const auto vertex =
+        compiler.Compile({"material_vertex", "<material vertex>", VertexSource}, {}, {ShaderCodeTarget::SpirV});
+    const auto fragment =
+        compiler.Compile({"material_fragment", "<material fragment>", FragmentSource}, {}, {ShaderCodeTarget::SpirV});
+    const auto &vs = vertex.targets.front().entries.front();
+    const auto &fs = fragment.targets.front().entries.front();
+    assert(program.Create(
+        vkDevice, vs.code, fs.code, key,
+        {ShaderProgramDomain::Mesh, vs.name, fs.name, &vertex.targets.front(), &fragment.targets.front()}));
 
     VkAttachmentDescription attachment{};
     attachment.format = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -87,15 +109,9 @@ int main(int argc, char **argv)
     VkRenderPass pass;
     assert(vkCreateRenderPass(vkDevice, &passInfo, nullptr, &pass) == VK_SUCCESS);
 
-    std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
-    for (auto &stage : stages) {
-        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stage.pName = "main";
-    }
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = program.GetVertexModule();
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = program.GetFragmentModule();
+    auto stages =
+        vkrender::MakeVertFragStages(program.GetVertexModule(), program.GetFragmentModule(),
+                                     program.GetVertexEntryPoint().c_str(), program.GetFragmentEntryPoint().c_str());
     VkPipelineVertexInputStateCreateInfo input{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -186,6 +202,12 @@ int main(int argc, char **argv)
         material.SetColor("tint", tint);
         material.SetFloat("fragmentGain", fragmentGain);
         material.SetFloat("vertexGain", vertexGain);
+        glm::mat4 transform(1.0f);
+        transform[0][1] = 0.25f;
+        transform[1][2] = 0.5f;
+        transform[2][0] = 0.1f;
+        material.SetMatrix("colorTransform", transform);
+        material.SetFloatArray("gains", {0.25f, 0.8f});
         if (!publication)
             publication = descriptors.GetOrCreateDescriptorSet(material, program);
         else
@@ -208,7 +230,10 @@ int main(int argc, char **argv)
         assert(retirement.Collect(0) == 0 && allocator.Collect(0) == 0);
 
         auto &frame = frames[index];
-        frame.expected[index % 3] = fragmentGain * vertexGain;
+        const auto expected =
+            glm::vec3(transform * glm::vec4(glm::vec3(tint), 0.0f)) * fragmentGain * vertexGain * 0.8f;
+        for (size_t channel = 0; channel < 3; ++channel)
+            frame.expected[channel] = expected[channel];
         frame.expected[3] = 1;
         rhi::TextureDesc texture;
         texture.width = 2;
@@ -313,5 +338,6 @@ int main(int argc, char **argv)
     context.Destroy();
     SDL_DestroyWindow(window);
     SDL_Quit();
-    std::cout << "PASS " << count << ' ' << argv[4] << " frames, two views, immutable fragment/vertex UBOs\n";
+    std::cout << "PASS " << count << ' ' << argv[2]
+              << " frames, two views, Slang entries and immutable fragment/vertex UBOs\n";
 }

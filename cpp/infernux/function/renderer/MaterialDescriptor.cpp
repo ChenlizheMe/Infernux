@@ -102,6 +102,8 @@ bool MaterialUBO::Create(VmaAllocator allocator, VkDevice device, const Material
     m_device = device;
     m_layout = layout;
     m_size = layout.size;
+    for (const auto &member : layout.members)
+        m_memberCopies.emplace(member.name, ShaderValueCopy(member, ShaderMatrixOrder::ColumnMajor));
 
     if (m_size == 0) {
         INXLOG_WARN("Creating MaterialUBO with size 0");
@@ -146,6 +148,7 @@ void MaterialUBO::Destroy()
 
     m_allocator = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
+    m_memberCopies.clear();
 }
 
 void MaterialUBO::Update(const InxMaterial &material)
@@ -154,62 +157,8 @@ void MaterialUBO::Update(const InxMaterial &material)
         return;
     }
 
-    const auto &properties = material.GetAllProperties();
-
-    for (const auto &[name, prop] : properties) {
-        uint32_t offset, size;
-        if (!m_layout.GetMemberInfo(name, offset, size)) {
-            continue; // Property not in UBO layout
-        }
-
-        switch (prop.type) {
-        case MaterialPropertyType::Float: {
-            float value = std::get<float>(prop.value);
-            WriteData(offset, &value, sizeof(float));
-            break;
-        }
-        case MaterialPropertyType::Float2: {
-            glm::vec2 value = std::get<glm::vec2>(prop.value);
-            WriteData(offset, &value, sizeof(glm::vec2));
-            break;
-        }
-        case MaterialPropertyType::Float3: {
-            glm::vec3 value = std::get<glm::vec3>(prop.value);
-            WriteData(offset, &value, sizeof(glm::vec3));
-            break;
-        }
-        case MaterialPropertyType::Float4: {
-            glm::vec4 value = std::get<glm::vec4>(prop.value);
-            WriteData(offset, &value, sizeof(glm::vec4));
-            break;
-        }
-        case MaterialPropertyType::Color: {
-            // Authored colors are sRGB; shading runs in linear space.
-            glm::vec4 value = inx::color::SrgbToLinear(std::get<glm::vec4>(prop.value));
-            WriteData(offset, &value, sizeof(glm::vec4));
-            break;
-        }
-        case MaterialPropertyType::Int: {
-            int value = std::get<int>(prop.value);
-            WriteData(offset, &value, sizeof(int));
-            break;
-        }
-        case MaterialPropertyType::Mat4: {
-            glm::mat4 value = std::get<glm::mat4>(prop.value);
-            WriteData(offset, &value, sizeof(glm::mat4));
-            break;
-        }
-        case MaterialPropertyType::Texture2D:
-            // Textures are bound separately, not in UBO
-            break;
-        case MaterialPropertyType::FloatArray:
-            SetFloatArray(name, std::get<std::vector<float>>(prop.value));
-            break;
-        case MaterialPropertyType::Float4Array:
-            SetVec4Array(name, std::get<std::vector<glm::vec4>>(prop.value));
-            break;
-        }
-    }
+    for (const auto &[name, property] : material.GetAllProperties())
+        WriteProperty(name, property.type, property.value);
 }
 
 void MaterialUBO::Apply(const InxMaterial &material, const RendererParameterBlock &parameters)
@@ -219,37 +168,42 @@ void MaterialUBO::Apply(const InxMaterial &material, const RendererParameterBloc
         // An immutable block can outlive the shader layout it was recorded for.
         if (!declared || !MaterialPropertyOverrideCompatible(*declared, property))
             continue;
-        switch (declared->type) {
-        case MaterialPropertyType::Float:
-            SetFloat(name, std::get<float>(property.value));
-            break;
-        case MaterialPropertyType::Float2:
-            SetVec2(name, std::get<glm::vec2>(property.value));
-            break;
-        case MaterialPropertyType::Float3:
-            SetVec3(name, std::get<glm::vec3>(property.value));
-            break;
-        case MaterialPropertyType::Float4:
-            SetVec4(name, std::get<glm::vec4>(property.value));
-            break;
-        case MaterialPropertyType::Color:
-            SetVec4(name, inx::color::SrgbToLinear(std::get<glm::vec4>(property.value)));
-            break;
-        case MaterialPropertyType::Int:
-            SetInt(name, std::get<int>(property.value));
-            break;
-        case MaterialPropertyType::Mat4:
-            SetMat4(name, std::get<glm::mat4>(property.value));
-            break;
-        case MaterialPropertyType::Texture2D:
-            break;
-        case MaterialPropertyType::FloatArray:
-            SetFloatArray(name, std::get<std::vector<float>>(property.value));
-            break;
-        case MaterialPropertyType::Float4Array:
-            SetVec4Array(name, std::get<std::vector<glm::vec4>>(property.value));
-            break;
-        }
+        WriteProperty(name, declared->type, property.value);
+    }
+}
+
+void MaterialUBO::WriteProperty(const std::string &name, MaterialPropertyType type, const MaterialPropertyValue &value)
+{
+    switch (type) {
+    case MaterialPropertyType::Float:
+        SetFloat(name, std::get<float>(value));
+        break;
+    case MaterialPropertyType::Float2:
+        SetVec2(name, std::get<glm::vec2>(value));
+        break;
+    case MaterialPropertyType::Float3:
+        SetVec3(name, std::get<glm::vec3>(value));
+        break;
+    case MaterialPropertyType::Float4:
+        SetVec4(name, std::get<glm::vec4>(value));
+        break;
+    case MaterialPropertyType::Color:
+        SetVec4(name, inx::color::SrgbToLinear(std::get<glm::vec4>(value)));
+        break;
+    case MaterialPropertyType::Int:
+        SetInt(name, std::get<int>(value));
+        break;
+    case MaterialPropertyType::Mat4:
+        SetMat4(name, std::get<glm::mat4>(value));
+        break;
+    case MaterialPropertyType::Texture2D:
+        break;
+    case MaterialPropertyType::FloatArray:
+        SetFloatArray(name, std::get<std::vector<float>>(value));
+        break;
+    case MaterialPropertyType::Float4Array:
+        SetVec4Array(name, std::get<std::vector<glm::vec4>>(value));
+        break;
     }
 }
 
@@ -257,98 +211,71 @@ void MaterialUBO::UpdateTextureIndices(const std::array<uint32_t, ShaderProgram:
 {
     if (!m_mappedData || m_size == 0)
         return;
-    const size_t memberCount = (std::min)(m_layout.members.size(), indices.size());
-    for (size_t slot = 0; slot < memberCount; ++slot) {
-        const UniformMember &member = m_layout.members[slot];
-        WriteData(member.offset, &indices[slot], (std::min)(member.size, static_cast<uint32_t>(sizeof(indices[slot]))));
-    }
+    for (size_t slot = 0; slot < m_layout.members.size(); ++slot)
+        WriteValue(m_layout.members[slot].name, &indices[slot]);
 }
 
 void MaterialUBO::UpdateTextureIndex(std::string_view name, uint32_t index)
 {
-    uint32_t offset = 0;
-    uint32_t size = 0;
-    if (!m_layout.GetMemberInfo(std::string(name), offset, size))
-        return;
-    WriteData(offset, &index, (std::min)(size, static_cast<uint32_t>(sizeof(index))));
+    WriteValue(std::string(name), &index);
 }
 
-void MaterialUBO::WriteData(uint32_t offset, const void *data, uint32_t size)
+void MaterialUBO::WriteValue(const std::string &name, const void *value)
 {
-    if (!m_mappedData || offset + size > m_size) {
-        INXLOG_WARN("MaterialUBO write out of bounds: offset=", offset, " size=", size, " bufferSize=", m_size);
+    const auto copy = m_memberCopies.find(name);
+    if (copy == m_memberCopies.end())
         return;
-    }
-
-    std::memcpy(static_cast<char *>(m_mappedData) + offset, data, size);
+    copy->second.Write(m_mappedData, value);
 }
 
 void MaterialUBO::SetFloat(const std::string &name, float value)
 {
-    uint32_t offset, size;
-    if (m_layout.GetMemberInfo(name, offset, size)) {
-        WriteData(offset, &value, sizeof(float));
-    }
+    WriteValue(name, &value);
 }
 
 void MaterialUBO::SetVec2(const std::string &name, const glm::vec2 &value)
 {
-    uint32_t offset, size;
-    if (m_layout.GetMemberInfo(name, offset, size)) {
-        WriteData(offset, &value, sizeof(glm::vec2));
-    }
+    WriteValue(name, &value);
 }
 
 void MaterialUBO::SetVec3(const std::string &name, const glm::vec3 &value)
 {
-    uint32_t offset, size;
-    if (m_layout.GetMemberInfo(name, offset, size)) {
-        WriteData(offset, &value, sizeof(glm::vec3));
-    }
+    WriteValue(name, &value);
 }
 
 void MaterialUBO::SetVec4(const std::string &name, const glm::vec4 &value)
 {
-    uint32_t offset, size;
-    if (m_layout.GetMemberInfo(name, offset, size)) {
-        WriteData(offset, &value, sizeof(glm::vec4));
-    }
+    WriteValue(name, &value);
 }
 
 void MaterialUBO::SetInt(const std::string &name, int value)
 {
-    uint32_t offset, size;
-    if (m_layout.GetMemberInfo(name, offset, size)) {
-        WriteData(offset, &value, sizeof(int));
-    }
+    WriteValue(name, &value);
 }
 
 void MaterialUBO::SetMat4(const std::string &name, const glm::mat4 &value)
 {
-    uint32_t offset, size;
-    if (m_layout.GetMemberInfo(name, offset, size)) {
-        WriteData(offset, &value, sizeof(glm::mat4));
-    }
+    WriteValue(name, &value);
 }
 
 void MaterialUBO::SetFloatArray(const std::string &name, const std::vector<float> &values)
 {
-    const auto member = std::find_if(m_layout.members.begin(), m_layout.members.end(),
-                                     [&](const UniformMember &candidate) { return candidate.name == name; });
-    if (member == m_layout.members.end() || member->arraySize != values.size() || member->size < values.size() * 16u)
-        return;
-    for (size_t index = 0; index < values.size(); ++index)
-        WriteData(member->offset + static_cast<uint32_t>(index * 16u), &values[index], sizeof(float));
+    WriteArray(name, values.data(), values.size() * sizeof(float));
 }
 
 void MaterialUBO::SetVec4Array(const std::string &name, const std::vector<glm::vec4> &values)
 {
-    const auto member = std::find_if(m_layout.members.begin(), m_layout.members.end(),
-                                     [&](const UniformMember &candidate) { return candidate.name == name; });
-    if (member == m_layout.members.end() || member->arraySize != values.size() || member->size < values.size() * 16u)
+    WriteArray(name, values.data(), values.size() * sizeof(glm::vec4));
+}
+
+void MaterialUBO::WriteArray(const std::string &name, const void *values, size_t bytes)
+{
+    const auto copy = m_memberCopies.find(name);
+    if (copy == m_memberCopies.end())
         return;
-    if (!values.empty())
-        WriteData(member->offset, values.data(), static_cast<uint32_t>(values.size() * sizeof(glm::vec4)));
+    if (copy->second.GetSourceBytes() != bytes)
+        throw std::invalid_argument("Material array size does not match the compiled parameter: " + name);
+    copy->second.Write(m_mappedData, values);
 }
 
 // ============================================================================

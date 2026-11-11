@@ -2280,11 +2280,13 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     resource->textureVersions = std::move(textureVersions);
     if (artifact.materialBufferSize) {
         MaterialUBOLayout layout{0, artifact.materialBufferSize, {}};
-        for (const auto &property : artifact.properties) {
-            if (property.bufferOffset)
-                layout.members.push_back(
-                    {property.name, *property.bufferOffset, property.byteSize, 1, VK_FORMAT_UNDEFINED});
-        }
+        ShaderReflection reflection;
+        const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
+        if (!reflection.Reflect(forward->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT))
+            throw std::runtime_error("UI material parameter layout could not be reflected");
+        for (const auto &buffer : reflection.GetUniformBuffers())
+            if (buffer.set == 0 && buffer.binding == 0)
+                layout.members = buffer.members;
         resource->buffer = std::make_unique<MaterialUBO>();
         if (!resource->buffer->Create(m_allocator, m_device, layout))
             throw std::runtime_error("UI material UBO allocation failed");

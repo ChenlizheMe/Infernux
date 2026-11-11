@@ -89,25 +89,14 @@ if(INFERNUX_BUILD_TESTS)
     set_tests_properties(infernux.material_texture_readiness_vulkan PROPERTIES
         LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
 
-    foreach(_stage IN ITEMS vert frag)
-        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MaterialPublication.${_stage}.spv"
-            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-                "${CMAKE_SOURCE_DIR}/tests/native/shaders/MaterialPublication.${_stage}"
-                -o "${CMAKE_CURRENT_BINARY_DIR}/MaterialPublication.${_stage}.spv"
-            DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/MaterialPublication.${_stage}"
-            VERBATIM)
-    endforeach()
     infernux_add_native_test(infernux_material_publication_vulkan_tests
-        tests/native/MaterialPublicationVulkanTests.cpp
-        "${CMAKE_CURRENT_BINARY_DIR}/MaterialPublication.vert.spv"
-        "${CMAKE_CURRENT_BINARY_DIR}/MaterialPublication.frag.spv")
-    target_link_libraries(infernux_material_publication_vulkan_tests PRIVATE infernux_runtime_test_support)
+        tests/native/MaterialPublicationVulkanTests.cpp)
+    target_link_libraries(infernux_material_publication_vulkan_tests PRIVATE infernux_runtime_test_support InfernuxShaderCompiler)
     foreach(_frames RANGE 1 4)
         foreach(_mode IN ITEMS recorded queued)
             add_test(NAME infernux.material_publication_${_frames}_${_mode}
                 COMMAND infernux_material_publication_vulkan_tests
-                    "${CMAKE_CURRENT_BINARY_DIR}/MaterialPublication.vert.spv"
-                    "${CMAKE_CURRENT_BINARY_DIR}/MaterialPublication.frag.spv" "${_frames}" "${_mode}")
+                    "${_frames}" "${_mode}")
             set_tests_properties(infernux.material_publication_${_frames}_${_mode} PROPERTIES
                 LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
         endforeach()

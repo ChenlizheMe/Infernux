@@ -75,6 +75,8 @@ ShaderProgram::~ShaderProgram()
 ShaderProgram::ShaderProgram(ShaderProgram &&other) noexcept
     : m_device(other.m_device), m_shaderId(std::move(other.m_shaderId)), m_variantKey(std::move(other.m_variantKey)),
       m_vertModule(other.m_vertModule), m_fragModule(other.m_fragModule),
+      m_vertexEntryPoint(std::move(other.m_vertexEntryPoint)),
+      m_fragmentEntryPoint(std::move(other.m_fragmentEntryPoint)), m_domain(other.m_domain),
       m_vertReflection(std::move(other.m_vertReflection)), m_fragReflection(std::move(other.m_fragReflection)),
       m_descriptorBindings(std::move(other.m_descriptorBindings)),
       m_descriptorSetLayouts(std::move(other.m_descriptorSetLayouts)), m_pipelineLayout(other.m_pipelineLayout),
@@ -106,6 +108,9 @@ ShaderProgram &ShaderProgram::operator=(ShaderProgram &&other) noexcept
         m_variantKey = std::move(other.m_variantKey);
         m_vertModule = other.m_vertModule;
         m_fragModule = other.m_fragModule;
+        m_vertexEntryPoint = std::move(other.m_vertexEntryPoint);
+        m_fragmentEntryPoint = std::move(other.m_fragmentEntryPoint);
+        m_domain = other.m_domain;
         m_vertReflection = std::move(other.m_vertReflection);
         m_fragReflection = std::move(other.m_fragReflection);
         m_descriptorBindings = std::move(other.m_descriptorBindings);
@@ -133,11 +138,14 @@ ShaderProgram &ShaderProgram::operator=(ShaderProgram &&other) noexcept
 }
 
 bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
-                           const ShaderProgramVariantKey &variantKey)
+                           const ShaderProgramVariantKey &variantKey, const ShaderProgramMetadata &metadata)
 {
     m_device = device;
     m_variantKey = variantKey;
     m_shaderId = variantKey.ToString();
+    m_vertexEntryPoint = metadata.vertexEntryPoint;
+    m_fragmentEntryPoint = metadata.fragmentEntryPoint;
+    m_domain = metadata.domain;
 
     // Create shader modules
     m_vertModule = CreateShaderModule(vertSpirv);
@@ -193,7 +201,7 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     }
 
     // Extract material UBO layout
-    ExtractMaterialUBOLayout();
+    ExtractMaterialUBOLayout(metadata);
 
     // Create descriptor set layouts
     if (!CreateDescriptorSetLayouts()) {
@@ -408,40 +416,52 @@ bool ShaderProgram::ValidateStageInterface() const
     return valid;
 }
 
-void ShaderProgram::ExtractMaterialUBOLayout()
+void ShaderProgram::ExtractMaterialUBOLayout(const ShaderProgramMetadata &metadata)
 {
     m_hasMaterialUBO = false;
     m_hasVertexMaterialUBO = false;
     m_hasBindlessTextureIndexLayout = false;
 
-    // Look for the bindless texture-index block and the canonical material
-    // properties block in the fragment shader. The index block belongs to the
-    // material set of the active domain, so its set/binding cannot be hard-coded here.
+    const uint32_t materialSet =
+        m_domain == ShaderProgramDomain::ParticleSprite || m_variantKey.target == ShaderCompileTarget::Shadow
+            ? 2u
+            : MaterialDescriptorSet;
+
+    const auto extract = [](const UniformBufferInfo &ubo, const ShaderTargetCode *target) {
+        MaterialUBOLayout layout{ubo.binding, ubo.size, ubo.members};
+        if (target) {
+            const auto resource = std::find_if(target->resources.begin(), target->resources.end(),
+                                               [&](const ShaderResourceLayout &value) {
+                                                   return value.set == ubo.set && value.binding.binding == ubo.binding;
+                                               });
+            if (resource == target->resources.end())
+                throw std::logic_error("Material resource is absent from the compiler publication");
+            layout.size = static_cast<uint32_t>(resource->value.byteSize);
+            layout.members = resource->value.fields;
+        }
+        return layout;
+    };
+
+    // Material ownership comes from the program domain and binding set, not
+    // the compiler's emitted block name. Slang may mangle ConstantBuffer names.
     for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
         if (ubo.name == "InxMaterialTextureIndices") {
-            m_bindlessTextureIndexLayout.binding = ubo.binding;
-            m_bindlessTextureIndexLayout.size = ubo.size;
-            m_bindlessTextureIndexLayout.members = ubo.members;
+            m_bindlessTextureIndexLayout = extract(ubo, metadata.fragmentTarget);
             m_hasBindlessTextureIndexLayout = true;
             continue;
         }
-        if (ubo.name == "MaterialProperties") {
-            m_materialUBOLayout.binding = ubo.binding;
-            m_materialUBOLayout.size = ubo.size;
-            m_materialUBOLayout.members = ubo.members;
+        if (ubo.set == materialSet) {
+            m_materialUBOLayout = extract(ubo, metadata.fragmentTarget);
             m_hasMaterialUBO = true;
 
             break;
         }
     }
 
-    // Also look for a vertex-stage MaterialProperties UBO at binding 14
-    // (used when the vertex ShaderInfo declares Properties)
+    // The geometry ABI places vertex material parameters at binding 14.
     for (const auto &ubo : m_vertReflection.GetUniformBuffers()) {
-        if (ubo.name == "MaterialProperties" && ubo.binding == 14 && (ubo.set == 0 || ubo.set == 2)) {
-            m_vertexMaterialUBOLayout.binding = ubo.binding;
-            m_vertexMaterialUBOLayout.size = ubo.size;
-            m_vertexMaterialUBOLayout.members = ubo.members;
+        if (ubo.set == materialSet && ubo.binding == 14) {
+            m_vertexMaterialUBOLayout = extract(ubo, metadata.vertexTarget);
             m_hasVertexMaterialUBO = true;
 
             break;
@@ -454,16 +474,9 @@ void ShaderProgram::ExtractMaterialUBOLayout()
     if (m_hasMaterialUBO && m_hasVertexMaterialUBO &&
         m_materialUBOLayout.binding == m_vertexMaterialUBOLayout.binding &&
         m_materialUBOLayout.size == m_vertexMaterialUBOLayout.size &&
-        m_materialUBOLayout.members.size() == m_vertexMaterialUBOLayout.members.size()) {
-        const bool sameMembers = std::equal(
-            m_materialUBOLayout.members.begin(), m_materialUBOLayout.members.end(),
-            m_vertexMaterialUBOLayout.members.begin(), [](const UniformMember &lhs, const UniformMember &rhs) {
-                return lhs.name == rhs.name && lhs.offset == rhs.offset && lhs.size == rhs.size;
-            });
-        if (sameMembers) {
-            m_vertexMaterialUBOLayout = {};
-            m_hasVertexMaterialUBO = false;
-        }
+        m_materialUBOLayout.members == m_vertexMaterialUBOLayout.members) {
+        m_vertexMaterialUBOLayout = {};
+        m_hasVertexMaterialUBO = false;
     }
 }
 
@@ -707,16 +720,10 @@ void ShaderProgramCache::Shutdown()
     m_device = VK_NULL_HANDLE;
 }
 
-ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProgramKey &programKey,
-                                                                const std::vector<char> &vertSpirv,
-                                                                const std::vector<char> &fragSpirv)
-{
-    return GetOrCreateProgram({programKey, ShaderCompileTarget::Forward}, vertSpirv, fragSpirv);
-}
-
 ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
                                                                 const std::vector<char> &vertSpirv,
-                                                                const std::vector<char> &fragSpirv)
+                                                                const std::vector<char> &fragSpirv,
+                                                                const ShaderProgramMetadata &metadata)
 {
     const ShaderProgramVariantKey canonicalKey = CanonicalKey(variantKey);
     // Check cache first
@@ -732,7 +739,7 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
 
     // Create new program
     auto program = std::make_shared<ShaderProgram>();
-    if (!program->Create(m_device, vertSpirv, fragSpirv, canonicalKey)) {
+    if (!program->Create(m_device, vertSpirv, fragSpirv, canonicalKey, metadata)) {
         INXLOG_ERROR("Failed to create shader program: ", canonicalKey.program.stages.ToString(), " (",
                      ShaderCompileTargetName(canonicalKey.target), ")");
         m_failedPrograms.insert(canonicalKey);

@@ -143,7 +143,8 @@ class MaterialPipelineManager
     MaterialRenderData *GetOrCreateRenderDataWithReflection(std::shared_ptr<InxMaterial> material,
                                                             const std::vector<char> &vertShaderCode,
                                                             const std::vector<char> &fragShaderCode,
-                                                            const ShaderProgramKey &programKey);
+                                                            const ShaderProgramKey &programKey,
+                                                            const ShaderProgramMetadata &metadata = {});
 
     /**
      * @brief Get existing render data for a material (doesn't create new)

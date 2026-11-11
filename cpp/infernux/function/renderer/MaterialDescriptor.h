@@ -5,6 +5,7 @@
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiTexture.h"
 #include "shader/ShaderProgram.h"
+#include "shader/ShaderValueCopy.h"
 #include "vk/VkDescriptorManager.h"
 #include <array>
 #include <atomic>
@@ -116,11 +117,10 @@ class MaterialUBO
     uint32_t m_size = 0;
 
     MaterialUBOLayout m_layout;
-
-    /**
-     * @brief Write data to a specific offset in the buffer
-     */
-    void WriteData(uint32_t offset, const void *data, uint32_t size);
+    std::unordered_map<std::string, ShaderValueCopy> m_memberCopies;
+    void WriteValue(const std::string &name, const void *value);
+    void WriteArray(const std::string &name, const void *values, size_t bytes);
+    void WriteProperty(const std::string &name, MaterialPropertyType type, const MaterialPropertyValue &value);
 };
 
 /**
