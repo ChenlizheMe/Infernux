@@ -2,6 +2,7 @@
 
 #include <function/renderer/rhi/RenderCoreApi.h>
 #include <function/renderer/rhi/RhiCommand.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <cstdint>
 #include <memory>
@@ -17,6 +18,13 @@ namespace infernux
 
 class InxVkCoreModular;
 class FullscreenPipelineCache;
+class DeviceShaderProgram;
+
+struct FullscreenProgram
+{
+    std::shared_ptr<const ShaderTargetCode> code;
+    std::string schema;
+};
 
 class FullscreenRendererHost
 {
@@ -33,6 +41,10 @@ class FullscreenRendererHost
     [[nodiscard]] virtual rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name, rhi::ShaderStage stage,
                                                                       uint32_t inputCount,
                                                                       uint32_t inputBufferMask) = 0;
+    [[nodiscard]] virtual std::shared_ptr<const FullscreenProgram> AcquireProgram(const std::string &)
+    {
+        return {};
+    }
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetPerViewLayout() const noexcept = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetGlobalsLayout() const noexcept = 0;
     virtual void ReportError(const std::string &message)
@@ -63,6 +75,7 @@ struct FullscreenPipelineKey
     uint32_t inputBufferMask = 0;
     uint32_t depthInputMask = 0;
     bool useDynamicRendering = false;
+    std::shared_ptr<const FullscreenProgram> program;
 
     INFERNUX_RENDER_CORE_API bool operator==(const FullscreenPipelineKey &other) const noexcept;
 };
@@ -78,6 +91,11 @@ struct FullscreenPipelineEntry
     rhi::BindingLayoutHandle inputLayout;
     bool hasPerView = false;
     bool hasGlobals = false;
+    std::shared_ptr<DeviceShaderProgram> program;
+    std::vector<char> parameterDefaults;
+    std::vector<ShaderValueLayout> parameterFields;
+    std::vector<std::string> inputNames;
+    std::vector<int32_t> resourceInputs;
 };
 
 struct FullscreenResourceInput
@@ -106,6 +124,7 @@ class FullscreenPipelineCache
 
     INFERNUX_RENDER_CORE_API const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
     INFERNUX_RENDER_CORE_API void InvalidateShader(const std::string &shaderName);
+
     [[nodiscard]] INFERNUX_RENDER_CORE_API rhi::Device &GetDevice() const noexcept;
 
   private:
@@ -132,6 +151,15 @@ class FullscreenRenderer
     /// Retire every cached pipeline compiled from @p shaderName. The next
     /// record resolves the newly published module and builds a fresh pipeline.
     INFERNUX_RENDER_CORE_API void InvalidateShader(const std::string &shaderName);
+
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<const FullscreenProgram>
+    AcquireProgram(const std::string &name);
+
+    INFERNUX_RENDER_CORE_API void DrawProgram(rhi::GraphicsCommandEncoder &encoder,
+                                              const FullscreenPipelineEntry &entry,
+                                              const FullscreenResourceInput *inputs,
+                                              const std::vector<std::pair<std::string, float>> &parameters,
+                                              const float *values = nullptr);
 
     INFERNUX_RENDER_CORE_API rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout,
                                                                     const FullscreenResourceInput *inputs,

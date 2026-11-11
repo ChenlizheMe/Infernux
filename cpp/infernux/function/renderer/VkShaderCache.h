@@ -26,21 +26,6 @@ namespace vk
 class VkPipelineManager;
 }
 
-/// Render-state defaults parsed from the shader's ShaderInfo declaration.
-/// Keyed by shader_id (e.g. "lit", "unlit"). Applied to materials before
-/// pipeline creation so shader authors can control GPU state via annotations.
-struct ShaderRenderMeta
-{
-    std::string cullMode;   // "back", "front", "none" (empty = default)
-    std::string depthWrite; // "on", "off" (empty = default)
-    std::string depthTest;  // "on", "off", "less", "less_equal", "always", "never" (empty = default)
-    std::string blend;      // "off", "alpha", "additive" (empty = default)
-    int queue = -1;         // -1 = use material default
-    std::string passTag;    // "opaque", "transparent", etc. (empty = matches all)
-    std::string stencil;    // "compare,ref,pass,fail,zfail" (empty = no stencil)
-    std::string alphaClip;  // "off" or threshold string e.g. "0.5" (empty = default)
-};
-
 struct ShaderProgramArtifactPublishResult
 {
     bool accepted = false;

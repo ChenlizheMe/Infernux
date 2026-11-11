@@ -12,19 +12,6 @@
 namespace infernux
 {
 
-/// Render-state metadata extracted from shader annotations at compile time.
-struct ShaderRenderMeta
-{
-    std::string cullMode;
-    std::string depthWrite;
-    std::string depthTest;
-    std::string blend;
-    int queue = -1;
-    std::string passTag;
-    std::string stencil;
-    std::string alphaClip;
-};
-
 struct ShaderStageVariant
 {
     ShaderCompileTarget target = ShaderCompileTarget::Forward;

@@ -4779,28 +4779,84 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
 
                 // Reflect once when building this graph, never in the frame loop.
                 // Texture2DMS retains sample identity; Texture2D consumes resolved data.
-                if (!m_vkCore->EnsureShaderAvailable(command->shaderName, "fragment"))
-                    return;
-                const auto *fragmentCode = m_vkCore->GetShaderCache().FindFragCode(command->shaderName);
-                ShaderReflection inputReflection;
-                if (!fragmentCode || !inputReflection.Reflect(*fragmentCode, VK_SHADER_STAGE_FRAGMENT_BIT))
-                    return;
+                const auto authorProgram = m_fullscreenRenderer.AcquireProgram(command->shaderName);
+                const auto authorParameters = command->pushConstants;
+                struct FullscreenInput
+                {
+                    std::string name;
+                    uint32_t binding = 0;
+                    bool storage = false;
+                    bool readOnly = true;
+                    bool multisampled = false;
+                    uint32_t arraySize = 1;
+                    ReflectedImageDimension dimension = ReflectedImageDimension::D2;
+                    VkFormat scalarArrayFormat = VK_FORMAT_UNDEFINED;
+                    uint32_t arrayMemberOffset = 0;
+                    uint32_t arrayStride = 0;
+                    uint32_t arrayElementCount = 0;
+                };
+                std::vector<FullscreenInput> declaredInputs;
+                if (authorProgram) {
+                    const auto schema = nlohmann::json::parse(authorProgram->schema);
+                    for (const auto &input : schema.at("inputs")) {
+                        const auto name = input.at("name").get<std::string>();
+                        const auto &resources = authorProgram->code->resources;
+                        const auto resource = std::find_if(resources.begin(), resources.end(), [&](const auto &item) {
+                            return item.name == "inx_" + name + ".texture";
+                        });
+                        if (resource == resources.end())
+                            throw std::logic_error("Fullscreen author input has no target resource: " + name);
+                        FullscreenInput item;
+                        item.name = name;
+                        item.binding = static_cast<uint32_t>(declaredInputs.size());
+                        item.multisampled = resource->multisampled;
+                        declaredInputs.push_back(std::move(item));
+                    }
+                } else {
+                    if (!m_vkCore->EnsureShaderAvailable(command->shaderName, "fragment"))
+                        return;
+                    const auto *fragmentCode = m_vkCore->GetShaderCache().FindFragCode(command->shaderName);
+                    ShaderReflection reflection;
+                    if (!fragmentCode || !reflection.Reflect(*fragmentCode, VK_SHADER_STAGE_FRAGMENT_BIT))
+                        return;
+                    for (const auto &image : reflection.GetSampledImages()) {
+                        if (image.set == 0 && image.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                            FullscreenInput item;
+                            item.name = image.name;
+                            item.binding = image.binding;
+                            item.multisampled = image.multisampled;
+                            item.arraySize = image.arraySize;
+                            item.dimension = image.dimension;
+                            declaredInputs.push_back(std::move(item));
+                        }
+                    }
+                    for (const auto &buffer : reflection.GetStorageBuffers()) {
+                        if (buffer.set == 0) {
+                            FullscreenInput item;
+                            item.name = buffer.name;
+                            item.binding = buffer.binding;
+                            item.storage = true;
+                            item.readOnly = buffer.readOnly;
+                            item.arraySize = buffer.arraySize;
+                            item.scalarArrayFormat = buffer.scalarArrayFormat;
+                            item.arrayMemberOffset = buffer.arrayMemberOffset;
+                            item.arrayStride = buffer.arrayStride;
+                            item.arrayElementCount = buffer.arrayElementCount;
+                            declaredInputs.push_back(std::move(item));
+                        }
+                    }
+                }
                 std::unordered_set<uint32_t> multisampledBindings;
                 std::unordered_map<uint32_t, ReflectedImageDimension> sampledDimensions;
-                for (const auto &image : inputReflection.GetSampledImages()) {
-                    if (image.set != 0)
+                for (const auto &image : declaredInputs) {
+                    if (image.storage)
                         continue;
                     sampledDimensions[image.binding] = image.dimension;
                     if (image.multisampled)
                         multisampledBindings.insert(image.binding);
                 }
                 std::vector<std::string> inputNames(commandInputBindings.size());
-                const auto declaredInputCount =
-                    std::count_if(inputReflection.GetSampledImages().begin(), inputReflection.GetSampledImages().end(),
-                                  [](const auto &input) { return input.set == 0; }) +
-                    std::count_if(inputReflection.GetStorageBuffers().begin(),
-                                  inputReflection.GetStorageBuffers().end(),
-                                  [](const auto &input) { return input.set == 0; });
+                const auto declaredInputCount = declaredInputs.size();
                 if (!commandInputBindings.empty() && commandInputBindings.size() != declaredInputCount) {
                     INXLOG_ERROR("Fullscreen pass '", passDesc.name,
                                  "' must bind every declared set-0 input exactly once");
@@ -4809,13 +4865,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 for (const auto &[resourceName, sourceName] : commandInputBindings) {
                     std::optional<uint32_t> binding;
                     const bool bufferSource = bufferHandles.find(sourceName) != bufferHandles.end();
-                    for (const auto &image : inputReflection.GetSampledImages())
-                        if (!bufferSource && image.set == 0 && image.name == resourceName && image.arraySize == 1 &&
-                            image.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-                            binding = image.binding;
-                    for (const auto &buffer : inputReflection.GetStorageBuffers())
-                        if (bufferSource && buffer.set == 0 && buffer.name == resourceName && buffer.arraySize == 1)
-                            binding = buffer.binding;
+                    for (const auto &input : declaredInputs)
+                        if (bufferSource == input.storage && input.name == resourceName && input.arraySize == 1)
+                            binding = input.binding;
                     if (!binding) {
                         INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' has no matching scalar shader input '",
                                      resourceName, "' for resource '", sourceName, "' in set 0");
@@ -4855,13 +4907,11 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 for (uint32_t binding = 0; binding < inputNames.size(); ++binding) {
                     const auto &name = inputNames[binding];
                     if (const auto buffer = bufferHandles.find(name); buffer != bufferHandles.end()) {
-                        const auto reflected = std::find_if(inputReflection.GetStorageBuffers().begin(),
-                                                            inputReflection.GetStorageBuffers().end(),
-                                                            [binding](const StorageBufferInfo &item) {
-                                                                return item.set == 0 && item.binding == binding;
-                                                            });
-                        if (reflected == inputReflection.GetStorageBuffers().end() || !reflected->readOnly ||
-                            reflected->arraySize != 1) {
+                        const auto reflected =
+                            std::find_if(declaredInputs.begin(), declaredInputs.end(), [binding](const auto &item) {
+                                return item.storage && item.binding == binding;
+                            });
+                        if (reflected == declaredInputs.end() || !reflected->readOnly || reflected->arraySize != 1) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' input '", name,
                                          "' requires one read-only storage-buffer descriptor at binding ", binding);
                             return;
@@ -5201,10 +5251,23 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 key.depthInputMask |= 1u << i;
                         }
                         key.useDynamicRendering = true;
+                        key.program = authorProgram;
 
                         const auto &entry = fsRenderer->EnsurePipeline(key);
                         if (!entry.pipeline.IsValid())
                             return;
+
+                        if (authorProgram) {
+                            const float *values = nullptr;
+                            if (!parameterBlock.empty()) {
+                                const auto block = m_submittedParameterBlocks.find(parameterBlock);
+                                if (block != m_submittedParameterBlocks.end())
+                                    values = block->second.values.values;
+                            }
+                            fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
+                                                    values);
+                            return;
+                        }
 
                         // Allocate descriptor set for input textures
                         const auto bindGroup = fsRenderer->AllocateBindGroup(entry.inputLayout, inputs, inputCount,

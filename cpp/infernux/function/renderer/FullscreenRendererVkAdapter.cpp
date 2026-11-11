@@ -4,8 +4,14 @@
 #include "shader/ShaderReflection.h"
 #include "vk/VulkanRhiDevice.h"
 
+#include <algorithm>
 #include <core/error/InxError.h>
+#include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetFormatRegistry.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace infernux
@@ -43,6 +49,27 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
     [[nodiscard]] uint32_t GetCurrentFrame() const noexcept override
     {
         return m_core.GetCurrentFrameSlot();
+    }
+
+    [[nodiscard]] std::shared_ptr<const FullscreenProgram> AcquireProgram(const std::string &name) override
+    {
+        auto &registry = AssetRegistry::Instance();
+        auto *database = registry.GetAssetDatabase();
+        const auto path =
+            asset_formats::FindShaderSourceKind(name) ? name : database->FindShaderPathById(name, "fragment");
+        if (!asset_formats::FindShaderSourceKind(path))
+            return {};
+        const auto asset = registry.LoadAssetByPath<ShaderAsset>(path, ResourceType::Shader);
+        if (!asset || !asset->program)
+            throw std::runtime_error("Fullscreen author program is unavailable: " + path);
+        const auto target = std::find_if(asset->program->targets.begin(), asset->program->targets.end(),
+                                         [](const auto &code) { return code.target == ShaderCodeTarget::SpirV; });
+        if (target == asset->program->targets.end())
+            throw std::logic_error("Vulkan shader asset has no SPIR-V target: " + path);
+        auto result = std::make_shared<FullscreenProgram>();
+        result->code = std::shared_ptr<const ShaderTargetCode>(asset, &*target);
+        result->schema = asset->authoringSchema;
+        return result;
     }
 
     [[nodiscard]] rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name, rhi::ShaderStage stage,

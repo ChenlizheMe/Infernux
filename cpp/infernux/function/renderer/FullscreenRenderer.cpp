@@ -1,8 +1,11 @@
 #include "FullscreenRenderer.h"
 
 #include "rhi/RhiDevice.h"
+#include "shader/DeviceShaderProgram.h"
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -10,6 +13,73 @@
 
 namespace infernux
 {
+namespace
+{
+void StoreParameter(char *destination, ShaderScalarKind scalar, double value)
+{
+    switch (scalar) {
+    case ShaderScalarKind::Float32: {
+        const auto converted = static_cast<float>(value);
+        std::memcpy(destination, &converted, sizeof(converted));
+        break;
+    }
+    case ShaderScalarKind::Int32: {
+        const auto converted = static_cast<int32_t>(value);
+        std::memcpy(destination, &converted, sizeof(converted));
+        break;
+    }
+    case ShaderScalarKind::UInt32: {
+        const auto converted = static_cast<uint32_t>(value);
+        std::memcpy(destination, &converted, sizeof(converted));
+        break;
+    }
+    default:
+        throw std::logic_error("Fullscreen parameter has no scalar upload contract");
+    }
+}
+
+void PrepareParameters(FullscreenPipelineEntry &entry, const std::string &schemaText)
+{
+    const auto schema = nlohmann::json::parse(schemaText);
+    if (schema.at("domain") != "fullscreen")
+        throw std::invalid_argument("Fullscreen pass requires a shader.fullscreen author program");
+    for (const auto &input : schema.at("inputs"))
+        entry.inputNames.push_back(input.at("name").get<std::string>());
+    for (const auto &resource : entry.program->GetResources()) {
+        if (resource.binding.type == rhi::BindingType::SampledTexture ||
+            resource.binding.type == rhi::BindingType::Sampler) {
+            const auto end = resource.name.find('.');
+            const auto name = resource.name.substr(4, end - 4); // Generated inx_<logical port>.
+            const auto input = std::find(entry.inputNames.begin(), entry.inputNames.end(), name);
+            if (input == entry.inputNames.end())
+                throw std::logic_error("Compiled fullscreen resource has no logical input: " + resource.name);
+            entry.resourceInputs.push_back(static_cast<int32_t>(input - entry.inputNames.begin()));
+        } else {
+            if (resource.binding.type != rhi::BindingType::UniformBuffer || resource.name != "inx_parameters")
+                throw std::logic_error("Fullscreen author resource has no graph binding contract: " + resource.name);
+            entry.resourceInputs.push_back(-1);
+        }
+        if (resource.name != "inx_parameters")
+            continue;
+        entry.parameterDefaults.resize(resource.value.byteSize);
+        entry.parameterFields = resource.value.fields;
+        for (const auto &parameter : schema.at("parameters")) {
+            const auto name = parameter.at("name").get<std::string>();
+            const auto field = std::find_if(entry.parameterFields.begin(), entry.parameterFields.end(),
+                                            [&](const auto &value) { return value.name == name; });
+            if (field == entry.parameterFields.end())
+                throw std::logic_error("Compiled fullscreen parameter is missing: " + name);
+            const auto &value = parameter.at("default");
+            for (uint32_t component = 0; component < field->columns; ++component) {
+                const auto &item = value.is_array() ? value.at(component) : value;
+                const double scalar = item.is_boolean() ? (item.get<bool>() ? 1.0 : 0.0) : item.get<double>();
+                StoreParameter(entry.parameterDefaults.data() + field->offset + component * sizeof(float),
+                               field->scalar, scalar);
+            }
+        }
+    }
+}
+} // namespace
 
 bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const noexcept
 {
@@ -18,7 +88,8 @@ bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const
            depth.testEnabled == other.depth.testEnabled && depth.writeEnabled == other.depth.writeEnabled &&
            depth.compare == other.depth.compare && alphaBlend == other.alphaBlend &&
            inputResourceCount == other.inputResourceCount && depthInputMask == other.depthInputMask &&
-           inputBufferMask == other.inputBufferMask && useDynamicRendering == other.useDynamicRendering;
+           inputBufferMask == other.inputBufferMask && useDynamicRendering == other.useDynamicRendering &&
+           (program ? program->code.get() : nullptr) == (other.program ? other.program->code.get() : nullptr);
 }
 
 size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) const noexcept
@@ -37,6 +108,7 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     combine(key.inputBufferMask);
     combine(key.depthInputMask);
     combine(key.useDynamicRendering ? 1U : 0U);
+    combine(std::hash<const ShaderTargetCode *>{}(key.program ? key.program->code.get() : nullptr));
     return hash;
 }
 
@@ -72,6 +144,39 @@ struct FullscreenPipelineCache::Impl
             (!key.useDynamicRendering && !key.renderTargetLayout.IsValid()))
             return entry;
 
+        rhi::GraphicsPipelineDesc desc;
+        desc.useDynamicRendering = key.useDynamicRendering;
+        desc.renderTargetLayout = key.renderTargetLayout;
+        desc.topology = rhi::PrimitiveTopology::TriangleList;
+        desc.raster.cullMode = rhi::CullMode::None;
+        desc.raster.frontFace = rhi::FrontFace::Clockwise;
+        desc.samples = key.samples;
+        desc.colorTargetCount = 1;
+        desc.colorTargets[0].format = key.colorFormat;
+        desc.colorTargets[0].blendEnabled = key.alphaBlend;
+        desc.depth = key.depth;
+        if (key.useDynamicRendering) {
+            desc.renderingSignature.colorFormatCount = 1;
+            desc.renderingSignature.colorFormats[0] = key.colorFormat;
+            desc.renderingSignature.samples = key.samples;
+            desc.renderingSignature.depthFormat = key.depthFormat;
+            if (rhi::IsStencilFormat(key.depthFormat))
+                desc.renderingSignature.stencilFormat = key.depthFormat;
+        }
+        if (key.program) {
+            std::vector<uint32_t> selected;
+            for (uint32_t index = 0; index < key.program->code->entries.size(); ++index)
+                if (key.program->code->entries[index].stage != rhi::ShaderStage::Compute)
+                    selected.push_back(index);
+            entry.rhi.program = std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected);
+            entry.rhi.program->Apply(desc);
+            PrepareParameters(entry.rhi, key.program->schema);
+            entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
+            if (!entry.rhi.pipeline.IsValid())
+                throw std::runtime_error("Fullscreen pipeline creation failed: " + key.shaderName);
+            return entry;
+        }
+
         rhi::BindingLayoutDesc inputLayoutDesc;
         inputLayoutDesc.entryCount = key.inputResourceCount;
         for (uint32_t index = 0; index < key.inputResourceCount; ++index) {
@@ -87,28 +192,9 @@ struct FullscreenPipelineCache::Impl
         if (!entry.rhi.inputLayout.IsValid())
             return entry;
 
-        rhi::GraphicsPipelineDesc desc;
-        desc.useDynamicRendering = key.useDynamicRendering;
-        desc.renderTargetLayout = key.renderTargetLayout;
-        desc.topology = rhi::PrimitiveTopology::TriangleList;
-        desc.raster.cullMode = rhi::CullMode::None;
-        desc.raster.frontFace = rhi::FrontFace::Clockwise;
-        desc.samples = key.samples;
-        desc.colorTargetCount = 1;
-        desc.colorTargets[0].format = key.colorFormat;
-        desc.colorTargets[0].blendEnabled = key.alphaBlend;
-        desc.depth = key.depth;
         desc.bindingLayouts[desc.bindingLayoutCount++] = entry.rhi.inputLayout;
         desc.pushConstantStages = rhi::ShaderStage::Fragment;
         desc.pushConstantBytes = sizeof(FullscreenPushConstants);
-        if (key.useDynamicRendering) {
-            desc.renderingSignature.colorFormatCount = 1;
-            desc.renderingSignature.colorFormats[0] = key.colorFormat;
-            desc.renderingSignature.samples = key.samples;
-            desc.renderingSignature.depthFormat = key.depthFormat;
-            if (rhi::IsStencilFormat(key.depthFormat))
-                desc.renderingSignature.stencilFormat = key.depthFormat;
-        }
 
         const auto perViewLayout = host->GetPerViewLayout();
         const auto globalsLayout = host->GetGlobalsLayout();
@@ -175,12 +261,24 @@ rhi::Device &FullscreenPipelineCache::GetDevice() const noexcept
 
 struct FullscreenRenderer::Impl
 {
+    struct ParameterBuffer
+    {
+        rhi::BufferHandle buffer;
+        uint64_t capacity = 0;
+    };
+    struct FrameParameters
+    {
+        std::vector<ParameterBuffer> buffers;
+        size_t next = 0;
+        std::vector<char> scratch;
+    };
     std::shared_ptr<FullscreenRendererHost> host;
     std::shared_ptr<FullscreenPipelineCache> pipelines;
     rhi::Device *device = nullptr;
     rhi::SamplerHandle linearSampler;
     rhi::SamplerHandle nearestSampler;
     std::vector<std::vector<rhi::BindGroupHandle>> frameBindGroups;
+    std::vector<FrameParameters> frameParameters;
 
     [[nodiscard]] uint32_t CurrentFrame() const noexcept
     {
@@ -196,6 +294,28 @@ struct FullscreenRenderer::Impl
         for (const auto handle : frameBindGroups[frame])
             device->Release(handle);
         frameBindGroups[frame].clear();
+    }
+
+    rhi::BufferHandle UploadParameters(uint32_t frame, const void *data, uint64_t bytes)
+    {
+        auto &parameters = frameParameters[frame];
+        if (parameters.next == parameters.buffers.size())
+            parameters.buffers.emplace_back();
+        auto &slot = parameters.buffers[parameters.next++];
+        if (slot.capacity < bytes) {
+            device->Release(slot.buffer);
+            rhi::BufferDesc description;
+            description.byteSize = bytes;
+            description.usage = rhi::BufferUsageFlags::Uniform;
+            description.memory = rhi::BufferMemory::Upload;
+            slot.buffer = device->CreateBuffer(description);
+            slot.capacity = bytes;
+            if (!slot.buffer.IsValid())
+                throw std::runtime_error("Fullscreen parameter buffer allocation failed");
+        }
+        if (!device->WriteBuffer(slot.buffer, 0, data, bytes))
+            throw std::runtime_error("Fullscreen parameter upload failed");
+        return slot.buffer;
     }
 };
 
@@ -237,6 +357,7 @@ void FullscreenRenderer::Initialize(std::shared_ptr<FullscreenRendererHost> host
 
     const uint32_t frames = std::max(1u, m_impl->host->GetFrameCount());
     m_impl->frameBindGroups.resize(frames);
+    m_impl->frameParameters.resize(frames);
 }
 
 void FullscreenRenderer::Destroy()
@@ -245,6 +366,9 @@ void FullscreenRenderer::Destroy()
         return;
     for (uint32_t frame = 0; frame < m_impl->frameBindGroups.size(); ++frame)
         m_impl->ReleaseBindGroups(frame);
+    for (auto &frame : m_impl->frameParameters)
+        for (const auto &slot : frame.buffers)
+            m_impl->device->Release(slot.buffer);
     if (m_impl->device) {
         m_impl->device->Release(m_impl->linearSampler);
         m_impl->device->Release(m_impl->nearestSampler);
@@ -376,6 +500,60 @@ void FullscreenRenderer::ResetPool()
     if (!m_impl || m_impl->frameBindGroups.empty())
         return;
     m_impl->ReleaseBindGroups(m_impl->CurrentFrame());
+    m_impl->frameParameters[m_impl->CurrentFrame()].next = 0;
+}
+
+std::shared_ptr<const FullscreenProgram> FullscreenRenderer::AcquireProgram(const std::string &name)
+{
+    return m_impl->host->AcquireProgram(name);
+}
+
+void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
+                                     const FullscreenResourceInput *inputs,
+                                     const std::vector<std::pair<std::string, float>> &parameters, const float *values)
+{
+    const auto frame = m_impl->CurrentFrame();
+    auto &bytes = m_impl->frameParameters[frame].scratch;
+    bytes.assign(entry.parameterDefaults.begin(), entry.parameterDefaults.end());
+    for (size_t index = 0; index < parameters.size(); ++index) {
+        const auto &[name, value] = parameters[index];
+        const auto field = std::find_if(entry.parameterFields.begin(), entry.parameterFields.end(),
+                                        [&](const auto &item) { return item.name == name; });
+        if (field == entry.parameterFields.end() || field->kind != ShaderValueKind::Scalar)
+            throw std::invalid_argument("Fullscreen scalar parameter is not declared: " + name);
+        StoreParameter(bytes.data() + field->offset, field->scalar, values ? values[index] : value);
+    }
+    const auto uniform =
+        bytes.empty() ? rhi::BufferHandle{} : m_impl->UploadParameters(frame, bytes.data(), bytes.size());
+    const auto &layouts = entry.program->GetBindingLayouts();
+    std::array<rhi::BindGroupDesc, rhi::GraphicsPipelineDesc::MaxBindingLayouts> groups;
+    for (size_t index = 0; index < layouts.size(); ++index) {
+        groups[index].layout = layouts[index];
+        groups[index].lifetime = rhi::BindGroupLifetime::FrameTransient;
+    }
+    const auto &resources = entry.program->GetResources();
+    for (size_t index = 0; index < resources.size(); ++index) {
+        const auto &resource = resources[index];
+        auto &group = groups[resource.set];
+        const auto &binding = resource.binding;
+        if (binding.type == rhi::BindingType::UniformBuffer) {
+            group.buffers[group.bufferCount++] = {binding.binding, binding.type, uniform, 0, bytes.size()};
+        } else {
+            const auto &input = inputs[entry.resourceInputs[index]];
+            group.textures[group.textureCount++] = {binding.binding, binding.type, input.view,
+                                                    input.sampler.IsValid() ? input.sampler : m_impl->linearSampler,
+                                                    input.depthRead};
+        }
+    }
+    encoder.BindPipeline(entry.pipeline);
+    for (uint32_t index = 0; index < layouts.size(); ++index) {
+        const auto group = m_impl->device->CreateBindGroup(groups[index]);
+        if (!group.IsValid())
+            throw std::runtime_error("Fullscreen bind group creation failed");
+        m_impl->frameBindGroups[frame].push_back(group);
+        encoder.BindGroup(entry.pipeline, index, group);
+    }
+    encoder.Draw(3);
 }
 
 rhi::SamplerHandle FullscreenRenderer::GetLinearSampler() const noexcept

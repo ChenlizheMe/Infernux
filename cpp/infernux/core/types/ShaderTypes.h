@@ -6,6 +6,19 @@
 namespace infernux
 {
 
+/// Authored render-state defaults shared by assets and device publication.
+struct ShaderRenderMeta
+{
+    std::string cullMode;
+    std::string depthWrite;
+    std::string depthTest;
+    std::string blend;
+    int queue = -1;
+    std::string passTag;
+    std::string stencil;
+    std::string alphaClip;
+};
+
 enum class ShaderProgramDomain : unsigned char
 {
     Mesh = 0,
