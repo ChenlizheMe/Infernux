@@ -57,7 +57,7 @@ def _register_native_module_override() -> str | None:
     global native_dir
 
     override = os.environ.get("INFERNUX_NATIVE_MODULE_DIR")
-    if override is None:
+    if not override:
         return None
 
     native_dir = os.path.abspath(override)

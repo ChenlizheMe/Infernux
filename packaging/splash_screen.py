@@ -421,7 +421,7 @@ class EngineSplashScreen(QWidget):
     # ── Process management ──
 
     def launch(self, python_exe: str, script: str, project_path: str,
-               *, detached: bool = True, extra_env: dict[str, str] | None = None,
+               *, detached: bool = True, extra_env: dict[str, str | None] | None = None,
                lock_token: str | None = None, runtime: EditorPythonRuntime | None = None):
         """Start the engine without blocking the UI and monitor readiness."""
         self._launch_args = (python_exe, script, project_path, detached, extra_env, runtime)

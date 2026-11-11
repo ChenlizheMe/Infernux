@@ -192,9 +192,9 @@ def write_project_lock(project_path: str, pid: int, token: str, mode: str, state
     return project_lock.reserve(project_path, pid, token, mode, state, probe=is_pid_running)
 
 
-def merge_child_env_utf8(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Environment for subprocesses: inherit current env and prefer UTF-8 on Windows."""
-    merged = {**os.environ, **(extra or {})}
+def merge_child_env_utf8(extra: dict[str, str | None] | None = None) -> dict[str, str]:
+    """Inherit child settings, remove None overrides, and prefer UTF-8 on Windows."""
+    merged = {key: value for key, value in {**os.environ, **(extra or {})}.items() if value is not None}
     if not merged.get("INFERNUX_DATA_ROOT", "").strip():
         merged["INFERNUX_DATA_ROOT"] = get_hub_user_data_dir()
     if not merged.get("INFERNUX_SHARED_DATA_ROOT", "").strip():

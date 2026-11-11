@@ -6,6 +6,11 @@ Infernux 0.4.8 brings model authoring, native execution, and checkpoint export i
 
 [Compare with v0.4.3-v8](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.4.8)
 
+### Hub 0.4.8-2 startup hotfix
+
+- Remove inherited development-only native module and compiler paths when launching a project's installed runtime. Empty native-directory overrides no longer resolve to the project directory.
+- Verified the complete Hub-to-editor startup path with a project's private Python runtime. This is a Hub-only release; the published engine and plugin versions remain unchanged.
+
 ### Neural runtime
 
 - Define models with `infernux.nn` and run supported training and inference on native CPU or Vulkan. Managed requests keep their intermediate state across host frames and publish results at the consumer boundary.

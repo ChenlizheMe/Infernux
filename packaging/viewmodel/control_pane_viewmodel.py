@@ -357,12 +357,12 @@ class ControlPaneViewModel(QObject):
 
                 project_runtime = worker.uses_project_runtime
                 runtime_env = {
-                    "PYTHONHOME": "",
-                    "PYTHONPATH": "",
+                    "PYTHONHOME": None,
+                    "PYTHONPATH": None,
                     "PYTHONNOUSERSITE": "1",
                     "PYTHONSAFEPATH": "1",
-                    "INFERNUX_NATIVE_MODULE_DIR": "",
-                    "INFERNUX_GPU_JIT_VENDOR_DIR": "",
+                    "INFERNUX_NATIVE_MODULE_DIR": None,
+                    "INFERNUX_GPU_JIT_VENDOR_DIR": None,
                 } if project_runtime else None
                 splash.launch(
                     python_exe,

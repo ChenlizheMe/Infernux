@@ -65,8 +65,14 @@ def test_failed_launch_preserves_complete_stderr_and_exit_code(tmp_path, monkeyp
     splash = EngineSplashScreen('', 'Failed startup')
     failures = []
     monkeypatch.setattr(splash, '_show_failure', lambda title, detail: failures.append(detail))
+    monkeypatch.setenv('INFERNUX_NATIVE_MODULE_DIR', str(tmp_path))
+    monkeypatch.setenv('INFERNUX_GPU_JIT_VENDOR_DIR', str(tmp_path))
     started = tmp_path / 'editor-script-started'
-    script = f"from pathlib import Path; Path({str(started)!r}).touch(); " + (
+    script = (
+        "import os; assert 'INFERNUX_NATIVE_MODULE_DIR' not in os.environ; "
+        "assert 'INFERNUX_GPU_JIT_VENDOR_DIR' not in os.environ; "
+        f"from pathlib import Path; Path({str(started)!r}).touch(); "
+    ) + (
         "import sys; sys.stderr.write('startup diagnostics\\n' + 'x' * 9000 + "
         "'\\nRuntimeError: final-cause-marker\\n'); sys.exit(23)"
     )
@@ -82,7 +88,9 @@ def test_failed_launch_preserves_complete_stderr_and_exit_code(tmp_path, monkeyp
 
     monkeypatch.setattr(splash_screen, 'write_project_lock', delayed_transfer)
     try:
-        splash.launch(sys.executable, script, str(tmp_path))
+        splash.launch(sys.executable, script, str(tmp_path), extra_env={
+            'INFERNUX_NATIVE_MODULE_DIR': None, 'INFERNUX_GPU_JIT_VENDOR_DIR': None,
+        })
         splash._poll_timer.stop()
         splash._stderr_thread.join(15)
         assert not splash._stderr_thread.is_alive()
