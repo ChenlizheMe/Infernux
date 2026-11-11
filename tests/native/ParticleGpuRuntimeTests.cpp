@@ -464,6 +464,25 @@ struct EventTransferTrace
 
 struct GraphicsTrace
 {
+    static void BindVertexBuffer(void *, uint32_t, rhi::BufferHandle, uint64_t, uint64_t)
+    {
+    }
+    static void BindIndexBuffer(void *, rhi::BufferHandle, rhi::IndexFormat, uint64_t, uint64_t)
+    {
+    }
+    static void DrawIndexed(void *, uint32_t, uint32_t, uint32_t, int32_t, uint32_t)
+    {
+    }
+    static void DrawIndexedIndirect(void *, rhi::BufferHandle, uint64_t, uint32_t, uint32_t)
+    {
+    }
+
+    static rhi::GraphicsCommandEncoder::Dispatch Commands()
+    {
+        return {BindPipeline,    BindGroup,   PushConstants,      Draw, DrawIndirect, BindVertexBuffer,
+                BindIndexBuffer, DrawIndexed, DrawIndexedIndirect};
+    }
+
     std::vector<rhi::GraphicsPipelineHandle> pipelines;
     std::vector<rhi::BindGroupHandle> groups;
     std::vector<uint32_t> groupSets;
@@ -723,9 +742,7 @@ static bool VerifyParticlePassBinding(const std::string &kind, bool bindless, Sh
     material->SetTextureGuid("texSampler", "white");
     const auto artifact = PassBindingArtifact(bindless);
     GraphicsTrace trace;
-    const rhi::GraphicsCommandEncoder::Dispatch dispatch = {&GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup,
-                                                            &GraphicsTrace::PushConstants, &GraphicsTrace::Draw,
-                                                            &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder::Dispatch dispatch = GraphicsTrace::Commands();
     const rhi::GraphicsCommandEncoder encoder(&trace, &dispatch);
     MaterialPassPipelineDescriptor pass;
     pass.target = target;
@@ -900,9 +917,7 @@ static void TestViewBindingRetirement(const std::string &kind)
     material->SetTextureGuid("texSampler", "white");
     const auto artifact = ViewBindingTestArtifact(bindless);
     GraphicsTrace trace;
-    const rhi::GraphicsCommandEncoder::Dispatch dispatch = {&GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup,
-                                                            &GraphicsTrace::PushConstants, &GraphicsTrace::Draw,
-                                                            &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder::Dispatch dispatch = GraphicsTrace::Commands();
     const rhi::GraphicsCommandEncoder encoder(&trace, &dispatch);
     MaterialPassPipelineDescriptor pass;
     pass.target = target;
@@ -1047,8 +1062,9 @@ int main()
         assert(domain.Create(device, 871, 3, program, std::vector<uint32_t>(16, 7)));
         EventTransferTrace trace;
         const rhi::TransferCommandEncoder::DispatchTable dispatch{
-            &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
-            nullptr, &EventTransferTrace::UpdateBuffer, nullptr};
+            &EventTransferTrace::CopyBuffer,     &EventTransferTrace::CopyTexture,
+            &EventTransferTrace::ResolveTexture, nullptr,
+            &EventTransferTrace::UpdateBuffer,   nullptr};
         const rhi::TransferCommandEncoder transfer(&trace, &dispatch);
         assert(domain.HasPendingUploads() && domain.RecordPendingUploads(transfer));
         assert(trace.updates.size() == 4 && device.writes == 0);
@@ -1189,8 +1205,8 @@ int main()
 
         ContinuationTrace continuationTrace;
         const rhi::ComputeCommandEncoder::DispatchTable continuationDispatch = {
-            &ContinuationTrace::BindPipeline, &ContinuationTrace::BindGroup, &ContinuationTrace::PushConstants,
-            &ContinuationTrace::Dispatch, &ContinuationTrace::DispatchIndirect, CanRecordCompute};
+            &ContinuationTrace::BindPipeline, &ContinuationTrace::BindGroup,        &ContinuationTrace::PushConstants,
+            &ContinuationTrace::Dispatch,     &ContinuationTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder continuationEncoder(&continuationTrace, &continuationDispatch);
         current->RequestReset();
         assert(current->ProgramGeneration() == 42 && current->ResetSerial() == 2 && current->Telemetry().resetPending);
@@ -1378,8 +1394,8 @@ int main()
 
         DepthResolveTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
-            &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup, &DepthResolveTrace::PushConstants,
-            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect, CanRecordCompute};
+            &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup,        &DepthResolveTrace::PushConstants,
+            &DepthResolveTrace::Dispatch,     &DepthResolveTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         const rhi::TextureViewHandle source{101, 1};
         const rhi::TextureViewHandle destination{102, 1};
@@ -1404,8 +1420,8 @@ int main()
         assert(program);
         DepthResolveTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
-            &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup, &DepthResolveTrace::PushConstants,
-            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect, CanRecordCompute};
+            &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup,        &DepthResolveTrace::PushConstants,
+            &DepthResolveTrace::Dispatch,     &DepthResolveTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         SceneDepthResolver retained;
         assert(retained.Initialize(program));
@@ -1464,8 +1480,8 @@ int main()
 
         MigrationTrace trace;
         const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
-            &MigrationTrace::BindPipeline, &MigrationTrace::BindGroup, &MigrationTrace::PushConstants,
-            &MigrationTrace::Dispatch, &MigrationTrace::DispatchIndirect, CanRecordCompute};
+            &MigrationTrace::BindPipeline, &MigrationTrace::BindGroup,        &MigrationTrace::PushConstants,
+            &MigrationTrace::Dispatch,     &MigrationTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
         migrator.RecordMigrate(encoder);
         assert(!migrator.WasRecorded() && trace.pipelines.empty());
@@ -1523,8 +1539,7 @@ int main()
         const rhi::TransferCommandEncoder::DispatchTable collisionTransferDispatch = {
             &EventTransferTrace::CopyBuffer,     &EventTransferTrace::CopyTexture,
             &EventTransferTrace::ResolveTexture, nullptr,
-            &EventTransferTrace::UpdateBuffer,
-            nullptr,
+            &EventTransferTrace::UpdateBuffer,   nullptr,
         };
         const rhi::TransferCommandEncoder collisionTransferEncoder(&collisionTransferTrace, &collisionTransferDispatch);
         assert(collisionScene.RecordPendingUpload(collisionTransferEncoder));
@@ -1765,8 +1780,8 @@ int main()
         assert(previous.NeedsBootstrap());
         CommandTrace sharingTrace;
         const rhi::ComputeCommandEncoder::DispatchTable sharingDispatch = {
-            &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
-            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect, CanRecordCompute};
+            &CommandTrace::BindPipeline, &CommandTrace::BindGroup,        &CommandTrace::PushConstants,
+            &CommandTrace::Dispatch,     &CommandTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder sharingEncoder(&sharingTrace, &sharingDispatch);
         const rhi::BindGroupHandle sharingSpawnGroup{0xffe2u, 1};
         assert(previous.RecordBootstrap(sharingEncoder, 13, sharingSpawnGroup));
@@ -1835,8 +1850,8 @@ int main()
 
         CommandTrace contactTrace;
         const rhi::ComputeCommandEncoder::DispatchTable contactDispatch = {
-            &CommandTrace::BindPipeline, &CommandTrace::BindGroup, &CommandTrace::PushConstants,
-            &CommandTrace::Dispatch, &CommandTrace::DispatchIndirect, CanRecordCompute};
+            &CommandTrace::BindPipeline, &CommandTrace::BindGroup,        &CommandTrace::PushConstants,
+            &CommandTrace::Dispatch,     &CommandTrace::DispatchIndirect, CanRecordCompute};
         const rhi::ComputeCommandEncoder contactEncoder(&contactTrace, &contactDispatch);
         const rhi::BindGroupHandle contactSpawnGroup{0xffcfu, 1};
         collisionRuntime.RecordContactPrepare(contactEncoder, 17u, contactSpawnGroup);
@@ -1959,8 +1974,9 @@ int main()
 
         EventTransferTrace uploadTrace;
         const rhi::TransferCommandEncoder::DispatchTable uploadDispatch{
-            &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
-            nullptr, &EventTransferTrace::UpdateBuffer, nullptr};
+            &EventTransferTrace::CopyBuffer,     &EventTransferTrace::CopyTexture,
+            &EventTransferTrace::ResolveTexture, nullptr,
+            &EventTransferTrace::UpdateBuffer,   nullptr};
         const rhi::TransferCommandEncoder uploadEncoder(&uploadTrace, &uploadDispatch);
         const auto flush = [&] {
             assert(meshInterfaceRuntime.RecordPendingUploads(uploadEncoder));
@@ -2160,8 +2176,9 @@ int main()
     assert(device.writes == 0 && runtime.HasPendingUploads());
     {
         const rhi::TransferCommandEncoder::DispatchTable uploads{
-            &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
-            nullptr, &EventTransferTrace::UpdateBuffer, nullptr};
+            &EventTransferTrace::CopyBuffer,     &EventTransferTrace::CopyTexture,
+            &EventTransferTrace::ResolveTexture, nullptr,
+            &EventTransferTrace::UpdateBuffer,   nullptr};
         EventTransferTrace first;
         assert(runtime.RecordPendingUploads({&first, &uploads}) && first.updates.size() == 1);
         assert(runtime.HasPendingUploads());
@@ -2228,9 +2245,9 @@ int main()
     }
 
     CommandTrace trace;
-    const rhi::ComputeCommandEncoder::DispatchTable dispatch = {&CommandTrace::BindPipeline, &CommandTrace::BindGroup,
-                                                                &CommandTrace::PushConstants, &CommandTrace::Dispatch,
-                                                                &CommandTrace::DispatchIndirect, CanRecordCompute};
+    const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
+        &CommandTrace::BindPipeline, &CommandTrace::BindGroup,        &CommandTrace::PushConstants,
+        &CommandTrace::Dispatch,     &CommandTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
     const rhi::BindGroupHandle graphSpawnGroup{0xffe3u, 1};
     const rhi::BufferHandle spawnMetadata{0xffe4u, 1};
@@ -2358,8 +2375,8 @@ int main()
 
     BoundsTrace boundsTrace;
     const rhi::ComputeCommandEncoder::DispatchTable boundsDispatch = {
-        &BoundsTrace::BindPipeline, &BoundsTrace::BindGroup, &BoundsTrace::PushConstants, &BoundsTrace::Dispatch,
-        &BoundsTrace::DispatchIndirect, CanRecordCompute};
+        &BoundsTrace::BindPipeline, &BoundsTrace::BindGroup,        &BoundsTrace::PushConstants,
+        &BoundsTrace::Dispatch,     &BoundsTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder boundsEncoder(&boundsTrace, &boundsDispatch);
     bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::PauseWhenOffscreen, false);
     bounds.RecordPrepare(boundsEncoder, particle::GpuParticleOffscreenPolicy::AlwaysSimulate, false);
@@ -2476,8 +2493,8 @@ int main()
            cullDevice.shaderCreates == 6 && cullDevice.shaderReleases == 6 && cullDevice.pipelineCreates == 6);
 
     CullTrace cullTrace;
-    const rhi::ComputeCommandEncoder::DispatchTable cullDispatch = {&CullTrace::BindPipeline, &CullTrace::BindGroup,
-                                                                    &CullTrace::PushConstants, &CullTrace::Dispatch,
+    const rhi::ComputeCommandEncoder::DispatchTable cullDispatch = {&CullTrace::BindPipeline,     &CullTrace::BindGroup,
+                                                                    &CullTrace::PushConstants,    &CullTrace::Dispatch,
                                                                     &CullTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder cullEncoder(&cullTrace, &cullDispatch);
     std::array<float, particle::ParticleGpuCuller::PlaneCount * 4> frustumPlanes{};
@@ -2542,8 +2559,8 @@ int main()
     assert(sortDevice.shaderCreates == 10 && sortDevice.shaderReleases == 10 && sortDevice.pipelineCreates == 10);
 
     SortTrace sortTrace;
-    const rhi::ComputeCommandEncoder::DispatchTable sortDispatch = {&SortTrace::BindPipeline, &SortTrace::BindGroup,
-                                                                    &SortTrace::PushConstants, &SortTrace::Dispatch,
+    const rhi::ComputeCommandEncoder::DispatchTable sortDispatch = {&SortTrace::BindPipeline,     &SortTrace::BindGroup,
+                                                                    &SortTrace::PushConstants,    &SortTrace::Dispatch,
                                                                     &SortTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder sortEncoder(&sortTrace, &sortDispatch);
     std::array<float, 16> sortView{};
@@ -2664,8 +2681,8 @@ int main()
 
     RibbonTrace ribbonTrace;
     const rhi::ComputeCommandEncoder::DispatchTable ribbonDispatch = {
-        &RibbonTrace::BindPipeline, &RibbonTrace::BindGroup, &RibbonTrace::PushConstants, &RibbonTrace::Dispatch,
-        &RibbonTrace::DispatchIndirect, CanRecordCompute};
+        &RibbonTrace::BindPipeline, &RibbonTrace::BindGroup,        &RibbonTrace::PushConstants,
+        &RibbonTrace::Dispatch,     &RibbonTrace::DispatchIndirect, CanRecordCompute};
     const rhi::ComputeCommandEncoder ribbonEncoder(&ribbonTrace, &ribbonDispatch);
     ribbonTopology->RecordReset(ribbonEncoder);
     ribbonTopology->RecordInitialize(ribbonEncoder);
@@ -2744,9 +2761,7 @@ int main()
     const auto ribbonViewIndices = ribbonCuller.VisibleIndexBuffer();
 
     GraphicsTrace ribbonGraphicsTrace;
-    const rhi::GraphicsCommandEncoder::Dispatch ribbonGraphicsDispatch = {
-        &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants, &GraphicsTrace::Draw,
-        &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder::Dispatch ribbonGraphicsDispatch = GraphicsTrace::Commands();
     const rhi::GraphicsCommandEncoder ribbonGraphicsEncoder(&ribbonGraphicsTrace, &ribbonGraphicsDispatch);
     particle::GpuParticleViewConstants ribbonView;
     MaterialPassPipelineDescriptor ribbonPass;
@@ -2884,9 +2899,7 @@ int main()
     forwardPass.depthFormat = rhi::PixelFormat::D32SFloat;
     forwardPass.samples = rhi::SampleCount::Four;
     GraphicsTrace graphicsTrace;
-    const rhi::GraphicsCommandEncoder::Dispatch graphicsDispatch = {
-        &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants, &GraphicsTrace::Draw,
-        &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder::Dispatch graphicsDispatch = GraphicsTrace::Commands();
     const rhi::GraphicsCommandEncoder graphicsEncoder(&graphicsTrace, &graphicsDispatch);
     particle::GpuBillboardViewConstants view;
     view.cameraRight[0] = 1.0f;
@@ -3433,9 +3446,7 @@ int main()
                meshDevice.groupBufferCounts == std::vector<uint32_t>({0, 0, 4}));
 
         GraphicsTrace meshTrace;
-        const rhi::GraphicsCommandEncoder::Dispatch meshGraphicsDispatch = {
-            &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants,
-            &GraphicsTrace::Draw, &GraphicsTrace::DrawIndirect};
+        const rhi::GraphicsCommandEncoder::Dispatch meshGraphicsDispatch = GraphicsTrace::Commands();
         const rhi::GraphicsCommandEncoder meshEncoder(&meshTrace, &meshGraphicsDispatch);
         assert(meshRenderer.RecordDraw(meshEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
         assert(meshTrace.indirectBuffers == std::vector<rhi::BufferHandle>({indirectBuffer}));

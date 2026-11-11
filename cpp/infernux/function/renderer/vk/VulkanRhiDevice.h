@@ -377,7 +377,8 @@ class VulkanRhiDevice final : public rhi::Device
                                                                uint64_t byteSize, rhi::BufferMapAccess access) override;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data,
                                                               uint64_t byteSize) override;
-    [[nodiscard]] rhi::RenderTargetLayoutHandle RegisterRenderTargetLayout(VkRenderPass renderPass);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::RenderTargetLayoutHandle
+    RegisterRenderTargetLayout(VkRenderPass renderPass);
 
     INFERNUX_VULKAN_BACKEND_API void
     UseSubmissionSerials(std::function<rhi::SubmissionSerial()> retirementSerialSource);
@@ -547,6 +548,14 @@ class VulkanRhiDevice final : public rhi::Device
                      uint32_t firstInstance);
     static void DrawIndirect(void *context, rhi::BufferHandle arguments, uint64_t offset, uint32_t drawCount,
                              uint32_t stride);
+    static void BindVertexBuffer(void *context, uint32_t slot, rhi::BufferHandle buffer, uint64_t offset,
+                                 uint64_t byteSize);
+    static void BindIndexBuffer(void *context, rhi::BufferHandle buffer, rhi::IndexFormat format, uint64_t offset,
+                                uint64_t byteSize);
+    static void DrawIndexed(void *context, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex,
+                            int32_t baseVertex, uint32_t firstInstance);
+    static void DrawIndexedIndirect(void *context, rhi::BufferHandle arguments, uint64_t offset, uint32_t drawCount,
+                                    uint32_t stride);
 
     static bool CanRecordCompute(void *context, rhi::ComputePipelineHandle pipeline, rhi::BindGroupHandle group);
     static void BindComputePipeline(void *context, rhi::ComputePipelineHandle pipeline);

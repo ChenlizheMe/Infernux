@@ -123,18 +123,22 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
         targetDescriptions.push_back(description);
     }
 
-    slang::CompilerOptionEntry options[2]{};
+    slang::CompilerOptionEntry options[3]{};
     options[0].name = slang::CompilerOptionName::EmitSpirvMethod;
     options[0].value.intValue0 = SLANG_EMIT_SPIRV_DIRECTLY;
     options[1].name = slang::CompilerOptionName::VulkanUseEntryPointName;
     options[1].value.intValue0 = 1;
+    // Author clip space is Y-up on every target. Vulkan's positive-height
+    // viewport needs the opposite position Y; WGSL retains the author value.
+    options[2].name = slang::CompilerOptionName::VulkanInvertY;
+    options[2].value.intValue0 = 1;
 
     slang::SessionDesc description;
     description.targets = targetDescriptions.data();
     description.targetCount = static_cast<SlangInt>(targetDescriptions.size());
     description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
     description.compilerOptionEntries = options;
-    description.compilerOptionEntryCount = 2;
+    description.compilerOptionEntryCount = 3;
 
     Slang::ComPtr<slang::ISession> session;
     CheckCompilation(impl->global->createSession(description, session.writeRef()), "Create shader session", nullptr);
@@ -204,6 +208,26 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
                 entry->getComputeThreadGroupSize(3, groupSize);
                 for (size_t axis = 0; axis < 3; ++axis)
                     artifact.workgroupSize[axis] = static_cast<uint32_t>(groupSize[axis]);
+            }
+            Slang::ComPtr<slang::IMetadata> metadata;
+            diagnostics.setNull();
+            status =
+                program->getEntryPointMetadata(entryIndex, targetIndex, metadata.writeRef(), diagnostics.writeRef());
+            CheckCompilation(status, "Reflect entry resource use " + source.path, diagnostics);
+            auto *resources = layout->getGlobalParamsTypeLayout();
+            for (SlangInt set = 0; set < resources->getDescriptorSetCount(); ++set) {
+                const auto space = static_cast<uint32_t>(resources->getDescriptorSetSpaceOffset(set));
+                for (SlangInt range = 0; range < resources->getDescriptorSetDescriptorRangeCount(set); ++range) {
+                    const auto binding =
+                        static_cast<uint32_t>(resources->getDescriptorSetDescriptorRangeIndexOffset(set, range));
+                    const auto category = static_cast<SlangParameterCategory>(
+                        resources->getDescriptorSetDescriptorRangeCategory(set, range));
+                    bool used = false;
+                    CheckCompilation(metadata->isParameterLocationUsed(category, space, binding, used),
+                                     "Reflect descriptor use " + source.path, nullptr);
+                    if (used)
+                        artifact.bindings.push_back({space, binding});
+                }
             }
             const auto *bytes = static_cast<const char *>(code->getBufferPointer());
             artifact.code.assign(bytes, bytes + code->getBufferSize());

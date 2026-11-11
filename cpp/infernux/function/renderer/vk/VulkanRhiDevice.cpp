@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -717,8 +718,11 @@ bool VulkanRhiDevice::IsValidTextureDesc(const rhi::TextureDesc &desc) noexcept
 }
 
 const rhi::GraphicsCommandEncoder::Dispatch VulkanRhiDevice::s_graphicsDispatch = {
-    &VulkanRhiDevice::BindPipeline, &VulkanRhiDevice::BindGroup, &VulkanRhiDevice::PushConstants,
-    &VulkanRhiDevice::Draw, &VulkanRhiDevice::DrawIndirect};
+    &VulkanRhiDevice::BindPipeline,       &VulkanRhiDevice::BindGroup,
+    &VulkanRhiDevice::PushConstants,      &VulkanRhiDevice::Draw,
+    &VulkanRhiDevice::DrawIndirect,       &VulkanRhiDevice::BindVertexBuffer,
+    &VulkanRhiDevice::BindIndexBuffer,    &VulkanRhiDevice::DrawIndexed,
+    &VulkanRhiDevice::DrawIndexedIndirect};
 
 const rhi::ComputeCommandEncoder::DispatchTable VulkanRhiDevice::s_computeDispatch = {
     &VulkanRhiDevice::BindComputePipeline,  &VulkanRhiDevice::BindComputeGroup,
@@ -1628,6 +1632,9 @@ rhi::TextureViewHandle VulkanRhiDevice::CreateTextureView(const rhi::TextureView
         desc.mipCount > texture->desc.mipLevels - desc.baseMip)
         return {};
 
+    if (desc.usage != rhi::TextureUsageFlags::None && !rhi::HasTextureUsage(texture->desc.usage, desc.usage))
+        return {};
+
     const rhi::PixelFormat format = desc.format == rhi::PixelFormat::Undefined ? texture->desc.format : desc.format;
     if (format != texture->desc.format &&
         (!texture->desc.mutableFormat || !rhi::AreColorSpaceViewFormatsCompatible(texture->desc.format, format)))
@@ -1679,6 +1686,9 @@ rhi::TextureViewHandle VulkanRhiDevice::CreateTextureView(const rhi::TextureView
     createInfo.format = rhi::ToVkFormat(format);
     createInfo.subresourceRange = {ToVkImageAspect(desc.aspect), desc.baseMip, desc.mipCount, desc.baseLayer,
                                    desc.layerCount};
+    VkImageViewUsageCreateInfo viewUsage{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
+    viewUsage.usage = rhi::ToVkTextureUsage(desc.usage);
+    createInfo.pNext = desc.usage == rhi::TextureUsageFlags::None ? nullptr : &viewUsage;
     return CreateTextureViewNative(desc.texture, createInfo);
 }
 
@@ -2006,6 +2016,8 @@ rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::Com
 
 rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc)
 {
+    if (!desc.vertexInput.IsValid())
+        return {};
     if (m_device == VK_NULL_HANDLE || !desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid() ||
         !desc.HasValidRenderingContract() || desc.bindingLayoutCount > desc.bindingLayouts.size() ||
         desc.colorTargetCount > desc.colorTargets.size() || (desc.pushConstantBytes % 4u) != 0u ||
@@ -2062,6 +2074,33 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
     vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    const auto &input = desc.vertexInput;
+    constexpr std::array<VkFormat, 18> vertexFormats{VK_FORMAT_R32_SFLOAT,        VK_FORMAT_R32G32_SFLOAT,
+                                                     VK_FORMAT_R32G32B32_SFLOAT,  VK_FORMAT_R32G32B32A32_SFLOAT,
+                                                     VK_FORMAT_R32_SINT,          VK_FORMAT_R32G32_SINT,
+                                                     VK_FORMAT_R32G32B32_SINT,    VK_FORMAT_R32G32B32A32_SINT,
+                                                     VK_FORMAT_R32_UINT,          VK_FORMAT_R32G32_UINT,
+                                                     VK_FORMAT_R32G32B32_UINT,    VK_FORMAT_R32G32B32A32_UINT,
+                                                     VK_FORMAT_R16G16_SFLOAT,     VK_FORMAT_R16G16B16A16_SFLOAT,
+                                                     VK_FORMAT_R8G8B8A8_UNORM,    VK_FORMAT_R8G8B8A8_SNORM,
+                                                     VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_UNORM};
+    std::array<VkVertexInputBindingDescription, rhi::VertexInputLayout::MaxBuffers> vertexBuffers{};
+    std::array<VkVertexInputAttributeDescription, rhi::VertexInputLayout::MaxAttributes> vertexAttributes{};
+    for (uint32_t slot = 0; slot < input.bufferCount; ++slot) {
+        vertexBuffers[slot] = {slot, input.buffers[slot].stride,
+                               input.buffers[slot].stepMode == rhi::VertexStepMode::Vertex
+                                   ? VK_VERTEX_INPUT_RATE_VERTEX
+                                   : VK_VERTEX_INPUT_RATE_INSTANCE};
+    }
+    for (uint32_t index = 0; index < input.attributeCount; ++index) {
+        const auto &attribute = input.attributes[index];
+        vertexAttributes[index] = {attribute.location, attribute.bufferSlot,
+                                   vertexFormats[static_cast<size_t>(attribute.format)], attribute.offset};
+    }
+    vertexInput.vertexBindingDescriptionCount = input.bufferCount;
+    vertexInput.pVertexBindingDescriptions = vertexBuffers.data();
+    vertexInput.vertexAttributeDescriptionCount = input.attributeCount;
+    vertexInput.pVertexAttributeDescriptions = vertexAttributes.data();
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     inputAssembly.topology = ToVkTopology(desc.topology);
@@ -2535,6 +2574,42 @@ void VulkanRhiDevice::Draw(void *context, uint32_t vertexCount, uint32_t instanc
         vkCmdDraw(command.commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 }
 
+void VulkanRhiDevice::BindVertexBuffer(void *context, uint32_t slot, rhi::BufferHandle buffer, uint64_t offset,
+                                       uint64_t)
+{
+    auto &command = *static_cast<VulkanGraphicsCommandContext *>(context);
+    const VkBuffer native = command.device->Resolve(buffer);
+    assert(native != VK_NULL_HANDLE && command.commandBuffer != VK_NULL_HANDLE);
+    vkCmdBindVertexBuffers(command.commandBuffer, slot, 1, &native, &offset);
+}
+
+void VulkanRhiDevice::BindIndexBuffer(void *context, rhi::BufferHandle buffer, rhi::IndexFormat format, uint64_t offset,
+                                      uint64_t)
+{
+    auto &command = *static_cast<VulkanGraphicsCommandContext *>(context);
+    const VkBuffer native = command.device->Resolve(buffer);
+    assert(native != VK_NULL_HANDLE && command.commandBuffer != VK_NULL_HANDLE);
+    vkCmdBindIndexBuffer(command.commandBuffer, native, offset,
+                         format == rhi::IndexFormat::Uint16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+}
+
+void VulkanRhiDevice::DrawIndexed(void *context, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex,
+                                  int32_t baseVertex, uint32_t firstInstance)
+{
+    auto &command = *static_cast<VulkanGraphicsCommandContext *>(context);
+    assert(command.commandBuffer != VK_NULL_HANDLE && command.boundPipeline.IsValid());
+    vkCmdDrawIndexed(command.commandBuffer, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+}
+
+void VulkanRhiDevice::DrawIndexedIndirect(void *context, rhi::BufferHandle arguments, uint64_t offset,
+                                          uint32_t drawCount, uint32_t stride)
+{
+    auto &command = *static_cast<VulkanGraphicsCommandContext *>(context);
+    const VkBuffer native = command.device->Resolve(arguments);
+    assert(native != VK_NULL_HANDLE && command.commandBuffer != VK_NULL_HANDLE && command.boundPipeline.IsValid());
+    vkCmdDrawIndexedIndirect(command.commandBuffer, native, offset, drawCount, stride);
+}
+
 void VulkanRhiDevice::DrawIndirect(void *context, rhi::BufferHandle arguments, uint64_t offset, uint32_t drawCount,
                                    uint32_t stride)
 {
@@ -2719,6 +2794,8 @@ bool VulkanRhiDevice::CopyTextureBuffer(void *context, rhi::TextureHandle textur
     }
     VkBufferImageCopy copy{};
     copy.bufferOffset = region.bufferOffset;
+    copy.bufferRowLength =
+        region.bytesPerRow ? region.bytesPerRow / rhi::TextureBufferCopyRegion::TexelBytes(image->desc.format) : 0;
     copy.imageSubresource = {ToVkImageAspect(region.aspect), region.textureMip, region.textureLayer, 1};
     copy.imageExtent = {region.width, region.height, 1};
     if (toBuffer)

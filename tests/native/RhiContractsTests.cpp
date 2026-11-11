@@ -24,6 +24,14 @@ struct RecordedCommands
     BufferHandle indirectBuffer;
     uint64_t indirectOffset = 0;
     uint32_t indirectCount = 0;
+    BufferHandle vertexBuffer;
+    BufferHandle indexBuffer;
+    IndexFormat indexFormat = IndexFormat::Uint16;
+    uint32_t vertexSlot = 0;
+    uint64_t vertexOffset = 0;
+    uint64_t indexOffset = 0;
+    uint32_t indexCount = 0;
+    int32_t baseVertex = 0;
     ComputePipelineHandle computePipeline;
     uint32_t dispatchX = 0;
     uint32_t dispatchY = 0;
@@ -78,6 +86,29 @@ void DrawIndirect(void *context, BufferHandle buffer, uint64_t offset, uint32_t 
     recorded.indirectBuffer = buffer;
     recorded.indirectOffset = offset;
     recorded.indirectCount = drawCount;
+}
+
+void BindVertexBuffer(void *context, uint32_t slot, BufferHandle buffer, uint64_t offset, uint64_t)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.vertexSlot = slot;
+    recorded.vertexBuffer = buffer;
+    recorded.vertexOffset = offset;
+}
+
+void BindIndexBuffer(void *context, BufferHandle buffer, IndexFormat format, uint64_t offset, uint64_t)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.indexBuffer = buffer;
+    recorded.indexFormat = format;
+    recorded.indexOffset = offset;
+}
+
+void DrawIndexed(void *context, uint32_t count, uint32_t, uint32_t, int32_t baseVertex, uint32_t)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.indexCount = count;
+    recorded.baseVertex = baseVertex;
 }
 
 void BindComputePipeline(void *context, ComputePipelineHandle pipeline)
@@ -197,7 +228,9 @@ int main()
     assert(GraphicsPipelineHandle{} != pipeline);
 
     RecordedCommands recorded;
-    const GraphicsCommandEncoder::Dispatch dispatch{BindPipeline, BindGroup, PushConstants, Draw, DrawIndirect};
+    const GraphicsCommandEncoder::Dispatch dispatch{BindPipeline, BindGroup,        PushConstants,   Draw,
+                                                    DrawIndirect, BindVertexBuffer, BindIndexBuffer, DrawIndexed,
+                                                    DrawIndirect};
     const GraphicsCommandEncoder encoder(&recorded, &dispatch);
     const float constants[4] = {};
 
@@ -217,6 +250,25 @@ int main()
     assert(recorded.indirectOffset == 32);
     assert(recorded.indirectCount == 2);
 
+    assert(encoder.HasCompleteDispatch());
+    encoder.BindVertexBuffer(2, indirectBuffer, 16, 96);
+    encoder.BindIndexBuffer(indirectBuffer, IndexFormat::Uint32, 32, 24);
+    encoder.DrawIndexed(6, 1, 0, -2);
+    assert(recorded.vertexSlot == 2 && recorded.vertexBuffer == indirectBuffer && recorded.vertexOffset == 16);
+    assert(recorded.indexBuffer == indirectBuffer && recorded.indexFormat == IndexFormat::Uint32 &&
+           recorded.indexOffset == 32);
+    assert(recorded.indexCount == 6 && recorded.baseVertex == -2);
+
+    VertexInputLayout meshInput;
+    meshInput.bufferCount = 1;
+    meshInput.buffers[0] = {20, VertexStepMode::Vertex};
+    meshInput.attributeCount = 2;
+    meshInput.attributes[0] = {0, 0, VertexFormat::Float32x3, 0};
+    meshInput.attributes[1] = {1, 0, VertexFormat::Float32x2, 12};
+    assert(meshInput.IsValid());
+    meshInput.attributes[1].offset = 16;
+    assert(!meshInput.IsValid());
+
     const ComputeCommandEncoder::DispatchTable computeDispatch{
         BindComputePipeline, BindComputeGroup, PushComputeConstants, DispatchCompute, DispatchComputeIndirect};
     const ComputeCommandEncoder computeEncoder(&recorded, &computeDispatch);
@@ -231,8 +283,8 @@ int main()
     const BufferHandle copyDestinationBuffer{12, 1};
     const TextureHandle copySourceTexture{13, 1};
     const TextureHandle copyDestinationTexture{14, 1};
-    const TransferCommandEncoder::DispatchTable transferDispatch{
-        CopyBuffer, CopyTexture, ResolveTexture, FillBuffer, RecordBufferUpdate};
+    const TransferCommandEncoder::DispatchTable transferDispatch{CopyBuffer, CopyTexture, ResolveTexture, FillBuffer,
+                                                                 RecordBufferUpdate};
     const TransferCommandEncoder transferEncoder(&recorded, &transferDispatch);
     transferEncoder.CopyBuffer(copySourceBuffer, copyDestinationBuffer, {16, 32, 128});
     assert(transferEncoder.FillBuffer(copyDestinationBuffer, 16, 128, 0x12345678u));

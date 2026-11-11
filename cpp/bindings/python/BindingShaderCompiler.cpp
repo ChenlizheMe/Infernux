@@ -66,6 +66,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                         break;
                     }
                     item["workgroup_size"] = entry.workgroupSize;
+                    item["bindings"] = entry.bindings;
                     item["code"] = py::bytes(entry.code.data(), entry.code.size());
                     entries.append(std::move(item));
                 }

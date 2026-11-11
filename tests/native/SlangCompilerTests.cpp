@@ -89,6 +89,8 @@ void derivative(uint3 id : SV_DispatchThreadID)
                 Require(!entry.code.empty(), "Shader code is empty");
                 if (entry.stage == rhi::ShaderStage::Compute)
                     Require(entry.workgroupSize == std::array<uint32_t, 3>{32, 1, 1}, "Workgroup size changed");
+                Require(entry.bindings.size() == (entry.stage == rhi::ShaderStage::Compute ? 3 : 0),
+                        "Entry resource use must come from the compiled target metadata");
                 if (target.target == ShaderCodeTarget::SpirV)
                     Require(HasSpirvEntry(entry.code, entry.name), "Reflection and SPIR-V entry names differ");
                 else {

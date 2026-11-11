@@ -18,10 +18,15 @@ class GraphicsCommandEncoder
         void (*pushConstants)(void *, GraphicsPipelineHandle, ShaderStage, uint32_t, const void *) = nullptr;
         void (*draw)(void *, uint32_t, uint32_t, uint32_t, uint32_t) = nullptr;
         void (*drawIndirect)(void *, BufferHandle, uint64_t, uint32_t, uint32_t) = nullptr;
+        void (*bindVertexBuffer)(void *, uint32_t, BufferHandle, uint64_t, uint64_t) = nullptr;
+        void (*bindIndexBuffer)(void *, BufferHandle, IndexFormat, uint64_t, uint64_t) = nullptr;
+        void (*drawIndexed)(void *, uint32_t, uint32_t, uint32_t, int32_t, uint32_t) = nullptr;
+        void (*drawIndexedIndirect)(void *, BufferHandle, uint64_t, uint32_t, uint32_t) = nullptr;
 
         [[nodiscard]] constexpr bool IsComplete() const noexcept
         {
-            return bindPipeline && bindGroup && pushConstants && draw && drawIndirect;
+            return bindPipeline && bindGroup && pushConstants && draw && drawIndirect && bindVertexBuffer &&
+                   bindIndexBuffer && drawIndexed && drawIndexedIndirect;
         }
     };
 
@@ -73,6 +78,28 @@ class GraphicsCommandEncoder
     {
         if (IsValid() && m_dispatch->drawIndirect && arguments.IsValid() && drawCount > 0)
             m_dispatch->drawIndirect(m_context, arguments, offset, drawCount, stride);
+    }
+
+    void BindVertexBuffer(uint32_t slot, BufferHandle buffer, uint64_t offset = 0, uint64_t byteSize = 0) const
+    {
+        m_dispatch->bindVertexBuffer(m_context, slot, buffer, offset, byteSize);
+    }
+
+    void BindIndexBuffer(BufferHandle buffer, IndexFormat format, uint64_t offset = 0, uint64_t byteSize = 0) const
+    {
+        m_dispatch->bindIndexBuffer(m_context, buffer, format, offset, byteSize);
+    }
+
+    void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t baseVertex = 0,
+                     uint32_t firstInstance = 0) const
+    {
+        m_dispatch->drawIndexed(m_context, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+    }
+
+    void DrawIndexedIndirect(BufferHandle arguments, uint64_t offset = 0, uint32_t drawCount = 1,
+                             uint32_t stride = 20) const
+    {
+        m_dispatch->drawIndexedIndirect(m_context, arguments, offset, drawCount, stride);
     }
 
   private:
@@ -183,7 +210,7 @@ struct TextureCopyRegion
     uint32_t destinationZ = 0;
 };
 
-/// Tightly packed, single-aspect texels at the origin of one 2D mip/layer.
+/// Single-aspect texels at the origin of one 2D mip/layer.
 struct TextureBufferCopyRegion
 {
     TextureAspect aspect = TextureAspect::Color;
@@ -192,6 +219,8 @@ struct TextureBufferCopyRegion
     uint32_t width = 0;
     uint32_t height = 0;
     uint64_t bufferOffset = 0;
+    /// Zero is tightly packed. WebGPU multi-row command copies require 256-byte rows.
+    uint32_t bytesPerRow = 0;
 
     [[nodiscard]] static constexpr uint32_t TexelBytes(PixelFormat format) noexcept
     {
@@ -212,8 +241,14 @@ struct TextureBufferCopyRegion
 
     [[nodiscard]] constexpr bool Fits(PixelFormat format, uint64_t bytes) const noexcept
     {
-        const auto size = ByteSize(format, width, height);
+        auto size = ByteSize(format, width, height);
         const auto texelBytes = TexelBytes(format);
+        if (size && bytesPerRow) {
+            const auto rowBytes = uint64_t{width} * texelBytes;
+            if (bytesPerRow < rowBytes || bytesPerRow % texelBytes != 0)
+                return false;
+            size = uint64_t{height - 1} * bytesPerRow + rowBytes;
+        }
         return aspect == AspectFor(format) && size && size <= bytes &&
                bufferOffset % (texelBytes > 4u ? texelBytes : 4u) == 0;
     }

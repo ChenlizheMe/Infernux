@@ -267,6 +267,8 @@ struct TextureViewDesc
     uint32_t mipCount = 1;
     uint32_t baseLayer = 0;
     uint32_t layerCount = 1;
+    /// None inherits the allocation's usage; otherwise a subset for this view.
+    TextureUsageFlags usage = TextureUsageFlags::None;
 };
 
 enum class ShaderSourceLanguage : uint8_t
@@ -457,6 +459,85 @@ struct GraphicsRenderingSignature
     }
 };
 
+enum class VertexFormat : uint8_t
+{
+    Float32,
+    Float32x2,
+    Float32x3,
+    Float32x4,
+    Sint32,
+    Sint32x2,
+    Sint32x3,
+    Sint32x4,
+    Uint32,
+    Uint32x2,
+    Uint32x3,
+    Uint32x4,
+    Float16x2,
+    Float16x4,
+    Unorm8x4,
+    Snorm8x4,
+    Uint16x4,
+    Unorm16x4,
+};
+
+enum class VertexStepMode : uint8_t
+{
+    Vertex,
+    Instance,
+};
+
+enum class IndexFormat : uint8_t
+{
+    Uint16,
+    Uint32,
+};
+
+struct VertexBufferLayout
+{
+    uint32_t stride = 0;
+    VertexStepMode stepMode = VertexStepMode::Vertex;
+};
+
+struct VertexAttribute
+{
+    uint32_t location = 0;
+    uint32_t bufferSlot = 0;
+    VertexFormat format = VertexFormat::Float32x3;
+    uint32_t offset = 0;
+};
+
+struct VertexInputLayout
+{
+    // The common WebGPU/Vulkan baseline; attributes reference dense buffer slots.
+    static constexpr size_t MaxBuffers = 8;
+    static constexpr size_t MaxAttributes = 16;
+    std::array<VertexBufferLayout, MaxBuffers> buffers{};
+    std::array<VertexAttribute, MaxAttributes> attributes{};
+    uint32_t bufferCount = 0;
+    uint32_t attributeCount = 0;
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept
+    {
+        if (bufferCount > buffers.size() || attributeCount > attributes.size())
+            return false;
+        for (uint32_t slot = 0; slot < bufferCount; ++slot) {
+            if (buffers[slot].stride == 0 || buffers[slot].stride % 4 != 0)
+                return false;
+        }
+        constexpr std::array<uint32_t, 18> widths{4, 8, 12, 16, 4, 8, 12, 16, 4, 8, 12, 16, 4, 8, 4, 4, 8, 8};
+        for (uint32_t index = 0; index < attributeCount; ++index) {
+            const auto &attribute = attributes[index];
+            const auto format = static_cast<size_t>(attribute.format);
+            if (attribute.bufferSlot >= bufferCount || format >= widths.size() || attribute.offset % 4 != 0 ||
+                attribute.offset > buffers[attribute.bufferSlot].stride ||
+                widths[format] > buffers[attribute.bufferSlot].stride - attribute.offset)
+                return false;
+        }
+        return true;
+    }
+};
+
 struct GraphicsPipelineDesc
 {
     static constexpr size_t MaxColorTargets = 8;
@@ -468,6 +549,7 @@ struct GraphicsPipelineDesc
     GraphicsRenderingSignature renderingSignature;
     RenderTargetLayoutHandle renderTargetLayout;
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
+    VertexInputLayout vertexInput;
     RasterState raster;
     DepthState depth;
     SampleCount samples = SampleCount::One;

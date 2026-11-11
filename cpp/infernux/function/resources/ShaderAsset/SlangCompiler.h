@@ -32,6 +32,8 @@ struct ShaderEntryPointCode
     std::string name;
     rhi::ShaderStage stage = rhi::ShaderStage::Compute;
     std::array<uint32_t, 3> workgroupSize{1, 1, 1};
+    /// Actual descriptor set/binding pairs retained by this target entry.
+    std::vector<std::array<uint32_t, 2>> bindings;
     std::vector<char> code;
 };
 

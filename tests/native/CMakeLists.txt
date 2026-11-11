@@ -26,8 +26,14 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_slang_compiler_tests PRIVATE InfernuxShaderCompiler)
     add_test(NAME infernux.slang_compiler COMMAND infernux_slang_compiler_tests)
     set_tests_properties(infernux.slang_compiler PROPERTIES TIMEOUT 60)
+    infernux_add_native_test(infernux_slang_graphics_tests tests/native/SlangGraphicsTests.cpp)
+    target_link_libraries(infernux_slang_graphics_tests PRIVATE InfernuxShaderCompiler InfernuxVulkanBackend SDL3::SDL3)
+    add_test(NAME infernux.slang_graphics COMMAND infernux_slang_graphics_tests)
+    set_tests_properties(infernux.slang_graphics PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
     if(WIN32)
-        set_tests_properties(infernux.slang_compiler PROPERTIES
+        set_tests_properties(infernux.slang_compiler infernux.slang_graphics PROPERTIES
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:${INFERNUX_SLANG_TARGET}>")
     endif()
 
