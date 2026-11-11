@@ -15,6 +15,24 @@ class fullscreen:
     """Fragment program paired with the engine's fullscreen triangle."""
 
 
+class frag:
+    """Mesh fragment program paired with the standard instanced/skinned vertex path."""
+
+
+class mesh_input:
+    """Interpolated mesh data in the current geometry view."""
+
+    position: vec4
+    position_ws: vec3
+    normal_ws: vec3
+    tangent_ws: vec4
+    color: vec3
+    uv0: vec2
+    uv1: vec2
+    view_depth: float
+    line_color: vec4
+
+
 class fragment_input:
     """Raster position in pixel coordinates and interpolated fullscreen UV."""
 
@@ -95,6 +113,7 @@ class _Parameters:
 
 
 parameter = _Parameters()
+material = _Parameters()
 
 
 def _gpu_intrinsic(name):
@@ -111,4 +130,4 @@ for _name in INTRINSICS:
 for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions"):
     globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "fragment_input", "parameter", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "fragment_input", "mesh_input", "parameter", "material", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]

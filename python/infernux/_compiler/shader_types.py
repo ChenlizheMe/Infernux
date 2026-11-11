@@ -1,8 +1,11 @@
 """Resource value types consumed by the static Shader frontends."""
 
 RESOURCE_TYPES = {"Color2D": "InxColor2D"}
-STRUCT_TYPES = {"fragment_input": "InxFragmentInput"}
-STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"}}
+STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "mesh_input": "InxMeshInput"}
+STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
+                 "InxMeshInput": {"position": "float4", "position_ws": "float3", "normal_ws": "float3",
+                                  "tangent_ws": "float4", "color": "float3", "uv0": "float2", "uv1": "float2",
+                                  "view_depth": "float", "line_color": "float4"}}
 
 # A logical image carries its sampler through typed library calls. Slang
 # flattens the pair for each target; neither authors nor helpers name slots.

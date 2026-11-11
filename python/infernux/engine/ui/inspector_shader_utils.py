@@ -9,6 +9,11 @@ import json
 import os
 import re
 from infernux.engine.path_utils import lexical_path_key, path_key, portable_path
+from infernux._source_kinds import source_extension
+
+
+def _matches_stage(filepath: str, ext: str) -> bool:
+    return source_extension(filepath) in {ext, ext + ".py"}
 
 
 def _normalize_imported_property(item: dict) -> dict:
@@ -291,9 +296,13 @@ def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dic
             continue
         for dirpath, _, filenames in os.walk(root):
             for fname in filenames:
-                if not fname.lower().endswith(ext):
+                if not _matches_stage(fname, ext):
                     continue
                 full_path = os.path.join(dirpath, fname)
+                if source_extension(fname) == ".frag.py":
+                    from infernux.core.shader import Shader
+                    if Shader.get_schema(full_path)["domain"] != "mesh":
+                        continue
 
                 shader_id = parse_shader_id(full_path)
                 if not shader_id:
@@ -351,7 +360,7 @@ def _get_shader_properties_cached(reference, ext: str) -> list | None:
     else:
         shader_path = get_shader_file_path(shader_id, ext)
     props = (parse_shader_properties(shader_path)
-             if shader_path and shader_path.lower().endswith(ext) else None)
+             if shader_path and _matches_stage(shader_path, ext) else None)
     _shader_properties_cache[cache_key] = props
     return props
 
@@ -376,6 +385,20 @@ def parse_shader_properties(filepath: str) -> list:
     Returns list of dicts: [{'name': str, 'type': str, 'default': any, 'hdr': bool}, ...]
 
     """
+    if source_extension(filepath) in {".frag.py", ".vert.py"}:
+        from infernux.core.shader import Shader
+        schema = Shader.get_schema(filepath)
+        if schema["domain"] != "mesh":
+            return []
+        kinds = {"float": "Float", "int": "Int", "vec2": "Float2", "vec3": "Float3",
+                 "vec4": "Float4", "color": "Color", "mat4": "Mat4"}
+        fields = []
+        for parameter in schema["parameters"]:
+            item = dict(parameter, type=kinds[parameter["kind"]])
+            if parameter["kind"] == "mat4":
+                item["default"] = [parameter["default"][row][column] for column in range(4) for row in range(4)]
+            fields.append(item)
+        return fields
     import json
     metadata = _read_compiled_shader_metadata(filepath)
     if metadata is not None:
@@ -452,7 +475,7 @@ def make_shader_reference(value, ext: str) -> dict[str, str]:
 
     if isinstance(value, str):
         candidate = value.strip()
-        if candidate.lower().endswith(ext) or os.path.isfile(candidate):
+        if _matches_stage(candidate, ext) or os.path.isfile(candidate):
             path_hint = candidate
             # A picker/drop payload is a source location, never a shader ID.
             # Resolve ShaderInfo.Name below so material pipeline keys remain
@@ -630,6 +653,10 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
 
         existing['type'] = ptype
         existing['hdr'] = hdr
+        if sp.get('label'):
+            existing['label'] = sp['label']
+        else:
+            existing.pop('label', None)
         if internal:
             existing['internal'] = True
         else:

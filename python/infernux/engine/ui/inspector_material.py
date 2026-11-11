@@ -324,9 +324,10 @@ def render_material_property(
     """Render one material property row.  Returns ``True`` if changed."""
     changed = False
     wid = f"##{wid_prefix}_{prop_name}"
+    label = prop.get("label", prop_name)
 
     if ptype == 0:  # Float
-        field_label(ctx, prop_name, plw)
+        field_label(ctx, label, plw)
         authored_range = prop.get("range")
         if isinstance(authored_range, list) and len(authored_range) == 2:
             nv = float(ctx.float_slider(
@@ -363,7 +364,7 @@ def render_material_property(
             changed = True
 
     elif ptype == 4:  # Int
-        field_label(ctx, prop_name, plw)
+        field_label(ctx, label, plw)
         authored_range = prop.get("range")
         if isinstance(authored_range, list) and len(authored_range) == 2:
             nv = int(ctx.int_slider(
@@ -378,15 +379,16 @@ def render_material_property(
         arr = list(value)
         mat_changed = False
         for row in range(4):
-            base = row * 4
+            indices = [column * 4 + row for column in range(4)]
+            values = [arr[index] for index in indices]
             nx, ny, nz, nw = ctx.vector4(
-                f"{prop_name}[{row}]",
-                float(arr[base]), float(arr[base + 1]),
-                float(arr[base + 2]), float(arr[base + 3]),
+                f"{label}[{row}]##{wid_prefix}_{prop_name}_{row}",
+                *map(float, values),
             )
             nr = [nx, ny, nz, nw]
-            if nr != arr[base:base + 4]:
-                arr[base:base + 4] = nr
+            if nr != values:
+                for index, component in zip(indices, nr):
+                    arr[index] = component
                 mat_changed = True
         if mat_changed:
             prop["value"] = arr
@@ -403,7 +405,7 @@ def render_material_property(
             x, y, z, w = value[0], value[1], value[2], value[3]
         else:
             x, y, z, w = 1.0, 1.0, 1.0, 1.0
-        field_label(ctx, prop_name, plw)
+        field_label(ctx, label, plw)
         allow_hdr = bool(prop.get("hdr", False))
         nr, ng, nb, na = _render_color_bar(
             ctx, wid, float(x), float(y), float(z), float(w),

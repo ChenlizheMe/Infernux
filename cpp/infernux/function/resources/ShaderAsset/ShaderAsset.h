@@ -1,5 +1,6 @@
 #pragma once
 
+#include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
@@ -54,6 +55,7 @@ struct ShaderAsset
     std::shared_ptr<const ShaderCompilation> program;
     std::string authoringSchema;
     std::optional<ShaderProgramDomain> programDomain;
+    std::shared_ptr<const ShaderProgramArtifact> materialProgram;
     std::vector<std::string> sourceDependencies;
 
     [[nodiscard]] const ShaderStageVariant *FindVariant(ShaderCompileTarget target) const noexcept

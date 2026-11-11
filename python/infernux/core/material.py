@@ -116,6 +116,20 @@ class Material(ResourceProxy):
         return Material(native)
 
     @staticmethod
+    def from_shader(asset: str, name: str = "New Material") -> "Material":
+        """Create a mesh material from an imported ``*.frag.py`` path or GUID.
+
+        The shader owns the vertex program, field defaults and target layouts.
+        This prepares an asset; it does not create a device pipeline.
+        """
+        from infernux.core.shader import Shader
+
+        _, _, guid = Shader._author_source(asset)
+        if not guid:
+            raise FileNotFoundError(f"Shader author is not imported: {asset}")
+        return Material(InxMaterial.from_shader(guid, name))
+
+    @staticmethod
     def from_native(native: "InxMaterial | Material") -> "Material":
         """Return the canonical proxy for a native or public material."""
         if isinstance(native, Material):

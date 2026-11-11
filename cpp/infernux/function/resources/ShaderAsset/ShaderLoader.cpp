@@ -7,6 +7,7 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
+#include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <platform/filesystem/InxPath.h>
@@ -54,8 +55,11 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->descriptor.filePath = filePath;
         asset->descriptor.fileExtension = kind->suffix;
         asset->authoringSchema = prepared.schema;
-        if (nlohmann::json::parse(prepared.schema).at("domain") == "fullscreen")
+        const auto schema = nlohmann::json::parse(prepared.schema);
+        if (schema.at("domain") == "fullscreen")
             asset->programDomain = ShaderProgramDomain::Fullscreen;
+        else if (schema.at("domain") == "mesh")
+            asset->programDomain = ShaderProgramDomain::Mesh;
         for (const auto &library : prepared.libraries) {
             if (!asset_formats::FindShaderSourceKind(library.path))
                 continue;
@@ -66,6 +70,9 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->program = std::make_shared<ShaderCompilation>(
             compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl},
                              false, prepared.sourceRanges));
+        if (asset->programDomain == ShaderProgramDomain::Mesh)
+            asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(
+                CreateShaderAuthorMaterial(asset->shaderId, asset->program, prepared.schema));
         return asset;
     }
 

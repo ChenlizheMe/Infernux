@@ -23,6 +23,29 @@ class Tint(shader.fullscreen):
 '''
 
 
+def test_mesh_fragment_uses_native_geometry_and_material_domain():
+    source = '''import infernux.shader as shader
+
+class Grid(shader.frag):
+    tint = shader.material.color(default=(0.8, 0.3, 0.1, 1.0), hdr=True, label="颜色")
+    scale = shader.material.float(default=2.0, range=(0.0, 4.0))
+
+    def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        stripe = shader.step(0.5, shader.frac(ctx.position_ws.x * self.scale))
+        return shader.vec4(self.tint.rgb * stripe, self.tint.a)
+'''
+    definition = parse_shader(source, "网格.frag.py", "mesh_grid")
+    assert definition.domain == "mesh"
+    for target in definition.compile()["targets"]:
+        assert {(entry["name"], entry["stage"]) for entry in target["entries"]} == {
+            ("vertex_main", "vertex"), ("fragment_main", "fragment"),
+        }
+        locations = {(resource["set"], resource["binding"]): resource for resource in target["resources"]}
+        assert {(0, 0), (1, 5), (2, 1), (2, 2), (2, 3)} <= locations.keys()
+        fields = locations[0, 0]["value"]["fields"]
+        assert [field["name"] for field in fields] == ["tint", "scale"]
+
+
 def test_static_fullscreen_schema_and_both_targets():
     definition = parse_shader(SOURCE, "测试.frag.py", "tint")
     assert [field.name for field in definition.parameters] == ["strength", "color", "active"]

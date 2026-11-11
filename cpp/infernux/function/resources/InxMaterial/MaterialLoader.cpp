@@ -3,7 +3,10 @@
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetFormatRegistry.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 
 #include <platform/filesystem/AssetDocument.h>
 #include <platform/filesystem/InxPath.h>
@@ -115,6 +118,7 @@ bool MaterialLoader::Reload(const RuntimeAssetPayload &existing, const std::stri
     InxMaterial staged(*mat);
     if (!PrepareDocument(staged, filePath, adb))
         return false;
+    PrepareShaderDefaults(staged, adb);
     staged.m_name = mat->GetName();
     mat->PublishDocument(std::move(staged));
 
@@ -187,6 +191,22 @@ void MaterialLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::
     const auto material = payload.Get<InxMaterial>();
     material->SetFilePath(filePath);
     material->SetName(FromFsPath(ToFsPath(filePath).stem()));
+}
+
+void MaterialLoader::PrepareShaderDefaults(InxMaterial &material, AssetDatabase *adb)
+{
+    const auto &fragment = material.GetFragShaderReference();
+    if (!fragment.guid.empty() && asset_formats::FindShaderSourceKind(adb->GetPathFromGuid(fragment.guid))) {
+        const auto shader = AssetRegistry::Instance().LoadAsset<ShaderAsset>(fragment.guid, ResourceType::Shader);
+        if (!shader || !shader->materialProgram)
+            throw std::invalid_argument("Material requires a compiled mesh shader author");
+        material.SynchronizeShaderPropertyDefaults(*shader->materialProgram);
+    }
+}
+
+void MaterialLoader::PreparePublication(const RuntimeAssetPayload &payload, const std::string &, AssetDatabase *adb)
+{
+    PrepareShaderDefaults(*payload.Get<InxMaterial>(), adb);
 }
 
 void MaterialLoader::OnPublished(const RuntimeAssetPayload &payload, const std::string &, AssetDatabase *adb)

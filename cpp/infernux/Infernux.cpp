@@ -462,6 +462,8 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
         work.stages = stages;
         work.vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
         work.fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
+        if (asset_formats::FindShaderSourceKind(work.fragmentPath))
+            continue; // Static author programs are prepared by the asset loader, not the legacy stage linker.
         if (work.vertexPath.empty() || work.fragmentPath.empty() || !readSource(work.vertexPath, work.vertexSource) ||
             !readSource(work.fragmentPath, work.fragmentSource)) {
             m_linkedShaderPreparations.erase(stages);
@@ -3874,6 +3876,9 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
     LinkedShaderProgramPreparation result;
     if (!m_renderer || !stages.IsValid())
         return result;
+
+    if (asset_formats::FindShaderSourceKind(fragmentPath))
+        return EnsureShaderAuthorMaterial(stages, fragmentPath);
 
     const auto cached = m_linkedShaderProgramCache.find(stages);
     const auto publishPrepared = [&]() -> LinkedShaderProgramPreparation {

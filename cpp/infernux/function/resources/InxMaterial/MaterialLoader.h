@@ -15,6 +15,7 @@ class MaterialLoader final : public IAssetLoader
     }
     bool Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
                 AssetDatabase *adb) override;
+    void PreparePublication(const RuntimeAssetPayload &payload, const std::string &guid, AssetDatabase *adb) override;
     void OnPublished(const RuntimeAssetPayload &payload, const std::string &guid, AssetDatabase *adb) override;
     void OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath) override;
     [[nodiscard]] size_t EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const override;
@@ -24,6 +25,7 @@ class MaterialLoader final : public IAssetLoader
 
   private:
     static bool PrepareDocument(class InxMaterial &staged, const std::string &filePath, AssetDatabase *adb);
+    static void PrepareShaderDefaults(class InxMaterial &staged, AssetDatabase *adb);
 };
 
 } // namespace infernux

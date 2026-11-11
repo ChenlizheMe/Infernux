@@ -66,6 +66,7 @@ set(INFERNUX_PARTICLE_RUNTIME_SOURCES
 set(INFERNUX_SHADER_COMPILER_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/SlangCompiler.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/SlangLayout.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderAuthorMaterial.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderReflection.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/GlslStageInterfaceEmitter.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderInfoSchema.cpp"

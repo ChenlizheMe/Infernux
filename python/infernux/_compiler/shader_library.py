@@ -202,7 +202,7 @@ class LibraryGraph:
                 emitter.error(definition, "Duplicate ShaderLib function: " + definition.name)
             function = emitter.signature(definition, module.name + "::" + definition.name)
             module.functions[definition.name] = functions[definition.name] = function
-        code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies),
+        code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies),
                 "namespace " + module.name + " {"]
         ranges = []
         for definition in body:

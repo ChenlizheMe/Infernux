@@ -151,6 +151,13 @@ class IAssetLoader
         throw std::logic_error("Asset loader requires registry-managed publication");
     }
 
+    /// Finish owner-dependent preparation on the private candidate. Dependencies
+    /// may be loaded here; failure does not publish this candidate. This runs
+    /// before residency accounting and publication, never on a worker.
+    virtual void PreparePublication(const RuntimeAssetPayload &, const std::string &, AssetDatabase *)
+    {
+    }
+
     /// Apply loader-owned global state after the owner accepts the live payload.
     /// Synchronous loading, reloading and worker publication share this boundary.
     virtual void OnPublished(const RuntimeAssetPayload &, const std::string &, AssetDatabase *)

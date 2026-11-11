@@ -39,6 +39,7 @@ class ShaderDefinition:
     libraries: tuple[tuple[str, str, str], ...] = ()
     inputs: tuple[ShaderInput, ...] = ()
     source_ranges: tuple = ()
+    domain: str = "fullscreen"
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -63,6 +64,7 @@ class _Author(ShaderEmitter):
         self.alias = ""
         self.fields = {}
         self.field_nodes = {}
+        self.domain = "fullscreen"
 
     def qualified(self, node):
         if isinstance(node, ast.Name):
@@ -110,9 +112,9 @@ class _Author(ShaderEmitter):
             self.fields[name] = ShaderInput(name, self.literal(call.args[0]), kind, metadata.get("domain"))
             self.types["self." + name] = RESOURCE_TYPES[kind]
             return
-        prefix = self.alias + ".parameter."
+        prefix = self.alias + (".material." if self.domain == "mesh" else ".parameter.")
         if not declaration.startswith(prefix) or declaration[len(prefix):] not in _PARAMETER_TYPES:
-            self.error(call, "Unsupported shader parameter declaration")
+            self.error(call, "Expected " + prefix + " followed by a supported value type")
         kind = declaration[len(prefix):]
         values = {keyword.arg: self.literal(keyword.value) for keyword in call.keywords}
         if call.args:
@@ -170,17 +172,19 @@ class _Author(ShaderEmitter):
         if not arguments or arguments[0].arg != "self":
             self.error(main, "Shader main is an instance method")
         if len(arguments) > 2:
-            self.error(main, "Fullscreen main accepts self and an optional vec2 or fragment_input")
+            self.error(main, "Shader main accepts self and one typed stage input")
         signature = ""
         if len(arguments) == 2:
             uv = arguments[1]
             kind = self.annotation(uv.annotation) if uv.annotation is not None else None
-            if kind not in {"float2", "InxFragmentInput"}:
-                self.error(uv, "Fullscreen input is shader.vec2 or shader.fragment_input")
+            expected = {"InxMeshInput"} if self.domain == "mesh" else {"float2", "InxFragmentInput"}
+            if kind not in expected:
+                self.error(uv, "Mesh input is shader.mesh_input" if self.domain == "mesh" else
+                           "Fullscreen input is shader.vec2 or shader.fragment_input")
             signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
         if main.returns is None or self.annotation(main.returns) != "float4":
-            self.error(main, "Fullscreen main returns shader.vec4")
+            self.error(main, "Fragment main returns shader.vec4")
         self.aliases = (self.alias,)
         self.declare_locals(main.body)
         self.local_declarations()
@@ -202,6 +206,20 @@ FullscreenVertex vertex_main(uint id : SV_VulkanVertexID)
 }
 """
 
+_MESH_VERTEX = """
+import inx_geometry;
+[[vk::binding(5, 1)]] ConstantBuffer<InxCameraData> inx_view;
+[[vk::binding(1, 2)]] StructuredBuffer<InxModelMatrix> inx_models;
+[[vk::binding(2, 2)]] StructuredBuffer<InxSkinState> inx_skins;
+[[vk::binding(3, 2)]] StructuredBuffer<InxModelMatrix> inx_bones;
+[shader("vertex")]
+InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
+{
+    input = inx_skin_vertex(input, inx_skins[instance], inx_bones);
+    return inx_transform_vertex(input, inx_models[instance].value, inx_view.view, inx_view.projection);
+}
+"""
+
 
 def parse_shader(source: str, source_path: str, module_name: str, *, reader=None) -> ShaderDefinition:
     author = _Author(source, source_path)
@@ -212,8 +230,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if len(body) != 1 or not isinstance(body[0], ast.ClassDef):
         author.error(ast.Constant(lineno=1, col_offset=0), "Declare one shader class")
     declaration = body[0]
-    if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) != author.alias + ".fullscreen":
-        author.error(declaration, "The first authoring slice supports shader.fullscreen")
+    bases = {author.alias + ".fullscreen": "fullscreen", author.alias + ".frag": "mesh"}
+    if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) not in bases:
+        author.error(declaration, "Declare shader.fullscreen or shader.frag")
+    author.domain = bases[author.qualified(declaration.bases[0])]
     main, helpers = None, []
     for statement in declaration.body:
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
@@ -231,7 +251,15 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         author.error(declaration, "Shader class needs a main entry")
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
-    code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies), _FULLSCREEN_VERTEX]
+    if author.domain == "mesh":
+        for field in parameters:
+            if field.kind in {"bool", "uint", "mat3"}:
+                author.error(author.field_nodes[field.name], "This material value type is not supported by the material owner yet",
+                             code="author.parameter")
+        if inputs:
+            author.error(declaration, "Mesh image resources are declared as material properties")
+    code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies),
+            _MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX]
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),
                      RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";"])
@@ -240,12 +268,14 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         for field in parameters:
             code.extend([author.source_directive(author.field_nodes[field.name]),
                          "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
-        code.extend(["};", "ConstantBuffer<ShaderParameters> inx_parameters;"])
+        binding = "[[vk::binding(0, 0)]] " if author.domain == "mesh" else ""
+        code.extend(["};", binding + "ConstantBuffer<ShaderParameters> inx_parameters;"])
     for helper in helpers:
         emitter = _Author(source, source_path)
         emitter.alias = author.alias
         emitter.aliases = (author.alias,)
         emitter.fields = author.fields
+        emitter.domain = author.domain
         emitter.types = author.types.copy()
         emitter.functions = author.functions
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
@@ -253,7 +283,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     code.extend(author.function(main))
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
                             "\n".join(code), graph.sources(), inputs,
-                            tuple(dict.fromkeys((*graph.ranges(), *author.source_ranges))))
+                            tuple(dict.fromkeys((*graph.ranges(), *author.source_ranges))), author.domain)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -275,7 +305,7 @@ def _prepare_source(source, source_path, module_name, reader):
         libraries = tuple(item for item in graph.sources() if item[0] != module.name)
         return module.source, libraries, json.dumps(schema, ensure_ascii=False), graph.ranges()
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
-    schema = {"name": definition.name, "domain": "fullscreen",
+    schema = {"name": definition.name, "domain": definition.domain,
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}
     return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False), definition.source_ranges

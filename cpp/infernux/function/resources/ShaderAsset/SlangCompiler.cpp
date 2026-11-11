@@ -1,4 +1,5 @@
 #include "SlangCompiler.h"
+#include "SlangGeometryModule.h"
 #include "SlangLayout.h"
 
 #include <slang-com-ptr.h>
@@ -276,6 +277,7 @@ try {
             throw ShaderCompilationError(FailureDiagnostics("compile", module.path, diagnostics));
         return loaded;
     };
+    loadModule(GetSlangGeometryModule());
     for (const auto &library : libraries)
         loadModule(library);
     auto *module = loadModule(source);

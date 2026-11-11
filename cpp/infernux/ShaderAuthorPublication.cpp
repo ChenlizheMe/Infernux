@@ -15,6 +15,22 @@
 namespace infernux
 {
 
+Infernux::LinkedShaderProgramPreparation Infernux::EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
+                                                                              const std::string &fragmentPath)
+{
+    auto &registry = AssetRegistry::Instance();
+    const auto guid = GetAssetDatabase()->GetGuidFromPath(fragmentPath);
+    const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+    if (!asset || !asset->materialProgram)
+        return {true, false, "This GPU author is not a mesh material: " + fragmentPath};
+    const auto &program = *asset->materialProgram;
+    if (stages != program.key.stages)
+        return {true, false, "Mesh fragment requires its declared standard vertex program"};
+    if (!m_renderer->HasShaderProgramArtifact(program.key) && !m_renderer->PublishShaderProgramArtifact(program))
+        return {true, false, "Mesh author program could not be published"};
+    return {true, true, {}};
+}
+
 std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
 {
     auto &registry = AssetRegistry::Instance();
@@ -41,13 +57,20 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
             candidates.emplace_back(root, loader.Load(path, root, database).Get<ShaderAsset>());
         }
 
+        std::vector<ShaderProgramArtifact> materials;
+        for (const auto &candidate : candidates)
+            if (candidate.second->materialProgram)
+                materials.push_back(*candidate.second->materialProgram);
+        if (m_renderer && !materials.empty() && !m_renderer->PublishShaderProgramArtifacts(materials))
+            throw std::runtime_error("Mesh author candidate programs could not be published");
+
         // All frontend and target work succeeds before any program generation
         // becomes visible. Source dependencies are published by the loader at
         // this same owner boundary; device readers retain immutable code.
         for (auto &[root, asset] : candidates) {
-            const bool executable = asset->shaderType != "library";
+            const bool fullscreen = asset->programDomain == ShaderProgramDomain::Fullscreen;
             registry.PublishShader(root, std::move(asset));
-            if (m_renderer && executable)
+            if (m_renderer && fullscreen)
                 m_renderer->InvalidateShaderCache(root);
         }
         return {};

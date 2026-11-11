@@ -593,13 +593,14 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             [](AssetRegistry &self, const std::string &path) {
                 return self.LoadAssetByPath<InxMaterial>(path, ResourceType::Material);
             },
-            py::arg("path"), "Load a material by file path (GUID resolved internally)")
+            py::arg("path"), "Load a material by file path (GUID resolved internally)",
+            py::call_guard<py::gil_scoped_release>())
         .def(
             "load_material_by_guid",
             [](AssetRegistry &self, const std::string &guid) {
                 return self.LoadAsset<InxMaterial>(guid, ResourceType::Material);
             },
-            py::arg("guid"), "Load a material by its GUID")
+            py::arg("guid"), "Load a material by its GUID", py::call_guard<py::gil_scoped_release>())
         .def(
             "get_material",
             [](AssetRegistry &self, const std::string &guid) { return self.GetAsset<InxMaterial>(guid); },

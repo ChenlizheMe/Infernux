@@ -18,6 +18,7 @@
 #include <function/resources/InxTexture/TextureLoader.h>
 #include <function/resources/InxTexture/TexturePixels.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <iomanip>
 #include <platform/filesystem/AssetDocument.h>
 #include <platform/filesystem/AtomicFile.h>
@@ -710,6 +711,20 @@ void RegisterResourceBindings(py::module_ &m)
 
     // InxMaterial - material definition (named InxMaterial to avoid conflict with ResourceType.Material)
     py::class_<InxMaterial, std::shared_ptr<InxMaterial>>(m, "InxMaterial")
+        .def_static(
+            "from_shader",
+            [](const std::string &guid, const std::string &name) {
+                auto &registry = AssetRegistry::Instance();
+                const auto shader = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+                if (!shader || !shader->materialProgram)
+                    throw std::invalid_argument("Material requires an imported mesh shader author");
+                auto material = std::make_shared<InxMaterial>(name);
+                material->SetVertShaderReference({{}, "Standard", {}});
+                material->SetFragShaderReference({guid, shader->shaderId, shader->filePath});
+                material->SynchronizeShaderPropertyDefaults(*shader->materialProgram);
+                return material;
+            },
+            py::arg("guid"), py::arg("name") = "New Material", py::call_guard<py::gil_scoped_release>())
         .def_static("property_to_id", &ShaderPropertyIds::Get, py::arg("name"))
         .def_static(
             "property_name", [](const bindings::MaterialPropertyName &name) { return std::string(name); },

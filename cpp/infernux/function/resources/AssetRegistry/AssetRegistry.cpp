@@ -171,6 +171,7 @@ RuntimeAssetPayload AssetRegistry::LoadAssetInternal(const std::string &filePath
         return nullptr;
     }
 
+    loaderIt->second->PreparePublication(payload, guid, m_assetDb.get());
     InsertEntry(guid, payload, type);
     loaderIt->second->OnPublished(payload, guid, m_assetDb.get());
     ++m_assetMutationGenerations[guid];
@@ -1044,6 +1045,7 @@ bool AssetRegistry::CommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
         ticket->m_payload = existing->second.payload;
         existing->second.lastAccessSerial = ++m_accessSerial;
     } else {
+        ticket->m_loader->PreparePublication(ticket->m_payload, ticket->m_guid, m_assetDb.get());
         InsertEntry(ticket->m_guid, ticket->m_payload, ticket->m_resourceType);
         m_loaders.at(ticket->m_resourceType)->OnPublished(ticket->m_payload, ticket->m_guid, m_assetDb.get());
         ++m_assetMutationGenerations[ticket->m_guid];
