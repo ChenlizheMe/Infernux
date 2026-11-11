@@ -123,50 +123,21 @@ foreach(_source_file IN LISTS _native_files)
     endif()
 endforeach()
 
-# The 041 compute contract ships both JIT toolchains with the engine install:
-# Numba/llvmlite are declared wheel dependencies, while the compiler-only
-# Vulkan frontend is a native payload in this wheel.  Missing either side is a
-# broken distribution, not an optional runtime download.
-file(GLOB _gpu_jit_modules
-    "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.pyd"
-    "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.so"
-    "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.dylib"
-)
-list(LENGTH _gpu_jit_modules _gpu_jit_module_count)
-if(NOT _gpu_jit_module_count EQUAL 1)
-    message(FATAL_ERROR
-        "Wheel must contain exactly one platform GPU JIT compiler module, found ${_gpu_jit_module_count}"
-    )
+# GPU compilation is provided by the linked Slang service and its matching
+# standard modules. There is no second Python/native GPU compiler payload.
+if(NOT EXISTS "${_verify_root}/infernux/_compiler/slang.py")
+    message(FATAL_ERROR "Wheel is missing the shared numerical Slang frontend")
 endif()
-if(NOT EXISTS "${_verify_root}/infernux/_compiler/taichi/__init__.py" OR
-   NOT EXISTS "${_verify_root}/infernux/_compiler/taichi/frontend.py")
-    message(FATAL_ERROR "Wheel is missing the Infernux-owned GPU compiler loader")
+file(GLOB _slang_libraries
+    "${_verify_root}/infernux/lib/*slang-compiler*.dll"
+    "${_verify_root}/infernux/lib/*slang-compiler*.so*"
+    "${_verify_root}/infernux/lib/*slang-compiler*.dylib")
+if(NOT _slang_libraries)
+    message(FATAL_ERROR "Wheel is missing the resident Slang compiler")
 endif()
-# The reused lowering sources are namespaced below Infernux and are not an
-# installable author package. A top-level Taichi package in the wheel would
-# create a second public API and is forbidden.
-if(EXISTS "${_verify_root}/taichi")
-    message(FATAL_ERROR "Wheel must not expose a top-level Taichi package")
+if(NOT IS_DIRECTORY "${_verify_root}/infernux/lib/${INFERNUX_SLANG_MODULE_NAME}")
+    message(FATAL_ERROR "Wheel is missing Slang's matching standard modules")
 endif()
-set(_retired_private_compiler_directories
-    ad algorithms aot examples graph linalg math profiler sparse tools ui _ti_module)
-foreach(_retired_dir IN LISTS _retired_private_compiler_directories)
-    if(EXISTS "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/${_retired_dir}")
-        message(FATAL_ERROR
-            "Wheel restored retired private compiler directory: ${_retired_dir}")
-    endif()
-endforeach()
-foreach(_retired_file experimental.py lang/misc.py types/quant.py _funcs.py _kernels.py)
-    if(EXISTS "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/${_retired_file}")
-        message(FATAL_ERROR
-            "Wheel restored retired private compiler file: ${_retired_file}")
-    endif()
-endforeach()
-foreach(_license_name LICENSE NOTICE)
-    if(NOT EXISTS "${_verify_root}/infernux/_compiler/licenses/taichi/${_license_name}")
-        message(FATAL_ERROR "Wheel is missing the Taichi ${_license_name} attribution")
-    endif()
-endforeach()
 
 file(GLOB _wheel_metadata "${_verify_root}/*.dist-info/METADATA")
 list(LENGTH _wheel_metadata _wheel_metadata_count)

@@ -21,7 +21,6 @@
         "INFERNUX_PYTHON_SYNC_DIR": "${sourceDir}/out/build/android-arm64-release/python-sync",
         "INFERNUX_BUILD_PLAYER_HOST": "OFF",
         "INFERNUX_BUILD_TESTS": "OFF",
-        "INFERNUX_BUILD_GPU_JIT_COMPILER": "OFF",
         "INFERNUX_RELEASE_LTO": "OFF",
         "INFERNUX_ENABLE_VULKAN_VALIDATION": "OFF"
       }

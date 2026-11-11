@@ -40,10 +40,6 @@
 [submodule "external/plugins/infernux_web"]
 	path = external/plugins/infernux_web
 	url = https://github.com/InfernuxEngine/infernux_web.git
-[submodule "external/taichi_for_infernux"]
-	path = external/taichi_for_infernux
-	url = https://github.com/InfernuxEngine/taichi_for_infernux.git
-	branch = infernux-support
 [submodule "external/llvmlite_for_infernux"]
 	path = external/llvmlite_for_infernux
 	url = https://github.com/InfernuxEngine/llvmlite_for_infernux.git

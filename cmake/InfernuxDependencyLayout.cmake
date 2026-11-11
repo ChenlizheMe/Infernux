@@ -22,7 +22,6 @@ set(INFERNUX_MAINTAINED_FORKS
     imgui_for_infernux
     sdl_for_infernux
     joltphysics_for_infernux
-    taichi_for_infernux
     llvmlite_for_infernux
     zstd_for_infernux
     lunasvg_for_infernux
@@ -52,7 +51,6 @@ set(INFERNUX_THIRD_PARTY_SUBMODULES
     stb
     joltphysics_for_infernux
     VulkanMemoryAllocator
-    taichi_for_infernux
     MikkTSpace
     zstd_for_infernux
     lunasvg_for_infernux

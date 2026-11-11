@@ -138,28 +138,7 @@ def main() -> int:
 
             declaration = affine
             inx.compute.statistics(reset=True)
-            from infernux._compiler.taichi import frontend as compiler_frontend
-            compiler_vendor = compiler_frontend._load_vendor()
-            compiler_module = sys.modules[compiler_vendor.__name__ + '.lang.kernel_impl']
-            buffer_type = compiler_vendor.types.external_buffer
-            ensure_compiled = compiler_module.Kernel.ensure_compiled
-            compiler_context = compiler_vendor.lang.impl.get_runtime()
-            observed_signatures = []
-            compiler_references = []
-
-            def compile_from_metadata(compiler, *arguments):
-                observed_signatures.append(arguments)
-                for argument, declaration in zip(arguments, compiler.arguments):
-                    if isinstance(declaration.annotation, buffer_type):
-                        assert argument is declaration.annotation, 'Buffer schema was replaced by runtime data'
-                    else:
-                        assert argument is None, 'Scalar values must remain runtime arguments'
-                key = ensure_compiled(compiler, *arguments)
-                compiler_references.append((weakref.ref(compiler), weakref.ref(compiler.compiled_kernels[key])))
-                assert not hasattr(compiler, 'grad')
-                return key
-
-            compiler_module.Kernel.ensure_compiled = compile_from_metadata
+            # Cold preparation must not retain unrelated project globals.
             globals()['_compiler_lifetime_probe'] = ModuleType('compiler_lifetime_probe')
             globals_reference = weakref.ref(globals()['_compiler_lifetime_probe'])
             gc_was_enabled = gc.isenabled()
@@ -168,23 +147,17 @@ def main() -> int:
                 try:
                     inx.compute.prepare(affine, params=(values, 3, 11))
                 finally:
-                    compiler_module.Kernel.ensure_compiled = ensure_compiled
                     del globals()['_compiler_lifetime_probe']
-                assert globals_reference() is None, 'Generated compiler namespace retained project globals'
+                assert globals_reference() is None, 'Compiler retained unrelated project globals'
             finally:
                 if gc_was_enabled:
                     gc.enable()
-            assert len(observed_signatures) == 1
-            assert all(reference() is None for pair in compiler_references for reference in pair), \
-                'Completed compilation still retains its Python/native kernel'
-            assert not hasattr(compiler_context, 'kernels')
+            assert not any(name.startswith('infernux._compiler.taichi') for name in sys.modules)
             assert not any(name.startswith('<infernux-kernel:') for name in linecache.cache)
-            assert not hasattr(compiler_module, 'data_oriented')
-            assert not hasattr(compiler_module, '_inside_class')
             @inx.compute.kernel
             def invalid_lowering(payload):
                 i = inx.compute.index(payload)
-                payload[i] = undefined_compiler_value
+                payload[i] = undefined_compiler_value  # noqa: F821 -- compiler source diagnostic probe
 
             try:
                 inx.compute.prepare(invalid_lowering, params=(values,))
@@ -194,9 +167,6 @@ def main() -> int:
             else:
                 raise AssertionError('Invalid compiler AST unexpectedly accepted')
             assert not any(name.startswith('<infernux-kernel:') for name in linecache.cache)
-            assert compiler_context.current_kernel is None
-            assert compiler_context.compiling_callable is None
-            assert compiler_context.inside_kernel is False
             prepared_statistics = inx.compute.statistics()
             assert prepared_statistics.submission_count == 0
             assert prepared_statistics.dispatch_count == 0
@@ -209,16 +179,16 @@ def main() -> int:
             # Drop the process-local executable and make private frontend
             # initialization impossible. Preparing the same specialization
             # must reconstruct its Infernux pipeline from the project cache.
-            from infernux._compiler.taichi import frontend as compiler_frontend
+            from infernux.lib import _Infernux as compiler_service
             affine._release_engine_resources()
-            load_vendor = compiler_frontend._load_vendor
-            compiler_frontend._load_vendor = lambda: (_ for _ in ()).throw(
-                AssertionError("cached GPU artifact tried to initialize the compiler")
+            compile_program = compiler_service._compile_shader_program
+            compiler_service._compile_shader_program = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("cached GPU artifact tried to compile source")
             )
             try:
                 inx.compute.prepare(affine, params=(values, 3, 11))
             finally:
-                compiler_frontend._load_vendor = load_vendor
+                compiler_service._compile_shader_program = compile_program
             readback = values.get_data_async(offset=31, count=67)
             assert isinstance(readback.done, bool)
             values.close()
@@ -607,87 +577,7 @@ def main() -> int:
             assert profiled.gpu_profile_serial > 0
             assert profiled.gpu_time_ms is not None and profiled.gpu_time_ms >= 0.0
             inx.compute.set_profiling_enabled(False)
-            from infernux._compiler.taichi import frontend as compiler_frontend
-            compiler_native = compiler_frontend.load_native()
-            assert not hasattr(compiler_native, "_attach_engine_compute_host")
-            assert not hasattr(compiler_native, "_EngineComputeDevice")
-            assert not hasattr(compiler_native, "AotModuleBuilder")
-            assert not hasattr(compiler_native, "GraphBuilder")
-            assert not hasattr(compiler_native, "LoadedAotModule")
-            assert not hasattr(compiler_native, "SparseMatrix")
-            assert not hasattr(compiler_native, "SparseMatrixBuilder")
-            assert not hasattr(compiler_native, "SparseSolver")
-            assert not hasattr(compiler_native, "KernelProfilerQueryResult")
-            assert not hasattr(compiler_native, "KernelProfileTracedRecord")
-            assert not hasattr(compiler_native.Program, "create_ndarray")
-            assert not hasattr(compiler_native.Program, "create_texture")
-            assert not hasattr(compiler_native.Program, "launch_kernel")
-            assert not hasattr(compiler_native.Program, "materialize_runtime")
-            assert not hasattr(compiler_native, "Ndarray")
-            assert not hasattr(compiler_native, "ArgPack")
-            assert not hasattr(compiler_native, "Texture")
-            assert not hasattr(compiler_native, "SNodeTree")
-            assert not hasattr(compiler_native, "SNodeRegistry")
-            assert not hasattr(compiler_native, "SNode")
-            assert not hasattr(compiler_native, "Axis")
-            assert not hasattr(compiler_native, "Mesh")
-            assert not hasattr(compiler_native, "MeshPtr")
-            assert not hasattr(compiler_native, "finalize_snode_tree")
-            assert not hasattr(compiler_native, "trigger_crash")
-            assert not hasattr(compiler_native, "test_threading")
-            prefix = compiler_frontend._VENDOR_NAME
-            assert compiler_frontend._vendor.__name__ == prefix
-            private_modules = {"taichi" + name[len(prefix):] for name in sys.modules
-                               if name == prefix or name.startswith(prefix + ".")}
-            assert "taichi.types.quant" not in private_modules
-            assert not any(name == "taichi._snode" or name.startswith("taichi._snode.") for name in private_modules)
-            assert not any(name == "taichi.lang.simt" or name.startswith("taichi.lang.simt.") for name in private_modules)
-            assert "taichi.lang.mesh" not in private_modules
-            assert "taichi.lang.snode" not in private_modules
-            # Taichi field/ndarray modules are gone.  The one private marker
-            # module has no storage API; ownership remains with inx.buffer.
-            assert "taichi.lang._ndarray" not in private_modules
-            assert "taichi.lang.field" not in private_modules
-            assert "taichi.types.ndarray_type" not in private_modules
-            assert "taichi.lang._texture" not in private_modules
-            assert "taichi.types.texture_type" not in private_modules
-            assert prefix + ".lang._compiler_types" not in sys.modules
-            assert prefix + ".lang.runtime_ops" not in sys.modules
-            matrix_types = sys.modules[prefix + ".lang.matrix"]
-            assert not hasattr(matrix_types, "MatrixNdarray")
-            assert not hasattr(matrix_types, "VectorNdarray")
-            for numeric_type in (matrix_types.Matrix, matrix_types.Vector, matrix_types.MatrixType, matrix_types.VectorType):
-                assert not hasattr(numeric_type, "ndarray")
-                assert not hasattr(numeric_type, "field")
-            struct_types = sys.modules[prefix + ".lang.struct"]
-            assert not hasattr(struct_types, "StructField")
-            assert not hasattr(struct_types.Struct, "field")
-            assert not hasattr(struct_types.StructType, "field")
-            assert not hasattr(matrix_types, "MatrixField")
-            compiler_impl = compiler_frontend._vendor.lang.impl
-            for name in ("ndarray", "field", "root", "FieldsBuilder", "create_field_member", "axes", "Axis"):
-                assert not hasattr(compiler_impl, name)
-            for name in ("materialize", "sync", "materialized", "compiler_only", "global_vars",
-                         "unfinalized_fields_builder", "_finalize_root_fb_for_aot"):
-                assert not hasattr(compiler_impl.get_runtime(), name)
-            # Small numeric values remain compiler expressions, not storage
-            # proxies. Exercise their host construction and mutation as well.
-            vector_value = matrix_types.Vector([1.0, 2.0, 3.0])
-            vector_value[1] = 7.0
-            assert vector_value.to_list() == [1.0, 7.0, 3.0]
-            vector_value._set_entries([4.0, 5.0, 6.0])
-            np.testing.assert_array_equal(vector_value.to_numpy(), [4.0, 5.0, 6.0])
-            np.testing.assert_allclose(vector_value.norm(), np.sqrt(77.0))
-            matrix_value = matrix_types.Matrix([[1, 2], [3, 4]])
-            matrix_value[0, 1] = 9
-            assert matrix_value.to_list() == [[1, 9], [3, 4]]
-            matrix_value._set_entries([[5, 6], [7, 8]])
-            np.testing.assert_array_equal(matrix_value.to_numpy(), [[5, 6], [7, 8]])
-            np.testing.assert_array_equal(matrix_value.transpose().to_numpy(), [[5, 7], [6, 8]])
-            np.testing.assert_allclose(
-                matrix_value.inverse().to_numpy(), np.linalg.inv([[5.0, 6.0], [7.0, 8.0]])
-            )
-            assert matrix_types.Matrix([[], []]).to_list() == [[], []]
+            assert not any(name.startswith('infernux._compiler.taichi') for name in sys.modules)
             assert {name: module for name, module in sys.modules.items()
                     if name == "taichi" or name.startswith("taichi.")} == occupied
         except BaseException:

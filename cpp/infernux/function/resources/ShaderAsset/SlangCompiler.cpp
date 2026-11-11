@@ -3,6 +3,7 @@
 #include <slang-com-ptr.h>
 #include <slang.h>
 
+#include <cstring>
 #include <mutex>
 #include <stdexcept>
 
@@ -37,6 +38,36 @@ rhi::ShaderStage StageFromReflection(SlangStage stage)
     }
 }
 
+// The numerical ABI preserves NaN, infinity and signed zero. Slang's precise
+// mode supplies NoContraction; SPIR-V additionally requires an entry execution
+// mode to make preservation binding on the driver. This is a compiler pass on
+// trusted compiler output, not another shader parser or a validation scan.
+void PreserveNumericalFloat32(std::vector<char> &code)
+{
+    std::vector<uint32_t> words(code.size() / sizeof(uint32_t));
+    std::memcpy(words.data(), code.data(), code.size());
+    std::vector<uint32_t> entries;
+    size_t capabilityEnd = 5;
+    size_t modeEnd = 5;
+    for (size_t cursor = 5; cursor < words.size(); cursor += words[cursor] >> 16) {
+        const auto opcode = words[cursor] & 0xffffu;
+        const auto end = cursor + (words[cursor] >> 16);
+        if (opcode == 17) // OpCapability
+            capabilityEnd = end;
+        if (opcode == 15) // OpEntryPoint: execution model, function ID, name
+            entries.push_back(words[cursor + 2]);
+        if (opcode == 15 || opcode == 16 || opcode == 331) // entry / execution modes
+            modeEnd = end;
+    }
+    std::vector<uint32_t> modes;
+    for (const auto entry : entries)
+        modes.insert(modes.end(), {(4u << 16) | 16u, entry, 4461u, 32u}); // SignedZeroInfNanPreserve
+    words.insert(words.begin() + modeEnd, modes.begin(), modes.end());
+    words.insert(words.begin() + capabilityEnd, {(2u << 16) | 17u, 4466u}); // corresponding capability
+    code.resize(words.size() * sizeof(uint32_t));
+    std::memcpy(code.data(), words.data(), code.size());
+}
+
 } // namespace
 
 struct SlangCompiler::Impl
@@ -60,6 +91,11 @@ SlangCompiler &SlangCompiler::Get()
     return compiler;
 }
 
+const char *SlangCompiler::GetStandardModuleName() noexcept
+{
+    return INFERNUX_SLANG_MODULE_NAME;
+}
+
 SlangCompiler::SlangCompiler() : impl(std::make_unique<Impl>())
 {
 }
@@ -72,7 +108,7 @@ const std::string &SlangCompiler::GetVersion() const noexcept
 
 ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
                                          const std::vector<ShaderSourceModule> &libraries,
-                                         const std::vector<ShaderCodeTarget> &targets)
+                                         const std::vector<ShaderCodeTarget> &targets, bool precise)
 {
     std::lock_guard lock(impl->mutex);
 
@@ -80,6 +116,7 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
     targetDescriptions.reserve(targets.size());
     for (const auto target : targets) {
         slang::TargetDesc description;
+        description.floatingPointMode = precise ? SLANG_FLOATING_POINT_MODE_PRECISE : SLANG_FLOATING_POINT_MODE_DEFAULT;
         description.format = target == ShaderCodeTarget::SpirV ? SLANG_SPIRV : SLANG_WGSL;
         if (target == ShaderCodeTarget::SpirV)
             description.profile = impl->global->findProfile("spirv_1_5");
@@ -170,6 +207,8 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
             }
             const auto *bytes = static_cast<const char *>(code->getBufferPointer());
             artifact.code.assign(bytes, bytes + code->getBufferSize());
+            if (precise && target.target == ShaderCodeTarget::SpirV)
+                PreserveNumericalFloat32(artifact.code);
             target.entries.push_back(std::move(artifact));
         }
         Slang::ComPtr<slang::IBlob> reflection;

@@ -33,7 +33,6 @@ SignPath 的服务署名、适用范围和签名流程见 [英文政策](signing
 | LunaSVG / PlutoVG | [来源、修改与子依赖说明](svg/NOTICE.txt)、[MIT](svg/LunaSVG-PlutoVG.txt)、[FreeType](svg/FTL.txt)；静态链接，声明随 wheel 打包 |
 | dr_libs | [引入说明](../external/dr_libs/README.infernux.md)；[WAV](../external/dr_libs/dr_wav.h)、[MP3](../external/dr_libs/dr_mp3.h)、[FLAC](../external/dr_libs/dr_flac.h) 文件末尾的完整授权声明 |
 | nlohmann/json | [头文件内版权及许可证标识](../external/nlohmann/json.hpp) |
-| Taichi | [LICENSE](../external/taichi_for_infernux/LICENSE)、[NOTICE](../external/taichi_for_infernux/NOTICE) |
 | llvmlite | [LICENSE](../external/llvmlite_for_infernux/LICENSE)、[第三方声明](../external/llvmlite_for_infernux/LICENSE.thirdparty)、[运行时说明](../external/llvmlite_for_infernux/NOTICE.runtime)、[Windows runtime](../external/llvmlite_for_infernux/LICENSE.windows-runtime)、[zlib](../external/llvmlite_for_infernux/LICENSE.zlib)、[zstd](../external/llvmlite_for_infernux/LICENSE.zstd) |
 
 依赖目录内更细粒度的文件头声明、第三方子依赖声明仍以原文件为准；这张表不是对其授权条款的替代。

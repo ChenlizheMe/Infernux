@@ -16,7 +16,7 @@ import numpy as np
 
 from .kernel_contract import (execution_domain, implicit_receiver_attribute,
     implicit_receiver_name, receiver_field_names, receiver_issue, ARRAY_DTYPES)
-from .taichi.compile_inputs import snapshot_compilation_values
+from .compile_inputs import snapshot_compilation_values
 
 
 def _kernel_qualified_name(function) -> str:

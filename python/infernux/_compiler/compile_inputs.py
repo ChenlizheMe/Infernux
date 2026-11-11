@@ -1,4 +1,4 @@
-"""Snapshot the compile-time values actually read by a work-item source plan."""
+"""Snapshot compile-time values for the shared CPU/GPU work-item source plan."""
 from __future__ import annotations
 
 import ast

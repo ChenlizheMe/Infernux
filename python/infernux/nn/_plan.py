@@ -1247,7 +1247,7 @@ class Plan:
             if not reverse and (not contract.eligible or not contract.output_parameters
                     or set(contract.output_parameters) != set(contract.fully_written_output_parameters)):
                 raise TypeError("managed GPU work requires complete independent output rows")
-            # Local Taichi VJP is a whole operation. Its inputs include a fully
+            # Local VJP is a whole operation. Its inputs include a fully
             # initialized dx and seed; it has no proven begin/end range ABI.
             size = int(executable.artifact.argument_layout["size"])
             if not 0 < size <= 65536 or size % 4:

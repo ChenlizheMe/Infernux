@@ -26,12 +26,13 @@ from typing import Any, Callable, ClassVar, Dict, Iterable, Iterator, List, Lite
 
 
 _shader_source_kinds: tuple[tuple[str, str, str, str], ...]
+_slang_standard_module_name: str
 
 def _slang_version() -> str: ...
 def _compile_shader_program(
     source: str, source_path: str, module_name: str,
     libraries: Sequence[tuple[str, str, str]] = (),
-    targets: Sequence[Literal["spirv", "wgsl"]] = ("spirv", "wgsl"),
+    targets: Sequence[Literal["spirv", "wgsl"]] = ("spirv", "wgsl"), precise: bool = False,
 ) -> dict[str, Any]: ...
 
 

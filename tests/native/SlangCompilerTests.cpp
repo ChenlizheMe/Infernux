@@ -107,6 +107,31 @@ void derivative(uint3 id : SV_DispatchThreadID)
         const auto edited = compiler.Compile(source, {library}, {ShaderCodeTarget::SpirV});
         Require(edited.targets[0].entries[1].code != previous, "Shader edit reused the previous module");
 
+        const auto precise = compiler.Compile(source, {library}, {ShaderCodeTarget::SpirV}, true);
+        const auto &numericalCode = precise.targets[0].entries.back().code;
+        std::vector<uint32_t> words(numericalCode.size() / sizeof(uint32_t));
+        std::memcpy(words.data(), numericalCode.data(), numericalCode.size());
+        bool preserve = false;
+        bool separate = false;
+        for (size_t cursor = 5; cursor < words.size(); cursor += words[cursor] >> 16) {
+            const auto opcode = words[cursor] & 0xffffu;
+            preserve |= opcode == 16 && words[cursor + 2] == 4461 && words[cursor + 3] == 32;
+            separate |= opcode == 71 && words[cursor + 2] == 42;
+        }
+        Require(preserve && separate, "Numerical programs lost float32 preservation or NoContraction");
+
+        // Standard modules are loaded beside the compiler. Their experimental
+        // gate must diagnose the module itself, not a missing packaged file.
+        bool standardModuleFound = false;
+        try {
+            compiler.Compile({"standard", "standard.compute.py",
+                              "import slang.numerics; [shader(\"compute\")] [numthreads(1,1,1)] void main() {}"},
+                             {}, {ShaderCodeTarget::SpirV});
+        } catch (const std::runtime_error &error) {
+            standardModuleFound = std::string(error.what()).find("experimental module") != std::string::npos;
+        }
+        Require(standardModuleFound, "Packaged Slang standard modules were not found");
+
         bool diagnosed = false;
         try {
             compiler.Compile({"broken", "broken.frag.py", "float4 broken( {"}, {}, {ShaderCodeTarget::SpirV});

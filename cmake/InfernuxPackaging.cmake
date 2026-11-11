@@ -47,9 +47,6 @@ add_custom_target(stage_python_package
     COMMENT "Assembling the Python wheel source tree after native and official plugin builds"
     VERBATIM
 )
-if(TARGET infernux_gpu_jit_compiler)
-    add_dependencies(stage_python_package infernux_gpu_jit_compiler)
-endif()
 if(TARGET InfernuxPlayerHost)
     add_dependencies(stage_python_package InfernuxPlayerHost)
 endif()
@@ -111,6 +108,7 @@ add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND}
         -DINFERNUX_SOURCE_DIR=${INFERNUX_PYTHON_STAGE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
+        -DINFERNUX_SLANG_MODULE_NAME=${INFERNUX_SLANG_MODULE_NAME}
         -P "${CMAKE_SOURCE_DIR}/cmake/verify_python_wheel.cmake"
 
     ${_infernux_repair_linux_wheel}

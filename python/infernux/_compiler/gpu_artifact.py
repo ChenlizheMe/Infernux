@@ -9,7 +9,7 @@ import numpy as np
 from .kernel_contract import WORK_ITEM_FAST_MATH, ARRAY_KINDS
 
 _CACHE_MAGIC = b"INXGPU\x02"
-_CACHE_ABI = "infernux-gpu-ordered-inner-f32"
+_CACHE_ABI = "infernux-slang-work-item"
 
 def parameter_key(params) -> tuple:
     """Return the bounded specialization key; runtime sizes are not compiled in."""
@@ -26,44 +26,6 @@ def parameter_key(params) -> tuple:
         else:
             raise TypeError("GPU kernel parameters must be inx.buffer values or numeric scalars")
     return tuple(key)
-
-def _require_separate_f32_ops(payload):
-    """Check final compiler bytes once, including cache/AOT, outside execution.
-
-    This finite arithmetic contract is not a general SPIR-V validator. Numeric
-    opcodes/decorations are from the vendored Khronos unified1 headers.
-    """
-    if len(payload) < 20 or len(payload) % 4:
-        raise ValueError("Invalid GPU artifact SPIR-V word stream")
-    words = struct.unpack(f"<{len(payload) // 4}I", payload)
-    if words[0] != 0x07230203:
-        raise ValueError("Invalid GPU artifact SPIR-V magic")
-    instructions = []
-    cursor = 5
-    while cursor < len(words):
-        size, opcode = words[cursor] >> 16, words[cursor] & 0xffff
-        if not size or cursor + size > len(words):
-            raise ValueError("Truncated GPU artifact SPIR-V instruction")
-        instructions.append((opcode, words[cursor + 1:cursor + size]))
-        cursor += size
-    f32 = {args[0] for op, args in instructions if op == 22 and args[1] == 32}  # OpTypeFloat
-    if f32 and not any(op == 16 and args[1:] == (4461, 32) for op, args in instructions):
-        raise ValueError("GPU f32 artifact must preserve signed zero, infinity and NaN; recompile this model")
-    f32.update(args[0] for op, args in instructions if op == 23 and args[1] in f32)  # OpTypeVector
-    glsl = {args[0] for op, args in instructions if op == 11 and struct.pack(
-        f"<{len(args) - 1}I", *args[1:]).split(b"\0", 1)[0] == b"GLSL.std.450"}
-    precise = {args[0] for op, args in instructions if op == 71 and args[1] == 42}  # NoContraction
-    for op, args in instructions:
-        if op == 74 and args[0] in precise:  # OpGroupDecorate
-            precise.update(args[1:])
-    for op, args in instructions:
-        if op in (129, 131, 133, 136) and args[0] in f32 and args[1] not in precise:
-            raise ValueError(f"GPU f32 no-contraction contract missing on arithmetic result %{args[1]}")
-        if op == 12 and args[0] in f32 and args[2] in glsl and args[3] == 50:  # GLSL Fma
-            raise ValueError("GPU f32 no-contraction contract cannot contain fused multiply-add")
-        if ((op == 71 and (args[1] == 0 or (args[1] == 40 and args[2] != 0)))
-                or (op == 72 and args[2] == 0)):
-            raise ValueError("GPU f32 no-contraction contract cannot relax arithmetic precision")
 
 @dataclass(frozen=True, slots=True)
 class RangeContract:
@@ -110,121 +72,7 @@ class CompilerArtifact:
     fast_math: bool
     autodiff_mode: str = "none"
     gradient_parameters: tuple[int, ...] = ()
-
-    def __post_init__(self):
-        if type(self.fast_math) is not bool or self.fast_math is not WORK_ITEM_FAST_MATH:
-            raise ValueError("GPU artifact disagrees with the fixed WorkItem floating-point policy")
-        for task in self.spirv_tasks:
-            _require_separate_f32_ops(task)
-        layouts = self.argument_layout["parameters"]
-        contract = self.continuation
-        if (not isinstance(contract, RangeContract) or type(contract.operation_cost) is not int
-                or contract.operation_cost < 0 or contract.cost_source != "hir_ast_weight"
-                or type(contract.gathered) is not bool
-                or any(not isinstance(value, str) or not value for value in contract.diagnostics)):
-            raise ValueError("Invalid GPU artifact range contract")
-        if contract.eligible:
-            count = len(layouts) - 2
-            if (contract.diagnostics or type(contract.begin_parameter) is not int or type(contract.end_parameter) is not int
-                    or (contract.begin_parameter, contract.end_parameter) != (count, count + 1)
-                    or [row["kind"] for row in layouts[-2:]] != ["int32", "int32"]
-                    or not contract.output_parameters or contract.operation_cost <= 0
-                    or self.autodiff_mode != "none" or self.gradient_parameters):
-                raise ValueError("GPU artifact range ABI disagrees with its request/layout")
-        else:
-            count = len(layouts)
-            if contract.end_parameter is not None or not contract.diagnostics:
-                raise ValueError("GPU artifact requires an explicit continuation rejection")
-        if type(self.domain_parameter) is not int or not 0 <= self.domain_parameter < count or layouts[self.domain_parameter]["kind"] != "external_buffer":
-            raise ValueError("GPU artifact has an invalid execution domain parameter")
-        inner = contract.inner_range
-        if inner is not None:
-            from infernux.jit_hir import InnerRangeContract
-
-            if (not isinstance(inner, InnerRangeContract) or not contract.eligible or not contract.gathered
-                    or count < 5 or self.domain_parameter >= count - 4
-                    or (inner.begin_parameter, inner.end_parameter) != (count - 2, count - 1)
-                    or [row["kind"] for row in layouts[count - 4:count]] != ["external_buffer", "external_buffer", "int32", "int32"]):
-                raise ValueError("GPU artifact inner range disagrees with its parameter layout")
-            carry_in, carry_out = count - 4, count - 3
-            if (carry_out in contract.input_parameters or carry_in in contract.output_parameters
-                    or (inner.kind == "initial" and (carry_in in contract.input_parameters
-                        or contract.output_parameters != (carry_out,)))
-                    or (inner.kind == "resume" and (carry_in not in contract.input_parameters
-                        or contract.output_parameters != (carry_out,)))
-                    or (inner.kind == "final" and (carry_in not in contract.input_parameters
-                        or any(index >= count - 4 for index in contract.output_parameters)))
-                    or contract.fully_written_output_parameters != contract.output_parameters
-                    or any(row["function"].rsplit("#", 1)[-1] != inner.kind for row in self.diagnostic_locations)):
-                raise ValueError("GPU artifact inner stage disagrees with its read/write roles")
-        for indices in (contract.input_parameters, contract.output_parameters, contract.fully_written_output_parameters):
-            if (tuple(sorted(set(indices))) != indices or
-                    any(type(index) is not int or not 0 <= index < count or layouts[index]["kind"] != "external_buffer"
-                        for index in indices)):
-                raise ValueError("GPU artifact has invalid range resource parameters")
-        if (not set(contract.fully_written_output_parameters).issubset(contract.output_parameters)
-                or (not contract.eligible and contract.fully_written_output_parameters)):
-            raise ValueError("GPU artifact has invalid fully written range outputs")
-        if contract.eligible and set(contract.input_parameters) & set(contract.output_parameters):
-            raise ValueError("GPU continuation outputs cannot be inputs")
-        if contract.eligible:
-            from infernux.jit_hir import ResourceExtent
-
-            expected_parameters = tuple(index for index, layout in enumerate(layouts[:count]) if layout["kind"] == "external_buffer")
-            if (tuple(item.parameter for item in contract.resource_extents) != expected_parameters
-                    or any(ResourceExtent.from_record(asdict(item)) != item for item in contract.resource_extents)
-                    or any(not item.bounds or not item.upper_indices for item in contract.resource_extents
-                           if item.parameter in (*contract.input_parameters, *contract.output_parameters))
-                    or (inner is None and any(item.exact_domain == contract.gathered for item in contract.resource_extents))
-                    or (inner is not None and any(not item.exact_domain for item in contract.resource_extents
-                        if item.parameter in (*contract.output_parameters, count - 4, count - 3)))
-                    or (contract.gathered and len(contract.output_parameters) != 1)):
-                raise ValueError("GPU artifact omitted or changed its complete resource extent proof")
-        elif contract.resource_extents or contract.gathered:
-            raise ValueError("rejected GPU continuation cannot carry resource extents")
-        if (self.autodiff_mode not in {"none", "reverse"}
-                or any(type(index) is not int or not 0 <= index < len(layouts)
-                       for index in self.gradient_parameters)
-                or tuple(sorted(set(self.gradient_parameters))) != self.gradient_parameters):
-            raise ValueError("Invalid GPU artifact differentiation request")
-        gradient_layouts = []
-        for index, layout in enumerate(layouts):
-            if layout["kind"] != "external_buffer":
-                continue
-            if layout.get("byte_offset_width") != 4 or type(layout.get("needs_grad")) is not bool:
-                raise ValueError("GPU artifact requires the current 32-bit buffer ABI")
-            if layout["needs_grad"]:
-                if "grad_byte_offset_offset" not in layout:
-                    raise ValueError("GPU artifact omitted the gradient byte offset")
-                gradient_layouts.append(index)
-        if tuple(gradient_layouts) != self.gradient_parameters or (self.autodiff_mode == "reverse" and not gradient_layouts):
-            raise ValueError("GPU artifact gradient layout disagrees with its differentiation request")
-        if len(self.spirv_tasks) != len(self.task_metadata):
-            raise ValueError("GPU artifact task metadata does not match its SPIR-V")
-        if contract.eligible:
-            if (len(self.task_metadata) != 1 or self.task_metadata[0]["task_type"] != "range_for"
-                    or self.task_metadata[0]["range"]["begin_source"] != "constant"
-                    or self.task_metadata[0]["range"]["begin"] != 0
-                    or not self.task_metadata[0]["range"]["const_begin"]
-                    or self.task_metadata[0]["range"]["const_end"]
-                    or self.task_metadata[0]["range"]["end_source"] != "arguments"):
-                raise ValueError("GPU continuation requires one constant-zero/arguments range task")
-        for task in self.task_metadata:
-            for binding in task["buffer_bindings"]:
-                if contract.eligible and binding["resource_kind"] not in {"arguments", "external_buffer"}:
-                    raise ValueError("GPU continuation cannot depend on temporary/global resources")
-                if binding["resource_kind"] == "external_buffer":
-                    if type(binding.get("is_grad")) is not bool:
-                        raise ValueError("GPU artifact omitted external buffer gradient role")
-                    indices = binding["argument_indices"]
-                    if len(indices) != 1 or not 0 <= indices[0] < len(layouts):
-                        raise ValueError("GPU artifact has an invalid external buffer parameter")
-                    if binding["is_grad"] and indices[0] not in self.gradient_parameters:
-                        raise ValueError("GPU artifact binds an undeclared gradient resource")
-                    if contract.eligible:
-                        expected_access = 1 if indices[0] in contract.input_parameters else 2 if indices[0] in contract.output_parameters else None
-                        if expected_access is None or binding["access"] != expected_access or binding["is_grad"]:
-                            raise ValueError("GPU continuation resource access disagrees with its row proof")
+    identity: str = ""
 
     def range_bounds(self, params, *, begin=None, end=None, host=None, _validate_resources=True):
         from infernux.compute import Buffer
@@ -456,6 +304,7 @@ def _read_artifact_payload(payload, *, specialization: str | None = None, path="
         fast_math=fast_math,
         autodiff_mode=str(header["autodiff_mode"]),
         gradient_parameters=tuple(header["gradient_parameters"]),
+        identity=header["identity"],
     )
     return header, artifact
 
@@ -478,6 +327,7 @@ def _encode_artifact(artifact, specialization):
         "fast_math": artifact.fast_math,
         "autodiff_mode": artifact.autodiff_mode,
         "gradient_parameters": artifact.gradient_parameters,
+        "identity": artifact.identity,
         "task_sizes": [len(task) for task in artifact.spirv_tasks],
         "task_metadata": artifact.task_metadata,
         "domain_parameter": artifact.domain_parameter,

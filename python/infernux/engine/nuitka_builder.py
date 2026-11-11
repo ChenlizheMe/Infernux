@@ -1476,10 +1476,10 @@ class NuitkaBuilder:
         package_lib_dir = package_root / "lib"
         if path_key(native_payload_dir) != path_key(package_lib_dir):
             for path in sorted(
-                self._native_payload_files(native_payload_dir),
+                [*self._native_payload_files(native_payload_dir), *self._native_shader_module_files(native_payload_dir)],
                 key=lambda item: item.name.casefold(),
             ):
-                digest.update(f"native/{path.name}".encode("utf-8"))
+                digest.update(f"native/{path.relative_to(native_payload_dir).as_posix()}".encode("utf-8"))
                 content_hash, state_key = self._cached_file_hash(path, hash_state)
                 live_hash_keys.add(state_key)
                 digest.update(content_hash.encode("ascii"))
@@ -2599,6 +2599,18 @@ print(json.dumps({{
         )
 
     @staticmethod
+    def _native_shader_module_files(lib_dir: Path) -> list[Path]:
+        from infernux.lib import _Infernux
+
+        root = lib_dir / _Infernux._slang_standard_module_name
+        # Package preparation is the boundary for a missing toolchain payload.
+        # Iterate the root explicitly so a missing directory cannot be ignored.
+        children = tuple(root.iterdir())
+        return sorted((file for child in children for file in
+                       (child.rglob("*") if child.is_dir() else (child,)) if file.is_file()),
+                      key=lambda path: path.as_posix())
+
+    @staticmethod
     def _native_payload_files(lib_dir: Path) -> list[Path]:
         """Return one ABI-compatible extension module plus its shared libraries."""
         if sys.platform == "win32":
@@ -2802,6 +2814,11 @@ print(json.dumps({{
                     (dist_root / src.name).unlink()
                 except FileNotFoundError:
                     pass
+
+        for source in self._native_shader_module_files(lib_dir):
+            destination = target_dir / source.relative_to(lib_dir)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
 
         full_root_name = "_Infernux.pyd" if sys.platform == "win32" else "_Infernux.so"
         try:
@@ -3207,30 +3224,6 @@ print(json.dumps({{
                 copied_bytecode += 1
             else:
                 shutil.copy2(source_path, destination)
-
-        # The private GPU lowering vendor is staged by CMake, not part of the
-        # checked-out Python package.  Include it in the source-less Player
-        # runtime using the same bytecode policy as the engine modules.
-        from infernux._compiler.taichi import _vendor_dir
-
-        vendor_root = _vendor_dir()
-        if vendor_root.is_dir() and vendor_root != source_root:
-            vendor_destination = destination_root / "_compiler" / "taichi" / "_vendor" / "taichi"
-            for source_path in sorted(vendor_root.rglob("*")):
-                if not source_path.is_file() or source_path.suffix.casefold() in {".pyc", ".pyo"}:
-                    continue
-                relative = source_path.relative_to(vendor_root)
-                destination = vendor_destination / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if source_path.suffix.casefold() == ".py":
-                    destination = destination.with_suffix(".pyc")
-                    py_compile.compile(
-                        str(source_path), cfile=str(destination),
-                        dfile=f"<infernux-gpu-vendor>/{relative.as_posix()}",
-                        doraise=True, optimize=2,
-                    )
-                else:
-                    shutil.copy2(source_path, destination)
 
         if not (destination_root / "__init__.pyc").is_file():
             raise RuntimeError("Player Runtime is missing infernux/__init__.pyc")

@@ -2703,7 +2703,6 @@ class _PreparedLaunch:
 
 class _KernelExecutable:
     def __init__(self, artifact, host, params) -> None:
-        import hashlib
         from infernux._compiler.gpu_artifact import _specialization_identity
 
         if not host.shader_float32_preserve:
@@ -2715,12 +2714,12 @@ class _KernelExecutable:
         self.host = host
         self.specialization = _specialization_identity(params, autodiff_mode=artifact.autodiff_mode,
                                                       gradient_parameters=artifact.gradient_parameters)
-        self.cost_identity = hashlib.sha256(b"".join(artifact.spirv_tasks)).hexdigest()
+        self.cost_identity = artifact.identity
         # A launch specialization is immutable: resident buffer identities and
         # scalar values fully determine both the compiler argument block and
         # the native resource bindings. Fixed-step solvers commonly repeat the
         # same launch tens of times, so prepare it once instead of rebuilding a
-        # Taichi launch context and Python binding list on every dispatch.
+        # compiler launch context and Python binding list on every dispatch.
         self._prepared_launches = OrderedDict()
         self.tasks = []
         widths = tuple(int(task["threads_per_group"]) for task in artifact.task_metadata)
@@ -2731,7 +2730,7 @@ class _KernelExecutable:
             for spirv, metadata in zip(artifact.spirv_tasks, artifact.task_metadata):
                 bindings = sorted(metadata["buffer_bindings"], key=lambda binding: binding["binding"])
                 layout = [(binding["binding"], binding["binding_type"]) for binding in bindings]
-                native = host._create_kernel_from_compiler(spirv, layout)
+                native = host._create_kernel_from_compiler(spirv, layout, entry_point=metadata["entry_point"])
                 self.tasks.append((native, bindings, int(metadata["threads_per_group"])))
         except Exception:
             # A failed constructor is not registered in the declaration cache.
@@ -2904,7 +2903,7 @@ class _CpuKernelExecutable:
             # Cooked project kernels carry the same slot explicitly.
             import ast
             from infernux._compiler.kernel_contract import execution_domain
-            from infernux._compiler.taichi.frontend import _function_source
+            from infernux._compiler.work_item import _function_source
 
             domain_parameter = execution_domain(ast.parse(_function_source(function)).body[0])[3]
         self.domain_parameter = domain_parameter
@@ -3125,8 +3124,7 @@ class Kernel:
             return executable
 
     def _compile_artifact(self, params, receiver_fields, autodiff_mode, gradient_parameters):
-        from infernux._compiler.taichi import CompilerInstallationError
-        from infernux._compiler.taichi.frontend import compile_kernel
+        from infernux._compiler.slang import compile_kernel
 
         try:
             return compile_kernel(
@@ -3134,16 +3132,19 @@ class Kernel:
                 autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters,
                 **({"_lowered": self._lowered_work_item} if self._lowered_work_item is not None else {}),
             )
-        except CompilerInstallationError as exception:
-            raise ComputeCompilerError(f"Infernux GPU compiler initialization failed: {exception}") from exception
         except KernelCompilationError:
             raise
+        except SyntaxError as exception:
+            raise KernelCompilationError(
+                f"GPU kernel '{self.__qualname__}' at {exception.filename}:{exception.lineno}:{exception.offset}: "
+                f"{exception.msg}\n{exception.text}"
+            ) from exception
         except Exception as exception:
             raise KernelCompilationError(f"GPU kernel '{self.__qualname__}' compilation failed: {exception}") from exception
 
     def _get_receiver_field_names(self):
         if self._receiver_field_names is None:
-            from infernux._compiler.taichi.frontend import receiver_fields
+            from infernux._compiler.work_item import receiver_fields
 
             self._receiver_field_names = receiver_fields(self.function)
         return self._receiver_field_names
@@ -3165,7 +3166,7 @@ def _reduction_kernels(function, params, *, receiver_fields=None, _prepared=None
     """Declare the shared finite reduction variants; allocate/dispatch nothing."""
     from infernux._compiler.work_item import normalize_work_item
     from infernux._compiler.kernel_contract import ARRAY_KINDS
-    from infernux._compiler.taichi.frontend import _continuation_contract, _work_item_proof
+    from infernux._compiler.slang import _continuation_contract, _work_item_proof
 
     item = (normalize_work_item(function, len(params), receiver_fields=receiver_fields)
             if _prepared is None else _prepared[0])
@@ -3194,7 +3195,7 @@ class _BoundKernel(Kernel):
             setattr(self, attribute, getattr(declaration, attribute, None))
 
     def _effective_params(self, params):
-        from infernux._compiler.taichi.frontend import receiver_bindings
+        from infernux._compiler.work_item import receiver_bindings
 
         fields = self._declaration._get_receiver_field_names()
         bindings = receiver_bindings(self.function, self._receiver, fields)

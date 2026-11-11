@@ -34,7 +34,6 @@ if(INFERNUX_BUILD_TESTS AND Python3_EXECUTABLE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         VERBATIM)
 endif()
-include("${CMAKE_SOURCE_DIR}/cmake/InfernuxGpuJit.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxPlayerHost.cmake")
 add_subdirectory(external/plugins)
 include("${CMAKE_SOURCE_DIR}/tests/native/CMakeLists.txt")

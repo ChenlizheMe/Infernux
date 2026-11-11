@@ -28,7 +28,7 @@ def prepare(function, params, **facts):
         item, _, _, proof, _ = prepared
     else:
         from infernux._compiler.work_item import normalize_work_item
-        from infernux._compiler.taichi.frontend import _work_item_proof
+        from infernux._compiler.slang import _work_item_proof
         item = normalize_work_item(bound, len(params), target="Numerical work")
         proof = _work_item_proof(item, params)
     proof.require()

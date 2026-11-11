@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-import json
 from pathlib import Path
 
-from infernux.shader._language import INTRINSICS, TYPES
+from .shader_library import LibraryGraph, ShaderEmitter, declarations
 
 
 @dataclass(frozen=True)
@@ -32,35 +31,25 @@ class ShaderDefinition:
     module_name: str
     parameters: tuple[ShaderParameter, ...]
     generated_source: str
+    libraries: tuple[tuple[str, str, str], ...] = ()
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
         return _Infernux._compile_shader_program(
-            self.generated_source, self.source_path, self.module_name, targets=targets,
+            self.generated_source, self.source_path, self.module_name, self.libraries, targets,
         )
 
 
 _PARAMETER_TYPES = {"float": "float", "int": "int", "bool": "uint", "color": "float4"}
 _DEFAULTS = {"float": 0.0, "int": 0, "bool": False, "color": (1.0, 1.0, 1.0, 1.0)}
-_BINARY = {
-    ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Mod: "%",
-    ast.BitAnd: "&", ast.BitOr: "|", ast.BitXor: "^", ast.LShift: "<<", ast.RShift: ">>",
-}
-_UNARY = {ast.UAdd: "+", ast.USub: "-", ast.Not: "!", ast.Invert: "~"}
-_COMPARE = {ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
 
 
-class _Author:
+class _Author(ShaderEmitter):
     def __init__(self, source: str, path: str):
+        super().__init__(source, path)
         self.source = source
-        self.path = path
-        self.lines = source.splitlines()
         self.alias = ""
         self.parameters = {}
-        self.locals = set()
-
-    def error(self, node, message):
-        raise SyntaxError(message, (self.path, node.lineno, node.col_offset + 1, self.lines[node.lineno - 1]))
 
     def qualified(self, node):
         if isinstance(node, ast.Name):
@@ -100,47 +89,15 @@ class _Author:
         value = ShaderParameter(name, kind, values.get("default", _DEFAULTS[kind]), values.get("label", name),
                                 values.get("range"), values.get("hdr", False))
         self.parameters[name] = value
+        self.types["self." + name] = "bool" if kind == "bool" else _PARAMETER_TYPES[kind]
 
-    def expression(self, node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, (float, int, bool)):
-            return json.dumps(node.value)
-        if isinstance(node, ast.Name) and node.id in self.locals:
-            return node.id
-        if isinstance(node, ast.Attribute):
-            if isinstance(node.value, ast.Name) and node.value.id == "self":
-                if node.attr not in self.parameters:
-                    self.error(node, "Unknown shader parameter: " + node.attr)
-                name = "inx_parameters." + node.attr
-                return "(" + name + " != 0u)" if self.parameters[node.attr].kind == "bool" else name
-            return self.expression(node.value) + "." + node.attr
-        if isinstance(node, ast.Call):
-            name = self.qualified(node.func)
-            prefix = self.alias + "."
-            symbol = name[len(prefix):] if name.startswith(prefix) else name
-            functions = TYPES | INTRINSICS
-            if symbol not in functions or (not name.startswith(prefix) and name not in {"float", "int", "bool", "abs", "min", "max"}):
-                self.error(node, "GPU calls must name a shader constructor or intrinsic")
-            if node.keywords:
-                self.error(node, "GPU intrinsic arguments are positional")
-            return functions[symbol] + "(" + ", ".join(self.expression(arg) for arg in node.args) + ")"
-        if isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
-            return "(" + self.expression(node.left) + " " + _BINARY[type(node.op)] + " " + self.expression(node.right) + ")"
-        if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY:
-            return "(" + _UNARY[type(node.op)] + self.expression(node.operand) + ")"
-        if isinstance(node, ast.IfExp):
-            return "(" + self.expression(node.test) + " ? " + self.expression(node.body) + " : " + self.expression(node.orelse) + ")"
-        if isinstance(node, ast.Compare):
-            operands = [node.left, *node.comparators]
-            parts = ["(" + self.expression(left) + " " + _COMPARE[type(op)] + " " + self.expression(right) + ")"
-                     for left, op, right in zip(operands, node.ops, operands[1:]) if type(op) in _COMPARE]
-            if len(parts) != len(node.ops):
-                self.error(node, "Unsupported GPU comparison")
-            return "(" + " && ".join(parts) + ")"
-        if isinstance(node, ast.BoolOp):
-            return "(" + (" && " if isinstance(node.op, ast.And) else " || ").join(self.expression(value) for value in node.values) + ")"
-        if isinstance(node, ast.Subscript):
-            return self.expression(node.value) + "[" + self.expression(node.slice) + "]"
-        self.error(node, "GPU expression is not supported by the current source contract: " + type(node).__name__)
+    def visit_Attribute(self, node):
+        if isinstance(node.value, ast.Name) and node.value.id == "self":
+            if node.attr not in self.parameters:
+                self.error(node, "Unknown shader parameter: " + node.attr)
+            name = "inx_parameters." + node.attr
+            return "(" + name + " != 0u)" if self.parameters[node.attr].kind == "bool" else name
+        return super().visit_Attribute(node)
 
     def function(self, main):
         if main.decorator_list or main.args.vararg or main.args.kwarg or main.args.kwonlyargs or main.args.defaults:
@@ -156,23 +113,14 @@ class _Author:
             if uv.annotation is None or self.qualified(uv.annotation) != self.alias + ".vec2":
                 self.error(uv, "Fullscreen UV must be annotated as shader.vec2")
             signature = "float2 " + uv.arg + " : TEXCOORD0"
-            self.locals.add(uv.arg)
+            self.types[uv.arg] = "float2"
         if main.returns is None or self.qualified(main.returns) != self.alias + ".vec4":
             self.error(main, "Fullscreen main returns shader.vec4")
-        lines = ["[shader(\"fragment\")]", "float4 fragment_main(" + signature + ") : SV_Target0", "{"]
-        for statement in main.body:
-            lines.append("#line " + str(statement.lineno) + " " + json.dumps(self.path, ensure_ascii=False))
-            if isinstance(statement, ast.Return):
-                lines.append("    return " + self.expression(statement.value) + ";")
-            elif isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name):
-                name = statement.targets[0].id
-                value = self.expression(statement.value)
-                lines.append("    " + ("" if name in self.locals else "var ") + name + " = " + value + ";")
-                self.locals.add(name)
-            else:
-                self.error(statement, "Fullscreen entries currently support local values and a return expression")
-        lines.append("}")
-        return lines
+        self.aliases = (self.alias,)
+        self.declare_locals(main.body)
+        self.local_declarations()
+        self.block(main.body)
+        return ['[shader("fragment")]', "float4 fragment_main(" + signature + ") : SV_Target0", "{", *self.lines, "}"]
 
 
 _FULLSCREEN_VERTEX = """
@@ -191,41 +139,45 @@ FullscreenVertex vertex_main(uint id : SV_VertexID)
 
 def parse_shader(source: str, source_path: str, module_name: str) -> ShaderDefinition:
     author = _Author(source, source_path)
-    tree = ast.parse(source, filename=source_path)
-    classes = []
-    for statement in tree.body:
-        if isinstance(statement, ast.Import) and len(statement.names) == 1 and statement.names[0].name == "infernux.shader":
-            author.alias = statement.names[0].asname or "infernux.shader"
-        elif isinstance(statement, ast.ClassDef):
-            classes.append(statement)
-        elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
-            pass
-        else:
-            author.error(statement, "GPU author files contain shader imports and declarations; host statements are not executed")
-    if not author.alias or len(classes) != 1:
-        raise SyntaxError("Declare one shader class and import infernux.shader", (source_path, 1, 1, author.lines[0] if author.lines else ""))
-    declaration = classes[0]
+    author.alias, imports, body = declarations(source, source_path)
+    graph = LibraryGraph()
+    author.functions, dependencies = graph.imports(imports, author)
+    if len(body) != 1 or not isinstance(body[0], ast.ClassDef):
+        author.error(ast.Constant(lineno=1, col_offset=0), "Declare one shader class")
+    declaration = body[0]
     if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) != author.alias + ".fullscreen":
         author.error(declaration, "The first authoring slice supports shader.fullscreen")
-    main = None
+    main, helpers = None, []
     for statement in declaration.body:
         if isinstance(statement, ast.Assign):
             author.parameter(statement)
         elif isinstance(statement, ast.FunctionDef) and statement.name == "main" and main is None:
             main = statement
+        elif isinstance(statement, ast.FunctionDef) and statement.name != "main":
+            author.functions["self." + statement.name] = author.signature(statement, statement.name, method=True)
+            helpers.append(statement)
         elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
             pass
         else:
-            author.error(statement, "Expected a parameter declaration or the main shader entry")
+            author.error(statement, "Expected a shader parameter or typed method")
     if main is None:
         author.error(declaration, "Shader class needs a main entry")
-    code = [_FULLSCREEN_VERTEX]
+    code = [*("import " + name + ";" for name in dependencies), _FULLSCREEN_VERTEX]
     if author.parameters:
         code.append("struct ShaderParameters {")
         code.extend("    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";" for field in author.parameters.values())
         code.extend(["};", "ConstantBuffer<ShaderParameters> inx_parameters;"])
+    for helper in helpers:
+        emitter = _Author(source, source_path)
+        emitter.alias = author.alias
+        emitter.aliases = (author.alias,)
+        emitter.parameters = author.parameters
+        emitter.types = author.types.copy()
+        emitter.functions = author.functions
+        code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
     code.extend(author.function(main))
-    return ShaderDefinition(declaration.name, source_path, module_name, tuple(author.parameters.values()), "\n".join(code))
+    return ShaderDefinition(declaration.name, source_path, module_name, tuple(author.parameters.values()),
+                            "\n".join(code), graph.sources())
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:

@@ -73,7 +73,7 @@ def _engine_specializations():
 
 def ensure_engine_compute_artifacts(project_root: str | Path) -> float:
     """Compile every engine-owned Player compute specialization into Library."""
-    from infernux._compiler.taichi.frontend import compile_kernel
+    from infernux._compiler.slang import compile_kernel
     from infernux.engine.project_context import using_project_root
 
     started = time.perf_counter()
@@ -278,7 +278,7 @@ def declared_kernel_names(
 
 
 def _artifact_record(path: Path) -> tuple[tuple[str, ...], str]:
-    from infernux._compiler.taichi.frontend import _read_artifact
+    from infernux._compiler.gpu_artifact import _read_artifact
 
     try:
         result = _read_artifact(path)
@@ -303,7 +303,7 @@ def _specialization_parameters(specialization: str) -> tuple:
     """Recreate ABI descriptors, never runtime buffers or guessed scalar values."""
     result = []
     from infernux.math import vector2, vector3, vector4
-    from infernux._compiler.taichi.frontend import _compilation_request
+    from infernux._compiler.gpu_artifact import _compilation_request
 
     dtypes = {"int": int, "float": float, "vector2": vector2, "vector3": vector3, "vector4": vector4}
     identity = json.loads(specialization)
@@ -335,7 +335,8 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
     Candidate imports are private and never borrow the editor's published
     project modules. A same-named LKG function is not a valid build input.
     """
-    from infernux._compiler.taichi import frontend
+    from infernux._compiler import slang as frontend
+    from infernux._compiler.gpu_artifact import ArtifactAbiMismatchError, _specialization_identity
     from infernux.engine.candidate_import import CandidateImportTransaction
     from infernux.engine.project_context import using_project_root
 
@@ -354,7 +355,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
         except ComputeAotBuildError as error:
             # Historical ABIs cannot describe this build's current closure.
             # Missing contracts/corrupt current artifacts still fail strictly.
-            if isinstance(error.__cause__, frontend.ArtifactAbiMismatchError):
+            if isinstance(error.__cause__, ArtifactAbiMismatchError):
                 continue
             raise
         for name in set(functions).intersection(specializations):
@@ -372,7 +373,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
         if not path.is_file():
             return False
         functions, specialization = _artifact_record(path)
-        if name not in functions or specialization != frontend._specialization_identity(params, **request):
+        if name not in functions or specialization != _specialization_identity(params, **request):
             raise ComputeAotBuildError(f"GPU AOT artifact identity disagrees with its source: {path}")
         selected[path.name] = path
         manifest.append({"function": name, "specialization": specialization, "artifact": path.name})

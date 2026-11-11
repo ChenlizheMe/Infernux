@@ -9,6 +9,8 @@ add_library(InfernuxAssetRuntime SHARED ${INFERNUX_ASSET_RUNTIME_SOURCES})
 add_library(InfernuxParticleRuntime SHARED ${INFERNUX_PARTICLE_RUNTIME_SOURCES})
 add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
 target_link_libraries(InfernuxShaderCompiler PRIVATE ${INFERNUX_SLANG_TARGET})
+target_compile_definitions(InfernuxShaderCompiler PRIVATE
+    INFERNUX_SLANG_MODULE_NAME="${INFERNUX_SLANG_MODULE_NAME}")
 if(INFERNUX_SLANG_MODULE_TARGETS)
     add_dependencies(InfernuxShaderCompiler ${INFERNUX_SLANG_MODULE_TARGETS})
 endif()

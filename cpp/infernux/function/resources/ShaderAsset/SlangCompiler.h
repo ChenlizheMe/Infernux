@@ -56,10 +56,12 @@ class SlangCompiler
 {
   public:
     static INFERNUX_SHADER_COMPILER_API SlangCompiler &Get();
+    static INFERNUX_SHADER_COMPILER_API const char *GetStandardModuleName() noexcept;
 
     INFERNUX_SHADER_COMPILER_API ShaderCompilation Compile(const ShaderSourceModule &source,
                                                            const std::vector<ShaderSourceModule> &libraries,
-                                                           const std::vector<ShaderCodeTarget> &targets);
+                                                           const std::vector<ShaderCodeTarget> &targets,
+                                                           bool precise = false);
 
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API const std::string &GetVersion() const noexcept;
 

@@ -69,3 +69,58 @@ def test_generated_diagnostics_keep_author_path_and_line():
     definition = parse_shader(SOURCE.replace("uv.x", "uv.z"), "错误.frag.py", "invalid_swizzle")
     with pytest.raises(RuntimeError, match=r"错误.frag.py:9:"):
         definition.compile()
+
+
+def test_packaged_standard_module_is_found_by_native_loader():
+    from infernux.lib import _Infernux
+
+    # The Windows extension loader uses extended-length DLL paths. Slang must
+    # find its module before enforcing the upstream experimental-module gate.
+    source = 'import slang.numerics; [shader("compute")][numthreads(1,1,1)] void main() {}'
+    with pytest.raises(RuntimeError, match="experimental module"):
+        _Infernux._compile_shader_program(source, "standard.compute.py", "standard")
+
+
+def test_static_shader_library_dependencies_and_typed_helpers(tmp_path):
+    (tmp_path / "curves.shaderlib.py").write_text('''import infernux.shader as shader
+
+def pulse(value: shader.f32) -> shader.f32:
+    return shader.smoothstep(0.0, 1.0, value)
+''', encoding="utf-8")
+    palette = tmp_path / "palette.shaderlib.py"
+    palette.write_text('''import infernux.shader as shader
+from .curves import pulse
+
+def tint(rgb: shader.vec3, value: shader.f32) -> shader.vec3:
+    return rgb * pulse(value)
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+from . import palette as pal
+
+class Painted(shader.fullscreen):
+    strength = shader.parameter.float(default=0.5)
+
+    def paint(self, uv: shader.vec2) -> shader.vec3:
+        return pal.tint(shader.vec3(uv, 1.0), self.strength)
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(self.paint(uv), 1.0)
+'''
+    path = str(tmp_path / "painted.frag.py")
+    definition = parse_shader(source, path, "painted")
+    assert [item[1] for item in definition.libraries] == [str(tmp_path / "curves.shaderlib.py"), str(palette)]
+    previous = definition.compile()
+    for target in previous["targets"]:
+        assert len(target["entries"]) == 2
+    palette.write_text(palette.read_text(encoding="utf-8").replace("rgb * pulse(value)", "rgb * pulse(value) * 0.5"), encoding="utf-8")
+    edited = parse_shader(source, path, "painted").compile()
+    assert edited["targets"][0]["entries"][1]["code"] != previous["targets"][0]["entries"][1]["code"]
+
+    # A source cycle is diagnosed at the import, before any host code can run.
+    (tmp_path / "curves.shaderlib.py").write_text('''import infernux.shader as shader
+from .palette import tint
+''', encoding="utf-8")
+    with pytest.raises(SyntaxError, match="import cycle") as failure:
+        parse_shader(source, path, "painted")
+    assert failure.value.filename == str(tmp_path / "curves.shaderlib.py")
+    assert failure.value.lineno == 2
