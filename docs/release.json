@@ -14,10 +14,10 @@
   "assets": [
     {
       "kind": "hub-installer",
-      "name": "InfernuxHubInstaller-0.4.8-2-windows-x64.exe",
-      "size_bytes": 183074304,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHubInstaller-0.4.8-2-windows-x64.exe",
-      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v2/InfernuxHubInstaller-0.4.8-2-windows-x64.exe"
+      "name": "InfernuxHubInstaller-0.4.8-3-windows-x64.exe",
+      "size_bytes": 183085568,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-windows-x64.exe",
+      "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-windows-x64.exe"
     },
     {
       "kind": "python-wheel",
