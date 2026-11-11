@@ -42,17 +42,6 @@ namespace infernux
 namespace
 {
 
-std::vector<uint32_t> CompileBuiltinComputeProgram(std::string_view source, const char *name)
-{
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-    const auto bytes = compiler.CompileComputeGlsl(std::string(source), name);
-    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-        throw std::runtime_error(std::string("Failed to compile built-in compute program: ") + name);
-    std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
-    std::memcpy(spirv.data(), bytes.data(), bytes.size());
-    return spirv;
-}
-
 void DestroyLingeringMaterialPassPipelines(VkDevice device)
 {
     if (device == VK_NULL_HANDLE) {
@@ -125,12 +114,12 @@ std::shared_ptr<const SceneDepthResolveProgram> InxVkCoreModular::GetSceneDepthR
 std::shared_ptr<const lighting::ForwardPlusGridPipeline> InxVkCoreModular::GetForwardPlusGridProgram()
 {
     if (!m_forwardPlusProgram) {
-        const auto spirv = CompileBuiltinComputeProgram(lighting::ForwardPlusLightGrid::ShaderSource(),
-                                                        "Infernux/ForwardPlusLightGrid.comp");
-        m_forwardPlusProgram = lighting::ForwardPlusLightGrid::CreateProgram(GetDeviceContext().GetRhiDevice(),
-                                                                             {spirv.data(), spirv.size()});
-        if (!m_forwardPlusProgram)
-            throw std::runtime_error("Failed to create the built-in Forward+ program");
+        const auto program =
+            SlangCompiler::Get().Compile({"inx_forward_plus_grid", "Infernux/ForwardPlusLightGrid.slang",
+                                          std::string(lighting::ForwardPlusLightGrid::ShaderSource())},
+                                         {}, {ShaderCodeTarget::SpirV});
+        m_forwardPlusProgram =
+            lighting::ForwardPlusLightGrid::CreateProgram(GetDeviceContext().GetRhiDevice(), program.targets[0]);
     }
     return m_forwardPlusProgram;
 }

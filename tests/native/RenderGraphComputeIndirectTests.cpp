@@ -25,6 +25,7 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -39,8 +40,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <thread>
 #include <string>
+#include <thread>
 #include <vector>
 #include <vk_mem_alloc.h>
 
@@ -85,7 +86,7 @@ struct TestResources
     infernux::rhi::SamplerHandle sampledTextureSamplerHandle;
 
     bool PublishParticleGraph(infernux::particle::ParticleGpuSystemManager &manager,
-                               const infernux::particle::GpuParticleGraphProgram &program, std::string *error)
+                              const infernux::particle::GpuParticleGraphProgram &program, std::string *error)
     {
         using Status = infernux::particle::GpuParticlePublicationStatus;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -214,8 +215,8 @@ bool Require(bool condition, const char *message)
 bool VerifyRhiBufferUpload(TestResources &resources)
 {
     const std::array<uint32_t, 8> source = {3, 5, 8, 13, 21, 34, 55, 89};
-    auto ticket =
-        resources.resources.BeginBufferUpload({source.data(), sizeof(source), infernux::rhi::BufferUsageFlags::Storage});
+    auto ticket = resources.resources.BeginBufferUpload(
+        {source.data(), sizeof(source), infernux::rhi::BufferUsageFlags::Storage});
     resources.resources.DrainBufferUploads();
     if (!Require(ticket && resources.resources.TryPublishBufferUpload(ticket),
                  "DeviceLocal RHI buffer upload did not publish"))
@@ -359,8 +360,8 @@ bool VerifyGpuParticleMigration(TestResources &resources,
         destinationState = builder.WriteStorageBuffer(destinationState);
         destinationFreeList = builder.WriteStorageBuffer(destinationFreeList);
         destinationCounter = builder.ReadWrite(destinationCounter, infernux::rhi::PipelineStage::ComputeShader);
-        (void)builder.WriteStorageBuffer(builder.ImportBuffer("ParticleMigrationAliveIndices", destinationAliveIndices,
-                                                              destinationFreeListBytes));
+        (void)builder.WriteStorageBuffer(
+            builder.ImportBuffer("ParticleMigrationAliveIndices", destinationAliveIndices, destinationFreeListBytes));
         aliveControl = builder.ReadWrite(aliveControl, infernux::rhi::PipelineStage::ComputeShader);
         return [&](RenderContext &context) { migrator.RecordMigrate(context.GetComputeCommandEncoder()); };
     });
@@ -407,18 +408,11 @@ bool VerifyGpuParticleMigration(TestResources &resources,
     migrationGraph.Execute(commandBuffer);
 
     const std::array<infernux::rhi::BufferHandle, 5> destinations = {
-        destinationStateBuffer,
-        destinationFreeListBuffer,
-        destinationCounterBuffer,
-        destinationAliveIndices,
-        destinationAliveControl,
+        destinationStateBuffer,  destinationFreeListBuffer, destinationCounterBuffer,
+        destinationAliveIndices, destinationAliveControl,
     };
     const std::array<VkDeviceSize, 5> destinationBytes = {
-        destinationStateBytes,
-        destinationFreeListBytes,
-        counterBytes,
-        destinationFreeListBytes,
-        aliveControlBytes,
+        destinationStateBytes, destinationFreeListBytes, counterBytes, destinationFreeListBytes, aliveControlBytes,
     };
     const std::array<VkDeviceSize, 5> readbackOffsets = {
         0,
@@ -487,8 +481,10 @@ bool VerifyGpuParticleMigration(TestResources &resources,
                 sizeof(migratedCounters));
     std::array<uint32_t, 2> liveSlots{};
     std::array<uint32_t, 2> liveCounts{};
-    std::memcpy(liveSlots.data(), static_cast<const uint8_t *>(readback.mapped) + readbackOffsets[3], sizeof(liveSlots));
-    std::memcpy(liveCounts.data(), static_cast<const uint8_t *>(readback.mapped) + readbackOffsets[4], sizeof(liveCounts));
+    std::memcpy(liveSlots.data(), static_cast<const uint8_t *>(readback.mapped) + readbackOffsets[3],
+                sizeof(liveSlots));
+    std::memcpy(liveCounts.data(), static_cast<const uint8_t *>(readback.mapped) + readbackOffsets[4],
+                sizeof(liveCounts));
     std::sort(liveSlots.begin(), liveSlots.end());
     const bool migrationMatches =
         migratedStates == expectedStates && migratedFreeList[0] == 1 && liveSlots == std::array<uint32_t, 2>{0, 2} &&
@@ -776,8 +772,8 @@ void main() {
 #include "ParticleSceneSourceTests.h"
 #include "ParticleSpawnInputTests.h"
 #include "ParticleSurfaceSnapshotTests.h"
-#include "RhiBufferUpdateTests.h"
 #include "RenderGraphTransientBufferTests.h"
+#include "RhiBufferUpdateTests.h"
 
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
@@ -1017,10 +1013,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                        migrationProgram, spawnProgram))
         return false;
     if (!VerifyParticleSceneSources(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
-                                   migrationProgram, spawnProgram))
+                                    migrationProgram, spawnProgram))
         return false;
     if (!VerifyParticleFrameSnapshots(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
-                                     migrationProgram, spawnProgram))
+                                      migrationProgram, spawnProgram))
         return false;
     std::string managedError;
     auto publishManagedGraph = [&](std::vector<infernux::particle::GpuParticleEmitterProgram> emitters,
@@ -1520,9 +1516,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     resources.graph.AddTransferPass("CopyIndirectArguments", [&](PassBuilder &builder) {
         builder.TransferRead(indirectArguments);
-        copiedIndirectArguments =
-            builder.CreateBuffer("CopiedIndirectArguments", sizeof(VkDrawIndirectCommand),
-                                 BufferUsage::TransferDestination | BufferUsage::Indirect);
+        copiedIndirectArguments = builder.CreateBuffer("CopiedIndirectArguments", sizeof(VkDrawIndirectCommand),
+                                                       BufferUsage::TransferDestination | BufferUsage::Indirect);
         copiedIndirectArguments = builder.TransferWrite(copiedIndirectArguments);
         return [&](RenderContext &context) {
             context.GetTransferCommandEncoder().CopyBuffer(context.GetBufferHandle(indirectArguments),
@@ -2003,8 +1998,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto upload3DTicket = resources.resources.BeginTextureUpload(upload3DRequest);
     resources.resources.DrainBufferUploads();
     if (!Require(upload2DTicket && resources.resources.TryPublishTextureUpload(upload2DTicket) &&
-                     upload2DTicket->GetTexture()->IsValid() &&
-                     upload3DTicket && resources.resources.TryPublishTextureUpload(upload3DTicket) &&
+                     upload2DTicket->GetTexture()->IsValid() && upload3DTicket &&
+                     resources.resources.TryPublishTextureUpload(upload3DTicket) &&
                      upload3DTicket->GetTexture()->IsValid() &&
                      rhi.Resolve(upload2DTicket->GetTexture()->GetTexture()) != VK_NULL_HANDLE &&
                      rhi.Resolve(upload3DTicket->GetTexture()->GetTexture()) != VK_NULL_HANDLE,
@@ -2558,8 +2553,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     infernux::rhi::BufferDesc externalAliasDesc;
     externalAliasDesc.byteSize = 128;
-    externalAliasDesc.usage = infernux::rhi::BufferUsageFlags::Storage |
-                              infernux::rhi::BufferUsageFlags::TransferDestination;
+    externalAliasDesc.usage =
+        infernux::rhi::BufferUsageFlags::Storage | infernux::rhi::BufferUsageFlags::TransferDestination;
     const auto externalAliasBuffer = rhi.CreateBuffer(externalAliasDesc);
     RenderGraph externalAliasGraph;
     externalAliasGraph.Initialize(&resources.context);
@@ -2589,12 +2584,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     RenderGraph bufferAliasGraph;
     bufferAliasGraph.Initialize(&resources.context);
     constexpr VkDeviceSize aliasBufferBytes = 64 * 1024;
-    const auto firstAliasBuffer = bufferAliasGraph.RegisterTransientBuffer("FirstAliasBuffer", aliasBufferBytes,
-                                                                           BufferUsage::Storage);
-    const auto aliasBridge =
-        bufferAliasGraph.RegisterTransientBuffer("AliasBridge", 16, BufferUsage::Storage);
-    const auto secondAliasBuffer = bufferAliasGraph.RegisterTransientBuffer("SecondAliasBuffer", aliasBufferBytes,
-                                                                            BufferUsage::Storage);
+    const auto firstAliasBuffer =
+        bufferAliasGraph.RegisterTransientBuffer("FirstAliasBuffer", aliasBufferBytes, BufferUsage::Storage);
+    const auto aliasBridge = bufferAliasGraph.RegisterTransientBuffer("AliasBridge", 16, BufferUsage::Storage);
+    const auto secondAliasBuffer =
+        bufferAliasGraph.RegisterTransientBuffer("SecondAliasBuffer", aliasBufferBytes, BufferUsage::Storage);
     ResourceHandle firstAliasVersion;
     ResourceHandle aliasBridgeVersion;
     ResourceHandle secondAliasVersion;
@@ -2627,7 +2621,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     RenderGraph deferredReleaseGraph;
     deferredReleaseGraph.Initialize(&resources.context);
-    const auto deferredBuffer = deferredReleaseGraph.RegisterTransientBuffer("DeferredBuffer", 256, BufferUsage::Storage);
+    const auto deferredBuffer =
+        deferredReleaseGraph.RegisterTransientBuffer("DeferredBuffer", 256, BufferUsage::Storage);
     ResourceHandle deferredBufferVersion;
     deferredReleaseGraph.AddComputePass("WriteDeferredBuffer", [&](PassBuilder &builder) {
         deferredBufferVersion = builder.WriteStorageBuffer(deferredBuffer);
@@ -2723,8 +2718,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     VkImageFormatProperties graphImageLimits{};
     if (!Require(vkGetPhysicalDeviceImageFormatProperties(
                      resources.context.GetPhysicalDevice(), VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D,
-                     VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                     0, &graphImageLimits) == VK_SUCCESS,
+                     VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0,
+                     &graphImageLimits) == VK_SUCCESS,
                  "RenderGraph image format limits query failed"))
         return false;
     const auto rejectsImage = [&](uint32_t width, VkSampleCountFlagBits samples) {
@@ -2872,9 +2867,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
         graph.Initialize(&resources.context);
         graph.SetQueueTopology(topology);
-        const auto storage = graph.RegisterTransientBuffer(
-            "QueueOwnershipStorage", 64,
-            BufferUsage::Storage | BufferUsage::TransferSource | BufferUsage::TransferDestination);
+        const auto storage = graph.RegisterTransientBuffer("QueueOwnershipStorage", 64,
+                                                           BufferUsage::Storage | BufferUsage::TransferSource |
+                                                               BufferUsage::TransferDestination);
         ResourceHandle produced;
         graph.AddComputePass("QueueOwnershipProducer", [&](PassBuilder &builder) {
             produced = builder.WriteStorageBuffer(storage);

@@ -393,7 +393,7 @@ if(INFERNUX_BUILD_TESTS)
         cpp/infernux/function/renderer/lighting/CanonicalLightGpuBuffer.cpp
         cpp/infernux/function/renderer/lighting/ForwardPlusLightGrid.cpp
     )
-    target_link_libraries(infernux_canonical_light_snapshot_tests PRIVATE glm::glm)
+    target_link_libraries(infernux_canonical_light_snapshot_tests PRIVATE glm::glm InfernuxShaderCompiler InfernuxRenderCore)
     # Match the runtime GLM conventions so shadow math is tested under the
     # exact same handedness and clip-depth range the engine renders with.
     target_compile_definitions(infernux_canonical_light_snapshot_tests PRIVATE
@@ -673,6 +673,7 @@ if(INFERNUX_BUILD_TESTS)
     add_dependencies(infernux_render_graph_compute_indirect_tests infernux_render_graph_compute_indirect_shaders)
     target_link_libraries(infernux_render_graph_compute_indirect_tests PRIVATE
         infernux_runtime_test_support
+        InfernuxShaderCompiler
         GPUOpen::VulkanMemoryAllocator
     )
     add_test(NAME infernux.render_graph_compute_indirect

@@ -2,6 +2,7 @@
 
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -33,14 +34,6 @@ struct ForwardPlusGridConfig
 [[nodiscard]] ForwardPlusGridConfig BuildForwardPlusGridConfig(uint32_t width, uint32_t height,
                                                                uint32_t localLightCount, uint32_t domainMask);
 
-struct ForwardPlusGridProgram
-{
-    const uint32_t *words = nullptr;
-    size_t wordCount = 0;
-
-    [[nodiscard]] bool IsValid() const noexcept;
-};
-
 struct alignas(16) ForwardPlusGridConstants
 {
     float viewProjection[16]{};
@@ -58,6 +51,8 @@ struct ForwardPlusGridFrame
     rhi::BindGroupHandle bindGroup;
     rhi::BindGroupHandle consumerBindGroup;
     rhi::BufferHandle canonicalLights;
+    rhi::BufferHandle constants;
+    std::vector<char> constantBytes;
     ForwardPlusGridConfig config{};
     uint64_t headerCapacityBytes = 0;
     uint64_t maskCapacityBytes = 0;
@@ -84,9 +79,9 @@ class ForwardPlusLightGrid
     ForwardPlusLightGrid(const ForwardPlusLightGrid &) = delete;
     ForwardPlusLightGrid &operator=(const ForwardPlusLightGrid &) = delete;
 
-    [[nodiscard]] bool Initialize(rhi::Device &device, uint32_t framesInFlight, const ForwardPlusGridProgram &program);
-    [[nodiscard]] static std::shared_ptr<const ForwardPlusGridPipeline>
-    CreateProgram(rhi::Device &device, const ForwardPlusGridProgram &program);
+    [[nodiscard]] bool Initialize(rhi::Device &device, uint32_t framesInFlight, const ShaderTargetCode &program);
+    [[nodiscard]] static std::shared_ptr<const ForwardPlusGridPipeline> CreateProgram(rhi::Device &device,
+                                                                                      const ShaderTargetCode &program);
     [[nodiscard]] bool Initialize(std::shared_ptr<const ForwardPlusGridPipeline> program, uint32_t framesInFlight);
     void Shutdown() noexcept;
 
@@ -94,7 +89,7 @@ class ForwardPlusLightGrid
     [[nodiscard]] bool PrepareFrame(uint32_t frameIndex, uint32_t width, uint32_t height, uint32_t localLightCount,
                                     uint32_t domainMask, rhi::BufferHandle canonicalLights);
     void Record(uint32_t frameIndex, const rhi::ComputeCommandEncoder &encoder,
-                const ForwardPlusGridConstants &constants) const;
+                const ForwardPlusGridConstants &constants);
 
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] uint32_t FrameCount() const noexcept;

@@ -71,7 +71,7 @@ def main():
                 imported=AssetManager.import_asset(str(path),database=db);assert imported,imported.error
                 target=inx.RenderTexture.load_by_guid(imported.guid);targets.append(target)
                 owner=scene.create_game_object('View'+str(i));owner.transform.position=Vector3(i*100,0,-5);owners.append(owner)
-                camera=owner.add_component(inx.Camera);camera.culling_mask=1<<i;camera.depth=i+1;camera.target_texture=target;camera.background_color=vec4f(0,0,0,1);camera.clear_flags=CameraClearFlags.SolidColor;cameras.append(camera)
+                camera=owner.add_component(inx.Camera);camera.culling_mask=1<<i;camera.depth=i+1;camera.render_to_texture=True;camera.target_texture=target;camera.background_color=vec4f(0,0,0,1);camera.clear_flags=CameraClearFlags.SolidColor;cameras.append(camera)
                 obj=scene.create_game_object('Layer'+str(i));obj.layer=i;obj.transform.position=Vector3(i*100+x,0,0);objects.append(obj)
                 renderer=obj.add_component(inx.MeshRenderer);renderer.set_mesh_asset_guid(mesh_guid)
                 material=inx.Material.create_lit();material.set_color('baseColor',1,1,1,1);material.set_float('metallic',0);material.set_float('smoothness',0.3);renderer.set_material(0,material)

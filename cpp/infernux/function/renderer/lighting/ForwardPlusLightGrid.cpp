@@ -1,4 +1,6 @@
 #include "ForwardPlusLightGrid.h"
+#include <function/renderer/shader/DeviceShaderProgram.h>
+#include <function/renderer/shader/ShaderValueCopy.h>
 
 #include <algorithm>
 #include <limits>
@@ -11,19 +13,50 @@ namespace infernux::lighting
 // Geometry and particle views share code and layout, never mutable buffers.
 struct ForwardPlusGridPipeline
 {
-    explicit ForwardPlusGridPipeline(rhi::Device &owner) : device(owner)
+    ForwardPlusGridPipeline(rhi::Device &owner, const ShaderTargetCode &code) : device(owner), shader(owner, code, {0})
     {
+        for (const auto &resource : shader.GetResources()) {
+            if (resource.name == "pc") {
+                constantsBinding = resource.binding.binding;
+                constantBytes = resource.value.byteSize;
+                constantCopy = std::make_unique<ShaderValueCopy>(resource.value);
+            } else if (resource.name == "canonical_lights")
+                lightsBinding = resource.binding.binding;
+            else if (resource.name == "tile_headers")
+                headersBinding = resource.binding.binding;
+            else if (resource.name == "tile_light_masks")
+                masksBinding = resource.binding.binding;
+        }
+        rhi::ComputePipelineDesc description;
+        shader.Apply(description);
+        pipeline = device.CreateComputePipeline(description);
+        if (!pipeline.IsValid())
+            throw std::runtime_error("Forward+ grid pipeline creation failed");
+        // Until the mesh author path is migrated, its published fragment
+        // program consumes the canonical three-buffer light-table interface.
+        rhi::BindingLayoutDesc consumer;
+        for (uint32_t binding = 0; binding < 3; ++binding) {
+            consumer.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Fragment, 1};
+            consumer.entries[binding].readOnlyStorage = true;
+        }
+        consumer.entryCount = 3;
+        consumerLayout = device.CreateBindingLayout(consumer);
     }
     ~ForwardPlusGridPipeline()
     {
         device.Release(pipeline);
-        device.Release(layout);
         device.Release(consumerLayout);
     }
     rhi::Device &device;
-    rhi::BindingLayoutHandle layout;
+    DeviceShaderProgram shader;
     rhi::BindingLayoutHandle consumerLayout;
     rhi::ComputePipelineHandle pipeline;
+    uint32_t constantsBinding = 0;
+    uint32_t lightsBinding = 0;
+    uint32_t headersBinding = 0;
+    uint32_t masksBinding = 0;
+    uint64_t constantBytes = 0;
+    std::unique_ptr<ShaderValueCopy> constantCopy;
 };
 
 namespace
@@ -91,52 +124,18 @@ ForwardPlusGridConfig BuildForwardPlusGridConfig(uint32_t width, uint32_t height
     return config;
 }
 
-bool ForwardPlusGridProgram::IsValid() const noexcept
-{
-    return words && wordCount >= 5 && words[0] == 0x07230203u;
-}
-
 ForwardPlusLightGrid::~ForwardPlusLightGrid()
 {
     Shutdown();
 }
 
-std::shared_ptr<const ForwardPlusGridPipeline>
-ForwardPlusLightGrid::CreateProgram(rhi::Device &device, const ForwardPlusGridProgram &program)
+std::shared_ptr<const ForwardPlusGridPipeline> ForwardPlusLightGrid::CreateProgram(rhi::Device &device,
+                                                                                   const ShaderTargetCode &program)
 {
-    if (!program.IsValid())
-        return {};
-
-    auto compiled = std::make_shared<ForwardPlusGridPipeline>(device);
-    rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 3; ++binding)
-        layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 3;
-    compiled->layout = device.CreateBindingLayout(layoutDesc);
-    rhi::BindingLayoutDesc consumerLayoutDesc;
-    for (uint32_t binding = 0; binding < 3; ++binding) {
-        consumerLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Fragment, 1};
-    }
-    consumerLayoutDesc.entryCount = 3;
-    compiled->consumerLayout = device.CreateBindingLayout(consumerLayoutDesc);
-
-    const auto shader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(program.words, program.wordCount));
-    if (compiled->layout.IsValid() && compiled->consumerLayout.IsValid() && shader.IsValid()) {
-        rhi::ComputePipelineDesc pipelineDesc;
-        pipelineDesc.computeShader = shader;
-        pipelineDesc.bindingLayouts[0] = compiled->layout;
-        pipelineDesc.bindingLayoutCount = 1;
-        pipelineDesc.pushConstantBytes = sizeof(ForwardPlusGridConstants);
-        compiled->pipeline = device.CreateComputePipeline(pipelineDesc);
-    }
-    device.Release(shader);
-    if (!compiled->layout.IsValid() || !compiled->consumerLayout.IsValid() || !compiled->pipeline.IsValid())
-        return {};
-    return compiled;
+    return std::make_shared<ForwardPlusGridPipeline>(device, program);
 }
 
-bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlight,
-                                      const ForwardPlusGridProgram &program)
+bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlight, const ShaderTargetCode &program)
 {
     if (framesInFlight == 0) {
         Shutdown();
@@ -153,6 +152,14 @@ bool ForwardPlusLightGrid::Initialize(std::shared_ptr<const ForwardPlusGridPipel
     m_program = std::move(program);
     m_device = &m_program->device;
     m_frames.resize(framesInFlight);
+    for (auto &frame : m_frames) {
+        frame.constantBytes.resize(m_program->constantBytes);
+        rhi::BufferDesc description;
+        description.byteSize = frame.constantBytes.size();
+        description.usage = rhi::BufferUsageFlags::Uniform;
+        description.memory = rhi::BufferMemory::Upload;
+        frame.constants = m_device->CreateBuffer(description);
+    }
     return true;
 }
 
@@ -175,6 +182,7 @@ void ForwardPlusLightGrid::Shutdown() noexcept
             m_device->Release(frame.consumerBindGroup);
             m_device->Release(frame.lightMasks);
             m_device->Release(frame.headers);
+            m_device->Release(frame.constants);
         }
     }
     m_frames.clear();
@@ -231,13 +239,9 @@ bool ForwardPlusLightGrid::PrepareFrame(uint32_t frameIndex, uint32_t width, uin
 }
 
 void ForwardPlusLightGrid::Record(uint32_t frameIndex, const rhi::ComputeCommandEncoder &encoder,
-                                  const ForwardPlusGridConstants &constants) const
+                                  const ForwardPlusGridConstants &constants)
 {
-    if (!IsValid() || !encoder.IsValid() || frameIndex >= m_frames.size())
-        return;
-    const auto &frame = m_frames[frameIndex];
-    if (!frame.config.IsValid() || !frame.bindGroup.IsValid())
-        return;
+    auto &frame = m_frames[frameIndex];
 
     ForwardPlusGridConstants resolved = constants;
     resolved.viewportAndProjectionScale[0] = static_cast<float>(frame.config.width);
@@ -249,9 +253,10 @@ void ForwardPlusLightGrid::Record(uint32_t frameIndex, const rhi::ComputeCommand
     resolved.domainAndMaskWords[0] = frame.config.domainMask;
     resolved.domainAndMaskWords[1] = frame.config.maskWordStride;
 
+    m_program->constantCopy->Write(frame.constantBytes.data(), &resolved);
+    m_device->WriteBuffer(frame.constants, 0, frame.constantBytes.data(), frame.constantBytes.size());
     encoder.BindPipeline(m_program->pipeline);
     encoder.BindGroup(m_program->pipeline, 0, frame.bindGroup);
-    encoder.PushConstants(m_program->pipeline, sizeof(resolved), &resolved);
     encoder.Dispatch(frame.config.tileCountX, frame.config.tileCountY, 1);
 }
 
@@ -286,16 +291,22 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
     frame.bindGroup = {};
     frame.consumerBindGroup = {};
     rhi::BindGroupDesc groupDesc;
-    groupDesc.layout = m_program->layout;
+    groupDesc.layout = m_program->shader.GetBindingLayouts()[0];
     const rhi::BufferHandle buffers[] = {canonicalLights, frame.headers, frame.lightMasks};
-    for (uint32_t binding = 0; binding < 3; ++binding)
-        groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
-    groupDesc.bufferCount = 3;
+    const uint32_t bindings[] = {m_program->lightsBinding, m_program->headersBinding, m_program->masksBinding};
+    for (uint32_t index = 0; index < 3; ++index)
+        groupDesc.buffers[index] = {bindings[index], rhi::BindingType::StorageBuffer, buffers[index], 0, 0};
+    groupDesc.buffers[3] = {m_program->constantsBinding, rhi::BindingType::UniformBuffer, frame.constants, 0,
+                            m_program->constantBytes};
+    groupDesc.bufferCount = 4;
     frame.bindGroup = m_device->CreateBindGroup(groupDesc);
     if (!frame.bindGroup.IsValid())
         return false;
 
     groupDesc.layout = m_program->consumerLayout;
+    groupDesc.bufferCount = 3;
+    for (uint32_t binding = 0; binding < 3; ++binding)
+        groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
     frame.consumerBindGroup = m_device->CreateBindGroup(groupDesc);
     if (!frame.consumerBindGroup.IsValid()) {
         m_device->Release(frame.bindGroup);
@@ -308,49 +319,49 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
 
 std::string_view ForwardPlusLightGrid::ShaderSource() noexcept
 {
-    return R"glsl(#version 450
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+    return R"(
 
 struct CanonicalLightData {
-    vec4 position_range;
-    vec4 direction_spot;
-    vec4 color_intensity;
-    vec4 attenuation;
-    vec4 area_right_width;
-    vec4 area_up_height;
-    uvec4 metadata;
-    uvec4 identity_shadow;
+    float4 position_range;
+    float4 direction_spot;
+    float4 color_intensity;
+    float4 attenuation;
+    float4 area_right_width;
+    float4 area_up_height;
+    uint4 metadata;
+    uint4 identity_shadow;
 };
 
-layout(std430, set = 0, binding = 0) readonly buffer CanonicalLights {
-    uvec4 counts_generation;
-    CanonicalLightData lights[];
-};
-layout(std430, set = 0, binding = 1) buffer TileHeaders { uvec4 tile_headers[]; };
-layout(std430, set = 0, binding = 2) buffer TileLightMasks { uint tile_light_masks[]; };
+ByteAddressBuffer canonical_lights;
+RWStructuredBuffer<uint4> tile_headers;
+RWStructuredBuffer<Atomic<uint>> tile_light_masks;
 
-layout(push_constant) uniform ForwardPlusGridConstants {
-    mat4 view_projection;
-    vec4 viewport_projection_scale;
-    uvec4 grid_lights;
-    uvec4 domain_mask_words;
-} pc;
+struct ForwardPlusGridConstants {
+    // The canonical host camera stores column vectors. Keep that data
+    // contract explicit and independent of target matrix storage rules.
+    float4 view_projection_columns[4];
+    float4 viewport_projection_scale;
+    uint4 grid_lights;
+    uint4 domain_mask_words;
+};
+ConstantBuffer<ForwardPlusGridConstants> pc;
 
 // Pull the tile's clip inequalities back to world-space planes. This avoids
 // dividing a sphere's center by w and guessing a symmetric projected radius,
 // which can exclude lit pixels for off-axis or shifted projections. All light
 // lanes share the six planes and their normal lengths, computed once per tile.
-shared vec4 tile_planes[6];
-shared float tile_plane_lengths[6];
+groupshared float4 tile_planes[6];
+groupshared float tile_plane_lengths[6];
 
-void prepare_tile_plane(uint index, uvec2 tile) {
-    mat4 rows = transpose(pc.view_projection);
-    vec2 viewport = pc.viewport_projection_scale.xy;
-    vec2 pixel_min = vec2(tile) * float(pc.grid_lights.w);
-    vec2 pixel_max = min(pixel_min + float(pc.grid_lights.w), viewport);
-    vec2 ndc_min = 2.0 * pixel_min / viewport - 1.0;
-    vec2 ndc_max = 2.0 * pixel_max / viewport - 1.0;
-    vec4 plane;
+void prepare_tile_plane(uint index, uint2 tile) {
+    float4x4 rows = transpose(float4x4(pc.view_projection_columns[0], pc.view_projection_columns[1],
+                                      pc.view_projection_columns[2], pc.view_projection_columns[3]));
+    float2 viewport = pc.viewport_projection_scale.xy;
+    float2 pixel_min = float2(tile) * float(pc.grid_lights.w);
+    float2 pixel_max = min(pixel_min + float(pc.grid_lights.w), viewport);
+    float2 ndc_min = 2.0 * pixel_min / viewport - 1.0;
+    float2 ndc_max = 2.0 * pixel_max / viewport - 1.0;
+    float4 plane;
     if (index == 0u) plane = rows[0] - ndc_min.x * rows[3];
     else if (index == 1u) plane = ndc_max.x * rows[3] - rows[0];
     else if (index == 2u) plane = rows[1] - ndc_min.y * rows[3];
@@ -364,13 +375,13 @@ void prepare_tile_plane(uint index, uvec2 tile) {
 }
 
 bool overlaps_tile(CanonicalLightData light) {
-    vec4 center = vec4(light.position_range.xyz, 1.0);
+    float4 center = float4(light.position_range.xyz, 1.0);
     float radius = max(light.position_range.w, 0.0);
     if (light.metadata.x == 3u) {
-        radius += 0.5 * length(vec2(light.area_right_width.w, light.area_up_height.w));
+        radius += 0.5 * length(float2(light.area_right_width.w, light.area_up_height.w));
     }
     for (uint index = 0u; index < 6u; ++index) {
-        vec4 plane = tile_planes[index];
+        float4 plane = tile_planes[index];
         float support = radius * tile_plane_lengths[index];
         // Outward rounding for float dot products keeps a tangent sphere in
         // the list; this is relative to the terms, not a world-unit padding.
@@ -380,40 +391,39 @@ bool overlaps_tile(CanonicalLightData light) {
     return true;
 }
 
-void main() {
-    uvec2 tile = gl_WorkGroupID.xy;
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void build_light_grid(uint3 group : SV_GroupID, uint lane : SV_GroupIndex) {
+    uint2 tile = group.xy;
     uint tile_index = tile.y * pc.grid_lights.x + tile.x;
     uint offset = tile_index * pc.domain_mask_words.y;
-    if (gl_LocalInvocationIndex < 6u) prepare_tile_plane(gl_LocalInvocationIndex, tile);
-    for (uint word = gl_LocalInvocationIndex; word < pc.domain_mask_words.y; word += gl_WorkGroupSize.x) {
-        tile_light_masks[offset + word] = 0u;
+    if (lane < 6u) prepare_tile_plane(lane, tile);
+    for (uint word = lane; word < pc.domain_mask_words.y; word += 64u) {
+        tile_light_masks[offset + word].store(0u);
     }
-    // barrier() only synchronizes invocation progress. SSBO writes require an
-    // explicit buffer-memory barrier before another invocation in the same
-    // workgroup can safely feed the cleared words to atomicOr. Desktop drivers
-    // commonly hide this omission; tiled mobile GPUs do not.
-    memoryBarrierBuffer();
-    barrier();
+    // Both shared planes and storage mask words must be visible before the
+    // other lanes test lights and atomically accumulate into the cleared mask.
+    AllMemoryBarrierWithGroupSync();
 
+    uint4 counts_generation = canonical_lights.Load<uint4>(0);
     uint directional_count = counts_generation.x;
     uint available_local_count = min(counts_generation.y, pc.grid_lights.z);
-    for (uint local_index = gl_LocalInvocationIndex; local_index < available_local_count;
-         local_index += gl_WorkGroupSize.x) {
-        CanonicalLightData light = lights[directional_count + local_index];
+    for (uint local_index = lane; local_index < available_local_count; local_index += 64u) {
+        CanonicalLightData light = canonical_lights.Load<CanonicalLightData>(
+            16u + (directional_count + local_index) * sizeof(CanonicalLightData));
         if ((light.metadata.w & pc.domain_mask_words.x) == 0u || !overlaps_tile(light)) continue;
-        atomicOr(tile_light_masks[offset + (local_index >> 5u)], 1u << (local_index & 31u));
+        tile_light_masks[offset + (local_index >> 5u)].or(1u << (local_index & 31u));
     }
-    memoryBarrierBuffer();
-    barrier();
-    if (gl_LocalInvocationIndex == 0u) {
+    AllMemoryBarrierWithGroupSync();
+    if (lane == 0u) {
         if (tile_index == 0u) {
-            tile_headers[0] = uvec4(pc.grid_lights.xy, pc.grid_lights.w, pc.domain_mask_words.x);
+            tile_headers[0] = uint4(pc.grid_lights.xy, pc.grid_lights.w, pc.domain_mask_words.x);
         }
         tile_headers[tile_index + 1u] =
-            uvec4(offset, pc.domain_mask_words.y, available_local_count, pc.domain_mask_words.x);
+            uint4(offset, pc.domain_mask_words.y, available_local_count, pc.domain_mask_words.x);
     }
 }
-)glsl";
+)";
 }
 
 } // namespace infernux::lighting

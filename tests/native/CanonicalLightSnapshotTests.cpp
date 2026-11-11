@@ -5,6 +5,7 @@
 #include <function/renderer/lighting/CanonicalLightGpuBuffer.h>
 #include <function/renderer/lighting/ForwardPlusLightGrid.h>
 #include <function/renderer/lighting/ShadowFrame.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/scene/LightingData.h>
 
 #include <cassert>
@@ -54,6 +55,7 @@ struct FakeDevice final : infernux::rhi::Device
     uint32_t releasedPipelines = 0;
     uint32_t releasedLayouts = 0;
     uint32_t bufferWrites = 0;
+    std::vector<char> lastWrite;
 
     infernux::rhi::BufferHandle CreateBuffer(const infernux::rhi::BufferDesc &desc) override
     {
@@ -97,9 +99,10 @@ struct FakeDevice final : infernux::rhi::Device
         pipelines.push_back(desc);
         return {next++, 1};
     }
-    bool WriteBuffer(infernux::rhi::BufferHandle, uint64_t, const void *, uint64_t) override
+    bool WriteBuffer(infernux::rhi::BufferHandle, uint64_t, const void *data, uint64_t bytes) override
     {
         ++bufferWrites;
+        lastWrite.assign(static_cast<const char *>(data), static_cast<const char *>(data) + bytes);
         return true;
     }
     void Release(infernux::rhi::BufferHandle handle) noexcept override
@@ -137,7 +140,6 @@ struct FakeDevice final : infernux::rhi::Device
 
 struct DispatchTrace
 {
-    infernux::lighting::ForwardPlusGridConstants constants{};
     uint32_t x = 0;
     uint32_t y = 0;
     uint32_t z = 0;
@@ -148,11 +150,9 @@ struct DispatchTrace
     static void BindGroup(void *, infernux::rhi::ComputePipelineHandle, uint32_t, infernux::rhi::BindGroupHandle)
     {
     }
-    static void PushConstants(void *context, infernux::rhi::ComputePipelineHandle, uint32_t bytes, const void *data)
+    static void PushConstants(void *, infernux::rhi::ComputePipelineHandle, uint32_t, const void *)
     {
-        auto &self = *static_cast<DispatchTrace *>(context);
-        assert(bytes == sizeof(self.constants));
-        std::memcpy(&self.constants, data, bytes);
+        assert(false && "Forward+ parameters use reflected uniform buffers");
     }
     static void Dispatch(void *context, uint32_t x, uint32_t y, uint32_t z)
     {
@@ -415,16 +415,20 @@ int main()
            2);
 
     FakeDevice device;
-    std::array<uint32_t, 5> shaderWords{0x07230203u};
+    const auto compiledGrid = infernux::SlangCompiler::Get().Compile(
+        {"forward_plus", "ForwardPlusLightGrid.slang",
+         std::string(infernux::lighting::ForwardPlusLightGrid::ShaderSource())},
+        {}, {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl});
+    const auto &gridCode = compiledGrid.targets[0];
     infernux::lighting::ForwardPlusLightGrid grid;
-    assert(grid.Initialize(device, 2, {shaderWords.data(), shaderWords.size()}));
+    assert(grid.Initialize(device, 2, gridCode));
     const infernux::rhi::BufferHandle canonicalBuffer{900, 1};
     assert(grid.PrepareFrame(0, 1920, 1080, 1000, CanonicalLightAffectsGeometry, canonicalBuffer));
     assert(grid.PrepareFrame(1, 1280, 720, 4, CanonicalLightAffectsParticles, canonicalBuffer));
-    assert(device.layouts.size() == 2 && device.layouts[0].entryCount == 3 && device.layouts[1].entryCount == 3);
+    assert(device.layouts.size() == 2 && device.layouts[0].entryCount == 4 && device.layouts[1].entryCount == 3);
     assert(grid.ConsumerLayout().IsValid());
-    assert(device.pipelines.size() == 1 && device.pipelines[0].pushConstantBytes == 112);
-    assert(device.groups.size() == 4 && device.groups[0].bufferCount == 3 && device.groups[1].bufferCount == 3);
+    assert(device.pipelines.size() == 1 && device.pipelines[0].pushConstantBytes == 0);
+    assert(device.groups.size() == 4 && device.groups[0].bufferCount == 4 && device.groups[1].bufferCount == 3);
     assert(grid.Frame(0).headers != grid.Frame(1).headers && grid.Frame(0).lightMasks != grid.Frame(1).lightMasks);
 
     DispatchTrace trace;
@@ -437,22 +441,19 @@ int main()
     constants.viewportAndProjectionScale[3] = 1.0f;
     grid.Record(1, encoder, constants);
     assert(trace.x == 80 && trace.y == 45 && trace.z == 1);
-    assert(trace.constants.gridAndLights[2] == 4 && trace.constants.gridAndLights[3] == 16);
-    assert(trace.constants.domainAndMaskWords[0] == CanonicalLightAffectsParticles);
-    assert(trace.constants.domainAndMaskWords[1] == 1);
-
-    const std::string_view source = infernux::lighting::ForwardPlusLightGrid::ShaderSource();
-    assert(source.find("local_size_x = 64") != std::string_view::npos);
-    assert(source.find("metadata.w & pc.domain_mask_words.x") != std::string_view::npos);
-    assert(source.find("atomicOr(tile_light_masks") != std::string_view::npos);
-    assert(source.find("MAX_LIGHTS") == std::string_view::npos);
+    infernux::lighting::ForwardPlusGridConstants uploaded{};
+    assert(device.lastWrite.size() == sizeof(uploaded));
+    std::memcpy(&uploaded, device.lastWrite.data(), sizeof(uploaded));
+    assert(uploaded.gridAndLights[2] == 4 && uploaded.gridAndLights[3] == 16);
+    assert(uploaded.domainAndMaskWords[0] == CanonicalLightAffectsParticles);
+    assert(uploaded.domainAndMaskWords[1] == 1);
     grid.Shutdown();
 
-    assert(device.releasedBuffers == 4 && device.releasedGroups == 4);
+    assert(device.releasedBuffers == 6 && device.releasedGroups == 4);
     {
         using infernux::lighting::ForwardPlusLightGrid;
         FakeDevice sharedDevice;
-        auto program = ForwardPlusLightGrid::CreateProgram(sharedDevice, {shaderWords.data(), shaderWords.size()});
+        auto program = ForwardPlusLightGrid::CreateProgram(sharedDevice, gridCode);
         assert(program);
         ForwardPlusLightGrid first;
         assert(first.Initialize(program, 2));

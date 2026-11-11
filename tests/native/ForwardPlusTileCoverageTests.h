@@ -1,13 +1,12 @@
-// Exercise the actual grid owner, push constants, per-frame bindings and GPU
+// Exercise the actual grid owner, reflected uniforms, per-frame bindings and GPU
 // dispatch. The broader projection/ray oracle lives in the Python GPU suite.
 bool VerifyForwardPlusTileCoverage(TestResources &resources, infernux::InxShaderLoader &compiler)
 {
     using namespace infernux;
     using namespace infernux::lighting;
-    const auto code = SpirvWords(compiler.CompileComputeGlsl(std::string(ForwardPlusLightGrid::ShaderSource()),
-                                                             "Tests/ForwardPlusCoverage.comp"));
-    if (!Require(!code.empty(), "Forward+ coverage shader compilation failed"))
-        return false;
+    const auto code = SlangCompiler::Get().Compile(
+        {"forward_plus_coverage", "Tests/ForwardPlusCoverage.slang", std::string(ForwardPlusLightGrid::ShaderSource())},
+        {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
     auto &device = resources.context.GetRhiDevice();
     const auto native = resources.context.GetDevice();
     struct Owner
@@ -52,7 +51,7 @@ bool VerifyForwardPlusTileCoverage(TestResources &resources, infernux::InxShader
     lights.values[1].metadata = {1, ~0u, 0, CanonicalLightAffectsParticles};
     owner.canonical = device.CreateBuffer(
         {sizeof(lights), rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferDestination});
-    if (!Require(owner.canonical.IsValid() && owner.grid.Initialize(device, 2, {code.data(), code.size()}),
+    if (!Require(owner.canonical.IsValid() && owner.grid.Initialize(device, 2, code.targets[0]),
                  "Forward+ grid initialization failed"))
         return false;
     for (uint32_t frame = 0; frame < 2; ++frame) {
