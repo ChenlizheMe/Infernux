@@ -2,6 +2,7 @@
 
 #include <core/types/ShaderTypes.h>
 #include <function/resources/ShaderAsset/ShaderDescriptor.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <cstdint>
 #include <string>
@@ -62,6 +63,11 @@ struct ShaderAsset
     /// Render-state annotations (fragment shaders only)
     ShaderRenderMeta renderMeta;
 
+    /// Statically authored programs retain both targets and their logical
+    /// fields. Device publication chooses the target without recompiling.
+    std::optional<ShaderCompilation> program;
+    std::string authoringSchema;
+
     [[nodiscard]] const ShaderStageVariant *FindVariant(ShaderCompileTarget target) const noexcept
     {
         for (const auto &variant : variants) {
@@ -102,6 +108,16 @@ struct ShaderAsset
                        renderMeta.alphaClip.capacity();
         for (const auto &variant : variants)
             bytes += variant.spirv.capacity();
+        bytes += authoringSchema.capacity();
+        if (program) {
+            bytes += program->diagnostics.capacity() + program->targets.capacity() * sizeof(ShaderTargetCode);
+            for (const auto &target : program->targets) {
+                bytes += target.reflection.capacity() + target.entries.capacity() * sizeof(ShaderEntryPointCode);
+                for (const auto &entry : target.entries)
+                    bytes += entry.name.capacity() + entry.code.capacity() +
+                             entry.bindings.capacity() * sizeof(entry.bindings[0]);
+            }
+        }
         return bytes;
     }
 };

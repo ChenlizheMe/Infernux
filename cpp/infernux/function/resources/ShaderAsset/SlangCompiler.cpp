@@ -74,6 +74,7 @@ struct SlangCompiler::Impl
 {
     Slang::ComPtr<slang::IGlobalSession> global;
     std::string version;
+    ShaderAuthorFrontend authorFrontend;
     // Slang sessions that share a global session must be used serially. The
     // Python caller releases the GIL before entering this compilation owner.
     std::mutex mutex;
@@ -104,6 +105,26 @@ SlangCompiler::~SlangCompiler() = default;
 const std::string &SlangCompiler::GetVersion() const noexcept
 {
     return impl->version;
+}
+
+void SlangCompiler::SetAuthorFrontend(ShaderAuthorFrontend frontend)
+{
+    std::lock_guard lock(impl->mutex);
+    impl->authorFrontend = std::move(frontend);
+}
+
+ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader)
+{
+    ShaderAuthorFrontend frontend;
+    {
+        std::lock_guard lock(impl->mutex);
+        frontend = impl->authorFrontend;
+    }
+    if (!frontend)
+        throw std::logic_error("Static GPU authoring frontend is not registered");
+    // Frontend work may acquire the host interpreter. Never hold a compiler
+    // lock across that boundary; only the returned C++ snapshot enters Slang.
+    return frontend(source, reader);
 }
 
 ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,

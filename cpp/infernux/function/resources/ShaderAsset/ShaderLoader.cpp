@@ -2,6 +2,7 @@
 
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
@@ -25,6 +26,36 @@ void ShaderLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::st
 static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePath, const std::string &guid,
                                                        AssetDatabase *adb)
 {
+    if (const auto *kind = asset_formats::FindShaderSourceKind(filePath)) {
+        std::vector<char> bytes;
+        if (!adb->ReadFile(filePath, bytes))
+            throw std::runtime_error("GPU author source could not be read: " + filePath);
+        const std::string source(bytes.begin(), bytes.end());
+        auto &compiler = SlangCompiler::Get();
+        const ShaderSourceModule module{"asset_" + guid, filePath, source};
+        const auto prepared =
+            compiler.PrepareAuthorSource(module, [adb](const std::string &path) -> std::optional<std::string> {
+                std::vector<char> contents;
+                if (!adb->ReadFile(path, contents))
+                    return std::nullopt;
+                return std::string(contents.begin(), contents.end());
+            });
+        auto asset = std::make_shared<ShaderAsset>();
+        const auto meta = adb->GetMetaByGuid(guid);
+        asset->shaderId = meta->GetDataAs<std::string>("shader_id");
+        asset->shaderType = kind->stage;
+        asset->filePath = filePath;
+        asset->descriptor.shaderId = asset->shaderId;
+        asset->descriptor.isFragmentShader = kind->stage == "fragment";
+        asset->descriptor.isVertexShader = kind->stage == "vertex";
+        asset->descriptor.filePath = filePath;
+        asset->descriptor.fileExtension = kind->suffix;
+        asset->authoringSchema = prepared.schema;
+        asset->program =
+            compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        return asset;
+    }
+
     // Share one compiler/cache lock with linked-program prewarming and editor
     // hot reload. Publication into AssetRegistry still occurs on the owner
     // thread through AssetLoadTicket.

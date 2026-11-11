@@ -1,4 +1,6 @@
 #include "BindingRegistration.h"
+#include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <pybind11/stl.h>
@@ -17,6 +19,37 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         py::gil_scoped_release release;
         SlangCompiler::Get();
     }
+    SlangCompiler::Get().SetAuthorFrontend([](const ShaderSourceModule &source, const ShaderTextReader &reader) {
+        py::gil_scoped_acquire acquire;
+        try {
+            const auto prepare = py::module_::import("infernux._compiler.shader").attr("_prepare_source");
+            const auto prepared = prepare(source.source, source.path, source.name, py::cpp_function(reader));
+            const auto fields = py::cast<py::tuple>(prepared);
+            ShaderAuthorSource result;
+            result.source = {source.name, source.path, py::cast<std::string>(fields[0])};
+            for (const auto &[name, path, text] :
+                 py::cast<std::vector<std::tuple<std::string, std::string, std::string>>>(fields[1]))
+                result.libraries.push_back({name, path, text});
+            result.schema = py::cast<std::string>(fields[2]);
+            return result;
+        } catch (py::error_already_set &error) {
+            // Worker tickets retain native diagnostics, never Python exception
+            // objects whose destruction could run after interpreter shutdown.
+            const std::string message = error.what();
+            error.restore();
+            PyErr_Clear();
+            throw std::runtime_error(message);
+        }
+    });
+    m.def(
+        "_shader_source_schema",
+        [](const std::string &guid) {
+            const auto asset = AssetRegistry::Instance().LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+            if (!asset || asset->authoringSchema.empty())
+                throw std::invalid_argument("Asset has no static GPU author schema: " + guid);
+            return asset->authoringSchema;
+        },
+        py::arg("guid"), py::call_guard<py::gil_scoped_release>());
     m.def("_slang_version", [] { return SlangCompiler::Get().GetVersion(); }, py::call_guard<py::gil_scoped_release>());
     m.def(
         "_compile_shader_program",

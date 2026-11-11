@@ -71,6 +71,24 @@ def main() -> None:
         try:
             frontend.init_renderer(64, 64, str(project))
             database = native.get_asset_database()
+            author_path = project / "Assets" / "NativeSource.frag.py"
+            author_path.write_text('''import infernux.shader as shader
+from infernux.shader.lib.color import luminance
+
+class NativeSource(shader.fullscreen):
+    image = shader.input("scene", shader.Color2D, domain="scene_linear_hdr")
+    strength = shader.parameter.float(default=0.75, label="强度", range=(0.0, 1.0))
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        color = shader.sample_level(self.image, uv, 0.0)
+        return shader.vec4(shader.vec3(luminance(color.rgb)) * self.strength, color.a)
+''', encoding="utf-8-sig")
+            imported_author = database.import_asset(str(author_path))
+            assert imported_author, imported_author.error
+            schema = inx.Shader.get_schema(str(author_path))
+            assert schema["name"] == "NativeSource"
+            assert schema["parameters"][0]["label"] == "强度"
+            assert schema["inputs"][0]["domain"] == "scene_linear_hdr"
             for suffix, (stage, _, _) in SHADER_SOURCE_KINDS.items():
                 path = project / "Assets" / ("Static" + suffix.upper())
                 path.write_text('raise AssertionError("GPU source must not execute on the host")', encoding="utf-8")

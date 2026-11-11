@@ -15,6 +15,21 @@ class fullscreen:
     """Fragment program paired with the engine's fullscreen triangle."""
 
 
+class Color2D:
+    """A typed sampled RGBA image and the sampler supplied by its graph port."""
+
+
+@dataclass(frozen=True)
+class _Input:
+    semantic: str
+    kind: type
+    domain: str | None
+
+
+def input(semantic: str, kind: type, *, domain: str | None = None):
+    return _Input(semantic, kind, domain)
+
+
 class _Value:
     def __init__(self, *components):
         self.components = components
@@ -39,6 +54,22 @@ class _Parameters:
         return _Parameter("int", default, range, label)
 
     @staticmethod
+    def uint(default=0, *, range=None, label=None):
+        return _Parameter("uint", default, range, label)
+
+    @staticmethod
+    def vec2(default=(0.0, 0.0), *, label=None):
+        return _Parameter("vec2", default, label=label)
+
+    @staticmethod
+    def vec3(default=(0.0, 0.0, 0.0), *, label=None):
+        return _Parameter("vec3", default, label=label)
+
+    @staticmethod
+    def vec4(default=(0.0, 0.0, 0.0, 0.0), *, label=None):
+        return _Parameter("vec4", default, label=label)
+
+    @staticmethod
     def bool(default=False, *, label=None):
         return _Parameter("bool", default, label=label)
 
@@ -61,5 +92,7 @@ for _name in TYPES:
     globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
+for _name in ("sample", "sample_level", "sample_grad", "load"):
+    globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "parameter", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "parameter", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", *TYPES, *INTRINSICS]

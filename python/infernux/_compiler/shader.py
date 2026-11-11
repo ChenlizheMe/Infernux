@@ -1,17 +1,14 @@
-"""Static author declarations lowered to the shared native Slang compiler.
-
-The first vertical slice is a fullscreen fragment with typed parameters and
-pure expressions. General shader domains and control-flow analysis build on
-this source model; unsupported author syntax is diagnosed at its source line.
-"""
+"""Static GPU author fields, typed inputs and functions lowered to native Slang."""
 
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
 
 from .shader_library import LibraryGraph, ShaderEmitter, declarations
+from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
 
 
 @dataclass(frozen=True)
@@ -25,6 +22,14 @@ class ShaderParameter:
 
 
 @dataclass(frozen=True)
+class ShaderInput:
+    name: str
+    semantic: str
+    kind: str
+    domain: str | None = None
+
+
+@dataclass(frozen=True)
 class ShaderDefinition:
     name: str
     source_path: str
@@ -32,6 +37,7 @@ class ShaderDefinition:
     parameters: tuple[ShaderParameter, ...]
     generated_source: str
     libraries: tuple[tuple[str, str, str], ...] = ()
+    inputs: tuple[ShaderInput, ...] = ()
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -40,8 +46,10 @@ class ShaderDefinition:
         )
 
 
-_PARAMETER_TYPES = {"float": "float", "int": "int", "bool": "uint", "color": "float4"}
-_DEFAULTS = {"float": 0.0, "int": 0, "bool": False, "color": (1.0, 1.0, 1.0, 1.0)}
+_PARAMETER_TYPES = {"float": "float", "int": "int", "uint": "uint", "bool": "uint", "color": "float4",
+                    "vec2": "float2", "vec3": "float3", "vec4": "float4"}
+_DEFAULTS = {"float": 0.0, "int": 0, "uint": 0, "bool": False, "color": (1.0, 1.0, 1.0, 1.0),
+             "vec2": (0.0, 0.0), "vec3": (0.0, 0.0, 0.0), "vec4": (0.0, 0.0, 0.0, 0.0)}
 
 
 class _Author(ShaderEmitter):
@@ -49,7 +57,7 @@ class _Author(ShaderEmitter):
         super().__init__(source, path)
         self.source = source
         self.alias = ""
-        self.parameters = {}
+        self.fields = {}
 
     def qualified(self, node):
         if isinstance(node, ast.Name):
@@ -62,19 +70,40 @@ class _Author(ShaderEmitter):
         if isinstance(node, ast.Call) and self.qualified(node.func) in {
             self.alias + ".vec2", self.alias + ".vec3", self.alias + ".vec4",
         }:
-            return tuple(self.literal(value) for value in node.args)
+            dimension = int(self.qualified(node.func)[-1])
+            values = (self.literal(value) for value in node.args)
+            components = tuple(component for value in values for component in (value if isinstance(value, tuple) else (value,)))
+            if len(components) == 1:
+                components *= dimension
+            if len(components) != dimension:
+                self.error(node, "Vector defaults must fill every component")
+            return components
         try:
             return ast.literal_eval(node)
         except (ValueError, TypeError):
             self.error(node, "Shader parameter defaults and presentation metadata must be literal values")
 
     def parameter(self, statement):
-        if len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
             self.error(statement, "Declare one named shader parameter per field")
         call = statement.value
         if not isinstance(call, ast.Call):
             self.error(statement, "Expected shader.parameter declaration")
         declaration = self.qualified(call.func)
+        name = targets[0].id
+        if declaration == self.alias + ".input":
+            if len(call.args) != 2:
+                self.error(call, "shader.input names a semantic and a typed GPU resource")
+            kind = self.qualified(call.args[1]).removeprefix(self.alias + ".")
+            if kind not in RESOURCE_TYPES:
+                self.error(call.args[1], "Unknown GPU input resource type")
+            metadata = {keyword.arg: self.literal(keyword.value) for keyword in call.keywords}
+            if metadata.keys() - {"domain"}:
+                self.error(call, "GPU image inputs declare a color domain")
+            self.fields[name] = ShaderInput(name, self.literal(call.args[0]), kind, metadata.get("domain"))
+            self.types["self." + name] = RESOURCE_TYPES[kind]
+            return
         prefix = self.alias + ".parameter."
         if not declaration.startswith(prefix) or declaration[len(prefix):] not in _PARAMETER_TYPES:
             self.error(call, "Unsupported shader parameter declaration")
@@ -85,18 +114,20 @@ class _Author(ShaderEmitter):
         unknown = values.keys() - {"default", "label", "range", "hdr"}
         if unknown:
             self.error(call, "Unknown shader parameter metadata: " + ", ".join(sorted(unknown)))
-        name = statement.targets[0].id
         value = ShaderParameter(name, kind, values.get("default", _DEFAULTS[kind]), values.get("label", name),
                                 values.get("range"), values.get("hdr", False))
-        self.parameters[name] = value
+        self.fields[name] = value
         self.types["self." + name] = "bool" if kind == "bool" else _PARAMETER_TYPES[kind]
 
     def visit_Attribute(self, node):
         if isinstance(node.value, ast.Name) and node.value.id == "self":
-            if node.attr not in self.parameters:
+            field = self.fields.get(node.attr)
+            if isinstance(field, ShaderInput):
+                return "inx_" + node.attr
+            if field is None:
                 self.error(node, "Unknown shader parameter: " + node.attr)
             name = "inx_parameters." + node.attr
-            return "(" + name + " != 0u)" if self.parameters[node.attr].kind == "bool" else name
+            return "(" + name + " != 0u)" if field.kind == "bool" else name
         return super().visit_Attribute(node)
 
     def function(self, main):
@@ -137,10 +168,10 @@ FullscreenVertex vertex_main(uint id : SV_VertexID)
 """
 
 
-def parse_shader(source: str, source_path: str, module_name: str) -> ShaderDefinition:
+def parse_shader(source: str, source_path: str, module_name: str, *, reader=None) -> ShaderDefinition:
     author = _Author(source, source_path)
     author.alias, imports, body = declarations(source, source_path)
-    graph = LibraryGraph()
+    graph = LibraryGraph(reader)
     author.functions, dependencies = graph.imports(imports, author)
     if len(body) != 1 or not isinstance(body[0], ast.ClassDef):
         author.error(ast.Constant(lineno=1, col_offset=0), "Declare one shader class")
@@ -149,7 +180,7 @@ def parse_shader(source: str, source_path: str, module_name: str) -> ShaderDefin
         author.error(declaration, "The first authoring slice supports shader.fullscreen")
     main, helpers = None, []
     for statement in declaration.body:
-        if isinstance(statement, ast.Assign):
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             author.parameter(statement)
         elif isinstance(statement, ast.FunctionDef) and statement.name == "main" and main is None:
             main = statement
@@ -162,23 +193,35 @@ def parse_shader(source: str, source_path: str, module_name: str) -> ShaderDefin
             author.error(statement, "Expected a shader parameter or typed method")
     if main is None:
         author.error(declaration, "Shader class needs a main entry")
-    code = [*("import " + name + ";" for name in dependencies), _FULLSCREEN_VERTEX]
-    if author.parameters:
+    parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
+    inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
+    code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies), _FULLSCREEN_VERTEX]
+    code.extend(RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";" for field in inputs)
+    if parameters:
         code.append("struct ShaderParameters {")
-        code.extend("    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";" for field in author.parameters.values())
+        code.extend("    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";" for field in parameters)
         code.extend(["};", "ConstantBuffer<ShaderParameters> inx_parameters;"])
     for helper in helpers:
         emitter = _Author(source, source_path)
         emitter.alias = author.alias
         emitter.aliases = (author.alias,)
-        emitter.parameters = author.parameters
+        emitter.fields = author.fields
         emitter.types = author.types.copy()
         emitter.functions = author.functions
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
     code.extend(author.function(main))
-    return ShaderDefinition(declaration.name, source_path, module_name, tuple(author.parameters.values()),
-                            "\n".join(code), graph.sources())
+    return ShaderDefinition(declaration.name, source_path, module_name, parameters,
+                            "\n".join(code), graph.sources(), inputs)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
     return parse_shader(path.read_text(encoding="utf-8-sig"), str(path), module_name)
+
+
+def _prepare_source(source, source_path, module_name, reader):
+    """Return a plain native preparation snapshot; no Python object enters GPU work."""
+    definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
+    schema = {"name": definition.name, "domain": "fullscreen",
+              "parameters": [asdict(field) for field in definition.parameters],
+              "inputs": [asdict(field) for field in definition.inputs]}
+    return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False)

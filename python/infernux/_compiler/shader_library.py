@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
+from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
 
 
 @dataclass(frozen=True)
@@ -30,17 +31,37 @@ class ShaderEmitter(SlangEmitter):
         self.functions = dict(functions or {})
 
     def infer(self, node):
+        if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
+                and self.symbol(qualified(node.func)) in {"sample", "sample_level", "sample_grad", "load"}):
+            return "float4"
         if isinstance(node, ast.Call) and (function := self.functions.get(qualified(node.func))):
             return function.result
         return super().infer(node)
 
     def visit_Call(self, node):
+        operation = self.symbol(qualified(node.func))
+        image_operations = {"sample": (2, "Sample"), "sample_level": (3, "SampleLevel"),
+                            "sample_grad": (4, "SampleGrad"), "load": (3, "Load")}
+        if operation in image_operations and operation != qualified(node.func):
+            arity, intrinsic = image_operations[operation]
+            if node.keywords or len(node.args) != arity:
+                self.error(node, f"shader.{operation} takes {arity} typed positional arguments")
+            if self.infer(node.args[0]) not in RESOURCE_TYPES.values():
+                self.error(node, "Texture operations receive a declared GPU image")
+            image, *arguments = (self.visit(argument) for argument in node.args)
+            if operation == "load":
+                return f"{image}.texture.Load(int3({arguments[0]}, {arguments[1]}))"
+            return image + ".texture." + intrinsic + "(" + ", ".join([image + ".sampler", *arguments]) + ")"
         function = self.functions.get(qualified(node.func))
         if function is None:
             return super().visit_Call(node)
         if node.keywords or len(node.args) != len(function.arguments):
             self.error(node, "Shader helper arguments must match its typed positional signature")
         return function.symbol + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
+
+    def annotation(self, node):
+        name = qualified(node).rsplit(".", 1)[-1]
+        return RESOURCE_TYPES[name] if name in RESOURCE_TYPES else super().annotation(node)
 
     def signature(self, definition, symbol, *, method=False):
         arguments = definition.args
@@ -95,10 +116,11 @@ def declarations(source, path):
 
 
 class LibraryGraph:
-    def __init__(self):
+    def __init__(self, reader=None):
         self.modules: dict[Path, Module] = {}
         self.ordered: list[Module] = []
         self.loading: set[Path] = set()
+        self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
 
     def imports(self, imports, owner: ShaderEmitter):
         functions, dependencies = {}, []
@@ -111,7 +133,7 @@ class LibraryGraph:
                     base = base.parent
                 base = base.joinpath(*(statement.module or "").split("."))
             elif statement.module and statement.module.startswith("infernux.shader.lib."):
-                base = Path(__file__).parents[1] / "shader" / "lib"
+                base = Path(__file__).parents[1] / "resources" / "shaders" / "lib"
                 base = base.joinpath(*statement.module.split(".")[3:])
             else:
                 owner.error(statement, "ShaderLib imports use a relative path or infernux.shader.lib")
@@ -140,9 +162,12 @@ class LibraryGraph:
         if path in self.modules:
             return self.modules[path]
         try:
-            source = path.read_text(encoding="utf-8-sig")
+            source = self.reader(str(path))
         except FileNotFoundError:
             owner.error(location, "ShaderLib source does not exist: " + str(path))
+        if source is None:
+            owner.error(location, "ShaderLib source does not exist: " + str(path))
+        source = source.removeprefix("\ufeff")
         alias, imports, body = declarations(source, str(path))
         emitter = ShaderEmitter(source, str(path), aliases=(alias,))
         module = Module("inx_library_" + str(len(self.modules)), str(path), "", {})
@@ -156,7 +181,8 @@ class LibraryGraph:
                 emitter.error(definition, "Duplicate ShaderLib function: " + definition.name)
             function = emitter.signature(definition, module.name + "::" + definition.name)
             module.functions[definition.name] = functions[definition.name] = function
-        code = [*("import " + name + ";" for name in dependencies), "namespace " + module.name + " {"]
+        code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies),
+                "namespace " + module.name + " {"]
         for definition in body:
             function_emitter = ShaderEmitter(source, str(path), aliases=(alias,), functions=functions)
             code.extend(function_emitter.emit_function(definition, module.functions[definition.name], public=True))
@@ -167,4 +193,4 @@ class LibraryGraph:
         return module
 
     def sources(self):
-        return tuple((module.name, module.path, module.source) for module in self.ordered)
+        return (RESOURCE_MODULE, *((module.name, module.path, module.source) for module in self.ordered))

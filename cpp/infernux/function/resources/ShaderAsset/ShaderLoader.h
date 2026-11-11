@@ -6,17 +6,13 @@ namespace infernux
 {
 
 /**
- * @brief IAssetLoader implementation for shader assets (.vert, .frag).
+ * @brief Runtime preparation and publication for GPU author assets.
  *
- * Loads authored GLSL and compiles it into a runtime ShaderAsset.
+ * Static Python authors produce a plain source/field snapshot before native
+ * Slang compilation. The asset retains both targets and its logical schema.
  *
- * Key design points:
- *   - Load() prefers a cooked INXSHADER blob and only compiles GLSL when the
- *     payload is still authoring source.
- *   - Compiled or cooked assets contain explicit semantic pass variants keyed
- *     by ShaderCompileTarget.
- *   - Reload() recompiles and replaces the ShaderAsset data in-place.
- *   - ScanDependencies() returns {} — shaders have no outgoing asset deps.
+ * Reload prepares a replacement before updating the published object. Device
+ * programs and graph resources are published by the renderer's owner.
  */
 class ShaderLoader final : public IAssetLoader
 {

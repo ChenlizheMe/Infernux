@@ -108,7 +108,7 @@ class Painted(shader.fullscreen):
 '''
     path = str(tmp_path / "painted.frag.py")
     definition = parse_shader(source, path, "painted")
-    assert [item[1] for item in definition.libraries] == [str(tmp_path / "curves.shaderlib.py"), str(palette)]
+    assert [item[1] for item in definition.libraries if item[1].endswith(".shaderlib.py")] == [str(tmp_path / "curves.shaderlib.py"), str(palette)]
     previous = definition.compile()
     for target in previous["targets"]:
         assert len(target["entries"]) == 2
@@ -124,3 +124,33 @@ from .palette import tint
         parse_shader(source, path, "painted")
     assert failure.value.filename == str(tmp_path / "curves.shaderlib.py")
     assert failure.value.lineno == 2
+
+
+def test_typed_image_port_passes_through_a_library_without_binding_numbers(tmp_path):
+    (tmp_path / "sampling.shaderlib.py").write_text('''import infernux.shader as shader
+
+def read_color(image: shader.Color2D, uv: shader.vec2) -> shader.vec4:
+    return shader.sample_level(image, uv, 0.0)
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+from .sampling import read_color
+from infernux.shader.lib.color import luminance
+
+class Grayscale(shader.fullscreen):
+    image = shader.input("scene", shader.Color2D, domain="scene_linear_hdr")
+    offset: shader.vec2 = shader.parameter.vec2(default=(0.0, 0.0))
+    strength = shader.parameter.float(default=0.75, range=(0.0, 1.0))
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        color = read_color(self.image, uv + self.offset)
+        value = luminance(color.rgb)
+        return shader.vec4(shader.lerp(color.rgb, shader.vec3(value), self.strength), color.a)
+'''
+    definition = parse_shader(source, str(tmp_path / "grayscale.frag.py"), "grayscale")
+    assert definition.inputs[0].semantic == "scene"
+    assert definition.inputs[0].domain == "scene_linear_hdr"
+    assert definition.parameters[0].kind == "vec2"
+    for target in definition.compile()["targets"]:
+        vertex, fragment = target["entries"]
+        assert not vertex["bindings"]
+        assert len(fragment["bindings"]) == 3  # image, sampler, parameter block

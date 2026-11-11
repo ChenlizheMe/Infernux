@@ -96,6 +96,30 @@ class Shader:
         return InxMaterial.property_to_id(name)
 
     @staticmethod
+    def get_schema(asset: str) -> dict:
+        """Read a static GPU asset's logical fields and graph input ports.
+
+        Accepts an asset GUID or registered project path. The native asset
+        owner prepares the source revision; querying fields creates no PSO.
+        """
+        from infernux.core.assets import AssetManager
+        from infernux.lib import _Infernux
+
+        database = AssetManager.require_asset_database()
+        selector = str(asset)
+        path = database.get_path_from_guid(selector)
+        if path:
+            guid = selector
+        else:
+            candidate = Path(selector)
+            if not candidate.is_absolute():
+                candidate = Path(database.project_root) / candidate
+            guid = database.get_guid_from_path(str(candidate))
+            if not guid:
+                raise FileNotFoundError(f"GPU author asset is not registered: {selector}")
+        return json.loads(_Infernux._shader_source_schema(guid))
+
+    @staticmethod
     def _validate_shader_type(shader_type: str) -> str:
         normalized = str(shader_type).strip().lower()
         if normalized not in {"vertex", "fragment"}:

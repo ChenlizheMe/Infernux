@@ -29,6 +29,7 @@ _shader_source_kinds: tuple[tuple[str, str, str, str], ...]
 _slang_standard_module_name: str
 
 def _slang_version() -> str: ...
+def _shader_source_schema(guid: str) -> str: ...
 def _compile_shader_program(
     source: str, source_path: str, module_name: str,
     libraries: Sequence[tuple[str, str, str]] = (),

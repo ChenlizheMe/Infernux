@@ -8,6 +8,11 @@ class Shader:
         """Return a process-local property ID shared by all material instances."""
         ...
 
+    @staticmethod
+    def get_schema(asset: str) -> dict:
+        """Query logical fields and graph ports of a static GPU author asset."""
+        ...
+
     @classmethod
     def is_loaded(cls, name: str, shader_type: str = ...) -> bool:
         """Query GPU publication of a standalone stage or linked material program."""
