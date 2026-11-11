@@ -18,6 +18,7 @@ set(INFERNUX_PLUGIN_ROOT "${INFERNUX_EXTERNAL_ROOT}/plugins" CACHE INTERNAL
 # single `infernux-support` branch; the superproject still builds the exact
 # gitlink recorded in the checkout.
 set(INFERNUX_MAINTAINED_FORKS
+    slang_for_infernux
     imgui_for_infernux
     sdl_for_infernux
     joltphysics_for_infernux
@@ -42,6 +43,7 @@ set(INFERNUX_OFFICIAL_PLUGIN_NAMES
 )
 
 set(INFERNUX_THIRD_PARTY_SUBMODULES
+    slang_for_infernux
     assimp
     glslang
     glm

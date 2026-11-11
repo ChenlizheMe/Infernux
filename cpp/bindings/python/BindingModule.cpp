@@ -117,6 +117,7 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterSceneBindings(module);
     infernux::RegisterTagLayerBindings(module);
     infernux::RegisterRhiBindings(module);
+    infernux::RegisterShaderCompilerBindings(module);
     infernux::RegisterRenderGraphBindings(module);
     infernux::RegisterCommandBufferBindings(module);
     infernux::RegisterRenderPipelineBindings(module);

@@ -19,7 +19,7 @@ namespace infernux::rhi
 /// RHI ABI version. The major component changes whenever a plugin must be
 /// rebuilt; the minor component is for additive contracts understood by the
 /// existing device vtable.
-inline constexpr uint32_t kRhiApiVersionMajor = 3;
+inline constexpr uint32_t kRhiApiVersionMajor = 4;
 inline constexpr uint32_t kRhiApiVersionMinor = 0;
 inline constexpr uint32_t kRhiApiVersion = (kRhiApiVersionMajor << 16u) | kRhiApiVersionMinor;
 

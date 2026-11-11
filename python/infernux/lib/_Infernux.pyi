@@ -25,6 +25,14 @@ from infernux.components.component import InxComponent as _PublicComponent
 from typing import Any, Callable, ClassVar, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypeVar, Union, overload
 
 
+def _slang_version() -> str: ...
+def _compile_shader_program(
+    source: str, source_path: str, module_name: str,
+    libraries: Sequence[tuple[str, str, str]] = (),
+    targets: Sequence[Literal["spirv", "wgsl"]] = ("spirv", "wgsl"),
+) -> dict[str, Any]: ...
+
+
 class _FrameTimeSmoother:
     def __init__(self) -> None: ...
     def advance(self, delta: float) -> float: ...
@@ -4322,7 +4330,8 @@ class _ComputeHost:
         self, spirv: bytes, buffer_bindings: list[int], push_constant_bytes: int = 0
     ) -> _ComputeKernel: ...
     def _create_kernel_from_compiler(
-        self, spirv: bytes, bindings: Sequence[tuple[int, Literal["uniform", "storage"]]], push_constant_bytes: int = 0
+        self, code: bytes, bindings: Sequence[tuple[int, Literal["uniform", "storage", "read_only_storage"]]], push_constant_bytes: int = 0,
+        entry_point: str = "main", target: Literal["spirv", "wgsl"] = "spirv",
     ) -> _ComputeKernel: ...
     def prepare_batch(
         self,

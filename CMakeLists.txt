@@ -25,6 +25,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/InfernuxBuildOptions.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxSources.cmake")
 
 add_subdirectory(external)
+include("${CMAKE_SOURCE_DIR}/cmake/InfernuxSlang.cmake")
 
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxNativeTargets.cmake")
 if(INFERNUX_BUILD_TESTS AND Python3_EXECUTABLE)

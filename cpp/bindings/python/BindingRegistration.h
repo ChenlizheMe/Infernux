@@ -25,6 +25,7 @@ void RegisterSceneBindings(pybind11::module_ &module);
 void RegisterAssetDatabaseBindings(pybind11::module_ &module);
 void RegisterAssetRegistryBindings(pybind11::module_ &module);
 void RegisterRhiBindings(pybind11::module_ &module);
+void RegisterShaderCompilerBindings(pybind11::module_ &module);
 void RegisterRenderGraphBindings(pybind11::module_ &module);
 void RegisterRenderPipelineBindings(pybind11::module_ &module);
 void RegisterCommandBufferBindings(pybind11::module_ &module);

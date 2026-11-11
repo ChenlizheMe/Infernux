@@ -23,6 +23,7 @@ SignPath 的服务署名、适用范围和签名流程见 [英文政策](signing
 | Dear ImGui | [LICENSE](../external/imgui_for_infernux/LICENSE.txt) |
 | GLM | [copying.txt](../external/glm/copying.txt) |
 | glslang | [LICENSE](../external/glslang/LICENSE.txt) |
+| Slang | [LICENSE](../external/slang_for_infernux/LICENSE)、[原始授权文本](../external/slang_for_infernux/LICENSES)；编译器与配套标准模块按固定源码一起分发 |
 | Zstandard | [LICENSE](../external/zstd_for_infernux/LICENSE) |
 | SPIRV-Cross | [LICENSE](../external/spirv_cross_for_infernux/LICENSE) |
 | Volk | [LICENSE](../external/volk_for_infernux/LICENSE.md) |

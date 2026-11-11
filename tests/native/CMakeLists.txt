@@ -22,6 +22,11 @@ if(INFERNUX_BUILD_TESTS)
             ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
     endfunction()
 
+    infernux_add_native_test(infernux_slang_compiler_tests tests/native/SlangCompilerTests.cpp)
+    target_link_libraries(infernux_slang_compiler_tests PRIVATE InfernuxShaderCompiler)
+    add_test(NAME infernux.slang_compiler COMMAND infernux_slang_compiler_tests)
+    set_tests_properties(infernux.slang_compiler PROPERTIES TIMEOUT 60)
+
     add_library(infernux_runtime_test_support INTERFACE)
     target_link_libraries(infernux_runtime_test_support INTERFACE
         InfernuxRuntime

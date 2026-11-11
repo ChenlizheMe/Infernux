@@ -477,6 +477,9 @@ struct GraphicsPipelineDesc
     uint32_t bindingLayoutCount = 0;
     ShaderStage pushConstantStages = ShaderStage::None;
     uint32_t pushConstantBytes = 0;
+    // Names are borrowed for the duration of CreateGraphicsPipeline().
+    const char *vertexEntryPoint = "main";
+    const char *fragmentEntryPoint = "main";
 
     [[nodiscard]] constexpr bool HasValidRenderingContract() const noexcept
     {
@@ -503,6 +506,8 @@ struct ComputePipelineDesc
     std::array<BindingLayoutHandle, MaxBindingLayouts> bindingLayouts{};
     uint32_t bindingLayoutCount = 0;
     uint32_t pushConstantBytes = 0;
+    // Borrowed for the duration of CreateComputePipeline().
+    const char *entryPoint = "main";
 };
 
 } // namespace infernux::rhi

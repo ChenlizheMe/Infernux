@@ -46,16 +46,22 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size
 
 ComputeKernel::ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size_t wordCount,
                              std::vector<ComputeBufferBinding> bufferBindings, uint32_t pushConstantBytes)
+    : ComputeKernel(host, ShaderModuleDesc::FromSpirV(spirvWords, wordCount), "main", std::move(bufferBindings),
+                    pushConstantBytes)
+{
+}
+
+ComputeKernel::ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shaderDesc, const std::string &entryPoint,
+                             std::vector<ComputeBufferBinding> bufferBindings, uint32_t pushConstantBytes)
     : m_host(host), m_pushConstantBytes(pushConstantBytes)
 {
     if (!m_host.IsAlive())
         throw std::runtime_error("Compute kernel device is retired");
-    if (!spirvWords || wordCount < 5 || spirvWords[0] != 0x07230203u)
-        throw std::invalid_argument("Compute kernel requires valid SPIR-V words");
     if (bufferBindings.size() > BindingLayoutDesc::MaxEntries)
         throw std::invalid_argument("Compute kernel has too many buffer bindings");
     m_bufferBindings.reserve(bufferBindings.size());
     m_bufferBindingTypes.reserve(bufferBindings.size());
+    m_defaultBufferAccesses.reserve(bufferBindings.size());
     for (size_t index = 0; index < bufferBindings.size(); ++index) {
         const auto binding = bufferBindings[index];
         if (binding.slot >= BindingLayoutDesc::MaxEntries)
@@ -67,20 +73,26 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size
             throw std::invalid_argument("Compute kernel accepts only storage or uniform buffers");
         m_bufferBindings.push_back(binding.slot);
         m_bufferBindingTypes.push_back(binding.type);
+        m_defaultBufferAccesses.push_back(binding.type == BindingType::UniformBuffer || binding.readOnlyStorage
+                                              ? ComputeBufferAccess::Read
+                                              : ComputeBufferAccess::ReadWrite);
     }
 
     BindingLayoutDesc layoutDesc;
-    for (size_t index = 0; index < m_bufferBindings.size(); ++index)
+    for (size_t index = 0; index < m_bufferBindings.size(); ++index) {
         layoutDesc.entries[index] = {m_bufferBindings[index], m_bufferBindingTypes[index], ShaderStage::Compute, 1};
+        layoutDesc.entries[index].readOnlyStorage = bufferBindings[index].readOnlyStorage;
+    }
     layoutDesc.entryCount = static_cast<uint32_t>(m_bufferBindings.size());
     m_layout = host.device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid())
         throw std::runtime_error("Failed to create compute kernel binding layout");
 
-    const auto shader = host.device.CreateShaderModule(ShaderModuleDesc::FromSpirV(spirvWords, wordCount));
+    const auto shader = host.device.CreateShaderModule(shaderDesc);
     if (shader.IsValid()) {
         ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
+        pipelineDesc.entryPoint = entryPoint.c_str();
         pipelineDesc.bindingLayouts[0] = m_layout;
         pipelineDesc.bindingLayoutCount = 1;
         pipelineDesc.pushConstantBytes = pushConstantBytes;
@@ -123,8 +135,7 @@ void ComputeKernel::Dispatch(std::vector<std::shared_ptr<ComputeBuffer>> buffers
     std::vector<uint8_t> constants(pushConstantBytes);
     if (pushConstantBytes > 0)
         std::memcpy(constants.data(), pushConstants, pushConstantBytes);
-    std::vector<ComputeBufferAccess> accesses(buffers.size(), ComputeBufferAccess::ReadWrite);
-    SubmitComputeBatch(m_host, {{shared_from_this(), std::move(buffers), std::move(accesses), std::move(constants),
+    SubmitComputeBatch(m_host, {{shared_from_this(), std::move(buffers), m_defaultBufferAccesses, std::move(constants),
                                  groupCountX, groupCountY, groupCountZ}});
 }
 

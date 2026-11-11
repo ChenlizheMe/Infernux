@@ -681,8 +681,8 @@ void infernux::RegisterComputeBindings(py::module_ &m)
             py::arg("spirv"), py::arg("buffer_bindings"), py::arg("push_constant_bytes") = 0, py::keep_alive<0, 1>())
         .def(
             "_create_kernel_from_compiler",
-            [](rhi::ComputeHost &host, py::bytes spirv, const std::vector<std::pair<uint32_t, std::string>> &bindings,
-               uint32_t pushConstantBytes) {
+            [](rhi::ComputeHost &host, py::bytes code, const std::vector<std::pair<uint32_t, std::string>> &bindings,
+               uint32_t pushConstantBytes, const std::string &entryPoint, const std::string &target) {
                 host.Queue().RecordNativeBoundary();
                 std::vector<rhi::ComputeBufferBinding> bufferBindings;
                 bufferBindings.reserve(bindings.size());
@@ -691,14 +691,27 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                         bufferBindings.push_back({slot, rhi::BindingType::UniformBuffer});
                     else if (type == "storage")
                         bufferBindings.push_back({slot, rhi::BindingType::StorageBuffer});
+                    else if (type == "read_only_storage")
+                        bufferBindings.push_back({slot, rhi::BindingType::StorageBuffer, true});
                     else
-                        throw py::value_error("Compiler buffer binding type must be uniform or storage");
+                        throw py::value_error(
+                            "Compiler buffer binding type must be uniform, storage or read_only_storage");
                 }
-                const auto words = bindings::DecodeSpirvBytes(spirv, "compiled compute kernel");
-                return std::make_shared<rhi::ComputeKernel>(host, words.data(), words.size(), std::move(bufferBindings),
-                                                            pushConstantBytes);
+                if (target == "spirv") {
+                    const auto words = bindings::DecodeSpirvBytes(code, "compiled compute kernel");
+                    return std::make_shared<rhi::ComputeKernel>(
+                        host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), entryPoint,
+                        std::move(bufferBindings), pushConstantBytes);
+                }
+                if (target != "wgsl")
+                    throw py::value_error("Compiler target must be spirv or wgsl");
+                const std::string text = code;
+                return std::make_shared<rhi::ComputeKernel>(host,
+                                                            rhi::ShaderModuleDesc::FromWgsl(text.data(), text.size()),
+                                                            entryPoint, std::move(bufferBindings), pushConstantBytes);
             },
-            py::arg("spirv"), py::arg("bindings"), py::arg("push_constant_bytes") = 0, py::keep_alive<0, 1>())
+            py::arg("code"), py::arg("bindings"), py::arg("push_constant_bytes") = 0, py::arg("entry_point") = "main",
+            py::arg("target") = "spirv", py::keep_alive<0, 1>())
         .def(
             "prepare_batch",
             [](rhi::ComputeHost &host, py::iterable values, py::iterable updateValues, py::iterable readValues,

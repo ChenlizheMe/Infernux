@@ -28,6 +28,7 @@ struct ComputeBufferBinding
 {
     uint32_t slot = 0;
     BindingType type = BindingType::StorageBuffer;
+    bool readOnlyStorage = false;
 };
 
 enum class ComputeBufferAccess : uint8_t
@@ -106,6 +107,10 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     INFERNUX_RENDER_CORE_API ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size_t wordCount,
                                            std::vector<uint32_t> bufferBindings, uint32_t pushConstantBytes);
     INFERNUX_RENDER_CORE_API ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size_t wordCount,
+                                           std::vector<ComputeBufferBinding> bufferBindings,
+                                           uint32_t pushConstantBytes);
+    INFERNUX_RENDER_CORE_API ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shader,
+                                           const std::string &entryPoint,
                                            std::vector<ComputeBufferBinding> bufferBindings,
                                            uint32_t pushConstantBytes);
     INFERNUX_RENDER_CORE_API ~ComputeKernel();
@@ -259,6 +264,7 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     std::vector<BindingGroupEntry> m_groups;
     std::vector<uint32_t> m_bufferBindings;
     std::vector<BindingType> m_bufferBindingTypes;
+    std::vector<ComputeBufferAccess> m_defaultBufferAccesses;
     uint32_t m_pushConstantBytes = 0;
     std::vector<PendingDispatch> m_pending;
 };
