@@ -298,7 +298,7 @@ def test_new_project_failure_removes_only_staging(tmp_path: Path, monkeypatch):
 
 
 @pytest.fixture
-def upgrade_project(tmp_path):
+def upgrade_project(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from project_python_runtime import write_project_python_version
     from version_manager import VersionManager
@@ -306,20 +306,39 @@ def upgrade_project(tmp_path):
     project = _make_project(tmp_path / "Upgrade", name="Upgrade", version="0.4.3")
     write_project_python_version(project, "3.13")
     (project / "Assets/level.inxscene").write_bytes(b"asset contents must remain unchanged")
-    releases = {"0.4.3-v2": "3.13", "0.5.0": "3.12"}
+    releases = {"0.4.3": "3.13", "0.4.3-v2": "3.13", "0.5.0": "3.12"}
     manager = SimpleNamespace(
         read_project_version=VersionManager.read_project_version,
         write_project_version=VersionManager.write_project_version,
         installed_versions=lambda: list(releases),
         python_version_for_engine=lambda version: releases.get(version, ""),
         is_installed=lambda version, python=None: version in releases and releases[version] == python,
+        get_wheel_path=lambda version, python=None: str(tmp_path / (version + '.whl')),
     )
+    old_runtime = project / '.runtime/python313'
+    old_runtime.mkdir(parents=True)
+    (old_runtime / 'old-engine').write_text('old engine code')
+    monkeypatch.setattr(project_model_module, 'is_frozen', lambda: True)
+    monkeypatch.setattr(project_model_module, 'validate_wheel_identity', lambda _wheel: None)
+
+    def provision(self, project_dir, version, *, on_status=None):
+        from hub_utils import is_project_open
+        from project_python_runtime import project_runtime_directory
+
+        assert is_project_open(project_dir)
+        assert not (Path(project_dir) / '.runtime').exists()
+        root = Path(project_runtime_directory(project_dir, releases[version]))
+        root.mkdir(parents=True)
+        (root / 'installed-engine').write_text(version)
+
+    monkeypatch.setattr(ProjectModel, '_provision_project_runtime', provision)
     with ProjectDatabase(tmp_path / "hub.db") as db:
         record = db.add_project("Upgrade", str(project))
         yield ProjectModel(db, version_manager=manager), record, project
 
 
-@pytest.mark.parametrize(('kind', 'target', 'python'), [('hotfix', '0.4.3-v2', '3.13'), ('version', '0.5.0', '3.12')])
+@pytest.mark.parametrize(('kind', 'target', 'python'), [('hotfix', '0.4.3-v2', '3.13'), ('version', '0.5.0', '3.12'),
+                                                     ('reinstall', '0.4.3', '3.13')])
 def test_project_upgrade_selects_only_the_requested_kind_and_preserves_assets(upgrade_project, monkeypatch, kind, target, python):
     from types import SimpleNamespace
     from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QPushButton
@@ -337,7 +356,7 @@ def test_project_upgrade_selects_only_the_requested_kind_and_preserves_assets(up
     def apply(dialog):
         choices = dialog.findChild(QComboBox)
         assert [choices.itemData(i) for i in range(choices.count())] == [target]
-        action = 'Apply hotfix' if kind == 'hotfix' else 'Upgrade engine'
+        action = 'Reinstall runtime' if kind == 'reinstall' else 'Apply hotfix' if kind == 'hotfix' else 'Upgrade engine'
         next(button for button in dialog.findChildren(QPushButton) if button.text() == action).click()
         return QDialog.Accepted
 
@@ -346,11 +365,21 @@ def test_project_upgrade_selects_only_the_requested_kind_and_preserves_assets(up
     controller = ControlPaneViewModel(model, pane, version_manager=model.version_manager)
     try:
         controller.change_engine_version(None, record.project_id, kind)
+        import time
+        deadline = time.monotonic() + 10
+        while controller._creation_thread is not None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert controller._creation_thread is None
         assert model.version_manager.read_project_version(str(project)) == target
         assert read_project_python_version(project) == python
         assert (project / 'Assets/level.inxscene').read_bytes() == b'asset contents must remain unchanged'
         assert selected == [record.project_id]
         assert not is_project_open(str(project))
+        from project_python_runtime import project_runtime_directory
+        root = Path(project_runtime_directory(project, python))
+        assert (root / 'installed-engine').read_text() == target
+        assert not list((project / '.runtime').rglob('old-engine'))
     finally:
         configure_language(previous_language)
         app.processEvents()
@@ -376,6 +405,7 @@ def test_failed_project_upgrade_preserves_the_existing_bindings(upgrade_project,
         with pytest.raises((OSError, RuntimeError, ValueError)):
             model.change_engine_version(record.project_id, target)
         assert (pin.read_bytes(), runtime.read_bytes()) == before
+        assert (project / '.runtime/python313/old-engine').read_text() == 'old engine code'
     finally:
         if failure == 'locked':
             remove_project_lock(str(project), 'editor-owner')

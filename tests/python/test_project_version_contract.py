@@ -3,31 +3,26 @@ from __future__ import annotations
 import pytest
 
 from infernux.engine import release_engine, run_headless
-from infernux.engine.project_version import validate_project_engine_version
-from infernux.version import ENGINE_RELEASE
-
-
-def test_exact_engine_version_is_required(tmp_path):
+@pytest.mark.parametrize("required", [None, "0.0.0"])
+@pytest.mark.parametrize("entry", [release_engine, run_headless])
+def test_runtime_engine_starts_without_a_matching_project_version(tmp_path, monkeypatch, entry, required):
     pin = tmp_path / ".infernux-version"
-    with pytest.raises(RuntimeError, match="must declare"):
-        validate_project_engine_version(str(tmp_path))
-    pin.write_text(f"# pinned\n{ENGINE_RELEASE}\n", encoding="utf-8")
-    assert validate_project_engine_version(str(tmp_path)) == ENGINE_RELEASE
-    pin.write_text(f"{ENGINE_RELEASE}\n9.9.9\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="exactly one"):
-        validate_project_engine_version(str(tmp_path))
+    if required is not None:
+        pin.write_text(required + "\n", encoding="utf-8")
 
+    class ResourceSyncReached(Exception):
+        pass
 
-@pytest.mark.parametrize("required,entry", [("0.0.0", release_engine), ("0.0.0", run_headless)])
-def test_wrong_engine_version_rejects_before_resource_sync(tmp_path, monkeypatch, entry, required):
-    pin = tmp_path / ".infernux-version"
-    pin.write_text(required + "\n", encoding="utf-8")
-    before = pin.read_bytes()
-    monkeypatch.setattr("infernux.engine.library_sync.sync_resources", lambda *_: pytest.fail("must not touch project"))
-    with pytest.raises(RuntimeError, match="exact required version"):
+    def sync_resources(_project):
+        raise ResourceSyncReached
+
+    monkeypatch.setattr("infernux.engine.library_sync.sync_resources", sync_resources)
+    with pytest.raises(ResourceSyncReached):
         if entry is run_headless:
             entry(str(tmp_path), lambda *_: False)
         else:
             entry(str(tmp_path))
-    assert pin.read_bytes() == before
-    assert sorted(path.name for path in tmp_path.iterdir()) == [".infernux-version"]
+    if required is None:
+        assert not pin.exists()
+    else:
+        assert pin.read_text(encoding="utf-8") == required + "\n"

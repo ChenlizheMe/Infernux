@@ -140,7 +140,11 @@ def _popen_kwargs(*, capture_output: bool = False) -> dict:
     """
     kw: dict = {
         "stdin": subprocess.DEVNULL,
-        "env": merge_child_env_utf8({"PYTHONDONTWRITEBYTECODE": "1"}),
+        "env": merge_child_env_utf8({
+            "PYTHONDONTWRITEBYTECODE": "1",
+            **({"PYTHONHOME": None, "PYTHONPATH": None, "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1",
+                "INFERNUX_NATIVE_MODULE_DIR": None, "INFERNUX_GPU_JIT_VENDOR_DIR": None} if is_frozen() else {}),
+        }),
     }
     if capture_output:
         kw["stdout"] = subprocess.PIPE
@@ -321,33 +325,50 @@ class ProjectModel:
 
     def change_engine_version(self, project_id: str, version: str) -> None:
         record = self.db.get_project(project_id)
-        if record is None or not os.path.isdir(record.path):
+        if record is None:
+            raise RuntimeError("The project folder is unavailable.")
+        self.replace_project_runtime(record.path, version)
+
+    def replace_project_runtime(self, project_dir: str, version: str, *, on_status=None) -> None:
+        """Install the selected engine into a fresh project-owned runtime."""
+        if not os.path.isdir(project_dir):
             raise RuntimeError("The project folder is unavailable.")
         manager = self.version_manager
-        current = manager.read_project_version(record.path)
-        if not current or not release_update_kind(current, version):
+        current = manager.read_project_version(project_dir)
+        if current != version and (not current or not release_update_kind(current, version)):
             raise ValueError("Select a newer installed engine release.")
         python_version = manager.python_version_for_engine(version)
         if not python_version or not manager.is_installed(version, python_version):
             raise RuntimeError(f"Install Infernux {version} in Hub first.")
+        wheel = manager.get_wheel_path(version, python_version)
+        if not wheel:
+            raise RuntimeError(f"Install Infernux {version} in Hub first.")
+        validate_wheel_identity(wheel)
         token = uuid.uuid4().hex
-        write_project_lock(record.path, os.getpid(), token, "version-change", "preparing")
+        write_project_lock(project_dir, os.getpid(), token, "version-change", "preparing")
         try:
-            settings = project_runtime_settings_path(record.path)
+            settings = project_runtime_settings_path(project_dir)
             previous = settings.read_bytes()
-            abi_changed = read_project_python_version(record.path) != python_version
+            abi_changed = read_project_python_version(project_dir) != python_version
             if abi_changed:
-                write_project_python_version(record.path, python_version)
+                write_project_python_version(project_dir, python_version)
             try:
-                manager.write_project_version(record.path, version)
+                manager.write_project_version(project_dir, version)
             except Exception:
                 if abi_changed:
                     temporary = settings.with_suffix(".json.tmp")
                     temporary.write_bytes(previous)
                     os.replace(temporary, settings)
                 raise
+            if on_status:
+                on_status("Removing previous project runtime...")
+            _remove_tree(os.path.join(os.path.abspath(project_dir), ".runtime"))
+            self._provision_project_runtime(project_dir, version, on_status=on_status)
+            if on_status:
+                on_status("Writing project editor settings...")
+            self._create_vscode_workspace(project_dir)
         finally:
-            remove_project_lock(record.path, token)
+            remove_project_lock(project_dir, token)
 
     def relocate_project(self, project_id: str, project_dir: str):
         """Point an existing registry entry at a validated project directory."""

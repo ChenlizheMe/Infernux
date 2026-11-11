@@ -60,5 +60,6 @@ def editor_launch_script(*, installed: bool) -> str:
         "import sys\n"
         "_engine = importlib.import_module(_engine_package + '.engine')\n"
         "_lib = importlib.import_module(_engine_package + '.lib')\n"
+        "print('Infernux engine module:', _engine.__file__, flush=True)\n"
         "_engine.release_engine(engine_log_level=_lib.LogLevel.Info, project_path=sys.argv[1])\n"
     )

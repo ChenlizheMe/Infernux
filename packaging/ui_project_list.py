@@ -18,7 +18,6 @@ from project_python_runtime import project_runtime_exists, read_project_python_v
 from version_manager import VersionManager, display_release, hotfix_number
 from view.forge import Monogram, StatusLed, chip, fmt_age, mono_label, toast, track
 from view.hover_widgets import AnimatedSurfaceFrame
-from model.project_model import source_engine_version
 
 
 # Fixed column widths shared by the header and every row.
@@ -157,10 +156,6 @@ class _ProjectCard(AnimatedSurfaceFrame):
                         f"{tr('is not installed')}"
                     )
                     fix_action = "install"
-            elif not has_runtime and version and not is_frozen() and version != source_engine_version():
-                unavailable_reason = (
-                    f"Project requires Infernux {version}; the source engine is {source_engine_version()}"
-                )
 
             engine_stack.addWidget(version_label, 0, Qt.AlignmentFlag.AlignLeft)
             if unavailable_reason:
@@ -239,7 +234,8 @@ class _ProjectCard(AnimatedSurfaceFrame):
             menu.addSeparator()
         if self._fix_action == "install":
             menu.addAction(tr("Install required engine"), lambda: self.fix_clicked.emit(self.project_id, "install"))
-        for label, action in (("Update project hotfix...", "hotfix"), ("Upgrade engine version...", "upgrade")):
+        for label, action in (("Update project hotfix...", "hotfix"), ("Upgrade engine version...", "upgrade"),
+                              ("Reinstall project runtime...", "reinstall")):
             item = menu.addAction(tr(label), lambda _checked=False, kind=action: self.fix_clicked.emit(self.project_id, kind))
             item.setEnabled(is_frozen() and os.path.isdir(self.project_path) and not is_project_open(self.project_path))
         show = menu.addAction(tr("Show in Explorer"),
@@ -571,8 +567,8 @@ class ProjectListPane(QWidget):
             self.install_requested.emit(card.engine_version)
         elif action == "locate":
             self.relocate_requested.emit(project_id)
-        elif action in ("hotfix", "upgrade"):
-            self.engine_update_requested.emit(project_id, "hotfix" if action == "hotfix" else "version")
+        elif action in ("hotfix", "upgrade", "reinstall"):
+            self.engine_update_requested.emit(project_id, "version" if action == "upgrade" else action)
 
     def keyPressEvent(self, event):
         visible = [pid for pid, card in self.project_cards.items() if not card.isHidden() and card.can_select]

@@ -44,9 +44,6 @@ def run_headless(
     from infernux.engine import _acquire_project_lock, _remove_project_lock
 
     project = str(project_path)
-    from .project_version import validate_project_engine_version
-
-    validate_project_engine_version(project)
     lock_path, lock_token = _acquire_project_lock(project, "headless")
     engine = None
     plugin_manager = None

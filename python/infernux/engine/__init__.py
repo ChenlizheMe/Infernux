@@ -106,9 +106,6 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
             "Complete the pending dependency installation by opening this project "
             "from Hub or running 'python -m infernux_editor <project>'."
         )
-    from .project_version import validate_project_engine_version
-
-    validate_project_engine_version(project_path)
     from .bootstrap import EditorBootstrap, _signal_progress
 
     from .library_sync import sync_resources

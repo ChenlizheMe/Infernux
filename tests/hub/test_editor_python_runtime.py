@@ -32,14 +32,18 @@ def test_hub_uses_the_installed_sdks_startup_entry_without_importing_unprovided_
     package = site / 'infernux'
     package.mkdir(parents=True)
     (package / '__init__.py').write_text('')
+    (package / 'version.py').write_text("ENGINE_RELEASE = '0.4.3-v7'\n")
+    pin = tmp_path / '.infernux-version'
+    pin.write_text('0.4.8\n', encoding='utf-8')
     report = tmp_path / 'startup.txt'
     (package / 'engine.py').write_text(
         'from pathlib import Path\n'
-        f'def release_engine(*, engine_log_level, project_path):\n    Path({str(report)!r}).write_text("engine")\n',
+        'def release_engine(*, engine_log_level, project_path):\n'
+        f'    Path({str(report)!r}).write_text("engine")\n',
         encoding='utf-8',
     )
     (package / 'lib.py').write_text('class LogLevel:\n    Info = 1\n')
-    files = ['infernux/__init__.py', 'infernux/engine.py', 'infernux/lib.py']
+    files = ['infernux/__init__.py', 'infernux/version.py', 'infernux/engine.py', 'infernux/lib.py']
     if preparation != 'absent':
         files.append('infernux_editor.py')
         (site / 'infernux_editor.py').write_text(
@@ -56,6 +60,9 @@ def test_hub_uses_the_installed_sdks_startup_entry_without_importing_unprovided_
     result = subprocess.run([sys.executable, '-I', '-S', '-c', bootstrap, str(tmp_path)], capture_output=True, timeout=15)
     assert result.returncode == 0, result.stdout + result.stderr
     assert report.read_text() == ('fresh' if preparation == 'pending' else 'engine')
+    assert pin.read_text(encoding='utf-8') == '0.4.8\n'
+    if preparation != 'pending':
+        assert b'Infernux engine module:' in result.stdout
 
 
 def test_failed_launch_preserves_complete_stderr_and_exit_code(tmp_path, monkeypatch):

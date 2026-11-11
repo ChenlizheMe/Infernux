@@ -6,6 +6,12 @@ Infernux 0.4.8 brings model authoring, native execution, and checkpoint export i
 
 [Compare with v0.4.3-v8](https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.4.8)
 
+### Hub 0.4.8-3 runtime selection hotfix
+
+- Engine upgrades and hotfixes now replace the project's old runtime and install the selected engine, instead of only changing the project version record. Runtime replacement runs in a background worker with progress reporting. A Reinstall Project Runtime action repairs projects whose version record was already changed by an earlier Hub.
+- Ordinary launches preserve the existing runtime and locally modified engine code. Startup logs identify the engine actually loaded without rewriting the preferred version.
+- Remove exact project-version rejection from source Editor and headless entry points. A recorded project version is used to provision a missing runtime, not to override an existing one.
+
 ### Hub 0.4.8-2 startup hotfix
 
 - Remove inherited development-only native module and compiler paths when launching a project's installed runtime. Hub no longer uses an empty native-directory override that the installed engine can interpret as the project directory.

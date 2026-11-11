@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
 )
 from PySide6.QtCore import QThread, Signal, Slot, QObject, QTimer, Qt
-from model.project_model import ProjectModel, source_engine_version
+from model.project_model import ProjectModel
 from hub_utils import HubLaunchContext, is_project_open, write_project_lock, remove_project_lock
 from project_paths import ProjectPathError
 from project_python_runtime import project_runtime_executable, project_runtime_exists
@@ -30,12 +30,13 @@ class CustomProgressDialog(QDialog):
         ("Editor settings", ("Writing project editor settings",)),
     )
 
-    def __init__(self, parent=None, title=None):
+    def __init__(self, parent=None, title=None, steps=None):
         super().__init__(parent)
         from view.forge import HazardStripe, SegmentMeter, StatusLed, mono_label
         self.setWindowTitle(title or tr("Initializing"))
         self.setWindowModality(Qt.WindowModal)
         self.setFixedWidth(460)
+        self.steps = steps or self.STEPS
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -60,7 +61,7 @@ class CustomProgressDialog(QDialog):
         layout.addSpacing(4)
 
         self._steps = []
-        for index, (label, _prefixes) in enumerate(self.STEPS, start=1):
+        for index, (label, _prefixes) in enumerate(self.steps, start=1):
             row = QHBoxLayout()
             row.setSpacing(10)
             led = StatusLed("idle")
@@ -109,7 +110,7 @@ class CustomProgressDialog(QDialog):
 
     def set_status(self, message: str):
         self.label.setText(tr(message))
-        for index, (_label, prefixes) in enumerate(self.STEPS):
+        for index, (_label, prefixes) in enumerate(self.steps):
             if any(message.startswith(prefix) for prefix in prefixes):
                 self._advance_to(index)
                 break
@@ -135,23 +136,28 @@ class InitProjectWorker(QObject):
     finished = Signal()
     error = Signal(str)
 
-    def __init__(self, model, name, path, engine_version=""):
+    def __init__(self, model, name, path, engine_version="", *, project_id=""):
         super().__init__()
         self.model = model
         self.name = name
         self.path = path
         self.engine_version = engine_version
+        self.project_id = project_id
         self.project_dir = ""
         self.error_message = ""
 
     def run(self):
         try:
-            self.project_dir = self.model.init_project_folder(
-                self.name,
-                self.path,
-                self.engine_version,
-                on_status=self.progress.emit,
-            )
+            if self.project_id:
+                self.model.replace_project_runtime(self.path, self.engine_version, on_status=self.progress.emit)
+                self.project_dir = self.path
+            else:
+                self.project_dir = self.model.init_project_folder(
+                    self.name,
+                    self.path,
+                    self.engine_version,
+                    on_status=self.progress.emit,
+                )
         except Exception as exc:
             self.error_message = str(exc)
             self.error.emit(self.error_message)
@@ -235,14 +241,6 @@ class LaunchPreparationWorker(QObject):
                 python_exe = project_runtime_executable(project_path, python_version)
                 self.uses_project_runtime = True
             else:
-                current_version = source_engine_version()
-                if pinned_version != current_version:
-                    raise RuntimeError(
-                        f"Project requires Infernux {pinned_version or 'an explicit version pin'}; "
-                        f"the source engine is {current_version}. "
-                        "Launch this project from Hub using its exact pinned engine version."
-                    )
-
                 # A source-launched Hub is a development/test frontend for the
                 # Python environment that started it.  Infernux is therefore
                 # already supplied by that environment; consulting the Hub
@@ -483,6 +481,10 @@ class ControlPaneViewModel(QObject):
         from version_manager import latest_releases, release_update_kind, display_release, hotfix_number
         from view.forge import ForgeComboBox
 
+        if self._creation_dialog is not None:
+            self._creation_dialog.show()
+            self._creation_dialog.raise_()
+            return
         record = self._record_for(project_id)
         if record is None:
             return
@@ -491,12 +493,14 @@ class ControlPaneViewModel(QObject):
             dialogs.warning(parent, tr("Missing Version"), tr("Project engine version is missing"))
             return
         try:
-            versions = [version for version in latest_releases(self.version_manager.installed_versions())
-                        if release_update_kind(current, version) == kind]
+            versions = ([current] if kind == "reinstall" else
+                        [version for version in latest_releases(self.version_manager.installed_versions())
+                         if release_update_kind(current, version) == kind])
         except ValueError as exc:
             dialogs.warning(parent, tr("Missing Version"), str(exc))
             return
-        title = tr("Update project hotfix") if kind == "hotfix" else tr("Upgrade engine version")
+        title = (tr("Reinstall project runtime") if kind == "reinstall" else
+                 tr("Update project hotfix") if kind == "hotfix" else tr("Upgrade engine version"))
         if not versions:
             dialogs.information(parent, title,
                                 tr("Install a newer hotfix in the Installs page first.") if kind == "hotfix"
@@ -511,24 +515,24 @@ class ControlPaneViewModel(QObject):
             choices.addItem(label, version)
         dialog = dialogs.HubDialog(
             parent, title=title,
-            text=tr("This updates the project's engine and Python version settings. "
-                    "If the project already has a runtime for that Python version, update its engine files before launching."),
+            text=tr("This deletes the project's old runtime and installs the selected engine and Python runtime. "
+                    "Project assets and settings are preserved. Changes made inside the old runtime are removed."),
             subject=(record.name, tr("Current engine: {version}", version=current)), content=choices,
         )
         dialog.addButton(tr("Cancel"), "reject")
-        apply = dialog.addButton(tr("Apply hotfix") if kind == "hotfix" else tr("Upgrade engine"), "accept")
+        apply = dialog.addButton(tr("Reinstall runtime") if kind == "reinstall" else
+                                 tr("Apply hotfix") if kind == "hotfix" else tr("Upgrade engine"), "accept")
         dialog.setDefaultButton(apply)
         dialog.exec()
         if dialog.clickedButton() is not apply:
             return
-        try:
-            self.model.change_engine_version(project_id, choices.currentData())
-        except (OSError, ValueError, RuntimeError) as exc:
-            dialogs.critical(parent, title, str(exc))
-            return
-        self.project_list.refresh()
-        self.project_list.select_project(project_id)
-        toast(parent, tr("Project engine updated"))
+        progress = CustomProgressDialog(parent, title=title, steps=(
+            ("Private Python runtime", ("Removing previous project runtime", "Creating project", "Copying", "Extracting")),
+            ("Engine files", ("Checking the project runtime", "Installing Infernux", "Validating project runtime")),
+            ("Editor settings", ("Writing project editor settings",)),
+        ))
+        self._start_creation(InitProjectWorker(self.model, record.name, record.path, choices.currentData(),
+                                             project_id=project_id), progress)
 
     def create_project(self, parent):
         from view.new_project_view import NewProjectView
@@ -558,13 +562,13 @@ class ControlPaneViewModel(QObject):
             dialogs.warning(parent, tr("Missing Version"), tr("Please select an installed engine version."))
             return
         progress_dialog = CustomProgressDialog(parent)
+        self._start_creation(InitProjectWorker(self.model, new_name, project_path, engine_version), progress_dialog)
+
+    def _start_creation(self, worker, progress_dialog):
         self._creation_dialog = progress_dialog
         progress_dialog.show()
-
         self._creation_thread = QThread(self)
-        self._creation_worker = InitProjectWorker(
-            self.model, new_name, project_path, engine_version
-        )
+        self._creation_worker = worker
         self._creation_worker.moveToThread(self._creation_thread)
 
         self._creation_thread.started.connect(self._creation_worker.run)
@@ -596,10 +600,12 @@ class ControlPaneViewModel(QObject):
                 if show_dialogs:
                     summary, _, rest = worker.error_message.partition("\n")
                     dialogs.critical(
-                        progress, tr("Project Creation Failed"), summary,
+                        progress, tr("Runtime installation failed") if worker.project_id else tr("Project Creation Failed"), summary,
                         detail=worker.error_message if rest.strip() else "",
                         kicker=tr("CREATION SEQUENCE ABORTED"),
                     )
+            elif worker.project_id:
+                record = self.model.db.get_project(worker.project_id)
             elif worker.project_dir:
                 record = self.model.add_project(worker.name, worker.project_dir)
                 if record is None and show_dialogs:
@@ -612,7 +618,8 @@ class ControlPaneViewModel(QObject):
             if record is not None:
                 self.project_list.select_project(record.project_id)
                 if show_dialogs:
-                    toast(self.project_list, tr("{name} is ready. Press Enter to launch.", name=worker.name))
+                    toast(self.project_list, tr("Project engine updated") if worker.project_id else
+                          tr("{name} is ready. Press Enter to launch.", name=worker.name))
         finally:
             QApplication.instance().aboutToQuit.disconnect(self._wait_for_creation)
             progress.finish()

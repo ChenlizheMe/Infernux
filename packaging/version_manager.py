@@ -486,7 +486,7 @@ class VersionManager:
 
     @staticmethod
     def read_project_version(project_dir: str) -> Optional[str]:
-        """Read the engine version pinned in a project.
+        """Read the project's last recorded or preferred engine release.
 
         Ignores comment lines (starting with ``#``) so the file can carry
         human-readable annotations without breaking version parsing.
@@ -501,15 +501,15 @@ class VersionManager:
 
     @staticmethod
     def write_project_version(project_dir: str, version: str) -> None:
-        """Pin an engine version for a project."""
+        """Record the preferred release used when provisioning a new runtime."""
         if _tag_to_version(version) != version:
             raise ValueError(f"Invalid engine release: {version}")
         vf = os.path.join(project_dir, ".infernux-version")
         temporary = Path(vf + ".tmp")
         try:
             temporary.write_text(
-                "# Infernux project version pin — do not edit manually.\n"
-                "# Exact release: <package-version>[-v<revision>]; no automatic upgrades.\n"
+                "# Preferred Infernux release for runtime installation.\n"
+                "# An existing project runtime determines the actual engine.\n"
                 + version + "\n", encoding="utf-8", newline="\n",
             )
             replace_path(str(temporary), vf)
