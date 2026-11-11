@@ -3667,7 +3667,7 @@ bool AssetDatabase::ContinuePendingImportPrepare(const std::shared_ptr<PendingRe
            HasOwnerMergeBudget(m_frameWork, ownerStarted, processed)) {
         const size_t assetIndex = state->importRequestCursor++;
         const auto &asset = state->pendingImports[assetIndex];
-        const std::string extension = FromFsPath(ToFsPath(asset.path).extension());
+        const std::string extension = asset_formats::SourceExtension(asset.path);
         AssetImporter *importer = m_importerRegistry.GetImporterForExtension(extension);
         if (!importer) {
             workingSet.importResults[asset.guid] = {true, {}};
@@ -4757,7 +4757,7 @@ bool AssetDatabase::BeginWatcherImport(const std::string &requestedPath, Watcher
     pending->ready = std::move(ready);
     pending->finished = std::move(finished);
     auto &worker = pending->worker;
-    worker.importer = m_importerRegistry.GetImporterForExtension(FromFsPath(path.extension()));
+    worker.importer = m_importerRegistry.GetImporterForExtension(asset_formats::SourceExtension(result.path));
     worker.expectedSource = metadata.file.source;
     worker.request = MakeImportRequestBase(result.guid, result.path, reimport, InxResourceMeta{});
     if (result.resourceType == ResourceType::Mesh) {
@@ -5231,7 +5231,7 @@ bool AssetDatabase::CanBeginMeshArtifactRepair() const
 void AssetDatabase::BeginMeshArtifactRepair(const std::shared_ptr<AssetLoadTicket> &ticket)
 {
     const auto path = GetPathFromGuid(ticket->GetGuid());
-    if (!m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(path).extension())))
+    if (!m_importerRegistry.GetImporterForExtension(asset_formats::SourceExtension(path)))
         throw std::runtime_error("Cooked mesh artifacts are unavailable for " + path);
     StartModelReimport(path, {}, nlohmann::json::object(), {}, ticket);
 }
@@ -5250,7 +5250,7 @@ void AssetDatabase::StartModelReimport(const std::string &sourcePath, const std:
     if (!PrepareReimportInput(sourcePath, pending->metadata, pending->result))
         throw std::runtime_error(pending->result.error);
     auto &worker = pending->worker;
-    worker.importer = m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(sourcePath).extension()));
+    worker.importer = m_importerRegistry.GetImporterForExtension(asset_formats::SourceExtension(sourcePath));
     if (!worker.importer)
         throw std::logic_error("Asset Apply has no registered importer");
     // Capture any external definition against the settings to be applied by
@@ -6185,7 +6185,7 @@ std::optional<std::string> AssetDatabase::RunImporter(const std::string &guid, c
     if (guid.empty() || path.empty())
         throw std::invalid_argument("AssetDatabase importer request requires GUID and path");
 
-    std::string ext = FromFsPath(ToFsPath(path).extension());
+    std::string ext = asset_formats::SourceExtension(path);
     AssetImporter *importer = m_importerRegistry.GetImporterForExtension(ext);
     if (!importer && !candidateMetadata) {
         m_importResults[guid] = {true, {}};
@@ -6433,7 +6433,7 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     std::string ext = extensionName;
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-    if (ext == ".vert" || ext == ".frag") {
+    if (asset_formats::FindShaderSourceKind(ext) || ext == ".vert" || ext == ".frag") {
         return ResourceType::Shader;
     }
     if (ext == ".mat") {
@@ -6477,9 +6477,7 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
 
 ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) const
 {
-    std::filesystem::path path = ToFsPath(filePath);
-    std::string ext = FromFsPath(path.extension());
-    return GetResourcesType(ext);
+    return GetResourcesType(asset_formats::SourceExtension(filePath));
 }
 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,

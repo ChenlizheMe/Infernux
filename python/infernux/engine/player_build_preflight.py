@@ -9,6 +9,7 @@ module provides the synchronous form used by automation and headless hosts.
 from __future__ import annotations
 
 import os
+from infernux._source_kinds import is_host_python_source
 from typing import Any
 
 from infernux.engine.path_utils import resolved_path, same_path
@@ -75,7 +76,7 @@ def capture_player_build_inputs(project_root, entries, *, path="") -> dict[str, 
     scripts = []
     for entry in entries:
         raw = str(entry.get("normalized_path", ""))
-        if not raw.endswith(".py") or raw.endswith(".particle.py"):
+        if not is_host_python_source(raw):
             continue
         candidate = resolve_project_path(raw, root)
         if (is_project_script(candidate, root)

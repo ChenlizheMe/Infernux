@@ -9,6 +9,7 @@
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
@@ -165,6 +166,12 @@ ShaderAssetReference ShaderReferenceFromPython(py::handle value)
 
 void RegisterResourceBindings(py::module_ &m)
 {
+    py::tuple shaderSourceKinds(asset_formats::kShaderSourceKinds.size());
+    size_t sourceKindIndex = 0;
+    for (const auto &kind : asset_formats::kShaderSourceKinds)
+        shaderSourceKinds[sourceKindIndex++] = py::make_tuple(kind.suffix, kind.stage, kind.icon, kind.dragPayload);
+    m.attr("_shader_source_kinds") = std::move(shaderSourceKinds);
+
     py::register_exception<PathWriteBusy>(m, "PathWriteBusy", PyExc_RuntimeError);
     py::class_<PathWriteScope>(m, "PathWriteScope")
         .def(py::init<>())

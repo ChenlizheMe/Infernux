@@ -1,3 +1,4 @@
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <chrono>
@@ -32,6 +33,14 @@ bool HasSpirvEntry(const std::vector<char> &code, const std::string &name)
 int main()
 {
     try {
+        for (const auto &kind : asset_formats::kShaderSourceKinds) {
+            const auto path = "Assets/nested/program" + std::string(kind.suffix);
+            Require(asset_formats::SourceExtension(path) == kind.suffix, "Compound shader suffix lost");
+        }
+        Require(asset_formats::SourceExtension("Assets/nested/program.FRaG.PY") == ".frag.py",
+                "Shader suffix classification must be case insensitive");
+        Require(asset_formats::SourceExtension("Assets/program.frag.py.txt") == ".txt",
+                "Only the final complete shader suffix classifies a source");
         auto &compiler = SlangCompiler::Get();
         const ShaderSourceModule library{"palette", "palette.shaderlib.py", R"(
 public float3 tint(float3 color) { return color * float3(1.0, 0.5, 0.25); }

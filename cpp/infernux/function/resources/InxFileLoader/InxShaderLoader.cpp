@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <function/renderer/shader/ShaderReflection.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/GlslStageInterfaceEmitter.h>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -811,6 +812,15 @@ void InxShaderLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData)
     const auto content = source.Bytes();
     const auto &filePath = source.Path();
     metaData.InitFromSource(source, ResourceType::Shader);
+
+    if (const auto *kind = asset_formats::FindShaderSourceKind(filePath)) {
+        const auto filename = FromFsPath(ToFsPath(filePath).filename());
+        metaData.AddMetadata("type", std::string(kind->stage));
+        metaData.AddMetadata("file_extension", std::string(kind->suffix));
+        metaData.AddMetadata("shader_source_kind", std::string(kind->stage));
+        metaData.AddMetadata("shader_id", filename.substr(0, filename.size() - kind->suffix.size()));
+        return;
+    }
 
     // Parse shader into structured descriptor (single pass)
     auto desc = ParseShaderSource(std::string(content), filePath);

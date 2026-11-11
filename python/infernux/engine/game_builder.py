@@ -38,6 +38,7 @@ from typing import Callable, Dict, List, Optional
 
 import infernux._jit_kernels as _jit_kernels
 import infernux.resources as _resources
+from infernux._source_kinds import is_host_python_source, source_extension
 from infernux.core.asset_types import MESH_EXTENSIONS
 from infernux.debug import Debug
 from infernux.engine.build_cancellation import BuildCancelled
@@ -1653,7 +1654,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         }
         for directory, _folders, filenames in os.walk(root):
             for filename in filenames:
-                if not filename.endswith(".py"):
+                if not is_host_python_source(filename):
                     continue
                 source = os.path.join(directory, filename)
                 relative_source = portable_path(relative_path(source, data_root))
@@ -2213,7 +2214,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             metadata = entry.get("metadata", {}).get("metadata", {})
             imported_document = metadata.get("import_document", {}).get("value")
             suffix = (metadata["file_extension"]["value"] if imported_document is not None
-                      else Path(source_path).suffix).casefold()
+                      else source_extension(source_path)).casefold()
             if suffix == ".py":
                 # User scripts are compiled after data staging.
                 continue
@@ -2745,7 +2746,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         # current AssetIndex closure. There is deliberately no .meta fallback.
         for root, _dirs, files in os.walk(assets_dir):
             for fname in files:
-                if fname.endswith(".py"):
+                if is_host_python_source(fname):
                     py_path = os.path.join(root, fname)
                     staged_relative = relative_path(py_path, data_dir).replace("\\", "/")
                     indexed_guid = cooked_guid_by_path.get(staged_relative.casefold(), "")
@@ -2770,7 +2771,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         }
         for root, _dirs, files in os.walk(assets_dir):
             for fname in files:
-                if fname.endswith(".py"):
+                if is_host_python_source(fname):
                     py_path = os.path.join(root, fname)
                     try:
                         with open(py_path, "r", encoding="utf-8") as sf:
@@ -2868,7 +2869,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 if is_project_asset or is_package_asset
                 else f"Library/Resources/{builtin_relative}"
             )
-            if runtime_path.casefold().endswith(".py"):
+            if is_host_python_source(runtime_path):
                 runtime_path += "c"
             compiled_bindings = sorted(
                 compiled_bindings_by_guid.get(str(guid), []),

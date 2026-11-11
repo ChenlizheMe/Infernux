@@ -5,6 +5,7 @@ import threading
 import time
 import types
 import uuid
+from infernux._source_kinds import is_host_python_source, source_extension
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -62,7 +63,7 @@ def _reject_failed_asset_import(path, result) -> None:
         raise _AssetImportRejected(result.error)
     lower = path.lower()
     compiled_source = any(
-        os.path.splitext(source.lower())[1] in SHADER_SOURCE_EXTENSIONS | RENDER_EFFECT_EXTENSIONS
+        source_extension(source) in SHADER_SOURCE_EXTENSIONS | RENDER_EFFECT_EXTENSIONS
         or source.lower().endswith((".particlegraph", ".particle.py"))
         for source in (lower, result.previous_path)
     )
@@ -178,10 +179,6 @@ class _ScriptPublicationRollback:
         self.registry_snapshot = registry_snapshot
         self.graph_transaction = graph_transaction
         self.graph_committed = bool(graph_committed)
-
-
-def _is_particle_script_path(file_path: str) -> bool:
-    return str(file_path or "").lower().endswith(".particle.py")
 
 
 _BLENDER_BACKUP_PATTERN = re.compile(r"\.blend\d+$", re.IGNORECASE)
@@ -447,7 +444,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if event.is_directory or self._should_ignore(event.src_path):
             return
         lower = str(event.src_path or "").lower()
-        script_change = lower.endswith(".py") and not _is_particle_script_path(lower)
+        script_change = is_host_python_source(lower)
         editor_catalog_change = self._is_editor_translation_change(event.src_path)
         registered_guid = self._asset_database.get_guid_from_path(event.src_path)
         self._coordinator.submit(
@@ -492,7 +489,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if event.is_directory or self._should_ignore(event.src_path):
             return
         lower = str(event.src_path or "").lower()
-        script_change = lower.endswith(".py") and not _is_particle_script_path(lower)
+        script_change = is_host_python_source(lower)
         editor_catalog_change = self._is_editor_translation_change(event.src_path)
         self._coordinator.submit(
             AssetFsEventKind.MODIFIED,
@@ -529,19 +526,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
             source_registered=source_registered,
             debounce_seconds=(
                 0.0
-                if (
-                    str(event.dest_path or "").lower().endswith(".py")
-                    and not _is_particle_script_path(event.dest_path)
-                )
+                if is_host_python_source(event.dest_path)
                 or self._is_editor_translation_change(event.dest_path)
                 else None
             ),
         )
         destination_lower = str(event.dest_path or "").lower()
-        if (
-            destination_lower.endswith(".py")
-            and not _is_particle_script_path(destination_lower)
-        ) or self._is_editor_translation_change(event.dest_path):
+        if is_host_python_source(destination_lower) or self._is_editor_translation_change(event.dest_path):
             self._wake_editor()
 
     def _submit_metadata_change(self, meta_path: str) -> None:
@@ -861,8 +852,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             dependent_path = record.source_path
             if (
                 path_key(dependent_path) == result.change.identity_key
-                or not dependent_path.lower().endswith(".py")
-                or _is_particle_script_path(dependent_path)
+                or not is_host_python_source(dependent_path)
                 or path_key(dependent_path) in retired_keys
             ):
                 continue
@@ -1203,7 +1193,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         sources = {}
         changed = {}
         for path in sorted(catalog):
-            if not path.lower().endswith(".py") or _is_particle_script_path(path) or not graph.owns_path(path):
+            if not is_host_python_source(path) or not graph.owns_path(path):
                 continue
             try:
                 with open(path, "rb") as stream:
@@ -1644,7 +1634,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
     def _publish_created(self, path, result) -> None:
         from infernux.core.assets import AssetManager
 
-        if path.lower().endswith(".py") and not _is_particle_script_path(path):
+        if is_host_python_source(path):
             if is_project_component_script(path, self._dependency_graph.project_root):
                 self._check_script(path, catalog_event="created")
             elif package_script_role(path, self._dependency_graph.project_root) == "editor":
@@ -1775,7 +1765,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         published_guid = str(getattr(result, "guid", "") or asset_guid).strip()
         if documents.has_pending_external_change_preflight(path, guid=published_guid):
             documents.publish_external_resource_change(path, guid=published_guid)
-        script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
+        script_change = is_host_python_source(path)
         if script_change:
             if is_project_component_script(path, self._dependency_graph.project_root):
                 self._check_script(path, catalog_event="modified")
@@ -1835,7 +1825,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         ):
             raise RuntimeError(f"asset deletion failed: {path}")
         self._rejected_compiled_assets.discard(path_key(path))
-        if path.lower().endswith(".py") and not _is_particle_script_path(path):
+        if is_host_python_source(path):
             self._retire_script_path(path)
         elif self._is_editor_translation_change(path):
             manager = ResourcesManager.instance()
@@ -1930,8 +1920,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     def _publish_script_path_move(self, old_path: str, new_path: str, *, origin: str) -> None:
         """Apply one script-domain transition after the asset move commits."""
-        old_script = old_path.lower().endswith(".py") and not _is_particle_script_path(old_path)
-        new_script = new_path.lower().endswith(".py") and not _is_particle_script_path(new_path)
+        old_script = is_host_python_source(old_path)
+        new_script = is_host_python_source(new_path)
         if self._is_gameplay_script_source(new_path):
             self._submit_moved_script(old_path, new_path, origin=origin)
             return
@@ -1944,8 +1934,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     def _is_gameplay_script_source(self, path: str) -> bool:
         return (
-            path.lower().endswith(".py")
-            and not _is_particle_script_path(path)
+            is_host_python_source(path)
             and self._dependency_graph is not None
             and is_project_component_script(path, self._dependency_graph.project_root)
         )
@@ -2375,7 +2364,7 @@ class ResourcesManager:
                     return
                 dirs[:] = [d for d in dirs if d.casefold() not in VERSION_CONTROL_DIRECTORIES | {"__pycache__"}]
                 for fname in files:
-                    if not fname.endswith('.py') or _is_particle_script_path(fname):
+                    if not is_host_python_source(fname):
                         continue
                     fpath = os.path.join(root, fname)
                     if is_project_component_script(fpath, self._project_path):

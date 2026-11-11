@@ -5,13 +5,58 @@
 // the AssetDatabase and Project panel from slowly growing different opinions
 // about which files are real assets.
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace infernux::asset_formats
 {
+
+struct ShaderSourceKind
+{
+    std::string_view suffix;
+    std::string_view stage;
+    std::string_view icon;
+    std::string_view dragPayload;
+};
+
+// Author files are assets, never host Python modules. All discovery, import,
+// UI and cook consumers use this table before looking at the final suffix.
+inline constexpr std::array<ShaderSourceKind, 5> kShaderSourceKinds = {{
+    {".shadingmodel.py", "shadingmodel", "shadingmodel", "SHADING_MODEL_FILE"},
+    {".shaderlib.py", "library", "shader_glsl", "SHADER_LIBRARY_FILE"},
+    {".compute.py", "compute", "shader_hlsl", "COMPUTE_SHADER_FILE"},
+    {".vert.py", "vertex", "shader_vert", "SHADER_FILE"},
+    {".frag.py", "fragment", "shader_frag", "SHADER_FILE"},
+}};
+
+inline const ShaderSourceKind *FindShaderSourceKind(std::string_view path)
+{
+    for (const auto &kind : kShaderSourceKinds) {
+        if (path.size() >= kind.suffix.size() &&
+            std::equal(kind.suffix.begin(), kind.suffix.end(), path.end() - kind.suffix.size(),
+                       [](char suffix, unsigned char value) { return suffix == std::tolower(value); }))
+            return &kind;
+    }
+    return nullptr;
+}
+
+inline std::string SourceExtension(std::string_view path)
+{
+    if (const auto *kind = FindShaderSourceKind(path))
+        return std::string(kind->suffix);
+    const auto dot = path.find_last_of('.');
+    const auto slash = path.find_last_of("/\\");
+    if (dot == std::string_view::npos || (slash != std::string_view::npos && dot < slash))
+        return {};
+    std::string suffix(path.substr(dot));
+    std::transform(suffix.begin(), suffix.end(), suffix.begin(),
+                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    return suffix;
+}
 
 inline constexpr std::array<std::string_view, 16> kTextureExtensions = {
     ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga",       ".gif",    ".psd",

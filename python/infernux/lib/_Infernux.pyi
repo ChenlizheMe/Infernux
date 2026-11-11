@@ -25,6 +25,8 @@ from infernux.components.component import InxComponent as _PublicComponent
 from typing import Any, Callable, ClassVar, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, TypeVar, Union, overload
 
 
+_shader_source_kinds: tuple[tuple[str, str, str, str], ...]
+
 def _slang_version() -> str: ...
 def _compile_shader_program(
     source: str, source_path: str, module_name: str,

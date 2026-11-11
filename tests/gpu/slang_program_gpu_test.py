@@ -10,6 +10,7 @@ import tempfile
 import numpy as np
 
 import infernux as inx
+from infernux._source_kinds import SHADER_SOURCE_KINDS
 from infernux.lib import _Infernux as native_api
 
 
@@ -69,6 +70,16 @@ def main() -> None:
         host = None
         try:
             frontend.init_renderer(64, 64, str(project))
+            database = native.get_asset_database()
+            for suffix, (stage, _, _) in SHADER_SOURCE_KINDS.items():
+                path = project / "Assets" / ("Static" + suffix.upper())
+                path.write_text('raise AssertionError("GPU source must not execute on the host")', encoding="utf-8")
+                imported = database.import_asset(str(path))
+                assert imported, imported.error
+                metadata = database.get_meta_by_path(str(path))
+                assert metadata.get_resource_type() == native_api.ResourceType.Shader
+                assert metadata.get_string("type") == stage
+                assert metadata.get_string("file_extension") == suffix
             host = native._acquire_compute_host()
             buffers["params"] = inx.buffer(shape=4, dtype=np.float32, device="gpu", data=constants)
             buffers["inputs"] = inx.buffer(shape=257, dtype=np.float32, device="gpu", data=initial)

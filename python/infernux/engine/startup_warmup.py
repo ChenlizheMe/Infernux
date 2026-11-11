@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 from infernux.debug import Debug
+from infernux._source_kinds import is_host_python_source
 from infernux.engine.path_utils import lexical_path
 
 _SCHEMA = "infernux.startup-warmup"
@@ -591,7 +592,8 @@ def run_project_script_warmups(*, project_path: str | None, scope: str) -> int:
     else:
         scripts_root = root / "Assets"
         source_paths = (
-            sorted(scripts_root.rglob("*.py"), key=lambda item: item.as_posix().casefold())
+            sorted((path for path in scripts_root.rglob("*.py") if is_host_python_source(path)),
+                   key=lambda item: item.as_posix().casefold())
             if scripts_root.is_dir() else []
         )
         for path in source_paths:

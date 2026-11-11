@@ -308,6 +308,8 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
             result.emplace(std::string(extension), "model_3d");
         for (const auto extension : asset_formats::kAudioExtensions)
             result.emplace(std::string(extension), "audio");
+        for (const auto &kind : asset_formats::kShaderSourceKinds)
+            result.emplace(kind.suffix, kind.icon);
         return result;
     }();
     return map;
@@ -349,6 +351,8 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
             result.emplace(std::string(extension), DragDropInfo{"MODEL_FILE", "Model"});
         for (const auto extension : asset_formats::kAudioExtensions)
             result.emplace(std::string(extension), DragDropInfo{"AUDIO_FILE", "Audio"});
+        for (const auto &kind : asset_formats::kShaderSourceKinds)
+            result.emplace(kind.suffix, DragDropInfo{kind.dragPayload.data(), "Shader"});
         return result;
     }();
     return map;
@@ -1003,10 +1007,7 @@ ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
             snap.dirs.push_back(std::move(item));
         } else if (!catalog) {
             item.type = FileItem::File;
-            auto ext = infernux::FromFsPath(entry.path().extension());
-            for (auto &c : ext)
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            item.ext = std::move(ext);
+            item.ext = asset_formats::SourceExtension(item.path);
 
             if (IsImageExt(item.ext) || IsMaterialExt(item.ext)) {
                 auto ftime = entry.last_write_time(ec);
@@ -1032,9 +1033,7 @@ ProjectPanel::DirSnapshot *ProjectPanel::GetDirSnapshot(const std::string &path)
             item.path = asset.path;
             item.resourceType = asset.resourceType;
             item.importFailed = !asset.importError.empty();
-            item.ext = infernux::FromFsPath(fs::u8path(asset.path).extension());
-            for (char &character : item.ext)
-                character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+            item.ext = asset_formats::SourceExtension(asset.path);
             std::memcpy(&item.mtimeNs, &asset.source.modifiedNs, sizeof(item.mtimeNs));
             snap.files.push_back(std::move(item));
         }
@@ -2434,9 +2433,7 @@ void ProjectPanel::ScheduleSearch(const EditorSearchToken &token, uint64_t gener
                                     item.type = FileItem::File;
                                     item.name = entry.name;
                                     item.path = path;
-                                    item.ext = infernux::FromFsPath(fs::u8path(path).extension());
-                                    if (!item.ext.empty() && item.ext.front() == '.')
-                                        item.ext.erase(item.ext.begin());
+                                    item.ext = asset_formats::SourceExtension(path);
                                     item.resourceType = entry.resourceType;
                                     item.importFailed = !entry.importError.empty();
 

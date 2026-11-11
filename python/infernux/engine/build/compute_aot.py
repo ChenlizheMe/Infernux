@@ -11,6 +11,7 @@ import shutil
 import time
 
 import numpy as np
+from infernux._source_kinds import is_host_python_source
 
 from infernux.engine.path_utils import resolved_path
 from infernux.engine.project_context import get_script_module_name
@@ -202,7 +203,7 @@ def declared_kernel_names(
         (Path(resolved_path(Path(path).expanduser())) for path in source_paths),
         key=lambda value: value.as_posix().casefold(),
     ):
-        if source_path.suffix.casefold() != ".py":
+        if not is_host_python_source(source_path):
             continue
         module_name = get_script_module_name(str(source_path), project_root=str(root))
         if not module_name:

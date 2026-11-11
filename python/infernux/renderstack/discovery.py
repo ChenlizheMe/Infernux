@@ -15,6 +15,7 @@ Discovery strategies:
 from __future__ import annotations
 
 import ast
+from infernux._source_kinds import is_host_python_source
 import importlib.util
 import os
 from infernux.engine.path_utils import is_path_within, path_key
@@ -158,7 +159,7 @@ def _candidate_source_paths(search_root: str, roots: set[str]) -> list[str]:
             if filename.startswith("_"):
                 continue
             full = os.path.join(dirpath, filename)
-            if filename.endswith(".py"):
+            if is_host_python_source(filename):
                 sources.append((full, _read_source_inheritance(full)))
             elif filename.endswith(".pyc"):
                 bytecode.append(full)
@@ -358,7 +359,7 @@ def discover_effect_features() -> None:
                 # .effect feature never silently vanishes after cooking.
                 candidates.append(full)
                 continue
-            if not filename.endswith(".py"):
+            if not is_host_python_source(filename):
                 continue
             try:
                 with open(full, "r", encoding="utf-8", errors="ignore") as stream:

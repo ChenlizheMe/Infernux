@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from importlib.util import spec_from_file_location
 from typing import Iterator, Optional, Protocol
 from infernux.debug import Debug
+from infernux._source_kinds import is_gpu_source
 from infernux.engine.path_utils import (
     is_path_within,
     portable_path,
@@ -454,6 +455,8 @@ def is_project_component_script(
 
 def is_project_script(path: str, project_root: Optional[str] = None) -> bool:
     """Include packaged libraries while sharing the same source ownership rules."""
+    if is_gpu_source(path):
+        return False
     roots = get_project_script_roots(project_root)
     if not roots:
         return False
@@ -543,6 +546,8 @@ def get_script_module_name(
     Returns ``None`` when the script is outside the gameplay/editor script
     domains or its code-relative path is not a valid Python module name.
     """
+    if path and is_gpu_source(path):
+        return None
     if path and project_root and not os.path.isabs(path):
         resolved = resolved_path(os.path.join(project_root, path))
     else:
