@@ -14,9 +14,85 @@
     "to": "0.4.8",
     "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.4.8"
   },
-  "section_count": 2,
-  "item_count": 9,
+  "section_count": 5,
+  "item_count": 20,
   "sections": [
+    {
+      "id": "unreleased-runtime-improvements",
+      "title": "Unreleased runtime improvements",
+      "kind": "changes",
+      "items": [
+        {
+          "title": "Execute synchronous and managed CPU neural operations through the same native range recipe, retaining storage and compiled code until actual completion. Batch ordinary tensor, parameter and optimizer-state transfers through the shared CPU/Vulkan IO boundary.",
+          "detail": "",
+          "text": "Execute synchronous and managed CPU neural operations through the same native range recipe, retaining storage and compiled code until actual completion. Batch ordinary tensor, parameter and optimizer-state transfers through the shared CPU/Vulkan IO boundary."
+        },
+        {
+          "title": "Reuse native GPU forward recipes for inference and tracked training activations. Preserve input snapshots, aliased views, random-state ownership and complete model-parameter publication while retiring completed queue receipts and unused launch bindings.",
+          "detail": "",
+          "text": "Reuse native GPU forward recipes for inference and tracked training activations. Preserve input snapshots, aliased views, random-state ownership and complete model-parameter publication while retiring completed queue receipts and unused launch bindings."
+        },
+        {
+          "title": "Expose the shared host-work budget through Engine.work_budget. Budget changes reselect unsubmitted compute and model transfers without replaying accepted work or losing cross-frame progress.",
+          "detail": "",
+          "text": "Expose the shared host-work budget through Engine.work_budget. Budget changes reselect unsubmitted compute and model transfers without replaying accepted work or losing cross-frame progress."
+        },
+        {
+          "title": "Share gradient-clipping preparation between ordinary calls and training programs. Preserve strict float32 signed-zero, infinity and NaN behavior in generated SPIR-V and Vulkan capability checks.",
+          "detail": "",
+          "text": "Share gradient-clipping preparation between ordinary calls and training programs. Preserve strict float32 signed-zero, infinity and NaN behavior in generated SPIR-V and Vulkan capability checks."
+        },
+        {
+          "title": "Reduce repeated rigidbody pose publication and joint-batch overhead, share the engine worker pool with Jolt, and enable supported Release link-time optimization for the Jolt library. Convex-collider queries and gizmos now use the final cooked hull.",
+          "detail": "",
+          "text": "Reduce repeated rigidbody pose publication and joint-batch overhead, share the engine worker pool with Jolt, and enable supported Release link-time optimization for the Jolt library. Convex-collider queries and gizmos now use the final cooked hull."
+        },
+        {
+          "title": "Pause a failed physical step before publishing its results and require Stop before restarting, preventing partial integration from being replayed. Sample project model architectures remain unchanged.",
+          "detail": "",
+          "text": "Pause a failed physical step before publishing its results and require Stop before restarting, preventing partial integration from being replayed. Sample project model architectures remain unchanged."
+        }
+      ]
+    },
+    {
+      "id": "hub-0-4-8-3-runtime-selection-hotfix",
+      "title": "Hub 0.4.8-3 runtime selection hotfix",
+      "kind": "changes",
+      "items": [
+        {
+          "title": "Engine upgrades and hotfixes now replace the project's old runtime and install the selected engine, instead of only changing the project version record. Runtime replacement runs in a background worker with progress reporting. A Reinstall Project Runtime action repairs projects whose version record was already changed by an earlier Hub.",
+          "detail": "",
+          "text": "Engine upgrades and hotfixes now replace the project's old runtime and install the selected engine, instead of only changing the project version record. Runtime replacement runs in a background worker with progress reporting. A Reinstall Project Runtime action repairs projects whose version record was already changed by an earlier Hub."
+        },
+        {
+          "title": "Ordinary launches preserve the existing runtime and locally modified engine code. Startup logs identify the engine actually loaded without rewriting the preferred version.",
+          "detail": "",
+          "text": "Ordinary launches preserve the existing runtime and locally modified engine code. Startup logs identify the engine actually loaded without rewriting the preferred version."
+        },
+        {
+          "title": "Remove exact project-version rejection from source Editor and headless entry points. A recorded project version is used to provision a missing runtime, not to override an existing one.",
+          "detail": "",
+          "text": "Remove exact project-version rejection from source Editor and headless entry points. A recorded project version is used to provision a missing runtime, not to override an existing one."
+        }
+      ]
+    },
+    {
+      "id": "hub-0-4-8-2-startup-hotfix",
+      "title": "Hub 0.4.8-2 startup hotfix",
+      "kind": "changes",
+      "items": [
+        {
+          "title": "Remove inherited development-only native module and compiler paths when launching a project's installed runtime. Hub no longer uses an empty native-directory override that the installed engine can interpret as the project directory.",
+          "detail": "",
+          "text": "Remove inherited development-only native module and compiler paths when launching a project's installed runtime. Hub no longer uses an empty native-directory override that the installed engine can interpret as the project directory."
+        },
+        {
+          "title": "Verified the complete Hub-to-editor startup path with a project's private Python runtime. This is a Hub-only release; the published engine and plugin versions remain unchanged.",
+          "detail": "",
+          "text": "Verified the complete Hub-to-editor startup path with a project's private Python runtime. This is a Hub-only release; the published engine and plugin versions remain unchanged."
+        }
+      ]
+    },
     {
       "id": "neural-runtime",
       "title": "Neural runtime",

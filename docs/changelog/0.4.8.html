@@ -68,6 +68,26 @@
 <a href="https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.8">GitHub Release ↗</a>
 </header><div class="release-prose"><p>Infernux 0.4.8 brings model authoring, native execution, and checkpoint export into the engine. Projects can connect neural inputs and outputs to their own game systems through the same resource and lifecycle boundaries used by rendering and physics.</p>
 <p><a href="https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.4.8">Compare with v0.4.3-v8</a></p>
+<h2 id="en-unreleased-runtime-improvements">Unreleased runtime improvements</h2>
+<ul>
+<li>Execute synchronous and managed CPU neural operations through the same native range recipe, retaining storage and compiled code until actual completion. Batch ordinary tensor, parameter and optimizer-state transfers through the shared CPU/Vulkan IO boundary.</li>
+<li>Reuse native GPU forward recipes for inference and tracked training activations. Preserve input snapshots, aliased views, random-state ownership and complete model-parameter publication while retiring completed queue receipts and unused launch bindings.</li>
+<li>Expose the shared host-work budget through <code>Engine.work_budget</code>. Budget changes reselect unsubmitted compute and model transfers without replaying accepted work or losing cross-frame progress.</li>
+<li>Share gradient-clipping preparation between ordinary calls and training programs. Preserve strict float32 signed-zero, infinity and NaN behavior in generated SPIR-V and Vulkan capability checks.</li>
+<li>Reduce repeated rigidbody pose publication and joint-batch overhead, share the engine worker pool with Jolt, and enable supported Release link-time optimization for the Jolt library. Convex-collider queries and gizmos now use the final cooked hull.</li>
+<li>Pause a failed physical step before publishing its results and require Stop before restarting, preventing partial integration from being replayed. Sample project model architectures remain unchanged.</li>
+</ul>
+<h2 id="en-hub-048-3-runtime-selection-hotfix">Hub 0.4.8-3 runtime selection hotfix</h2>
+<ul>
+<li>Engine upgrades and hotfixes now replace the project's old runtime and install the selected engine, instead of only changing the project version record. Runtime replacement runs in a background worker with progress reporting. A Reinstall Project Runtime action repairs projects whose version record was already changed by an earlier Hub.</li>
+<li>Ordinary launches preserve the existing runtime and locally modified engine code. Startup logs identify the engine actually loaded without rewriting the preferred version.</li>
+<li>Remove exact project-version rejection from source Editor and headless entry points. A recorded project version is used to provision a missing runtime, not to override an existing one.</li>
+</ul>
+<h2 id="en-hub-048-2-startup-hotfix">Hub 0.4.8-2 startup hotfix</h2>
+<ul>
+<li>Remove inherited development-only native module and compiler paths when launching a project's installed runtime. Hub no longer uses an empty native-directory override that the installed engine can interpret as the project directory.</li>
+<li>Verified the complete Hub-to-editor startup path with a project's private Python runtime. This is a Hub-only release; the published engine and plugin versions remain unchanged.</li>
+</ul>
 <h2 id="en-neural-runtime">Neural runtime</h2>
 <ul>
 <li>Define models with <code>infernux.nn</code> and run supported training and inference on native CPU or Vulkan. Managed requests keep their intermediate state across host frames and publish results at the consumer boundary.</li>
@@ -87,13 +107,33 @@
 <a href="https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.8">GitHub Release ↗</a>
 </header><div class="release-prose"><p>Infernux 0.4.8 将模型定义、原生执行和检查点导出纳入引擎。项目可以通过资源和生命周期接口，将神经计算的输入与结果接到自己的渲染、物理和其他游戏系统。</p>
 <p><a href="https://github.com/ChenlizheMe/Infernux/compare/v0.4.3-v8...v0.4.8">与 v0.4.3-v8 比较</a></p>
-<h2 id="zh-_1">神经计算</h2>
+<h2 id="zh-_1">待发布：神经计算与物理运行改进</h2>
+<ul>
+<li>普通同步调用和受管 CPU 神经计算共用原生执行片段，直到真正完成才释放数据和编译代码。张量、模型参数与优化器状态的普通传输，通过公共 CPU/Vulkan IO 管线合并提交。</li>
+<li>推理和保留训练激活的前向计算复用原生 GPU 计算配方。保留输入快照、别名视图、随机状态和完整参数发布语义，及时释放已完成的队列记录及不再使用的启动绑定。</li>
+<li>通过 <code>Engine.work_budget</code> 调整共享宿主预算。预算改变时重新选择尚未提交的计算和模型传输，不重放已接受的工作，也不丢失跨帧进度。</li>
+<li>普通梯度裁剪和训练程序共用准备结果。生成的 SPIR-V 与 Vulkan 能力检查保持 float32 的正负零、无穷和 NaN 语义。</li>
+<li>减少刚体姿态重复发布与关节批量访问开销，Jolt 共用引擎工作线程池，并在支持的 Release 构建中启用链接优化。凸碰撞体查询和 Gizmo 使用最终烘焙的凸包。</li>
+<li>物理步骤失败后暂停并停止发布结果，必须先 Stop 才能重新运行，避免重复推进部分完成的物理步骤。本次没有改变示例项目的网络结构。</li>
+</ul>
+<h2 id="zh-hub-048-3">Hub 0.4.8-3 运行环境选择热修复</h2>
+<ul>
+<li>升级引擎或应用热修时，真正替换项目的旧 runtime 并安装选定引擎，不再只修改版本记录。后台线程执行安装并显示进度。新增“重新安装项目运行环境”，可修复旧 Hub 已改版本记录但未更新引擎的项目。</li>
+<li>普通启动保留已有 runtime 以及用户对引擎代码的修改；日志记录实际加载的引擎，不反向覆盖用户选定的版本。</li>
+<li>移除源码编辑器与无窗口入口对项目版本完全一致的强制要求。项目版本记录用于初始化缺失的 runtime，不用于覆盖已有 runtime。</li>
+</ul>
+<h2 id="zh-hub-048-2">Hub 0.4.8-2 启动热修复</h2>
+<ul>
+<li>启动项目的已安装运行环境时，正确移除继承的开发用原生库和编译器路径。Hub 不再用空字符串表示清除原生库目录覆盖，避免已安装的引擎将其解释为项目目录。</li>
+<li>已验证 Hub 通过项目私有 Python 启动编辑器的完整链路。本次仅发布 Hub，已发布的引擎和插件版本保持不变。</li>
+</ul>
+<h2 id="zh-_2">神经计算</h2>
 <ul>
 <li>通过 <code>infernux.nn</code> 定义模型，在原生 CPU 或 Vulkan 上执行受支持的训练和推理。受管请求可跨宿主帧保留中间状态，并在结果使用方需要的阶段发布。</li>
 <li>就绪工作共享宿主帧预算，无窗口运行时也可继续推进。RenderGraph 和 NeuralGraph 各自管理依赖，共用设备提交和完成记录。</li>
 <li>用 <code>.inm</code> 检查点保存已发布的模型，文件包含可读的结构头和二进制权重。编辑器和对应版本的 Player 可以读取检查点并执行推理或续训。</li>
 </ul>
-<h2 id="zh-_2">渲染、场景和编辑</h2>
+<h2 id="zh-_3">渲染、场景和编辑</h2>
 <ul>
 <li>相机支持连续或按请求渲染，可输出到 RenderTexture 资产或内存。使用方可继续显示最近一次完成的图像。</li>
 <li>提供可编辑的骨骼层级以及 Jolt 关节和布娃娃。模型结果可以在指定的物理或渲染阶段生效。</li>
