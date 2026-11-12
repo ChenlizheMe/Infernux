@@ -77,7 +77,7 @@ constexpr size_t PortIndex(Resource resource)
     return PortCount;
 }
 
-// These two stage bodies initialize every slot. Access qualifiers alone do not
+// These stage bodies initialize every slot. Access qualifiers alone do not
 // establish complete stores: all read/write solvers retain their input proof.
 constexpr uint32_t CompleteWrites(Stage stage)
 {
@@ -86,6 +86,8 @@ constexpr uint32_t CompleteWrites(Stage stage)
         return Mask(Resource::Bounds);
     case Stage::CollidePairs:
         return Mask(Resource::Contacts);
+    case Stage::ClearForces:
+        return Mask(Resource::BodyForces);
     default:
         return 0;
     }
@@ -534,8 +536,9 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
     proof.writes.reserve(entry.bindings.size());
     for (size_t index = 0; index < entry.bindings.size(); ++index) {
         const auto &binding = entry.bindings[index];
-        const auto &buffer =
-            binding.slot < inputs.m_buffers.size() ? inputs.m_buffers[binding.slot] : storage.m_buffers[binding.slot];
+        const bool writer = binding.access != rhi::ComputeBufferAccess::Read;
+        const auto &buffer = !writer && binding.slot < inputs.m_buffers.size() ? inputs.m_buffers[binding.slot]
+                                                                               : storage.m_buffers[binding.slot];
         if (!buffer)
             throw std::invalid_argument("Jolt GPU stage requires captured input: " +
                                         std::string(Ports[binding.slot].name));

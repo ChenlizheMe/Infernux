@@ -87,6 +87,9 @@ class JoltGpuTick::Impl
             for (uint32_t iteration = 0; iteration < step.Get().solve.x; ++iteration)
                 stages.push_back(JPH::GPU::Stage::SolvePosition);
         }
+        // All substeps consume the same frozen accumulator. Its live endpoint
+        // is cleared only in the final packet, before this logical tick completes.
+        stages.push_back(JPH::GPU::Stage::ClearForces);
         fixedDeltaTime = deltaTime;
         tickParameters = actualParameters;
         parameters = std::move(step);

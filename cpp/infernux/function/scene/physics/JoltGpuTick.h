@@ -35,6 +35,9 @@ class JoltGpuTick final
     /// already be accepted. Capture those values immediately here. CPU forces
     /// are moved into one parameter/force upload packet and captured only when
     /// it is accepted. dt is the logical fixed step; each substep uses dt/N.
+    /// The owner keeps solver state and the force accumulator exclusive until
+    /// completion. Later controller results wait for the next control boundary;
+    /// they must not overwrite this accumulator while its tick is running.
     void Begin(float fixedDeltaTime, const JoltGpuStepParameters &parameters,
                std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces = std::nullopt);
 
