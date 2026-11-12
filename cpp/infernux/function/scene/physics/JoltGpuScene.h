@@ -7,6 +7,7 @@
 #include "PhysicsECSStore.h"
 #include "PhysicsTargetReference.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -107,6 +108,13 @@ class JoltGpuScene final
     /// advancing a solver or a clock. Uses the last published fixed-step
     /// identity (zero before the first tick) within the supplied epoch.
     void BeginControl(uint64_t simulationEpoch);
+    /// Prepares a read-only GPU consumer against the immutable post-command
+    /// publication, through the same tick source and completion receipts. The
+    /// callback may prepare GPU work only: it must not submit, wait, author
+    /// scene changes or reenter the world. Control publication waits for its
+    /// returned packet to complete as well as the preceding author prefix.
+    void BeginControl(uint64_t simulationEpoch,
+                      std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)> consumer);
     /// Publishes only a completed tick. Returns true exactly once per tick;
     /// pending/failed/cancelled work retains the previous full publication.
     bool PublishCompletedTick();
@@ -116,6 +124,7 @@ class JoltGpuScene final
     [[nodiscard]] JoltGpuTick::Status GetTickStatus() const noexcept;
     [[nodiscard]] FrameWorkOwner::SourceId GetSourceId() const noexcept;
     [[nodiscard]] bool AreControlInputsAccepted() const noexcept;
+    [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t maxWaitNanoseconds);
     void SetAdmissionEnabled(bool enabled) noexcept;
     [[nodiscard]] bool IsAdmissionEnabled() const noexcept;
     void Cancel() noexcept;

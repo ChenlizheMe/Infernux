@@ -139,6 +139,25 @@ class JoltGpuTick::Impl
         return status != Status::Running && receipts.empty();
     }
 
+    FrameWorkWaitResult WaitForProgress(uint64_t maxWaitNanoseconds)
+    {
+        if (receipts.empty())
+            return FrameWorkWaitResult::Blocked;
+        const auto count = receipts.size();
+        try {
+            const bool completed =
+                host.Queue().WaitFor(receipts.front().completion.GetSubmission(), maxWaitNanoseconds);
+            Poll();
+            if (receipts.size() != count)
+                return FrameWorkWaitResult::Progress;
+            return completed ? FrameWorkWaitResult::Blocked : FrameWorkWaitResult::Waiting;
+        } catch (...) {
+            status = Status::Failed;
+            Cancel();
+            throw;
+        }
+    }
+
     FrameWorkOwner &work;
     JoltGpuStorage &storage;
     JoltGpuPrograms &programs;
@@ -156,6 +175,7 @@ class JoltGpuTick::Impl
         Initialization,
         Model,
         Commands,
+        Work,
         Inputs,
         Stages,
         Preservation
@@ -300,7 +320,7 @@ class JoltGpuTick::Impl
     {
         if (groupCursor < control.groups.size()) {
             const auto &group = control.groups[groupCursor];
-            if (!modelPrepared || modelUpdate || !group.commands.empty() ||
+            if (!modelPrepared || modelUpdate || !group.commands.empty() || group.prepareWork ||
                 (commandCursor && !commandCursor->IsComplete()))
                 return;
             commandCursor.reset();
@@ -478,6 +498,16 @@ class JoltGpuTick::Impl
                 }
                 if (commandCursor && !commandCursor->IsComplete())
                     return PreparePrefix(true);
+                if (group.prepareWork) {
+                    auto prepareWork = std::move(group.prepareWork);
+                    group.prepareWork = {};
+                    batch = prepareWork();
+                    ValidateControlPacket(batch);
+                    if (batch) {
+                        batchKind = PacketKind::Work;
+                        return true;
+                    }
+                }
                 FinishControlGroup();
                 return true;
             }
@@ -683,6 +713,10 @@ bool JoltGpuTick::IsComplete() const noexcept
 bool JoltGpuTick::AreControlInputsAccepted() const noexcept
 {
     return m_impl->controlAccepted;
+}
+FrameWorkWaitResult JoltGpuTick::WaitForProgress(uint64_t maxWaitNanoseconds)
+{
+    return m_impl->WaitForProgress(maxWaitNanoseconds);
 }
 bool JoltGpuTick::HasReceipts() const noexcept
 {

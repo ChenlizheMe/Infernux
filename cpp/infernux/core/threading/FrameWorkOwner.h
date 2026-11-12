@@ -31,6 +31,13 @@ enum class FrameGpuAvailability : uint8_t
     BackgroundPending
 };
 
+enum class FrameWorkWaitResult : uint8_t
+{
+    Progress,
+    Waiting,
+    Blocked
+};
+
 struct FrameWorkAllowance
 {
     uint64_t limit = 1'000'000;
@@ -218,6 +225,17 @@ class FrameWorkOwner
     /// share this opportunity's allowances; true means work remains pending.
     INFERNUX_FOUNDATION_API bool AdvanceRequired(SourceId id,
                                                  const std::function<FrameGpuAvailability()> &gpuAvailability);
+    /// Finish only the required source, without opening/refilling a host frame.
+    /// Soft frame allowances may overrun; storage and queue admission still
+    /// apply. Normal return means the source has no pending work. Callers must
+    /// still inspect its logical result. Stop, suspension and blocked progress
+    /// throw diagnostics instead of returning a partial synchronous result.
+    /// Waiting must mean a real bounded wait for this source's accepted ticket.
+    /// An explicitly known dependency may be drained from the wait or source
+    /// callback; requests for an already active source and cycles are rejected.
+    INFERNUX_FOUNDATION_API void
+    DrainRequired(SourceId id, const std::function<FrameGpuAvailability()> &gpuAvailability,
+                  const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress = {});
     INFERNUX_FOUNDATION_API bool AdvanceLate(const std::function<FrameGpuAvailability()> &gpuAvailability);
     INFERNUX_FOUNDATION_API void EndOpportunity() noexcept;
     void Stop() noexcept
@@ -293,15 +311,18 @@ class FrameWorkOwner
     {
         Background,
         Interactive,
-        Required
+        Required,
+        SynchronousRequired
     };
     class ServiceScope
     {
       public:
         ServiceScope(FrameWorkOwner &owner, bool interactive)
-            : ServiceScope(owner, owner.m_serviceKind == ServiceKind::Required ? ServiceKind::Required
-                                  : interactive                                ? ServiceKind::Interactive
-                                                                               : ServiceKind::Background)
+            : ServiceScope(owner, owner.m_serviceKind == ServiceKind::Required ||
+                                          owner.m_serviceKind == ServiceKind::SynchronousRequired
+                                      ? owner.m_serviceKind
+                                  : interactive ? ServiceKind::Interactive
+                                                : ServiceKind::Background)
         {
         }
         ServiceScope(FrameWorkOwner &owner, ServiceKind kind)
@@ -317,6 +338,38 @@ class FrameWorkOwner
         FrameWorkOwner &m_owner;
         ServiceKind m_previous;
     };
+    class QuantumScope
+    {
+      public:
+        explicit QuantumScope(FrameWorkOwner &owner);
+        ~QuantumScope();
+
+      private:
+        FrameWorkOwner &m_owner;
+        uint64_t m_previousStart;
+        uint32_t m_previousAdmissions;
+    };
+    class CallbackScope
+    {
+      public:
+        CallbackScope(FrameWorkOwner &owner, SourceId id);
+        ~CallbackScope();
+
+      private:
+        FrameWorkOwner &m_owner;
+        QuantumScope m_quantum;
+    };
+    class RequiredScope
+    {
+      public:
+        RequiredScope(FrameWorkOwner &owner, SourceId id, bool synchronous);
+        ~RequiredScope();
+
+      private:
+        FrameWorkOwner &m_owner;
+        FrameGpuAvailability m_previousGpu;
+        bool m_restoreGpu;
+    };
     enum class Admission : uint8_t
     {
         Open,
@@ -327,7 +380,7 @@ class FrameWorkOwner
     {
         SourceId id;
         FrameWorkSource callbacks;
-        uint64_t observedOpportunity = 0;
+        uint64_t observedOpportunity = UINT64_MAX;
         bool awake = true;
         uint64_t lastIoService = 0;
     };
@@ -341,6 +394,8 @@ class FrameWorkOwner
     void ObserveSource(const std::shared_ptr<Source> &source);
     void RefreshSources();
     bool Drive(const std::function<FrameGpuAvailability()> &gpuAvailability = {});
+    bool DriveRequired(SourceId id, ServiceKind kind, const std::function<FrameGpuAvailability()> &gpuAvailability,
+                       const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress);
     std::vector<Choice> DescribeSources();
     std::optional<FrameWorkFacts> DescribeSource(const std::shared_ptr<Source> &source, bool interactive);
     bool AdvanceChoice(Choice &choice, bool gpu, bool interactive);
@@ -380,6 +435,10 @@ class FrameWorkOwner
     bool m_preferGpu = false;
     ServiceKind m_serviceKind = ServiceKind::Background;
     FrameGpuAvailability m_gpuAvailability = FrameGpuAvailability::Ready;
+    std::vector<SourceId> m_callbackSources;
+    std::vector<SourceId> m_requiredSources;
+    uint64_t m_quantumStarted = 0;
+    uint32_t m_quantumAdmissions = 0;
 };
 
 } // namespace infernux

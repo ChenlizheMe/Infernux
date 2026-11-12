@@ -4,10 +4,57 @@
 #include <chrono>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace infernux
 {
+
+FrameWorkOwner::QuantumScope::QuantumScope(FrameWorkOwner &owner)
+    : m_owner(owner), m_previousStart(owner.m_quantumStarted), m_previousAdmissions(owner.m_quantumAdmissions)
+{
+    if (owner.m_serviceKind == ServiceKind::SynchronousRequired) {
+        owner.m_quantumStarted = owner.Now();
+        owner.m_quantumAdmissions = 0;
+    }
+}
+
+FrameWorkOwner::QuantumScope::~QuantumScope()
+{
+    m_owner.m_quantumStarted = m_previousStart;
+    m_owner.m_quantumAdmissions = m_previousAdmissions;
+}
+
+FrameWorkOwner::CallbackScope::CallbackScope(FrameWorkOwner &owner, SourceId id) : m_owner(owner), m_quantum(owner)
+{
+    if (std::find(owner.m_callbackSources.begin(), owner.m_callbackSources.end(), id) != owner.m_callbackSources.end())
+        throw std::logic_error("Frame work source callback dependency cycle at source " + std::to_string(id));
+    owner.m_callbackSources.push_back(id);
+}
+
+FrameWorkOwner::CallbackScope::~CallbackScope()
+{
+    m_owner.m_callbackSources.pop_back();
+}
+
+FrameWorkOwner::RequiredScope::RequiredScope(FrameWorkOwner &owner, SourceId id, bool synchronous)
+    : m_owner(owner), m_previousGpu(owner.m_gpuAvailability), m_restoreGpu(synchronous)
+{
+    if (std::find(owner.m_callbackSources.begin(), owner.m_callbackSources.end(), id) != owner.m_callbackSources.end())
+        throw std::logic_error("Required frame work callback dependency cycle at source " + std::to_string(id));
+    if (std::find(owner.m_requiredSources.begin(), owner.m_requiredSources.end(), id) != owner.m_requiredSources.end())
+        throw std::logic_error("Required frame work dependency cycle at source " + std::to_string(id));
+    if (!owner.m_requiredSources.empty() && !synchronous)
+        throw std::logic_error("Nested required frame work must explicitly drain its dependency");
+    owner.m_requiredSources.push_back(id);
+}
+
+FrameWorkOwner::RequiredScope::~RequiredScope()
+{
+    m_owner.m_requiredSources.pop_back();
+    if (m_restoreGpu)
+        m_owner.m_gpuAvailability = m_previousGpu;
+}
 
 FrameCpuStorageClaim::FrameCpuStorageClaim(std::shared_ptr<std::atomic<uint64_t>> total, uint64_t bytes) noexcept
     : m_total(std::move(total)), m_bytes(bytes)
@@ -174,6 +221,8 @@ const FrameWorkAllowance &FrameWorkOwner::ResourceState(FrameWorkResource resour
 uint64_t FrameWorkOwner::ResourceRemaining(FrameWorkResource resource) const noexcept
 {
     const auto &state = ResourceState(resource);
+    if (m_serviceKind == ServiceKind::SynchronousRequired)
+        return m_quantumAdmissions & (1u << static_cast<uint8_t>(resource)) ? 0 : state.limit;
     const auto remaining = state.admitted < state.allowance ? state.allowance - state.admitted : 0;
     // Interactive work uses the configured window per submission, rather
     // than waiting for background credit to refill on another host frame.
@@ -184,6 +233,8 @@ bool FrameWorkOwner::CanAdmitResource(FrameWorkResource resource, uint64_t predi
 {
     const auto &state = ResourceState(resource);
     const auto remaining = ResourceRemaining(resource);
+    if (m_serviceKind == ServiceKind::SynchronousRequired)
+        return IsAccepting() && remaining && (!prediction || prediction <= remaining || indivisible);
     // Background work gets one unknown-duration calibration per host frame.
     // Interactive admission is limited by actual storage and queue readiness.
     return m_active && IsAccepting() && remaining &&
@@ -209,6 +260,8 @@ uint64_t FrameWorkOwner::RecordAcceptedResource(FrameWorkResource resource, uint
     state.admitted += grant;
     state.calibrations += prediction == 0;
     state.frameCalibrations += prediction == 0;
+    if (m_serviceKind == ServiceKind::SynchronousRequired)
+        m_quantumAdmissions |= 1u << static_cast<uint8_t>(resource);
     return grant;
 }
 
@@ -222,7 +275,7 @@ void FrameWorkOwner::ObserveResource(FrameWorkResource resource, uint64_t actual
     // A same-frame receipt replaces its own estimate with actual work. A late
     // receipt never changes the new frame's grants. Cancellation alone returns
     // no allowance; only a real execution receipt can reconcile a grant.
-    if (m_active && submittedFrame == m_opportunity)
+    if ((m_active || m_serviceKind == ServiceKind::SynchronousRequired) && submittedFrame == m_opportunity)
         state.admitted = state.admitted - grant + actual;
 }
 
@@ -272,6 +325,8 @@ int64_t FrameWorkOwner::Remaining(bool background) const
 
 int64_t FrameWorkOwner::ServiceRemaining() const
 {
+    if (m_serviceKind == ServiceKind::SynchronousRequired)
+        return static_cast<int64_t>(m_ownerNanoseconds) - static_cast<int64_t>(Now() - m_quantumStarted);
     return Remaining(m_serviceKind == ServiceKind::Background);
 }
 
@@ -289,6 +344,7 @@ void FrameWorkOwner::ObserveSource(const std::shared_ptr<Source> &source)
     source->observedOpportunity = m_opportunity;
     if (source->callbacks.observe) {
         Scope scope(*this);
+        CallbackScope callback(*this, source->id);
         source->callbacks.observe();
     }
 }
@@ -310,10 +366,14 @@ std::vector<FrameWorkOwner::Choice> FrameWorkOwner::DescribeSources()
 
 std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_ptr<Source> &source, bool interactive)
 {
-    if (!source->awake || !source->observedOpportunity || source->observedOpportunity != m_opportunity)
+    if (m_serviceKind == ServiceKind::SynchronousRequired &&
+        (m_requiredSources.empty() || source->id != m_requiredSources.back()))
+        return std::nullopt;
+    if (!source->awake || source->observedOpportunity != m_opportunity)
         return std::nullopt;
     Scope scope(*this);
     ServiceScope service(*this, interactive);
+    CallbackScope callback(*this, source->id);
     auto facts = source->callbacks.describe();
     if (!source->awake)
         return std::nullopt; // Removed during the callback.
@@ -327,6 +387,7 @@ void FrameWorkOwner::RefreshSources()
         if (!source->awake || source->observedOpportunity != m_opportunity || !source->callbacks.refresh)
             continue;
         Scope scope(*this);
+        CallbackScope callback(*this, source->id);
         source->callbacks.refresh();
     }
 }
@@ -367,6 +428,7 @@ bool FrameWorkOwner::AdvanceChoice(Choice &choice, bool gpu, bool interactive)
         return false;
     Scope scope(*this);
     ServiceScope service(*this, interactive);
+    CallbackScope callback(*this, choice.source->id);
     const auto progressSerial = m_progressSerial;
     const auto &candidate = gpu ? choice.facts.gpu : choice.facts.host;
     const bool ownProgress = choice.source->callbacks.advance(gpu, candidate.token);
@@ -513,31 +575,75 @@ bool FrameWorkOwner::AdvanceRequired(SourceId id, const std::function<FrameGpuAv
 {
     if (!m_active || m_late)
         throw std::logic_error("Required work must run in the current pre-render opportunity");
+    return DriveRequired(id, ServiceKind::Required, gpuAvailability, {});
+}
+
+void FrameWorkOwner::DrainRequired(SourceId id, const std::function<FrameGpuAvailability()> &gpuAvailability,
+                                   const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress)
+{
+    (void)DriveRequired(id, ServiceKind::SynchronousRequired, gpuAvailability, waitForProgress);
+}
+
+bool FrameWorkOwner::DriveRequired(SourceId id, ServiceKind kind,
+                                   const std::function<FrameGpuAvailability()> &gpuAvailability,
+                                   const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress)
+{
+    const bool synchronous = kind == ServiceKind::SynchronousRequired;
+    RequiredScope required(*this, id, synchronous);
+    if (!gpuAvailability)
+        throw std::invalid_argument("Required frame work needs a GPU availability callback");
     const auto found =
         std::find_if(m_sources.begin(), m_sources.end(), [id](const auto &source) { return source->id == id; });
     if (found == m_sources.end())
         throw std::invalid_argument("Required work source is not registered");
     const auto source = *found;
+    const auto blocked = [id](const std::string &reason) {
+        throw std::runtime_error("Synchronous frame work source " + std::to_string(id) + ": " + reason);
+    };
+    const auto blockedProgress = [&](const char *reason) {
+        const auto gpuReason = GpuUnavailableReason();
+        blocked(std::string(reason) + (*gpuReason ? std::string("; ") + gpuReason : std::string{}));
+    };
+    const auto requireAdmission = [&] {
+        if (!IsAccepting())
+            blocked(m_admission.load(std::memory_order_acquire) == Admission::DriverSuspended
+                        ? "the frame driver is suspended"
+                        : "work admission is stopped");
+    };
+    if (synchronous)
+        requireAdmission();
     Scope scope(*this);
-    ServiceScope service(*this, ServiceKind::Required);
+    ServiceScope service(*this, kind);
+    QuantumScope quantum(*this);
     source->awake = true;
     ObserveSource(source);
     for (;;) {
+        if (synchronous)
+            requireAdmission();
         const auto roundProgress = m_progressSerial;
         m_gpuAvailability = gpuAvailability();
-        if (source->awake && source->callbacks.refresh)
+        if (source->awake && source->callbacks.refresh) {
+            CallbackScope callback(*this, source->id);
             source->callbacks.refresh();
+        }
         const auto description = DescribeSource(source, false);
-        if (!description)
+        if (!description) {
+            if (synchronous)
+                blocked("the required source was removed before completion");
             return false;
+        }
         Choice choice{source, *description};
         const bool pending = HasPending(choice.facts);
         source->awake = pending || choice.facts.observe;
-        if (!IsAccepting() || Remaining() <= 0)
+        if (synchronous)
+            requireAdmission();
+        if (!pending)
+            return false;
+        if (!IsAccepting() || (!synchronous && Remaining() <= 0))
             return pending;
-        const auto fits = [this](const FrameWorkCandidate &candidate) {
-            return candidate.ready &&
-                   candidate.hostNanoseconds <= static_cast<uint64_t>((std::max)(int64_t{0}, Remaining()));
+        const auto fits = [this, synchronous](const FrameWorkCandidate &candidate) {
+            return candidate.ready && (synchronous || candidate.hostNanoseconds <=
+                                                          static_cast<uint64_t>((std::max)(int64_t{0}, Remaining())));
         };
         if (m_gpuAvailability == FrameGpuAvailability::Ready && choice.facts.gpuBusy)
             m_gpuAvailability = FrameGpuAvailability::BackgroundPending;
@@ -546,8 +652,32 @@ bool FrameWorkOwner::AdvanceRequired(SourceId id, const std::function<FrameGpuAv
             continue;
         if (fits(choice.facts.host) && AdvanceChoice(choice, false, false))
             continue;
-        if (roundProgress == m_progressSerial)
-            return source->awake && pending;
+        if (!source->awake) {
+            if (synchronous)
+                blocked("the required source was removed before completion");
+            return false;
+        }
+        if (roundProgress != m_progressSerial)
+            continue;
+        if (!synchronous)
+            return pending;
+        requireAdmission();
+        if (choice.facts.gpu.ready && !choice.facts.gpuBusy &&
+            m_gpuAvailability == FrameGpuAvailability::ForegroundRecording)
+            blocked(GpuUnavailableReason());
+        if (!waitForProgress)
+            blockedProgress(
+                "pending work has no bounded wait handler; storage or an unaccepted dependency may block progress");
+        FrameWorkWaitResult result;
+        {
+            QuantumScope waitQuantum(*this);
+            result = waitForProgress(id, m_ownerNanoseconds);
+        }
+        if (result == FrameWorkWaitResult::Blocked)
+            blockedProgress("no accepted target ticket or explicit dependency can make progress");
+        // Progress reports a retained change. Waiting reports a real bounded
+        // ticket timeout. Both return through the same refresh/describe loop;
+        // no peer source or global queue is driven implicitly.
     }
 }
 

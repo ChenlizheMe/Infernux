@@ -10,9 +10,9 @@
 namespace infernux
 {
 
-/// One ordered author-model boundary followed by per-body FIFO commands. The
-/// factory runs only after preceding groups' commands are accepted, so storage
-/// never has more than one unaccepted model transaction. A null result is a
+/// One ordered author-model boundary, per-body FIFO commands, then optional
+/// deferred compute work. Factories run after preceding groups are accepted,
+/// so storage never has more than one unaccepted model transaction. A null model result is a
 /// metadata-only boundary. The acceptance callback runs once, including for a
 /// null result; it must not throw, allocate, perform IO or submit GPU work.
 struct JoltGpuControlGroup
@@ -20,10 +20,14 @@ struct JoltGpuControlGroup
     std::function<std::unique_ptr<JoltGpuModelUpdate>()> prepareModel;
     std::function<void()> modelAccepted;
     std::vector<JPH::GPU::BodyCommand> commands;
+    /// Prepare once, after this group's model and commands are accepted. The
+    /// returned unaccepted packet shares this source's admission and receipts.
+    /// Null means no GPU work; preparation must not submit the packet itself.
+    std::function<std::shared_ptr<rhi::PreparedComputeBatch>()> prepareWork;
 };
 
 /// Accepted through the tick's existing work source before solver inputs are
-/// captured: initialization, then each group's model boundary and commands.
+/// captured: initialization, then each group's model, commands and deferred work.
 struct JoltGpuTickControl
 {
     JoltGpuTickControl() = default;
@@ -98,6 +102,9 @@ class JoltGpuTick final
     /// All control producers accepted, independently of GPU completion. Solver
     /// inputs and the optional CPU-force packet may still be pending.
     [[nodiscard]] bool AreControlInputsAccepted() const noexcept;
+    /// Strict consumers may wait only this source's accepted work. A timeout
+    /// means a real bounded queue wait; no receipts means a blocked dependency.
+    [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t maxWaitNanoseconds);
     [[nodiscard]] bool HasReceipts() const noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;
     [[nodiscard]] float GetFixedDeltaTime() const noexcept;
