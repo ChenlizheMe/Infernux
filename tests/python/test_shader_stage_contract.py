@@ -23,7 +23,7 @@ def test_shader_file_creation_accepts_graphics_stages(tmp_path):
     for stage in ("vert", "frag"):
         ok, error = create_shader(str(tmp_path), f"Stage_{stage}", stage)
         assert ok, error
-        path = tmp_path / ("stage_frag.frag.py" if stage == "frag" else "Stage_vert.vert")
+        path = tmp_path / f"stage_{stage}.{stage}.py"
         source = path.read_text(encoding="utf-8")
         if stage == "frag":
             from infernux._compiler.shader import parse_shader
@@ -32,5 +32,9 @@ def test_shader_file_creation_accepts_graphics_stages(tmp_path):
             assert definition.info["shader_id"] == "project/stage_frag"
             assert {"base_color", "albedo_map"} <= {field.name for field in definition.parameters}
         else:
-            assert "ShaderInfo {" in source and 'Name "Stage Vert"' in source
+            import json
+            from infernux._compiler.shader import _prepare_source
+            _, _, schema, _ = _prepare_source(source, str(path), "created_vertex", None)
+            assert json.loads(schema)["domain"] == "vertex"
+            assert json.loads(schema)["info"]["shader_id"] == "project/stage_vert"
         assert "@" not in source

@@ -5,6 +5,7 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
@@ -64,9 +65,18 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
         }
 
         std::vector<ShaderProgramArtifact> materials;
-        for (const auto &candidate : candidates)
-            if (candidate.second->materialProgram)
+        std::vector<std::pair<std::string, ShaderProgramKey>> replacedRecipes;
+        for (const auto &candidate : candidates) {
+            if (candidate.second->materialProgram) {
                 materials.push_back(*candidate.second->materialProgram);
+                if (registry.IsLoaded(candidate.first)) {
+                    const auto resident = registry.LoadAsset<ShaderAsset>(candidate.first, ResourceType::Shader);
+                    if (resident->materialProgram &&
+                        resident->materialProgram->key.stages != candidate.second->materialProgram->key.stages)
+                        replacedRecipes.emplace_back(candidate.first, resident->materialProgram->key);
+                }
+            }
+        }
         if (m_renderer && !materials.empty() && !m_renderer->PublishShaderProgramArtifacts(materials))
             throw std::runtime_error("Mesh author candidate programs could not be published");
 
@@ -84,6 +94,17 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
             registry.PublishShader(root, std::move(asset));
             if (m_renderer && fullscreen)
                 m_renderer->InvalidateShaderCache(root);
+        }
+        if (!replacedRecipes.empty()) {
+            for (const auto &material : registry.GetAllMaterials()) {
+                const auto &fragment = material->GetFragShaderReference().guid;
+                if (std::any_of(replacedRecipes.begin(), replacedRecipes.end(),
+                                [&](const auto &recipe) { return recipe.first == fragment; }))
+                    material->PrepareShaderDefaults();
+            }
+            if (m_renderer)
+                for (const auto &[root, key] : replacedRecipes)
+                    m_renderer->RetireShaderProgramArtifact(key);
         }
         return {};
     } catch (const ShaderCompilationError &error) {

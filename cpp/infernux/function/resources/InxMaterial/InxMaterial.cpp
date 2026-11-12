@@ -1550,6 +1550,21 @@ void InxMaterial::PrepareShaderDefaults()
         const auto shader = registry.LoadAsset<ShaderAsset>(fragment.guid, ResourceType::Shader);
         if (!shader || !shader->materialProgram)
             throw std::invalid_argument("Material requires a compiled mesh shader author");
+        const auto &vertexKey = shader->materialProgram->key.stages.vertexKey;
+        ShaderAssetReference vertex{{}, "Standard", {}};
+        if (vertexKey != "Standard") {
+            auto *database = registry.GetAssetDatabase();
+            const auto meta = database->GetMetaByGuid(vertexKey);
+            vertex = {vertexKey, meta->GetDataAs<std::string>("shader_id"), database->GetPathFromGuid(vertexKey)};
+        }
+        if (!(m_vertexShader == vertex)) {
+            m_vertexShader = std::move(vertex);
+            m_pipelineDirty = true;
+            ++m_version;
+            NotifyRoutingChanged();
+            TrackRuntimeShaderReferences();
+            PublishDependencies();
+        }
         SynchronizeShaderPropertyDefaults(*shader->materialProgram);
     }
 #endif

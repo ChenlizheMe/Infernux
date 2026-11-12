@@ -33,453 +33,263 @@
         <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="rendering.html"><span data-page-language="en">Author the rendering pipeline</span><span data-page-language="zh" lang="zh-CN" hidden>编写自定义渲染</span></a><span class="learn-chapter-position"><span data-page-language="en">Rendering course · 2/8</span><span data-page-language="zh" lang="zh-CN" hidden>渲染课程 · 2/8</span></span><a href="vertex-stage.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
 
         <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Custom Rendering · Chapter 2</span></p>
-<h1 id="vertex-stages-and-reusable-deformation">Vertex stages and reusable deformation</h1>
-<p>The vertex stage answers one narrow question: <strong>where is this vertex, and what information should reach the fragment stage?</strong> Keeping it separate from the fragment stage lets the same deformation drive several visual styles. A wave vertex stage can support water, lava, holograms, or a depth-only utility without duplicating the motion.</p>
-<div class="learn-article-toc"><strong>In this chapter</strong><a href="#minimal-stage">The minimal stage</a><a href="#vertex-layout">Vertex layout</a><a href="#vertex-hook">The vertex hook</a><a href="#varyings">Stage interfaces</a><a href="#geometry-data">Geometry responsibilities</a><a href="#reuse">Reuse and debugging</a></div>
+<h1 id="vertex-assets-and-shared-deformation">Vertex assets and shared deformation</h1>
+<p>Create <code>*.vert.py</code> for local-space vertex deformation. This is a static GPU asset, compiled with Slang alongside the surface that references it. Its class body never executes as a game script. Ordinary surfaces already have the engine's instanced/skinned vertex path and need no vertex file.</p>
+<h2 id="minimal-stage">A first deformation</h2>
+<p>Save this as <code>wave.vert.py</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
 
-<figure class="learn-figure">
-  <img src="../assets/learn/vertex-reuse.webp" alt="comparison of one vertex deformation with three fragment appearances" loading="lazy" decoding="async">
-  <figcaption>Diagram: the same animated mesh shown with three materials to demonstrate stage reuse.</figcaption>
-</figure>
 
-<h2 id="minimal-stage">The minimal stage</h2>
-<p>The standard mesh path needs only a name:</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Wave</span><span class="p">(</span><span class="n">shader</span><span class="o">.</span><span class="n">vert</span><span class="p">):</span>
+    <span class="n">shader_id</span> <span class="o">=</span> <span class="s2">"example/vertex/wave"</span>
+    <span class="n">amplitude</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">float</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">),</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Amplitude"</span><span class="p">)</span>
+    <span class="n">frequency</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">float</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">4.0</span><span class="p">)</span>
+    <span class="n">speed</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">float</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
 
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Standard</span><span class="err">"</span>
-<span class="p">}</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">deform</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">vertex</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">VertexData</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">VertexContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">shader</span><span class="o">.</span><span class="n">VertexData</span><span class="p">:</span>
+        <span class="n">phase</span> <span class="o">=</span> <span class="n">vertex</span><span class="o">.</span><span class="n">position_os</span><span class="o">.</span><span class="n">x</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">frequency</span> <span class="o">+</span> <span class="n">ctx</span><span class="o">.</span><span class="n">time</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span>
+        <span class="n">vertex</span><span class="o">.</span><span class="n">position_os</span><span class="o">.</span><span class="n">y</span> <span class="o">+=</span> <span class="n">shader</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">phase</span><span class="p">)</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">amplitude</span>
+        <span class="k">return</span> <span class="n">vertex</span>
 </code></pre></div>
 
-<p>With no authored hook, Infernux supplies the normal mesh inputs and performs the standard object-to-world-to-view-to-clip transform. This is deliberate: ordinary materials should not repeat matrix boilerplate, descriptor layouts, or vertex locations.</p>
-<p>Save this example as <code>Assets/Shaders/learn_standard.vert</code> and select it in the Material's Vertex picker. Its unique name keeps it separate from the built-in <code>Standard</code> stage. To use the built-in stage, select <code>Standard</code> directly; no project file is needed.</p>
-<p><code>Name</code> is the case-sensitive stage identifier displayed in the Material's bound field. The Project asset picker displays the file name: choose <code>wave_bent.vert</code>, and the <strong>Vertex</strong> field displays <code>Wave</code> when the file declares <code>Name "Wave"</code>.</p>
-<h3 id="how-the-material-finds-it">How the Material finds it</h3>
-<p>Import a <code>.vert</code> or <code>.frag</code> inside the project's <code>Assets</code> tree, then open the corresponding <strong>Vertex</strong> or <strong>Fragment</strong> asset picker in the Material Inspector. Select the shader file by its file name. The Material stores the selected project asset's GUID and displays its current <code>ShaderInfo Name</code>; the file name and displayed stage name need not match. Built-in stages such as <code>Standard</code> and <code>Lit</code> use symbolic stage identifiers rather than project asset GUIDs.</p>
-<p>Keep stage names unique across project and built-in shaders: linked programs currently use stage names for their program namespace. A project's GUID reference owns the asset identity; its cached stage name is a derived label. Changing <code>ShaderInfo Name</code> and saving the shader automatically updates referencing loaded Materials and runtime clones after a successful import. Existing saved Materials also resolve the current name from GUID metadata when loaded; you do not need to select the shader again. If any dependent stage pair fails compilation or linking, the reload is rejected before live Material references migrate. Correct the source and save again.</p>
-<p>The material linker checks the selected stages' properties and varyings before Vulkan pipeline creation. To verify selection and reload, save <code>Assets/Shaders/wave_bent.vert</code> with <code>Name "Wave"</code>, wait for import, choose <code>wave_bent.vert</code> in the <strong>Vertex</strong> asset picker, and confirm that the bound field displays <code>Wave</code>. Change only <code>Name</code> to <code>Wave V2</code> and save. The field should update to <code>Wave V2</code> while the Material keeps the same shader GUID and its authored values. Restore <code>Name "Wave"</code> and confirm that both Scene and Game continue rendering without shader errors.</p>
-<h2 id="vertex-layout">Where vertex data comes from</h2>
-<p>The hook edits <code>VertexInput</code>, but that public struct sits on top of a fixed engine vertex buffer. The buffer names below are implementation fields; shader authors use the <code>VertexInput</code> field in the next column:</p>
+<p>Reference it from <code>painted.frag.py</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Painted</span><span class="p">(</span><span class="n">shader</span><span class="o">.</span><span class="n">surface</span><span class="p">):</span>
+    <span class="n">shader_id</span> <span class="o">=</span> <span class="s2">"example/materials/wave"</span>
+    <span class="n">vertex_shader</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="s2">"./wave.vert.py"</span><span class="p">)</span>
+    <span class="n">base_color</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">color</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="p">(</span><span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">surface</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceData</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceData</span><span class="p">(</span><span class="n">albedo</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">base_color</span><span class="o">.</span><span class="n">rgb</span><span class="p">,</span> <span class="n">normal_ws</span><span class="o">=</span><span class="n">ctx</span><span class="o">.</span><span class="n">normal_ws</span><span class="p">)</span>
+</code></pre></div>
+
+<p>After import, the reference can also be <code>shader.ref("example/vertex/wave")</code>. A matching filename does not implicitly change a material. Create the Material from its fragment root:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+<span class="n">material</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Material</span><span class="o">.</span><span class="n">from_shader</span><span class="p">(</span><span class="s2">"example/materials/wave"</span><span class="p">,</span> <span class="s2">"Water"</span><span class="p">)</span>
+<span class="n">material</span><span class="o">.</span><span class="n">set_float</span><span class="p">(</span><span class="s2">"amplitude"</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">)</span>
+<span class="n">renderer</span><span class="o">.</span><span class="n">set_material</span><span class="p">(</span><span class="n">material</span><span class="p">)</span>
+</code></pre></div>
+
+<p>Vertex fields appear in the same Material Inspector as fragment fields. Authors do not declare locations, descriptor bindings, a second parameter block or a second material. The ID locates an asset; its GUID owns the program identity. Renaming a class does not change that identity.</p>
+<h2 id="vertex-layout">Geometry values</h2>
+<p>The entry is <code>deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -&gt; shader.VertexData</code>. Modify and return the input. Deformation runs before skinning and the object transform.</p>
 <table>
 <thead>
 <tr>
-<th>Location</th>
-<th>Engine buffer field</th>
-<th><code>VertexInput</code> field</th>
-<th>Type</th>
-<th>Notes</th>
+<th>VertexData field</th>
+<th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>0</td>
-<td><code>pos</code></td>
-<td><code>position</code></td>
-<td><code>vec3</code></td>
-<td>Local-space position</td>
+<td><code>position_os</code></td>
+<td>Local position, vec3</td>
 </tr>
 <tr>
-<td>1</td>
-<td><code>normal</code></td>
-<td><code>normal</code></td>
-<td><code>vec3</code></td>
-<td>Missing source normals face +Y</td>
+<td><code>normal_os</code></td>
+<td>Local normal, vec3</td>
 </tr>
 <tr>
-<td>2</td>
-<td><code>tangent</code></td>
-<td><code>tangent</code></td>
-<td><code>vec4</code></td>
-<td><code>.w</code> carries the bitangent sign</td>
+<td><code>tangent_os</code></td>
+<td>Local tangent XYZ and handedness W, vec4</td>
 </tr>
 <tr>
-<td>3</td>
 <td><code>color</code></td>
-<td><code>color</code></td>
-<td><code>vec3</code></td>
-<td>Defaults to white</td>
+<td>Vertex color, vec3</td>
 </tr>
 <tr>
-<td>4</td>
-<td><code>texCoord</code></td>
-<td><code>texCoord</code></td>
-<td><code>vec2</code></td>
-<td>Primary UV set</td>
-</tr>
-<tr>
-<td>5</td>
-<td><code>boneIndices</code></td>
-<td>Engine-owned</td>
-<td><code>uvec4</code></td>
-<td>GPU skinning palette indices</td>
-</tr>
-<tr>
-<td>6</td>
-<td><code>boneWeights</code></td>
-<td>Engine-owned</td>
-<td><code>vec4</code></td>
-<td>GPU skinning weights</td>
-</tr>
-<tr>
-<td>7</td>
-<td><code>texCoord1</code></td>
-<td><code>texCoord1</code></td>
-<td><code>vec2</code></td>
-<td>Secondary/lightmap UV set; defaults to the origin</td>
+<td><code>uv0</code>, <code>uv1</code></td>
+<td>Mesh UV sets, vec2</td>
 </tr>
 </tbody>
 </table>
-<p>For example, location 0 is stored as <code>pos</code> in the C++ <code>Vertex</code> structure, then presented to user code as <code>v.position</code>. Shader code never accesses <code>v.pos</code>. The generated builtins mirror locations 0-7 and construct the public <code>VertexInput</code> contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.</p>
-<p>Vulkan pipelines do not bind all eight attributes blindly. After SPIR-V compilation, <code>FilterVertexAttributesForReflection()</code> (<code>VertexInputFilter.h</code>) keeps only the locations the vertex shader actually reads, so a shader that never samples skinning does not create unused attribute descriptors; <code>MaterialPipelineManager.cpp</code> calls it during pipeline creation. The CPU-side buffer layout never changes.</p>
-<p>Different geometry domains reuse or replace this layout:</p>
-<ul>
-<li><strong>Mesh</strong> is the default domain: the eight-attribute buffer, the generated builtins, and the optional <code>vertex()</code> hook.</li>
-<li><strong>Sprite</strong> renders a quad through the same mesh path (<code>SpriteRenderer</code> attaches an inline quad mesh), so it uses the identical layout and hooks.</li>
-<li><strong>Standalone</strong> programs such as <code>gizmo.vert</code>, <code>grid.vert</code>, and <code>flat.vert</code> write their own <code>main()</code> under <code>Capabilities [Standalone]</code>. Gizmos still feed them the standard <code>Vertex</code> structure, but the author owns the whole vertex stage.</li>
-<li><strong>ParticleSprite</strong> is a separate domain with no vertex buffer at all. The particle sprite stage declares <code>Capabilities [ParticleSprite]</code>, and the engine builds six billboard corners from instance storage buffers inside <code>main()</code>. Selecting a ParticleSprite or Fullscreen stage on a mesh Material fails with a domain error.</li>
-</ul>
-<p>Evidence: the attribute table and defaults follow <code>InxRenderStruct.h</code> (<code>Vertex</code> and <code>getAttributeDescriptions()</code>); the reflection filter follows <code>VertexInputFilter.h</code> and its call site in <code>MaterialPipelineManager.cpp</code>; domain selection follows <code>ShaderStageLinker.cpp</code> and the stage capability sets.</p>
-<h2 id="vertex-hook">Add deformation with <code>vertex()</code></h2>
-<p>Define the fixed hook only when the geometry needs to change:</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
+<table>
+<thead>
+<tr>
+<th>VertexContext field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>time</code></td>
+<td>Time of this geometry sample, seconds</td>
+</tr>
+<tr>
+<td><code>delta_time</code></td>
+<td>Current engine frame interval, seconds</td>
+</tr>
+<tr>
+<td><code>model_matrix</code></td>
+<td>Object matrix for this sample, mat4</td>
+</tr>
+<tr>
+<td><code>object_id</code></td>
+<td>Object identity, uvec2</td>
+</tr>
+<tr>
+<td><code>layer_mask</code></td>
+<td>Object lighting layer mask, uint</td>
+</tr>
+</tbody>
+</table>
+<p>Bone indices, weights, instance addressing, projection and clipping remain engine data. Returning VertexData preserves those streams. Update normals and tangents when a deformation changes surface orientation; moving positions alone does not derive a new normal.</p>
+<p>The standard entry preserves the engine's mesh-to-fragment contract. Arbitrary user varyings and custom clip-space exits are still being extended. Geometry and tessellation stages are separate future capabilities.</p>
+<h2 id="vertex-hook">One material layout</h2>
+<p>Vertex and fragment fields merge before compilation. A field declared in both files must have the same type, default and presentation metadata. It then has one value and one target layout shared by both stages. Conflicts report the fragment reference location. Vertex-only fields use normal Material APIs and serialization.</p>
+<p>ShaderLib imports work as they do in surfaces. For example, save this as <code>bend.shaderlib.py</code>, then use <code>from .bend import bend</code> in the vertex asset:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
 
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Wave</span><span class="err">"</span>
-<span class="p">}</span>
 
-<span class="kt">void</span><span class="w"> </span><span class="n">vertex</span><span class="p">(</span><span class="k">inout</span><span class="w"> </span><span class="n">VertexInput</span><span class="w"> </span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">phase</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">4.0</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">_Globals</span><span class="p">.</span><span class="n">_Time</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="p">;</span>
-<span class="w">    </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">y</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">sin</span><span class="p">(</span><span class="n">phase</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">0.1</span><span class="p">;</span>
-<span class="p">}</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">bend</span><span class="p">(</span><span class="n">position</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">time</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">amplitude</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
+    <span class="k">return</span> <span class="n">position</span> <span class="o">+</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">shader</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">position</span><span class="o">.</span><span class="n">x</span> <span class="o">*</span> <span class="mf">4.0</span> <span class="o">+</span> <span class="n">time</span><span class="p">)</span> <span class="o">*</span> <span class="n">amplitude</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
 </code></pre></div>
 
-<p>The hook edits object-space <code>VertexInput</code>; the generated stage continues through the standard transforms afterwards. This preserves engine features that depend on a consistent geometry contract, including camera rendering, shadows, picking, and compatible motion data.</p>
-<p>Choose the coordinate space intentionally. Object-space deformation follows object rotation and scale. World-space behavior needs an explicit calculation through the generated world transform or an imported helper.</p>
-<p><code>_Globals._Time</code> follows one source-defined convention: <code>.x</code> is unscaled seconds accumulated by the renderer, <code>.y</code> is <code>sin(x)</code>, <code>.z</code> is <code>cos(x)</code>, and <code>.w</code> is the current render-frame delta in seconds. The clock starts when the renderer is initialized, advances in Edit Mode and while gameplay is paused, does not reset on Play/Stop, and is unaffected by <code>Time.time_scale</code>; one unusually long frame contributes at most <code>1/3</code> second. <code>Time.shader_time</code> is the public CPU-side value that mirrors <code>_Globals._Time.x</code>. Restarting the renderer starts a new clock, so do not use <code>_Time.x</code> as saved gameplay time or a deterministic simulation tick.</p>
-<h3 id="generated-mesh-path-boundary">Generated mesh-path boundary</h3>
-<p>For ordinary mesh variants, Infernux calls <code>vertex()</code> on unskinned object-local data, records the post-hook local position, then applies current skinning and the current per-instance model transform. <code>VertexInput</code> exposes <code>position</code>, <code>normal</code>, <code>tangent</code>, <code>color</code>, <code>texCoord</code>, and <code>texCoord1</code>; it does not expose bone indices/weights, an instance ID, or custom per-instance payload. One Material hook therefore runs identically for every instance before each instance transform.</p>
-<p>This order has concrete consequences:</p>
-<ul>
-<li>A skinned mesh carries the deformed local position through the generated bone palette. The hook cannot branch on bone data through the current <code>VertexInput</code> contract.</li>
-<li>Instanced meshes receive a generated current instance transform; the Motion variant also receives its previous transform. The hook has no public per-instance selector, so it cannot express instance-specific deformation. Split renderer/material configurations when instances need different hook behavior.</li>
-<li>The generated model transform applies the inverse-transpose matrix to normals and the model matrix to tangent directions. Mirrored object or instance scale also reverses the tangent handedness. These transforms run after the hook and cannot reconstruct a normal or tangent left stale by the deformation. Skinning applies the same rule to the blended bone matrix: inverse transpose for normals, direction transform for tangents, and reversed handedness for a mirrored blend. Two reflections, one in the bone blend and one in the model transform, cancel.</li>
-</ul>
-<div class="learn-warning"><strong>Deformed geometry has more than one consumer.</strong><p>If an effect changes the visible silhouette, verify the Scene camera, Game camera, shadow caster, object picking, and motion-vector path. The generated variants reuse the hook, but bounds and previous-frame procedural deformation still have separate limits described below.</p></div>
-
-<h2 id="varyings">Stage interfaces without manual layouts</h2>
-<p>Infernux owns Vulkan locations, descriptor sets, generated uniform blocks, and push-constant layouts. Leave <code>layout(location=...)</code> and <code>layout(set=..., binding=...)</code> to the compiler. Structured <code>Inputs</code>, <code>Outputs</code>, <code>Resources</code>, and <code>PushConstants</code> describe intent; the shader compiler assigns the physical interface.</p>
-<p>Here is a complete pair. Save the first file as <code>Assets/Shaders/wind_bent.vert</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
-
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Wind</span><span class="w"> </span><span class="n">Bent</span><span class="err">"</span>
-<span class="w">    </span><span class="n">Outputs</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float2</span><span class="w"> </span><span class="n">detailUV</span><span class="w"> </span><span class="n">Semantic</span><span class="p">(</span><span class="n">TexCoord7</span><span class="p">)</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float</span><span class="w"> </span><span class="n">windMask</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-
-<span class="n">VertexOutput</span><span class="w"> </span><span class="n">vertex</span><span class="p">(</span><span class="k">inout</span><span class="w"> </span><span class="n">VertexInput</span><span class="w"> </span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">VertexOutput</span><span class="w"> </span><span class="n">result</span><span class="p">;</span>
-<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">phase</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">4.0</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">_Globals</span><span class="p">.</span><span class="n">_Time</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="p">;</span>
-<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">bend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sin</span><span class="p">(</span><span class="n">phase</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">0.1</span><span class="p">;</span>
-<span class="w">    </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">y</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">bend</span><span class="p">;</span>
-<span class="w">    </span><span class="n">result</span><span class="p">.</span><span class="n">detailUV</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">texCoord</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="p">;</span>
-<span class="w">    </span><span class="n">result</span><span class="p">.</span><span class="n">windMask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">clamp</span><span class="p">(</span><span class="n">abs</span><span class="p">(</span><span class="n">bend</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">10.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">);</span>
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">result</span><span class="p">;</span>
-<span class="p">}</span>
+<p>Dependencies and diagnostics follow the consuming surface. Use <code>shader.sample_level(image, uv, lod)</code> for vertex texture sampling: a vertex stage has no fragment derivatives for implicit LOD. GPU imports use <code>infernux.shader</code> and static ShaderLib declarations, without NumPy or host code.</p>
+<h2 id="geometry-data">Every geometry pass</h2>
+<p>The same deformation feeds visible color, supported GBuffer output, shadow casting, depth, picking, normals, base color and motion. Surface alpha supplies their common coverage rule. The engine applies the appropriate camera or light projection.</p>
+<p>Motion evaluates deformation at the previous sample, with the previous object transform and skeletal pose. Each camera graph retains its last submitted sample time; skipped views do not assume a fixed frame interval. A new or invalidated view does not claim valid previous motion. Each evaluation receives its own <code>ctx.time</code>; <code>ctx.delta_time</code> still describes the current frame.</p>
+<p>Geometry evaluation currently uses current material values. Previous parameter values and independently changing displacement textures require an explicit history contract for exact motion. This entry does not record arbitrary GPU state.</p>
+<p>Deformation changes GPU vertices, not CPU collision shapes or mesh bounds. Keep conservative bounds over the displacement range, or the mesh may be culled before the vertex program runs. Rigidbody geometry remains separate gameplay data. A static renderer is also a shadow-cache promise: time-varying deformation needs a dynamic renderer.</p>
+<h2 id="reuse">Creation and diagnostics</h2>
+<p>Project creation generates a snake_case <code>.vert.py</code> with a <code>shader.vert</code> class. A fragment root may reference one vertex asset and one shading model. Make the Material from the fragment; its prepared recipe supplies the declared vertex reference.</p>
+<div class="highlight"><pre><span></span><code><span class="n">report</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Shader</span><span class="o">.</span><span class="n">check</span><span class="p">(</span><span class="s2">"Assets/Shaders/wave.vert.py"</span><span class="p">)</span>
+<span class="n">schema</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Shader</span><span class="o">.</span><span class="n">get_schema</span><span class="p">(</span><span class="s2">"example/materials/wave"</span><span class="p">)</span>
 </code></pre></div>
 
-<p>Save the consumer as <code>Assets/Shaders/wind_surface.frag</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
-
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Wind</span><span class="w"> </span><span class="n">Surface</span><span class="err">"</span>
-<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="n">Unlit</span>
-<span class="w">    </span><span class="n">Inputs</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float2</span><span class="w"> </span><span class="n">detailUV</span><span class="w"> </span><span class="n">Semantic</span><span class="p">(</span><span class="n">TexCoord7</span><span class="p">)</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float</span><span class="w"> </span><span class="n">windMask</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-
-<span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
-<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kt">vec3</span><span class="p">(</span><span class="n">fragmentInput</span><span class="p">.</span><span class="n">detailUV</span><span class="p">,</span><span class="w"> </span><span class="n">fragmentInput</span><span class="p">.</span><span class="n">windMask</span><span class="p">);</span>
-<span class="p">}</span>
-</code></pre></div>
-
-<p>Create or open a Material, select <code>Wind Bent</code> under <strong>Vertex</strong> and <code>Wind Surface</code> under <strong>Fragment</strong>, then assign it to a MeshRenderer. The producer writes both members of <code>VertexOutput</code>; the consumer reads those same members from <code>fragmentInput</code>.</p>
-<p>Names, types, interpolation, semantics, and declared spaces form one contract. <code>Float4</code> to <code>Float3</code> and <code>Smooth</code> to <code>Flat</code> both produce link errors. A missing or mismatched member is reported before Vulkan pipeline creation.</p>
-<p>Location assignment is engine-owned as well. The built-in varyings occupy locations 0-7 (<code>v_WorldPos</code>, <code>v_Normal</code>, <code>v_Tangent</code>, <code>v_Color</code>, <code>v_TexCoord</code>, <code>v_ViewDepth</code>, the internal LineRenderer tint, and <code>v_TexCoord1</code>). Authored varyings start at location 8. The linker sorts them by semantic first, then by name, so the declaration order in the file does not decide the layout; a <code>mat4</code> consumes four consecutive locations. The ceiling is location 15, and location 15 itself is reserved for engine pass data such as the picking ID. <code>ShaderStageLinker</code> applies these rules when the stages link at import time.</p>
-<p>Two checks enforce the contract. At import time, the stage linker pairs every fragment <code>Inputs</code> member with a vertex <code>Outputs</code> member by name and compares type, interpolation, semantic, and space. Its diagnostics cover a missing vertex output, a type mismatch, an interpolation mismatch, a semantic mismatch, a space mismatch, duplicate varyings, duplicate semantics, and the location ceiling. At runtime, when the linked program is created, <code>ShaderProgram::ValidateStageInterface()</code> reflects the compiled SPIR-V and compares each fragment input with the vertex output at the same location, including the vector width. A stage pair that passes the source-level link but disagrees in reflection fails program creation before any Vulkan pipeline is built.</p>
-<p>Custom varyings are only needed when the fragment stage needs data beyond the standard contract. Built-in surface helpers already expose standard UVs, vertex color, world normal, and related mesh data.</p>
-<p><code>Space(World)</code> is a checked label with no transform behavior. The linker verifies that producer and consumer use the same label; object-to-world multiplication remains author code. Compute a value in world space first with the transform or helper available to that geometry domain, then declare it <code>Space(World)</code> on both sides. Tagging object-space <code>v.position</code> as world space creates a consistently mislabeled varying.</p>
-<h2 id="geometry-data">Bounds, normals, and tangents</h2>
-<p>Changing <code>v.position</code> moves GPU vertices while the CPU mesh data stays unchanged. The renderer gets bounds, normals, and tangents from that mesh data, and each solves a different problem:</p>
-<ul>
-<li><strong>Bounds</strong> decide whether a renderer is submitted for camera and shadow culling and also support Scene-view framing. Infernux derives local bounds from imported or inline mesh vertices, then transforms that box to world space. Shader motion is invisible to that calculation. The current Editor and Python binding expose no per-renderer bounds override; <code>MeshRenderer.get_world_bounds()</code> returns the six-value world AABB for inspection only.</li>
-<li><strong>Normal</strong> describes the surface direction used by lighting. Translation preserves it; bending, waves, and uneven displacement usually change it. Update <code>v.normal</code> in object space when the deformation changes the local slope. The generated stage handles the later skinning and world-space normal transform.</li>
-<li><strong>Tangent</strong> supplies the UV-aligned axis used with the normal to build the tangent basis for normal maps. If deformation rotates that axis, update <code>v.tangent.xyz</code> too and preserve or deliberately recompute its handedness in <code>.w</code>. Otherwise the silhouette can look right while normal-mapped light slides in the wrong direction.</li>
-</ul>
-<p>Reproduce a bounds failure before choosing a workaround:</p>
-<ol>
-<li>Assign the <code>Wave</code> stage to a Cube, temporarily raise the amplitude from <code>0.1</code> to <code>1.0</code>, and keep the Cube's Transform scale at <code>(1, 1, 1)</code>.</li>
-<li>In Game view, move the Cube slowly toward the top edge of the camera frustum. At some phases, displaced vertices are still mathematically inside the view after the original CPU box has left it; the whole renderer then disappears. A shadow may disappear at a different light-frustum edge for the same reason.</li>
-<li>With the Transform held fixed, inspect <code>MeshRenderer.get_world_bounds()</code> from an Editor script over several frames. The tuple remains constant while <code>_Time</code> changes the visible vertices. A clean Console plus this constant box distinguishes culling from a shader compile failure.</li>
-<li>Restore a conservative amplitude or author/import a mesh whose CPU vertex positions cover the complete deformation envelope. For procedural geometry, calling the public <code>set_inline_mesh_data(...)</code> recomputes bounds from every supplied position; indexed data can include envelope positions that are not referenced by a triangle. There is currently no direct public call to enlarge the existing renderer bounds.</li>
-</ol>
-<p>Arbitrary GLSL gives the engine no basis for inferring bounds, normals, or tangents. For a displacement texture, sample neighboring heights and rebuild the local normal/tangent from the new slope. Verify the CPU envelope separately with the frustum-edge test above.</p>
-<h2 id="reuse">Reuse and debugging</h2>
-<p>Treat <code>.vert</code> files as geometry behavior and keep them independent of specific material names. Useful reusable stages include wind bending, water displacement, vegetation flutter, skinning variants, or a standard unmodified mesh path.</p>
-<p>When a material disappears after changing its vertex stage, check in this order:</p>
-<ol>
-<li>The selected value matches <code>ShaderInfo Name</code> exactly, including case, and does not collide with another project or built-in ID.</li>
-<li>The shader finished import. Clear Console, save/reimport the file, assign the Material again, and treat any import, stage-link, or Vulkan pipeline error as a failed check.</li>
-<li>A stage with custom <code>Outputs</code> returns a <code>VertexOutput</code>; a stage that only edits built-in geometry may use the <code>void vertex(inout VertexInput v)</code> hook.</li>
-<li>Every custom output has a matching fragment input with the same name, type, interpolation, semantic, and space.</li>
-<li>The stage belongs to the geometry domain expected by the Material. Fullscreen and particle programs are rejected with a domain error.</li>
-</ol>
-<h3 id="verify-shadow-picking-and-motion-variants">Verify shadow, picking, and motion variants</h3>
-<p>The compiler places the same hook in compatible color, shadow/depth, picking, and motion vertex variants. Verify the observable product of each path:</p>
-<ol>
-<li><strong>Color:</strong> clear Console, reimport, assign the Material, and confirm the same animated silhouette in Scene and Game. No new shader/link/pipeline error is allowed.</li>
-<li><strong>Shadow:</strong> add a large Plane below the object, use a shadow-enabled Directional Light, and keep the deformed renderer's <code>casts_shadows</code> enabled. Move the light or camera until the wavy edge is legible. The shadow silhouette must move with the visible silhouette; an early disappearance near the light frustum points back to CPU bounds.</li>
-<li><strong>Picking:</strong> in Scene view, click a visibly displaced part that is still inside the submitted renderer. The same GameObject must become selected in Hierarchy. Repeat at two different wave phases.</li>
-<li><strong>Object motion:</strong> create the built-in <strong>Motion Blur</strong> RenderEffect, mount it in an active RenderStack's <code>final</code> stage as described in <a href="renderstack-mount-points.html">RenderStack mount points</a>, and animate the object's Transform during Play. Visible blur on the moving object verifies previous model transforms. Duplicate the opaque object so both MeshRenderers share one mesh and Material, then move them independently; this setup is eligible for automatic instance batching and exercises per-instance history. On a skinned test mesh, play a bone animation and check the moving limbs to verify previous bone transforms.</li>
-<li><strong>Procedural local motion:</strong> keep the object Transform still and observe the <code>_Time</code> wave with Motion Blur or TAA. The current Motion variant reuses the current frame's post-hook local position for both clip-space histories, then applies previous bone and model transforms. It does not evaluate the hook with previous <code>_Time</code>. Time-driven local deformation therefore has no reliable self-motion vector and may show missing blur or TAA ghosting. Accurate previous-frame procedural deformation requires work outside the current public vertex-hook contract.</li>
-</ol>
-<figure class="learn-figure">
-  <img src="../assets/learn/shader-diagnostics.webp" alt="interface diagram of vertex shader selection and compile diagnostics" loading="lazy" decoding="async">
-  <figcaption>Diagram: the Vertex selector displays the `ShaderInfo Name` value <code>Wave</code>; the adjacent example shows a fragment-stage type diagnostic. This is a schematic, not a pixel-exact Editor capture.</figcaption>
-</figure>
-
-<div class="learn-note"><strong>Evidence note.</strong><p>Name discovery follows <code>inspector_shader_utils.py</code>. Hook order and generated variants follow the mesh, shadow, picking, and motion templates plus <code>InxShaderLoader.cpp</code>. The vertex attribute layout and reflection filter follow <code>InxRenderStruct.h</code> and <code>VertexInputFilter.h</code>; stage pairing, its diagnostics, and location assignment follow <code>ShaderStageLinker.cpp</code> and <code>ShaderProgram.cpp</code>. The time convention follows <code>EngineGlobals.h</code>, <code>InxRenderer.cpp</code>, and <code>timing.py</code>. The bounds boundary follows <code>MeshRenderer.cpp</code> and the Python declarations in <code>BindingScene.cpp</code>; the documented public surface includes <code>get_world_bounds()</code> and <code>set_inline_mesh_data(...)</code>, with no bounds setter.</p></div>
-
-<p>The next chapter keeps this geometry stage and changes only what the surface is made of.</p></div>
+<p>Standalone checking verifies the typed definition and libraries. The surface verifies the complete graphics recipe and target entries. Vertex errors retain their original file and line. Successful hot edits publish dependent programs; already submitted work retains its resources.</p></div>
         <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">自定义渲染 · 第 2 章</span></p>
-<h1 id="_1">顶点阶段与可复用形变</h1>
-<p>顶点阶段只回答一个狭窄的问题：<strong>这个顶点在哪里，以及哪些信息需要传给片元阶段？</strong> 把它与片元阶段分开，同一套形变就能服务多种画面风格。一份波浪 Vert 可以同时用于水面、岩浆、全息效果或只写深度的工具 Pass，而不用复制运动逻辑。</p>
-<div class="learn-article-toc"><strong>本章内容</strong><a href="#minimal-stage_1">最小顶点阶段</a><a href="#vertex-layout_1">顶点布局</a><a href="#vertex-hook_1">vertex Hook</a><a href="#varyings_1">阶段接口</a><a href="#geometry-data_1">几何数据责任</a><a href="#reuse_1">复用与排错</a></div>
+<h1 id="_1">顶点资产与共享变形</h1>
+<p>需要局部空间顶点变形时，创建 <code>*.vert.py</code>。它是静态 GPU 资产，与引用它的 Surface 一起由 Slang 编译，类体不会作为游戏脚本执行。普通 Surface 已有引擎的实例化、蒙皮和标准变换，不必再写顶点文件。</p>
+<h2 id="minimal-stage">第一个变形</h2>
+<p>保存为 <code>wave.vert.py</code>：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
 
-<figure class="learn-figure">
-  <img src="../assets/learn/vertex-reuse.webp" alt="同一顶点形变搭配三种片元外观对比图" loading="lazy" decoding="async">
-  <figcaption>图解：用三个材质展示同一动画网格，直观看出阶段复用。</figcaption>
-</figure>
 
-<h2 id="minimal-stage_1">最小顶点阶段</h2>
-<p>标准网格路径只需要一个名字：</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Wave</span><span class="p">(</span><span class="n">shader</span><span class="o">.</span><span class="n">vert</span><span class="p">):</span>
+    <span class="n">shader_id</span> <span class="o">=</span> <span class="s2">"example/vertex/wave"</span>
+    <span class="n">amplitude</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">float</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">),</span> <span class="n">label</span><span class="o">=</span><span class="s2">"幅度"</span><span class="p">)</span>
+    <span class="n">frequency</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">float</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">4.0</span><span class="p">)</span>
+    <span class="n">speed</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">float</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
 
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Standard</span><span class="err">"</span>
-<span class="p">}</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">deform</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">vertex</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">VertexData</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">VertexContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">shader</span><span class="o">.</span><span class="n">VertexData</span><span class="p">:</span>
+        <span class="n">phase</span> <span class="o">=</span> <span class="n">vertex</span><span class="o">.</span><span class="n">position_os</span><span class="o">.</span><span class="n">x</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">frequency</span> <span class="o">+</span> <span class="n">ctx</span><span class="o">.</span><span class="n">time</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span>
+        <span class="n">vertex</span><span class="o">.</span><span class="n">position_os</span><span class="o">.</span><span class="n">y</span> <span class="o">+=</span> <span class="n">shader</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">phase</span><span class="p">)</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">amplitude</span>
+        <span class="k">return</span> <span class="n">vertex</span>
 </code></pre></div>
 
-<p>没有自定义 Hook 时，Infernux 会提供常规网格输入，并完成物体空间到世界、观察和裁剪空间的标准变换。普通材质不需要重复矩阵样板、描述符布局或顶点 Location，这是有意设计的结果。</p>
-<p>把这个示例保存为 <code>Assets/Shaders/learn_standard.vert</code>，再从 Material 的 Vertex 选择弹窗中选中它。唯一的名称让它与内置 <code>Standard</code> 阶段保持独立。要使用内置阶段，直接选择 <code>Standard</code> 即可，不需要创建项目文件。</p>
-<p><code>Name</code> 是 Material 已绑定字段显示的阶段标识符，并且区分大小写。Project 资产选择弹窗显示的是文件名：选择 <code>wave_bent.vert</code> 后，若文件声明 <code>Name "Wave"</code>，<strong>Vertex</strong> 字段会显示 <code>Wave</code>。</p>
-<h3 id="material">Material 怎样找到它</h3>
-<p>把 <code>.vert</code> 或 <code>.frag</code> 放入项目 <code>Assets</code> 目录并完成导入，再打开 Material Inspector 中对应的 <strong>Vertex</strong> 或 <strong>Fragment</strong> 资产选择弹窗，按文件名选择 Shader。Material 保存所选项目资产的 GUID，并显示它当前的 <code>ShaderInfo Name</code>；文件名与显示的阶段名不必一致。<code>Standard</code>、<code>Lit</code> 等内置阶段使用符号化阶段标识符，不使用项目资产 GUID。</p>
-<p>项目 Shader 与内置 Shader 应使用唯一阶段名：当前链接程序仍以阶段名作为程序命名空间。项目 GUID 引用决定资产身份，缓存的阶段名只是派生标签。修改 <code>ShaderInfo Name</code> 并保存后，成功导入会自动更新引用它的已加载 Material 和运行时克隆材质；已有的磁盘 Material 在加载时也会从 GUID 元数据取得当前名称，不需要重新选择 Shader。如果任何依赖阶段组合编译或链接失败，热重载会在迁移实际 Material 引用之前拒绝此次更新；修正源码后再次保存即可。</p>
-<p>Material 链接器会在 Vulkan Pipeline 创建前检查所选阶段的属性与 Varying。可以这样验证选择和重载：把带有 <code>Name "Wave"</code> 的文件保存为 <code>Assets/Shaders/wave_bent.vert</code>，等待导入，在 <strong>Vertex</strong> 资产选择弹窗中选择 <code>wave_bent.vert</code>，确认绑定字段显示 <code>Wave</code>。随后只把 <code>Name</code> 改为 <code>Wave V2</code> 并保存：字段应自动更新为 <code>Wave V2</code>，Material 的 Shader GUID 与已设置参数保持不变。恢复 <code>Name "Wave"</code> 后，确认 Scene 与 Game 仍然正常渲染，没有 Shader 错误。</p>
-<h2 id="vertex-layout_1">顶点数据从哪里来</h2>
-<p>Hook 编辑的是公开结构 <code>VertexInput</code>，它建立在固定的引擎顶点缓冲之上。下表中的“引擎缓冲字段”属于底层实现；编写 Shader 时应使用旁边的 <code>VertexInput</code> 字段：</p>
+<p>在 <code>painted.frag.py</code> 中引用：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Painted</span><span class="p">(</span><span class="n">shader</span><span class="o">.</span><span class="n">surface</span><span class="p">):</span>
+    <span class="n">shader_id</span> <span class="o">=</span> <span class="s2">"example/materials/wave"</span>
+    <span class="n">vertex_shader</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="s2">"./wave.vert.py"</span><span class="p">)</span>
+    <span class="n">base_color</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">color</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="p">(</span><span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">surface</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceData</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceData</span><span class="p">(</span><span class="n">albedo</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">base_color</span><span class="o">.</span><span class="n">rgb</span><span class="p">,</span> <span class="n">normal_ws</span><span class="o">=</span><span class="n">ctx</span><span class="o">.</span><span class="n">normal_ws</span><span class="p">)</span>
+</code></pre></div>
+
+<p>导入后也可以使用 <code>shader.ref("example/vertex/wave")</code>。引擎不会因目录里出现同名文件就暗中替换阶段。由片元根创建材质：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+<span class="n">material</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Material</span><span class="o">.</span><span class="n">from_shader</span><span class="p">(</span><span class="s2">"example/materials/wave"</span><span class="p">,</span> <span class="s2">"水面"</span><span class="p">)</span>
+<span class="n">material</span><span class="o">.</span><span class="n">set_float</span><span class="p">(</span><span class="s2">"amplitude"</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">)</span>
+<span class="n">renderer</span><span class="o">.</span><span class="n">set_material</span><span class="p">(</span><span class="n">material</span><span class="p">)</span>
+</code></pre></div>
+
+<p>顶点与片元的字段进入同一个 Material Inspector，无须声明 location、绑定号、第二份参数块或第二份材质。ID 用于定位，GUID 持有程序资产身份；修改类名不会改变身份。</p>
+<h2 id="vertex-layout">几何数据</h2>
+<p>入口为 <code>deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -&gt; shader.VertexData</code>。修改并返回传入值；引擎先执行变形，再做蒙皮和对象变换。</p>
 <table>
 <thead>
 <tr>
-<th>Location</th>
-<th>引擎缓冲字段</th>
-<th><code>VertexInput</code> 字段</th>
-<th>类型</th>
-<th>说明</th>
+<th>VertexData 字段</th>
+<th>含义</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>0</td>
-<td><code>pos</code></td>
-<td><code>position</code></td>
-<td><code>vec3</code></td>
-<td>物体空间位置</td>
+<td><code>position_os</code></td>
+<td>局部位置，vec3</td>
 </tr>
 <tr>
-<td>1</td>
-<td><code>normal</code></td>
-<td><code>normal</code></td>
-<td><code>vec3</code></td>
-<td>缺少源法线时朝向 +Y</td>
+<td><code>normal_os</code></td>
+<td>局部法线，vec3</td>
 </tr>
 <tr>
-<td>2</td>
-<td><code>tangent</code></td>
-<td><code>tangent</code></td>
-<td><code>vec4</code></td>
-<td><code>.w</code> 保存副切线方向符号</td>
+<td><code>tangent_os</code></td>
+<td>局部切线 XYZ 与手性 W，vec4</td>
 </tr>
 <tr>
-<td>3</td>
 <td><code>color</code></td>
-<td><code>color</code></td>
-<td><code>vec3</code></td>
-<td>默认白色</td>
+<td>顶点色，vec3</td>
 </tr>
 <tr>
-<td>4</td>
-<td><code>texCoord</code></td>
-<td><code>texCoord</code></td>
-<td><code>vec2</code></td>
-<td>主 UV 集</td>
-</tr>
-<tr>
-<td>5</td>
-<td><code>boneIndices</code></td>
-<td>引擎内部使用</td>
-<td><code>uvec4</code></td>
-<td>GPU 蒙皮骨骼调色板索引</td>
-</tr>
-<tr>
-<td>6</td>
-<td><code>boneWeights</code></td>
-<td>引擎内部使用</td>
-<td><code>vec4</code></td>
-<td>GPU 蒙皮权重</td>
-</tr>
-<tr>
-<td>7</td>
-<td><code>texCoord1</code></td>
-<td><code>texCoord1</code></td>
-<td><code>vec2</code></td>
-<td>第二套/光照贴图 UV；缺省为原点</td>
+<td><code>uv0</code>、<code>uv1</code></td>
+<td>两组 UV，vec2</td>
 </tr>
 </tbody>
 </table>
-<p>以 Location 0 为例，C++ <code>Vertex</code> 结构把它存为 <code>pos</code>，生成代码再把它映射成用户接口里的 <code>v.position</code>；用户 Shader 不应写 <code>v.pos</code>。生成的 Builtin 会镜像 Location 0 到 7，并据此构造公开的 <code>VertexInput</code>。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。</p>
-<p>Vulkan Pipeline 不会盲目绑定全部八项属性。SPIR-V 编译完成后，<code>FilterVertexAttributesForReflection()</code>（<code>VertexInputFilter.h</code>）只保留顶点着色器真正读取的 Location，从不采样蒙皮的 Shader 因此不会产生未使用的属性描述符；<code>MaterialPipelineManager.cpp</code> 在创建管线时调用它。CPU 侧缓冲布局始终不变。</p>
-<p>不同几何域复用或替换这份布局：</p>
-<ul>
-<li><strong>Mesh</strong> 是默认域：八属性缓冲、生成的 Builtin，以及可选的 <code>vertex()</code> Hook。</li>
-<li><strong>Sprite</strong> 通过同一条 Mesh 路径渲染四边形（<code>SpriteRenderer</code> 会挂载内联 Quad Mesh），使用的布局和 Hook 完全相同。</li>
-<li><strong>Standalone</strong> 程序（<code>gizmo.vert</code>、<code>grid.vert</code>、<code>flat.vert</code> 等）在 <code>Capabilities [Standalone]</code> 下自行编写 <code>main()</code>。Gizmo 仍然把标准 <code>Vertex</code> 结构喂给它们，整个顶点阶段由作者掌控。</li>
-<li><strong>ParticleSprite</strong> 是独立域，完全没有顶点缓冲。粒子 Sprite 阶段声明 <code>Capabilities [ParticleSprite]</code>，引擎在 <code>main()</code> 内从实例存储缓冲生成公告板的六个角点。给 Mesh Material 选择 ParticleSprite 或 Fullscreen 阶段会以域错误拒绝。</li>
-</ul>
-<p>证据：属性表与默认值来自 <code>InxRenderStruct.h</code>（<code>Vertex</code> 与 <code>getAttributeDescriptions()</code>）；反射过滤来自 <code>VertexInputFilter.h</code> 及其在 <code>MaterialPipelineManager.cpp</code> 的调用点；域选择来自 <code>ShaderStageLinker.cpp</code> 与各阶段的 Capability 集合。</p>
-<h2 id="vertex-hook_1">用 <code>vertex()</code> 加入形变</h2>
-<p>只有几何体确实需要改变时，才定义固定 Hook：</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
+<table>
+<thead>
+<tr>
+<th>VertexContext 字段</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>time</code></td>
+<td>本次几何采样时间，秒</td>
+</tr>
+<tr>
+<td><code>delta_time</code></td>
+<td>当前引擎帧间隔，秒</td>
+</tr>
+<tr>
+<td><code>model_matrix</code></td>
+<td>本次采样的对象矩阵，mat4</td>
+</tr>
+<tr>
+<td><code>object_id</code></td>
+<td>对象标识，uvec2</td>
+</tr>
+<tr>
+<td><code>layer_mask</code></td>
+<td>对象光照层掩码，uint</td>
+</tr>
+</tbody>
+</table>
+<p>骨骼索引、权重、实例寻址、投影和裁剪由引擎持有，返回 VertexData 不会丢掉这些数据。变形改变表面朝向时，需要同步更新法线和切线，只移动位置不会自动推导解析法线。</p>
+<p>当前标准入口保留引擎既定的网格到片元约定。任意自定义 varying、直接裁剪空间输出仍在扩展；Geometry 和 Tessellation 是独立的后续能力。</p>
+<h2 id="vertex-hook">一份材质布局</h2>
+<p>编译前会合并两个阶段的材质字段。同名字段的类型、默认值与展示元数据必须一致，合并后共享一个值和一份目标布局。冲突会定位到片元引用位置。只在顶点声明的字段同样使用正常的 Material API 与序列化。</p>
+<p>顶点使用与 Surface 相同的静态 ShaderLib。例如保存以下函数为 <code>bend.shaderlib.py</code>，在顶点文件中 <code>from .bend import bend</code>：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
 
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Wave</span><span class="err">"</span>
-<span class="p">}</span>
 
-<span class="kt">void</span><span class="w"> </span><span class="n">vertex</span><span class="p">(</span><span class="k">inout</span><span class="w"> </span><span class="n">VertexInput</span><span class="w"> </span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">phase</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">4.0</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">_Globals</span><span class="p">.</span><span class="n">_Time</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="p">;</span>
-<span class="w">    </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">y</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">sin</span><span class="p">(</span><span class="n">phase</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">0.1</span><span class="p">;</span>
-<span class="p">}</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">bend</span><span class="p">(</span><span class="n">position</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">time</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">amplitude</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
+    <span class="k">return</span> <span class="n">position</span> <span class="o">+</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">shader</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">position</span><span class="o">.</span><span class="n">x</span> <span class="o">*</span> <span class="mf">4.0</span> <span class="o">+</span> <span class="n">time</span><span class="p">)</span> <span class="o">*</span> <span class="n">amplitude</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
 </code></pre></div>
 
-<p>这个 Hook 修改物体空间的 <code>VertexInput</code>，随后生成阶段继续执行标准变换。这样，相机渲染、阴影、物体拾取以及兼容的运动数据仍然可以共享同一份几何契约。</p>
-<p>要明确选择坐标空间。物体空间形变会跟随物体的旋转与缩放；世界空间行为需要通过生成的世界变换或导入函数显式计算。</p>
-<p><code>_Globals._Time</code> 采用源码定义的固定约定：<code>.x</code> 是渲染器累计的未缩放秒数，<code>.y</code> 是 <code>sin(x)</code>，<code>.z</code> 是 <code>cos(x)</code>，<code>.w</code> 是当前渲染帧的秒级 Delta。时钟在渲染器初始化时开始，Edit Mode 与游戏暂停期间仍会推进，Play/Stop 不会重置它，<code>Time.time_scale</code> 也不会影响它；异常长的一帧最多累计 <code>1/3</code> 秒。<code>Time.shader_time</code> 是与 <code>_Globals._Time.x</code> 对齐的公共 CPU 侧值。重启渲染器会启动新时钟，因此 <code>_Time.x</code> 不适合充当存档游戏时间或确定性模拟 Tick。</p>
-<h3 id="mesh">生成 Mesh 路径的边界</h3>
-<p>对常规 Mesh 变体，Infernux 先在未蒙皮的物体空间数据上调用 <code>vertex()</code>，记录 Hook 处理后的局部位置，再应用当前骨骼蒙皮与当前实例 Model 变换。<code>VertexInput</code> 公开 <code>position</code>、<code>normal</code>、<code>tangent</code>、<code>color</code>、<code>texCoord</code> 和 <code>texCoord1</code>，不包含骨骼索引/权重、实例 ID 或自定义实例数据。因此，同一 Material Hook 会在各实例变换之前以相同逻辑运行。</p>
-<p>这套顺序带来几项明确限制：</p>
-<ul>
-<li>蒙皮 Mesh 会让形变后的局部位置继续经过生成的骨骼调色板；当前 <code>VertexInput</code> 契约无法让 Hook 按骨骼数据分支。</li>
-<li>实例化 Mesh 会获得生成的当前实例变换；Motion 变体也会获得上一帧实例变换。Hook 没有公共的逐实例选择值，无法表达实例间不同的形变。实例需要不同 Hook 行为时，应拆分 Renderer/Material 配置。</li>
-<li>生成的 Model 变换用逆转置矩阵处理法线，用 Model 矩阵处理切线方向；物体或实例的镜像缩放也会翻转切线手性。这些变换都在 Hook 之后执行，无法修复形变后仍然过期的 Normal 或 Tangent。蒙皮对混合后的骨骼矩阵应用同样的规则：法线用逆转置矩阵，切线用方向变换，镜像骨骼混合翻转切线手性。骨骼混合和 Model 变换各发生一次镜像时，两次翻转会相互抵消。</li>
-</ul>
-<div class="learn-warning"><strong>形变后的几何体会进入多条路径。</strong><p>只要效果改变了轮廓，就应同时验证 Scene 相机、Game 相机、阴影投射、点击拾取和运动向量路径。生成变体会复用 Hook；Bounds 与上一帧程序化形变仍有各自限制，详见下文。</p></div>
-
-<h2 id="varyings_1">不手写 layout 的阶段接口</h2>
-<p>Vulkan Location、描述符 Set、生成的 Uniform Block 与 Push Constant 布局都由 Infernux 管理。不要手写 <code>layout(location=...)</code> 或 <code>layout(set=..., binding=...)</code>。结构化的 <code>Inputs</code>、<code>Outputs</code>、<code>Resources</code> 和 <code>PushConstants</code> 用于描述意图，Shader 编译器负责分配物理接口。</p>
-<p>下面是一对可以直接配合的完整文件。先保存为 <code>Assets/Shaders/wind_bent.vert</code>：</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
-
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Wind</span><span class="w"> </span><span class="n">Bent</span><span class="err">"</span>
-<span class="w">    </span><span class="n">Outputs</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float2</span><span class="w"> </span><span class="n">detailUV</span><span class="w"> </span><span class="n">Semantic</span><span class="p">(</span><span class="n">TexCoord7</span><span class="p">)</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float</span><span class="w"> </span><span class="n">windMask</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-
-<span class="n">VertexOutput</span><span class="w"> </span><span class="n">vertex</span><span class="p">(</span><span class="k">inout</span><span class="w"> </span><span class="n">VertexInput</span><span class="w"> </span><span class="n">v</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">VertexOutput</span><span class="w"> </span><span class="n">result</span><span class="p">;</span>
-<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">phase</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">4.0</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">_Globals</span><span class="p">.</span><span class="n">_Time</span><span class="p">.</span><span class="n">x</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="p">;</span>
-<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="n">bend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sin</span><span class="p">(</span><span class="n">phase</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">0.1</span><span class="p">;</span>
-<span class="w">    </span><span class="n">v</span><span class="p">.</span><span class="n">position</span><span class="p">.</span><span class="n">y</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">bend</span><span class="p">;</span>
-<span class="w">    </span><span class="n">result</span><span class="p">.</span><span class="n">detailUV</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">texCoord</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">2.0</span><span class="p">;</span>
-<span class="w">    </span><span class="n">result</span><span class="p">.</span><span class="n">windMask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">clamp</span><span class="p">(</span><span class="n">abs</span><span class="p">(</span><span class="n">bend</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">10.0</span><span class="p">,</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">);</span>
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">result</span><span class="p">;</span>
-<span class="p">}</span>
+<p>依赖与错误位置跟随使用它的 Surface。顶点采样使用 <code>shader.sample_level(image, uv, lod)</code>，因为该阶段没有片元导数来选择隐式 LOD。GPU 文件只引入 <code>infernux.shader</code> 与静态 ShaderLib，不引入 NumPy 或宿主代码。</p>
+<h2 id="geometry-data">各几何 Pass 共用</h2>
+<p>可见颜色、受支持的 GBuffer、阴影、深度、拾取、法线、反照率和运动矢量都使用同一个变形。Surface 的 alpha 决定共同覆盖，引擎分别应用相机或光源投影。</p>
+<p>运动矢量会在上一采样时间重新求值，使用上一对象矩阵和骨骼姿态。每个相机图保存上一次真正提交的时间，视图跳帧时不会假设固定帧间隔。新视图或历史失效后的首帧不声称有上一运动数据。两次求值分别得到自己的 <code>ctx.time</code>；<code>ctx.delta_time</code> 仍表示当前帧间隔。</p>
+<p>几何求值目前使用当前材质值。前一时刻的参数、独立变化的位移纹理，需要明确的历史约定才能产生精确运动；这个入口不会替用户记录任意 GPU 状态。</p>
+<p>变形修改 GPU 顶点，不会修改 CPU 碰撞体或网格包围盒。包围盒应覆盖完整位移范围，否则物体可能在顶点程序运行前被剔除。刚体属于独立的玩法数据。声明静态还意味着允许阴影缓存，随时间变形的物体应使用动态 Renderer。</p>
+<h2 id="reuse">创建与诊断</h2>
+<p>Project 会生成 snake_case 的 <code>.vert.py</code> 与 <code>shader.vert</code> 类。一个片元根可以引用一个顶点和一个光照模型。创建材质时选择片元，准备后的配方会设置它声明的顶点引用。</p>
+<div class="highlight"><pre><span></span><code><span class="n">report</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Shader</span><span class="o">.</span><span class="n">check</span><span class="p">(</span><span class="s2">"Assets/Shaders/wave.vert.py"</span><span class="p">)</span>
+<span class="n">schema</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Shader</span><span class="o">.</span><span class="n">get_schema</span><span class="p">(</span><span class="s2">"example/materials/wave"</span><span class="p">)</span>
 </code></pre></div>
 
-<p>再把消费端保存为 <code>Assets/Shaders/wind_surface.frag</code>：</p>
-<div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
-
-<span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Wind</span><span class="w"> </span><span class="n">Surface</span><span class="err">"</span>
-<span class="w">    </span><span class="n">ShadingModel</span><span class="w"> </span><span class="n">Unlit</span>
-<span class="w">    </span><span class="n">Inputs</span><span class="w"> </span><span class="p">{</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float2</span><span class="w"> </span><span class="n">detailUV</span><span class="w"> </span><span class="n">Semantic</span><span class="p">(</span><span class="n">TexCoord7</span><span class="p">)</span>
-<span class="w">        </span><span class="n">Smooth</span><span class="w"> </span><span class="n">Float</span><span class="w"> </span><span class="n">windMask</span>
-<span class="w">    </span><span class="p">}</span>
-<span class="p">}</span>
-
-<span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
-<span class="w">    </span><span class="n">s</span><span class="p">.</span><span class="n">albedo</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kt">vec3</span><span class="p">(</span><span class="n">fragmentInput</span><span class="p">.</span><span class="n">detailUV</span><span class="p">,</span><span class="w"> </span><span class="n">fragmentInput</span><span class="p">.</span><span class="n">windMask</span><span class="p">);</span>
-<span class="p">}</span>
-</code></pre></div>
-
-<p>打开 Material，在 <strong>Vertex</strong> 里选 <code>Wind Bent</code>，在 <strong>Fragment</strong> 里选 <code>Wind Surface</code>，再赋给 MeshRenderer。生产端填写 <code>VertexOutput</code> 的两个成员，消费端从 <code>fragmentInput</code> 读取同名成员，这才是一条完整 Varying 链路。</p>
-<p>名称、类型、插值方式、Semantic 与声明空间共同组成契约。<code>Float4</code> 不能接到 <code>Float3</code>，<code>Smooth</code> 也不能接到 <code>Flat</code>；缺项或不匹配会在 Vulkan Pipeline 创建前给出诊断。</p>
-<p>Location 分配同样归引擎。内置 Varying 固定占 location 0 到 7（<code>v_WorldPos</code>、<code>v_Normal</code>、<code>v_Tangent</code>、<code>v_Color</code>、<code>v_TexCoord</code>、<code>v_ViewDepth</code>、内部 LineRenderer 色调和 <code>v_TexCoord1</code>），自定义 Varying 从 location 8 开始。链接器先按 Semantic 排序、再按名字排序，文件里的声明顺序不决定布局；<code>mat4</code> 连续占用 4 个 location。上限是 location 15，location 15 本身保留给拾取 ID 等引擎 Pass 数据。<code>ShaderStageLinker</code> 在导入期链接阶段时应用这些规则。</p>
-<p>这套契约有两道检查。导入期，阶段链接器按名字把每个片元 <code>Inputs</code> 成员配对到顶点 <code>Outputs</code> 成员，再比较类型、插值方式、Semantic 与空间；它的诊断覆盖缺失顶点输出、类型不匹配、插值不匹配、Semantic 不匹配、空间不匹配、重复 Varying、重复 Semantic 以及 Location 上限。运行期创建链接程序时，<code>ShaderProgram::ValidateStageInterface()</code> 反射编译后的 SPIR-V，按 Location 逐项比较片元输入与顶点输出，包括向量宽度。源级链接通过但反射不一致的阶段组合，会在程序创建阶段失败，此时任何 Vulkan Pipeline 都还没有开始构建。</p>
-<p>多数材质用不到自定义 Varying。内置 Surface Helper 已经提供常规 UV、顶点色、世界法线等网格数据；只有标准契约没带上 Frag 真正需要的值时，才值得增加接口。</p>
-<p><code>Space(World)</code> 只是一枚会被校验的标签，本身没有变换能力。链接器确认生产端和消费端使用同一个 Space；object-to-world 乘法仍由作者编写。先用当前几何域提供的变换或 Helper 算出真正的世界空间值，再在两端都标记 <code>Space(World)</code>。给物体空间的 <code>v.position</code> 直接贴上这个标签，会得到一条“双方一致、内容错误”的 Varying。</p>
-<h2 id="geometry-data_1">Bounds、Normal 与 Tangent 各管什么</h2>
-<p>修改 <code>v.position</code> 只移动 GPU 上的顶点，CPU Mesh 里的 Bounds、Normal 与 Tangent 会保持原值。三者分别解决不同问题：</p>
-<ul>
-<li><strong>Bounds</strong> 决定相机与阴影裁剪时是否提交 Renderer，也用于 Scene 视图取景。Infernux 从导入或内联 Mesh 顶点得到局部 Bounds，再把盒子变换到世界空间；Shader 形变不会进入这次计算。当前 Editor 与 Python 绑定都没有逐 Renderer 的 Bounds 覆盖入口；<code>MeshRenderer.get_world_bounds()</code> 只读，返回六个数值组成的世界空间 AABB。</li>
-<li><strong>Normal</strong> 告诉光照表面朝向。整体平移不用改它，弯曲、波浪和不均匀位移通常要改。形变改变局部坡度时，在物体空间更新 <code>v.normal</code>；之后的蒙皮与世界空间法线变换由生成阶段继续完成。</li>
-<li><strong>Tangent</strong> 是沿 UV 方向的轴，它和 Normal 一起构成法线贴图使用的切线基。形变若旋转了这条轴，也要更新 <code>v.tangent.xyz</code>，并保留或有意重算 <code>.w</code> 中的手性。否则轮廓虽然正确，法线贴图的受光方向仍可能滑动。</li>
-</ul>
-<p>先复现一次 Bounds 故障，再决定修正方式：</p>
-<ol>
-<li>把 <code>Wave</code> 阶段赋给 Cube，暂时把振幅从 <code>0.1</code> 提高到 <code>1.0</code>，保持 Cube 的 Transform Scale 为 <code>(1, 1, 1)</code>。</li>
-<li>在 Game 视图里把 Cube 缓慢移向相机视锥上边缘。某些相位下，CPU 原始包围盒已经离开视锥，形变顶点按公式仍会落在画面内，此时整个 Renderer 会提前消失。阴影也可能在另一处灯光视锥边缘提前消失。</li>
-<li>固定 Transform，通过 Editor 脚本连续几帧读取 <code>MeshRenderer.get_world_bounds()</code>。<code>_Time</code> 持续改变可见顶点时，这个 Tuple 仍保持不变。Console 干净且包围盒不变，可以把裁剪问题与 Shader 编译失败区分开。</li>
-<li>把振幅恢复到保守范围，或编写/导入 CPU 顶点覆盖完整形变包络的 Mesh。程序化几何调用公共 <code>set_inline_mesh_data(...)</code> 时，会根据所有传入 Position 重算 Bounds；索引数据可以包含不被三角形引用的包络 Position。当前没有直接扩大已有 Renderer Bounds 的公共调用。</li>
-</ol>
-<p>引擎无法从任意 GLSL 自动推导 Bounds、Normal 或 Tangent。使用位移贴图时，可以采样邻近高度，根据新坡度重建局部 Normal 与 Tangent；CPU 包络仍需单独通过上面的视锥边缘流程验证。</p>
-<h2 id="reuse_1">复用与排错</h2>
-<p>把 <code>.vert</code> 看作“几何行为”，并与具体材质名解耦。适合复用的顶点阶段包括风力弯曲、水面位移、植被摆动、蒙皮变体以及完全不修改网格的标准路径。</p>
-<p>更换 Vert 后物体消失时，按这个顺序检查：</p>
-<ol>
-<li>所选值是否与 <code>ShaderInfo Name</code> 精确匹配，包括大小写，并确认它没有和项目或内置 ID 重名。</li>
-<li>Shader 是否完成导入。清空 Console，保存并重新导入文件，再次赋值 Material；任何导入、阶段链接或 Vulkan Pipeline 错误都表示检查未通过。</li>
-<li>有自定义 <code>Outputs</code> 时是否返回 <code>VertexOutput</code>；只修改内置几何数据时才使用 <code>void vertex(inout VertexInput v)</code>。</li>
-<li>每个自定义输出是否都有名称、类型、插值、Semantic 与 Space 完全匹配的片元输入。</li>
-<li>该阶段是否属于 Material 需要的几何域。全屏或粒子程序会被明确的域错误拒绝。</li>
-</ol>
-<h3 id="_2">验证阴影、拾取与运动变体</h3>
-<p>编译器会把同一个 Hook 放入兼容的颜色、阴影/深度、拾取与运动顶点变体。逐项检查每条路径的可观察产物：</p>
-<ol>
-<li><strong>颜色：</strong> 清空 Console，重新导入并赋值 Material，确认 Scene 与 Game 中出现相同的动画轮廓；不得出现新增 Shader、链接或 Pipeline 错误。</li>
-<li><strong>阴影：</strong> 在物体下方添加大 Plane，使用启用阴影的 Directional Light，并保持形变 Renderer 的 <code>casts_shadows</code> 开启。调整灯光或相机，让波浪边缘清楚可见。阴影轮廓应与可见轮廓同步；它在灯光视锥边缘提前消失时，回到 CPU Bounds 检查。</li>
-<li><strong>拾取：</strong> 在 Scene 视图点击仍处于已提交 Renderer 内的可见形变部位，Hierarchy 应选中同一 GameObject。换两个波浪相位重复一次。</li>
-<li><strong>物体运动：</strong> 创建内置 <strong>Motion Blur</strong> RenderEffect，按 <a href="renderstack-mount-points.html">RenderStack 挂载点</a>一章把它挂到活动 RenderStack 的 <code>final</code> 阶段，并在 Play 中动画化物体 Transform。移动物体出现可见模糊，可以验证上一帧 Model 变换。复制这个不透明物体，让两个 MeshRenderer 共用同一 Mesh 与 Material，再分别移动它们；这套配置满足自动实例批处理的候选条件，可以覆盖逐实例历史。对蒙皮测试 Mesh 播放骨骼动画并检查移动肢体，可以验证上一帧骨骼变换。</li>
-<li><strong>程序化局部运动：</strong> 保持物体 Transform 静止，用 Motion Blur 或 TAA 观察 <code>_Time</code> 波浪。当前 Motion 变体会把本帧 Hook 处理后的局部位置用于两套裁剪空间历史，再应用上一帧骨骼与 Model 变换；它不会用上一帧 <code>_Time</code> 重新计算 Hook。因此，时间驱动的局部形变没有可靠的自身运动向量，可能缺少模糊或出现 TAA 拖影。精确的上一帧程序化形变需要超出当前公共 Vertex Hook 契约的实现工作。</li>
-</ol>
-<figure class="learn-figure">
-  <img src="../assets/learn/shader-diagnostics.webp" alt="顶点 Shader 选择与编译诊断界面示意图" loading="lazy" decoding="async">
-  <figcaption>图解：Vertex 选择器显示 `ShaderInfo Name` 的值 <code>Wave</code>；旁边示例展示片元阶段类型诊断。这是一张示意图，不对应 Editor 的逐像素截图。</figcaption>
-</figure>
-
-<div class="learn-note"><strong>证据说明。</strong><p>Name 发现语义来自 <code>inspector_shader_utils.py</code>。Hook 顺序与生成变体来自 Mesh、Shadow、Picking、Motion 模板及 <code>InxShaderLoader.cpp</code>。顶点属性布局与反射过滤来自 <code>InxRenderStruct.h</code> 与 <code>VertexInputFilter.h</code>；阶段配对、配对诊断与 Location 分配来自 <code>ShaderStageLinker.cpp</code> 与 <code>ShaderProgram.cpp</code>。时间约定来自 <code>EngineGlobals.h</code>、<code>InxRenderer.cpp</code> 与 <code>timing.py</code>。Bounds 边界来自 <code>MeshRenderer.cpp</code> 和 <code>BindingScene.cpp</code> 的 Python 声明；文中公共表面包含 <code>get_world_bounds()</code> 与 <code>set_inline_mesh_data(...)</code>，没有 Bounds Setter。</p></div>
-
-<p>下一章会保留这份几何阶段，只改变表面由什么组成。</p></div>
+<p>独立检查会核对顶点定义与库，Surface 会验证完整配方与目标入口。顶点错误保留原文件和行号。热改成功后发布依赖程序，已经提交的工作继续持有自己的资源。</p></div>
 
         <nav class="learn-course-pager" aria-label="Previous and next chapters">
             <div data-page-language="en"><a href="rendering-overview.html">← How authored rendering enters an Infernux frame</a><span class="learn-course-home">Chapter 2 of 8</span><a href="fragment-materials.html">Fragment stages, surfaces, and materials →</a></div>

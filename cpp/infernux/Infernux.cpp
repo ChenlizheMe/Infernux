@@ -3845,9 +3845,13 @@ Infernux::EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &
         return adb->FindShaderPathById(reference.shaderId, stage);
     };
 
+    const std::string fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
+    if (asset_formats::FindShaderSourceKind(fragmentPath)) {
+        material->PrepareShaderDefaults();
+        return EnsureShaderAuthorMaterial(material->GetShaderStages(), fragmentPath);
+    }
     const auto stages = material->GetShaderStages();
     const std::string vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
-    const std::string fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
     return EnsureLinkedShaderProgramArtifact(stages, vertexPath, fragmentPath, requireCurrentSource);
 }
 

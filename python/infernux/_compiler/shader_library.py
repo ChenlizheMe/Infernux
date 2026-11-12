@@ -160,6 +160,25 @@ class LibraryGraph:
         self.loading: set[Path] = set()
         self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
 
+    def reference(self, call, owner, *, stage, suffix):
+        if (not isinstance(call, ast.Call) or owner.qualified(call.func) != owner.alias + ".ref"
+                or call.keywords or len(call.args) != 1):
+            owner.error(call, "GPU stages refer to one asset with shader.ref", code="author.reference")
+        reference = owner.literal(call.args[0])
+        if not isinstance(reference, str):
+            owner.error(call, "A GPU asset reference uses a registered ID or " + suffix + " path", code="author.reference")
+        if reference.endswith(suffix):
+            return (Path(owner.path).parent / reference).resolve()
+        from infernux.lib import _Infernux
+
+        try:
+            resolved = _Infernux._shader_source_path(reference, stage)
+        except (RuntimeError, ValueError) as error:
+            owner.error(call, str(error), code="author.reference")
+        if not resolved:
+            owner.error(call, "GPU asset ID is not registered: " + reference, code="author.reference")
+        return Path(resolved)
+
     def imports(self, imports, owner: ShaderEmitter):
         functions, dependencies = {}, []
         for statement in imports:
@@ -171,7 +190,9 @@ class LibraryGraph:
                     base = base.parent
                 base = base.joinpath(*(statement.module or "").split("."))
             elif statement.module and statement.module.startswith("infernux.shader.lib."):
-                base = Path(__file__).parents[1] / "resources" / "shaders" / "lib"
+                from infernux.resources import resources_path
+
+                base = Path(resources_path) / "shaders" / "lib"
                 base = base.joinpath(*statement.module.split(".")[3:])
             else:
                 owner.error(statement, "ShaderLib imports use a relative path or infernux.shader.lib")

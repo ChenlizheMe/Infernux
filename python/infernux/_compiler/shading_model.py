@@ -11,9 +11,10 @@ from .slang_ast import qualified
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 
 
-_BUILTIN_ROOT = Path(__file__).parents[1] / "resources" / "shaders"
-_BUILTIN_MODELS = {_BUILTIN_ROOT.joinpath(name + ".shadingmodel.py").resolve(): model
-                   for name, model in (("pbr", "PBR"), ("unlit", "Unlit"))}
+def _builtin_root():
+    from infernux.resources import resources_path
+
+    return Path(resources_path) / "shaders"
 _LIGHTING = {
     "lighting.pbr": ("inx_shade_pbr<tiled_lighting>", "float3", ("InxSurfaceData", "InxShadingContext")),
     "lighting.pbr_indirect": ("inx_pbr_indirect", "float3", ("InxSurfaceData", "InxShadingContext")),
@@ -116,9 +117,11 @@ def read_shading_model(path, graph, owner, location, *, source=None):
         code.extend(emitter.emit_function(method, functions["self." + method.name], method=True, public=True))
         ranges.extend(emitter.source_ranges)
     code.append("}")
+    builtin_models = {_builtin_root().joinpath(name + ".shadingmodel.py").resolve(): model
+                      for name, model in (("pbr", "PBR"), ("unlit", "Unlit"))}
     return ShadingModel(declaration.name, str(path), contract, "\n".join(code), dependencies, tuple(ranges),
-                        _BUILTIN_MODELS.get(path), read_shader_info(source, str(path)))
+                        builtin_models.get(path), read_shader_info(source, str(path)))
 
 
 def default_shading_model():
-    return _BUILTIN_ROOT / "pbr.shadingmodel.py"
+    return _builtin_root() / "pbr.shadingmodel.py"

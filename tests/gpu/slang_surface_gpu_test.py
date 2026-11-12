@@ -76,6 +76,7 @@ def main():
     parser.add_argument("--pipeline", choices=("forward", "forward_plus", "deferred"), required=True)
     parser.add_argument("--skinned", action="store_true")
     parser.add_argument("--model", choices=("pbr", "unlit", "band"), default="pbr")
+    parser.add_argument("--vertex", action="store_true")
     options = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="infernux-slang-surface-") as directory:
         root = Path(directory)
@@ -95,6 +96,19 @@ def main():
             (root / "Assets/baseline.shadingmodel").write_text(REFERENCE_MODEL, encoding="utf-8")
             author_source = SOURCE.replace("(shader.surface):", '(shader.surface):\n    shading_model = shader.ref("./band.shadingmodel.py")')
             reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel BaselineBand")
+        if options.vertex:
+            (root / "Assets/translate.vert.py").write_text('''import infernux.shader as shader
+class Translate(shader.vert):
+    translation = shader.material.float(default=0.35)
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os.x += self.translation
+        return vertex
+''', encoding="utf-8")
+            (root / "Assets/baseline.vert").write_text('''#version 450
+ShaderInfo { Name "Baseline Translate" Properties { Float translation=0.35 } }
+void vertex(inout VertexInput v) { v.position.x += material.translation; }
+''', encoding="utf-8")
+            author_source = author_source.replace('(shader.surface):', '(shader.surface):\n    vertex_shader = shader.ref("./translate.vert.py")')
         source.write_text(author_source, encoding="utf-8")
         reference.write_text(reference_source, encoding="utf-8")
         mask_path = root / "Assets/mask.png"
@@ -141,6 +155,8 @@ def main():
                 np.array([0, 2, 1, 0, 3, 2], dtype=np.uint32), "Quad")
             candidate = inx.Material.from_shader(str(source), "Slang 表面")
             baseline = inx.Material.create_lit("基准表面")
+            if options.vertex:
+                baseline.vert_shader_name = "Baseline Translate"
             baseline.frag_shader_name = "Surface Baseline"
             materials = (baseline, candidate)
             for material in materials:
@@ -225,6 +241,8 @@ def main():
                                 return
                             if phase == 1:
                                 for material in materials:
+                                    if options.vertex:
+                                        material.set_float("translation", 0.2)
                                     material.set_float("metallic", .85)
                                     material.set_float("smoothness", .8)
                             elif phase == 2:

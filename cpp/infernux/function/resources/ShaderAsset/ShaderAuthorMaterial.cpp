@@ -10,7 +10,7 @@ namespace infernux
 
 ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
                                                  const std::shared_ptr<const ShaderCompilation> &compilation,
-                                                 const std::string &schema)
+                                                 const std::string &schema, std::string vertexKey)
 {
     const auto source = nlohmann::json::parse(schema);
     const auto target = std::find_if(compilation->targets.begin(), compilation->targets.end(),
@@ -25,7 +25,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
         return *found;
     };
     ShaderProgramArtifact result;
-    result.key.stages = {"Standard", std::move(guid)};
+    result.key.stages = {std::move(vertexKey), std::move(guid)};
     result.domain = ShaderProgramDomain::Mesh;
     const bool surface = source.value("surface", false);
     result.shadingModel = surface ? source.at("shading_model").get<std::string>() : "";
@@ -46,7 +46,9 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     for (const auto &parameter : source.at("parameters")) {
         ShaderProgramPropertyBinding property;
         property.name = parameter.at("name");
-        property.stages = ShaderProgramStageMask::Fragment;
+        for (const auto &stage : parameter.at("stages"))
+            property.stages = property.stages |
+                              (stage == "vertex" ? ShaderProgramStageMask::Vertex : ShaderProgramStageMask::Fragment);
         const auto kind = parameter.at("kind").get<std::string>();
         if (kind == "texture_2d") {
             property.type = "Texture2D";

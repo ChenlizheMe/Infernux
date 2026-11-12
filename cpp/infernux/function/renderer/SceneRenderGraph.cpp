@@ -1433,6 +1433,8 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     camera.zBufferParams = depth::LinearizationParams(nearClip, farClip);
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     EngineGlobalsUBO globals = m_vkCore->GetStagedGlobals();
+    m_stagedShaderTime = globals.time.x;
+    globals.frameParams.w = m_cameraHistoryValid ? m_previousShaderTime : m_stagedShaderTime;
     const float width = static_cast<float>(m_width);
     const float height = static_cast<float>(m_height);
     globals.screenParams = glm::vec4(width, height, 1.0f / width, 1.0f / height);

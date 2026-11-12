@@ -27,6 +27,6 @@ layout(std140, set = 2, binding = 0) uniform InfGlobals {
     vec4 _ZBufferParams;
 
     // ─── Frame ─────────────────────────────────────────────────────
-    // x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = unused
+    // x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = previous view sample time
     vec4 _FrameParams;
 } _Globals;

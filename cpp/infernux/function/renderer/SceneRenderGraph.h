@@ -750,6 +750,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         if (!m_hasCachedCameraVP)
             return;
         m_previousViewProj = m_cachedProj * m_cachedView;
+        m_previousShaderTime = m_stagedShaderTime;
         m_cameraHistoryValid = true;
         if (m_pythonGraphValid && m_pythonGraphDesc.temporalJitter)
             m_temporalSampleIndex = (m_temporalSampleIndex + 1u) % kTemporalJitterSampleCount;
@@ -1077,6 +1078,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
     glm::mat4 m_billboardView{1.0f};
     bool m_hasBillboardView = false;
     glm::mat4 m_previousViewProj{1.0f};
+    float m_previousShaderTime = 0.0f;
+    float m_stagedShaderTime = 0.0f;
     RenderInstanceHistory m_motionHistory;
     bool m_cameraHistoryValid = false;
     const Camera *m_cachedCamera = nullptr;

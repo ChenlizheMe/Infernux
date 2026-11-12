@@ -571,30 +571,12 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
     if (!publish.changed)
         return true;
 
-    if (m_materialPipelineManagerInitialized)
+    if (!publish.replacedProgram && m_materialPipelineManagerInitialized)
         m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(artifact.key.stages);
-
-    // Retire this pair's previous shadow pipelines with their owning publication.
-    const VkDevice device = GetDevice();
-    for (auto it = m_shadowPipelineCache.begin(); it != m_shadowPipelineCache.end();) {
-        if (it->first.program->GetProgramKey().stages != artifact.key.stages) {
-            ++it;
-            continue;
-        }
-        const VkPipeline pipeline = it->second;
-        if (pipeline != VK_NULL_HANDLE)
-            m_deletionQueue.Retire([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
-        ++m_shaderHotReloadRetirementCount;
-        it = m_shadowPipelineCache.erase(it);
-    }
 
     if (publish.replacedProgram) {
         m_pendingUIProgramRelease.erase(*publish.replacedProgram);
-        auto previousPrograms = m_shaderCache.GetProgramCache().TakePrograms(*publish.replacedProgram);
-        for (auto &previous : previousPrograms) {
-            m_deletionQueue.Retire([retired = std::move(previous)]() mutable { retired.reset(); });
-            ++m_shaderHotReloadRetirementCount;
-        }
+        RetireShaderProgramArtifact(*publish.replacedProgram);
     }
 
     return true;
@@ -667,9 +649,20 @@ void InxVkCoreModular::RetireShaderProgramArtifact(const ShaderProgramKey &key)
 {
     if (m_materialPipelineManagerInitialized)
         m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(key.stages);
-    if (m_uiProgramOwners.count(key) ||
-        (m_materialPipelineManagerInitialized && m_materialPipelineManager.HasMaterialProgramOwner(key)))
-        throw std::logic_error("Cannot retire a shader program artifact with live material/UI owners");
+    // Publication drops cache ownership. Submitted draws and UI generations
+    // retain their immutable owners until the matching completion serial.
+    const VkDevice device = GetDevice();
+    for (auto it = m_shadowPipelineCache.begin(); it != m_shadowPipelineCache.end();) {
+        if (it->first.program->GetProgramKey() != key) {
+            ++it;
+            continue;
+        }
+        const VkPipeline pipeline = it->second;
+        if (pipeline != VK_NULL_HANDLE)
+            m_deletionQueue.Retire([device, pipeline] { vkDestroyPipeline(device, pipeline, nullptr); });
+        ++m_shaderHotReloadRetirementCount;
+        it = m_shadowPipelineCache.erase(it);
+    }
     auto artifact = m_shaderCache.TakeProgramArtifact(key);
     auto programs = m_shaderCache.GetProgramCache().TakePrograms(key);
     for (auto &program : programs) {

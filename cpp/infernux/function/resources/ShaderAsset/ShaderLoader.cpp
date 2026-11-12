@@ -71,7 +71,7 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->renderMeta.alphaClip = info.at("alpha_clip").is_null() ? std::string{} : info.at("alpha_clip").dump();
         if (schema.at("domain") == "fullscreen")
             asset->programDomain = ShaderProgramDomain::Fullscreen;
-        else if (schema.at("domain") == "mesh")
+        else if (schema.at("domain") == "mesh" || schema.at("domain") == "vertex")
             asset->programDomain = ShaderProgramDomain::Mesh;
         for (const auto &library : prepared.libraries) {
             if (!asset_formats::FindShaderSourceKind(library.path))
@@ -83,9 +83,18 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->program = std::make_shared<ShaderCompilation>(
             compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl},
                              false, prepared.sourceRanges));
-        if (asset->programDomain == ShaderProgramDomain::Mesh)
+        if (schema.at("domain") == "mesh") {
+            std::string vertexKey = "Standard";
+            if (!schema.at("vertex_source").is_null()) {
+                const auto path = schema.at("vertex_source").get<std::string>();
+                vertexKey = adb->GetGuidFromPath(path);
+                if (vertexKey.empty())
+                    throw std::invalid_argument("Vertex source is not imported: " + path);
+                asset->sourceDependencies.push_back(vertexKey);
+            }
             asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(
-                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema));
+                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema, std::move(vertexKey)));
+        }
         return asset;
     }
 

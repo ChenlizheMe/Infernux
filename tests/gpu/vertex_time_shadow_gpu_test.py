@@ -1,27 +1,66 @@
-"""Exact tutorial time-driven hooks: static shadow control versus animated mask."""
+"""Legacy time-driven hooks: static shadow control versus animated mask."""
 import argparse
 import json
 from pathlib import Path
-import re
 import tempfile
 import time
 import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
-from infernux.engine.path_utils import resolved_path
 from infernux.lib import ConsolePanel,InxMaterial,LightShadows,SceneManager,Vector3
 
-ROOT=Path(resolved_path(__file__)).parents[2]
 
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--proof',type=Path)
     args=parser.parse_args()
-    guide=(ROOT/'docs/learn/vertex-stage.md').read_text(encoding='utf-8').split('<!-- language:zh -->',1)[0]
-    blocks=re.findall(r'```glsl\n(.*?)```',guide,re.S)
-    wave=next(b for b in blocks if 'Name "Wave"' in b)
-    wind=next(b for b in blocks if 'Name "Wind Bent"' in b)
-    wind_fragment=next(b for b in blocks if 'Name "Wind Surface"' in b)
+    wave = '''#version 450
+
+ShaderInfo {
+    Name "Wave"
+}
+
+void vertex(inout VertexInput v) {
+    float phase = v.position.x * 4.0 + _Globals._Time.x * 2.0;
+    v.position.y += sin(phase) * 0.1;
+}
+'''
+    wind = '''#version 450
+
+ShaderInfo {
+    Name "Wind Bent"
+    Outputs {
+        Smooth Float2 detailUV Semantic(TexCoord7)
+        Smooth Float windMask
+    }
+}
+
+VertexOutput vertex(inout VertexInput v) {
+    VertexOutput result;
+    float phase = v.position.x * 4.0 + _Globals._Time.x * 2.0;
+    float bend = sin(phase) * 0.1;
+    v.position.y += bend;
+    result.detailUV = v.texCoord * 2.0;
+    result.windMask = clamp(abs(bend) * 10.0, 0.0, 1.0);
+    return result;
+}
+'''
+    wind_fragment = '''#version 450
+
+ShaderInfo {
+    Name "Wind Surface"
+    ShadingModel Unlit
+    Inputs {
+        Smooth Float2 detailUV Semantic(TexCoord7)
+        Smooth Float windMask
+    }
+}
+
+void surface(out SurfaceData s) {
+    s = InitSurfaceData();
+    s.albedo = vec3(fragmentInput.detailUV, fragmentInput.windMask);
+}
+'''
     control=wind.replace('Name "Wind Bent"','Name "Wind Static Control"').replace('float bend = sin(phase) * 0.1;', 'float bend = 0.0;')
     assert control!=wind
     sources={'Wave.vert':wave,'Wind.vert':wind,'Control.vert':control,'Wind.frag':wind_fragment,
@@ -34,7 +73,7 @@ void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(.5); s.smoo
 '''}
     plans=[inx.renderstack.DefaultForwardPipeline,inx.renderstack.DefaultForwardPlusPipeline,inx.renderstack.DefaultDeferredPipeline]
     stages=[('wave','Standard','Wave','Wave Shadow Red'),('wind','Wind Static Control','Wind Bent','Wind Surface')]
-    proof={'package':inx.__file__,'scope':'Exact current Wave and Wind sources. Fixed camera/light/model/CPU bounds. Four static shadow masks must be identical before four animated masks change, outside a conservative caster screen region. Forward, Forward+ and Deferred. Independent temporary project GPU readbacks; no live Editor pixels.','cases':[]}
+    proof={'package':inx.__file__,'scope':'Legacy Wave and Wind fixtures. Fixed camera/light/model/CPU bounds. Four static shadow masks must be identical before four animated masks change, outside a conservative caster screen region. Forward, Forward+ and Deferred. Independent temporary project GPU readbacks; no live Editor pixels.','cases':[]}
     with tempfile.TemporaryDirectory(prefix='infernux-exact-shadow-') as folder:
         project=Path(folder)
         for name in ('Assets','Packages','ProjectSettings'):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 
@@ -11,25 +11,8 @@ from .shader_library import LibraryGraph, ShaderEmitter, declarations
 from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
-
-
-@dataclass(frozen=True)
-class ShaderParameter:
-    name: str
-    kind: str
-    default: object
-    label: str
-    range: tuple[float, float] | None = None
-    hdr: bool = False
-    internal: bool = False
-
-
-@dataclass(frozen=True)
-class ShaderInput:
-    name: str
-    semantic: str
-    kind: str
-    domain: str | None = None
+from .shader_parameters import ParameterAuthor, ShaderInput, ShaderParameter
+from .vertex import read_vertex
 
 
 @dataclass(frozen=True)
@@ -47,6 +30,7 @@ class ShaderDefinition:
     shading_model: str | None = None
     deferred_model: str | None = None
     info: dict | None = None
+    vertex_source: str | None = None
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -56,130 +40,7 @@ class ShaderDefinition:
         )
 
 
-_PARAMETER_TYPES = {"float": "float", "int": "int", "uint": "uint", "bool": "uint", "color": "float4",
-                    "vec2": "float2", "vec3": "float3", "vec4": "float4", "mat3": "float3x3", "mat4": "float4x4"}
-_DEFAULTS = {"float": 0.0, "int": 0, "uint": 0, "bool": False, "color": (1.0, 1.0, 1.0, 1.0),
-             "texture_2d": "white",
-             "vec2": (0.0, 0.0), "vec3": (0.0, 0.0, 0.0), "vec4": (0.0, 0.0, 0.0, 0.0),
-             "mat3": tuple(tuple(float(row == column) for column in range(3)) for row in range(3)),
-             "mat4": tuple(tuple(float(row == column) for column in range(4)) for row in range(4))}
-
-
-class _Author(ShaderEmitter):
-    def __init__(self, source: str, path: str):
-        super().__init__(source, path)
-        self.source = source
-        self.alias = ""
-        self.fields = {}
-        self.field_nodes = {}
-        self.domain = "fullscreen"
-        self.is_surface = False
-
-    def qualified(self, node):
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return self.qualified(node.value) + "." + node.attr
-        self.error(node, "Expected a static shader declaration name")
-
-    def literal(self, node):
-        if isinstance(node, ast.Call) and self.qualified(node.func) in {
-            self.alias + ".vec2", self.alias + ".vec3", self.alias + ".vec4",
-        }:
-            dimension = int(self.qualified(node.func)[-1])
-            values = (self.literal(value) for value in node.args)
-            components = tuple(component for value in values for component in (value if isinstance(value, tuple) else (value,)))
-            if len(components) == 1:
-                components *= dimension
-            if len(components) != dimension:
-                self.error(node, "Vector defaults must fill every component")
-            return components
-        try:
-            return ast.literal_eval(node)
-        except (ValueError, TypeError):
-            self.error(node, "Shader parameter defaults and presentation metadata must be literal values")
-
-    def parameter(self, statement):
-        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-        if len(targets) != 1 or not isinstance(targets[0], ast.Name):
-            self.error(statement, "Declare one named shader parameter per field")
-        call = statement.value
-        if not isinstance(call, ast.Call):
-            self.error(statement, "Expected shader.parameter declaration")
-        declaration = self.qualified(call.func)
-        name = targets[0].id
-        self.field_nodes[name] = statement
-        if declaration == self.alias + ".input":
-            if len(call.args) != 2:
-                self.error(call, "shader.input names a semantic and a typed GPU resource")
-            kind = self.qualified(call.args[1]).removeprefix(self.alias + ".")
-            if kind not in RESOURCE_TYPES:
-                self.error(call.args[1], "Unknown GPU input resource type")
-            metadata = {keyword.arg: self.literal(keyword.value) for keyword in call.keywords}
-            if metadata.keys() - {"domain"}:
-                self.error(call, "GPU image inputs declare a color domain")
-            self.fields[name] = ShaderInput(name, self.literal(call.args[0]), kind, metadata.get("domain"))
-            self.types["self." + name] = RESOURCE_TYPES[kind]
-            return
-        prefix = self.alias + (".material." if self.domain == "mesh" else ".parameter.")
-        if not declaration.startswith(prefix) or declaration[len(prefix):] not in {*_PARAMETER_TYPES, "texture_2d"}:
-            self.error(call, "Expected " + prefix + " followed by a supported value type")
-        kind = declaration[len(prefix):]
-        values = {keyword.arg: self.literal(keyword.value) for keyword in call.keywords}
-        if call.args:
-            self.error(call, "Declare the parameter's default with default=...")
-        unknown = values.keys() - {"default", "label", "range", "hdr"}
-        if unknown:
-            self.error(call, "Unknown shader parameter metadata: " + ", ".join(sorted(unknown)))
-        value = ShaderParameter(name, kind, values.get("default", _DEFAULTS[kind]), values.get("label", name),
-                                values.get("range"), values.get("hdr", False))
-        self.validate_default(value, call)
-        self.fields[name] = value
-        self.types["self." + name] = (RESOURCE_TYPES["Color2D"] if kind == "texture_2d" else
-                                     "bool" if kind == "bool" else _PARAMETER_TYPES[kind])
-
-    def validate_default(self, field, node):
-        value, kind = field.default, field.kind
-        numeric = lambda item: type(item) in (int, float)
-        valid = True
-        if kind == "texture_2d":
-            if self.domain != "mesh":
-                self.error(node, "Texture asset properties belong to mesh materials; fullscreen images use shader.input",
-                           code="author.parameter")
-            valid = value in ("white", "black", "normal")
-        elif kind == "float":
-            valid = numeric(value)
-        elif kind in {"int", "uint"}:
-            minimum, maximum = (-2**31, 2**31 - 1) if kind == "int" else (0, 2**32 - 1)
-            valid = type(value) is int and minimum <= value <= maximum
-        elif kind == "bool":
-            valid = type(value) is bool
-        elif kind == "color" or kind.startswith("vec"):
-            count = 4 if kind == "color" else int(kind[-1])
-            valid = isinstance(value, (tuple, list)) and len(value) == count and all(map(numeric, value))
-        elif kind.startswith("mat"):
-            count = int(kind[-1])
-            valid = (isinstance(value, (tuple, list)) and len(value) == count
-                     and all(isinstance(row, (tuple, list)) and len(row) == count and all(map(numeric, row)) for row in value))
-        if not valid:
-            self.error(node, f"Default of {field.name!r} must match its declared {kind} type and shape", code="author.parameter")
-        if field.range is not None:
-            valid = (kind in {"float", "int", "uint"} and isinstance(field.range, (tuple, list))
-                     and len(field.range) == 2 and all(map(numeric, field.range)) and field.range[0] <= field.range[1])
-            if not valid:
-                self.error(node, "A slider range is an ordered pair for a scalar numeric parameter", code="author.parameter")
-
-    def visit_Attribute(self, node):
-        if isinstance(node.value, ast.Name) and node.value.id == "self":
-            field = self.fields.get(node.attr)
-            if isinstance(field, ShaderInput) or (isinstance(field, ShaderParameter) and field.kind == "texture_2d"):
-                return "inx_" + node.attr
-            if field is None:
-                self.error(node, "Unknown shader parameter: " + node.attr)
-            name = "inx_parameters." + node.attr
-            return "(" + name + " != 0u)" if field.kind == "bool" else name
-        return super().visit_Attribute(node)
-
+class _Author(ParameterAuthor):
     def function(self, main):
         if main.decorator_list or main.args.vararg or main.args.kwarg or main.args.kwonlyargs or main.args.defaults:
             self.error(main, "Shader entry parameters have a fixed typed signature")
@@ -248,6 +109,27 @@ InxMeshInput inx_mesh_vertex(InxVertexInput input, uint instance)
 InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
 {
     return inx_mesh_vertex(input, instance);
+}
+"""
+
+_VERTEX_DEFORM = """
+[[vk::binding(0, 2)]] ConstantBuffer<InxEngineGlobals> inx_globals;
+InxVertexInput inx_apply_vertex(InxVertexInput input, uint instance, float time, float4x4 model)
+{
+    InxVertexContext context;
+    context.time = time;
+    context.delta_time = inx_globals.time.w;
+    context.object_id = inx_instances[instance].object_id;
+    context.layer_mask = inx_instances[instance].layer_mask;
+    context.model_matrix = model;
+    InxVertexData vertex = inx_vertex_author::deform(inx_vertex_data(input), context);
+    input.position = vertex.position_os;
+    input.normal = vertex.normal_os;
+    input.tangent = vertex.tangent_os;
+    input.color = vertex.color;
+    input.uv0 = vertex.uv0;
+    input.uv1 = vertex.uv1;
+    return input;
 }
 """
 
@@ -368,32 +250,17 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     author.domain = bases[author.qualified(declaration.bases[0])]
     author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
     entry_name = "surface" if author.is_surface else "main"
-    main, helpers, model_reference = None, [], None
+    main, helpers, references = None, [], {}
     for statement in declaration.body:
         if info_field(statement) in INFO_DEFAULTS:
             continue
-        if (author.is_surface and isinstance(statement, ast.Assign) and len(statement.targets) == 1
-                and author.qualified(statement.targets[0]) == "shading_model"):
-            call = statement.value
-            if (model_reference is not None or not isinstance(call, ast.Call)
-                    or author.qualified(call.func) != author.alias + ".ref" or call.keywords or len(call.args) != 1):
-                author.error(statement, "shading_model refers to one .shadingmodel.py asset with shader.ref", code="author.reference")
-            reference = author.literal(call.args[0])
-            if not isinstance(reference, str):
-                author.error(call, "A shading model reference uses an asset ID or a .shadingmodel.py path", code="author.reference")
-            if reference.endswith(".shadingmodel.py"):
-                model_path = Path(source_path).parent / reference
-            else:
-                from infernux.lib import _Infernux
-
-                try:
-                    resolved = _Infernux._shader_source_path(reference, "shadingmodel")
-                except (RuntimeError, ValueError) as error:
-                    author.error(call, str(error), code="author.reference")
-                if not resolved:
-                    author.error(call, "Shading model ID is not registered: " + reference, code="author.reference")
-                model_path = Path(resolved)
-            model_reference = (model_path, statement)
+        if (author.domain == "mesh" and isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                and author.qualified(statement.targets[0]) in {"shading_model", "vertex_shader"}):
+            name = author.qualified(statement.targets[0])
+            if name in references or (name == "shading_model" and not author.is_surface):
+                author.error(statement, "Declare one shading model on a Surface and one optional vertex asset", code="author.reference")
+            stage, suffix = ("shadingmodel", ".shadingmodel.py") if name == "shading_model" else ("vertex", ".vert.py")
+            references[name] = (graph.reference(statement.value, author, stage=stage, suffix=suffix), statement)
         elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
             author.parameter(statement)
         elif isinstance(statement, ast.FunctionDef) and statement.name == entry_name and main is None:
@@ -410,10 +277,26 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if author.domain == "mesh":
         author.fields["_alpha_clip_threshold"] = ShaderParameter("_alpha_clip_threshold", "float", 0.0, "", internal=True)
         author.field_nodes["_alpha_clip_threshold"] = declaration
+        author.field_sources["_alpha_clip_threshold"] = (author, declaration)
     model = None
     if author.is_surface:
-        model_path, location = model_reference or (default_shading_model(), declaration)
+        model_path, location = references.get("shading_model", (default_shading_model(), declaration))
         model = read_shading_model(model_path, graph, author, location)
+    vertex = None
+    if "vertex_shader" in references:
+        vertex_path, location = references["vertex_shader"]
+        vertex = read_vertex(vertex_path, graph, author, location)
+        for name, field in vertex.author.fields.items():
+            previous = author.fields.get(name)
+            if previous is not None:
+                if replace(previous, stages=field.stages) != field:
+                    author.error(location, "Vertex and fragment declarations disagree on material field: " + name, code="author.parameter")
+                field = replace(previous, stages=("vertex", "fragment"))
+            author.fields[name] = field
+            if previous is None:
+                author.field_nodes[name] = vertex.author.field_nodes[name]
+                author.field_sources[name] = vertex.author.field_sources[name]
+            author.types["self." + name] = vertex.author.types["self." + name]
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
     if author.domain == "mesh":
@@ -423,25 +306,22 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                              code="author.parameter")
         if inputs:
             author.error(declaration, "Mesh image resources are declared as material properties")
-    code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies),
-            _MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX]
+    dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
+    code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies)]
     if author.is_surface:
         code.insert(0, "import inx_surface_model;")
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),
                      RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";"])
-    textures = tuple(field for field in parameters if field.kind == "texture_2d")
-    for index, field in enumerate(textures):
-        code.extend([author.source_directive(author.field_nodes[field.name]),
-                     f"[[vk::binding({1 + 2 * index}, 0)]] InxColor2D inx_{field.name};"])
-    uniforms = tuple(field for field in parameters if field.kind != "texture_2d")
-    if uniforms:
-        code.append("struct ShaderParameters {")
-        for field in uniforms:
-            code.extend([author.source_directive(author.field_nodes[field.name]),
-                         "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
-        binding = "[[vk::binding(0, 0)]] " if author.domain == "mesh" else ""
-        code.extend(["};", binding + "ConstantBuffer<ShaderParameters> inx_parameters;"])
+    code.extend(author.parameter_declarations(parameters))
+    vertex_ranges = ()
+    if vertex:
+        vertex_code, vertex_ranges = vertex.emit()
+        code.extend([vertex_code, _VERTEX_DEFORM])
+        vertex_main = _MESH_VERTEX.replace("    input = inx_skin_vertex", "    input = inx_apply_vertex(input, instance, inx_globals.time.x, inx_models[instance].value);\n    input = inx_skin_vertex")
+        code.append(vertex_main)
+    else:
+        code.append(_MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX)
     for helper in helpers:
         emitter = _Author(source, source_path)
         emitter.alias = author.alias
@@ -456,7 +336,12 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if author.is_surface:
         code.append("static const bool INX_RECEIVE_SHADOWS = " + ("true" if info["receive_shadows"] else "false") + ";")
         code.append(_SURFACE_LIGHTING)
-        code.append(_SURFACE_PASSES)
+        passes = _SURFACE_PASSES
+        if vertex:
+            passes = passes.replace("float3 previous_local = inx_skin_vertex(input, skin, inx_bones).position;",
+                                    "InxVertexInput previous = inx_apply_vertex(input, instance, inx_globals.frame_params.w, history.previous_model);\n"
+                                    "        float3 previous_local = inx_skin_vertex(previous, skin, inx_bones).position;")
+        code.append(passes)
         if model.deferred_model:
             code.append(_SURFACE_GBUFFER.replace("INX_MODEL_ID", "INX_" + model.deferred_model.upper() + "_MODEL_ID"))
     libraries = graph.sources()
@@ -464,8 +349,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         libraries = (*libraries, ("inx_surface_model", model.path, model.source))
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
                             "\n".join(code), libraries, inputs,
-                            tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *author.source_ranges))),
-                            author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None, info)
+                            tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *vertex_ranges,
+                                                 *(vertex.author.source_ranges if vertex else ()), *author.source_ranges))),
+                            author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None,
+                            info, vertex.path if vertex else None)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -479,6 +366,18 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
     source = source.removeprefix("\ufeff")
     if metadata_only:
         return "", (), json.dumps(read_shader_info(source, source_path), ensure_ascii=False), ()
+    if source_extension(source_path) == ".vert.py":
+        graph = LibraryGraph(reader)
+        owner = ShaderEmitter(source, source_path)
+        vertex = read_vertex(source_path, graph, owner, ast.Constant(value=None, lineno=1, col_offset=0), source=source)
+        parameters = tuple(vertex.author.fields.values())
+        code, ranges = vertex.emit()
+        prefix = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;",
+                  *("import " + name + ";" for name in vertex.dependencies),
+                  *vertex.author.parameter_declarations(parameters)]
+        schema = {"name": vertex.name, "domain": "vertex", "info": vertex.info,
+                  "parameters": [asdict(field) for field in parameters], "inputs": []}
+        return "\n".join([*prefix, code]), graph.sources(), json.dumps(schema, ensure_ascii=False), (*graph.ranges(), *vertex.author.source_ranges, *ranges)
     if source_extension(source_path) == ".shadingmodel.py":
         graph = LibraryGraph(reader)
         owner = ShaderEmitter(source, source_path)
@@ -502,6 +401,7 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
     schema = {"name": definition.name, "domain": definition.domain, "surface": definition.surface,
               "info": definition.info,
               "shading_model": definition.shading_model, "deferred_model": definition.deferred_model,
+              "vertex_source": definition.vertex_source,
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}
     return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False), definition.source_ranges

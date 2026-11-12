@@ -159,6 +159,7 @@
 </tbody>
 </table>
 <p>The same surface evaluation and alpha decision feed visible color, shadow/depth, picking, motion, normal, and base-color passes. PBR and Unlit additionally produce the shared GBuffer with the correct model ID. Previous object transforms and bone offsets feed motion. Render state remains Material state: use its surface/blend, culling, depth, queue, and alpha-clip controls instead of adding a second state block to the author file.</p>
+<p>For local deformation, add <code>vertex_shader = shader.ref("./wave.vert.py")</code>. Its <code>shader.vert</code> definition and Material fields are linked into the same program; see <a href="vertex-stage.html">vertex assets</a>.</p>
 <h2 id="shading-models">Separate shading models</h2>
 <p>A surface uses PBR by default. To define a separate model, save <code>flat.shadingmodel.py</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
@@ -316,6 +317,7 @@
 </tbody>
 </table>
 <p>同一份 Surface 求值与 alpha 决定可见颜色、阴影／深度、拾取、运动、法线和基础色通道。PBR 和 Unlit 还生成带正确模型标识的公共 GBuffer。运动通道使用上一对象变换和上一骨骼偏移。渲染状态仍属于 Material：使用其透明混合、剔除、深度、队列和 alpha 裁剪控制，不在作者文件中维护第二套状态声明。</p>
+<p>需要局部变形时，添加 <code>vertex_shader = shader.ref("./wave.vert.py")</code>。它的 <code>shader.vert</code> 定义与材质字段会合入同一程序，见<a href="vertex-stage.html">顶点资产</a>。</p>
 <h2 id="shading-models_1">独立 ShadingModel</h2>
 <p>Surface 默认采用 PBR。保存独立模型 <code>flat.shadingmodel.py</code>：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>

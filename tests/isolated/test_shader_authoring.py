@@ -86,6 +86,34 @@ def test_static_fullscreen_schema_and_both_targets():
         assert block["fields"][-1]["type"]["scalarType"] == "uint32"
 
 
+def test_active_resource_tree_owns_builtin_models_and_libraries(tmp_path, monkeypatch):
+    from pathlib import Path
+    from infernux.resources import get_package_resources_path
+
+    root = tmp_path / "resources"
+    library = root / "shaders" / "lib"
+    library.mkdir(parents=True)
+    pbr = Path(get_package_resources_path()) / "shaders" / "pbr.shadingmodel.py"
+    (root / "shaders" / pbr.name).write_text(pbr.read_text(encoding="utf8"), encoding="utf8")
+    (library / "active.shaderlib.py").write_text('''import infernux.shader as shader
+def color() -> shader.vec3:
+    return shader.vec3(0.2, 0.4, 0.6)
+''', encoding="utf8")
+    monkeypatch.setattr("infernux.resources.resources_path", str(root))
+    source = '''import infernux.shader as shader
+from infernux.shader.lib.active import color
+class Paint(shader.surface):
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=color())
+'''
+    definition = parse_shader(source, str(tmp_path / "paint.frag.py"), "active_resources")
+    assert definition.deferred_model == "PBR"
+    paths = {path for _, path, _ in definition.libraries}
+    assert str((root / "shaders" / pbr.name).resolve()) in paths
+    assert str((library / "active.shaderlib.py").resolve()) in paths
+    assert len(definition.compile()["targets"]) == 2
+
+
 def test_shader_identity_visibility_and_render_defaults_are_literal_metadata():
     from infernux._compiler.shader import _prepare_source
 

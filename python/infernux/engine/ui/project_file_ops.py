@@ -42,11 +42,16 @@ class {class_name}(inx.InxComponent):
         """Called every frame."""
 '''
 
-VERTEX_SHADER_TEMPLATE = '''#version 450
+VERTEX_SHADER_TEMPLATE = '''import infernux.shader as shader
 
-ShaderInfo {{
-    Name "{shader_id}"
-}}
+
+class {shader_id}(shader.vert):
+    shader_id = "project/{file_stem}"
+    offset = shader.material.vec3()
+
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os += self.offset
+        return vertex
 '''
 
 FRAGMENT_SHADER_TEMPLATE = '''import infernux.shader as shader
@@ -700,31 +705,25 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
     if shader_type not in {"vert", "frag"}:
         return AssetCreationResult(False, "Shader type must be 'vert' or 'frag'; GPU kernels use infernux.compute.kernel.")
 
-    for ext in ['.frag.py', '.vert', '.frag']:
+    for ext in ['.frag.py', '.vert.py', '.vert', '.frag']:
         if shader_name.endswith(ext):
             shader_name = shader_name[:-len(ext)]
             break
 
     words = re.split(r'[\s_\-]+', shader_name)
-    if shader_type == 'frag':
-        shader_id = ''.join(word[:1].upper() + word[1:] for word in words if word)
-        if not shader_id.isidentifier() or keyword.iskeyword(shader_id):
-            return AssetCreationResult(False, "Shader name must form a Python class identifier")
-        stem = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', shader_name)
-        stem = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', stem)
-        file_name = re.sub(r'[\s_\-]+', '_', stem).lower() + '.frag.py'
-    else:
-        shader_id = ' '.join(word[:1].upper() + word[1:] for word in words if word)
-        file_name = shader_name + '.vert'
+    shader_id = ''.join(word[:1].upper() + word[1:] for word in words if word)
+    if not shader_id.isidentifier() or keyword.iskeyword(shader_id):
+        return AssetCreationResult(False, "Shader name must form a Python class identifier")
+    stem = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', shader_name)
+    stem = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', stem)
+    file_name = re.sub(r'[\s_\-]+', '_', stem).lower() + f'.{shader_type}.py'
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
         return AssetCreationResult(False, f"'{file_name}' already exists")
 
-    if shader_type == 'vert':
-        content = VERTEX_SHADER_TEMPLATE.format(shader_id=shader_id)
-    else:
-        content = FRAGMENT_SHADER_TEMPLATE.format(shader_id=shader_id, file_stem=file_name[:-len('.frag.py')])
+    template = VERTEX_SHADER_TEMPLATE if shader_type == 'vert' else FRAGMENT_SHADER_TEMPLATE
+    content = template.format(shader_id=shader_id, file_stem=file_name[:-len(f'.{shader_type}.py')])
 
     written, error = _write_new_text_asset(file_path, content)
     if not written:

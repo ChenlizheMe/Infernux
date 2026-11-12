@@ -43,6 +43,31 @@ class shadingmodel(_ShaderAsset):
     """A typed lighting response shared by surfaces referring to this GPU asset."""
 
 
+class vert(_ShaderAsset):
+    """Local-space deformation shared by all geometry passes of a material."""
+
+
+class VertexData:
+    """Authored local-space mesh values, before skinning and object transforms."""
+
+    position_os: vec3
+    normal_os: vec3
+    tangent_os: vec4
+    color: vec3
+    uv0: vec2
+    uv1: vec2
+
+
+class VertexContext:
+    """Time and object state at the geometry sample being evaluated."""
+
+    time: float
+    delta_time: float
+    object_id: uvec2
+    layer_mask: uint
+    model_matrix: mat4
+
+
 class ShadingContext:
     """Lighting geometry independent of mesh UVs, vertex colors and tangent streams."""
 
@@ -224,4 +249,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]

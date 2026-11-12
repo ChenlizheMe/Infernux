@@ -52,7 +52,7 @@ struct EngineGlobalsUBO
     alignas(16) glm::vec4 zBufferParams = depth::LinearizationParams(0.01f, 5000.0f);
 
     // ─── Frame ──────────────────────────────────────────────────────
-    /// x = frame count (float), y = smoothDeltaTime, z = 1/deltaTime, w = unused
+    /// x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = previous view sample time
     alignas(16) glm::vec4 frameParams{0.0f};
 };
 

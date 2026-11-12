@@ -9,7 +9,8 @@ SURFACE_FIELDS = {
     "shading_param0": ("float", "0.0"), "shading_param1": ("float", "0.0"),
 }
 STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
-                "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight"}
+                "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight",
+                "VertexData": "InxVertexData", "VertexContext": "InxVertexContext"}
 STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
                  "InxMeshInput": {"position": "float4", "position_ws": "float3", "normal_ws": "float3",
                                   "tangent_ws": "float4", "color": "float3", "uv0": "float2", "uv1": "float2",
@@ -18,7 +19,11 @@ STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
                  "InxSurfaceData": {name: kind for name, (kind, _) in SURFACE_FIELDS.items()},
                  "InxShadingContext": {"position_ws": "float3", "geometric_normal_ws": "float3", "view_depth": "float",
                                        "pixel_position": "float2", "layer_mask": "uint", "receives_shadows": "bool"},
-                 "InxLight": {"direction": "float3", "color": "float3", "attenuation": "float", "shadow": "float"}}
+                 "InxLight": {"direction": "float3", "color": "float3", "attenuation": "float", "shadow": "float"},
+                 "InxVertexData": {"position_os": "float3", "normal_os": "float3", "tangent_os": "float4",
+                                   "color": "float3", "uv0": "float2", "uv1": "float2"},
+                 "InxVertexContext": {"time": "float", "delta_time": "float", "object_id": "uint2",
+                                      "layer_mask": "uint", "model_matrix": "float4x4"}}
 
 # A logical image carries its sampler through typed library calls. Slang
 # flattens the pair for each target; neither authors nor helpers name slots.

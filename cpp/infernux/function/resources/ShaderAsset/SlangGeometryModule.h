@@ -23,6 +23,45 @@ public struct InxVertexInput
     [[vk::location(6)]] public float4 bone_weights : BLENDWEIGHT;
     [[vk::location(7)]] public float2 uv1 : TEXCOORD1;
 };
+public struct InxVertexData
+{
+    public float3 position_os;
+    public float3 normal_os;
+    public float4 tangent_os;
+    public float3 color;
+    public float2 uv0;
+    public float2 uv1;
+};
+public struct InxVertexContext
+{
+    public float time;
+    public float delta_time;
+    public uint2 object_id;
+    public uint layer_mask;
+    public column_major float4x4 model_matrix;
+};
+public InxVertexData inx_vertex_data(InxVertexInput input)
+{
+    InxVertexData result;
+    result.position_os = input.position;
+    result.normal_os = input.normal;
+    result.tangent_os = input.tangent;
+    result.color = input.color;
+    result.uv0 = input.uv0;
+    result.uv1 = input.uv1;
+    return result;
+}
+public struct InxEngineGlobals
+{
+    public float4 time;
+    public float4 sin_time;
+    public float4 cos_time;
+    public float4 screen_params;
+    public float4 camera_position;
+    public float4 projection_params;
+    public float4 depth_params;
+    public float4 frame_params;
+};
 public struct InxMeshInput
 {
     public float4 position : SV_Position;
