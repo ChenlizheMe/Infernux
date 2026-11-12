@@ -74,6 +74,31 @@ class TransformECSStore
 
     static TransformECSStore &Instance();
 
+    /// Internal author/cache maintenance must not turn a matrix rebuild into
+    /// a demand readback of every GPU-owned body. Public reads run outside it.
+    class PhysicsPoseReadScope
+    {
+      public:
+        explicit PhysicsPoseReadScope(TransformECSStore &store) : m_store(store)
+        {
+            ++m_store.m_physicsPoseReadDepth;
+        }
+        ~PhysicsPoseReadScope()
+        {
+            --m_store.m_physicsPoseReadDepth;
+        }
+        PhysicsPoseReadScope(const PhysicsPoseReadScope &) = delete;
+        PhysicsPoseReadScope &operator=(const PhysicsPoseReadScope &) = delete;
+
+      private:
+        TransformECSStore &m_store;
+    };
+
+    [[nodiscard]] bool IsPhysicsPoseReadSuppressed() const noexcept
+    {
+        return m_physicsPoseReadDepth != 0;
+    }
+
     Handle Allocate(Transform *owner);
     void Release(Handle handle);
     [[nodiscard]] bool IsValid(Handle handle) const;
@@ -469,6 +494,7 @@ class TransformECSStore
     bool m_anyWorldMatrixDirty = false;
     // ── Global transform change serial (for physics dirty skip) ──────
     uint64_t m_globalTransformSerial = 0;
+    uint32_t m_physicsPoseReadDepth = 0;
 
     // ── slot metadata (free-list + generation) ───────────────────────
     std::vector<uint32_t> m_generations;

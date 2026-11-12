@@ -58,6 +58,7 @@ class Transform : public Component
     /// @brief Get position in local (parent) space
     [[nodiscard]] glm::vec3 GetLocalPosition() const
     {
+        EnsureCpuPhysicsPose();
         auto &store = TransformECSStore::Instance();
         if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPositionOverride(m_ecsHandle)) {
             const glm::vec3 world = store.GetCachedWorldPosition(m_ecsHandle.index);
@@ -123,6 +124,7 @@ class Transform : public Component
     /// @brief Get rotation as Euler angles (degrees) in local space
     [[nodiscard]] glm::vec3 GetLocalEulerAngles() const
     {
+        EnsureCpuPhysicsPose();
         auto &store = TransformECSStore::Instance();
         if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle)) {
             if (!GetParentTransformSafe() && store.GetWorldEulerExact(m_ecsHandle))
@@ -487,6 +489,10 @@ class Transform : public Component
     friend class Rigidbody;
     friend class SkeletonInstance;
     friend class TransformECSStore;
+    friend class PhysicsWorld;
+
+    void EnsureCpuPhysicsPose() const;
+    [[nodiscard]] bool HasSimulatedLocalPose() const;
 
     [[nodiscard]] glm::quat LocalRotationToWorld(const glm::quat &local) const;
     [[nodiscard]] glm::quat WorldRotationToLocal(const glm::quat &world) const;
@@ -591,6 +597,9 @@ class Transform : public Component
     }
 
     TransformECSStore::Handle m_ecsHandle;
+    uint64_t m_cpuPhysicsPoseGeneration = 0;
+    uint64_t m_cpuPhysicsPoseEpoch = UINT64_MAX;
+    uint32_t m_cpuPhysicsPoseBodyId = UINT32_MAX;
 };
 
 } // namespace infernux

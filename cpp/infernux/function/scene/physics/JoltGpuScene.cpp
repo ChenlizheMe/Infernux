@@ -67,6 +67,9 @@ class JoltGpuScene::Impl
         PhysicsActorHandle actor;
         OwnerIdentity owner;
         bool desiredResident = false;
+        // Initial author inputs are claimed by the first dynamic group for a
+        // component generation. Static groups must not release that claim.
+        PhysicsECSStore::RigidbodyHandle initialRigidbody;
         std::shared_ptr<const PublishedActor> accepted;
         // Shares the actual pending transaction record. After acceptance these
         // pointers normally name the same object; no second model is cached.
@@ -80,8 +83,13 @@ class JoltGpuScene::Impl
         BodyModel model;
         ShapeModel shape;
         BodyState initialState;
+        PhysicsECSStore::RigidbodyHandle initialRigidbody;
+        bool hasInitialLinearVelocity = false;
+        bool hasInitialAngularVelocity = false;
+        std::vector<PreparedGpuActor::ColliderCenter> colliderCenters;
         std::shared_ptr<PublishedActor> identity;
         bool creation = false;
+        bool initializesRigidbody = false;
     };
 
     Impl(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
@@ -148,6 +156,7 @@ class JoltGpuScene::Impl
         slot.actor = actor;
         slot.owner = std::move(owner);
         slot.desiredResident = false;
+        slot.initialRigidbody = {};
         ++nextBodyId;
         return {id, index};
     }
@@ -162,22 +171,24 @@ class JoltGpuScene::Impl
         if (actor.bodyId != change->bodyId)
             return;
         actor.shapeRevision = change->identity->shapeRevision;
-        if (change->creation && actor.rigidbody) {
-            const auto handle = actor.rigidbody->GetECSHandle();
-            if (actors.IsValid(handle)) {
-                auto &body = actors.GetRigidbody(handle);
-                // A setter can author another deferred value while admission
-                // waits. Consume only the exact initial value captured by this
-                // creation, leaving a newer authored velocity pending.
-                const auto &linear = change->initialState.linearVelocity;
-                const auto &angular = change->initialState.angularVelocity;
-                if (body.hasLinearVelocity && body.linearVelocity.x == linear.x && body.linearVelocity.y == linear.y &&
-                    body.linearVelocity.z == linear.z)
-                    body.hasLinearVelocity = false;
-                if (body.hasAngularVelocity && body.angularVelocity.x == angular.x &&
-                    body.angularVelocity.y == angular.y && body.angularVelocity.z == angular.z)
-                    body.hasAngularVelocity = false;
+        for (const auto &center : change->colliderCenters)
+            if (actors.IsValid(center.collider)) {
+                auto &collider = actors.GetCollider(center.collider);
+                if (collider.actorHandle == change->identity->actor)
+                    collider.publishedRigidCenter = center.center;
             }
+        if (change->initializesRigidbody && actors.IsValid(change->initialRigidbody)) {
+            auto &body = actors.GetRigidbody(change->initialRigidbody);
+            if (body.actorHandle != change->identity->actor)
+                return;
+            const auto &linear = change->initialState.linearVelocity;
+            const auto &angular = change->initialState.angularVelocity;
+            if (change->hasInitialLinearVelocity && body.hasLinearVelocity && body.linearVelocity.x == linear.x &&
+                body.linearVelocity.y == linear.y && body.linearVelocity.z == linear.z)
+                body.hasLinearVelocity = false;
+            if (change->hasInitialAngularVelocity && body.hasAngularVelocity && body.angularVelocity.x == angular.x &&
+                body.angularVelocity.y == angular.y && body.angularVelocity.z == angular.z)
+                body.hasAngularVelocity = false;
         }
     }
 
@@ -194,6 +205,7 @@ class JoltGpuScene::Impl
         identity->bodyId = id;
         identity->slot = index;
         identity->actor = slot.actor;
+        identity->rigidbody = actor.initialRigidbody;
         identity->owner = slot.owner;
         identity->rootCenterOfMass = rootCOM;
         identity->subShapeId = actor.geometry.subShapeID.GetValue();
@@ -216,7 +228,12 @@ class JoltGpuScene::Impl
             (change->model.meta.z & ~MotionNotResident) | (slot.desiredResident ? 0 : MotionNotResident);
         change->shape = actor.geometry.model;
         change->initialState = actor.initialState;
+        change->initialRigidbody = actor.initialRigidbody;
+        change->hasInitialLinearVelocity = actor.hasInitialLinearVelocity;
+        change->hasInitialAngularVelocity = actor.hasInitialAngularVelocity;
+        change->colliderCenters = std::move(actor.colliderCenters);
         change->identity = std::move(identity);
+        change->initializesRigidbody = firstOwnership || slot.initialRigidbody != change->initialRigidbody;
 
         JoltGpuControlGroup group;
         group.prepareModel = [this, change] {
@@ -244,19 +261,26 @@ class JoltGpuScene::Impl
             BodyCommand reset{};
             reset.meta = {index, CommandResetMotion, 0, 0};
             group.commands.push_back(reset);
-        } else if (firstOwnership && (change->model.meta.z & ~MotionNotResident) == MotionDynamic) {
-            // Initialization retains the captured raw input. Apply the normal
-            // GPU velocity setters once so control-only reads also observe the
-            // authored speed limits before the first solver step.
-            BodyCommand linear{};
-            linear.meta = {index, CommandSetLinearVelocity, 0, 0};
-            linear.value = change->initialState.linearVelocity;
-            BodyCommand angular{};
-            angular.meta = {index, CommandSetAngularVelocity, 0, 0};
-            angular.value = change->initialState.angularVelocity;
-            group.commands = {linear, angular};
+        } else if ((change->model.meta.z & ~MotionNotResident) == MotionDynamic) {
+            // A new slot clamps its initial values. A new Rigidbody attached
+            // to an existing actor applies only that component's captured
+            // pending inputs, preserving the resident numerical pose/state.
+            if (firstOwnership || (change->initializesRigidbody && change->hasInitialLinearVelocity)) {
+                BodyCommand linear{};
+                linear.meta = {index, CommandSetLinearVelocity, 0, 0};
+                linear.value = change->initialState.linearVelocity;
+                group.commands.push_back(linear);
+            }
+            if (firstOwnership || (change->initializesRigidbody && change->hasInitialAngularVelocity)) {
+                BodyCommand angular{};
+                angular.meta = {index, CommandSetAngularVelocity, 0, 0};
+                angular.value = change->initialState.angularVelocity;
+                group.commands.push_back(angular);
+            }
         }
         pending.push_back(std::move(group));
+        if ((change->model.meta.z & ~MotionNotResident) == MotionDynamic)
+            slot.initialRigidbody = change->initialRigidbody;
         slot.authored = change->identity;
     }
 
@@ -483,6 +507,10 @@ size_t JoltGpuScene::GetBodyCount() const noexcept
 uint32_t JoltGpuScene::GetCapacity() const noexcept
 {
     return static_cast<uint32_t>(m_impl->slots.size());
+}
+bool JoltGpuScene::CanReserve() const noexcept
+{
+    return !m_impl->cancelled && !m_impl->freeSlots.empty();
 }
 
 bool JoltGpuScene::HasPendingControl() const noexcept

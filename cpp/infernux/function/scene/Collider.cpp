@@ -192,10 +192,6 @@ void Collider::SetIsTrigger(bool trigger)
         auto &physics = PhysicsWorld::Instance();
         physics.RefreshBodyTriggerState(bodyId);
 
-        // Wake dynamic bodies that may be resting on (or overlapping) this
-        // collider so they re-evaluate the changed sensor state.
-        physics.WakeBodiesTouchingStatic(bodyId);
-
         // Clear stale contact-pair tracking so the listener produces fresh
         // Enter events (Trigger or Collision) on the next physics step
         // instead of suppressing them as wake-from-sleep duplicates.
@@ -216,20 +212,17 @@ void Collider::SetCenter(const glm::vec3 &center)
 
 // ---- Friction / Bounciness helpers ----
 
-/// @brief Update Jolt's body-level fallback material from the primary enabled collider.
-/// Actual contacts are combined per subshape by InxContactListener.
+/// Capture the primary collider's authored surface in the ordered GPU model.
 static void ApplyMaterialToBody(Collider *self)
 {
     const uint32_t bodyId = self->GetBodyId();
     if (bodyId == 0xFFFFFFFF)
         return;
 
-    auto &world = PhysicsWorld::Instance();
-    auto *primary = world.FindColliderByBodyId(bodyId);
-    if (primary) {
-        world.SetBodyFriction(bodyId, primary->GetFriction());
-        world.SetBodyRestitution(bodyId, primary->GetBounciness());
-    }
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = store.GetCollider(self->GetECSHandle()).actorHandle;
+    if (store.IsValid(handle))
+        PhysicsWorld::Instance().UpdateBodyShape(store.GetActor(handle));
 }
 
 std::shared_ptr<PhysicMaterial> Collider::GetPhysicMaterial() const

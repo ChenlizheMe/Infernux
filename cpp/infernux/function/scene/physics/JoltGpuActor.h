@@ -2,6 +2,7 @@
 
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include "JoltGpuShape.h"
+#include "PhysicsECSStore.h"
 
 #include <optional>
 
@@ -19,6 +20,17 @@ struct PreparedGpuActor
     JPH::GPU::BodyModel body;
     PreparedGpuShape geometry;
     JPH::GPU::BodyState initialState;
+    // Creation inputs belong to this exact component generation, even when a
+    // different Rigidbody is attached to the actor before GPU acceptance.
+    PhysicsECSStore::RigidbodyHandle initialRigidbody;
+    bool hasInitialLinearVelocity = false;
+    bool hasInitialAngularVelocity = false;
+    struct ColliderCenter
+    {
+        PhysicsECSStore::ColliderHandle collider;
+        glm::vec3 center;
+    };
+    std::vector<ColliderCenter> colliderCenters;
     JPH::RefConst<JPH::Shape> authoredShape;
     /// Source of the single collision leaf's material and layer, null for Empty.
     /// The owner retains its normal component identity/lifetime separately.
@@ -28,7 +40,8 @@ struct PreparedGpuActor
 /// Capture ordinary component authoring without creating or reading a CPU Body.
 /// Null means the complete shape candidate is not ready. Unsupported authored
 /// capabilities throw at this boundary. Pending velocities are observed without
-/// consumption; the owner consumes them once creation has been accepted.
+/// consumption; the owner consumes them when that Rigidbody binding's model
+/// packet is accepted, retaining any following velocity commands in FIFO order.
 [[nodiscard]] std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &actor, uint32_t shapeSlot,
                                                                   uint32_t worldIndex);
 

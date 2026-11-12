@@ -118,14 +118,12 @@ set(CPP_EXCEPTIONS_ENABLED OFF CACHE BOOL "" FORCE)
 set(CPP_RTTI_ENABLED OFF CACHE BOOL "" FORCE)
 set(DEBUG_RENDERER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)  # Not needed for physics-only usage
 set(PROFILER_IN_DEBUG_AND_RELEASE OFF CACHE BOOL "" FORCE)        # Not needed
-set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)                     # We don't use Jolt's GPU compute
-set(JPH_USE_VK OFF CACHE BOOL "" FORCE)                       # We have our own Vulkan renderer  
-if(APPLE)
-    set(JPH_USE_MTL ON CACHE BOOL "" FORCE)                     # macOS Metal backend for Jolt
-else()
-    set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
-endif()
-set(JPH_USE_CPU_COMPUTE ON CACHE BOOL "" FORCE)               # CPU physics only
+set(JPH_GPU_RUNTIME ON CACHE BOOL "" FORCE)
+# Slang kernels use the engine's shared device and compute queue on every OS.
+set(JPH_USE_DX12 OFF CACHE BOOL "" FORCE)
+set(JPH_USE_VK OFF CACHE BOOL "" FORCE)
+set(JPH_USE_MTL OFF CACHE BOOL "" FORCE)
+set(JPH_USE_CPU_COMPUTE OFF CACHE BOOL "" FORCE)
 
 # ------------------------------------------------------------------------------
 # External Libraries

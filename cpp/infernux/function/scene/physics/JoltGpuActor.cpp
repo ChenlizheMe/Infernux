@@ -5,6 +5,7 @@
 #include "../Rigidbody.h"
 #include "../TagLayerManager.h"
 #include "../Transform.h"
+#include "../TransformECSStore.h"
 #include "JoltGpuActor.h"
 #include "PhysicsECSStore.h"
 #include "PhysicsMass.h"
@@ -33,6 +34,7 @@ void RefreshGpuActorSurface(JPH::GPU::BodyModel &body, const Collider *collider,
 std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &actor, uint32_t shapeSlot,
                                                     uint32_t worldIndex)
 {
+    TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
     std::vector<Collider *> members;
     auto shape = BuildActorShape(actor, nullptr, nullptr, &members);
     if (!shape)
@@ -78,7 +80,10 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
         prepared.body.damping = {rigidbody->GetDrag(), rigidbody->GetAngularDrag(), rigidbody->GetMaxLinearVelocity(),
                                  rigidbody->GetMaxAngularVelocity()};
 
-        const auto &data = PhysicsECSStore::Instance().GetRigidbody(rigidbody->GetECSHandle());
+        prepared.initialRigidbody = rigidbody->GetECSHandle();
+        const auto &data = PhysicsECSStore::Instance().GetRigidbody(prepared.initialRigidbody);
+        prepared.hasInitialLinearVelocity = data.hasLinearVelocity;
+        prepared.hasInitialAngularVelocity = data.hasAngularVelocity;
         if (data.hasLinearVelocity) {
             const auto velocity = data.linearVelocity;
             prepared.initialState.linearVelocity = {velocity.x, velocity.y, velocity.z, 0.0f};
@@ -89,6 +94,9 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
         }
     }
     prepared.surfaceCollider = members.empty() ? nullptr : members.front();
+    prepared.colliderCenters.reserve(actor.colliders.size());
+    for (const auto *collider : actor.colliders)
+        prepared.colliderCenters.push_back({collider->GetECSHandle(), collider->GetCenterInRigidSpace()});
     RefreshGpuActorSurface(prepared.body, prepared.surfaceCollider, *actor.owner);
     prepared.authoredShape = std::move(shape);
     return prepared;

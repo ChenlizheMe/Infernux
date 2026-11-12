@@ -257,6 +257,7 @@ bool SceneManager::MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWor
 void SceneManager::Shutdown()
 {
     Scene::RequireNoWorldRetirement();
+    PhysicsWorld::Instance().CancelPendingStep();
 
     // No play-mode restore logic here — this is irreversible engine teardown.
     m_isPlaying = false;
@@ -530,9 +531,8 @@ void SceneManager::Update(float deltaTime)
                 return;
         }
 
-        t0 = ProfileClock::now();
-        ApplyInterpolatedRigidbodies(m_fixedTimeAccumulator / m_fixedTimeStep);
-        m_lastFrameProfile.interpolationMs += ProfileMsSince(t0);
+        // Render consumers use the completed device pose. CPU Transform
+        // samples are acquired only by the getters that actually need them.
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
         if (GetSimulationState() != admittedState)
             return;
@@ -563,8 +563,9 @@ void SceneManager::Update(float deltaTime)
 
 void SceneManager::EnsurePhysicsQueriesCurrent()
 {
-    if (HasPendingFixedStep() && !m_fixedExecuting)
-        return;
+    if (HasPendingFixedStep() && !m_fixedExecuting) {
+        PhysicsWorld::Instance().CompletePendingStep();
+    }
     if (m_scenes.empty() && !m_runtimePersistentScene)
         return;
     FlushPendingBroadphase();
@@ -757,18 +758,13 @@ void SceneManager::StartActiveSceneForPlay()
     FlushPendingBroadphase();
     const double flushMs = ProfileMsSince(phaseStart);
 
-    // Jolt bodies default to sleeping and need activation after broadphase
-    // publication for gravity and forces to apply on the first fixed step.
-    phaseStart = ProfileClock::now();
-    ActivateDynamicBodies();
     m_startupPending = false;
-    const double activationMs = ProfileMsSince(phaseStart);
 
     const double totalMs = ProfileMsSince(transitionStart);
     if (totalMs > 25.0) {
         // INXLOG_INFO("[Perf] StartActiveSceneForPlay: total=", totalMs, "ms transform=", initialTransformMs,
         //             "ms lifecycle=", startMs, "ms postTransform=", postStartTransformMs,
-        //             "ms colliderSync=", colliderSyncMs, "ms broadphase=", flushMs, "ms activate=", activationMs,
+        //             "ms colliderSync=", colliderSyncMs, "ms broadphase=", flushMs,
         //             "ms");
     }
 }
@@ -792,12 +788,12 @@ void SceneManager::StartSceneForPlay(Scene *scene)
     FlushPendingBroadphase();
     MeshCollider::FlushCompletedCooking(true);
     FlushPendingBroadphase();
-    ActivateDynamicBodies(scene);
 }
 
 void SceneManager::Stop()
 {
     Scene::RequireNoWorldRetirement();
+    PhysicsWorld::Instance().CancelPendingStep();
     const bool wasPlaying = m_isPlaying;
     m_isPlaying = false;
     m_isPaused = false;
@@ -898,9 +894,6 @@ void SceneManager::Step(float deltaTime)
     if (GetSimulationState() != admittedState || !RunFixedSimulationStep(useRuntimeScheduler, admittedState))
         return;
     m_pausedStepPending = false;
-    phaseStarted = ProfileClock::now();
-    ApplyInterpolatedRigidbodies(1.0f);
-    m_lastFrameProfile.interpolationMs += ProfileMsSince(phaseStarted);
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
     if (GetSimulationState() != admittedState)
         return;
@@ -1164,6 +1157,22 @@ void SceneManager::FlushPersistentPromotions()
 
 void SceneManager::PrepareActiveSceneReplacement()
 {
+    // Finish accepted work against the old graph before retiring its actors.
+    // This does not run FixedUpdate or admit another solver step, and leaves
+    // additive/persistent actors on the same compute owner.
+    auto &physics = PhysicsWorld::Instance();
+    const bool retainedStep = physics.HasPendingStep();
+    const bool needsPublication = m_fixedHasPhysics && (m_fixedPhase == FixedPhase::Publication ||
+                                                        (retainedStep && m_fixedPhase == FixedPhase::Integration));
+    physics.CompletePendingStep();
+    if (retainedStep && m_fixedPhase == FixedPhase::Integration) {
+        if (!physics.Step(m_admittedFixedDeltaTime))
+            throw std::logic_error("Completed physical step did not retire at the scene replacement boundary");
+    }
+    if (needsPublication) {
+        InvalidatePhysicsSkeletonPoses();
+        PublishPhysicsTransformsToRenderer();
+    }
     // SceneDocumentTransaction replaces the active graph in place, so the
     // Scene pointer does not change and SetActiveScene cannot publish this
     // boundary. Discard both wall-clock loading time and old-scene fixed-step
@@ -1231,6 +1240,7 @@ void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
 
 void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
 {
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     // FixedUpdate may have authored cached poses. They must reach physics
     // before the solver, rather than waiting for the end-of-frame commit.
     TransformECSStore::Instance().VisitAuthoredPoseWrites([](Transform *transform) {
@@ -1304,6 +1314,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     if (m_fixedPhase == FixedPhase::Idle) {
         m_admittedFixedDeltaTime = m_fixedTimeStep;
         m_fixedAccumulatorDebit = !m_isStepping;
+        m_fixedHasPhysics = false;
         ++m_fixedStepIndex;
         m_fixedTime += static_cast<double>(m_admittedFixedDeltaTime);
         if (m_timeScale > 0.0f)
@@ -1359,13 +1370,15 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             return false;
     }
     if (m_fixedPhase == FixedPhase::Integration) {
-        if (PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+        if (PhysicsWorld::Instance().HasPendingStep() || PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+            m_fixedHasPhysics = true;
             const auto phaseStart = ProfileClock::now();
             PhysicsStepProfile profile;
+            bool completed = false;
             try {
-                PhysicsWorld::Instance().Step(m_admittedFixedDeltaTime, &profile);
+                completed = PhysicsWorld::Instance().Step(m_admittedFixedDeltaTime, &profile);
             } catch (...) {
-                // Jolt may already have changed internal bodies. Preserve the
+                // Accepted GPU work may have changed its retained storage. Preserve the
                 // last published world and never replay this admitted step.
                 m_fixedPhase = FixedPhase::Failed;
                 m_pausedStepPending = false;
@@ -1379,6 +1392,8 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             m_lastFrameProfile.physicsFinishMs += profile.finishNs * 1e-6;
             m_lastFrameProfile.dynamicCCDSplits +=
                 static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
+            if (!completed)
+                return false;
         }
         m_completedFixedStepIndex = m_fixedStepIndex;
         m_lastFrameProfile.fixedSteps += 1.0;
@@ -1387,7 +1402,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
         // Mark before user collision callbacks: a Pause or delayed publication
         // must never repeat the solver or dispatch this batch a second time.
         m_fixedPhase = FixedPhase::Publication;
-        if (PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+        if (m_fixedHasPhysics) {
             const auto phaseStart = ProfileClock::now();
             m_lastFrameProfile.contactEvents += static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
             m_lastFrameProfile.physicsEventsMs += ProfileMsSince(phaseStart);
@@ -1398,26 +1413,24 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     if (m_fixedPhase == FixedPhase::Publication) {
         if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsToTransform) || !validWorld())
             return false;
-        if (PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+        if (m_fixedHasPhysics) {
             const auto phaseStart = ProfileClock::now();
-            SyncRigidbodiesToTransform();
+            // The world published one completed GPU generation. Invalidating
+            // consumers here does not read every body back into Transform.
+            InvalidatePhysicsSkeletonPoses();
+            PublishPhysicsTransformsToRenderer();
             m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(phaseStart);
         }
         m_publishedFixedStepIndex = m_completedFixedStepIndex;
         m_fixedPhase = FixedPhase::PostNotification;
-        if (!current()) {
-            ApplyInterpolatedRigidbodies(1.0f);
+        if (!current())
             return false;
-        }
     }
     if (m_fixedPhase == FixedPhase::PostNotification) {
         m_fixedPhase = FixedPhase::PostStep;
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsToTransform);
-        if (!current()) {
-            if (validWorld())
-                ApplyInterpolatedRigidbodies(1.0f);
+        if (!current())
             return false;
-        }
     }
     if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsPostScript) || !current())
         return false;
@@ -1508,6 +1521,7 @@ void SceneManager::SyncTransforms(float motionDeltaTime)
 
 void SceneManager::ForceAllBodiesToCurrentTransform()
 {
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     auto &pw = PhysicsWorld::Instance();
     if (!pw.IsInitialized())
         return;
@@ -1531,73 +1545,6 @@ void SceneManager::ForceAllBodiesToCurrentTransform()
     });
 }
 
-void SceneManager::ActivateDynamicBodies(Scene *scene)
-{
-    auto &pw = PhysicsWorld::Instance();
-    if (!pw.IsInitialized())
-        return;
-
-    PhysicsECSStore::Instance().ForEachAliveRigidbody([this, scene](RigidbodyECSData &data) {
-        auto *rb = data.owner;
-        if (!rb || !rb->IsEnabled() || rb->IsKinematic())
-            return;
-        auto *go = rb->GetGameObject();
-        if (!go || !go->IsActiveInHierarchy() || !IsRuntimeScene(go->GetScene()) || (scene && go->GetScene() != scene))
-            return;
-        rb->WakeUp();
-    });
-}
-
-void SceneManager::SyncRigidbodiesToTransform()
-{
-    auto &physics = PhysicsWorld::Instance();
-    const auto &bodyIds = physics.GetPoseReadbackBodyIds();
-    m_lastFrameProfile.rigidbodySyncCandidates += static_cast<double>(bodyIds.size());
-
-    // A body absent from the new active union has gone to sleep or been
-    // deactivated. Finish its previous interpolation at the exact solver pose
-    // before removing it from the dense presentation set.
-    for (const uint32_t previousBodyId : m_posePresentationBodyIds) {
-        if (std::binary_search(bodyIds.begin(), bodyIds.end(), previousBodyId))
-            continue;
-        auto *rb = physics.FindRigidbodyByBodyId(previousBodyId);
-        if (!rb || !rb->IsEnabled())
-            continue;
-        auto *go = rb->GetGameObject();
-        if (go && IsRuntimeScene(go->GetScene()))
-            rb->ApplyInterpolatedTransform(1.0f);
-    }
-    m_posePresentationBodyIds.assign(bodyIds.begin(), bodyIds.end());
-
-    for (const uint32_t bodyId : bodyIds) {
-        auto *rb = physics.FindRigidbodyByBodyId(bodyId);
-        if (!rb || !rb->IsEnabled())
-            continue;
-        auto *go = rb->GetGameObject();
-        if (!go || !IsRuntimeScene(go->GetScene()))
-            continue;
-        rb->SyncPhysicsToTransform();
-    }
-}
-
-void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
-{
-    if (m_scenes.empty() && !m_runtimePersistentScene)
-        return;
-
-    auto &physics = PhysicsWorld::Instance();
-    m_lastFrameProfile.interpolationCandidates += static_cast<double>(m_posePresentationBodyIds.size());
-    for (const uint32_t bodyId : m_posePresentationBodyIds) {
-        auto *rb = physics.FindRigidbodyByBodyId(bodyId);
-        if (!rb || !rb->IsEnabled())
-            continue;
-        auto *go = rb->GetGameObject();
-        if (!go || !IsRuntimeScene(go->GetScene()))
-            continue;
-        rb->ApplyInterpolatedTransform(alpha);
-    }
-}
-
 // ============================================================================
 // Component registries
 // ============================================================================
@@ -1617,7 +1564,6 @@ void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
     // Collider/actor handles include their generation, and body destruction
     // cancels its own pending broadphase commands. Clearing those queues here
     // would discard live Worlds' creation, enabled-state and transform edits.
-    m_posePresentationBodyIds.clear();
 
     // Scene document replacement clears process-wide registries. Re-publish
     // every other loaded Scene plus the runtime-persistent Scene; the caller
@@ -1727,6 +1673,30 @@ void SceneManager::ForgetSkeletonBone(Transform *bone)
         auto *skeleton = found->second;
         m_skeletonBoneOwners.erase(found);
         skeleton->MarkPoseDirty();
+    }
+}
+
+void SceneManager::InvalidatePhysicsSkeletonPoses()
+{
+    auto &physics = PhysicsECSStore::Instance();
+    const auto physicalRoot = [&](GameObject *object) {
+        for (; object; object = object->GetParent()) {
+            const auto handle = physics.FindActor(object);
+            if (!physics.IsValid(handle))
+                continue;
+            const auto &actor = physics.GetActor(handle);
+            if (actor.rigidbody && actor.rigidbody->IsEnabled() && !actor.rigidbody->IsKinematic() &&
+                !actor.sceneSuspended && actor.bodyId != UINT32_MAX)
+                return actor.bodyId;
+        }
+        return UINT32_MAX;
+    };
+    // A palette needs refresh when a bone has an independently moving physical
+    // ancestor. A common rigid root cancels from root-space bone matrices.
+    for (const auto &[bone, skeleton] : m_skeletonBoneOwners) {
+        const auto body = physicalRoot(bone->GetGameObject());
+        if (body != UINT32_MAX && body != physicalRoot(skeleton->GetGameObject()))
+            skeleton->MarkPoseDirty();
     }
 }
 

@@ -199,16 +199,21 @@ void Rigidbody::TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3
 {
     auto &d = DataMut();
     if (publishTransform) {
-        auto *transform = go->GetTransform();
-        transform->ApplyWorldPoseFromPhysics(pos, rot, true);
+        {
+            TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
+            auto *transform = go->GetTransform();
+            transform->ApplyWorldPoseFromPhysics(pos, rot, true);
+            d.lastAuthoredPoseRevision =
+                TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
+            CacheActorPose(pos, rot);
+            d.lastSyncedPosition = pos;
+            d.lastSyncedRotation = rot;
+            d.hasSyncedOnce = true;
+        }
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             SceneManager::Instance().PublishPhysicsTransformsToRenderer();
-        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
-        CacheActorPose(pos, rot);
-        d.lastSyncedPosition = pos;
-        d.lastSyncedRotation = rot;
-        d.hasSyncedOnce = true;
     } else if (!d.hasSyncedOnce) {
+        TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
         auto *transform = go->GetTransform();
         d.lastSyncedPosition = transform->GetPosition();
         d.lastSyncedRotation = transform->GetWorldRotation();
@@ -218,7 +223,6 @@ void Rigidbody::TeleportBodies(PhysicsWorld &pw, GameObject *go, const glm::vec3
     const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF) {
         pw.SetBodyPosition(bodyId, pos, rot, publishTransform);
-        pw.ActivateBody(bodyId);
     }
     d.previousPhysicsPosition = pos;
     d.previousPhysicsRotation = rot;
@@ -398,7 +402,7 @@ void Rigidbody::SetIsKinematic(bool kinematic)
     if (!kinematic && m_massProperties)
         PhysicsWorld::Instance().ValidateBodyMassProperties(*this, d.mass, &*m_massProperties);
     d.isKinematic = kinematic;
-    NotifyCollidersBodyTypeChanged(false);
+    NotifyCollidersBodyTypeChanged();
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     // When switching kinematic → dynamic, synchronise interpolation caches
@@ -507,17 +511,13 @@ void Rigidbody::SetVelocity(const glm::vec3 &vel)
 {
     if (!IsFinite(vel))
         throw std::invalid_argument("velocity must contain finite values");
-    auto &data = DataMut();
-    data.linearVelocity = vel;
-    data.hasLinearVelocity = true;
-    auto *go = GetGameObject();
-    if (go) {
-        auto &pw = PhysicsWorld::Instance();
-        const uint32_t bodyId = GetBodyId();
-        if (bodyId != 0xFFFFFFFF) {
-            pw.SetBodyLinearVelocity(bodyId, vel);
-            data.hasLinearVelocity = false;
-        }
+    const uint32_t bodyId = GetBodyId();
+    if (bodyId != 0xFFFFFFFF) {
+        PhysicsWorld::Instance().SetBodyLinearVelocity(bodyId, vel);
+    } else {
+        auto &data = DataMut();
+        data.linearVelocity = vel;
+        data.hasLinearVelocity = true;
     }
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
@@ -532,17 +532,13 @@ void Rigidbody::SetAngularVelocity(const glm::vec3 &vel)
 {
     if (!IsFinite(vel))
         throw std::invalid_argument("angular velocity must contain finite values");
-    auto &data = DataMut();
-    data.angularVelocity = vel;
-    data.hasAngularVelocity = true;
-    auto *go = GetGameObject();
-    if (go) {
-        auto &pw = PhysicsWorld::Instance();
-        const uint32_t bodyId = GetBodyId();
-        if (bodyId != 0xFFFFFFFF) {
-            pw.SetBodyAngularVelocity(bodyId, vel);
-            data.hasAngularVelocity = false;
-        }
+    const uint32_t bodyId = GetBodyId();
+    if (bodyId != 0xFFFFFFFF) {
+        PhysicsWorld::Instance().SetBodyAngularVelocity(bodyId, vel);
+    } else {
+        auto &data = DataMut();
+        data.angularVelocity = vel;
+        data.hasAngularVelocity = true;
     }
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }
@@ -583,81 +579,31 @@ void Rigidbody::SubmitForceCommand(ForceCommand command)
 {
     if (command.value == glm::vec3(0.0f))
         return;
-    const uint32_t bodyId = GetBodyId();
+    const uint32_t bodyId = GetParticipatingBodyId();
     auto &world = PhysicsWorld::Instance();
-    if (!world.IsBodyInBroadphase(bodyId)) {
+    if (bodyId == 0xFFFFFFFF) {
         m_pendingForceCommands.push_back(std::move(command));
         return;
     }
+    FlushPendingForceCommands();
     ApplyForceCommand(world, bodyId, command);
 }
 
 void Rigidbody::ApplyForceCommand(PhysicsWorld &world, uint32_t bodyId, const ForceCommand &command)
 {
-    const float mass = Data().mass;
-    if (command.kind == ForceCommandKind::Force) {
-        switch (command.mode) {
-        case ForceMode::Force:
-            world.AddBodyForce(bodyId, command.value);
-            return;
-        case ForceMode::Acceleration:
-            world.AddBodyForce(bodyId, command.value * mass);
-            return;
-        case ForceMode::Impulse:
-            world.AddBodyImpulse(bodyId, command.value);
-            return;
-        case ForceMode::VelocityChange:
-            world.AddBodyImpulse(bodyId, command.value * mass);
-            return;
-        }
-    }
-
-    if (command.kind == ForceCommandKind::Torque) {
-        switch (command.mode) {
-        case ForceMode::Force:
-            world.AddBodyTorque(bodyId, command.value);
-            return;
-        case ForceMode::Acceleration:
-            world.AddBodyTorque(bodyId, world.GetBodyWorldSpaceInertiaTensor(bodyId) * command.value);
-            return;
-        case ForceMode::Impulse:
-            world.AddBodyAngularImpulse(bodyId, command.value);
-            return;
-        case ForceMode::VelocityChange:
-            world.AddBodyAngularImpulse(bodyId, world.GetBodyWorldSpaceInertiaTensor(bodyId) * command.value);
-            return;
-        }
-    }
-
-    switch (command.mode) {
-    case ForceMode::Force:
-        world.AddBodyForceAtPosition(bodyId, command.value, command.position);
-        return;
-    case ForceMode::Acceleration:
-        world.AddBodyForceAtPosition(bodyId, command.value * mass, command.position);
-        return;
-    case ForceMode::Impulse:
-        world.AddBodyImpulseAtPosition(bodyId, command.value, command.position);
-        return;
-    case ForceMode::VelocityChange:
-        world.AddBodyImpulseAtPosition(bodyId, command.value * mass, command.position);
-        return;
-    }
-    throw std::logic_error("validated force command has an invalid mode");
+    world.QueueBodyForce(bodyId, static_cast<int>(command.kind), static_cast<int>(command.mode), command.value,
+                         command.position);
 }
 
 void Rigidbody::FlushPendingForceCommands()
 {
     if (m_pendingForceCommands.empty())
         return;
-    const uint32_t bodyId = GetBodyId();
+    const uint32_t bodyId = GetParticipatingBodyId();
     if (bodyId == 0xFFFFFFFF)
-        throw std::logic_error("cannot flush force commands without a physics body");
-
-    auto &world = PhysicsWorld::Instance();
-    if (!world.IsBodyInBroadphase(bodyId))
         return;
 
+    auto &world = PhysicsWorld::Instance();
     auto commands = std::move(m_pendingForceCommands);
     m_pendingForceCommands.clear();
     for (const auto &command : commands)
@@ -738,10 +684,12 @@ PhysicsBodyMotionState Rigidbody::GetMotionState(PhysicsStateFields fields) cons
 
 void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::vector<PhysicsBodyMotionState> states)
 {
-    auto &world = PhysicsWorld::Instance();
-    world.RequireResetPhase(); // Before accessing any scene/component state.
     if (bodies.size() != states.size())
         throw std::invalid_argument("reset requires one motion state per Rigidbody");
+    if (bodies.empty())
+        return;
+    auto &world = PhysicsWorld::Instance();
+    world.RequireResetPhase(); // Before accessing any scene/component state.
     std::unordered_set<uint32_t> identities;
     for (size_t i = 0; i < bodies.size(); ++i) {
         auto *body = bodies[i];
@@ -781,6 +729,7 @@ void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::v
     }
     std::sort(publicationOrder.begin(), publicationOrder.end());
     for (const auto &[depth, i] : publicationOrder) {
+        TransformECSStore::PhysicsPoseReadScope applying(TransformECSStore::Instance());
         auto *body = bodies[i];
         const auto &state = states[i];
         auto *go = body->GetGameObject();
@@ -791,7 +740,6 @@ void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::v
         data.lastSyncedRotation = transform->GetWorldRotation();
         data.hasSyncedOnce = true;
         body->CacheActorPose(data.lastSyncedPosition, data.lastSyncedRotation);
-        body->PreserveDescendantPhysicsPoses();
     }
     if (!bodies.empty())
         SceneManager::Instance().PublishPhysicsTransformsToRenderer();
@@ -827,22 +775,20 @@ void Rigidbody::SetPosition(const glm::vec3 &position)
     auto &world = PhysicsWorld::Instance();
     const uint32_t bodyId = GetBodyId();
     const bool hasBody = world.IsInitialized() && bodyId != 0xFFFFFFFF;
-    const glm::quat rotation =
-        hasBody ? glm::normalize(world.GetBodyRotation(bodyId)) : glm::normalize(transform->GetWorldRotation());
-    if (hasBody) {
-        TeleportBodies(world, go, position, rotation, !SceneManager::Instance().IsPlaying());
-    } else {
+    if (hasBody)
+        world.SetBodyPositionOnly(bodyId, position);
+    if (!hasBody || !SceneManager::Instance().IsPlaying()) {
         transform->SetPosition(position);
         auto &d = DataMut();
-        d.previousPhysicsPosition = d.currentPhysicsPosition = position;
-        d.previousPhysicsRotation = d.currentPhysicsRotation = rotation;
-        d.hasPhysicsPose = true;
-        d.wasSleeping = false;
         d.lastSyncedPosition = position;
-        d.lastSyncedRotation = rotation;
-        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
-        d.hasSyncedOnce = true;
+        d.lastAuthoredPoseRevision[0] =
+            TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle())[0];
+        auto &store = PhysicsECSStore::Instance();
+        if (store.IsValid(d.actorHandle))
+            store.GetActor(d.actorHandle).lastSyncedPos = position;
     }
+    DataMut().hasPhysicsPose = false;
+    DataMut().wasSleeping = false;
 }
 
 glm::quat Rigidbody::GetRotation() const
@@ -876,21 +822,20 @@ void Rigidbody::SetRotation(const glm::quat &rotation)
     auto &world = PhysicsWorld::Instance();
     const uint32_t bodyId = GetBodyId();
     const bool hasBody = world.IsInitialized() && bodyId != 0xFFFFFFFF;
-    const glm::vec3 position = hasBody ? world.GetBodyPosition(bodyId) : transform->GetPosition();
-    if (hasBody) {
-        TeleportBodies(world, go, position, normalized, !SceneManager::Instance().IsPlaying());
-    } else {
+    if (hasBody)
+        world.SetBodyRotationOnly(bodyId, normalized);
+    if (!hasBody || !SceneManager::Instance().IsPlaying()) {
         transform->SetWorldRotation(normalized);
         auto &d = DataMut();
-        d.previousPhysicsPosition = d.currentPhysicsPosition = position;
-        d.previousPhysicsRotation = d.currentPhysicsRotation = normalized;
-        d.hasPhysicsPose = true;
-        d.wasSleeping = false;
-        d.lastSyncedPosition = position;
         d.lastSyncedRotation = normalized;
-        d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
-        d.hasSyncedOnce = true;
+        d.lastAuthoredPoseRevision[1] =
+            TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle())[1];
+        auto &store = PhysicsECSStore::Instance();
+        if (store.IsValid(d.actorHandle))
+            store.GetActor(d.actorHandle).lastSyncedRot = normalized;
     }
+    DataMut().hasPhysicsPose = false;
+    DataMut().wasSleeping = false;
 }
 
 // ============================================================================
@@ -958,6 +903,8 @@ void Rigidbody::SyncPhysicsToTransform()
     if (!tf)
         return;
 
+    TransformECSStore::PhysicsPoseReadScope applying(TransformECSStore::Instance());
+
     const bool firstPose = !d.hasPhysicsPose;
     if (firstPose) {
         d.previousPhysicsPosition = bodyPos;
@@ -981,6 +928,14 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     auto &d = DataMut();
     if (!d.hasPhysicsPose)
         return;
+    auto *go = GetGameObject();
+    auto *transform = go ? go->GetTransform() : nullptr;
+    if (!transform ||
+        TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle()) != d.lastAuthoredPoseRevision)
+        return;
+    auto &physics = PhysicsECSStore::Instance();
+    if (!physics.IsValid(d.actorHandle) || physics.GetActor(d.actorHandle).centerTransformDirty)
+        return;
 
     if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None)) {
         // A normal fixed-step publication has already written this pose. A
@@ -990,16 +945,6 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
                                     static_cast<int>(RigidbodyConstraints::FreezeRotation);
         if (d.currentPhysicsPosition == d.lastSyncedPosition &&
             (rotationFrozen || !RotationChanged(d.currentPhysicsRotation, d.lastSyncedRotation)))
-            return;
-        auto *go = GetGameObject();
-        auto *transform = go ? go->GetTransform() : nullptr;
-        if (!transform || TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle()) !=
-                              d.lastAuthoredPoseRevision)
-            return;
-        // Actor authoring dirtiness includes ancestors. Do not infer it from
-        // world/local floating-point reconstruction differences.
-        auto &physics = PhysicsECSStore::Instance();
-        if (!physics.IsValid(d.actorHandle) || physics.GetActor(d.actorHandle).centerTransformDirty)
             return;
         PublishPhysicsPose(d.currentPhysicsPosition, d.currentPhysicsRotation);
         return;
@@ -1012,6 +957,39 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
     PublishPhysicsPose(presentedPos, presentedRot);
 }
 
+void Rigidbody::CacheCpuPhysicsPose(const glm::vec3 &position, const glm::quat &rotation, bool positionApplied,
+                                    bool rotationApplied)
+{
+    auto *go = GetGameObject();
+    auto *transform = go ? go->GetTransform() : nullptr;
+    if (!transform)
+        return;
+    auto &data = DataMut();
+    const auto revision = TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
+    if (positionApplied) {
+        data.lastSyncedPosition = position;
+        data.previousPhysicsPosition = data.currentPhysicsPosition = position;
+        data.lastAuthoredPoseRevision[0] = revision[0];
+    }
+    if (rotationApplied) {
+        data.lastSyncedRotation = rotation;
+        data.previousPhysicsRotation = data.currentPhysicsRotation = rotation;
+        data.lastAuthoredPoseRevision[1] = revision[1];
+    }
+    if (positionApplied && rotationApplied) {
+        data.hasSyncedOnce = true;
+        data.hasPhysicsPose = true;
+    }
+    auto &store = PhysicsECSStore::Instance();
+    if (store.IsValid(data.actorHandle)) {
+        auto &actor = store.GetActor(data.actorHandle);
+        if (positionApplied)
+            actor.lastSyncedPos = position;
+        if (rotationApplied)
+            actor.lastSyncedRot = rotation;
+    }
+}
+
 void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::quat &presentedRot)
 {
     auto &d = DataMut();
@@ -1022,6 +1000,7 @@ void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::qua
     Transform *tf = go->GetTransform();
     if (!tf)
         return;
+    TransformECSStore::PhysicsPoseReadScope applying(TransformECSStore::Instance());
 
     const bool rotFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
                            static_cast<int>(RigidbodyConstraints::FreezeRotation);
@@ -1036,35 +1015,6 @@ void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::qua
     d.hasSyncedOnce = true;
 
     CacheActorPose(presentedPos, d.lastSyncedRotation);
-    PreserveDescendantPhysicsPoses();
-}
-
-void Rigidbody::PreserveDescendantPhysicsPoses()
-{
-    auto *go = GetGameObject();
-    if (!go)
-        return;
-    auto &transforms = TransformECSStore::Instance();
-    const auto preserve = [&](auto &&self, GameObject *child) -> void {
-        if (!child->IsActive())
-            return;
-        auto *body = child->GetComponent<Rigidbody>();
-        if (body && body->IsEnabled() && !body->IsKinematic() && body->Data().hasPhysicsPose && body->HasBody()) {
-            const auto handle = child->GetTransform()->GetECSHandle();
-            // An already published solver/interpolated or authored target is
-            // authoritative. Do not replace it with an older interpolation
-            // sample. Its own publication already handled its descendants.
-            if (!transforms.IsFrameCacheActiveFor(handle) || !transforms.HasFrameCacheWorldPoseOverride(handle))
-                body->PublishPhysicsPose(body->Data().currentPhysicsPosition, body->Data().currentPhysicsRotation);
-            return;
-        }
-        for (size_t i = 0; i < child->GetChildCount(); ++i)
-            self(self, child->GetChild(i));
-    };
-    // Only traverse this moving actor's descendants, never the whole physics
-    // pool. Cached solver poses need no Jolt read, wake-up or teleport.
-    for (size_t i = 0; i < go->GetChildCount(); ++i)
-        preserve(preserve, go->GetChild(i));
 }
 
 void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
@@ -1084,48 +1034,24 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
 
     const float posEps = 1e-4f;
 
-    // First frame: initialise cache from current Transform.
-    // Also check whether the script already moved the Transform away from
-    // the body position (e.g. instantiate then set position).  If so,
-    // teleport the body immediately instead of waiting one more tick.
+    // Registration captures the authored initial pose before reserving a GPU
+    // body. A missing component cache can use that same author baseline;
+    // discovering external writes never requires reading dynamic device state.
     if (!d.hasSyncedOnce) {
-        d.lastAuthoredPoseRevision = authoredRevision;
-        d.lastSyncedPosition = currentPos;
-        d.lastSyncedRotation = currentRot;
+        auto &store = PhysicsECSStore::Instance();
+        const bool hasActor = store.IsValid(d.actorHandle);
+        d.lastSyncedPosition = hasActor ? store.GetActor(d.actorHandle).lastSyncedPos : currentPos;
+        d.lastSyncedRotation = hasActor ? store.GetActor(d.actorHandle).lastSyncedRot : currentRot;
         d.hasSyncedOnce = true;
-
-        auto &pw = PhysicsWorld::Instance();
-        if (!pw.IsInitialized())
-            return;
-
-        const uint32_t bodyId = GetBodyId();
-        if (bodyId == 0xFFFFFFFF)
-            return;
-
-        glm::vec3 bodyPos = pw.GetBodyPosition(bodyId);
-        const glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bodyId));
-        bool firstFrameDiff = glm::length(currentPos - bodyPos) > posEps || RotationChanged(currentRot, bodyRot);
-        if (!firstFrameDiff)
-            return;
-
-        if (d.isKinematic && fixedDeltaTime > 0.0f) {
-            pw.MoveBodyKinematic(bodyId, currentPos, currentRot, fixedDeltaTime, PhysicsWorld::kMaxTransformDriveSpeed);
-        } else {
-            // A direct Transform assignment outside the fixed simulation
-            // phase is an authored teleport. Resetting both interpolation
-            // samples prevents the previous physics pose from snapping the
-            // object back before the next fixed step.
-            TeleportBodies(pw, go, currentPos, currentRot);
-        }
-        return;
     }
 
     const bool positionAuthored = authoredRevision[0] != d.lastAuthoredPoseRevision[0];
     const bool rotationAuthored = authoredRevision[1] != d.lastAuthoredPoseRevision[1];
-    bool posDiff =
-        positionAuthored ? currentPos != d.lastSyncedPosition : glm::length(currentPos - d.lastSyncedPosition) > posEps;
-    bool rotDiff =
-        rotationAuthored ? currentRot != d.lastSyncedRotation : RotationChanged(currentRot, d.lastSyncedRotation);
+    // An explicit author write can restore an old CPU value after the device
+    // has moved away from it. Its revision, rather than stale cache equality,
+    // establishes the command that must reach the GPU.
+    const bool posDiff = positionAuthored || glm::length(currentPos - d.lastSyncedPosition) > posEps;
+    const bool rotDiff = rotationAuthored || RotationChanged(currentRot, d.lastSyncedRotation);
 
     if (!posDiff && !rotDiff) {
         d.lastAuthoredPoseRevision = authoredRevision;
@@ -1147,10 +1073,20 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
         d.lastSyncedPosition = currentPos;
         d.lastSyncedRotation = currentRot;
         CacheActorPose(currentPos, currentRot);
-    } else {
-        // Dynamic bodies and frame-authored kinematic poses use teleport
-        // semantics. TeleportBodies also resets interpolation history.
+    } else if (posDiff && rotDiff) {
         TeleportBodies(pw, go, currentPos, currentRot);
+    } else {
+        if (posDiff) {
+            pw.SetBodyPositionOnly(bodyId, currentPos);
+            d.lastSyncedPosition = currentPos;
+        }
+        if (rotDiff) {
+            pw.SetBodyRotationOnly(bodyId, currentRot);
+            d.lastSyncedRotation = currentRot;
+        }
+        d.lastAuthoredPoseRevision = authoredRevision;
+        d.hasPhysicsPose = false;
+        CacheActorPose(d.lastSyncedPosition, d.lastSyncedRotation);
     }
 
     d.lastAuthoredPoseRevision = authoredRevision;
@@ -1181,7 +1117,7 @@ PhysicsWorld *Rigidbody::GetActivePhysicsWorld(GameObject *&outGo) const
     return pw.IsInitialized() ? &pw : nullptr;
 }
 
-void Rigidbody::NotifyCollidersBodyTypeChanged(bool refreshShape)
+void Rigidbody::NotifyCollidersBodyTypeChanged()
 {
     auto &store = PhysicsECSStore::Instance();
     const auto handle = Data().actorHandle;
@@ -1194,19 +1130,7 @@ void Rigidbody::NotifyCollidersBodyTypeChanged(bool refreshShape)
                 mesh->SetConvex(true);
         }
     }
-    const auto bodyId = GetBodyId();
-    if (refreshShape || bodyId == 0xFFFFFFFF)
-        store.RefreshActor(handle);
-    else {
-        // A motion-mode edit leaves the installed shapes and their identities
-        // intact. Actual mesh convexification above publishes its own geometry.
-        auto &world = PhysicsWorld::Instance();
-        world.SetBodyMotionType(bodyId, IsEnabled() ? (Data().isKinematic ? 1 : 2) : 0);
-        if (IsEnabled())
-            ApplyConfigurationToBody(bodyId);
-    }
-    if (GetBodyId() != 0xFFFFFFFF)
-        FlushPendingForceCommands();
+    store.RefreshActor(handle);
 }
 
 void Rigidbody::CacheActorPose(const glm::vec3 &position, const glm::quat &rotation)
@@ -1219,14 +1143,9 @@ void Rigidbody::CacheActorPose(const glm::vec3 &position, const glm::quat &rotat
     }
 }
 
-void Rigidbody::ApplyConfigurationToBody(uint32_t bodyId)
+void Rigidbody::CaptureAuthorPoseCache()
 {
-    if (bodyId == 0xFFFFFFFF)
-        throw std::invalid_argument("cannot configure an invalid physics body");
-    auto &world = PhysicsWorld::Instance();
-    if (!world.IsInitialized())
-        throw std::runtime_error("cannot configure a body before PhysicsWorld initialization");
-
+    TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
     auto &data = DataMut();
     if (!data.hasSyncedOnce) {
         auto *transform = GetGameObject()->GetTransform();
@@ -1235,22 +1154,6 @@ void Rigidbody::ApplyConfigurationToBody(uint32_t bodyId)
         data.lastAuthoredPoseRevision =
             TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
         data.hasSyncedOnce = true;
-    }
-    world.SetBodyDamping(bodyId, data.drag, data.angularDrag);
-    world.SetBodyGravityFactor(bodyId, data.useGravity ? 1.0f : 0.0f);
-    const int allowedDofs = 0x3F & ~(data.constraints >> 1);
-    world.SetBodyAllowedDOFs(bodyId, allowedDofs, data.mass);
-    world.SetBodyMotionQuality(bodyId,
-                               MapCollisionDetectionModeToMotionQuality(data.collisionDetectionMode, data.isKinematic));
-    world.SetBodyMaxAngularVelocity(bodyId, data.maxAngularVelocity);
-    world.SetBodyMaxLinearVelocity(bodyId, data.maxLinearVelocity);
-    if (data.hasLinearVelocity) {
-        world.SetBodyLinearVelocity(bodyId, data.linearVelocity);
-        data.hasLinearVelocity = false;
-    }
-    if (data.hasAngularVelocity) {
-        world.SetBodyAngularVelocity(bodyId, data.angularVelocity);
-        data.hasAngularVelocity = false;
     }
 }
 

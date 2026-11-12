@@ -278,6 +278,11 @@ class Rigidbody : public Component
     /// @brief Sync physics → Transform after Jolt step.
     ///        Called by SceneManager's post-step pass.
     void SyncPhysicsToTransform();
+    /// Cache only a pose explicitly requested by a CPU consumer, after that
+    /// consumer applied its author-channel protection to the Transform.
+    /// The latest requested sample is retained; no fixed-step history is read.
+    void CacheCpuPhysicsPose(const glm::vec3 &position, const glm::quat &rotation, bool positionApplied = true,
+                             bool rotationApplied = true);
 
     /// @brief Apply render interpolation between previous and current physics poses.
     void ApplyInterpolatedTransform(float alpha);
@@ -295,9 +300,9 @@ class Rigidbody : public Component
     ///        Returns true when the actor is allocated.
     [[nodiscard]] bool HasBody() const;
 
-    /// @brief Apply the complete Rigidbody configuration to a newly created or
-    ///        motion-type-changed actor body.
-    void ApplyConfigurationToBody(uint32_t bodyId);
+    /// Capture the authored Transform baseline when staging an actor. Model
+    /// configuration is captured once by PrepareJoltGpuActor, never replayed.
+    void CaptureAuthorPoseCache();
 
     /// @brief Submit forces queued before deferred body creation.
     ///        Called after the body has entered the Jolt broadphase.
@@ -342,7 +347,7 @@ class Rigidbody : public Component
     void ApplyForceCommand(class PhysicsWorld &world, uint32_t bodyId, const ForceCommand &command);
 
     /// Notify all sibling Colliders to rebuild their Jolt body type.
-    void NotifyCollidersBodyTypeChanged(bool refreshShape = true);
+    void NotifyCollidersBodyTypeChanged();
     void CacheActorPose(const glm::vec3 &position, const glm::quat &rotation);
     void PublishPhysicsPose(const glm::vec3 &position, const glm::quat &rotation);
 
@@ -373,7 +378,6 @@ class Rigidbody : public Component
 
     /// Nested dynamic actors keep independent solver poses when this actor
     /// moves, including sleeping actors absent from the active readback list.
-    void PreserveDescendantPhysicsPoses();
 
     /// Pool-backed data — read access
     [[nodiscard]] const RigidbodyECSData &Data() const

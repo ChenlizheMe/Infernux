@@ -4,6 +4,10 @@
  */
 
 #include "TagLayerManager.h"
+#include "Collider.h"
+#include "GameObject.h"
+#include "physics/PhysicsECSStore.h"
+#include "physics/PhysicsWorld.h"
 #include "platform/filesystem/DocumentStore.h"
 #include <algorithm>
 #include <array>
@@ -17,6 +21,27 @@ using json = nlohmann::json;
 
 namespace infernux
 {
+namespace
+{
+void RefreshPhysicsLayers(uint32_t affectedLayers)
+{
+    if (!affectedLayers)
+        return;
+    auto &world = PhysicsWorld::Instance();
+    if (!world.IsInitialized())
+        return;
+    PhysicsECSStore::Instance().ForEachAliveActor([&](const PhysicsActorData &actor) {
+        if (actor.bodyId == UINT32_MAX)
+            return;
+        // A child collider contributes the actual collision leaf's layer.
+        // Empty actors use their Rigidbody owner's layer instead.
+        const auto *surface = actor.primaryCollider;
+        const auto *object = surface ? surface->GetGameObject() : actor.owner;
+        if (affectedLayers & TagLayerManager::LayerToMask(object->GetLayer()))
+            world.RefreshBodyLayers(actor.bodyId);
+    });
+}
+} // namespace
 
 const std::string TagLayerManager::s_emptyString;
 
@@ -193,16 +218,19 @@ bool TagLayerManager::SetLayerCollisionMask(int layer, uint32_t mask)
         return false;
     }
 
+    uint32_t affectedLayers = m_layerCollisionMasks[layer] != mask ? LayerToMask(layer) : 0;
     m_layerCollisionMasks[layer] = mask;
 
     // Keep the matrix symmetric.
     for (int other = 0; other < kMaxLayers; ++other) {
-        bool enabled = (mask & LayerToMask(other)) != 0;
-        if (enabled)
-            m_layerCollisionMasks[other] |= LayerToMask(layer);
-        else
-            m_layerCollisionMasks[other] &= ~LayerToMask(layer);
+        const bool enabled = (mask & LayerToMask(other)) != 0;
+        const auto previous = m_layerCollisionMasks[other];
+        const auto updated = enabled ? previous | LayerToMask(layer) : previous & ~LayerToMask(layer);
+        m_layerCollisionMasks[other] = updated;
+        if (previous != updated)
+            affectedLayers |= LayerToMask(other);
     }
+    RefreshPhysicsLayers(affectedLayers);
     return true;
 }
 
@@ -223,6 +251,8 @@ bool TagLayerManager::SetLayersCollide(int layerA, int layerB, bool shouldCollid
 
     const uint32_t maskA = LayerToMask(layerA);
     const uint32_t maskB = LayerToMask(layerB);
+    const auto previousA = m_layerCollisionMasks[layerA];
+    const auto previousB = m_layerCollisionMasks[layerB];
     if (shouldCollide) {
         m_layerCollisionMasks[layerA] |= maskB;
         m_layerCollisionMasks[layerB] |= maskA;
@@ -230,6 +260,9 @@ bool TagLayerManager::SetLayersCollide(int layerA, int layerB, bool shouldCollid
         m_layerCollisionMasks[layerA] &= ~maskB;
         m_layerCollisionMasks[layerB] &= ~maskA;
     }
+    const uint32_t affectedLayers = (previousA != m_layerCollisionMasks[layerA] ? maskA : 0) |
+                                    (previousB != m_layerCollisionMasks[layerB] ? maskB : 0);
+    RefreshPhysicsLayers(affectedLayers);
     return true;
 }
 
@@ -344,6 +377,10 @@ bool TagLayerManager::Deserialize(const std::string &jsonStr)
             }
         }
 
+        uint32_t affectedLayers = 0;
+        for (int layer = 0; layer < kMaxLayers; ++layer)
+            if (m_layerCollisionMasks[layer] != collisionMasks[layer])
+                affectedLayers |= LayerToMask(layer);
         InitDefaults();
         m_tags.insert(m_tags.end(), customTags.begin(), customTags.end());
         for (int i = 0; i < kMaxLayers; ++i) {
@@ -351,6 +388,7 @@ bool TagLayerManager::Deserialize(const std::string &jsonStr)
                 m_layers[i] = std::move(layers[i]);
         }
         m_layerCollisionMasks = std::move(collisionMasks);
+        RefreshPhysicsLayers(affectedLayers);
 
         return true;
     } catch (const std::exception &e) {

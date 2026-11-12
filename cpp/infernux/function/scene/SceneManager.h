@@ -606,18 +606,12 @@ class SceneManager
 
     /// Activate dynamic (non-kinematic) rigidbodies in one Scene, or in the
     /// complete World when scene is null.
-    void ActivateDynamicBodies(Scene *scene = nullptr);
-
-    /// Write active Jolt body poses back to their owning Rigidbody transforms.
-    void SyncRigidbodiesToTransform();
-
-    /// Apply presentation interpolation for the latest dense active-body set.
-    void ApplyInterpolatedRigidbodies(float alpha);
 
     /// Execute the one authoritative fixed-script/physics bundle. Both normal
     /// play and paused single-step use this path so transform synchronization,
     /// Jolt stepping and lifecycle callbacks cannot run twice in one step.
     bool RunFixedSimulationStep(bool useRuntimeScheduler, const SimulationState &admittedState);
+    void InvalidatePhysicsSkeletonPoses();
 
     Scene *EnsureRuntimePersistentScene();
     void FlushPersistentPromotions();
@@ -670,6 +664,7 @@ class SceneManager
     FixedPhase m_fixedPhase = FixedPhase::Idle;
     float m_admittedFixedDeltaTime = 0.0f;
     bool m_fixedAccumulatorDebit = false;
+    bool m_fixedHasPhysics = false;
     bool m_fixedExecuting = false;
     std::vector<uint64_t> m_fixedSceneWorlds;
     size_t m_fixedSceneCursor = 0;
@@ -724,9 +719,6 @@ class SceneManager
     // Light component registry — populated by Light OnEnable/OnDisable.
     // Avoids per-frame GetAllObjects() + GetComponent<Light>() in CollectLights/ComputeShadowVP.
     std::vector<Light *> m_activeLights;
-
-    // Full generation-aware body IDs that still need presentation updates.
-    std::vector<uint32_t> m_posePresentationBodyIds;
 
     FrameProfile m_lastFrameProfile;
 };

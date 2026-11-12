@@ -3567,13 +3567,13 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 void Infernux::InitializePhysics()
 {
     auto &world = PhysicsWorld::Instance();
-    world.Initialize();
     if (m_gpuServices) {
         // Initialization precedes m_isInitialized. Borrow the already created
         // engine services without retaining an external compute-host lease.
         auto lease = m_gpuServices->AcquireComputeHost();
         world.BindGpuServices(std::make_unique<rhi::ComputeHost>(*lease), &m_frameWork);
     }
+    world.Initialize();
 }
 
 void Infernux::InitHeadless(const std::string &projectPath, const std::string &builtinResourcePath,

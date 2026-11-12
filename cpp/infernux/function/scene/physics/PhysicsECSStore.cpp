@@ -21,6 +21,7 @@
 #include "../Rigidbody.h"
 #include "../SceneManager.h"
 #include "../Transform.h"
+#include "../TransformECSStore.h"
 #include "PhysicsWorld.h"
 #include <core/config/EngineConfig.h>
 
@@ -237,22 +238,29 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
     }
     const bool dynamicOwner = actor.rigidbody && actor.rigidbody->IsEnabled();
     const bool active = actor.owner->IsActiveInHierarchy() && (dynamicOwner || actor.primaryCollider);
+    if (dynamicOwner)
+        actor.rigidbody->CaptureAuthorPoseCache();
     if (actor.bodyId == 0xFFFFFFFF) {
         if (!active)
             return;
+        auto *transform = actor.owner->GetTransform();
+        glm::vec3 position, scale;
+        glm::quat rotation;
+        {
+            TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
+            position = transform->GetPosition();
+            rotation = transform->GetWorldRotation();
+            scale = transform->GetWorldScale();
+        }
         actor.bodyId = world.CreateBody(actor);
         if (actor.bodyId == 0xFFFFFFFF)
             return; // A mesh member is still being cooked.
-        auto *transform = actor.owner->GetTransform();
-        actor.lastSyncedPos = transform->GetPosition();
-        actor.lastSyncedRot = transform->GetWorldRotation();
-        actor.lastScale = transform->GetWorldScale();
+        actor.lastSyncedPos = position;
+        actor.lastSyncedRot = rotation;
+        actor.lastScale = scale;
     } else {
         world.UpdateBodyShape(actor);
     }
-    world.SetBodyMotionType(actor.bodyId, dynamicOwner ? (actor.rigidbody->IsKinematic() ? 1 : 2) : 0);
-    if (dynamicOwner)
-        actor.rigidbody->ApplyConfigurationToBody(actor.bodyId);
     if (active) {
         if (CancelBroadphaseRemove(actor.bodyId))
             actor.bodyInBroadphase = true;
@@ -352,8 +360,6 @@ void PhysicsECSStore::SyncActorTransform(ActorHandle handle, float fixedDeltaTim
             staticPoseBatch->push_back({actor.bodyId, position, rotation});
         else
             world.SetBodyPosition(actor.bodyId, position, rotation);
-        if (hasRigidbodies)
-            world.WakeBodiesTouchingStatic(actor.bodyId);
     }
 }
 
@@ -482,6 +488,14 @@ void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *ph
 {
     if (!owner)
         return;
+    if (physicsSource) {
+        const auto *sourceOwner = physicsSource->GetGameObject();
+        for (auto *current = owner; current && current != sourceOwner; current = current->GetParent()) {
+            const auto *body = current->GetComponent<Rigidbody>();
+            if (body && body->IsEnabled() && !body->IsKinematic() && body->HasBody())
+                return;
+        }
+    }
     const auto found = m_actorByOwner.find(owner);
     if (found != m_actorByOwner.end()) {
         if (!physicsSource || physicsSource->GetGameObject() != owner) {

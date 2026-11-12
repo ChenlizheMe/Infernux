@@ -2,26 +2,26 @@
 
 /**
  * @file PhysicsWorld.h
- * @brief Singleton physics world backed by Jolt Physics.
+ * @brief GPU-only Jolt scene facade using the shared engine compute runtime.
  *
  * Manages Jolt initialisation/shutdown, stepping, body management,
  * and raycast queries. Stepped by SceneManager's fixed-time accumulator.
  */
 
+#include "JoltGpuScene.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsTargetReference.h"
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
 #include <optional>
-#include <shared_mutex>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 // Forward declaration
@@ -29,30 +29,28 @@ namespace infernux
 {
 class FrameWorkOwner;
 class Infernux;
-class InxContactListener;
+class JoltGpuScene;
+class JoltGpuQueries;
+struct PreparedGpuActor;
 struct ContactEvent;
 namespace rhi
 {
 class ComputeHost;
-}
+class PreparedComputeBatch;
+} // namespace rhi
 } // namespace infernux
 
-// Forward-declare Jolt types to avoid Jolt.h leak into every TU
+// Immutable author geometry is retained; no native CPU Body/System is owned.
 namespace JPH
 {
-class PhysicsSystem;
-class TempAllocatorImpl;
-class Body;
-class BodyID;
 class Shape;
-class Constraint;
-class TwoBodyConstraintSettings;
-} // namespace JPH
+}
 
 namespace infernux
 {
 
 class GameObject;
+class Transform;
 class Component;
 class HingeJoint;
 class Collider;
@@ -63,7 +61,6 @@ struct RigidbodyMassProperties;
 struct SwingTwistJointSettings;
 struct SixDOFJointSettings;
 enum class JointSwingType;
-class InfernuxJoltJobSystemAdapter;
 
 struct PhysicsBodyPoseUpdate
 {
@@ -251,11 +248,7 @@ class PhysicsWorld
     ///   4. Jolt globals (Factory, registered types) torn down.
     /// Idempotent: subsequent calls are no-ops.
     void Shutdown();
-    [[nodiscard]] size_t GetBodyCount() const
-    {
-        std::shared_lock lock(m_querySnapshotMutex);
-        return m_bodies.size();
-    }
+    [[nodiscard]] size_t GetBodyCount() const;
 
     /// @return true if initialised
     [[nodiscard]] bool IsInitialized() const
@@ -268,19 +261,24 @@ class PhysicsWorld
     void SetGravity(const glm::vec3 &gravity);
 
     /// Advance the simulation by one fixed step.
-    void Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
+    /// True only when this admitted fixed step has completed and published.
+    /// False retains the same epoch/step and its shared-source continuation.
+    bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
+    void CompletePendingStep();
+    [[nodiscard]] bool HasPendingStep() const noexcept;
+    [[nodiscard]] bool HasPendingControl() const noexcept;
+    /// Whole-runtime Stop only; never cancel other loaded actors for a Scene swap.
+    void CancelPendingStep() noexcept;
+    /// Implemented at the CPU Transform access boundary; never returns a Future.
+    void EnsureCpuPhysicsPose(Transform &transform);
 
     /// Bodies that were active immediately before or after the latest step.
     /// The union includes bodies that entered sleep during the step so their
     /// final solver pose is still read back exactly once.
-    [[nodiscard]] const std::vector<uint32_t> &GetPoseReadbackBodyIds() const
-    {
-        return m_poseReadbackBodyIds;
-    }
-
+    [[nodiscard]] const std::vector<uint32_t> &GetPoseReadbackBodyIds() const;
     [[nodiscard]] size_t GetLastDynamicCCDSplitCount() const
     {
-        return m_lastDynamicCCDSplitCount;
+        return 0;
     }
 
     /// Enable the engine contact stream used by custom solvers and tooling.
@@ -303,10 +301,7 @@ class PhysicsWorld
     {
         return m_contactImpulseStreamEnabled;
     }
-    [[nodiscard]] const std::vector<ContactImpulse> &GetContactImpulses() const
-    {
-        return m_contactImpulses;
-    }
+    [[nodiscard]] const std::vector<ContactImpulse> &GetContactImpulses() const;
 
     // ========================================================================
     // Body management (published by PhysicsECSStore actors)
@@ -324,6 +319,9 @@ class PhysicsWorld
 
     /// Inform the physics world that a body has moved (kinematic / editor move).
     void SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot, bool cancelKinematicMove = false);
+
+    void SetBodyPositionOnly(uint32_t bodyId, const glm::vec3 &position);
+    void SetBodyRotationOnly(uint32_t bodyId, const glm::quat &rotation);
 
     /// Update many static body poses with one broadphase notification.
     void SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate> &updates);
@@ -392,6 +390,10 @@ class PhysicsWorld
     void AddBodyImpulse(uint32_t bodyId, const glm::vec3 &impulse);
     void AddBodyTorque(uint32_t bodyId, const glm::vec3 &torque);
     void AddBodyAngularImpulse(uint32_t bodyId, const glm::vec3 &impulse);
+
+    /// Raw component command: kind 0=Force, 1=Torque, 2=ForceAtPosition;
+    /// mode is the existing ForceMode 0..3, interpreted on the device.
+    void QueueBodyForce(uint32_t bodyId, int kind, int mode, const glm::vec3 &value, const glm::vec3 &point = {});
 
     // ---- Forces at position ----
 
@@ -546,10 +548,8 @@ class PhysicsWorld
                  uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Cast a contiguous batch of XYZ float rays against one stable world epoch.
-    /// The owner thread first publishes pending authoring state; worker callers
-    /// consume the last complete published epoch. Large batches fan out through
-    /// the engine JobSystem. Fixed-step and collider mutation publication wait
-    /// until the batch releases its epoch.
+    /// The engine owner publishes pending authoring state, dispatches GPU ray
+    /// lanes and decodes one immutable publication. No CPU world query runs.
     /// Every input row produces one mask entry and one initialized result row;
     /// caller-owned storage must contain @p count elements.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
@@ -557,15 +557,12 @@ class PhysicsWorld
                       bool queryTriggers = true, uint64_t *outQueryGeneration = nullptr,
                       RaycastBatchProfile *outProfile = nullptr) const;
 
-    /// Publish pending authored collider state only when called by the physics
-    /// owner thread. Worker threads deliberately consume the last complete
-    /// query epoch and never touch SceneManager-owned authoring state.
-    /// @return true when owner-thread synchronization was performed.
+    /// Publish pending authored collider state on the engine owner thread.
+    /// @return true when the synchronization boundary has completed.
     bool PrepareRaycastBatchQuery() const;
 
-    /// Consume the last complete published query epoch without touching
-    /// SceneManager. Call PrepareRaycastBatchQuery first on the owner thread;
-    /// background workers call this method directly.
+    /// Dispatch against a complete publication on the engine owner thread.
+    /// Results retain the publication identity used by their GPU computation.
     void RaycastBatchPublished(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
                                RaycastHit *outHits, uint8_t *outHitMask,
                                uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true,
@@ -658,26 +655,12 @@ class PhysicsWorld
     uint64_t CreateRagdollAssembly(const std::vector<Rigidbody *> &bodies, const std::vector<Joint *> &parentJoints,
                                    const std::vector<int> &parents);
     void DestroyRagdollAssembly(uint64_t id);
-    [[nodiscard]] bool HasRagdollAssembly(uint64_t id) const
-    {
-        return m_ragdolls.count(id) != 0;
-    }
+    [[nodiscard]] bool HasRagdollAssembly(uint64_t id) const;
     void DriveRagdollPose(uint64_t id, const std::vector<glm::quat> &worldRotations, bool enableMotors = true);
     [[nodiscard]] std::vector<PhysicsBoxShapeState> GetBodyBoxShapeStates(uint32_t bodyId, bool queryTriggers) const;
     [[nodiscard]] std::vector<PhysicsShapeState> GetBodyShapeStates(uint32_t bodyId, bool queryTriggers = true) const;
-    [[nodiscard]] bool HasRetiredShapeMembers() const
-    {
-        return m_retiredShapeBodyCount != 0;
-    }
-    [[nodiscard]] bool AcceptsSubShapeQuery(const JPH::Body &body, uint32_t subShapeId, uint32_t layerMask) const;
-    [[nodiscard]] bool AcceptsCCDCandidate(const JPH::Body &source, const JPH::Body &target, uint32_t sourceSubShape,
-                                           uint32_t targetSubShape) const;
-
-    /// Resolve a specific subshape hit/contact back to the owning Collider.
+    /// Resolve through the accepted immutable slot identity, never CPU Body data.
     Collider *ResolveColliderForSubShape(uint32_t bodyId, uint32_t subShapeIdValue) const;
-    Collider *ResolveColliderForSubShape(const JPH::Body &body, uint32_t bodyId, uint32_t subShapeIdValue) const;
-
-    /// Rebind a body lookup entry to another collider on the same body.
 
     /// Runtime-only collision policy for one exact Collider pair. This is
     /// separate from joint-owned whole-body suppression.
@@ -704,169 +687,68 @@ class PhysicsWorld
     void ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const;
     void SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets);
 
-    // Callers must hold m_querySnapshotMutex exclusively. Keeping the lock at
-    // the public-operation boundary lets compound mutations publish as one
-    // query epoch without recursively locking std::shared_mutex.
-    void SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot,
-                                 bool cancelKinematicMove = false);
-    void MoveBodyKinematicUnlocked(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
-                                   float deltaTime, float maxSpeed);
-
-    struct QueryTargetIdentity
-    {
-        Collider *collider = nullptr;
-        GameObject *gameObject = nullptr;
-        uint64_t colliderId = 0;
-        uint64_t gameObjectId = 0;
-        uint32_t memberIndex = UINT32_MAX;
-        PhysicsTargetReference target;
-        bool isTrigger = false;
-        uint32_t layerBit = 0;
-    };
-
-    /// Rebuild immutable application identity/trigger data while holding the
-    /// query epoch write lock. Query workers never dereference mutable
-    /// Collider or GameObject state.
-    void PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId);
-    [[nodiscard]] const QueryTargetIdentity *ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t bodyId,
-                                                                           uint32_t subShapeIdValue) const;
-
-    bool RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
-                        uint32_t layerMask, bool queryTriggers, bool queryEpochHeld = false,
-                        RaycastBatchProfile *profile = nullptr, bool directionNormalized = false,
-                        uint64_t queryGeneration = 0) const;
-
     PhysicsWorld() = default;
     ~PhysicsWorld();
     PhysicsWorld(const PhysicsWorld &) = delete;
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
-    /// @brief Shared overlap implementation for OverlapSphere/OverlapBox.
-    std::vector<Collider *> OverlapShapeImpl(const JPH::Shape &shape, const glm::vec3 &center,
-                                             const glm::quat &orientation, uint32_t layerMask,
-                                             bool queryTriggers) const;
-
-    /// @brief Shared shape cast implementation for SphereCast/BoxCast.
-    bool ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origin, const glm::quat &orientation,
-                       const glm::vec3 &direction, float maxDistance, RaycastHit &outHit, uint32_t layerMask,
-                       bool queryTriggers, const Collider *movingCollider = nullptr) const;
-
-    [[nodiscard]] float FindEarliestDynamicCCDFraction(float deltaTime) const;
-    [[nodiscard]] float FindEarliestStaticCCDFraction(float deltaTime) const;
-    void SetConstraintPairSuppressed(uint32_t bodyIdA, uint32_t bodyIdB, bool suppressed);
-
-    /// Stop tracked kinematic-move bodies that did not receive a new target
-    /// since the previous Step(), and restore temporarily-kinematic statics.
-    /// Called at the start of every Step().
-    void SettleKinematicMoves();
+    struct CompiledGpuPrograms;
+    struct CachedMotionState
+    {
+        uint64_t generation = 0;
+        PhysicsBodyMotionState state;
+        bool hasInverseMass = false;
+    };
+    bool EnsureGpuReady();
+    void RefreshGpuSurfaces();
+    void RequireHealthyStep() const;
+    void FailStep() noexcept;
+    bool AdvanceFixedStep(bool synchronous);
+    void RetryCapacityBodyCreations();
+    void RequireGpu() const;
+    void FlushAuthoring() const;
+    void DrainGpuSource() const;
+    void ObserveGpuPublication(bool numericalChange) const;
+    void RunControl(const std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
+                        &consumer) const;
+    void RefreshGpuActor(uint32_t bodyId, const std::function<void(PreparedGpuActor &)> &edit = {});
+    [[nodiscard]] PhysicsBodyMotionState ReadMotionState(uint32_t bodyId, PhysicsStateFields fields) const;
+    void CheckContactSupport() const;
 
     bool m_initialized = false;
-
+    bool m_ownsJoltGlobals = false;
+    std::thread::id m_ownerThreadId{};
     std::unique_ptr<rhi::ComputeHost> m_gpuHost;
     FrameWorkOwner *m_gpuWork = nullptr;
-
-    std::unique_ptr<JPH::TempAllocatorImpl> m_tempAllocator;
-    std::unique_ptr<InfernuxJoltJobSystemAdapter> m_jobSystem;
-    std::unique_ptr<JPH::PhysicsSystem> m_physicsSystem;
-
-    // Layer interfaces (must outlive PhysicsSystem)
-    struct LayerInterfaces;
-    std::unique_ptr<LayerInterfaces> m_layers;
-
-    // One owner and immutable shape-identity publication per native body.
-    // All Collider members share the Rigidbody actor and its query record.
-    struct BodyRecord
+    std::unique_ptr<CompiledGpuPrograms> m_gpuPrograms;
+    std::unique_ptr<JoltGpuScene> m_gpuScene;
+    std::unique_ptr<JoltGpuQueries> m_gpuQueries;
+    bool m_gpuCancelled = false;
+    std::vector<PhysicsActorHandle> m_recreateActors;
+    uint64_t m_surfaceRevision = 0;
+    bool m_stepPending = false;
+    bool m_stepCompleted = false;
+    enum class FixedGpuPhase
     {
-        GameObject *gameObject = nullptr;
-        Rigidbody *rigidbody = nullptr;
-        bool hasRetiredShapeMembers = false;
-        std::vector<Collider *> members;
-        std::vector<QueryTargetIdentity> targets;
-        struct ShapeLeaf
-        {
-            uint32_t subShapeId = 0;
-            glm::vec3 center{0.0f};
-            glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-            std::shared_ptr<const PhysicsShapeGeometry> geometry;
-        };
-        std::vector<ShapeLeaf> shapeLeaves;
+        Idle,
+        RetireControl,
+        RetryCreation,
+        Solver,
+        Failed
     };
-    void PublishBodyShapeGeometryUnlocked(uint32_t bodyId);
-    uint64_t m_nextShapeGeometryIdentity = 0;
-    void SetBodyActorOwner(uint32_t bodyId, const PhysicsActorData &actor);
-    std::unordered_map<uint32_t, BodyRecord> m_bodies;
-    struct RagdollAssembly;
-    std::unordered_map<uint64_t, std::shared_ptr<RagdollAssembly>> m_ragdolls;
-    uint64_t m_nextRagdollId = 1;
-    void InvalidateRagdollsForBody(uint32_t bodyId);
-    void InvalidateRagdollsForConstraint(const JPH::Constraint *constraint);
-    void UpdateRagdollCollision(const JPH::Constraint *constraint, bool enabled);
-    size_t m_retiredShapeBodyCount = 0;
-    // Queries acquire the read side after SceneManager has published pending
-    // transforms.  Fixed steps and every operation that changes query-visible
-    // body membership, pose, layer, sensor or shape acquire the write side.
-    // This turns query_generation into an epoch boundary rather than a
-    // best-effort before/after race detector.
-    mutable std::shared_mutex m_querySnapshotMutex;
-    std::atomic<uint64_t> m_queryGeneration{1};
-    std::thread::id m_ownerThreadId{};
-
-    struct ConstraintRecord
-    {
-        PhysicsConstraintOwner &owner;
-        JPH::Constraint *constraint = nullptr;
-        uint32_t bodyIdA = 0xFFFFFFFF;
-        uint32_t bodyIdB = 0xFFFFFFFF;
-        bool ignoresCollision = false;
-        glm::vec3 anchorA{0.0f};
-        glm::vec3 anchorB{0.0f};
-        glm::vec3 collapsedOffsetA{0.0f};
-        glm::vec3 collapsedOffsetB{0.0f};
-        glm::vec3 scaleA{1.0f};
-        glm::vec3 scaleB{1.0f};
-    };
-    void CaptureConstraintAnchors(ConstraintRecord &record, const glm::vec3 &localAnchor,
-                                  const glm::vec3 &connectedLocalAnchor);
-    uint64_t CreateTwoBodyConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                     const JPH::TwoBodyConstraintSettings &settings, const glm::vec3 &localAnchor,
-                                     bool enableCollision, const glm::vec3 &connectedLocalAnchor = glm::vec3(0.0f));
-    void UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale);
-    void ActivateConstraintBodies(const ConstraintRecord &record);
-    void ReplaceConstraint(ConstraintRecord &record, JPH::Constraint *replacement);
-    void UpdateConstraintCollision(ConstraintRecord &record, bool enableCollision);
-    std::unordered_map<uint64_t, ConstraintRecord> m_constraints;
-    uint64_t m_nextConstraintId = 1;
-
-    // Dense active-body union produced by the latest completed Step().
-    std::vector<uint32_t> m_poseReadbackBodyIds;
-
-    // Full Jolt IDs explicitly configured for each CCD contract. Plain
-    // Continuous uses an engine-owned static-only sweep; ContinuousDynamic
-    // keeps Jolt LinearCast and adds relative dynamic-pair subdivision.
-    std::unordered_set<uint32_t> m_staticContinuousBodyIds;
-    std::unordered_set<uint32_t> m_continuousBodyIds;
-    size_t m_lastDynamicCCDSplitCount = 0;
-    float m_previousSolverStepDuration = 0.0f;
-
-    /// Bodies whose velocity was authored by a MoveKinematic-style target
-    /// move. See MoveBodyKinematic / MoveStaticBodyWithVelocity.
-    struct KinematicMoveState
-    {
-        glm::vec3 targetPosition{0.0f};
-        glm::quat targetRotation{1.0f, 0.0f, 0.0f, 0.0f};
-        bool movedThisStep = true;  ///< Received a target since the last Step().
-        bool restoreStatic = false; ///< Body is a collider-only static, temporarily kinematic.
-        int idleSteps = 0;          ///< Steps elapsed without a new target.
-    };
-    std::unordered_map<uint32_t, KinematicMoveState> m_kinematicMoveStates;
-
-    // Contact listener for collision/trigger callbacks
-    std::unique_ptr<InxContactListener> m_contactListener;
+    FixedGpuPhase m_fixedGpuPhase = FixedGpuPhase::Idle;
+    bool m_waitingForSlot = false;
+    float m_admittedDeltaTime = 0;
+    std::optional<JoltGpuStepParameters> m_admittedParameters;
+    uint64_t m_stepEpoch = 0;
+    uint64_t m_stepIndex = 0;
+    mutable bool m_flushingAuthoring = false;
+    mutable bool m_synchronousRead = false;
+    mutable std::atomic<uint64_t> m_queryGeneration{1};
+    mutable std::shared_ptr<const void> m_lastPublication;
+    mutable std::unordered_map<uint32_t, CachedMotionState> m_requestedMotion;
     bool m_contactEventStreamEnabled = false;
-    bool m_dispatchingContacts = false;
-    bool m_contactEventStreamIncludeTriggers = false;
     bool m_contactImpulseStreamEnabled = false;
-    std::vector<ContactImpulse> m_contactImpulses;
 };
 
 } // namespace infernux

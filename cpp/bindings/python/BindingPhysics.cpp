@@ -212,21 +212,18 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     RaycastBatchProfile nativeProfile;
     PhysicsWorld &physics = PhysicsWorld::Instance();
     const uint64_t syncStartNs = profileEnabled ? profileNowNs() : 0;
-    const bool synchronizedOnOwner = physics.PrepareRaycastBatchQuery();
+    const bool synchronizedOnOwner = count != 0 && physics.PrepareRaycastBatchQuery();
     const uint64_t syncNs = profileEnabled && synchronizedOnOwner ? profileNowNs() - syncStartNs : 0;
-    // Owner-thread authored state was published above while the GIL and engine
-    // owner context were intact. Background Python threads deliberately skip
-    // that step and consume the last complete epoch. The native batch below
-    // touches neither Python nor SceneManager, so releasing the GIL is safe.
+    // GPU queries execute on the engine owner. Publishing author inputs above
+    // and decoding the same frozen generation below preserves ordinary return
+    // semantics; releasing the GIL does not change the calling thread.
     const auto dispatchNative = [&] {
         physics.RaycastBatchPublished(originData, normalizedDirectionData, static_cast<size_t>(count), maxDistance,
                                       nativeHits.data(), nativeMask.data(), layerMask, queryTriggers, &queryGeneration,
                                       profileEnabled ? &nativeProfile : nullptr, true);
     };
-    // Short/medium batches already fan out through the native JobSystem.
-    // Retaining the caller's GIL avoids a second, scheduler-dependent wait to
-    // reacquire it after sub-millisecond native work. Very large calls still
-    // release it so unrelated Python services remain responsive.
+    // The GPU handles the ray lanes. Retain the GIL for short calls to avoid
+    // reacquisition latency; large calls let unrelated Python services run.
     constexpr py::ssize_t kReleaseGilRayCount = 65'536;
     if (count >= kReleaseGilRayCount) {
         py::gil_scoped_release release;

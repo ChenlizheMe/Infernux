@@ -3,11 +3,14 @@
 #include "ComponentFactory.h"
 #include "GameObject.h"
 #include "RectTransformLayout.h"
+#include "Rigidbody.h"
 #include "Scene.h"
 #include "SceneManager.h"
 #include "TransformECSStore.h"
 #include "core/math/TransformMatrix.h"
 #include "core/math/TransformVectorMath.h"
+#include "physics/PhysicsECSStore.h"
+#include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <climits>
 #include <cmath>
@@ -100,6 +103,98 @@ Transform::~Transform()
     TransformECSStore::Instance().Release(m_ecsHandle);
 }
 
+void Transform::EnsureCpuPhysicsPose() const
+{
+    if (!TransformECSStore::Instance().IsPhysicsPoseReadSuppressed())
+        PhysicsWorld::Instance().EnsureCpuPhysicsPose(*const_cast<Transform *>(this));
+}
+
+bool Transform::HasSimulatedLocalPose() const
+{
+    const auto *body = m_gameObject ? m_gameObject->GetComponent<Rigidbody>() : nullptr;
+    return SceneManager::Instance().IsPlaying() && body && body->IsEnabled() && !body->IsKinematic() &&
+           body->GetBodyId() != UINT32_MAX;
+}
+
+void PhysicsWorld::EnsureCpuPhysicsPose(Transform &requested)
+{
+    auto &transforms = TransformECSStore::Instance();
+    if (!IsInitialized() || !SceneManager::Instance().IsPlaying() || transforms.IsPhysicsPoseReadSuppressed())
+        return;
+
+    auto &physics = PhysicsECSStore::Instance();
+    auto *object = requested.GetGameObject();
+    auto actorHandle = physics.FindActor(object);
+    while (object && !physics.IsValid(actorHandle)) {
+        object = object->GetParent();
+        actorHandle = physics.FindActor(object);
+    }
+    if (!object || !physics.IsValid(actorHandle))
+        return;
+    auto &actor = physics.GetActor(actorHandle);
+    auto *body = actor.rigidbody;
+    if (!body || !body->IsEnabled() || body->IsKinematic() || actor.sceneSuspended || actor.bodyId == UINT32_MAX)
+        return;
+    auto *target = object->GetTransform();
+    // Independent dynamic children retain their world pose. Resolve only
+    // their physical ancestors needed for world-to-local conversion.
+    if (auto *parent = target->GetParentTransformSafe())
+        parent->EnsureCpuPhysicsPose();
+
+    const auto generation = GetQueryGeneration();
+    const auto epoch = SceneManager::Instance().GetSimulationEpoch();
+    const auto bodyId = actor.bodyId;
+    if (!HasPendingStep() && !HasPendingControl() && target->m_cpuPhysicsPoseGeneration == generation &&
+        target->m_cpuPhysicsPoseBodyId == bodyId && target->m_cpuPhysicsPoseEpoch == epoch)
+        return;
+
+    const auto transformHandle = target->GetECSHandle();
+    const auto authoredBefore = transforms.GetAuthoredPoseRevision(transformHandle);
+    const auto &before = physics.GetRigidbody(body->GetECSHandle());
+    const bool positionAuthored = authoredBefore[0] != before.lastAuthoredPoseRevision[0];
+    const bool rotationAuthored = authoredBefore[1] != before.lastAuthoredPoseRevision[1];
+    // Ancestor/scale/reparent writes need the same protection as local pose
+    // writes; their world interpretation is not encoded by two local counters.
+    const bool hierarchyAuthored =
+        (actor.centerTransformDirty || actor.shapeTransformDirty) && !positionAuthored && !rotationAuthored;
+
+    constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Position) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::Rotation));
+    const auto sample = [&] {
+        TransformECSStore::PhysicsPoseReadScope reading(transforms);
+        return GetBodyMotionState(bodyId, fields);
+    }();
+    // Completing the query may also publish an authored parent boundary.
+    // Rebase against that parent before caching this independent body's local
+    // pose, otherwise the parent's subsequent lazy read would move it twice.
+    if (auto *parent = target->GetParentTransformSafe())
+        parent->EnsureCpuPhysicsPose();
+    if (!physics.IsValid(actorHandle) || !transforms.IsValid(transformHandle) ||
+        physics.GetActor(actorHandle).bodyId != bodyId)
+        return;
+    TransformECSStore::PhysicsPoseReadScope applying(transforms);
+    const auto authoredAfter = transforms.GetAuthoredPoseRevision(transformHandle);
+    const auto &after = physics.GetRigidbody(body->GetECSHandle());
+    const auto &currentActor = physics.GetActor(actorHandle);
+    const bool hierarchyPending =
+        hierarchyAuthored && (currentActor.centerTransformDirty || currentActor.shapeTransformDirty);
+    const bool applyPosition = !hierarchyPending && authoredAfter[0] == authoredBefore[0] &&
+                               (!positionAuthored || after.lastAuthoredPoseRevision[0] == authoredAfter[0]);
+    const bool rotationFrozen = (after.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
+                                static_cast<int>(RigidbodyConstraints::FreezeRotation);
+    const bool applyRotation = !hierarchyPending && !rotationFrozen && authoredAfter[1] == authoredBefore[1] &&
+                               (!rotationAuthored || after.lastAuthoredPoseRevision[1] == authoredAfter[1]);
+    const auto position = applyPosition ? sample.position : target->GetWorldPosition();
+    const auto rotation = applyRotation ? sample.rotation : target->GetWorldRotation();
+    if (applyPosition || applyRotation) {
+        target->ApplyWorldPoseFromPhysics(position, rotation, applyRotation);
+        body->CacheCpuPhysicsPose(target->GetWorldPosition(), target->GetWorldRotation(), applyPosition, applyRotation);
+    }
+    target->m_cpuPhysicsPoseGeneration = GetQueryGeneration();
+    target->m_cpuPhysicsPoseBodyId = bodyId;
+    target->m_cpuPhysicsPoseEpoch = epoch;
+}
+
 void Transform::SetLocalEulerAngles(const glm::vec3 &euler)
 {
     auto &store = TransformECSStore::Instance();
@@ -115,7 +210,8 @@ void Transform::SetLocalRotation(const glm::quat &rotation)
 {
     auto &store = TransformECSStore::Instance();
     const auto normalized = NormalizeStoredRotation(rotation);
-    if (GetLocalRotation() == normalized)
+    if (!store.HasFrameCacheWorldRotationOverride(m_ecsHandle) && store.GetLocalRotation(m_ecsHandle) == normalized &&
+        !HasSimulatedLocalPose())
         return;
     store.SetLocalRotation(m_ecsHandle, normalized);
     store.RecordLocalPoseWrite(m_ecsHandle, false, true);
@@ -166,14 +262,10 @@ void Transform::SetWorldPosition(const glm::vec3 &worldPos)
         return;
     }
 
-    store.RecordLocalPoseWrite(m_ecsHandle, true, false);
-
     Transform *parentTransform = GetParentTransformSafe();
-    if (!parentTransform) {
-        store.SetLocalPosition(m_ecsHandle, worldPos);
-    } else {
-        store.SetLocalPosition(m_ecsHandle, parentTransform->InverseTransformPoint(worldPos));
-    }
+    const auto local = parentTransform ? parentTransform->InverseTransformPoint(worldPos) : worldPos;
+    store.RecordLocalPoseWrite(m_ecsHandle, true, false);
+    store.SetLocalPosition(m_ecsHandle, local);
     store.SetDirty(m_ecsHandle, true);
     InvalidateWorldMatrix(false);
 }
@@ -181,6 +273,7 @@ void Transform::SetWorldPosition(const glm::vec3 &worldPos)
 void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::quat &worldRot, bool applyRotation)
 {
     auto &store = TransformECSStore::Instance();
+    TransformECSStore::PhysicsPoseReadScope applying(store);
     if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
         store.SetCachedWorldPoseFromPhysics(m_ecsHandle.index, worldPos, glm::normalize(worldRot), applyRotation);
         SceneManager::Instance().NotifySkeletonBoneChanged(this);
@@ -220,6 +313,7 @@ void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::
 
 const glm::mat4 &Transform::GetWorldMatrix() const
 {
+    EnsureCpuPhysicsPose();
     auto &store = TransformECSStore::Instance();
     // Cached world channels resolve through the local getters, preserving
     // the same parent affine transform before and after frame publication.
@@ -257,6 +351,7 @@ void Transform::InvalidateWorldMatrix(bool clearWorldEulerExact) const
 
 glm::quat Transform::GetWorldRotation() const
 {
+    EnsureCpuPhysicsPose();
     auto &store = TransformECSStore::Instance();
     if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle)) {
         return store.GetCachedWorldRotation(m_ecsHandle.index);
@@ -267,6 +362,7 @@ glm::quat Transform::GetWorldRotation() const
 
 glm::quat Transform::GetLocalRotation() const
 {
+    EnsureCpuPhysicsPose();
     auto &store = TransformECSStore::Instance();
     if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle))
         return WorldRotationToLocal(store.GetCachedWorldRotation(m_ecsHandle.index));
@@ -295,9 +391,10 @@ void Transform::SetWorldRotation(const glm::quat &worldRot)
 {
     auto &store = TransformECSStore::Instance();
     const glm::quat newLocalRot = NormalizeStoredRotation(WorldRotationToLocal(worldRot));
-
-    if (GetLocalRotation() == newLocalRot)
+    if (!store.HasFrameCacheWorldRotationOverride(m_ecsHandle) && store.GetLocalRotation(m_ecsHandle) == newLocalRot &&
+        !HasSimulatedLocalPose())
         return;
+
     store.RecordLocalPoseWrite(m_ecsHandle, false, true);
 
     store.SetLocalRotation(m_ecsHandle, newLocalRot);
@@ -315,6 +412,7 @@ void Transform::SetWorldRotation(const glm::quat &worldRot)
 
 glm::vec3 Transform::GetWorldEulerAngles() const
 {
+    EnsureCpuPhysicsPose();
     auto &store = TransformECSStore::Instance();
 
     // If world euler was set directly (not via quaternion), return the exact value
@@ -341,10 +439,10 @@ void Transform::SetWorldEulerAngles(const glm::vec3 &euler)
 
     Transform *parentTransform = GetParentTransformSafe();
 
-    // Exact Euler authoring is metadata. Only a changed quaternion publishes
-    // geometry or invalidates descendants; repeated Euler writes keep their
-    // representation without manufacturing another pose commit.
-    if (GetLocalRotation() != localRot) {
+    // Stored equality is sufficient only for a CPU-authored pose. A simulated
+    // body may already have rotated away from that stored value on the device.
+    if (store.GetLocalRotation(m_ecsHandle) != localRot || store.HasFrameCacheWorldRotationOverride(m_ecsHandle) ||
+        HasSimulatedLocalPose()) {
         store.RecordLocalPoseWrite(m_ecsHandle, false, true);
         store.SetLocalRotation(m_ecsHandle, localRot);
         store.SetDirty(m_ecsHandle, true);
@@ -774,6 +872,7 @@ bool Transform::DeserializeDocument(const nlohmann::json &j)
 
 void Transform::CloneDataTo(Transform &target) const
 {
+    EnsureCpuPhysicsPose();
     auto &store = TransformECSStore::Instance();
     const auto src = store.GetSnapshot(m_ecsHandle);
 

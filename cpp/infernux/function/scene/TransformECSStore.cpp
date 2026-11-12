@@ -367,6 +367,7 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
 
 void TransformECSStore::SyncSceneWorldMatrices(Scene *scene)
 {
+    PhysicsPoseReadScope maintenance(*this);
     if (!scene) {
         return;
     }
@@ -415,6 +416,7 @@ bool TransformECSStore::IsFrameCacheActiveFor(Handle h) const
 
 void TransformECSStore::SyncAllWorldMatrices()
 {
+    PhysicsPoseReadScope maintenance(*this);
     if (m_frameCacheActive || !m_anyWorldMatrixDirty) {
         return;
     }
@@ -695,6 +697,7 @@ void TransformECSStore::BeginFrameCache()
 
 bool TransformECSStore::EndFrameCache()
 {
+    PhysicsPoseReadScope maintenance(*this);
     if (!m_frameCacheActive) {
         return false;
     }
@@ -916,6 +919,10 @@ void TransformECSStore::SetCachedWorldPosition(uint32_t slotIndex, const glm::ve
         m_owners[slotIndex]->SetWorldPosition(v);
         return;
     }
+    // The later local-space commit uses this parent's affine transform. Resolve
+    // only that physical dependency before recording the author's world target.
+    if (auto *parent = m_owners[slotIndex]->GetParentTransformSafe())
+        parent->EnsureCpuPhysicsPose();
     ++m_authoredPoseRevisions[slotIndex][0];
     EnsureFrameCacheSlot(slotIndex);
     m_fcWorldPositions[slotIndex] = v;

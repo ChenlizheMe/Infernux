@@ -42,6 +42,8 @@ class JoltGpuScene final
         uint32_t bodyId = InvalidBodyId;
         uint32_t slot = UINT32_MAX;
         PhysicsActorHandle actor;
+        /// Component generation contributing the dynamic author model.
+        PhysicsECSStore::RigidbodyHandle rigidbody;
         OwnerIdentity owner;
         PhysicsTargetReference surfaceTarget;
         uint64_t surfaceGameObjectId = 0;
@@ -97,6 +99,7 @@ class JoltGpuScene final
     [[nodiscard]] PhysicsActorHandle FindActor(uint32_t bodyId) const noexcept;
     [[nodiscard]] size_t GetBodyCount() const noexcept;
     [[nodiscard]] uint32_t GetCapacity() const noexcept;
+    [[nodiscard]] bool CanReserve() const noexcept;
     [[nodiscard]] bool HasPendingControl() const noexcept;
 
     /// Queued author groups and initialization share the existing tick source.
