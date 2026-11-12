@@ -6,6 +6,7 @@ import copy
 
 from infernux.components.fields import get_serialized_fields
 from infernux.engine.ui.inspector_utils import (
+    field_label,
     has_field_changed,
     max_label_w,
     pretty_field_name,
@@ -23,6 +24,44 @@ def _inspector_parameter_instance(effect, feature):
     instance = feature.instantiate(effect)
     effect._inspector_parameter_cache = (cache_key, instance)
     return instance
+
+
+def render_render_effect_feature(ctx, effect, *, widget_prefix: str = "effect") -> float:
+    """Show the feature's source through the shared Inspector reference field."""
+    from infernux.renderstack.render_effect_compiler import get_render_effect_feature
+    from ._inspector_references import (
+        _is_project_asset_path,
+        open_asset_reference,
+        ping_asset_in_project,
+        render_object_field,
+    )
+
+    feature = get_render_effect_feature(effect.feature_type)
+    fields = get_serialized_fields(feature.effect_class)
+    labels = ["Feature"] + [pretty_field_name(name) for name, metadata in fields.items() if not metadata.hidden]
+    label_width = max_label_w(ctx, labels)
+    source_path = feature.source_identity[0]
+
+    def locate_source():
+        if _is_project_asset_path(source_path):
+            ping_asset_in_project(source_path)
+        else:
+            open_asset_reference(source_path)
+
+    field_label(ctx, "Feature", label_width)
+    render_object_field(
+        ctx,
+        f"##{widget_prefix}_feature",
+        effect.feature_type,
+        "Script",
+        clickable=bool(source_path),
+        has_value=bool(source_path),
+        on_open=locate_source if source_path else None,
+        semantic_id=f"render_effect.{widget_prefix}.feature",
+    )
+    if source_path and ctx.is_item_hovered():
+        ctx.set_tooltip(source_path)
+    return label_width
 
 
 def apply_render_effect_parameter_edit(
@@ -89,6 +128,7 @@ def render_render_effect_parameters(
     *,
     widget_prefix: str = "effect",
     resource_controller=None,
+    label_width: float = 0.0,
 ) -> bool:
     """Render and edit parameters from the feature's serialized schema."""
     from infernux.renderstack.render_effect_compiler import get_render_effect_feature
@@ -99,7 +139,7 @@ def render_render_effect_parameters(
         return False
     instance = _inspector_parameter_instance(effect, feature)
     labels = [pretty_field_name(name) for name in fields]
-    label_width = max(Theme.INSPECTOR_MIN_LABEL_WIDTH, max_label_w(ctx, labels))
+    label_width = label_width or max(Theme.INSPECTOR_MIN_LABEL_WIDTH, max_label_w(ctx, labels))
     changed = False
     for field_name, metadata in fields.items():
         if metadata.hidden:

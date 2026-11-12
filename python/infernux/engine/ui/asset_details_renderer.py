@@ -4331,7 +4331,7 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
     del panel
     from infernux.core.assets import AssetManager
     from .inspector_utils import render_compact_section_header
-    from .render_effect_inspector import render_render_effect_parameters
+    from .render_effect_inspector import render_render_effect_feature, render_render_effect_parameters
     from infernux.renderstack.render_effect import EditableRenderEffectGroup, RenderEffect
 
     def linked_effect_controller(effect):
@@ -4359,14 +4359,14 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
 
     resource = state.settings
     if isinstance(resource, RenderEffect):
-        field_label(ctx, "Feature", max_label_w(ctx, ["Feature"]))
-        ctx.label(resource.feature_type)
+        label_width = render_render_effect_feature(ctx, resource, widget_prefix="asset_effect")
         ctx.separator()
         render_render_effect_parameters(
             ctx,
             resource,
             widget_prefix="asset_effect",
             resource_controller=state.resource_controller,
+            label_width=label_width,
         )
         return
 
