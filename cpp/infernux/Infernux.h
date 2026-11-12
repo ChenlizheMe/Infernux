@@ -518,9 +518,10 @@ class Infernux
         // Compiled UI candidates wait for an actual draw to acquire GPU ownership.
         std::shared_ptr<const ShaderProgramArtifact> preparedArtifact;
         uint64_t sourceEnvironmentRevision = 0;
+        // Labels of the published generation, independently of current drafts.
+        std::array<std::string, 2> stageLabels;
     };
 
-    [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
                                                                                    const std::string &vertexPath,
                                                                                    const std::string &fragmentPath,

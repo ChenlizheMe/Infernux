@@ -123,8 +123,7 @@ std::shared_ptr<PreviewImage> GPUMaterialPreview::BeginRender(InxMaterial &mater
         return nullptr;
     if (!EnsureResources(renderSize, progressed))
         throw std::runtime_error("failed to allocate material preview resources");
-    if (!m_vkCore->RefreshPreviewMaterialPipeline(basePreviewMaterial, basePreviewMaterial->GetVertShaderName(),
-                                                  basePreviewMaterial->GetFragShaderName(), false)) {
+    if (!m_vkCore->RefreshPreviewMaterialPipeline(basePreviewMaterial, false)) {
         return nullptr;
     }
     ownedPreviewMaterials.push_back(basePreviewMaterial);
@@ -153,8 +152,7 @@ std::shared_ptr<PreviewImage> GPUMaterialPreview::BeginRender(InxMaterial &mater
                 passMaterial->MarkOverride(RenderStateOverride::CullMode);
             passMaterial->ClearAllPassPipelines();
 
-            if (!m_vkCore->RefreshPreviewMaterialPipeline(passMaterial, passMaterial->GetVertShaderName(),
-                                                          passMaterial->GetFragShaderName(), false)) {
+            if (!m_vkCore->RefreshPreviewMaterialPipeline(passMaterial, false)) {
                 return nullptr;
             }
             return passMaterial;
@@ -201,8 +199,7 @@ std::shared_ptr<PreviewImage> GPUMaterialPreview::BeginRender(InxMaterial &mater
 
         MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
-            if (!m_vkCore->RefreshPreviewMaterialPipeline(binding.material, passMat->GetVertShaderName(),
-                                                          passMat->GetFragShaderName(), false)) {
+            if (!m_vkCore->RefreshPreviewMaterialPipeline(binding.material, false)) {
                 return false;
             }
             rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material);

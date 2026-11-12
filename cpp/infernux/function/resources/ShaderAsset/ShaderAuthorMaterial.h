@@ -13,6 +13,6 @@ namespace infernux
 /// Link a prepared mesh author's logical fields to the compiler's physical
 /// target. Runs once on asset preparation, independently of GPU submission.
 [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderProgramArtifact CreateShaderAuthorMaterial(
-    std::string shaderId, const std::shared_ptr<const ShaderCompilation> &compilation, const std::string &schema);
+    std::string guid, const std::shared_ptr<const ShaderCompilation> &compilation, const std::string &schema);
 
 } // namespace infernux

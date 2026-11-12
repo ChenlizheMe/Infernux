@@ -1833,7 +1833,7 @@ class ParticleSystem(InxComponent):
                         "ParticleGraph GUID is not registered to an authoring source"
                     )
                 schema_revision = max(
-                    (Shader._surface_schemas.get(material.frag_shader_name, ((), 0))[1]
+                    (Shader._surface_schemas.get(Shader._fragment_key(material), ((), 0))[1]
                      for material in self._output_materials.values()),
                     default=0,
                 )
@@ -2622,7 +2622,7 @@ class ParticleSystem(InxComponent):
         )
         materials = self._output_materials.values()
         schema_changed = shader_revision != self._shader_runtime_revision and any(
-            Shader._surface_schemas.get(material.frag_shader_name, ((), 0))[1] > self._shader_runtime_revision
+            Shader._surface_schemas.get(Shader._fragment_key(material), ((), 0))[1] > self._shader_runtime_revision
             for material in materials
         )
         if artifact is not None and (artifact.revision != self._artifact_revision or schema_changed):
@@ -2633,7 +2633,7 @@ class ParticleSystem(InxComponent):
             # The renderer already refreshed the linked program for its live
             # materials. Apply the new routing defaults to the same outputs.
             for material in materials:
-                if Shader._runtime_revisions.get(material.frag_shader_name, 0) > self._shader_runtime_revision:
+                if Shader._runtime_revisions.get(Shader._fragment_key(material), 0) > self._shader_runtime_revision:
                     Shader._apply_published_surface(material)
         self._artifact_registry_revision = registry_revision
         self._shader_runtime_revision = shader_revision

@@ -859,13 +859,11 @@ class InxVkCoreModular
         m_editorGizmos = gizmos;
     }
 
-    /// @brief Refresh a material's pipeline using its vertex and fragment shader names.
-    bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
-                                 const std::string &fragShaderName);
+    /// Refresh the material's declared stage pair and retain its asset identity.
+    bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material);
     /// Resolve one committed Mesh generation for filtering and draw recording.
     MaterialRenderData *ResolveMeshMaterial(const std::shared_ptr<InxMaterial> &material);
-    bool RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
-                                        const std::string &fragShaderName, bool reportDomainMismatch = true);
+    bool RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material, bool reportDomainMismatch = true);
 
     /// Resolve the immutable material pass used by an offscreen preview. The
     /// preview owns its attachment contract, so this must not borrow the

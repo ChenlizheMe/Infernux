@@ -764,8 +764,8 @@ int main(int argc, char **argv)
         size_t retiredOwnedPrograms = 0;
         for (int index = 0; index < 24; ++index) {
             ShaderProgramArtifact candidate = *screenProgram;
-            candidate.key.stages.vertexShaderId += "/owned-" + std::to_string(index);
-            candidate.key.stages.fragmentShaderId += "/owned-" + std::to_string(index);
+            candidate.key.stages.vertexKey += "/owned-" + std::to_string(index);
+            candidate.key.stages.fragmentKey += "/owned-" + std::to_string(index);
             candidate.key.revision = ComputeShaderProgramArtifactRevision(candidate);
             assert(candidate.IsValid());
             assert(ownershipCache.PublishProgramArtifact(candidate).accepted);
@@ -792,8 +792,8 @@ int main(int argc, char **argv)
         for (const auto domain : {ShaderProgramDomain::Mesh, ShaderProgramDomain::ParticleSprite}) {
             ShaderProgramArtifact shared = *screenProgram;
             shared.domain = domain;
-            shared.key.stages.vertexShaderId += domain == ShaderProgramDomain::Mesh ? "/mesh" : "/particle";
-            shared.key.stages.fragmentShaderId += domain == ShaderProgramDomain::Mesh ? "/mesh" : "/particle";
+            shared.key.stages.vertexKey += domain == ShaderProgramDomain::Mesh ? "/mesh" : "/particle";
+            shared.key.stages.fragmentKey += domain == ShaderProgramDomain::Mesh ? "/mesh" : "/particle";
             shared.key.revision = ComputeShaderProgramArtifactRevision(shared);
             assert(ownershipCache.PublishProgramArtifact(shared).accepted);
             assert(!ownershipCache.TakeUIProgramArtifact(shared.key));
@@ -848,8 +848,8 @@ int main(int argc, char **argv)
         // Core resolver with an expected non-UI domain. A rejected UI source
         // must not publish either an artifact or a Forward program.
         auto wrongDomainMaterial = std::make_shared<InxMaterial>("UIOnNonUIDraw");
-        wrongDomainMaterial->SetVertShader(screenProgram->key.stages.vertexShaderId);
-        wrongDomainMaterial->SetFragShader(screenProgram->key.stages.fragmentShaderId);
+        wrongDomainMaterial->SetVertShader(screenProgram->key.stages.vertexKey);
+        wrongDomainMaterial->SetFragShader(screenProgram->key.stages.fragmentKey);
         size_t rejectedNonUIResolutions = 0;
         ownerCore->SetShaderProgramArtifactResolver(
             [&](const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain> expected) {

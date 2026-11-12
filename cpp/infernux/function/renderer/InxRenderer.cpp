@@ -2710,8 +2710,7 @@ InxRenderer::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &ma
         return nullptr;
     if (m_shaderProgramArtifactResolver)
         m_shaderProgramArtifactResolver(material, expectedDomain);
-    auto artifact =
-        m_vkCore->ShareShaderProgramArtifact({material->GetVertShaderName(), material->GetFragShaderName()});
+    auto artifact = m_vkCore->ShareShaderProgramArtifact(material->GetShaderStages());
     if (artifact &&
         (artifact->domain == ShaderProgramDomain::ScreenUI || artifact->domain == ShaderProgramDomain::WorldUI ||
          (expectedDomain && artifact->domain != *expectedDomain))) {
@@ -4327,7 +4326,7 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
 
     bool refreshed = true;
     if (!shaderProgram || shaderProgram->domain != ShaderProgramDomain::ParticleSprite)
-        refreshed = m_vkCore->RefreshMaterialPipeline(material, vertName, fragName);
+        refreshed = m_vkCore->RefreshMaterialPipeline(material);
 
     if (m_particleGpuSystemManager) {
         std::string particleError;
@@ -5120,7 +5119,7 @@ void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &rendere
             throw std::runtime_error("UI material shader publication validator is unavailable for GUID " + guid);
         if (!m_uiMaterialShaderValidator(material, expectedDomain))
             return std::shared_ptr<const ShaderProgramArtifact>{}; // Ordinary UI material uses the built-in pipeline.
-        return m_vkCore->ShareShaderProgramArtifact({material->GetVertShaderName(), material->GetFragShaderName()});
+        return m_vkCore->ShareShaderProgramArtifact(material->GetShaderStages());
     });
 }
 

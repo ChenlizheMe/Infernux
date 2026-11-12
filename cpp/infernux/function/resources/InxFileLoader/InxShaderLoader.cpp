@@ -151,11 +151,12 @@ void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderPr
 }
 } // namespace
 
-ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact() const
+ShaderProgramArtifact LinkedShaderProgramCompilation::CreateRuntimeArtifact(const ShaderStagePair &stages) const
 {
     ShaderProgramArtifact artifact;
-    artifact.key.stages.vertexShaderId = interfaceArtifact.vertex.shaderId;
-    artifact.key.stages.fragmentShaderId = interfaceArtifact.fragment.shaderId;
+    artifact.key.stages = stages.IsValid()
+                              ? stages
+                              : ShaderStagePair{interfaceArtifact.vertex.shaderId, interfaceArtifact.fragment.shaderId};
     artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
     artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
     artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;
@@ -170,8 +171,8 @@ bool LinkedShaderProgramArtifactCompilation::IsValid() const noexcept
 {
     if (!interfaceArtifact.IsValid() || !passPlan.IsValid() || !errors.empty() || compiledVariants.empty())
         return false;
-    if (passPlan.stages.vertexShaderId != interfaceArtifact.vertex.shaderId ||
-        passPlan.stages.fragmentShaderId != interfaceArtifact.fragment.shaderId) {
+    if (passPlan.stages.vertexKey != interfaceArtifact.vertex.shaderId ||
+        passPlan.stages.fragmentKey != interfaceArtifact.fragment.shaderId) {
         return false;
     }
 
@@ -211,13 +212,13 @@ bool LinkedShaderProgramArtifactCompilation::IsValid() const noexcept
     return true;
 }
 
-ShaderProgramArtifact LinkedShaderProgramArtifactCompilation::CreateRuntimeArtifact() const
+ShaderProgramArtifact LinkedShaderProgramArtifactCompilation::CreateRuntimeArtifact(const ShaderStagePair &stages) const
 {
     if (!IsValid())
         return {};
 
     ShaderProgramArtifact artifact;
-    artifact.key.stages = passPlan.stages;
+    artifact.key.stages = stages.IsValid() ? stages : passPlan.stages;
     artifact.varyingInterfaceSignature = interfaceArtifact.varyingInterfaceSignature;
     artifact.materialLayoutSignature = interfaceArtifact.materialLayoutSignature;
     artifact.compatibilitySignature = interfaceArtifact.compatibilitySignature;

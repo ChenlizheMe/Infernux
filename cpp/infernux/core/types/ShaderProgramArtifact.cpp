@@ -33,8 +33,8 @@ uint64_t AppendString(uint64_t hash, std::string_view value) noexcept
 
 size_t ShaderStagePairHash::operator()(const ShaderStagePair &pair) const noexcept
 {
-    uint64_t hash = AppendString(FnvOffset, pair.vertexShaderId);
-    hash = AppendString(hash, pair.fragmentShaderId);
+    uint64_t hash = AppendString(FnvOffset, pair.vertexKey);
+    hash = AppendString(hash, pair.fragmentKey);
     return static_cast<size_t>(hash);
 }
 
@@ -141,8 +141,8 @@ uint64_t ComputeShaderProgramRevision(std::string_view generatedVertexSource, st
 
 uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artifact) noexcept
 {
-    uint64_t hash = AppendString(FnvOffset, artifact.key.stages.vertexShaderId);
-    hash = AppendString(hash, artifact.key.stages.fragmentShaderId);
+    uint64_t hash = AppendString(FnvOffset, artifact.key.stages.vertexKey);
+    hash = AppendString(hash, artifact.key.stages.fragmentKey);
     const auto domain = static_cast<uint8_t>(artifact.domain);
     hash = AppendBytes(hash, &domain, sizeof(domain));
     hash = AppendString(hash, artifact.shadingModel);

@@ -8,7 +8,7 @@
 namespace infernux
 {
 
-ShaderProgramArtifact CreateShaderAuthorMaterial(std::string shaderId,
+ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
                                                  const std::shared_ptr<const ShaderCompilation> &compilation,
                                                  const std::string &schema)
 {
@@ -25,7 +25,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string shaderId,
         return *found;
     };
     ShaderProgramArtifact result;
-    result.key.stages = {"Standard", std::move(shaderId)};
+    result.key.stages = {"Standard", std::move(guid)};
     result.domain = ShaderProgramDomain::Mesh;
     result.compatibilitySignature =
         ComputeShaderProgramRevision(schema, "InxMeshInput", ShaderCompileTarget::Forward, 0);

@@ -824,22 +824,18 @@ std::vector<ShaderProgramPublication> ShaderProgramCache::TakeProgramsContaining
     if (shaderName.empty())
         throw std::invalid_argument("Shader program invalidation requires a non-empty shader identifier");
 
-    auto normalizeIdentifier = [](const std::string &path) { return PortablePathStem(path); };
-
     auto matchesShader = [&](const std::string &stageId) {
-        if (stageId == shaderName || stageId.rfind(shaderName + "/", 0) == 0)
-            return true;
-        return normalizeIdentifier(stageId) == normalizeIdentifier(shaderName);
+        return stageId == shaderName || stageId.rfind(shaderName + "/", 0) == 0;
     };
 
     std::vector<ShaderProgramVariantKey> toRemove;
     for (const auto &[key, program] : m_programs) {
         (void)program;
-        if (matchesShader(key.program.stages.vertexShaderId) || matchesShader(key.program.stages.fragmentShaderId))
+        if (matchesShader(key.program.stages.vertexKey) || matchesShader(key.program.stages.fragmentKey))
             toRemove.push_back(key);
     }
     for (auto it = m_failedPrograms.begin(); it != m_failedPrograms.end();) {
-        if (matchesShader(it->program.stages.vertexShaderId) || matchesShader(it->program.stages.fragmentShaderId))
+        if (matchesShader(it->program.stages.vertexKey) || matchesShader(it->program.stages.fragmentKey))
             it = m_failedPrograms.erase(it);
         else
             ++it;

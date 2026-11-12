@@ -37,7 +37,7 @@ struct LinkedShaderProgramCompilation
         return interfaceArtifact.IsValid() && errors.empty() && !vertexSpirv.empty() && !fragmentSpirv.empty();
     }
 
-    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact() const;
+    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact(const ShaderStagePair &stages = {}) const;
 };
 
 struct LinkedShaderProgramArtifactCompilation
@@ -49,7 +49,7 @@ struct LinkedShaderProgramArtifactCompilation
     std::vector<std::string> errors;
 
     [[nodiscard]] bool IsValid() const noexcept;
-    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact() const;
+    [[nodiscard]] ShaderProgramArtifact CreateRuntimeArtifact(const ShaderStagePair &stages = {}) const;
 };
 
 // ============================================================================

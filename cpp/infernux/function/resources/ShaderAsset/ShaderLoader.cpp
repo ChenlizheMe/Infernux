@@ -72,7 +72,7 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
                              false, prepared.sourceRanges));
         if (asset->programDomain == ShaderProgramDomain::Mesh)
             asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(
-                CreateShaderAuthorMaterial(asset->shaderId, asset->program, prepared.schema));
+                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema));
         return asset;
     }
 

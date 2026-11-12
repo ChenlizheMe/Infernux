@@ -934,31 +934,10 @@ void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &
 {
     INXLOG_INFO("Invalidating materials using shader: ", shaderId);
 
-    // Helper to extract shader name from path
-    auto extractShaderName = [](const std::string &path) -> std::string {
-        if (path.empty())
-            return "";
-        return PortablePathStem(path);
-    };
-
     std::vector<std::string> materialsToRemove;
-
-    for (auto &[name, data] : m_renderDataMap) {
-        if (!data || !data->material)
-            continue;
-
-        // Check if this material uses the specified shader (vert or frag)
-        const std::string &vertName = data->material->GetVertShaderName();
-        const std::string &fragName = data->material->GetFragShaderName();
-
-        // Check exact match or shader name match against both vert and frag
-        bool matches = (vertName == shaderId) || (extractShaderName(vertName) == shaderId) || (fragName == shaderId) ||
-                       (extractShaderName(fragName) == shaderId);
-
-        if (matches) {
+    for (const auto &[name, data] : m_renderDataMap)
+        if (data && data->programKey.stages.UsesShader(shaderId))
             materialsToRemove.push_back(name);
-        }
-    }
 
     // Remove render data for affected materials (force recreation)
     for (const auto &name : materialsToRemove) {

@@ -1,5 +1,4 @@
 #include <function/renderer/InxRenderer.h>
-#include <function/renderer/vk/VulkanBackendContext.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
@@ -7,6 +6,7 @@
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/renderer/shader/ShaderReflection.h>
+#include <function/renderer/vk/VulkanBackendContext.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
@@ -305,8 +305,13 @@ void surface(out SurfaceData s)
     assert(compiledProgram.IsValid());
     const auto runtimeArtifact = compiledProgram.CreateRuntimeArtifact();
     assert(runtimeArtifact.IsValid());
-    assert(runtimeArtifact.key.stages.vertexShaderId == "Tests/WaveDeform");
-    assert(runtimeArtifact.key.stages.fragmentShaderId == "Tests/OceanSurface");
+    assert(runtimeArtifact.key.stages.vertexKey == "Tests/WaveDeform");
+    assert(runtimeArtifact.key.stages.fragmentKey == "Tests/OceanSurface");
+    const auto importedArtifact = compiledProgram.CreateRuntimeArtifact({"vertex-guid", "fragment-guid"});
+    assert(importedArtifact.IsValid());
+    assert(importedArtifact.key.stages == (infernux::ShaderStagePair{"vertex-guid", "fragment-guid"}));
+    assert(importedArtifact.key.revision != runtimeArtifact.key.revision);
+    assert(importedArtifact.compatibilitySignature == runtimeArtifact.compatibilitySignature);
     assert(runtimeArtifact.key.revision != 0);
     assert(runtimeArtifact.domain == infernux::ShaderProgramDomain::Mesh);
     assert(runtimeArtifact.shadingModel == "PBR");
@@ -379,7 +384,8 @@ void surface(out SurfaceData s)
         pbrModelId *= 16777619u;
     }
     assert(gbufferProgram.generatedFragmentSource.find("gbuf4 = uvec4(_inx_ObjectLayerMask, " +
-                                                       std::to_string(pbrModelId) + "u, uint(_inx_ReceivesShadows), 0u);") != std::string::npos);
+                                                       std::to_string(pbrModelId) +
+                                                       "u, uint(_inx_ReceivesShadows), 0u);") != std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("vec3 litColor =") == std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("fragmentInput.waveUV = _inx_v_waveUV;") != std::string::npos);
 
@@ -796,8 +802,8 @@ void main() {
     const auto builtinParticleArtifact = builtinParticleCompilation.CreateRuntimeArtifact();
     assert(builtinParticleArtifact.IsValid());
     assert(builtinParticleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
-    assert(builtinParticleArtifact.key.stages.vertexShaderId == "Particle Sprite");
-    assert(builtinParticleArtifact.key.stages.fragmentShaderId == "Unlit");
+    assert(builtinParticleArtifact.key.stages.vertexKey == "Particle Sprite");
+    assert(builtinParticleArtifact.key.stages.fragmentKey == "Unlit");
     assert(builtinParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
     const auto defaultParticleCompilation = compiler.CompileLinkedProgramArtifact(
@@ -810,13 +816,15 @@ void main() {
     assert(defaultParticleCompilation.IsValid());
     const auto defaultParticleArtifact = defaultParticleCompilation.CreateRuntimeArtifact();
     assert(defaultParticleArtifact.IsValid());
-    assert(defaultParticleArtifact.key.stages.fragmentShaderId == "Particle Unlit");
+    assert(defaultParticleArtifact.key.stages.fragmentKey == "Particle Unlit");
     assert(defaultParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(defaultParticleCompilation.compiledVariants.size() == 3);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find("radialAlpha") ==
            std::string::npos);
-    assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
-               "vec4 texColor = sampleAlbedoAlpha(texSampler, transformTextureUV(v_TexCoord, material.texSampler_ST));") != std::string::npos);
+    assert(
+        defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
+            "vec4 texColor = sampleAlbedoAlpha(texSampler, transformTextureUV(v_TexCoord, material.texSampler_ST));") !=
+        std::string::npos);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
                "s.alpha = texColor.a * material.baseColor.a;") != std::string::npos);
 
@@ -833,7 +841,7 @@ void main() {
     assert(RequireProperty(sixWaySmokeCompilation.interfaceArtifact, "negativeAxesMap").schema.isTexture);
     const auto sixWaySmokeArtifact = sixWaySmokeCompilation.CreateRuntimeArtifact();
     assert(sixWaySmokeArtifact.IsValid());
-    assert(sixWaySmokeArtifact.key.stages.fragmentShaderId == "Particle Six-Way Smoke");
+    assert(sixWaySmokeArtifact.key.stages.fragmentKey == "Particle Six-Way Smoke");
     assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
 
@@ -993,8 +1001,8 @@ void surface(out SurfaceData s) {
     const auto builtinLitArtifact = builtinLitCompilation.CreateRuntimeArtifact();
     assert(builtinLitArtifact.IsValid());
     assert(builtinLitArtifact.usesBindlessTextureABI);
-    assert(builtinLitArtifact.key.stages.vertexShaderId == "Standard");
-    assert(builtinLitArtifact.key.stages.fragmentShaderId == "Lit");
+    assert(builtinLitArtifact.key.stages.vertexKey == "Standard");
+    assert(builtinLitArtifact.key.stages.fragmentKey == "Lit");
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
@@ -1159,7 +1167,7 @@ ShaderInfo { Name "Standard" }
                                                                 fragmentWithoutCustomInputs, "PlainSurface.frag");
     assert(migrationProgram.IsValid());
     assert(migrationProgram.CreateRuntimeArtifact().IsValid());
-    assert(migrationProgram.CreateRuntimeArtifact().key.stages.vertexShaderId == "Standard");
+    assert(migrationProgram.CreateRuntimeArtifact().key.stages.vertexKey == "Standard");
     assert(migrationProgram.generatedVertexSource.find("uniform MaterialProperties") == std::string::npos);
     assert(migrationProgram.generatedFragmentSource.find("uniform MaterialProperties") != std::string::npos);
 
@@ -1225,18 +1233,16 @@ void main() { }
     assert(HasDiagnostic(brokenArtifact, infernux::ShaderLinkDiagnosticCode::MissingVertexOutput));
 
     const std::array<std::pair<const char *, infernux::ShaderLinkDiagnosticCode>, 4> invalidVaryings = {{
-        {"Smooth Float3 waveUV Semantic(TexCoord7)",
-         infernux::ShaderLinkDiagnosticCode::VaryingTypeMismatch},
-        {"Smooth Float2 waveUV Semantic(TexCoord6)",
-         infernux::ShaderLinkDiagnosticCode::SemanticMismatch},
+        {"Smooth Float3 waveUV Semantic(TexCoord7)", infernux::ShaderLinkDiagnosticCode::VaryingTypeMismatch},
+        {"Smooth Float2 waveUV Semantic(TexCoord6)", infernux::ShaderLinkDiagnosticCode::SemanticMismatch},
         {"Smooth Float2 waveUV Semantic(TexCoord7) Smooth Float2 waveUV Semantic(TexCoord8)",
          infernux::ShaderLinkDiagnosticCode::DuplicateVarying},
         {"Smooth Float2 waveUV Semantic(TexCoord7) Smooth Float waveHeight Semantic(TexCoord7) Space(World)",
          infernux::ShaderLinkDiagnosticCode::DuplicateSemantic},
     }};
     for (const auto &[declarations, expectedDiagnostic] : invalidVaryings) {
-        const std::string source = "ShaderInfo { Name \"Tests/InvalidVaryings\" Inputs { " +
-                                   std::string(declarations) + " } } void main() { }";
+        const std::string source = "ShaderInfo { Name \"Tests/InvalidVaryings\" Inputs { " + std::string(declarations) +
+                                   " } } void main() { }";
         const auto invalidFragment = compiler.ParseShaderSource(source, "InvalidVaryings.frag");
         const auto rejected = infernux::ShaderStageLinker::Link(vertex, invalidFragment);
         assert(!rejected.IsValid());

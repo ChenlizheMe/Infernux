@@ -770,7 +770,7 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId, const 
     };
     for (auto it = m_shadowPipelineCache.begin(); it != m_shadowPipelineCache.end();) {
         const auto &stages = it->first.program->GetProgramKey().stages;
-        if (!matchesShadowStage(stages.vertexShaderId) && !matchesShadowStage(stages.fragmentShaderId)) {
+        if (!matchesShadowStage(stages.vertexKey) && !matchesShadowStage(stages.fragmentKey)) {
             ++it;
             continue;
         }

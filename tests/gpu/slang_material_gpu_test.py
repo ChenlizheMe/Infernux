@@ -50,6 +50,10 @@ def main():
             (project / directory).mkdir()
         path = project / "Assets/绘制.frag.py"
         path.write_text(SOURCE, encoding="utf-8")
+        other_path = project / "Assets/另一目录/绘制.frag.py"
+        other_path.parent.mkdir()
+        other_path.write_text(SOURCE.replace("transformed.rgb * self.gain", "transformed.rgb * self.gain * 0.6"),
+                              encoding="utf-8")
         frontend = inx.Engine()
         native = frontend.get_native_engine()
         console = ConsolePanel()
@@ -62,8 +66,12 @@ def main():
             native.set_editor_idle_fps(0)
             imported = AssetManager.import_asset(str(path), database=frontend.get_asset_database())
             assert imported, imported.error
+            shader_guid = imported.guid
+            other_imported = AssetManager.import_asset(str(other_path), database=frontend.get_asset_database())
+            assert other_imported and other_imported.guid != imported.guid, other_imported.error
             schema = inx.Shader.get_schema(str(path))
             assert schema["domain"] == "mesh"
+            assert not inx.Shader.is_loaded(shader_guid, "fragment")
             from infernux.engine.ui.inspector_shader_utils import parse_shader_properties
             fields = parse_shader_properties(str(path))
             assert fields[1]["range"] == [0.0, 2.0] and fields[1]["label"] == "强度"
@@ -83,7 +91,7 @@ def main():
                     np.array([[0, 0, -1]] * 4, dtype=np.float32),
                     np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
                     np.array([0, 2, 1, 0, 3, 2], dtype=np.uint32), "Quad")
-                material = inx.Material.from_shader(str(path), "材质" + str(index))
+                material = inx.Material.from_shader(str(other_path if index else path), "材质" + str(index))
                 material.cull_mode = 2
                 if index:
                     material.set_vector4("tint", 0.8, 0.2, 0.3, 1.0)
@@ -121,10 +129,10 @@ class Fill(shader.fullscreen):
             frontend.set_render_pipeline(MeshPipeline(options.material_pass))
             native.set_game_camera_enabled(True)
             frame = changed = phase = 0
-            ticket = baseline = None
+            ticket = baseline = baseline_retirements = None
 
             def after_draw():
-                nonlocal frame, changed, phase, ticket, baseline, completed
+                nonlocal frame, changed, phase, ticket, baseline, baseline_retirements, completed
                 try:
                     frame += 1
                     if ticket is None and frame >= changed + 6:
@@ -142,7 +150,8 @@ class Fill(shader.fullscreen):
                         for index, tint in enumerate(((0.2, 0.4, 0.8, 0), (0.8, 0.2, 0.3, 0))):
                             transform = matrix.T if phase >= 2 and index == 0 else matrix
                             gain = 0.25 if phase >= 1 and index == 0 else 0.75
-                            linear = (transform @ np.array(tint))[:3] * gain * (0.5 if phase == 3 else 1.0)
+                            multiplier = 0.6 if index else (0.5 if phase == 3 else 1.0)
+                            linear = (transform @ np.array(tint))[:3] * gain * multiplier
                             half = pixels[:, index * 80:(index + 1) * 80, :3]
                             visible = half[np.max(half, axis=-1) > 0.05]
                             assert len(visible) > 50, console._get_visible_log_snapshot(500)
@@ -159,9 +168,15 @@ class Fill(shader.fullscreen):
                         assert AssetRegistry.instance().get_asset_runtime_type_name(imported_bad.guid) == ""
                         print("MESH_AUTHOR", phase, "passed", flush=True)
                         if phase == 0:
+                            assert inx.Shader.is_loaded(shader_guid, "fragment")
+                            assert inx.Shader.is_loaded(str(other_path), "fragment")
                             baseline = pixels
+                            baseline_retirements = native.gpu_residency_snapshot["shader_hot_reload_retirement_count"]
                         elif phase == 1:
                             np.testing.assert_array_equal(pixels[:, 80:], baseline[:, 80:])
+                        if phase in (1, 2):
+                            assert native.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == baseline_retirements, (
+                                "Two same-named author assets must retain independent programs across ordinary draws")
                         if phase == 4:
                             completed = True
                             native.exit()

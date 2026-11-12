@@ -14,7 +14,19 @@ class Shader:
     _runtime_revisions: dict[str, int] = {}
     _surface_metadata: dict[str, tuple] = {}
     _surface_schemas: dict[str, tuple[tuple, int]] = {}
-    _surface_catalog_generation = None
+
+    @staticmethod
+    def _fragment_key(material) -> str:
+        from infernux.core.assets import AssetManager
+
+        reference = material.native.frag_shader_reference
+        if reference["guid"]:
+            return reference["guid"]
+        database = AssetManager._asset_database
+        if database is None:
+            return reference["shader_id"]
+        path = database.find_shader_path_by_id(reference["shader_id"], "fragment")
+        return database.get_guid_from_path(path)
 
     @staticmethod
     def _read_surface_metadata(meta) -> tuple:
@@ -51,7 +63,7 @@ class Shader:
             meta = database.get_meta_by_path(path)
             if meta is None or not meta.has_key("shader_id"):
                 continue
-            shader_id = meta.get_string("shader_id")
+            shader_id = meta.get_guid()
             cls._runtime_revision += 1
             cls._runtime_revisions[shader_id] = cls._runtime_revision
             if stage == "fragment" and kind is None:
@@ -67,19 +79,12 @@ class Shader:
         database = AssetManager._asset_database
         if database is None:
             return
-        shader_id = material.frag_shader_name
-        generation = database.query_generation
-        if shader_id not in cls._surface_metadata and cls._surface_catalog_generation != generation:
-            for path in database.get_all_asset_paths():
-                if not path.lower().endswith(".frag"):
-                    continue
-                meta = database.get_meta_by_path(path)
-                if meta is not None and meta.has_key("shader_id") and meta.has_key("shader_queue"):
-                    name = meta.get_string("shader_id")
-                    if name not in cls._surface_metadata:
-                        cls._surface_metadata[name] = cls._read_surface_metadata(meta)
-                        cls._surface_schemas[name] = (cls._read_surface_schema(meta), 0)
-            cls._surface_catalog_generation = generation
+        shader_id = cls._fragment_key(material)
+        if shader_id not in cls._surface_metadata:
+            meta = database.get_meta_by_guid(shader_id)
+            if meta is not None and meta.has_key("shader_queue"):
+                cls._surface_metadata[shader_id] = cls._read_surface_metadata(meta)
+                cls._surface_schemas[shader_id] = (cls._read_surface_schema(meta), 0)
         state = cls._surface_metadata.get(shader_id)
         if state is not None:
             material.native.apply_shader_render_meta(*state)
@@ -89,7 +94,6 @@ class Shader:
         cls._runtime_revisions.clear()
         cls._surface_metadata.clear()
         cls._surface_schemas.clear()
-        cls._surface_catalog_generation = None
 
     @staticmethod
     def property_to_id(name: str) -> int:
@@ -155,10 +159,10 @@ class Shader:
 
     @classmethod
     def is_loaded(cls, name: str, shader_type: str = "vertex") -> bool:
-        """Query GPU publication by ShaderInfo Name and stage, without loading.
+        """Query GPU publication by asset GUID, imported path or built-in name.
 
         Returns False before startup, after shutdown, or without a renderer.
-        Both standalone stages and linked material programs are included.
+        Static author assets, standalone stages and linked programs are included.
         This does not claim the last source edit compiled successfully.
         """
         from infernux.core.assets import AssetManager

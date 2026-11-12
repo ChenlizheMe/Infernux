@@ -5,6 +5,7 @@
 #include <array>
 #include <core/types/InxFwdType.h>
 #include <core/types/ShaderAssetReference.h>
+#include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -455,6 +456,13 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         return m_fragmentShader;
     }
 
+    /// Asset-backed stages use GUIDs; symbolic built-ins use their registered key.
+    /// Display names and paths never participate in program cache identity.
+    [[nodiscard]] ShaderStagePair GetShaderStages() const
+    {
+        return {m_vertexShader.StableKey(), m_fragmentShader.StableKey()};
+    }
+
     // ========================================================================
     // Render State
     // ========================================================================
@@ -672,7 +680,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     /// @brief Get unique shader ID for pipeline caching.
     [[nodiscard]] std::string GetShaderId() const
     {
-        return m_vertexShader.StableKey() + "|" + m_fragmentShader.StableKey();
+        return GetShaderStages().ToString();
     }
 
     /// @brief Get a unique key for this material (for pipeline/render-data caching)

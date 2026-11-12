@@ -180,8 +180,7 @@ bool GPUMeshPreview::PrepareMaterials(const std::vector<std::shared_ptr<InxMater
             if (!source)
                 return {};
             auto material = source->Clone();
-            if (!m_vkCore->RefreshPreviewMaterialPipeline(material, material->GetVertShaderName(),
-                                                          material->GetFragShaderName(), false))
+            if (!m_vkCore->RefreshPreviewMaterialPipeline(material, false))
                 return {};
             return material;
         };
@@ -199,9 +198,7 @@ bool GPUMeshPreview::PrepareMaterials(const std::vector<std::shared_ptr<InxMater
     for (auto &material : prepared) {
         if (!material)
             continue;
-        if (material->NeedsTextureAssetResolution() &&
-            !m_vkCore->RefreshPreviewMaterialPipeline(material, material->GetVertShaderName(),
-                                                      material->GetFragShaderName(), false)) {
+        if (material->NeedsTextureAssetResolution() && !m_vkCore->RefreshPreviewMaterialPipeline(material, false)) {
             material.reset();
             continue;
         }
@@ -883,15 +880,12 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         if (cloneMaterials) {
             previewMat->ClearAllPassPipelines();
         }
-        bool pipelineReady = m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
-                                                                      previewMat->GetFragShaderName(), false);
+        bool pipelineReady = m_vkCore->RefreshPreviewMaterialPipeline(previewMat, false);
         if (!pipelineReady && srcMat != defaultMat && defaultMat) {
             previewMat = cloneMaterials ? defaultMat->Clone() : defaultMat;
             if (previewMat && cloneMaterials)
                 previewMat->ClearAllPassPipelines();
-            pipelineReady =
-                previewMat && m_vkCore->RefreshPreviewMaterialPipeline(previewMat, previewMat->GetVertShaderName(),
-                                                                       previewMat->GetFragShaderName(), false);
+            pipelineReady = previewMat && m_vkCore->RefreshPreviewMaterialPipeline(previewMat, false);
         }
         if (!pipelineReady || !previewMat)
             continue;

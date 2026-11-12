@@ -19,27 +19,28 @@ struct ShaderTargetCode;
 
 struct ShaderStagePair
 {
-    std::string vertexShaderId;
-    std::string fragmentShaderId;
+    // GUIDs for imported assets, registered keys for symbolic built-ins.
+    std::string vertexKey;
+    std::string fragmentKey;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return !vertexShaderId.empty() && !fragmentShaderId.empty();
+        return !vertexKey.empty() && !fragmentKey.empty();
     }
 
     [[nodiscard]] std::string ToString() const
     {
-        return vertexShaderId + "|" + fragmentShaderId;
+        return vertexKey + "|" + fragmentKey;
     }
 
     [[nodiscard]] bool UsesShader(std::string_view shaderId) const noexcept
     {
-        return vertexShaderId == shaderId || fragmentShaderId == shaderId;
+        return vertexKey == shaderId || fragmentKey == shaderId;
     }
 
     friend bool operator==(const ShaderStagePair &lhs, const ShaderStagePair &rhs) noexcept
     {
-        return lhs.vertexShaderId == rhs.vertexShaderId && lhs.fragmentShaderId == rhs.fragmentShaderId;
+        return lhs.vertexKey == rhs.vertexKey && lhs.fragmentKey == rhs.fragmentKey;
     }
 
     friend bool operator!=(const ShaderStagePair &lhs, const ShaderStagePair &rhs) noexcept
