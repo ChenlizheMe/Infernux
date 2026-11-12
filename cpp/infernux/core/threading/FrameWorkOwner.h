@@ -238,6 +238,9 @@ class FrameWorkOwner
     INFERNUX_FOUNDATION_API void BeginScope();
     INFERNUX_FOUNDATION_API FrameWorkCost EndScope();
     [[nodiscard]] INFERNUX_FOUNDATION_API int64_t Remaining(bool background = false) const;
+    /// Time available to the current source callback, including its service's
+    /// foreground reservation policy. This does not start or refill a budget.
+    [[nodiscard]] INFERNUX_FOUNDATION_API int64_t ServiceRemaining() const;
     [[nodiscard]] uint64_t Opportunity() const noexcept
     {
         return m_opportunity;
@@ -286,21 +289,33 @@ class FrameWorkOwner
     [[nodiscard]] INFERNUX_FOUNDATION_API const char *GpuUnavailableReason() const noexcept;
 
   private:
+    enum class ServiceKind : uint8_t
+    {
+        Background,
+        Interactive,
+        Required
+    };
     class ServiceScope
     {
       public:
         ServiceScope(FrameWorkOwner &owner, bool interactive)
-            : m_owner(owner), m_previous(std::exchange(owner.m_interactive, interactive))
+            : ServiceScope(owner, owner.m_serviceKind == ServiceKind::Required ? ServiceKind::Required
+                                  : interactive                                ? ServiceKind::Interactive
+                                                                               : ServiceKind::Background)
+        {
+        }
+        ServiceScope(FrameWorkOwner &owner, ServiceKind kind)
+            : m_owner(owner), m_previous(std::exchange(owner.m_serviceKind, kind))
         {
         }
         ~ServiceScope()
         {
-            m_owner.m_interactive = m_previous;
+            m_owner.m_serviceKind = m_previous;
         }
 
       private:
         FrameWorkOwner &m_owner;
-        bool m_previous;
+        ServiceKind m_previous;
     };
     enum class Admission : uint8_t
     {
@@ -363,7 +378,7 @@ class FrameWorkOwner
     bool m_earlyAdvanced = false;
     bool m_serviced = false;
     bool m_preferGpu = false;
-    bool m_interactive = false;
+    ServiceKind m_serviceKind = ServiceKind::Background;
     FrameGpuAvailability m_gpuAvailability = FrameGpuAvailability::Ready;
 };
 

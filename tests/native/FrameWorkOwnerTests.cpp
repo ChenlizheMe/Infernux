@@ -5,6 +5,7 @@
 #endif
 #include <cassert>
 #include <iostream>
+#include <limits>
 
 using namespace infernux;
 
@@ -178,10 +179,64 @@ static void BlockedAndNoProgress()
     owner.EndOpportunity();
 }
 
+static void CallbackServiceBudgets()
+{
+    uint64_t now = 0;
+    FrameWorkOwner owner([&] { return now; });
+    owner.Configure(100, 60);
+    std::vector<int64_t> callbackBudgets;
+    bool ready = true;
+    const auto describe = [&] {
+        FrameWorkFacts facts;
+        facts.host = {0, 1, ready};
+        return facts;
+    };
+    FrameWorkSource target;
+    target.describe = describe;
+    target.advance = [&](bool gpu, uint64_t) {
+        assert(!gpu);
+        callbackBudgets.push_back(owner.ServiceRemaining());
+        now += 10;
+        ready = false;
+        return true;
+    };
+    const auto id = owner.AddSource(std::move(target));
+    owner.BeginOpportunity();
+    assert(owner.ServiceRemaining() == 40 && owner.Remaining() == 100);
+    assert(!owner.AdvanceEarly());
+    ready = true;
+    assert(!owner.AdvanceRequired(id, [] { return FrameGpuAvailability::Ready; }));
+    assert(owner.ServiceRemaining() == 20 && owner.Remaining() == 80);
+    ready = true;
+    owner.Wake(id);
+    assert(!owner.AdvanceLate([] { return FrameGpuAvailability::Ready; }));
+    assert((callbackBudgets == std::vector<int64_t>{40, 90, 20}));
+    assert(owner.ServiceRemaining() == 10 && owner.Remaining() == 70);
+    owner.EndOpportunity();
+
+    FrameWorkOwner interactive([] { return uint64_t{0}; });
+    interactive.Configure(100, 60);
+    ready = true;
+    FrameWorkSource editor;
+    editor.interactive = true;
+    editor.describe = describe;
+    editor.advance = [&](bool, uint64_t) {
+        assert(interactive.ServiceRemaining() == (std::numeric_limits<int64_t>::max)());
+        ready = false;
+        return true;
+    };
+    interactive.AddSource(std::move(editor));
+    interactive.BeginOpportunity();
+    assert(!interactive.AdvanceEarly());
+    assert(interactive.ServiceRemaining() == 40 && interactive.Remaining() == 100);
+    interactive.EndOpportunity();
+}
+
 int main()
 {
     SameOpportunityTicks();
     ForegroundReserveAndWait();
     BlockedAndNoProgress();
+    CallbackServiceBudgets();
     std::cout << "FRAME_WORK_REQUIRED_OK\n";
 }

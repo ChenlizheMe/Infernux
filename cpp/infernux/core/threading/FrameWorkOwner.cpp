@@ -177,7 +177,7 @@ uint64_t FrameWorkOwner::ResourceRemaining(FrameWorkResource resource) const noe
     const auto remaining = state.admitted < state.allowance ? state.allowance - state.admitted : 0;
     // Interactive work uses the configured window per submission, rather
     // than waiting for background credit to refill on another host frame.
-    return m_interactive ? (std::max)(remaining, state.limit) : remaining;
+    return m_serviceKind == ServiceKind::Interactive ? (std::max)(remaining, state.limit) : remaining;
 }
 
 bool FrameWorkOwner::CanAdmitResource(FrameWorkResource resource, uint64_t prediction, bool indivisible) const noexcept
@@ -187,8 +187,9 @@ bool FrameWorkOwner::CanAdmitResource(FrameWorkResource resource, uint64_t predi
     // Background work gets one unknown-duration calibration per host frame.
     // Interactive admission is limited by actual storage and queue readiness.
     return m_active && IsAccepting() && remaining &&
-           (m_interactive || (prediction ? prediction <= remaining || (indivisible && state.admitted == 0)
-                                         : state.frameCalibrations == 0));
+           (m_serviceKind == ServiceKind::Interactive ||
+            (prediction ? prediction <= remaining || (indivisible && state.admitted == 0)
+                        : state.frameCalibrations == 0));
 }
 
 uint64_t FrameWorkOwner::AdmitResource(FrameWorkResource resource, uint64_t prediction, bool indivisible)
@@ -262,11 +263,16 @@ FrameWorkCost FrameWorkOwner::EndScope()
 
 int64_t FrameWorkOwner::Remaining(bool background) const
 {
-    if (m_interactive)
+    if (m_serviceKind == ServiceKind::Interactive)
         return (std::numeric_limits<int64_t>::max)();
     return static_cast<int64_t>(m_allowanceNanoseconds) - static_cast<int64_t>(m_spentNanoseconds) -
            static_cast<int64_t>(RunningNanoseconds()) -
            (background ? static_cast<int64_t>(m_foregroundReserveNanoseconds) : 0);
+}
+
+int64_t FrameWorkOwner::ServiceRemaining() const
+{
+    return Remaining(m_serviceKind == ServiceKind::Background);
 }
 
 void FrameWorkOwner::ObserveSources()
@@ -513,7 +519,7 @@ bool FrameWorkOwner::AdvanceRequired(SourceId id, const std::function<FrameGpuAv
         throw std::invalid_argument("Required work source is not registered");
     const auto source = *found;
     Scope scope(*this);
-    ServiceScope service(*this, false);
+    ServiceScope service(*this, ServiceKind::Required);
     source->awake = true;
     ObserveSource(source);
     for (;;) {
