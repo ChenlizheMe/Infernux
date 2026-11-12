@@ -44,6 +44,7 @@
 #include "InfernuxJoltJobSystemAdapter.h"
 #include "PhysicsContactListener.h"
 #include "PhysicsLayers.h"
+#include "PhysicsMass.h"
 #include "PhysicsWorld.h"
 
 #include "core/threading/JobSystem.h"
@@ -610,63 +611,8 @@ static std::optional<uint32_t> CompoundMemberIndex(const JPH::Shape *shape, uint
     return compound->GetCompoundUserData(compound->GetSubShapeIndexFromID(subShapeId, remainder));
 }
 
-static JPH::Mat44 ScaledAuthoredInertia(const RigidbodyMassProperties &properties, const glm::vec3 &scale)
-{
-    const glm::dmat3 rotation = glm::mat3_cast(glm::dquat(properties.rotation));
-    glm::dmat3 diagonal(0.0);
-    for (int i = 0; i < 3; ++i)
-        diagonal[i][i] = properties.moments[i];
-    const glm::dmat3 inertia = rotation * diagonal * glm::transpose(rotation);
-    const double halfTrace = .5 * (inertia[0][0] + inertia[1][1] + inertia[2][2]);
-    glm::dmat3 secondMoment(0.0);
-    for (int column = 0; column < 3; ++column)
-        for (int row = 0; row < 3; ++row)
-            secondMoment[column][row] =
-                ((column == row ? halfTrace : 0.0) - inertia[column][row]) * double(scale[column]) * double(scale[row]);
-    const double trace = secondMoment[0][0] + secondMoment[1][1] + secondMoment[2][2];
-    JPH::Mat44 result = JPH::Mat44::sIdentity();
-    for (int column = 0; column < 3; ++column)
-        for (int row = 0; row < 3; ++row)
-            result(row, column) = float((column == row ? trace : 0.0) - secondMoment[column][row]);
-    // Constant authored mass: do not multiply by volume and divide it out.
-    // This also retains valid planar inertia at a single zero scale axis.
-    return result;
-}
-
-struct MassConfiguration
-{
-    float mass;
-    JPH::Vec3 inverse;
-    JPH::Quat axes;
-};
-
-static MassConfiguration PrepareMassConfiguration(const JPH::MassProperties &properties)
-{
-    const auto diagonal = properties.mInertia.GetDiagonal3();
-    const float magnitude = std::max({diagonal.GetX(), diagonal.GetY(), diagonal.GetZ()});
-    if (!std::isfinite(magnitude) || magnitude <= 0.0f)
-        throw std::invalid_argument("rigidbody inertia is not finite positive at the current scale");
-    auto normalized = properties;
-    for (int column = 0; column < 3; ++column)
-        for (int row = 0; row < 3; ++row)
-            normalized.mInertia(row, column) = float(double(properties.mInertia(row, column)) / magnitude);
-    JPH::Mat44 axes;
-    JPH::Vec3 moments;
-    if (!normalized.DecomposePrincipalMomentsOfInertia(axes, moments))
-        throw std::invalid_argument("rigidbody inertia cannot be decomposed at the current scale");
-    JPH::Vec3 inverse = JPH::Vec3::sZero();
-    for (int i = 0; i < 3; ++i) {
-        const double moment = double(moments[i]) * magnitude;
-        const float value = float(1.0 / moment);
-        if (moment <= 0.0 || !std::isfinite(value) || value <= 0.0f)
-            throw std::invalid_argument("rigidbody inverse inertia is not representable at the current scale");
-        inverse.SetComponent(i, value);
-    }
-    return {properties.mMass, inverse, axes.GetQuaternion()};
-}
-
 static void ApplyMassConfiguration(JPH::MotionProperties &motion, JPH::EAllowedDOFs allowed,
-                                   const MassConfiguration &prepared)
+                                   const PreparedBodyMass &prepared)
 {
     JPH::MassProperties configuration;
     configuration.mMass = prepared.mass;
@@ -677,20 +623,6 @@ static void ApplyMassConfiguration(JPH::MotionProperties &motion, JPH::EAllowedD
     motion.SetMassProperties(allowed, configuration);
     if ((uint32_t(allowed) & 0x38U) != 0)
         motion.SetInverseInertia(prepared.inverse, prepared.axes);
-}
-
-static MassConfiguration BodyMassConfiguration(const JPH::Shape *shape, float mass,
-                                               const RigidbodyMassProperties *properties, const glm::vec3 &scale)
-{
-    JPH::MassProperties value;
-    if (properties) {
-        value.mMass = mass;
-        value.mInertia = ScaledAuthoredInertia(*properties, scale);
-    } else {
-        value = shape->GetMassProperties();
-        value.ScaleToMass(mass);
-    }
-    return PrepareMassConfiguration(value);
 }
 
 } // namespace
@@ -1832,11 +1764,11 @@ void PhysicsWorld::UpdateBodyShape(PhysicsActorData &actor, const Collider *excl
         return;
 
     auto *rigidbody = actor.rigidbody;
-    std::optional<MassConfiguration> massConfiguration;
+    std::optional<PreparedBodyMass> massConfiguration;
     if (rigidbody && rigidbody->IsEnabled() && !rigidbody->IsKinematic()) {
         const auto &properties = rigidbody->GetAuthoredMassProperties();
-        massConfiguration = BodyMassConfiguration(newShape, rigidbody->GetMass(), properties ? &*properties : nullptr,
-                                                  actor.owner->GetTransform()->GetWorldScale());
+        massConfiguration = PrepareBodyMass(newShape, rigidbody->GetMass(), properties ? &*properties : nullptr,
+                                            actor.owner->GetTransform()->GetWorldScale());
     }
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.SetUseManifoldReduction(JPH::BodyID(id), shapeCount <= 1);
@@ -2254,7 +2186,7 @@ void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
     auto *owner = body.GetGameObject();
     const auto scale = owner ? owner->GetTransform()->GetWorldScale() : glm::vec3(1.0f);
     if (properties) {
-        (void)BodyMassConfiguration(nullptr, mass, properties, scale);
+        (void)PrepareBodyMass(nullptr, mass, properties, scale);
         return;
     }
     if (!owner || !m_initialized || body.IsKinematic())
@@ -2268,7 +2200,7 @@ void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
         const JPH::Shape *shape = lock.GetBody().GetShape();
         if (shape->GetSubType() == JPH::EShapeSubType::OffsetCenterOfMass)
             shape = static_cast<const JPH::OffsetCenterOfMassShape *>(shape)->GetInnerShape();
-        (void)BodyMassConfiguration(shape, mass, nullptr, scale);
+        (void)PrepareBodyMass(shape, mass, nullptr, scale);
     }
 }
 
@@ -2288,7 +2220,7 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t bodyId, int allowedDOFs, float ma
                                          : nullptr;
             const auto scale =
                 rigidbody ? rigidbody->GetGameObject()->GetTransform()->GetWorldScale() : glm::vec3(1.0f);
-            const auto prepared = BodyMassConfiguration(body.GetShape(), mass, properties, scale);
+            const auto prepared = PrepareBodyMass(body.GetShape(), mass, properties, scale);
             ApplyMassConfiguration(*body.GetMotionProperties(), static_cast<JPH::EAllowedDOFs>(allowedDOFs), prepared);
         }
     }

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "Component.h"
+#include "RigidbodyMassProperties.h"
 #include "physics/PhysicsECSStore.h"
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -19,13 +20,6 @@
 namespace infernux
 {
 
-/// Authored configuration, kept outside the per-frame physics data pool.
-struct RigidbodyMassProperties
-{
-    glm::vec3 center{0.0f};
-    glm::vec3 moments{1.0f};
-    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-};
 struct PhysicsBodyMotionState;
 enum class PhysicsStateFields : uint32_t;
 
