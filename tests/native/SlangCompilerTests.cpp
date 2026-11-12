@@ -61,7 +61,7 @@ float4 triangle(uint id : SV_VulkanVertexID) : SV_Position
     return float4(float(id & 1) * 2.0 - 1.0, float(id >> 1) * 2.0 - 1.0, 0.0, 1.0);
 }
 [shader("fragment")]
-float4 color() : SV_Target { return float4(tint(float3(1.0)), 1.0); }
+float4 color() : SV_Target3 { return float4(tint(float3(1.0)), 1.0); }
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void affine(uint3 id : SV_DispatchThreadID)
@@ -99,6 +99,9 @@ void derivative(uint3 id : SV_DispatchThreadID)
                 Require(!entry.code.empty(), "Shader code is empty");
                 if (entry.stage == rhi::ShaderStage::Compute)
                     Require(entry.workgroupSize == std::array<uint32_t, 3>{32, 1, 1}, "Workgroup size changed");
+                if (entry.stage == rhi::ShaderStage::Fragment)
+                    Require(entry.outputs.size() == 1 && entry.outputs[0].location == 3,
+                            "Direct return target location was overwritten during allocation");
                 Require(entry.bindings.size() == (entry.stage == rhi::ShaderStage::Compute ? 3 : 0),
                         "Entry resource use must come from the compiled target metadata");
                 if (target.target == ShaderCodeTarget::SpirV)
