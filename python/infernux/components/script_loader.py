@@ -2113,31 +2113,13 @@ def create_component_instance(component_class: Type[InxComponent]) -> InxCompone
     return component_class()
 
 
-def load_and_create_component(
+def _load_asset_component_types(
     file_path: str,
     asset_database=None,
-    type_name: str = "",
     *,
     script_guid: str = "",
-) -> Optional[InxComponent]:
-    """
-    Convenience function: Load first component from file and create instance.
-    
-    Args:
-        file_path: Absolute path to the .py file
-        
-    Returns:
-        New instance of the first component found, or None if the script
-        has errors (the error is already logged to Console).
-        
-    Note:
-        ``script_guid`` should be supplied when the caller already resolved
-        ``file_path`` from a stable component identity. Packaged ``.pyc``
-        artifacts do not necessarily support a reverse path-to-GUID lookup.
-
-    Raises:
-        ScriptLoadError: If AssetDatabase is missing or GUID cannot be resolved.
-    """
+) -> tuple[tuple[Type[InxComponent], ...], str]:
+    """Resolve and publish one asset's complete component type catalog."""
     if asset_database is None and not script_guid:
         raise ScriptLoadError("AssetDatabase is required for script components (GUID-only mode)")
 
@@ -2170,18 +2152,37 @@ def load_and_create_component(
     )
     if not already_published:
         component_types = tuple(load_all_components_from_file(file_path, register=False))
+    if component_types and not already_published:
+        from infernux.components.component_identity import bind_asset_script_guid
+        for candidate in component_types:
+            bind_asset_script_guid(candidate, guid, register=False)
+        publish_component_script_types(file_path, component_types)
+
+    return component_types, guid
+
+
+def load_and_create_component(
+    file_path: str,
+    asset_database=None,
+    type_name: str = "",
+    *,
+    script_guid: str = "",
+) -> Optional[InxComponent]:
+    """Create a component from the asset's published type catalog.
+
+    Supply ``script_guid`` when the path was resolved from a stable identity;
+    packaged ``.pyc`` artifacts need not support a reverse path-to-GUID lookup.
+    Load errors return None; missing asset identity raises ScriptLoadError.
+    """
+    component_types, guid = _load_asset_component_types(
+        file_path, asset_database, script_guid=script_guid,
+    )
     if not component_types:
         return None
     component_class = next(
         (candidate for candidate in component_types if type_name and candidate.__name__ == type_name),
         component_types[0],
     )
-
-    if not already_published:
-        from infernux.components.component_identity import bind_asset_script_guid
-        for candidate in component_types:
-            bind_asset_script_guid(candidate, guid, register=False)
-        publish_component_script_types(file_path, component_types)
 
     instance = create_component_instance(component_class)
     instance._script_guid = guid
