@@ -129,6 +129,15 @@ bool Zero3(const Float4 &value)
     return value.x == 0.0f && value.y == 0.0f && value.z == 0.0f;
 }
 
+void ValidateForces(const std::vector<BodyForces> &forces, uint32_t bodyCount)
+{
+    if (forces.size() != bodyCount)
+        throw std::invalid_argument("Jolt GPU force input does not match its resident model");
+    for (const auto &force : forces)
+        if (!Finite3(force.force) || !Finite3(force.torque))
+            throw std::invalid_argument("Jolt GPU force and torque must be finite");
+}
+
 void ValidateLayout(const Port &port, const ShaderResourceLayout &resource)
 {
     const bool uniform = port.resource == Resource::StepParams;
@@ -287,6 +296,14 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareParameters(const JoltGpuStepParameters &prepared)
 {
+    return PrepareInputs(prepared);
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInputs(const JoltGpuStepParameters &prepared,
+                                                                         const std::vector<BodyForces> *cpuForces)
+{
+    if (cpuForces)
+        ValidateForces(*cpuForces, m_bodyCount);
     if (m_bodyCount == 0)
         return {};
     auto parameters = prepared.Get();
@@ -294,16 +311,15 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareParameters(con
     parameters.counts.y = m_worldCount;
     parameters.counts.z = m_maxBodiesPerWorld;
     parameters.solve.z = m_contactCount;
-    return rhi::PrepareComputeBatch(m_host, {{Get(Resource::StepParams), 0, Bytes(&parameters, 1)}}, {});
+    std::vector<rhi::ComputeBufferUpdate> updates{{Get(Resource::StepParams), 0, Bytes(&parameters, 1)}};
+    if (cpuForces)
+        updates.push_back({Get(Resource::BodyForces), 0, Bytes(cpuForces->data(), cpuForces->size())});
+    return rhi::PrepareComputeBatch(m_host, std::move(updates), {});
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareForces(const std::vector<BodyForces> &forces)
 {
-    if (forces.size() != m_bodyCount)
-        throw std::invalid_argument("Jolt GPU force input does not match its resident model");
-    for (const auto &force : forces)
-        if (!Finite3(force.force) || !Finite3(force.torque))
-            throw std::invalid_argument("Jolt GPU force and torque must be finite");
+    ValidateForces(forces, m_bodyCount);
     if (m_bodyCount == 0)
         return {};
     return rhi::PrepareComputeBatch(m_host, {{Get(Resource::BodyForces), 0, Bytes(forces.data(), forces.size())}}, {});

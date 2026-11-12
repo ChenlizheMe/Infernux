@@ -49,6 +49,11 @@ class JoltGpuStorage
                           const std::vector<JPH::GPU::BodyForces> &forces);
     /// Updating step parameters never overwrites a device-produced force input.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareParameters(const JoltGpuStepParameters &parameters);
+    /// One CPU-input packet. A null forces pointer leaves the GPU-produced
+    /// force port untouched. Capture these values only after packet acceptance.
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareInputs(const JoltGpuStepParameters &parameters,
+                  const std::vector<JPH::GPU::BodyForces> *cpuForces = nullptr);
     /// Explicit CPU input path. A GPU controller can instead write the resident
     /// BodyForces port directly; the normal compute dependency orders its use.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
