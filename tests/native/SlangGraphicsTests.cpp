@@ -50,8 +50,19 @@ void prepare_vertices(uint3 id : SV_DispatchThreadID)
     generated.Store(int2(id.x & 1, id.x >> 1), float4(value.d, sigmoid(value.p), 1.0 - value.d, 1.0));
 }
 
-struct VertexInput { float3 position : POSITION; float2 uv : TEXCOORD0; };
-struct Varyings { float4 position : SV_Position; float2 uv : TEXCOORD0; nointerpolation uint instance : TEXCOORD1; };
+struct VertexInput {
+    [[vk::location(0)]] float3 position : POSITION;
+    [[vk::location(1)]] float2x3 axes : AXES;
+    [[vk::location(4)]] float2 uv : TEXCOORD0;
+    [[vk::location(5)]] float2 samples[2] : SAMPLES;
+};
+struct Piece { float2x3 axes : AXES; float2 samples[2] : SAMPLES; };
+struct Varyings {
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    nointerpolation uint instance : TEXCOORD1;
+    Piece data[2];
+};
 [shader("vertex")]
 Varyings mesh_vertex(VertexInput input, uint instance : SV_VulkanInstanceID)
 {
@@ -59,6 +70,12 @@ Varyings mesh_vertex(VertexInput input, uint instance : SV_VulkanInstanceID)
     result.position = float4(input.position, 1.0);
     result.uv = input.uv;
     result.instance = instance;
+    result.data[0].axes = input.axes;
+    result.data[1].axes = float2x3(.7, .8, .9, .11, .12, .13);
+    result.data[0].samples[0] = input.samples[0];
+    result.data[0].samples[1] = input.samples[1];
+    result.data[1].samples[0] = float2(.05, .06);
+    result.data[1].samples[1] = float2(.07, .08);
     return result;
 }
 
@@ -70,6 +87,8 @@ Targets mesh_fragment(Varyings input)
     result.color = scene.material.albedo.Sample(scene.material.albedoSampler, input.uv) * scene.material.tint
         * scene.material.generatedImage.Sample(scene.material.albedoSampler, input.uv) * scene.exposure;
     result.color.rgb = mul(scene.material.channelTransform, result.color.rgb) * scene.material.weights[1];
+    result.color.rgb += float3(input.data[0].axes[1].z, input.data[input.instance & 1].axes[0].y,
+        input.data[0].samples[1].x + input.data[1].samples[0].y) * .1;
     result.identity = uint2(scene.material.objectId + input.instance, 0xfedcba98u);
     return result;
 }
@@ -148,6 +167,12 @@ void Run()
         buffer(4 * 16, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Vertex, rhi::BufferMemory::DeviceLocal);
     const std::array<float, 8> uvs{0, 0, 1, 0, 0, 1, 1, 1};
     const auto uvBuffer = buffer(sizeof(uvs), rhi::BufferUsageFlags::Vertex, rhi::BufferMemory::Upload, uvs.data());
+    const std::array<float, 10> payload{.1f, .2f, .3f, .4f, .5f, .6f, .01f, .02f, .03f, .04f};
+    std::array<float, 40> payloads;
+    for (size_t vertex = 0; vertex < 4; ++vertex)
+        std::copy(payload.begin(), payload.end(), payloads.begin() + vertex * payload.size());
+    const auto payloadBuffer =
+        buffer(sizeof(payloads), rhi::BufferUsageFlags::Vertex, rhi::BufferMemory::Upload, payloads.data());
     const std::array<uint16_t, 6> indices{0, 1, 2, 2, 1, 3};
     const auto indexBuffer =
         buffer(sizeof(indices), rhi::BufferUsageFlags::Index, rhi::BufferMemory::Upload, indices.data());
@@ -301,12 +326,17 @@ void Run()
     graphicsDesc.colorTargetCount = 2;
     graphicsDesc.colorTargets[0].format = formats[0];
     graphicsDesc.colorTargets[1].format = formats[1];
-    graphicsDesc.vertexInput.bufferCount = 2;
+    graphicsDesc.vertexInput.bufferCount = 3;
     graphicsDesc.vertexInput.buffers[0] = {16, rhi::VertexStepMode::Vertex};
     graphicsDesc.vertexInput.buffers[1] = {8, rhi::VertexStepMode::Vertex};
-    graphicsDesc.vertexInput.attributeCount = 2;
+    graphicsDesc.vertexInput.buffers[2] = {40, rhi::VertexStepMode::Vertex};
+    graphicsDesc.vertexInput.attributeCount = 6;
     graphicsDesc.vertexInput.attributes[0] = {0, 0, rhi::VertexFormat::Float32x3, 0};
-    graphicsDesc.vertexInput.attributes[1] = {1, 1, rhi::VertexFormat::Float32x2, 0};
+    graphicsDesc.vertexInput.attributes[1] = {4, 1, rhi::VertexFormat::Float32x2, 0};
+    graphicsDesc.vertexInput.attributes[2] = {1, 2, rhi::VertexFormat::Float32x3, 0};
+    graphicsDesc.vertexInput.attributes[3] = {2, 2, rhi::VertexFormat::Float32x3, 12};
+    graphicsDesc.vertexInput.attributes[4] = {5, 2, rhi::VertexFormat::Float32x2, 24};
+    graphicsDesc.vertexInput.attributes[5] = {6, 2, rhi::VertexFormat::Float32x2, 32};
     const auto graphics = device.CreateGraphicsPipeline(graphicsDesc);
     Require(graphics.IsValid(), "Slang mesh graphics pipeline failed");
     const auto colorReadback =
@@ -371,6 +401,7 @@ void Run()
         draw.BindGroup(graphics, set, graphicsGroup[set]);
     draw.BindVertexBuffer(0, vertices);
     draw.BindVertexBuffer(1, uvBuffer);
+    draw.BindVertexBuffer(2, payloadBuffer);
     draw.BindIndexBuffer(indexBuffer, rhi::IndexFormat::Uint16);
     draw.DrawIndexed(6, 1, 0, 0, 7);
     vkCmdEndRenderPass(commands);
@@ -415,7 +446,8 @@ void Run()
                 float value = 0;
                 for (size_t source = 0; source < 3; ++source)
                     value += channelTransform[channel * 3 + source] * input[source];
-                const auto expected = std::lround(value * weights[1] * 255.0f);
+                constexpr std::array<float, 3> varyingBias{0.06f, 0.08f, 0.009f};
+                const auto expected = std::lround((value * weights[1] + varyingBias[channel]) * 255.0f);
                 Require(std::abs(int(colorBytes[y * 256 + x * 4 + channel]) - expected) <= 1,
                         "sRGB sampling/varying/color mismatch");
             }
@@ -425,7 +457,8 @@ void Run()
                     "Integer MRT or absolute first-instance index was changed");
         }
     }
-    std::cout << "Slang indexed mesh, varying, reflected uniform/texture/sampler, UNORM-storage+sRGB-sampled view, "
+    std::cout << "Slang indexed mesh, sparse attributes, nested matrix/array varying, reflected "
+                 "uniform/texture/sampler, UNORM-storage+sRGB-sampled view, "
                  "integer MRT, padded transfer and Compute-to-Vertex sharing passed\n";
 }
 } // namespace
