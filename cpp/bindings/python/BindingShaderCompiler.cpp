@@ -260,6 +260,21 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                     }
                     item["workgroup_size"] = entry.workgroupSize;
                     item["bindings"] = entry.bindings;
+                    const auto stageValues = [](const auto &values) {
+                        py::list result;
+                        for (const auto &value : values) {
+                            py::dict variable;
+                            variable["name"] = value.name;
+                            variable["location"] = value.location;
+                            variable["scalar"] = static_cast<uint8_t>(value.scalar);
+                            variable["components"] = value.components;
+                            result.append(std::move(variable));
+                        }
+                        return result;
+                    };
+                    item["inputs"] = stageValues(entry.inputs);
+                    item["outputs"] = stageValues(entry.outputs);
+                    item["sample_rate_shading"] = entry.sampleRateShading;
                     item["code"] = py::bytes(entry.code.data(), entry.code.size());
                     entries.append(std::move(item));
                 }

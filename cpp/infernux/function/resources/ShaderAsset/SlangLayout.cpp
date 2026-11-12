@@ -1,4 +1,5 @@
 #include "SlangLayout.h"
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <slang.h>
 
@@ -288,6 +289,52 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
                              offset.At(layout->getSubObjectRangeOffset(index)), names[range], result);
     }
 }
+void StageType(slang::TypeLayoutReflection *type, SlangParameterCategory category, uint32_t location,
+               const std::string &name, std::vector<ShaderStageVariable> &result);
+
+void StageVariable(slang::VariableLayoutReflection *variable, SlangParameterCategory category, uint32_t base,
+                   const std::string &parent, std::vector<ShaderStageVariable> &result)
+{
+    auto *type = variable->getTypeLayout();
+    if (type->getSize(category) == 0)
+        return; // System values have no vertex-buffer/varying location.
+    const auto *field = variable->getName();
+    const auto name = field ? (parent.empty() ? field : parent + "." + field) : parent;
+    StageType(type, category, base + static_cast<uint32_t>(variable->getOffset(category)), name, result);
+}
+
+void StageType(slang::TypeLayoutReflection *type, SlangParameterCategory category, uint32_t location,
+               const std::string &name, std::vector<ShaderStageVariable> &result)
+{
+    switch (type->getKind()) {
+    case Kind::Struct:
+        for (unsigned index = 0; index < type->getFieldCount(); ++index)
+            StageVariable(type->getFieldByIndex(index), category, location, name, result);
+        break;
+    case Kind::Array: {
+        const auto stride = static_cast<uint32_t>(type->getElementStride(category));
+        for (size_t index = 0; index < type->getElementCount(); ++index)
+            StageType(type->getElementTypeLayout(), category, location + static_cast<uint32_t>(index) * stride,
+                      name + "[" + std::to_string(index) + "]", result);
+        break;
+    }
+    case Kind::Matrix: {
+        const auto count = static_cast<uint32_t>(type->getSize(category));
+        const auto width = type->getRowCount() * type->getColumnCount() / count;
+        for (uint32_t index = 0; index < count; ++index)
+            result.push_back(
+                {name + "[" + std::to_string(index) + "]", location + index, ScalarKind(type->getScalarType()), width});
+        break;
+    }
+    case Kind::Scalar:
+    case Kind::Vector:
+        result.push_back({name, location, ScalarKind(type->getScalarType()),
+                          type->getKind() == Kind::Scalar ? 1u : type->getColumnCount()});
+        break;
+    default:
+        throw std::runtime_error("Shader stage IO has no concrete value layout: " + name);
+    }
+}
 } // namespace
 
 std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout)
@@ -298,6 +345,17 @@ std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflect
         return std::tie(left.set, left.binding.binding) < std::tie(right.set, right.binding.binding);
     });
     return result;
+}
+
+void ReflectSlangStageIO(slang::EntryPointReflection *layout, ShaderEntryPointCode &entry)
+{
+    for (unsigned index = 0; index < layout->getParameterCount(); ++index) {
+        auto *parameter = layout->getParameterByIndex(index);
+        StageVariable(parameter, SLANG_PARAMETER_CATEGORY_VARYING_INPUT, 0, {}, entry.inputs);
+        StageVariable(parameter, SLANG_PARAMETER_CATEGORY_VARYING_OUTPUT, 0, {}, entry.outputs);
+    }
+    StageVariable(layout->getResultVarLayout(), SLANG_PARAMETER_CATEGORY_VARYING_OUTPUT, 0, {}, entry.outputs);
+    entry.sampleRateShading = layout->getStage() == SLANG_STAGE_FRAGMENT && layout->usesAnySampleRateInput();
 }
 
 } // namespace infernux

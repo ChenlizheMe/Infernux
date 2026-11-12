@@ -328,6 +328,7 @@ try {
             const auto *overrideName = entry->getNameOverride();
             artifact.name = overrideName && *overrideName ? overrideName : entry->getName();
             artifact.stage = StageFromReflection(entry->getStage());
+            ReflectSlangStageIO(entry, artifact);
             if (artifact.stage == rhi::ShaderStage::Compute) {
                 SlangUInt groupSize[3]{};
                 entry->getComputeThreadGroupSize(3, groupSize);

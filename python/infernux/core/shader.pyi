@@ -18,7 +18,7 @@ class Shader:
 
     @classmethod
     def is_loaded(cls, name: str, shader_type: str = ...) -> bool:
-        """Query GPU publication of a standalone stage or linked material program."""
+        """Query GPU publication by asset GUID, imported path or built-in name."""
         ...
 
     @classmethod

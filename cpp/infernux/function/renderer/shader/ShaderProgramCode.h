@@ -14,6 +14,16 @@ enum class ShaderCodeTarget : uint8_t
     Wgsl,
 };
 
+/// One concrete scalar/vector location after the compiler assigns stage IO.
+/// Arrays and matrices are expanded by the compiler layout, without parsing code.
+struct ShaderStageVariable
+{
+    std::string name;
+    uint32_t location = 0;
+    ShaderScalarKind scalar = ShaderScalarKind::None;
+    uint32_t components = 1;
+};
+
 struct ShaderEntryPointCode
 {
     std::string name;
@@ -22,6 +32,9 @@ struct ShaderEntryPointCode
     /// Actual descriptor set/binding pairs retained by this target entry.
     std::vector<std::array<uint32_t, 2>> bindings;
     std::vector<char> code;
+    std::vector<ShaderStageVariable> inputs;
+    std::vector<ShaderStageVariable> outputs;
+    bool sampleRateShading = false;
 };
 
 struct ShaderTargetCode

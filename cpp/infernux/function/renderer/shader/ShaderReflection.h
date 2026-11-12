@@ -4,12 +4,15 @@
 #include <cstdint>
 #include <function/resources/ShaderAsset/ShaderCompilerApi.h>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.h>
 
 namespace infernux
 {
+
+struct ShaderTargetCode;
 
 /**
  * @brief Type of shader resource binding
@@ -143,6 +146,9 @@ class ShaderReflection
      * @brief Reflect from a vector<char> (common format from file loading)
      */
     INFERNUX_SHADER_COMPILER_API bool Reflect(const std::vector<char> &spirvCode, VkShaderStageFlagBits stage);
+
+    /// Consume the compiler's immutable target layout; never reparse executable code.
+    INFERNUX_SHADER_COMPILER_API void LoadTargetLayout(const ShaderTargetCode &target, std::string_view entryPoint);
 
     // Getters for reflected data
     [[nodiscard]] const std::vector<UniformBufferInfo> &GetUniformBuffers() const

@@ -313,7 +313,7 @@ class ShaderProgram
     /**
      * @brief Extract the canonical MaterialProperties UBO layout.
      */
-    void ExtractMaterialUBOLayout(const ShaderProgramMetadata &metadata);
+    void ExtractMaterialUBOLayout();
 
     /**
      * @brief Validate vertex output / fragment input interface compatibility

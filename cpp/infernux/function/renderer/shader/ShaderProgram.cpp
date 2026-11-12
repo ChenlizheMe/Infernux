@@ -163,13 +163,17 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     }
 
     // Reflect shader resources
-    if (!m_vertReflection.Reflect(vertSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
+    if (metadata.vertexTarget)
+        m_vertReflection.LoadTargetLayout(*metadata.vertexTarget, metadata.vertexEntryPoint);
+    else if (!m_vertReflection.Reflect(vertSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
         INXLOG_ERROR("Failed to reflect vertex shader: ", variantKey.program.stages.ToString());
         Destroy();
         return false;
     }
 
-    if (!m_fragReflection.Reflect(fragSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
+    if (metadata.fragmentTarget)
+        m_fragReflection.LoadTargetLayout(*metadata.fragmentTarget, metadata.fragmentEntryPoint);
+    else if (!m_fragReflection.Reflect(fragSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
         INXLOG_ERROR("Failed to reflect fragment shader: ", variantKey.program.stages.ToString());
         Destroy();
         return false;
@@ -201,7 +205,7 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     }
 
     // Extract material UBO layout
-    ExtractMaterialUBOLayout(metadata);
+    ExtractMaterialUBOLayout();
 
     // Create descriptor set layouts
     if (!CreateDescriptorSetLayouts()) {
@@ -321,13 +325,16 @@ void ShaderProgram::MergeReflectionData()
 
     // Process vertex shader samplers
     for (const auto &sampler : m_vertReflection.GetSampledImages()) {
-        addBinding(sampler.binding, sampler.set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampler.arraySize,
-                   VK_SHADER_STAGE_VERTEX_BIT, sampler.name);
+        addBinding(sampler.binding, sampler.set, sampler.descriptorType, sampler.arraySize, VK_SHADER_STAGE_VERTEX_BIT,
+                   sampler.name);
     }
     for (const auto &buffer : m_vertReflection.GetStorageBuffers()) {
         addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
                    VK_SHADER_STAGE_VERTEX_BIT, buffer.name, buffer.readOnly);
     }
+    for (const auto &image : m_vertReflection.GetStorageImages())
+        addBinding(image.binding, image.set, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image.arraySize,
+                   VK_SHADER_STAGE_VERTEX_BIT, image.name, image.readOnly);
 
     // Process fragment shader UBOs
     for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
@@ -336,13 +343,16 @@ void ShaderProgram::MergeReflectionData()
 
     // Process fragment shader samplers
     for (const auto &sampler : m_fragReflection.GetSampledImages()) {
-        addBinding(sampler.binding, sampler.set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampler.arraySize,
+        addBinding(sampler.binding, sampler.set, sampler.descriptorType, sampler.arraySize,
                    VK_SHADER_STAGE_FRAGMENT_BIT, sampler.name);
     }
     for (const auto &buffer : m_fragReflection.GetStorageBuffers()) {
         addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
                    VK_SHADER_STAGE_FRAGMENT_BIT, buffer.name, buffer.readOnly);
     }
+    for (const auto &image : m_fragReflection.GetStorageImages())
+        addBinding(image.binding, image.set, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image.arraySize,
+                   VK_SHADER_STAGE_FRAGMENT_BIT, image.name, image.readOnly);
 
     // Sort by set, then by binding
     std::sort(m_descriptorBindings.begin(), m_descriptorBindings.end(),
@@ -416,7 +426,7 @@ bool ShaderProgram::ValidateStageInterface() const
     return valid;
 }
 
-void ShaderProgram::ExtractMaterialUBOLayout(const ShaderProgramMetadata &metadata)
+void ShaderProgram::ExtractMaterialUBOLayout()
 {
     m_hasMaterialUBO = false;
     m_hasVertexMaterialUBO = false;
@@ -427,31 +437,20 @@ void ShaderProgram::ExtractMaterialUBOLayout(const ShaderProgramMetadata &metada
             ? 2u
             : MaterialDescriptorSet;
 
-    const auto extract = [](const UniformBufferInfo &ubo, const ShaderTargetCode *target) {
-        MaterialUBOLayout layout{ubo.binding, ubo.size, ubo.members};
-        if (target) {
-            const auto resource = std::find_if(target->resources.begin(), target->resources.end(),
-                                               [&](const ShaderResourceLayout &value) {
-                                                   return value.set == ubo.set && value.binding.binding == ubo.binding;
-                                               });
-            if (resource == target->resources.end())
-                throw std::logic_error("Material resource is absent from the compiler publication");
-            layout.size = static_cast<uint32_t>(resource->value.byteSize);
-            layout.members = resource->value.fields;
-        }
-        return layout;
+    const auto extract = [](const UniformBufferInfo &ubo) {
+        return MaterialUBOLayout{ubo.binding, ubo.size, ubo.members};
     };
 
     // Material ownership comes from the program domain and binding set, not
     // the compiler's emitted block name. Slang may mangle ConstantBuffer names.
     for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
         if (ubo.name == "InxMaterialTextureIndices") {
-            m_bindlessTextureIndexLayout = extract(ubo, metadata.fragmentTarget);
+            m_bindlessTextureIndexLayout = extract(ubo);
             m_hasBindlessTextureIndexLayout = true;
             continue;
         }
         if (ubo.set == materialSet) {
-            m_materialUBOLayout = extract(ubo, metadata.fragmentTarget);
+            m_materialUBOLayout = extract(ubo);
             m_hasMaterialUBO = true;
 
             break;
@@ -461,7 +460,7 @@ void ShaderProgram::ExtractMaterialUBOLayout(const ShaderProgramMetadata &metada
     // The geometry ABI places vertex material parameters at binding 14.
     for (const auto &ubo : m_vertReflection.GetUniformBuffers()) {
         if (ubo.set == materialSet && ubo.binding == 14) {
-            m_vertexMaterialUBOLayout = extract(ubo, metadata.vertexTarget);
+            m_vertexMaterialUBOLayout = extract(ubo);
             m_hasVertexMaterialUBO = true;
 
             break;

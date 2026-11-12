@@ -1,3 +1,4 @@
+#include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
@@ -105,6 +106,67 @@ void derivative(uint3 id : SV_DispatchThreadID)
                     const std::string text(entry.code.begin(), entry.code.end());
                     Require(text.find("fn " + entry.name + "(") != std::string::npos,
                             "Reflection and WGSL entry names differ");
+                }
+            }
+        }
+
+        const auto stageProgram = compiler.Compile({"stage_io", "stage_io.frag.py", R"(
+struct VertexInput {
+    [[vk::location(0)]] float3 position : POSITION;
+    [[vk::location(4)]] float2 uv : TEXCOORD0;
+};
+struct Varying {
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+    nointerpolation uint instance : TEXCOORD1;
+    float2x3 axes : TEXCOORD2;
+    float2 samples[2] : TEXCOORD4;
+};
+Texture2D<float4> image;
+SamplerState image_sampler;
+RWStructuredBuffer<uint> unrelated_output;
+[shader("vertex")]
+Varying vertex_main(VertexInput input, uint instance : SV_VulkanInstanceID) {
+    Varying output;
+    output.position = float4(input.position, 1.0);
+    output.uv = input.uv;
+    output.instance = instance;
+    output.axes = float2x3(1, 2, 3, 4, 5, 6);
+    output.samples[0] = input.uv;
+    output.samples[1] = input.uv * 2.0;
+    return output;
+}
+[shader("fragment")]
+float4 fragment_main(Varying input) : SV_Target0 {
+    return image.Sample(image_sampler, input.uv) + float(input.instance) +
+           float4(input.axes[0] + input.axes[1], input.samples[0].x + input.samples[1].y);
+}
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void fill(uint id : SV_DispatchThreadID) { unrelated_output[id] = id; }
+)"},
+                                                   {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : stageProgram.targets) {
+            for (const auto &entry : target.entries) {
+                if (entry.stage == rhi::ShaderStage::Vertex) {
+                    Require(entry.inputs.size() == 2 && entry.inputs[0].location == 0 &&
+                                entry.inputs[0].components == 3 && entry.inputs[1].location == 4,
+                            "Compiler stage inputs must retain explicit locations and exclude system values");
+                    Require(entry.outputs.size() == 6 && entry.outputs[1].scalar == ShaderScalarKind::UInt32,
+                            "Compiler varyings must retain integer shape and exclude raster position");
+                    Require(entry.outputs[2].components == 3 && entry.outputs[3].location == 3 &&
+                                entry.outputs[4].components == 2 && entry.outputs[5].location == 5,
+                            "Matrix and array stage IO must expand using target locations and strides");
+                } else if (entry.stage == rhi::ShaderStage::Fragment) {
+                    ShaderReflection reflected;
+                    reflected.LoadTargetLayout(target, entry.name);
+                    Require(reflected.GetInputs().size() == 6 && reflected.GetOutputs().size() == 1 &&
+                                reflected.GetInputs()[1].format == VK_FORMAT_R32_UINT,
+                            "Graphics consumer must use the compiler's stage IO");
+                    Require(reflected.GetSampledImages().size() == 2 && reflected.GetStorageBuffers().empty() &&
+                                reflected.GetSampledImages()[0].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE &&
+                                reflected.GetSampledImages()[1].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER,
+                            "Selected entry must retain separate image/sampler types and exclude unrelated storage");
                 }
             }
         }

@@ -29,6 +29,10 @@ class Material:
 
     # Factory methods
     @staticmethod
+    def from_shader(asset: str, name: str = ...) -> Material:
+        """Create a material instance from an imported mesh Shader GUID or path."""
+        ...
+    @staticmethod
     def create_lit(name: str = ...) -> Material:
         """Create a new material with the default lit (PBR) shader."""
         ...
