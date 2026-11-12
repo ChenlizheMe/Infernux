@@ -46,6 +46,9 @@ class JoltGpuCommandCursor final
         return m_batch;
     }
     [[nodiscard]] std::optional<rhi::SubmissionTicket> TrySubmit();
+    /// Replan an unaccepted prefix without changing the immutable plan or any
+    /// accepted progress. Accepted batches can only advance through TrySubmit.
+    void DiscardPreparedPrefix() noexcept;
     [[nodiscard]] bool IsComplete() const noexcept;
     [[nodiscard]] size_t GetAcceptedDispatchCount() const noexcept
     {

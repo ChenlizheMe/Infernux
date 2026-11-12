@@ -52,10 +52,11 @@ bool FiniteVector(const Float4 &value)
 void Validate(const BodyCommand &command, uint32_t bodyCount)
 {
     const auto kind = command.meta.y;
-    if (command.meta.x >= bodyCount || kind > CommandAddForceAtPosition || command.meta.w ||
-        command.meta.z > CommandVelocityChange || (kind < CommandAddForce && command.meta.z != 0))
+    if (command.meta.x >= bodyCount || kind > CommandResetMotion || command.meta.w ||
+        command.meta.z > CommandVelocityChange ||
+        ((kind < CommandAddForce || kind == CommandResetMotion) && command.meta.z != 0))
         throw std::invalid_argument("Jolt GPU command has an invalid body slot, kind or ForceMode");
-    if (kind != CommandSetRotation && !FiniteVector(command.value))
+    if (kind != CommandSetRotation && kind != CommandResetMotion && !FiniteVector(command.value))
         throw std::invalid_argument("Jolt GPU command value must be finite with zero padding");
     if (kind == CommandAddForceAtPosition && !FiniteVector(command.auxiliary))
         throw std::invalid_argument("Jolt GPU command point must be finite with zero padding");
@@ -196,6 +197,14 @@ JoltGpuCommandCursor::~JoltGpuCommandCursor()
 bool JoltGpuCommandCursor::IsComplete() const noexcept
 {
     return m_next == m_dispatches.size();
+}
+
+void JoltGpuCommandCursor::DiscardPreparedPrefix() noexcept
+{
+    if (m_batch && !m_batch->GetSubmission().IsValid()) {
+        (void)m_batch->Cancel();
+        m_batch.reset();
+    }
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi::ComputeHost &host,

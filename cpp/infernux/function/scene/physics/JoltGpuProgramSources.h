@@ -10,6 +10,7 @@ enum class JoltGpuProgram
     Step,
     BodyMutations,
     BodyCommands,
+    Queries,
     RenderPoses
 };
 

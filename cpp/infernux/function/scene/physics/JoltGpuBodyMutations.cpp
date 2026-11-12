@@ -54,7 +54,8 @@ void ValidateInitial(const BodyInitialization &initial, const BodyModel &model)
         !Finite3(state.angularVelocity) || !Finite3(initial.forces.force) || !Finite3(initial.forces.torque))
         throw std::invalid_argument("Jolt GPU body initialization has invalid pose, velocity or force");
     const auto zero = [](const Float4 &v) { return v.x == 0 && v.y == 0 && v.z == 0; };
-    if (model.meta.z == MotionStatic && (!zero(state.linearVelocity) || !zero(state.angularVelocity)))
+    if ((model.meta.z & ~MotionNotResident) == MotionStatic &&
+        (!zero(state.linearVelocity) || !zero(state.angularVelocity)))
         throw std::invalid_argument("Jolt GPU static body initialization must have zero velocity");
 }
 } // namespace

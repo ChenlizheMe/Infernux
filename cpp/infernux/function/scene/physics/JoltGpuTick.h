@@ -1,13 +1,41 @@
 #pragma once
 
-#include "JoltGpuPrograms.h"
+#include "JoltGpuBodyCommands.h"
 #include <core/threading/FrameWorkOwner.h>
 
+#include <functional>
 #include <memory>
 #include <optional>
 
 namespace infernux
 {
+
+/// One ordered author-model boundary followed by per-body FIFO commands. The
+/// factory runs only after preceding groups' commands are accepted, so storage
+/// never has more than one unaccepted model transaction. A null result is a
+/// metadata-only boundary. The acceptance callback runs once, including for a
+/// null result; it must not throw, allocate, perform IO or submit GPU work.
+struct JoltGpuControlGroup
+{
+    std::function<std::unique_ptr<JoltGpuModelUpdate>()> prepareModel;
+    std::function<void()> modelAccepted;
+    std::vector<JPH::GPU::BodyCommand> commands;
+};
+
+/// Accepted through the tick's existing work source before solver inputs are
+/// captured: initialization, then each group's model boundary and commands.
+struct JoltGpuTickControl
+{
+    JoltGpuTickControl() = default;
+    JoltGpuTickControl(JoltGpuTickControl &&) = default;
+    JoltGpuTickControl &operator=(JoltGpuTickControl &&) = default;
+    JoltGpuTickControl(const JoltGpuTickControl &) = delete;
+    JoltGpuTickControl &operator=(const JoltGpuTickControl &) = delete;
+    std::shared_ptr<rhi::PreparedComputeBatch> initialization;
+    // Required when any group has commands; must outlive control acceptance.
+    JoltGpuBodyCommands *commandProgram = nullptr;
+    std::vector<JoltGpuControlGroup> groups;
+};
 
 /// One PhysicsWorld-owned stage cursor using the engine's existing work source,
 /// compute queue and receipts. Storage/programs/work must outlive this owner.
@@ -40,6 +68,17 @@ class JoltGpuTick final
     /// they must not overwrite this accumulator while its tick is running.
     void Begin(float fixedDeltaTime, const JoltGpuStepParameters &parameters,
                std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces = std::nullopt);
+    /// Control packets share admission, preparation, prediction and receipts
+    /// with solver work. Commands freeze the new model only after its producer
+    /// is accepted. Optional CPU forces explicitly replace the accumulator
+    /// after commands as the final force producer. No completion wait separates
+    /// these phases; the existing compute dependencies order accepted packets.
+    void Begin(float fixedDeltaTime, const JoltGpuStepParameters &parameters, JoltGpuTickControl control,
+               std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces = std::nullopt);
+    /// Admit creation/model/command boundaries through this same source without
+    /// advancing simulation or uploading solver inputs. Completion publishes
+    /// the resulting body states only after all control receipts retire.
+    void BeginControl(JoltGpuTickControl control);
 
     /// Nonblocking. Unaccepted packets are revoked; accepted receipts remain
     /// observable through the same source. A cancelled/failed partial storage
@@ -56,6 +95,9 @@ class JoltGpuTick final
     [[nodiscard]] Status GetStatus() const noexcept;
     [[nodiscard]] bool IsPending() const noexcept;
     [[nodiscard]] bool IsComplete() const noexcept;
+    /// All control producers accepted, independently of GPU completion. Solver
+    /// inputs and the optional CPU-force packet may still be pending.
+    [[nodiscard]] bool AreControlInputsAccepted() const noexcept;
     [[nodiscard]] bool HasReceipts() const noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;
     [[nodiscard]] float GetFixedDeltaTime() const noexcept;

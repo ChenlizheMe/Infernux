@@ -86,8 +86,6 @@ constexpr uint32_t CompleteWrites(Stage stage)
         return Mask(Resource::Bounds);
     case Stage::CollidePairs:
         return Mask(Resource::Contacts);
-    case Stage::ClearForces:
-        return Mask(Resource::BodyForces);
     default:
         return 0;
     }
@@ -160,10 +158,11 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             throw std::invalid_argument("Jolt GPU bootstrap requires contiguous bounded world ranges");
         for (uint32_t body = range.x; body < range.x + range.y; ++body) {
             const auto &record = ModelRecord(model.bodies, bodyChanges, body);
+            const auto motionType = record.meta.z & ~MotionNotResident;
             if (record.meta.w != world || record.meta.x >= model.shapes.size() ||
                 (record.meta.y != ShapeSphere && record.meta.y != ShapeBox && record.meta.y != ShapeEmpty) ||
-                (record.meta.z != MotionStatic && record.meta.z != MotionDynamic) ||
-                (record.meta.y == ShapeBox && record.meta.z != MotionStatic))
+                (motionType != MotionStatic && motionType != MotionDynamic) ||
+                (record.meta.y == ShapeBox && motionType != MotionStatic))
                 throw std::invalid_argument("Unsupported body in the Jolt GPU bootstrap model");
             const auto &shape = ModelRecord(model.shapes, shapeChanges, record.meta.x);
             if (record.surface.x >= 32 || record.surface.z > MaterialCombineMaximum ||
@@ -172,7 +171,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             const auto geometry = shape.geometry;
             if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 || !Normalized(shape.localRotation))
                 throw std::invalid_argument("Jolt GPU shape local position or rotation is invalid");
-            const bool dynamic = record.meta.z == MotionDynamic;
+            const bool dynamic = motionType == MotionDynamic;
             if (!Finite4(record.mass) || record.mass.y < 0 || record.mass.z < 0 || record.mass.z > 1 ||
                 (dynamic ? record.mass.x <= 0 : record.mass.x != 0) || !Finite4(record.damping) ||
                 record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
@@ -330,7 +329,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
         const auto &state = states[body];
         if (!Finite3(state.positionCOM) || !Normalized(state.rotation) || !Finite3(state.linearVelocity) ||
             !Finite3(state.angularVelocity) || !Finite3(forces[body].force) || !Finite3(forces[body].torque) ||
-            (m_model.bodies[body].meta.z == MotionStatic &&
+            ((m_model.bodies[body].meta.z & ~MotionNotResident) == MotionStatic &&
              (!Zero3(state.linearVelocity) || !Zero3(state.angularVelocity))))
             throw std::invalid_argument("Jolt GPU initial pose, velocity or force is invalid");
     }

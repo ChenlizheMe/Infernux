@@ -8,5 +8,6 @@ inline constexpr char Math[] = R"INX_JPH_GPU(@JOLT_GPU_MATH_SOURCE@)INX_JPH_GPU"
 inline constexpr char Step[] = R"INX_JPH_GPU(@JOLT_GPU_STEP_SOURCE@)INX_JPH_GPU";
 inline constexpr char BodyMutations[] = R"INX_JPH_GPU(@JOLT_GPU_BODY_MUTATIONS_SOURCE@)INX_JPH_GPU";
 inline constexpr char BodyCommands[] = R"INX_JPH_GPU(@JOLT_GPU_BODY_COMMANDS_SOURCE@)INX_JPH_GPU";
+inline constexpr char Queries[] = R"INX_JPH_GPU(@JOLT_GPU_QUERIES_SOURCE@)INX_JPH_GPU";
 inline constexpr char RenderPoses[] = R"INX_JPH_GPU(@JOLT_GPU_RENDER_POSES_SOURCE@)INX_JPH_GPU";
 }
