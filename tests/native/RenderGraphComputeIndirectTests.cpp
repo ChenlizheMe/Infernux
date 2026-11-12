@@ -26,6 +26,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -838,42 +839,38 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         infernux::particle::GpuParticleSortShaderSources::Scan(),
         infernux::particle::GpuParticleSortShaderSources::Scatter(),
     };
-    if (!Require(sortSources[0].find("layout(local_size_x = 256)") != std::string_view::npos &&
-                     sortSources[0].find("shared uvec2 shared_keys[INX_SMALL_SORT_CAPACITY]") !=
-                         std::string_view::npos &&
-                     sortSources[0].find("INX_SMALL_SORT_VALUES_PER_LANE = 4u") != std::string_view::npos &&
-                     sortSources[0].find("for (uint k = 2u; k <= INX_SMALL_SORT_CAPACITY; k <<= 1u)") !=
-                         std::string_view::npos,
-                 "Small particle sort shader contract is not the 256-lane/1024-entry bitonic path"))
-        return false;
-    std::array<std::vector<uint32_t>, 5> sortCode;
+    std::array<infernux::particle::CompiledParticleShader, 5> sortCode;
     for (size_t index = 0; index < sortSources.size(); ++index) {
-        sortCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
-            std::string(sortSources[index]), "Tests/ParticleSort" + std::to_string(index) + ".comp"));
-        if (!Require(!sortCode[index].empty(), "Failed to compile GPU particle sort fixture"))
+        auto program = infernux::CompileSlangNativeModule(
+            {"particle_sort", "Tests/ParticleSort" + std::to_string(index) + ".slang", std::string(sortSources[index])},
+            infernux::ShaderCodeTarget::SpirV);
+        sortCode[index] = std::make_shared<const infernux::ShaderTargetCode>(std::move(program));
+        if (!Require(infernux::particle::IsCompiledParticleShaderValid(sortCode[index]),
+                     "Failed to compile GPU particle sort fixture"))
             return false;
     }
     const infernux::particle::GpuParticleSortProgram sortProgram = {
-        {sortCode[0].data(), sortCode[0].size()}, {sortCode[1].data(), sortCode[1].size()},
-        {sortCode[2].data(), sortCode[2].size()}, {sortCode[3].data(), sortCode[3].size()},
-        {sortCode[4].data(), sortCode[4].size()},
+        sortCode[0], sortCode[1], sortCode[2], sortCode[3], sortCode[4],
     };
     const std::array<std::string_view, 3> cullSources = {
         infernux::particle::GpuParticleCullShaderSources::Reset(),
         infernux::particle::GpuParticleCullShaderSources::Cull(),
         infernux::particle::GpuParticleCullShaderSources::Finalize(),
     };
-    std::array<std::vector<uint32_t>, 3> cullCode;
+    std::array<infernux::particle::CompiledParticleShader, 3> cullCode;
     for (size_t index = 0; index < cullSources.size(); ++index) {
-        cullCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
-            std::string(cullSources[index]), "Tests/ParticleCull" + std::to_string(index) + ".comp"));
-        if (!Require(!cullCode[index].empty(), "Failed to compile GPU particle cull fixture"))
+        auto program = infernux::CompileSlangNativeModule(
+            {"particle_cull", "Tests/ParticleCull" + std::to_string(index) + ".slang", std::string(cullSources[index])},
+            infernux::ShaderCodeTarget::SpirV);
+        cullCode[index] = std::make_shared<const infernux::ShaderTargetCode>(std::move(program));
+        if (!Require(infernux::particle::IsCompiledParticleShaderValid(cullCode[index]),
+                     "Failed to compile GPU particle cull fixture"))
             return false;
     }
     const infernux::particle::GpuParticleCullProgram cullProgram = {
-        {cullCode[0].data(), cullCode[0].size()},
-        {cullCode[1].data(), cullCode[1].size()},
-        {cullCode[2].data(), cullCode[2].size()},
+        cullCode[0],
+        cullCode[1],
+        cullCode[2],
     };
     if (!VerifyParticleCullConservation(resources, cullProgram))
         return false;
@@ -882,54 +879,59 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         infernux::particle::GpuParticleBoundsShaderSources::Reset(),
         infernux::particle::GpuParticleBoundsShaderSources::Reduce(),
     };
-    std::array<std::vector<uint32_t>, 3> boundsCode;
+    std::array<infernux::particle::CompiledParticleShader, 3> boundsCode;
     for (size_t index = 0; index < boundsSources.size(); ++index) {
-        boundsCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
-            std::string(boundsSources[index]), "Tests/ParticleBounds" + std::to_string(index) + ".comp"));
-        if (!Require(!boundsCode[index].empty(), "Failed to compile GPU particle bounds fixture"))
+        auto program = infernux::CompileSlangNativeModule({"particle_bounds",
+                                                           "Tests/ParticleBounds" + std::to_string(index) + ".slang",
+                                                           std::string(boundsSources[index])},
+                                                          infernux::ShaderCodeTarget::SpirV);
+        boundsCode[index] = std::make_shared<const infernux::ShaderTargetCode>(std::move(program));
+        if (!Require(infernux::particle::IsCompiledParticleShaderValid(boundsCode[index]),
+                     "Failed to compile GPU particle bounds fixture"))
             return false;
     }
     const infernux::particle::GpuParticleBoundsProgram boundsProgram = {
-        {boundsCode[0].data(), boundsCode[0].size()},
-        {boundsCode[1].data(), boundsCode[1].size()},
-        {boundsCode[2].data(), boundsCode[2].size()},
+        boundsCode[0],
+        boundsCode[1],
+        boundsCode[2],
     };
     const std::array<std::string_view, 2> migrationSources = {
         infernux::particle::GpuParticleMigrationShaderSources::Reset(),
         infernux::particle::GpuParticleMigrationShaderSources::Migrate(),
     };
-    std::array<std::vector<uint32_t>, 2> migrationCode;
+    std::array<infernux::particle::CompiledParticleShader, 2> migrationCode;
     for (size_t index = 0; index < migrationSources.size(); ++index) {
-        migrationCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
-            std::string(migrationSources[index]), "Tests/ParticleMigration" + std::to_string(index) + ".comp"));
-        if (!Require(!migrationCode[index].empty(), "Failed to compile GPU particle migration fixture"))
+        auto program = infernux::CompileSlangNativeModule({"particle_migration",
+                                                           "Tests/ParticleMigration" + std::to_string(index) + ".slang",
+                                                           std::string(migrationSources[index])},
+                                                          infernux::ShaderCodeTarget::SpirV);
+        migrationCode[index] = std::make_shared<const infernux::ShaderTargetCode>(std::move(program));
+        if (!Require(infernux::particle::IsCompiledParticleShaderValid(migrationCode[index]),
+                     "Failed to compile GPU particle migration fixture"))
             return false;
     }
     const infernux::particle::GpuParticleMigrationProgram migrationProgram = {
-        {migrationCode[0].data(), migrationCode[0].size()},
-        {migrationCode[1].data(), migrationCode[1].size()},
+        migrationCode[0],
+        migrationCode[1],
     };
     const std::array<std::string_view, 2> spawnSources = {
         infernux::particle::GpuParticleSpawnShaderSources::Advance(),
         infernux::particle::GpuParticleSpawnShaderSources::Prepare(),
     };
-    if (!Require(spawnSources[1].find("uint requested = playing ? pc.cpuSpawnCount : 0u;") != std::string_view::npos &&
-                     spawnSources[1].find("capacityCounters.freeCount") != std::string_view::npos &&
-                     spawnSources[1].find("min(pc.capacity, capacityCounters.freeCount)") != std::string_view::npos &&
-                     spawnSources[1].find("metadata[base + 0u] = accepted;") != std::string_view::npos &&
-                     spawnSources[1].find("metadata[base + 7u] = accepted;") != std::string_view::npos,
-                 "Particle spawn reset discarded the restart frame's fresh CPU burst"))
-        return false;
-    std::array<std::vector<uint32_t>, 2> spawnCode;
+    std::array<infernux::particle::CompiledParticleShader, 2> spawnCode;
     for (size_t index = 0; index < spawnSources.size(); ++index) {
-        spawnCode[index] = SpirvWords(sortCompiler.CompileComputeGlsl(
-            std::string(spawnSources[index]), "Tests/ParticleSpawn" + std::to_string(index) + ".comp"));
-        if (!Require(!spawnCode[index].empty(), "Failed to compile GPU particle spawn-domain fixture"))
+        auto program = infernux::CompileSlangNativeModule({"particle_spawn",
+                                                           "Tests/ParticleSpawn" + std::to_string(index) + ".slang",
+                                                           std::string(spawnSources[index])},
+                                                          infernux::ShaderCodeTarget::SpirV);
+        spawnCode[index] = std::make_shared<const infernux::ShaderTargetCode>(std::move(program));
+        if (!Require(infernux::particle::IsCompiledParticleShaderValid(spawnCode[index]),
+                     "Failed to compile GPU particle spawn-domain fixture"))
             return false;
     }
     const infernux::particle::GpuParticleSpawnProgram spawnProgram = {
-        {spawnCode[0].data(), spawnCode[0].size()},
-        {spawnCode[1].data(), spawnCode[1].size()},
+        spawnCode[0],
+        spawnCode[1],
     };
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
         return false;

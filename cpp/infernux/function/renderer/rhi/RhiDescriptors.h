@@ -10,6 +10,11 @@
 namespace infernux::rhi
 {
 
+/// Portable descriptor address for the RHI's emulated per-execution values.
+/// Native Vulkan pipelines keep using push constants at this same API boundary.
+inline constexpr uint32_t RootConstantGroup = 0;
+inline constexpr uint32_t RootConstantBinding = 999;
+
 enum class ComputeScalarType : uint8_t
 {
     Float32,

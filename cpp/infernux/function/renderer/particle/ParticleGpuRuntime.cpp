@@ -691,9 +691,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             !m_supportsFusedUpdateRendering)
             continue;
         const auto &kernel = desc.kernels[index];
-        const auto shader = device.CreateShaderModule(
-            kernel.IsWgsl() ? rhi::ShaderModuleDesc::FromWgsl(kernel.wgsl, kernel.wgslByteSize, true)
-                            : rhi::ShaderModuleDesc::FromSpirV(kernel.words, kernel.wordCount));
+        const auto shader = device.CreateShaderModule(kernel.ModuleDesc());
         if (!shader.IsValid()) {
             Destroy();
             return false;

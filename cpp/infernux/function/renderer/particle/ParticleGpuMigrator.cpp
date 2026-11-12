@@ -1,4 +1,5 @@
 #include "ParticleGpuMigrator.h"
+#include "ParticleComputePipeline.h"
 
 #include <algorithm>
 #include <limits>
@@ -9,11 +10,8 @@ namespace infernux::particle
 namespace
 {
 
-constexpr std::string_view ResetShader = R"glsl(#version 450
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-
-layout(std430, set = 0, binding = 0) readonly buffer SourceStates { uint source_states[]; };
-layout(std430, set = 0, binding = 1) readonly buffer SourceCounters {
+constexpr std::string_view ResetShader = R"slang([[vk::binding(0, 0)]] StructuredBuffer<uint> source_states;
+struct SourceCountersData {
     uint source_free_count;
     uint source_visible_count;
     uint source_dropped_count;
@@ -28,12 +26,13 @@ layout(std430, set = 0, binding = 1) readonly buffer SourceCounters {
     uint source_collision_max_tangent_speed_bits;
     uint source_collision_candidate_overflow_count;
 };
-layout(std430, set = 0, binding = 2) buffer DestinationStates { uint destination_states[]; };
-layout(std430, set = 0, binding = 3) buffer DestinationFreeList { uint destination_free_slots[]; };
-layout(std430, set = 0, binding = 4) buffer DestinationCounters {
-    uint destination_free_count;
+[[vk::binding(1, 0)]] StructuredBuffer<SourceCountersData> source_counters;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> destination_states;
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> destination_free_slots;
+struct DestinationCountersData {
+    Atomic<uint> destination_free_count;
     uint destination_visible_count;
-    uint destination_dropped_count;
+    Atomic<uint> destination_dropped_count;
     uint destination_reserved_count;
     uint destination_collision_hit_count;
     uint destination_collision_response_count;
@@ -45,10 +44,11 @@ layout(std430, set = 0, binding = 4) buffer DestinationCounters {
     uint destination_collision_max_tangent_speed_bits;
     uint destination_collision_candidate_overflow_count;
 };
-layout(std430, set = 0, binding = 5) readonly buffer CopyRanges { uvec4 copy_ranges[]; };
-layout(std430, set = 0, binding = 6) readonly buffer DefaultState { uint default_state[]; };
-layout(std430, set = 0, binding = 8) buffer DestinationAliveControl { uint destination_alive_counts[2]; };
-layout(push_constant) uniform MigrationConstants {
+[[vk::binding(4, 0)]] RWStructuredBuffer<DestinationCountersData> destination_counters;
+[[vk::binding(5, 0)]] StructuredBuffer<uint4> copy_ranges;
+[[vk::binding(6, 0)]] StructuredBuffer<uint> default_state;
+[[vk::binding(8, 0)]] RWStructuredBuffer<Atomic<uint>> destination_alive_counts;
+struct MigrationConstants {
     uint source_capacity;
     uint destination_capacity;
     uint source_stride_words;
@@ -57,32 +57,31 @@ layout(push_constant) uniform MigrationConstants {
     uint invocation_count;
     uint reserved0;
     uint reserved1;
-} pc;
+};
+INX_ROOT_CONSTANTS ConstantBuffer<MigrationConstants> pc;
 
-void main() {
-    destination_alive_counts[0] = 0u;
-    destination_alive_counts[1] = 0u;
-    destination_free_count = 0u;
-    destination_visible_count = 0u;
-    destination_dropped_count = source_dropped_count;
-    destination_reserved_count = source_reserved_count;
-    destination_collision_hit_count = source_collision_hit_count;
-    destination_collision_response_count = source_collision_response_count;
-    destination_collision_trigger_count = source_collision_trigger_count;
-    destination_collision_enter_count = source_collision_enter_count;
-    destination_collision_stay_count = source_collision_stay_count;
-    destination_collision_exit_count = source_collision_exit_count;
-    destination_collision_max_outward_speed_bits = source_collision_max_outward_speed_bits;
-    destination_collision_max_tangent_speed_bits = source_collision_max_tangent_speed_bits;
-    destination_collision_candidate_overflow_count = source_collision_candidate_overflow_count;
+[shader("compute")] [numthreads(1, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    destination_alive_counts[0].store(0u);
+    destination_alive_counts[1].store(0u);
+    destination_counters[0].destination_free_count.store(0u);
+    destination_counters[0].destination_visible_count = 0u;
+    destination_counters[0].destination_dropped_count.store(source_counters[0].source_dropped_count);
+    destination_counters[0].destination_reserved_count = source_counters[0].source_reserved_count;
+    destination_counters[0].destination_collision_hit_count = source_counters[0].source_collision_hit_count;
+    destination_counters[0].destination_collision_response_count = source_counters[0].source_collision_response_count;
+    destination_counters[0].destination_collision_trigger_count = source_counters[0].source_collision_trigger_count;
+    destination_counters[0].destination_collision_enter_count = source_counters[0].source_collision_enter_count;
+    destination_counters[0].destination_collision_stay_count = source_counters[0].source_collision_stay_count;
+    destination_counters[0].destination_collision_exit_count = source_counters[0].source_collision_exit_count;
+    destination_counters[0].destination_collision_max_outward_speed_bits = source_counters[0].source_collision_max_outward_speed_bits;
+    destination_counters[0].destination_collision_max_tangent_speed_bits = source_counters[0].source_collision_max_tangent_speed_bits;
+    destination_counters[0].destination_collision_candidate_overflow_count = source_counters[0].source_collision_candidate_overflow_count;
 }
-)glsl";
+)slang";
 
-constexpr std::string_view MigrateShader = R"glsl(#version 450
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
-layout(std430, set = 0, binding = 0) readonly buffer SourceStates { uint source_states[]; };
-layout(std430, set = 0, binding = 1) readonly buffer SourceCounters {
+constexpr std::string_view MigrateShader = R"slang([[vk::binding(0, 0)]] StructuredBuffer<uint> source_states;
+struct SourceCountersData {
     uint source_free_count;
     uint source_visible_count;
     uint source_dropped_count;
@@ -97,12 +96,13 @@ layout(std430, set = 0, binding = 1) readonly buffer SourceCounters {
     uint source_collision_max_tangent_speed_bits;
     uint source_collision_candidate_overflow_count;
 };
-layout(std430, set = 0, binding = 2) buffer DestinationStates { uint destination_states[]; };
-layout(std430, set = 0, binding = 3) buffer DestinationFreeList { uint destination_free_slots[]; };
-layout(std430, set = 0, binding = 4) buffer DestinationCounters {
-    uint destination_free_count;
+[[vk::binding(1, 0)]] StructuredBuffer<SourceCountersData> source_counters;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> destination_states;
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> destination_free_slots;
+struct DestinationCountersData {
+    Atomic<uint> destination_free_count;
     uint destination_visible_count;
-    uint destination_dropped_count;
+    Atomic<uint> destination_dropped_count;
     uint destination_reserved_count;
     uint destination_collision_hit_count;
     uint destination_collision_response_count;
@@ -114,11 +114,12 @@ layout(std430, set = 0, binding = 4) buffer DestinationCounters {
     uint destination_collision_max_tangent_speed_bits;
     uint destination_collision_candidate_overflow_count;
 };
-layout(std430, set = 0, binding = 5) readonly buffer CopyRanges { uvec4 copy_ranges[]; };
-layout(std430, set = 0, binding = 6) readonly buffer DefaultState { uint default_state[]; };
-layout(std430, set = 0, binding = 7) writeonly buffer DestinationAliveIndices { uint destination_alive_slots[]; };
-layout(std430, set = 0, binding = 8) buffer DestinationAliveControl { uint destination_alive_counts[2]; };
-layout(push_constant) uniform MigrationConstants {
+[[vk::binding(4, 0)]] RWStructuredBuffer<DestinationCountersData> destination_counters;
+[[vk::binding(5, 0)]] StructuredBuffer<uint4> copy_ranges;
+[[vk::binding(6, 0)]] StructuredBuffer<uint> default_state;
+[[vk::binding(7, 0)]] RWStructuredBuffer<uint> destination_alive_slots;
+[[vk::binding(8, 0)]] RWStructuredBuffer<Atomic<uint>> destination_alive_counts;
+struct MigrationConstants {
     uint source_capacity;
     uint destination_capacity;
     uint source_stride_words;
@@ -127,17 +128,19 @@ layout(push_constant) uniform MigrationConstants {
     uint invocation_count;
     uint reserved0;
     uint reserved1;
-} pc;
+};
+INX_ROOT_CONSTANTS ConstantBuffer<MigrationConstants> pc;
 
-void main() {
-    uint index = gl_GlobalInvocationID.x;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    uint index = dispatch_id.x;
     if (index >= pc.invocation_count) return;
 
     bool source_alive = false;
     uint source_base = index * pc.source_stride_words;
     if (index < pc.source_capacity) source_alive = (source_states[source_base] & 1u) != 0u;
     if (index >= pc.destination_capacity) {
-        if (source_alive) atomicAdd(destination_dropped_count, 1u);
+        if (source_alive) destination_counters[0].destination_dropped_count.add(1u);
         return;
     }
 
@@ -149,25 +152,20 @@ void main() {
         // Migrated particles have already completed Init.
         destination_states[destination_base] = source_states[source_base] | 2u;
         destination_states[destination_base + 1u] = source_states[source_base + 1u];
-        uint alive_index = atomicAdd(destination_alive_counts[0], 1u);
+        uint alive_index = destination_alive_counts[0].add(1u);
         destination_alive_slots[alive_index] = index;
         for (uint range_index = 0u; range_index < pc.copy_range_count; ++range_index) {
-            uvec4 range = copy_ranges[range_index];
+            uint4 range = copy_ranges[range_index];
             for (uint word = 0u; word < range.z; ++word)
                 destination_states[destination_base + range.y + word] =
                     source_states[source_base + range.x + word];
         }
     } else {
-        uint free_index = atomicAdd(destination_free_count, 1u);
+        uint free_index = destination_counters[0].destination_free_count.add(1u);
         destination_free_slots[free_index] = index;
     }
 }
-)glsl";
-
-bool IsSpirv(ShaderBytecode shader) noexcept
-{
-    return shader.words && shader.wordCount >= 5 && shader.words[0] == 0x07230203u;
-}
+)slang";
 
 uint32_t GroupCount(uint32_t count) noexcept
 {
@@ -178,15 +176,15 @@ uint32_t GroupCount(uint32_t count) noexcept
 
 bool GpuParticleMigrationProgram::IsValid() const noexcept
 {
-    return IsSpirv(reset) && IsSpirv(migrate);
+    return IsCompiledParticleShaderValid(reset) && IsCompiledParticleShaderValid(migrate);
 }
 
 bool GpuParticleMigrationProgramStorage::Assign(const GpuParticleMigrationProgram &program)
 {
     if (!program.IsValid())
         return false;
-    reset.assign(program.reset.words, program.reset.words + program.reset.wordCount);
-    migrate.assign(program.migrate.words, program.migrate.words + program.migrate.wordCount);
+    reset = program.reset;
+    migrate = program.migrate;
     return true;
 }
 
@@ -197,7 +195,7 @@ bool GpuParticleMigrationProgramStorage::IsValid() const noexcept
 
 GpuParticleMigrationProgram GpuParticleMigrationProgramStorage::View() const noexcept
 {
-    return {{reset.data(), reset.size()}, {migrate.data(), migrate.size()}};
+    return {reset, migrate};
 }
 
 std::string_view GpuParticleMigrationShaderSources::Reset() noexcept
@@ -209,6 +207,8 @@ std::string_view GpuParticleMigrationShaderSources::Migrate() noexcept
 {
     return MigrateShader;
 }
+
+ParticleGpuMigrator::ParticleGpuMigrator() = default;
 
 ParticleGpuMigrator::~ParticleGpuMigrator()
 {
@@ -275,65 +275,26 @@ bool ParticleGpuMigrator::Create(rhi::Device &device, const GpuParticleMigration
         return false;
     }
 
-    rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 9; ++binding)
-        layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 9;
-    m_layout = device.CreateBindingLayout(layoutDesc);
-    if (!m_layout.IsValid()) {
-        Destroy();
-        return false;
-    }
-
-    rhi::BindGroupDesc groupDesc;
-    groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 9> buffers = {
-        m_sourceStates, m_sourceCounters, m_destinationStates,       m_destinationFreeList,     m_destinationCounters,
-        m_copyRanges,   m_defaultState,   m_destinationAliveIndices, m_destinationAliveControl,
-    };
-    for (uint32_t binding = 0; binding < buffers.size(); ++binding) {
-        groupDesc.buffers[binding].binding = binding;
-        groupDesc.buffers[binding].type = rhi::BindingType::StorageBuffer;
-        groupDesc.buffers[binding].buffer = buffers[binding];
-    }
-    groupDesc.bufferCount = static_cast<uint32_t>(buffers.size());
-    m_group = device.CreateBindGroup(groupDesc);
-    if (!m_group.IsValid()) {
-        Destroy();
-        return false;
-    }
-
-    const std::array<ShaderBytecode, 2> shaders = {desc.program.reset, desc.program.migrate};
-    std::array<rhi::ComputePipelineHandle *, 2> pipelines = {&m_resetPipeline, &m_migratePipeline};
+    const std::array<CompiledParticleShader, 2> shaders = {desc.program.reset, desc.program.migrate};
+    std::array<std::unique_ptr<ParticleComputePipeline> *, 2> pipelines = {&m_resetPipeline, &m_migratePipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto module =
-            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
-        if (!module.IsValid()) {
-            Destroy();
-            return false;
-        }
-        rhi::ComputePipelineDesc pipelineDesc;
-        pipelineDesc.computeShader = module;
-        pipelineDesc.bindingLayouts[0] = m_layout;
-        pipelineDesc.bindingLayoutCount = 1;
-        pipelineDesc.pushConstantBytes = sizeof(GpuParticleMigrationConstants);
-        *pipelines[index] = device.CreateComputePipeline(pipelineDesc);
-        device.Release(module);
-        if (!pipelines[index]->IsValid()) {
-            Destroy();
-            return false;
-        }
+        auto program = std::make_unique<ParticleComputePipeline>(device, *shaders[index]);
+        auto bindings = ParticleBufferBindings({m_sourceStates, m_sourceCounters, m_destinationStates,
+                                                m_destinationFreeList, m_destinationCounters, m_copyRanges,
+                                                m_defaultState, m_destinationAliveIndices, m_destinationAliveControl});
+        bindings[1].byteSize = m_sourceCounterByteSize;
+        program->AddBindings(bindings);
+        *pipelines[index] = std::move(program);
     }
     return true;
 }
 
 void ParticleGpuMigrator::Destroy() noexcept
 {
+    m_resetPipeline.reset();
+    m_migratePipeline.reset();
+
     if (m_device) {
-        m_device->Release(m_migratePipeline);
-        m_device->Release(m_resetPipeline);
-        m_device->Release(m_group);
-        m_device->Release(m_layout);
         m_device->Release(m_defaultState);
         m_device->Release(m_copyRanges);
     }
@@ -348,8 +309,6 @@ void ParticleGpuMigrator::Destroy() noexcept
     m_destinationAliveControl = {};
     m_copyRanges = {};
     m_defaultState = {};
-    m_layout = {};
-    m_group = {};
     m_resetPipeline = {};
     m_migratePipeline = {};
     m_constants = {};
@@ -359,16 +318,14 @@ void ParticleGpuMigrator::Destroy() noexcept
 
 bool ParticleGpuMigrator::IsValid() const noexcept
 {
-    return m_device && m_group.IsValid() && m_resetPipeline.IsValid() && m_migratePipeline.IsValid();
+    return m_device && m_resetPipeline && m_migratePipeline;
 }
 
 void ParticleGpuMigrator::RecordReset(const rhi::ComputeCommandEncoder &encoder)
 {
     if (!IsValid() || !encoder.IsValid() || m_recorded)
         return;
-    encoder.BindPipeline(m_resetPipeline);
-    encoder.BindGroup(m_resetPipeline, 0, m_group);
-    encoder.PushConstants(m_resetPipeline, sizeof(m_constants), &m_constants);
+    m_resetPipeline->Bind(encoder, m_constants);
     encoder.Dispatch(1, 1, 1);
     m_resetRecorded = true;
 }
@@ -377,9 +334,7 @@ void ParticleGpuMigrator::RecordMigrate(const rhi::ComputeCommandEncoder &encode
 {
     if (!IsValid() || !encoder.IsValid() || !m_resetRecorded || m_recorded)
         return;
-    encoder.BindPipeline(m_migratePipeline);
-    encoder.BindGroup(m_migratePipeline, 0, m_group);
-    encoder.PushConstants(m_migratePipeline, sizeof(m_constants), &m_constants);
+    m_migratePipeline->Bind(encoder, m_constants);
     encoder.Dispatch(GroupCount(m_constants.invocationCount), 1, 1);
     m_recorded = true;
 }

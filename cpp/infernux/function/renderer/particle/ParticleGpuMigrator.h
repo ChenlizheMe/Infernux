@@ -13,16 +13,16 @@ namespace infernux::particle
 
 struct GpuParticleMigrationProgram
 {
-    ShaderBytecode reset;
-    ShaderBytecode migrate;
+    CompiledParticleShader reset;
+    CompiledParticleShader migrate;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleMigrationProgramStorage
 {
-    std::vector<uint32_t> reset;
-    std::vector<uint32_t> migrate;
+    CompiledParticleShader reset;
+    CompiledParticleShader migrate;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleMigrationProgram &program);
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
@@ -81,7 +81,7 @@ class ParticleGpuMigrator
   public:
     static constexpr uint32_t WorkgroupSize = 256;
 
-    ParticleGpuMigrator() = default;
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuMigrator();
     INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuMigrator();
 
     ParticleGpuMigrator(const ParticleGpuMigrator &) = delete;
@@ -150,10 +150,8 @@ class ParticleGpuMigrator
     rhi::BufferHandle m_destinationAliveControl;
     rhi::BufferHandle m_copyRanges;
     rhi::BufferHandle m_defaultState;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::BindGroupHandle m_group;
-    rhi::ComputePipelineHandle m_resetPipeline;
-    rhi::ComputePipelineHandle m_migratePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_resetPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_migratePipeline;
     GpuParticleMigrationConstants m_constants{};
     bool m_resetRecorded = false;
     bool m_recorded = false;

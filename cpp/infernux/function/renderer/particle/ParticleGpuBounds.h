@@ -14,16 +14,16 @@ namespace infernux::particle
 
 struct GpuParticleBoundsProgram
 {
-    ShaderBytecode prepare;
-    ShaderBytecode reset;
-    ShaderBytecode reduce;
+    CompiledParticleShader prepare;
+    CompiledParticleShader reset;
+    CompiledParticleShader reduce;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleBoundsProgramStorage
 {
-    std::array<std::vector<uint32_t>, 3> shaders;
+    std::array<CompiledParticleShader, 3> shaders;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleBoundsProgram &program);
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
@@ -72,7 +72,7 @@ class ParticleGpuBounds
     static constexpr uint32_t BoundsBufferBytes = 32;
     static constexpr uint32_t DispatchBufferBytes = 12;
 
-    ParticleGpuBounds() = default;
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuBounds();
     INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuBounds();
 
     ParticleGpuBounds(const ParticleGpuBounds &) = delete;
@@ -122,7 +122,7 @@ class ParticleGpuBounds
     INFERNUX_PARTICLE_RUNTIME_API void RecordReduce(const rhi::ComputeCommandEncoder &encoder) const;
 
   private:
-    void Bind(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
+    void Bind(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
               const GpuParticleBoundsConstants &constants) const;
 
     rhi::Device *m_device = nullptr;
@@ -133,11 +133,9 @@ class ParticleGpuBounds
     rhi::BufferHandle m_simulationControl;
     rhi::BufferHandle m_bounds;
     rhi::BufferHandle m_dispatchArguments;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::BindGroupHandle m_group;
-    rhi::ComputePipelineHandle m_preparePipeline;
-    rhi::ComputePipelineHandle m_resetPipeline;
-    rhi::ComputePipelineHandle m_reducePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_preparePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_resetPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_reducePipeline;
     // AlwaysSimulate does not consume the visibility feedback word, so its
     // control state can stay resident until a control input changes.
     mutable bool m_controlPrepared = false;

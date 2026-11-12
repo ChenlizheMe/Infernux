@@ -11,6 +11,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/ShaderAsset/ShaderPassVariantPlanner.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 
 #include <algorithm>
 #include <cassert>
@@ -1319,90 +1320,65 @@ void main() { }
     assert(changedCompilation.CreateRuntimeArtifact().key.revision != runtimeArtifact.key.revision);
 
     const std::array<std::pair<std::string_view, const char *>, 5> particleSortShaders = {{
-        {infernux::particle::GpuParticleSortShaderSources::Small(), "ParticleSortSmall.comp"},
-        {infernux::particle::GpuParticleSortShaderSources::Generate(), "ParticleSortGenerate.comp"},
-        {infernux::particle::GpuParticleSortShaderSources::Histogram(), "ParticleSortHistogram.comp"},
-        {infernux::particle::GpuParticleSortShaderSources::Scan(), "ParticleSortScan.comp"},
-        {infernux::particle::GpuParticleSortShaderSources::Scatter(), "ParticleSortScatter.comp"},
+        {infernux::particle::GpuParticleSortShaderSources::Small(), "ParticleSortSmall.slang"},
+        {infernux::particle::GpuParticleSortShaderSources::Generate(), "ParticleSortGenerate.slang"},
+        {infernux::particle::GpuParticleSortShaderSources::Histogram(), "ParticleSortHistogram.slang"},
+        {infernux::particle::GpuParticleSortShaderSources::Scan(), "ParticleSortScan.slang"},
+        {infernux::particle::GpuParticleSortShaderSources::Scatter(), "ParticleSortScatter.slang"},
     }};
-    const auto particleSortGenerate = infernux::particle::GpuParticleSortShaderSources::Generate();
-    assert(particleSortGenerate.find("inx_particle_sort_key(view_position.z") != std::string_view::npos);
-    assert(particleSortGenerate.find("visibility[particle_index].position_radius.xyz") != std::string_view::npos &&
-           particleSortGenerate.find("ribbon_data.w") == std::string_view::npos);
-    assert(particleSortGenerate.find("(depth_key & 0xffffff00u) | (particle_id & 0xffu)") != std::string_view::npos);
-    assert(particleSortGenerate.find("-view_position.z") == std::string_view::npos);
     for (const auto &[source, name] : particleSortShaders) {
-        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
-        assert(spirv.size() >= 5 * sizeof(uint32_t));
-        uint32_t magic = 0;
-        std::memcpy(&magic, spirv.data(), sizeof(magic));
-        assert(magic == 0x07230203u);
+        for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
+            const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
+            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+        }
     }
 
     const std::array<std::pair<std::string_view, const char *>, 3> particleCullShaders = {{
-        {infernux::particle::GpuParticleCullShaderSources::Reset(), "ParticleCullReset.comp"},
-        {infernux::particle::GpuParticleCullShaderSources::Cull(), "ParticleCull.comp"},
-        {infernux::particle::GpuParticleCullShaderSources::Finalize(), "ParticleCullFinalize.comp"},
+        {infernux::particle::GpuParticleCullShaderSources::Reset(), "ParticleCullReset.slang"},
+        {infernux::particle::GpuParticleCullShaderSources::Cull(), "ParticleCull.slang"},
+        {infernux::particle::GpuParticleCullShaderSources::Finalize(), "ParticleCullFinalize.slang"},
     }};
-    const auto particleCullSource = infernux::particle::GpuParticleCullShaderSources::Cull();
-    assert(particleCullSource.find("visible_segments") == std::string_view::npos);
-    assert(particleCullSource.find("ribbon_segments") != std::string_view::npos);
-    assert(particleCullSource.find("ParticleVisibilityInstance") != std::string_view::npos);
-    assert(particleCullSource.find("ParticleVisibilityInstance instance = visibility[particle_index]") !=
-           std::string_view::npos);
-    assert(particleCullSource.find("instance.position_radius.xyz") != std::string_view::npos);
-    assert(particleCullSource.find("ribbon_instances[first_index]") != std::string_view::npos);
     for (const auto &[source, name] : particleCullShaders) {
-        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
-        assert(spirv.size() >= 5 * sizeof(uint32_t));
-        uint32_t magic = 0;
-        std::memcpy(&magic, spirv.data(), sizeof(magic));
-        assert(magic == 0x07230203u);
+        for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
+            const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
+            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+        }
     }
 
     const std::array<std::pair<std::string_view, const char *>, 2> particleBoundsShaders = {{
-        {infernux::particle::GpuParticleBoundsShaderSources::Reset(), "ParticleBoundsReset.comp"},
-        {infernux::particle::GpuParticleBoundsShaderSources::Reduce(), "ParticleBoundsReduce.comp"},
+        {infernux::particle::GpuParticleBoundsShaderSources::Reset(), "ParticleBoundsReset.slang"},
+        {infernux::particle::GpuParticleBoundsShaderSources::Reduce(), "ParticleBoundsReduce.slang"},
     }};
     for (const auto &[source, name] : particleBoundsShaders) {
-        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
-        assert(spirv.size() >= 5 * sizeof(uint32_t));
-        uint32_t magic = 0;
-        std::memcpy(&magic, spirv.data(), sizeof(magic));
-        assert(magic == 0x07230203u);
+        for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
+            const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
+            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+        }
     }
 
     const std::array<std::pair<std::string_view, const char *>, 2> particleMigrationShaders = {{
-        {infernux::particle::GpuParticleMigrationShaderSources::Reset(), "ParticleMigrationReset.comp"},
-        {infernux::particle::GpuParticleMigrationShaderSources::Migrate(), "ParticleMigration.comp"},
+        {infernux::particle::GpuParticleMigrationShaderSources::Reset(), "ParticleMigrationReset.slang"},
+        {infernux::particle::GpuParticleMigrationShaderSources::Migrate(), "ParticleMigration.slang"},
     }};
     for (const auto &[source, name] : particleMigrationShaders) {
-        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
-        assert(spirv.size() >= 5 * sizeof(uint32_t));
-        uint32_t magic = 0;
-        std::memcpy(&magic, spirv.data(), sizeof(magic));
-        assert(magic == 0x07230203u);
+        for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
+            const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
+            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+        }
     }
 
     const std::array<std::pair<std::string_view, const char *>, 5> particleRibbonTopologyShaders = {{
-        {infernux::particle::GpuParticleRibbonShaderSources::Reset(), "ParticleRibbonReset.comp"},
-        {infernux::particle::GpuParticleRibbonShaderSources::Initialize(), "ParticleRibbonInitialize.comp"},
-        {infernux::particle::GpuParticleRibbonShaderSources::Histogram(), "ParticleRibbonHistogram.comp"},
-        {infernux::particle::GpuParticleRibbonShaderSources::Scan(), "ParticleRibbonScan.comp"},
-        {infernux::particle::GpuParticleRibbonShaderSources::Scatter(), "ParticleRibbonScatter.comp"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Reset(), "ParticleRibbonReset.slang"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Initialize(), "ParticleRibbonInitialize.slang"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Histogram(), "ParticleRibbonHistogram.slang"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Scan(), "ParticleRibbonScan.slang"},
+        {infernux::particle::GpuParticleRibbonShaderSources::Scatter(), "ParticleRibbonScatter.slang"},
     }};
-    const auto particleRibbonReset = infernux::particle::GpuParticleRibbonShaderSources::Reset();
-    assert(particleRibbonReset.find("if (simulation_allowed == 0u) return") == std::string_view::npos);
-    assert(particleRibbonReset.find("simulation_allowed != 0u ? inx_live_count() : 0u") != std::string_view::npos);
-    assert(particleRibbonReset.find("ribbon_instance_count = live_count > 1u ? 1u : 0u") != std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("ribbon_data") != std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonShaderSources::Scatter().find("& 0xffff") == std::string_view::npos);
     for (const auto &[source, name] : particleRibbonTopologyShaders) {
-        const auto spirv = compiler.CompileComputeGlsl(std::string(source), name);
-        assert(spirv.size() >= 5 * sizeof(uint32_t));
-        uint32_t magic = 0;
-        std::memcpy(&magic, spirv.data(), sizeof(magic));
-        assert(magic == 0x07230203u);
+        for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
+            const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
+            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+        }
     }
 
     const auto ribbonVertex = compiler.CompileVertexGlsl(

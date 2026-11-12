@@ -282,11 +282,6 @@ void main() {
 }
 )glsl";
 
-bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
-{
-    return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
-}
-
 std::vector<uint32_t> CopySpirvWords(const std::vector<char> &bytes)
 {
     if (bytes.empty() || bytes.size() % sizeof(uint32_t) != 0)
@@ -326,8 +321,7 @@ std::string_view GpuParticleRibbonRenderShaderSources::MotionFragment() noexcept
 
 bool GpuParticleRibbonRenderProgram::IsValid() const noexcept
 {
-    return IsShaderBytecodeValid(vertex) && IsShaderBytecodeValid(pickingFragment) &&
-           IsShaderBytecodeValid(motionVertex) && IsShaderBytecodeValid(motionFragment);
+    return vertex.IsSpirV() && pickingFragment.IsSpirV() && motionVertex.IsSpirV() && motionFragment.IsSpirV();
 }
 
 bool GpuParticleRibbonRenderProgramStorage::Assign(const GpuParticleRibbonRenderProgram &program)
@@ -336,9 +330,9 @@ bool GpuParticleRibbonRenderProgramStorage::Assign(const GpuParticleRibbonRender
         return false;
     const std::array<ShaderBytecode, 4> sources = {program.vertex, program.pickingFragment, program.motionVertex,
                                                    program.motionFragment};
-    std::array<std::vector<uint32_t>, 4> candidate;
+    std::array<ShaderBytecodeStorage, 4> candidate;
     for (size_t index = 0; index < sources.size(); ++index)
-        candidate[index].assign(sources[index].words, sources[index].words + sources[index].wordCount);
+        candidate[index].Assign(sources[index]);
     shaders = std::move(candidate);
     return true;
 }
@@ -351,10 +345,10 @@ bool GpuParticleRibbonRenderProgramStorage::IsValid() const noexcept
 GpuParticleRibbonRenderProgram GpuParticleRibbonRenderProgramStorage::View() const noexcept
 {
     return {
-        {shaders[0].data(), shaders[0].size()},
-        {shaders[1].data(), shaders[1].size()},
-        {shaders[2].data(), shaders[2].size()},
-        {shaders[3].data(), shaders[3].size()},
+        shaders[0].View(),
+        shaders[1].View(),
+        shaders[2].View(),
+        shaders[3].View(),
     };
 }
 

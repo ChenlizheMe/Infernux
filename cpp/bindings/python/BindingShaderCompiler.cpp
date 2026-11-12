@@ -235,6 +235,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                 py::dict program;
                 program["target"] = target.target == ShaderCodeTarget::SpirV ? "spirv" : "wgsl";
                 program["reflection"] = target.reflection;
+                program["root_constants"] =
+                    target.rootConstants ? py::object(ValueLayout(*target.rootConstants)) : py::object(py::none());
                 py::list resources;
                 for (const auto &resource : target.resources) {
                     py::dict item;

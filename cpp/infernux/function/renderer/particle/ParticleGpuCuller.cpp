@@ -1,4 +1,5 @@
 #include "ParticleGpuCuller.h"
+#include "ParticleComputePipeline.h"
 
 #include <array>
 #include <string>
@@ -9,43 +10,44 @@ namespace infernux::particle
 namespace
 {
 
-constexpr std::string_view CommonBindings = R"glsl(
+constexpr std::string_view CommonBindings = R"slang(
 struct ParticleVisibilityInstance {
-    vec4 position_radius;
+    float4 position_radius;
 };
 struct ParticleRenderInstance {
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
+    float4 position_size;
+    float4 color;
+    float4 rotation_custom;
+    float4 scale_custom;
+    uint4 ribbon_data;
+    float4 custom_data;
+    float4 previous_position_history;
 };
-layout(std430, set = 0, binding = 0) readonly buffer Visibility {
-    ParticleVisibilityInstance visibility[];
-};
-layout(std430, set = 0, binding = 1) readonly buffer SourceIndirectArguments {
+[[vk::binding(0, 0)]] StructuredBuffer<ParticleVisibilityInstance> visibility;
+struct SourceIndirectArgumentsData {
     uint source_vertex_count;
     uint source_instance_count;
     uint source_first_vertex;
     uint source_first_instance;
 };
-layout(std430, set = 0, binding = 2) buffer VisibleIndices { uint visible_indices[]; };
-layout(std430, set = 0, binding = 3) buffer DrawIndirectArguments {
+[[vk::binding(1, 0)]] StructuredBuffer<SourceIndirectArgumentsData> source_indirect_arguments;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> visible_indices;
+struct DrawIndirectArgumentsData {
     uint draw_vertex_count;
-    uint draw_instance_count;
+    Atomic<uint> draw_instance_count;
     uint draw_first_vertex;
     uint draw_first_instance;
 };
-layout(std430, set = 0, binding = 4) buffer SortDispatchArguments {
+[[vk::binding(3, 0)]] RWStructuredBuffer<DrawIndirectArgumentsData> draw_indirect_arguments;
+struct SortDispatchArgumentsData {
     uint sort_group_count_x;
     uint sort_group_count_y;
     uint sort_group_count_z;
     uint stats_source_count;
     uint stats_flags;
 };
-layout(std430, set = 0, binding = 5) readonly buffer Bounds {
+[[vk::binding(4, 0)]] INX_CULL_ARGUMENTS<SortDispatchArgumentsData> sort_dispatch_arguments;
+struct BoundsData {
     uint bounds_min_x;
     uint bounds_min_y;
     uint bounds_min_z;
@@ -55,64 +57,58 @@ layout(std430, set = 0, binding = 5) readonly buffer Bounds {
     uint bounds_valid;
     uint bounds_reserved;
 };
-layout(std430, set = 0, binding = 6) buffer SimulationControl {
-    uint any_view_visible;
+[[vk::binding(5, 0)]] StructuredBuffer<BoundsData> bounds;
+struct SimulationControlData {
+    Atomic<uint> any_view_visible;
     uint simulation_allowed;
     uint offscreen_policy;
     uint simulation_control_reserved;
 };
-layout(std430, set = 0, binding = 7) readonly buffer SourceIndices { uint source_indices[]; };
-layout(std430, set = 0, binding = 8) readonly buffer RibbonInstances {
-    ParticleRenderInstance ribbon_instances[];
-};
-layout(push_constant) uniform CullConstants {
-    vec4 frustum_planes[6];
+[[vk::binding(6, 0)]] RWStructuredBuffer<SimulationControlData> simulation_control;
+[[vk::binding(7, 0)]] StructuredBuffer<uint> source_indices;
+[[vk::binding(8, 0)]] StructuredBuffer<ParticleRenderInstance> ribbon_instances;
+struct CullConstants {
+    float4 frustum_planes[6];
     uint capacity;
     uint vertex_count;
     uint mode;
     uint view_enabled;
-} pc;
-)glsl";
+};
+INX_ROOT_CONSTANTS ConstantBuffer<CullConstants> pc;
+)slang";
 
-std::string BuildShader(std::string_view localSize, std::string_view body)
+std::string BuildShader(std::string_view body, bool writableArguments = true)
 {
-    std::string result;
-    result.reserve(localSize.size() + CommonBindings.size() + body.size() + 16);
-    result += "#version 450\n";
-    result += localSize;
+    std::string result = writableArguments ? "#define INX_CULL_ARGUMENTS RWStructuredBuffer\n"
+                                           : "#define INX_CULL_ARGUMENTS StructuredBuffer\n";
     result += CommonBindings;
     result += body;
     return result;
-}
-
-bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
-{
-    return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
 }
 
 } // namespace
 
 std::string_view GpuParticleCullShaderSources::Reset() noexcept
 {
-    static const std::string Source = BuildShader("layout(local_size_x = 1) in;\n", R"glsl(
-void main() {
+    static const std::string Source = BuildShader(R"slang([shader("compute")] [numthreads(1, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
     bool ribbon_segments = pc.mode == 1u;
-    draw_vertex_count = ribbon_segments ? 6u : pc.vertex_count;
-    draw_instance_count = 0u;
-    draw_first_vertex = source_first_vertex;
-    draw_first_instance = source_first_instance;
+    draw_indirect_arguments[0].draw_vertex_count = ribbon_segments ? 6u : pc.vertex_count;
+    draw_indirect_arguments[0].draw_instance_count.store(0u);
+    draw_indirect_arguments[0].draw_first_vertex = source_indirect_arguments[0].source_first_vertex;
+    draw_indirect_arguments[0].draw_first_instance = source_indirect_arguments[0].source_first_instance;
     uint source_count = ribbon_segments
-        ? min(source_vertex_count / 6u, pc.capacity > 0u ? pc.capacity - 1u : 0u)
-        : min(source_instance_count, pc.capacity);
-    stats_source_count = source_count;
-    stats_flags = (bounds_valid != 0u ? 1u : 0u) | (ribbon_segments ? 4u : 0u);
+        ? min(source_indirect_arguments[0].source_vertex_count / 6u, pc.capacity > 0u ? pc.capacity - 1u : 0u)
+        : min(source_indirect_arguments[0].source_instance_count, pc.capacity);
+    sort_dispatch_arguments[0].stats_source_count = source_count;
+    sort_dispatch_arguments[0].stats_flags = (bounds[0].bounds_valid != 0u ? 1u : 0u) | (ribbon_segments ? 4u : 0u);
     bool bounds_visible = true;
     bool bounds_fully_inside = false;
-    if (bounds_valid != 0u) {
-        uint ordered_min[3] = uint[3](bounds_min_x, bounds_min_y, bounds_min_z);
-        uint ordered_max[3] = uint[3](bounds_max_x, bounds_max_y, bounds_max_z);
-        vec3 lower;
-        vec3 upper;
+    if (bounds[0].bounds_valid != 0u) {
+        uint ordered_min[3] = {bounds[0].bounds_min_x, bounds[0].bounds_min_y, bounds[0].bounds_min_z};
+        uint ordered_max[3] = {bounds[0].bounds_max_x, bounds[0].bounds_max_y, bounds[0].bounds_max_z};
+        float3 lower;
+        float3 upper;
         for (uint axis = 0u; axis < 3u; ++axis) {
             uint min_bits = (ordered_min[axis] & 0x80000000u) != 0u
                                 ? (ordered_min[axis] ^ 0x80000000u)
@@ -120,60 +116,61 @@ void main() {
             uint max_bits = (ordered_max[axis] & 0x80000000u) != 0u
                                 ? (ordered_max[axis] ^ 0x80000000u)
                                 : ~ordered_max[axis];
-            lower[axis] = uintBitsToFloat(min_bits);
-            upper[axis] = uintBitsToFloat(max_bits);
+            lower[axis] = asfloat(min_bits);
+            upper[axis] = asfloat(max_bits);
         }
         bounds_fully_inside = true;
         for (uint plane_index = 0u; plane_index < 6u; ++plane_index) {
-            vec4 plane = pc.frustum_planes[plane_index];
-            vec3 positive_vertex = mix(lower, upper, greaterThanEqual(plane.xyz, vec3(0.0)));
+            float4 plane = pc.frustum_planes[plane_index];
+            float3 positive_vertex = select(plane.xyz >= float3(0.0), upper, lower);
             if (dot(plane.xyz, positive_vertex) + plane.w < 0.0)
                 bounds_visible = false;
-            vec3 negative_vertex = mix(lower, upper, lessThan(plane.xyz, vec3(0.0)));
+            float3 negative_vertex = select(plane.xyz < float3(0.0), upper, lower);
             if (dot(plane.xyz, negative_vertex) + plane.w < 0.0)
                 bounds_fully_inside = false;
         }
     }
-    bool visible_in_view = pc.view_enabled != 0u && (bounds_valid == 0u || bounds_visible);
-    if (visible_in_view) stats_flags |= 2u;
+    bool visible_in_view = pc.view_enabled != 0u && (bounds[0].bounds_valid == 0u || bounds_visible);
+    if (visible_in_view) sort_dispatch_arguments[0].stats_flags |= 2u;
     // Reset publishes immutable culling flags separately from the counter.
     // All workgroups consume the same flag while atomically appending indices.
-    if (bounds_fully_inside) stats_flags |= 8u;
-    if (visible_in_view) atomicOr(any_view_visible, 1u);
-    sort_group_count_x = visible_in_view ? (source_count + 255u) / 256u : 0u;
-    sort_group_count_y = 1u;
-    sort_group_count_z = 1u;
+    if (bounds_fully_inside) sort_dispatch_arguments[0].stats_flags |= 8u;
+    if (visible_in_view) simulation_control[0].any_view_visible.or(1u);
+    sort_dispatch_arguments[0].sort_group_count_x = visible_in_view ? (source_count + 255u) / 256u : 0u;
+    sort_dispatch_arguments[0].sort_group_count_y = 1u;
+    sort_dispatch_arguments[0].sort_group_count_z = 1u;
 }
-)glsl");
+)slang");
     return Source;
 }
 
 std::string_view GpuParticleCullShaderSources::Cull() noexcept
 {
-    static const std::string Source = BuildShader("layout(local_size_x = 256) in;\n", R"glsl(
-shared uint local_visible_count;
-shared uint global_base;
+    static const std::string Source = BuildShader(R"slang(
+groupshared Atomic<uint> local_visible_count;
+groupshared uint global_base;
 
-bool inx_visible_sphere(vec3 center, float radius) {
+bool inx_visible_sphere(float3 center, float radius) {
     for (uint plane_index = 0u; plane_index < 6u; ++plane_index) {
-        vec4 plane = pc.frustum_planes[plane_index];
+        float4 plane = pc.frustum_planes[plane_index];
         if (dot(plane.xyz, center) + plane.w < -radius) return false;
     }
     return true;
 }
-void main() {
-    bool bounds_fully_inside = (stats_flags & 8u) != 0u;
-    if (gl_LocalInvocationIndex == 0u) {
-        local_visible_count = 0u;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    bool bounds_fully_inside = (sort_dispatch_arguments[0].stats_flags & 8u) != 0u;
+    if (group_index == 0u) {
+        local_visible_count.store(0u);
         global_base = 0u;
     }
-    barrier();
+    GroupMemoryBarrierWithGroupSync();
 
-    uint source_index = gl_GlobalInvocationID.x;
+    uint source_index = dispatch_id.x;
     bool ribbon_segments = pc.mode == 1u;
     uint source_count = ribbon_segments
-        ? min(source_vertex_count / 6u, pc.capacity > 0u ? pc.capacity - 1u : 0u)
-        : min(source_instance_count, pc.capacity);
+        ? min(source_indirect_arguments[0].source_vertex_count / 6u, pc.capacity > 0u ? pc.capacity - 1u : 0u)
+        : min(source_indirect_arguments[0].source_instance_count, pc.capacity);
     bool visible = false;
     uint output_value = 0u;
     if (ribbon_segments) {
@@ -210,47 +207,49 @@ void main() {
     }
 
     uint local_output_index = 0u;
-    if (visible) local_output_index = atomicAdd(local_visible_count, 1u);
-    barrier();
-    if (gl_LocalInvocationIndex == 0u) global_base = atomicAdd(draw_instance_count, local_visible_count);
-    barrier();
+    if (visible) local_output_index = local_visible_count.add(1u);
+    GroupMemoryBarrierWithGroupSync();
+    if (group_index == 0u) global_base = draw_indirect_arguments[0].draw_instance_count.add(local_visible_count.load());
+    GroupMemoryBarrierWithGroupSync();
 
     if (visible && global_base < pc.capacity && local_output_index < pc.capacity - global_base) {
         visible_indices[global_base + local_output_index] = output_value;
     }
 }
-)glsl");
+)slang",
+                                                  false);
     return Source;
 }
 
 std::string_view GpuParticleCullShaderSources::Finalize() noexcept
 {
-    static const std::string Source = BuildShader("layout(local_size_x = 1) in;\n", R"glsl(
-void main() {
+    static const std::string Source = BuildShader(R"slang([shader("compute")] [numthreads(1, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
     // A skipped (empty or coarse-rejected) Cull retains Reset's zero count.
-    uint visible_count = min(draw_instance_count, pc.capacity);
-    draw_instance_count = visible_count;
-    sort_group_count_x = (visible_count + 255u) / 256u;
-    sort_group_count_y = 1u;
-    sort_group_count_z = 1u;
+    uint visible_count = min(draw_indirect_arguments[0].draw_instance_count.load(), pc.capacity);
+    draw_indirect_arguments[0].draw_instance_count.store(visible_count);
+    sort_dispatch_arguments[0].sort_group_count_x = (visible_count + 255u) / 256u;
+    sort_dispatch_arguments[0].sort_group_count_y = 1u;
+    sort_dispatch_arguments[0].sort_group_count_z = 1u;
 }
-)glsl");
+)slang");
     return Source;
 }
 
 bool GpuParticleCullProgram::IsValid() const noexcept
 {
-    return IsShaderBytecodeValid(reset) && IsShaderBytecodeValid(cull) && IsShaderBytecodeValid(finalize);
+    return IsCompiledParticleShaderValid(reset) && IsCompiledParticleShaderValid(cull) &&
+           IsCompiledParticleShaderValid(finalize);
 }
 
 bool GpuParticleCullProgramStorage::Assign(const GpuParticleCullProgram &program)
 {
     if (!program.IsValid())
         return false;
-    const std::array<ShaderBytecode, 3> sources = {program.reset, program.cull, program.finalize};
-    std::array<std::vector<uint32_t>, 3> candidate;
+    const std::array<CompiledParticleShader, 3> sources = {program.reset, program.cull, program.finalize};
+    std::array<CompiledParticleShader, 3> candidate;
     for (size_t index = 0; index < sources.size(); ++index)
-        candidate[index].assign(sources[index].words, sources[index].words + sources[index].wordCount);
+        candidate[index] = sources[index];
     shaders = std::move(candidate);
     return true;
 }
@@ -263,11 +262,13 @@ bool GpuParticleCullProgramStorage::IsValid() const noexcept
 GpuParticleCullProgram GpuParticleCullProgramStorage::View() const noexcept
 {
     return {
-        {shaders[0].data(), shaders[0].size()},
-        {shaders[1].data(), shaders[1].size()},
-        {shaders[2].data(), shaders[2].size()},
+        shaders[0],
+        shaders[1],
+        shaders[2],
     };
 }
+
+ParticleGpuCuller::ParticleGpuCuller() = default;
 
 ParticleGpuCuller::~ParticleGpuCuller()
 {
@@ -312,63 +313,27 @@ bool ParticleGpuCuller::Create(rhi::Device &device, const GpuParticleCullerDesc 
         return false;
     }
 
-    rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 9; ++binding)
-        layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 9;
-    m_layout = device.CreateBindingLayout(layoutDesc);
-    if (!m_layout.IsValid()) {
-        Destroy();
-        return false;
-    }
-
-    rhi::BindGroupDesc groupDesc;
-    groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 9> buffers = {
-        m_visibility, m_sourceIndirectArguments, m_visibleIndices, m_drawIndirectArguments, m_sortDispatchArguments,
-        m_bounds,     m_simulationControl,       m_sourceIndices,  m_ribbonInstances,
-    };
-    for (uint32_t binding = 0; binding < buffers.size(); ++binding)
-        groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
-    groupDesc.bufferCount = static_cast<uint32_t>(buffers.size());
-    m_group = device.CreateBindGroup(groupDesc);
-    if (!m_group.IsValid()) {
-        Destroy();
-        return false;
-    }
-
-    const std::array<ShaderBytecode, 3> shaders = {desc.program.reset, desc.program.cull, desc.program.finalize};
-    std::array<rhi::ComputePipelineHandle *, 3> pipelines = {&m_resetPipeline, &m_cullPipeline, &m_finalizePipeline};
+    const std::array<CompiledParticleShader, 3> shaders = {desc.program.reset, desc.program.cull,
+                                                           desc.program.finalize};
+    std::array<std::unique_ptr<ParticleComputePipeline> *, 3> pipelines = {&m_resetPipeline, &m_cullPipeline,
+                                                                           &m_finalizePipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto shader =
-            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
-        if (!shader.IsValid()) {
-            Destroy();
-            return false;
-        }
-        rhi::ComputePipelineDesc pipelineDesc;
-        pipelineDesc.computeShader = shader;
-        pipelineDesc.bindingLayouts[0] = m_layout;
-        pipelineDesc.bindingLayoutCount = 1;
-        pipelineDesc.pushConstantBytes = sizeof(GpuParticleCullConstants);
-        *pipelines[index] = device.CreateComputePipeline(pipelineDesc);
-        device.Release(shader);
-        if (!pipelines[index]->IsValid()) {
-            Destroy();
-            return false;
-        }
+        auto program = std::make_unique<ParticleComputePipeline>(device, *shaders[index]);
+        program->AddBindings(ParticleBufferBindings({m_visibility, m_sourceIndirectArguments, m_visibleIndices,
+                                                     m_drawIndirectArguments, m_sortDispatchArguments, m_bounds,
+                                                     m_simulationControl, m_sourceIndices, m_ribbonInstances}));
+        *pipelines[index] = std::move(program);
     }
     return true;
 }
 
 void ParticleGpuCuller::Destroy() noexcept
 {
+    m_resetPipeline.reset();
+    m_cullPipeline.reset();
+    m_finalizePipeline.reset();
+
     if (m_device) {
-        m_device->Release(m_finalizePipeline);
-        m_device->Release(m_cullPipeline);
-        m_device->Release(m_resetPipeline);
-        m_device->Release(m_group);
-        m_device->Release(m_layout);
         m_device->Release(m_sortDispatchArguments);
         m_device->Release(m_drawIndirectArguments);
         m_device->Release(m_visibleIndices);
@@ -386,8 +351,6 @@ void ParticleGpuCuller::Destroy() noexcept
     m_visibleIndices = {};
     m_drawIndirectArguments = {};
     m_sortDispatchArguments = {};
-    m_layout = {};
-    m_group = {};
     m_resetPipeline = {};
     m_cullPipeline = {};
     m_finalizePipeline = {};
@@ -395,58 +358,52 @@ void ParticleGpuCuller::Destroy() noexcept
 
 bool ParticleGpuCuller::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_vertexCount > 0 && m_visibility.IsValid() && m_ribbonInstances.IsValid() &&
-           m_sourceIndirectArguments.IsValid() && m_sourceIndices.IsValid() && m_bounds.IsValid() &&
-           m_simulationControl.IsValid() && m_visibleIndices.IsValid() && m_drawIndirectArguments.IsValid() &&
-           m_sortDispatchArguments.IsValid() && m_layout.IsValid() && m_group.IsValid() && m_resetPipeline.IsValid() &&
-           m_cullPipeline.IsValid() && m_finalizePipeline.IsValid();
+    return m_device && m_resetPipeline && m_cullPipeline && m_finalizePipeline;
 }
 
 void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder,
                                     const std::array<float, PlaneCount * 4> &frustumPlanes, bool viewEnabled) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     GpuParticleCullConstants constants;
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
     constants.vertexCount = m_vertexCount;
     constants.mode = m_mode;
     constants.viewEnabled = viewEnabled ? 1u : 0u;
-    Record(encoder, m_resetPipeline, constants, 1);
+    Record(encoder, *m_resetPipeline, constants, 1);
 }
 
 void ParticleGpuCuller::RecordCull(const rhi::ComputeCommandEncoder &encoder,
                                    const std::array<float, PlaneCount * 4> &frustumPlanes) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     GpuParticleCullConstants constants;
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
     constants.vertexCount = m_vertexCount;
     constants.mode = m_mode;
-    if (!IsValid() || !encoder.IsValid() || !m_cullPipeline.IsValid())
-        return;
-    encoder.BindPipeline(m_cullPipeline);
-    encoder.BindGroup(m_cullPipeline, 0, m_group);
-    encoder.PushConstants(m_cullPipeline, sizeof(constants), &constants);
+    m_cullPipeline->Bind(encoder, constants);
     encoder.DispatchIndirect(m_sortDispatchArguments);
 }
 
 void ParticleGpuCuller::RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     GpuParticleCullConstants constants;
     constants.capacity = m_capacity;
     constants.vertexCount = m_vertexCount;
     constants.mode = m_mode;
-    Record(encoder, m_finalizePipeline, constants, 1);
+    Record(encoder, *m_finalizePipeline, constants, 1);
 }
 
-void ParticleGpuCuller::Record(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
+void ParticleGpuCuller::Record(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
                                const GpuParticleCullConstants &constants, uint32_t groups) const
 {
-    if (!IsValid() || !encoder.IsValid() || !pipeline.IsValid() || groups == 0)
-        return;
-    encoder.BindPipeline(pipeline);
-    encoder.BindGroup(pipeline, 0, m_group);
-    encoder.PushConstants(pipeline, sizeof(constants), &constants);
+    pipeline.Bind(encoder, constants);
     encoder.Dispatch(groups, 1, 1);
 }
 

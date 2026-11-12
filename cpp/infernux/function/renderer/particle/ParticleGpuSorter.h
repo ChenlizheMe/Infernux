@@ -15,11 +15,11 @@ namespace infernux::particle
 
 struct GpuParticleSortProgram
 {
-    ShaderBytecode small;
-    ShaderBytecode generate;
-    ShaderBytecode histogram;
-    ShaderBytecode scan;
-    ShaderBytecode scatter;
+    CompiledParticleShader small;
+    CompiledParticleShader generate;
+    CompiledParticleShader histogram;
+    CompiledParticleShader scan;
+    CompiledParticleShader scatter;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
@@ -28,7 +28,7 @@ struct GpuParticleSortProgram
 /// keep only this immutable program while allocating independent workspaces.
 struct GpuParticleSortProgramStorage
 {
-    std::array<std::vector<uint32_t>, 5> shaders;
+    std::array<CompiledParticleShader, 5> shaders;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleSortProgram &program);
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
@@ -80,7 +80,7 @@ class ParticleGpuSorter
     // power-of-two so the in-workgroup bitonic network has no partial stage.
     static constexpr uint32_t SmallSortCapacity = WorkgroupSize * 4u;
 
-    ParticleGpuSorter() = default;
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuSorter();
     INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuSorter();
 
     ParticleGpuSorter(const ParticleGpuSorter &) = delete;
@@ -158,10 +158,10 @@ class ParticleGpuSorter
 
   private:
     [[nodiscard]] GpuParticleSortConstants Constants(uint32_t passIndex = 0) const noexcept;
-    void RecordDirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                      rhi::BindGroupHandle group, const GpuParticleSortConstants &constants, uint32_t groups) const;
-    void RecordIndirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                        rhi::BindGroupHandle group, const GpuParticleSortConstants &constants) const;
+    void RecordDirect(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
+                      uint32_t variant, const GpuParticleSortConstants &constants, uint32_t groups) const;
+    void RecordIndirect(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
+                        uint32_t variant, const GpuParticleSortConstants &constants) const;
 
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
@@ -175,13 +175,11 @@ class ParticleGpuSorter
     rhi::BufferHandle m_histograms;
     rhi::BufferHandle m_blockOffsets;
     rhi::BufferHandle m_globalOffsets;
-    rhi::BindingLayoutHandle m_layout;
-    std::array<rhi::BindGroupHandle, 2> m_groups{};
-    rhi::ComputePipelineHandle m_smallPipeline;
-    rhi::ComputePipelineHandle m_generatePipeline;
-    rhi::ComputePipelineHandle m_histogramPipeline;
-    rhi::ComputePipelineHandle m_scanPipeline;
-    rhi::ComputePipelineHandle m_scatterPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_smallPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_generatePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_histogramPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_scanPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_scatterPipeline;
 };
 
 static_assert(sizeof(GpuParticleSortConstants) == 80);

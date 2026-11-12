@@ -52,6 +52,7 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 #include <function/scene/Camera.h>
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
@@ -136,102 +137,43 @@ void StoreParticleCollisionAabb(particle::GpuParticleColliderRecord &record, con
     record.worldAabbMax = {worldMax.x, worldMax.y, worldMax.z, 0.0f};
 }
 
-struct CompiledParticleSortProgram
+template <typename Program, size_t Count> struct CompiledParticleProgram
 {
-    std::array<std::vector<uint32_t>, 5> shaders;
+    std::array<particle::CompiledParticleShader, Count> shaders;
 
-    [[nodiscard]] particle::GpuParticleSortProgram View() const noexcept
+    [[nodiscard]] Program View() const noexcept
     {
-        return {
-            {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
-            {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
-            {shaders[4].data(), shaders[4].size()},
-        };
+        return View(std::make_index_sequence<Count>{});
+    }
+
+  private:
+    template <size_t... Index> Program View(std::index_sequence<Index...>) const noexcept
+    {
+        return {shaders[Index]...};
     }
 };
 
-struct CompiledParticleCullProgram
-{
-    std::array<std::vector<uint32_t>, 3> shaders;
-
-    [[nodiscard]] particle::GpuParticleCullProgram View() const noexcept
-    {
-        return {
-            {shaders[0].data(), shaders[0].size()},
-            {shaders[1].data(), shaders[1].size()},
-            {shaders[2].data(), shaders[2].size()},
-        };
-    }
-};
-
-struct CompiledParticleBoundsProgram
-{
-    std::array<std::vector<uint32_t>, 3> shaders;
-
-    [[nodiscard]] particle::GpuParticleBoundsProgram View() const noexcept
-    {
-        return {
-            {shaders[0].data(), shaders[0].size()},
-            {shaders[1].data(), shaders[1].size()},
-            {shaders[2].data(), shaders[2].size()},
-        };
-    }
-};
-
-struct CompiledParticleMigrationProgram
-{
-    std::array<std::vector<uint32_t>, 2> shaders;
-
-    [[nodiscard]] particle::GpuParticleMigrationProgram View() const noexcept
-    {
-        return {
-            {shaders[0].data(), shaders[0].size()},
-            {shaders[1].data(), shaders[1].size()},
-        };
-    }
-};
-
-struct CompiledParticleSpawnProgram
-{
-    std::array<std::vector<uint32_t>, 2> shaders;
-
-    [[nodiscard]] particle::GpuParticleSpawnProgram View() const noexcept
-    {
-        return {
-            {shaders[0].data(), shaders[0].size()},
-            {shaders[1].data(), shaders[1].size()},
-        };
-    }
-};
-
-struct CompiledParticleRibbonTopologyProgram
-{
-    std::array<std::vector<uint32_t>, 5> shaders;
-
-    [[nodiscard]] particle::GpuParticleRibbonProgram View() const noexcept
-    {
-        return {
-            {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
-            {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
-            {shaders[4].data(), shaders[4].size()},
-        };
-    }
-};
-
+using CompiledParticleSortProgram = CompiledParticleProgram<particle::GpuParticleSortProgram, 5>;
+using CompiledParticleCullProgram = CompiledParticleProgram<particle::GpuParticleCullProgram, 3>;
+using CompiledParticleBoundsProgram = CompiledParticleProgram<particle::GpuParticleBoundsProgram, 3>;
+using CompiledParticleMigrationProgram = CompiledParticleProgram<particle::GpuParticleMigrationProgram, 2>;
+using CompiledParticleSpawnProgram = CompiledParticleProgram<particle::GpuParticleSpawnProgram, 2>;
+using CompiledParticleRibbonTopologyProgram = CompiledParticleProgram<particle::GpuParticleRibbonProgram, 5>;
 struct CompiledParticleRibbonRenderProgram
 {
-    std::array<std::vector<uint32_t>, 4> shaders;
-
-    [[nodiscard]] particle::GpuParticleRibbonRenderProgram View() const noexcept
+    std::array<particle::ShaderBytecodeStorage, 4> shaders;
+    particle::GpuParticleRibbonRenderProgram View() const noexcept
     {
-        return {
-            {shaders[0].data(), shaders[0].size()},
-            {shaders[1].data(), shaders[1].size()},
-            {shaders[2].data(), shaders[2].size()},
-            {shaders[3].data(), shaders[3].size()},
-        };
+        return {shaders[0].View(), shaders[1].View(), shaders[2].View(), shaders[3].View()};
     }
 };
+
+particle::CompiledParticleShader CompileParticleShader(std::string_view source, const char *name,
+                                                       ShaderCodeTarget target = ShaderCodeTarget::SpirV)
+{
+    return std::make_shared<const ShaderTargetCode>(
+        CompileSlangNativeModule({name, name, std::string(source)}, target));
+}
 
 struct CompiledParticleProgramBundle
 {
@@ -242,128 +184,98 @@ struct CompiledParticleProgramBundle
     CompiledParticleSpawnProgram spawn;
     CompiledParticleRibbonTopologyProgram ribbonTopology;
     CompiledParticleRibbonRenderProgram ribbonRender;
-    std::vector<uint32_t> stateGather;
+    particle::CompiledParticleShader stateGather;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
         return sort.View().IsValid() && cull.View().IsValid() && bounds.View().IsValid() &&
                migration.View().IsValid() && spawn.View().IsValid() && ribbonTopology.View().IsValid() &&
-               ribbonRender.View().IsValid() && !stateGather.empty();
+               ribbonRender.View().IsValid() && particle::IsCompiledParticleShaderValid(stateGather);
     }
 };
 
 CompiledParticleSortProgram CompileParticleSortProgram()
 {
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
     const std::array<std::pair<std::string_view, const char *>, 5> sources = {{
-        {particle::GpuParticleSortShaderSources::Small(), "Infernux/ParticleSortSmall.comp"},
-        {particle::GpuParticleSortShaderSources::Generate(), "Infernux/ParticleSortGenerate.comp"},
-        {particle::GpuParticleSortShaderSources::Histogram(), "Infernux/ParticleSortHistogram.comp"},
-        {particle::GpuParticleSortShaderSources::Scan(), "Infernux/ParticleSortScan.comp"},
-        {particle::GpuParticleSortShaderSources::Scatter(), "Infernux/ParticleSortScatter.comp"},
+        {particle::GpuParticleSortShaderSources::Small(), "Infernux/ParticleSortSmall.slang"},
+        {particle::GpuParticleSortShaderSources::Generate(), "Infernux/ParticleSortGenerate.slang"},
+        {particle::GpuParticleSortShaderSources::Histogram(), "Infernux/ParticleSortHistogram.slang"},
+        {particle::GpuParticleSortShaderSources::Scan(), "Infernux/ParticleSortScan.slang"},
+        {particle::GpuParticleSortShaderSources::Scatter(), "Infernux/ParticleSortScatter.slang"},
     }};
     CompiledParticleSortProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
-        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-            return {};
-        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
-        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+        result.shaders[index] = CompileParticleShader(sources[index].first, sources[index].second);
     }
     return result;
 }
 
 CompiledParticleCullProgram CompileParticleCullProgram()
 {
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
     const std::array<std::pair<std::string_view, const char *>, 3> sources = {{
-        {particle::GpuParticleCullShaderSources::Reset(), "Infernux/ParticleCullReset.comp"},
-        {particle::GpuParticleCullShaderSources::Cull(), "Infernux/ParticleCull.comp"},
-        {particle::GpuParticleCullShaderSources::Finalize(), "Infernux/ParticleCullFinalize.comp"},
+        {particle::GpuParticleCullShaderSources::Reset(), "Infernux/ParticleCullReset.slang"},
+        {particle::GpuParticleCullShaderSources::Cull(), "Infernux/ParticleCull.slang"},
+        {particle::GpuParticleCullShaderSources::Finalize(), "Infernux/ParticleCullFinalize.slang"},
     }};
     CompiledParticleCullProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
-        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-            return {};
-        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
-        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+        result.shaders[index] = CompileParticleShader(sources[index].first, sources[index].second);
     }
     return result;
 }
 
 CompiledParticleBoundsProgram CompileParticleBoundsProgram()
 {
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
     const std::array<std::pair<std::string_view, const char *>, 3> sources = {{
-        {particle::GpuParticleBoundsShaderSources::Prepare(), "Infernux/ParticleVisibilityPrepare.comp"},
-        {particle::GpuParticleBoundsShaderSources::Reset(), "Infernux/ParticleBoundsReset.comp"},
-        {particle::GpuParticleBoundsShaderSources::Reduce(), "Infernux/ParticleBoundsReduce.comp"},
+        {particle::GpuParticleBoundsShaderSources::Prepare(), "Infernux/ParticleVisibilityPrepare.slang"},
+        {particle::GpuParticleBoundsShaderSources::Reset(), "Infernux/ParticleBoundsReset.slang"},
+        {particle::GpuParticleBoundsShaderSources::Reduce(), "Infernux/ParticleBoundsReduce.slang"},
     }};
     CompiledParticleBoundsProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
-        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-            return {};
-        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
-        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+        result.shaders[index] = CompileParticleShader(sources[index].first, sources[index].second);
     }
     return result;
 }
 
 CompiledParticleMigrationProgram CompileParticleMigrationProgram()
 {
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
     const std::array<std::pair<std::string_view, const char *>, 2> sources = {{
-        {particle::GpuParticleMigrationShaderSources::Reset(), "Infernux/ParticleMigrationReset.comp"},
-        {particle::GpuParticleMigrationShaderSources::Migrate(), "Infernux/ParticleMigration.comp"},
+        {particle::GpuParticleMigrationShaderSources::Reset(), "Infernux/ParticleMigrationReset.slang"},
+        {particle::GpuParticleMigrationShaderSources::Migrate(), "Infernux/ParticleMigration.slang"},
     }};
     CompiledParticleMigrationProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
-        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-            return {};
-        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
-        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+        result.shaders[index] = CompileParticleShader(sources[index].first, sources[index].second);
     }
     return result;
 }
 
 CompiledParticleSpawnProgram CompileParticleSpawnProgram()
 {
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
     const std::array<std::pair<std::string_view, const char *>, 2> sources = {{
-        {particle::GpuParticleSpawnShaderSources::Advance(), "Infernux/ParticleSpawnAdvance.comp"},
-        {particle::GpuParticleSpawnShaderSources::Prepare(), "Infernux/ParticleSpawnPrepare.comp"},
+        {particle::GpuParticleSpawnShaderSources::Advance(), "Infernux/ParticleSpawnAdvance.slang"},
+        {particle::GpuParticleSpawnShaderSources::Prepare(), "Infernux/ParticleSpawnPrepare.slang"},
     }};
     CompiledParticleSpawnProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
-        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-            return {};
-        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
-        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+        result.shaders[index] = CompileParticleShader(sources[index].first, sources[index].second);
     }
     return result;
 }
 
 CompiledParticleRibbonTopologyProgram CompileParticleRibbonTopologyProgram()
 {
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
     const std::array<std::pair<std::string_view, const char *>, 5> sources = {{
-        {particle::GpuParticleRibbonShaderSources::Reset(), "Infernux/ParticleRibbonReset.comp"},
-        {particle::GpuParticleRibbonShaderSources::Initialize(), "Infernux/ParticleRibbonInitialize.comp"},
-        {particle::GpuParticleRibbonShaderSources::Histogram(), "Infernux/ParticleRibbonHistogram.comp"},
-        {particle::GpuParticleRibbonShaderSources::Scan(), "Infernux/ParticleRibbonScan.comp"},
-        {particle::GpuParticleRibbonShaderSources::Scatter(), "Infernux/ParticleRibbonScatter.comp"},
+        {particle::GpuParticleRibbonShaderSources::Reset(), "Infernux/ParticleRibbonReset.slang"},
+        {particle::GpuParticleRibbonShaderSources::Initialize(), "Infernux/ParticleRibbonInitialize.slang"},
+        {particle::GpuParticleRibbonShaderSources::Histogram(), "Infernux/ParticleRibbonHistogram.slang"},
+        {particle::GpuParticleRibbonShaderSources::Scan(), "Infernux/ParticleRibbonScan.slang"},
+        {particle::GpuParticleRibbonShaderSources::Scatter(), "Infernux/ParticleRibbonScatter.slang"},
     }};
     CompiledParticleRibbonTopologyProgram result;
     for (size_t index = 0; index < sources.size(); ++index) {
-        const auto bytes = compiler.CompileComputeGlsl(std::string(sources[index].first), sources[index].second);
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
-            return {};
-        result.shaders[index].resize(bytes.size() / sizeof(uint32_t));
-        std::memcpy(result.shaders[index].data(), bytes.data(), bytes.size());
+        result.shaders[index] = CompileParticleShader(sources[index].first, sources[index].second);
     }
     return result;
 }
@@ -387,8 +299,8 @@ CompiledParticleRibbonRenderProgram CompileParticleRibbonRenderProgram()
     for (size_t index = 0; index < bytes.size(); ++index) {
         if (bytes[index]->size() < 5 * sizeof(uint32_t) || bytes[index]->size() % sizeof(uint32_t) != 0)
             return {};
-        result.shaders[index].resize(bytes[index]->size() / sizeof(uint32_t));
-        std::memcpy(result.shaders[index].data(), bytes[index]->data(), bytes[index]->size());
+        result.shaders[index].Assign(particle::ShaderBytecode::FromSpirV(
+            reinterpret_cast<const uint32_t *>(bytes[index]->data()), bytes[index]->size() / sizeof(uint32_t)));
     }
     return result;
 }
@@ -403,13 +315,8 @@ CompiledParticleProgramBundle CompileParticleProgramBundle()
     result.spawn = CompileParticleSpawnProgram();
     result.ribbonTopology = CompileParticleRibbonTopologyProgram();
     result.ribbonRender = CompileParticleRibbonRenderProgram();
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-    const auto gather = compiler.CompileComputeGlsl(std::string(particle::GpuParticleStateGatherShaderSource()),
-                                                    "Infernux/ParticleStateGather.comp");
-    if (gather.size() >= 5 * sizeof(uint32_t) && gather.size() % sizeof(uint32_t) == 0) {
-        result.stateGather.resize(gather.size() / sizeof(uint32_t));
-        std::memcpy(result.stateGather.data(), gather.data(), gather.size());
-    }
+    result.stateGather =
+        CompileParticleShader(particle::GpuParticleStateGatherShaderSource(), "Infernux/ParticleStateGather.slang");
     return result;
 }
 
@@ -4141,8 +4048,7 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
                              std::move(particleTextureResolver), std::move(particleVectorFieldTextureResolver),
                              particle::ResolveSceneSkinnedMeshSource, programs.sort.View(), programs.cull.View(),
                              programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
-                             programs.ribbonTopology.View(), programs.ribbonRender.View(),
-                             {programs.stateGather.data(), programs.stateGather.size()})) {
+                             programs.ribbonTopology.View(), programs.ribbonRender.View(), programs.stateGather)) {
         INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         return nullptr;
     }

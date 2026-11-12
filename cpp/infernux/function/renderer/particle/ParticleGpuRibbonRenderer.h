@@ -39,7 +39,7 @@ struct GpuParticleRibbonRenderProgram
 
 struct GpuParticleRibbonRenderProgramStorage
 {
-    std::array<std::vector<uint32_t>, 4> shaders;
+    std::array<ShaderBytecodeStorage, 4> shaders;
 
     [[nodiscard]] bool Assign(const GpuParticleRibbonRenderProgram &program);
     [[nodiscard]] bool IsValid() const noexcept;

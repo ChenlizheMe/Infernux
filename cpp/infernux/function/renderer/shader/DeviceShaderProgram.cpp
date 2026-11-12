@@ -20,6 +20,7 @@ struct DeviceShaderProgram::Impl
     std::vector<Entry> entries;
     std::vector<ShaderResourceLayout> resources;
     std::vector<rhi::BindingLayoutHandle> layouts;
+    uint32_t rootConstantBytes = 0;
 
     explicit Impl(rhi::Device &owner) : device(owner)
     {
@@ -37,6 +38,7 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTarget
                                          const std::vector<uint32_t> &entries)
     : m_impl(std::make_unique<Impl>(device))
 {
+    m_impl->rootConstantBytes = code.rootConstants ? static_cast<uint32_t>(code.rootConstants->byteSize) : 0;
     for (const auto index : entries) {
         const auto &entry = code.entries.at(index);
         const auto language =
@@ -91,6 +93,7 @@ void DeviceShaderProgram::Apply(rhi::GraphicsPipelineDesc &pipeline) const
         }
     }
     pipeline.bindingLayoutCount = static_cast<uint32_t>(m_impl->layouts.size());
+    pipeline.pushConstantBytes = m_impl->rootConstantBytes;
     std::copy(m_impl->layouts.begin(), m_impl->layouts.end(), pipeline.bindingLayouts.begin());
 }
 
@@ -101,6 +104,7 @@ void DeviceShaderProgram::Apply(rhi::ComputePipelineDesc &pipeline) const
     pipeline.computeShader = m_impl->entries[0].module;
     pipeline.entryPoint = m_impl->entries[0].name.c_str();
     pipeline.bindingLayoutCount = static_cast<uint32_t>(m_impl->layouts.size());
+    pipeline.pushConstantBytes = m_impl->rootConstantBytes;
     std::copy(m_impl->layouts.begin(), m_impl->layouts.end(), pipeline.bindingLayouts.begin());
 }
 

@@ -1,6 +1,8 @@
 #include <function/renderer/shader/ShaderReflection.h>
+#include <function/renderer/shader/ShaderValueCopy.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 
 #include <algorithm>
 #include <chrono>
@@ -333,6 +335,32 @@ void main() { output[0] = uniforms.rotation[1][2] + uniforms.rectangular[1][2] +
             standardModuleFound = std::string(error.what()).find("experimental module") != std::string::npos;
         }
         Require(standardModuleFound, "Packaged Slang standard modules were not found");
+
+        for (auto target : {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}) {
+            const auto native = CompileSlangNativeModule({"native_root", "native_root.slang", R"slang(
+struct Arguments { float weights[2]; };
+INX_ROOT_CONSTANTS ConstantBuffer<Arguments> pc;
+[[vk::binding(3, 0)]] RWStructuredBuffer<float> output;
+[shader("compute")] [numthreads(1, 1, 1)]
+void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weights[1]; }
+)slang"},
+                                                         target);
+            Require(native.rootConstants.has_value(), "Native root values lost their target layout");
+            Require(native.resources.size() == 1 && native.resources[0].binding.binding == 3,
+                    "Native root values must not enter user descriptor groups");
+            const auto &root = *native.rootConstants;
+            const auto &array = root.fields.at(0);
+            const auto expectedStride = target == ShaderCodeTarget::SpirV ? 4u : 16u;
+            Require(array.stride == expectedStride, "Root array packing must follow the concrete target");
+            ShaderValueCopy copy(root);
+            const float weights[2] = {2.0f, 7.0f};
+            std::vector<char> values(root.byteSize);
+            copy.Write(values.data(), weights);
+            float second = 0;
+            std::memcpy(&second, values.data() + array.offset + array.stride, sizeof(second));
+            Require(copy.GetSourceBytes() == sizeof(weights) && second == 7.0f,
+                    "Root values must copy logical data into reflected storage");
+        }
 
         bool diagnosed = false;
         try {

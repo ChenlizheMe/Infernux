@@ -379,17 +379,16 @@ class ParticleGpuSystemManager
     ParticleGpuSystemManager(ParticleGpuSystemManager &&) = delete;
     ParticleGpuSystemManager &operator=(ParticleGpuSystemManager &&) = delete;
 
-    [[nodiscard]] bool
-    Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
-               GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
-               GpuBillboardTextureResolver textureResolver = {},
-               GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
-               GpuParticleSkinnedMeshResolver skinnedMeshResolver = {}, const GpuParticleSortProgram &sortProgram = {},
-               const GpuParticleCullProgram &cullProgram = {}, const GpuParticleBoundsProgram &boundsProgram = {},
-               const GpuParticleMigrationProgram &migrationProgram = {},
-               const GpuParticleSpawnProgram &spawnProgram = {},
-               const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, ShaderBytecode stateGatherShader = {});
+    [[nodiscard]] bool Initialize(
+        vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
+        GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+        GpuBillboardTextureResolver textureResolver = {},
+        GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
+        GpuParticleSkinnedMeshResolver skinnedMeshResolver = {}, const GpuParticleSortProgram &sortProgram = {},
+        const GpuParticleCullProgram &cullProgram = {}, const GpuParticleBoundsProgram &boundsProgram = {},
+        const GpuParticleMigrationProgram &migrationProgram = {}, const GpuParticleSpawnProgram &spawnProgram = {},
+        const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
+        const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, CompiledParticleShader stateGatherShader = {});
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph

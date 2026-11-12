@@ -1,4 +1,6 @@
 #include "ParticleGpuSorter.h"
+#include "ParticleComputePipeline.h"
+#include "ParticleGpuSortModule.h"
 
 #include <algorithm>
 #include <array>
@@ -11,56 +13,47 @@ namespace infernux::particle
 namespace
 {
 
-constexpr std::string_view CommonBindings = R"glsl(
+constexpr std::string_view CommonBindings = R"slang(
 struct ParticleVisibilityInstance {
-    vec4 position_radius;
+    float4 position_radius;
 };
-layout(std430, set = 0, binding = 0) readonly buffer Visibility {
-    ParticleVisibilityInstance visibility[];
-};
-layout(std430, set = 0, binding = 1) readonly buffer IndirectArguments {
+[[vk::binding(0, 0)]] StructuredBuffer<ParticleVisibilityInstance> visibility;
+struct IndirectArgumentsData {
     uint vertex_count;
     uint instance_count;
     uint first_vertex;
     uint first_instance;
-} indirect_args;
-layout(std430, set = 0, binding = 2) buffer InputKeys { uint input_keys[]; };
-layout(std430, set = 0, binding = 3) buffer InputIndices { uint input_indices[]; };
-layout(std430, set = 0, binding = 4) buffer OutputKeys { uint output_keys[]; };
-layout(std430, set = 0, binding = 5) buffer OutputIndices { uint output_indices[]; };
-layout(std430, set = 0, binding = 6) buffer Histograms { uint histograms[]; };
-layout(std430, set = 0, binding = 7) buffer BlockOffsets { uint block_offsets[]; };
-layout(std430, set = 0, binding = 8) buffer GlobalOffsets { uint global_offsets[]; };
-layout(std430, set = 0, binding = 9) readonly buffer SourceIndices { uint source_indices[]; };
-layout(std430, set = 0, binding = 10) readonly buffer DispatchArguments {
+};
+[[vk::binding(1, 0)]] StructuredBuffer<IndirectArgumentsData> indirect_args;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> input_keys;
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> input_indices;
+[[vk::binding(4, 0)]] RWStructuredBuffer<uint> output_keys;
+[[vk::binding(5, 0)]] RWStructuredBuffer<uint> output_indices;
+[[vk::binding(6, 0)]] RWStructuredBuffer<uint> histograms;
+[[vk::binding(7, 0)]] RWStructuredBuffer<uint> block_offsets;
+[[vk::binding(8, 0)]] RWStructuredBuffer<uint> global_offsets;
+[[vk::binding(9, 0)]] StructuredBuffer<uint> source_indices;
+struct DispatchArgumentsData {
     uint dispatch_group_count_x;
     uint dispatch_group_count_y;
     uint dispatch_group_count_z;
 };
-layout(push_constant) uniform SortConstants {
-    mat4 view;
+[[vk::binding(10, 0)]] StructuredBuffer<DispatchArgumentsData> dispatch_arguments;
+struct SortConstants {
+    column_major float4x4 view;
     uint capacity;
     uint block_count;
     uint digit_shift;
     uint descending;
-} pc;
-)glsl";
+};
+INX_ROOT_CONSTANTS ConstantBuffer<SortConstants> pc;
+)slang";
 
-std::string BuildShader(std::string_view extensions, std::string_view localSize, std::string_view body)
+std::string BuildShader(std::string_view body)
 {
-    std::string result;
-    result.reserve(extensions.size() + localSize.size() + CommonBindings.size() + body.size() + 32);
-    result += "#version 450\n";
-    result += extensions;
-    result += localSize;
-    result += CommonBindings;
+    std::string result(CommonBindings);
     result += body;
     return result;
-}
-
-bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
-{
-    return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
 }
 
 uint32_t DivideRoundUp(uint32_t value, uint32_t divisor) noexcept
@@ -72,53 +65,54 @@ uint32_t DivideRoundUp(uint32_t value, uint32_t divisor) noexcept
 
 std::string_view GpuParticleSortShaderSources::Small() noexcept
 {
-    static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
-const uint INX_SMALL_SORT_CAPACITY = 1024u;
-const uint INX_SMALL_SORT_LANES = 256u;
-const uint INX_SMALL_SORT_VALUES_PER_LANE = 4u;
-shared uvec2 shared_keys[INX_SMALL_SORT_CAPACITY];
-shared uint shared_indices[INX_SMALL_SORT_CAPACITY];
+    static const std::string Source = BuildShader(R"slang(
+static const uint INX_SMALL_SORT_CAPACITY = 1024u;
+static const uint INX_SMALL_SORT_LANES = 256u;
+static const uint INX_SMALL_SORT_VALUES_PER_LANE = 4u;
+groupshared uint2 shared_keys[INX_SMALL_SORT_CAPACITY];
+groupshared uint shared_indices[INX_SMALL_SORT_CAPACITY];
 
 uint inx_ordered_float(float value) {
-    uint bits = floatBitsToUint(value);
+    uint bits = asuint(value);
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
 
-bool inx_greater(uvec2 left_key, uint left_index, uvec2 right_key, uint right_index) {
+bool inx_greater(uint2 left_key, uint left_index, uint2 right_key, uint right_index) {
     return left_key.x > right_key.x ||
            (left_key.x == right_key.x &&
             (left_key.y > right_key.y || (left_key.y == right_key.y && left_index > right_index)));
 }
 
-bool inx_less(uvec2 left_key, uint left_index, uvec2 right_key, uint right_index) {
+bool inx_less(uint2 left_key, uint left_index, uint2 right_key, uint right_index) {
     return inx_greater(right_key, right_index, left_key, left_index);
 }
 
-uvec2 inx_particle_sort_key(float view_depth, uint particle_id) {
+uint2 inx_particle_sort_key(float view_depth, uint particle_id) {
     uint depth_key = inx_ordered_float(view_depth);
     depth_key = pc.descending != 0u ? ~depth_key : depth_key;
-    return uvec2(depth_key, particle_id);
+    return uint2(depth_key, particle_id);
 }
 
-void main() {
-    uint lane = gl_LocalInvocationID.x;
-    uint live_count = min(indirect_args.instance_count, pc.capacity);
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    uint lane = group_thread_id.x;
+    uint live_count = min(indirect_args[0].instance_count, pc.capacity);
     for (uint item = 0u; item < INX_SMALL_SORT_VALUES_PER_LANE; ++item) {
         uint index = lane + item * INX_SMALL_SORT_LANES;
         uint particle_index = index < live_count ? source_indices[index] : 0xffffffffu;
-        uvec2 key = uvec2(0xffffffffu, 0xffffffffu);
+        uint2 key = uint2(0xffffffffu, 0xffffffffu);
         if (index < live_count) {
-            vec4 view_position = pc.view * vec4(visibility[particle_index].position_radius.xyz, 1.0);
+            float4 view_position = mul(pc.view, float4(visibility[particle_index].position_radius.xyz, 1.0));
             key = inx_particle_sort_key(view_position.z, particle_index);
         }
         shared_keys[index] = key;
         shared_indices[index] = particle_index;
     }
-    barrier();
+    GroupMemoryBarrierWithGroupSync();
 
     // Sort the full power-of-two workspace. Invalid lanes carry the maximum
     // tuple and therefore remain at the tail; every compare/exchange pair is
-    // handled by exactly one lane before the barrier.
+    // handled by exactly one lane before the GroupMemoryBarrierWithGroupSync.
     for (uint k = 2u; k <= INX_SMALL_SORT_CAPACITY; k <<= 1u) {
         for (uint j = k >> 1u; j > 0u; j >>= 1u) {
             for (uint item = 0u; item < INX_SMALL_SORT_VALUES_PER_LANE; ++item) {
@@ -132,7 +126,7 @@ void main() {
                                           : inx_less(shared_keys[index], shared_indices[index],
                                                      shared_keys[partner], shared_indices[partner]);
                     if (swap) {
-                        uvec2 key = shared_keys[index];
+                        uint2 key = shared_keys[index];
                         uint particle_index = shared_indices[index];
                         shared_keys[index] = shared_keys[partner];
                         shared_indices[index] = shared_indices[partner];
@@ -141,7 +135,7 @@ void main() {
                     }
                 }
             }
-            barrier();
+            GroupMemoryBarrierWithGroupSync();
         }
     }
 
@@ -151,15 +145,15 @@ void main() {
             input_indices[index] = shared_indices[index];
     }
 }
-)glsl");
+)slang");
     return Source;
 }
 
 std::string_view GpuParticleSortShaderSources::Generate() noexcept
 {
-    static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
+    static const std::string Source = BuildShader(R"slang(
 uint inx_ordered_float(float value) {
-    uint bits = floatBitsToUint(value);
+    uint bits = asuint(value);
     return (bits & 0x80000000u) != 0u ? ~bits : (bits ^ 0x80000000u);
 }
 uint inx_particle_sort_key(float view_depth, uint particle_id) {
@@ -167,52 +161,55 @@ uint inx_particle_sort_key(float view_depth, uint particle_id) {
     depth_key = pc.descending != 0u ? ~depth_key : depth_key;
     return (depth_key & 0xffffff00u) | (particle_id & 0xffu);
 }
-void main() {
-    uint index = gl_GlobalInvocationID.x;
-    uint live_count = min(indirect_args.instance_count, pc.capacity);
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    uint index = dispatch_id.x;
+    uint live_count = min(indirect_args[0].instance_count, pc.capacity);
     if (index >= live_count) return;
     uint particle_index = source_indices[index];
-    vec4 view_position = pc.view * vec4(visibility[particle_index].position_radius.xyz, 1.0);
+    float4 view_position = mul(pc.view, float4(visibility[particle_index].position_radius.xyz, 1.0));
     input_keys[index] = inx_particle_sort_key(view_position.z, particle_index);
     input_indices[index] = particle_index;
 }
-)glsl");
+)slang");
     return Source;
 }
 
 std::string_view GpuParticleSortShaderSources::Histogram() noexcept
 {
-    static const std::string Source = BuildShader({}, "layout(local_size_x = 256) in;\n", R"glsl(
-shared uint local_histogram[16];
+    static const std::string Source = BuildShader(R"slang(
+groupshared Atomic<uint> local_histogram[16];
 uint inx_key_digit(uint key) {
     return (key >> pc.digit_shift) & 15u;
 }
-void main() {
-    uint local_index = gl_LocalInvocationID.x;
-    if (local_index < 16u) local_histogram[local_index] = 0u;
-    barrier();
-    uint index = gl_GlobalInvocationID.x;
-    uint live_count = min(indirect_args.instance_count, pc.capacity);
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    uint local_index = group_thread_id.x;
+    if (local_index < 16u) local_histogram[local_index].store(0u);
+    GroupMemoryBarrierWithGroupSync();
+    uint index = dispatch_id.x;
+    uint live_count = min(indirect_args[0].instance_count, pc.capacity);
     if (index < live_count) {
         uint digit = inx_key_digit(input_keys[index]);
-        atomicAdd(local_histogram[digit], 1u);
+        local_histogram[digit].add(1u);
     }
-    barrier();
+    GroupMemoryBarrierWithGroupSync();
     if (local_index < 16u)
-        histograms[gl_WorkGroupID.x * 16u + local_index] = local_histogram[local_index];
+        histograms[group_id.x * 16u + local_index] = local_histogram[local_index].load();
 }
-)glsl");
+)slang");
     return Source;
 }
 
 std::string_view GpuParticleSortShaderSources::Scan() noexcept
 {
-    static const std::string Source = BuildShader({}, "layout(local_size_x = 16) in;\n", R"glsl(
-shared uint totals[16];
-void main() {
-    uint bin = gl_LocalInvocationID.x;
+    static const std::string Source = BuildShader(R"slang(
+groupshared uint totals[16];
+[shader("compute")] [numthreads(16, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    uint bin = group_thread_id.x;
     uint running = 0u;
-    uint active_block_count = min(dispatch_group_count_x, pc.block_count);
+    uint active_block_count = min(dispatch_arguments[0].dispatch_group_count_x, pc.block_count);
     for (uint block = 0u; block < active_block_count; ++block) {
         uint offset = block * 16u + bin;
         uint count = histograms[offset];
@@ -220,75 +217,52 @@ void main() {
         running += count;
     }
     totals[bin] = running;
-    barrier();
+    GroupMemoryBarrierWithGroupSync();
     uint base = 0u;
     for (uint prior = 0u; prior < bin; ++prior) base += totals[prior];
     global_offsets[bin] = base;
 }
-)glsl");
+)slang");
     return Source;
 }
 
 std::string_view GpuParticleSortShaderSources::Scatter() noexcept
 {
-    static const std::string Source = BuildShader("#extension GL_KHR_shader_subgroup_basic : require\n"
-                                                  "#extension GL_KHR_shader_subgroup_ballot : require\n",
-                                                  "layout(local_size_x = 256) in;\n", R"glsl(
-const uint INX_MAX_SUBGROUPS = 64u;
-shared uint subgroup_counts[16 * INX_MAX_SUBGROUPS];
-uint inx_key_digit(uint key) {
-    return (key >> pc.digit_shift) & 15u;
-}
-void main() {
-    uint local_index = gl_LocalInvocationID.x;
-    uint subgroup_count = (256u + gl_SubgroupSize - 1u) / gl_SubgroupSize;
-    uint clear_count = min(subgroup_count, INX_MAX_SUBGROUPS) * 16u;
-    for (uint index = local_index; index < clear_count; index += 256u)
-        subgroup_counts[index] = 0u;
-    barrier();
-
-    uint source_index = gl_GlobalInvocationID.x;
-    uint live_count = min(indirect_args.instance_count, pc.capacity);
-    bool lane_active = source_index < live_count && gl_SubgroupID < INX_MAX_SUBGROUPS;
-    uint key = lane_active ? input_keys[source_index] : 0xffffffffu;
-    uint digit = inx_key_digit(key);
-    uvec4 own_mask = uvec4(0u);
-    for (uint bin = 0u; bin < 16u; ++bin) {
-        uvec4 mask = subgroupBallot(lane_active && digit == bin);
-        if (digit == bin) own_mask = mask;
-        if (subgroupElect())
-            subgroup_counts[gl_SubgroupID * 16u + bin] = subgroupBallotBitCount(mask);
-    }
-    barrier();
-    if (!lane_active) return;
-
-    uint local_rank = subgroupBallotExclusiveBitCount(own_mask);
-    for (uint subgroup = 0u; subgroup < gl_SubgroupID; ++subgroup)
-        local_rank += subgroup_counts[subgroup * 16u + digit];
-    uint block_offset = gl_WorkGroupID.x * 16u + digit;
+    static const std::string Source =
+        BuildShader(std::string(SlangParticleRadixRank) + R"slang([shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    uint source_index = dispatch_id.x;
+    uint live_count = min(indirect_args[0].instance_count, pc.capacity);
+    bool active = source_index < live_count;
+    uint key = active ? input_keys[source_index] : 0u;
+    uint digit = (key >> pc.digit_shift) & 15u;
+    uint local_rank = inx_radix_rank(group_index, digit, active);
+    if (!active) return;
+    uint block_offset = group_id.x * 16u + digit;
     uint destination = global_offsets[digit] + block_offsets[block_offset] + local_rank;
     output_keys[destination] = key;
     output_indices[destination] = input_indices[source_index];
 }
-)glsl");
+)slang");
     return Source;
 }
 
 bool GpuParticleSortProgram::IsValid() const noexcept
 {
-    return IsShaderBytecodeValid(small) && IsShaderBytecodeValid(generate) && IsShaderBytecodeValid(histogram) &&
-           IsShaderBytecodeValid(scan) && IsShaderBytecodeValid(scatter);
+    return IsCompiledParticleShaderValid(small) && IsCompiledParticleShaderValid(generate) &&
+           IsCompiledParticleShaderValid(histogram) && IsCompiledParticleShaderValid(scan) &&
+           IsCompiledParticleShaderValid(scatter);
 }
 
 bool GpuParticleSortProgramStorage::Assign(const GpuParticleSortProgram &program)
 {
     if (!program.IsValid())
         return false;
-    const std::array<ShaderBytecode, 5> sources = {program.small, program.generate, program.histogram, program.scan,
-                                                   program.scatter};
-    std::array<std::vector<uint32_t>, 5> candidate;
+    const std::array<CompiledParticleShader, 5> sources = {program.small, program.generate, program.histogram,
+                                                           program.scan, program.scatter};
+    std::array<CompiledParticleShader, 5> candidate;
     for (size_t index = 0; index < sources.size(); ++index)
-        candidate[index].assign(sources[index].words, sources[index].words + sources[index].wordCount);
+        candidate[index] = sources[index];
     shaders = std::move(candidate);
     return true;
 }
@@ -301,11 +275,11 @@ bool GpuParticleSortProgramStorage::IsValid() const noexcept
 GpuParticleSortProgram GpuParticleSortProgramStorage::View() const noexcept
 {
     return {
-        {shaders[0].data(), shaders[0].size()}, {shaders[1].data(), shaders[1].size()},
-        {shaders[2].data(), shaders[2].size()}, {shaders[3].data(), shaders[3].size()},
-        {shaders[4].data(), shaders[4].size()},
+        shaders[0], shaders[1], shaders[2], shaders[3], shaders[4],
     };
 }
+
+ParticleGpuSorter::ParticleGpuSorter() = default;
 
 ParticleGpuSorter::~ParticleGpuSorter()
 {
@@ -355,72 +329,33 @@ bool ParticleGpuSorter::Create(rhi::Device &device, const GpuParticleSorterDesc 
         return false;
     }
 
-    rhi::BindingLayoutDesc layoutDesc;
-    for (uint32_t binding = 0; binding < 11; ++binding)
-        layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 11;
-    m_layout = device.CreateBindingLayout(layoutDesc);
-    if (!m_layout.IsValid()) {
-        Destroy();
-        return false;
-    }
-
-    for (uint32_t pingPong = 0; pingPong < m_groups.size(); ++pingPong) {
-        const uint32_t output = 1u - pingPong;
-        const std::array<rhi::BufferHandle, 11> buffers = {
-            m_visibility,    m_indirectArguments, m_keys[pingPong],    m_indices[pingPong],
-            m_keys[output],  m_indices[output],   m_histograms,        m_blockOffsets,
-            m_globalOffsets, m_sourceIndices,     m_dispatchArguments,
-        };
-        rhi::BindGroupDesc groupDesc;
-        groupDesc.layout = m_layout;
-        for (uint32_t binding = 0; binding < buffers.size(); ++binding)
-            groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
-        groupDesc.bufferCount = static_cast<uint32_t>(buffers.size());
-        m_groups[pingPong] = device.CreateBindGroup(groupDesc);
-        if (!m_groups[pingPong].IsValid()) {
-            Destroy();
-            return false;
-        }
-    }
-
-    const std::array<ShaderBytecode, 5> shaders = {desc.program.small, desc.program.generate, desc.program.histogram,
-                                                   desc.program.scan, desc.program.scatter};
-    std::array<rhi::ComputePipelineHandle *, 5> pipelines = {&m_smallPipeline, &m_generatePipeline,
-                                                             &m_histogramPipeline, &m_scanPipeline, &m_scatterPipeline};
+    const std::array<CompiledParticleShader, 5> shaders = {
+        desc.program.small, desc.program.generate, desc.program.histogram, desc.program.scan, desc.program.scatter};
+    std::array<std::unique_ptr<ParticleComputePipeline> *, 5> pipelines = {
+        &m_smallPipeline, &m_generatePipeline, &m_histogramPipeline, &m_scanPipeline, &m_scatterPipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto shader =
-            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
-        if (!shader.IsValid()) {
-            Destroy();
-            return false;
+        auto program = std::make_unique<ParticleComputePipeline>(device, *shaders[index]);
+        for (uint32_t pingPong = 0; pingPong < 2; ++pingPong) {
+            const uint32_t output = 1u - pingPong;
+            program->AddBindings(
+                ParticleBufferBindings({m_visibility, m_indirectArguments, m_keys[pingPong], m_indices[pingPong],
+                                        m_keys[output], m_indices[output], m_histograms, m_blockOffsets,
+                                        m_globalOffsets, m_sourceIndices, m_dispatchArguments}));
         }
-        rhi::ComputePipelineDesc pipelineDesc;
-        pipelineDesc.computeShader = shader;
-        pipelineDesc.bindingLayouts[0] = m_layout;
-        pipelineDesc.bindingLayoutCount = 1;
-        pipelineDesc.pushConstantBytes = sizeof(GpuParticleSortConstants);
-        *pipelines[index] = device.CreateComputePipeline(pipelineDesc);
-        device.Release(shader);
-        if (!pipelines[index]->IsValid()) {
-            Destroy();
-            return false;
-        }
+        *pipelines[index] = std::move(program);
     }
     return true;
 }
 
 void ParticleGpuSorter::Destroy() noexcept
 {
+    m_smallPipeline.reset();
+    m_generatePipeline.reset();
+    m_histogramPipeline.reset();
+    m_scanPipeline.reset();
+    m_scatterPipeline.reset();
+
     if (m_device) {
-        m_device->Release(m_smallPipeline);
-        m_device->Release(m_scatterPipeline);
-        m_device->Release(m_scanPipeline);
-        m_device->Release(m_histogramPipeline);
-        m_device->Release(m_generatePipeline);
-        for (auto group : m_groups)
-            m_device->Release(group);
-        m_device->Release(m_layout);
         m_device->Release(m_globalOffsets);
         m_device->Release(m_blockOffsets);
         m_device->Release(m_histograms);
@@ -441,8 +376,6 @@ void ParticleGpuSorter::Destroy() noexcept
     m_histograms = {};
     m_blockOffsets = {};
     m_globalOffsets = {};
-    m_layout = {};
-    m_groups.fill({});
     m_smallPipeline = {};
     m_generatePipeline = {};
     m_histogramPipeline = {};
@@ -452,10 +385,8 @@ void ParticleGpuSorter::Destroy() noexcept
 
 bool ParticleGpuSorter::IsValid() const noexcept
 {
-    return m_device && m_capacity > 0 && m_blockCount > 0 && m_visibility.IsValid() && m_indirectArguments.IsValid() &&
-           m_sourceIndices.IsValid() && m_dispatchArguments.IsValid() && m_layout.IsValid() && m_groups[0].IsValid() &&
-           m_groups[1].IsValid() && m_generatePipeline.IsValid() && m_histogramPipeline.IsValid() &&
-           m_scanPipeline.IsValid() && m_scatterPipeline.IsValid() && m_smallPipeline.IsValid();
+    return m_device && m_smallPipeline && m_generatePipeline && m_histogramPipeline && m_scanPipeline &&
+           m_scatterPipeline;
 }
 
 GpuParticleSortConstants ParticleGpuSorter::Constants(uint32_t passIndex) const noexcept
@@ -470,59 +401,61 @@ GpuParticleSortConstants ParticleGpuSorter::Constants(uint32_t passIndex) const 
 void ParticleGpuSorter::RecordSmall(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,
                                     ParticleSortMode mode) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     auto constants = Constants();
     constants.view = view;
     constants.descending = mode == ParticleSortMode::BackToFront ? 1u : 0u;
-    RecordDirect(encoder, m_smallPipeline, m_groups[0], constants, 1);
+    RecordDirect(encoder, *m_smallPipeline, 0u, constants, 1);
 }
 
 void ParticleGpuSorter::RecordGenerate(const rhi::ComputeCommandEncoder &encoder, const std::array<float, 16> &view,
                                        ParticleSortMode mode) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     auto constants = Constants();
     constants.view = view;
     constants.descending = mode == ParticleSortMode::BackToFront ? 1u : 0u;
-    RecordIndirect(encoder, m_generatePipeline, m_groups[0], constants);
+    RecordIndirect(encoder, *m_generatePipeline, 0u, constants);
 }
 
 void ParticleGpuSorter::RecordHistogram(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     const auto constants = Constants(passIndex);
-    RecordIndirect(encoder, m_histogramPipeline, m_groups[passIndex % 2u], constants);
+    RecordIndirect(encoder, *m_histogramPipeline, passIndex % 2u, constants);
 }
 
 void ParticleGpuSorter::RecordScan(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     const auto constants = Constants(passIndex);
-    RecordDirect(encoder, m_scanPipeline, m_groups[passIndex % 2u], constants, 1);
+    RecordDirect(encoder, *m_scanPipeline, passIndex % 2u, constants, 1);
 }
 
 void ParticleGpuSorter::RecordScatter(const rhi::ComputeCommandEncoder &encoder, uint32_t passIndex) const
 {
+    if (!IsValid() || !encoder.IsValid())
+        return;
     const auto constants = Constants(passIndex);
-    RecordIndirect(encoder, m_scatterPipeline, m_groups[passIndex % 2u], constants);
+    RecordIndirect(encoder, *m_scatterPipeline, passIndex % 2u, constants);
 }
 
-void ParticleGpuSorter::RecordDirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                                     rhi::BindGroupHandle group, const GpuParticleSortConstants &constants,
-                                     uint32_t groups) const
+void ParticleGpuSorter::RecordDirect(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
+                                     uint32_t variant, const GpuParticleSortConstants &constants, uint32_t groups) const
 {
-    if (!IsValid() || !encoder.IsValid() || !pipeline.IsValid() || !group.IsValid() || groups == 0)
-        return;
-    encoder.BindPipeline(pipeline);
-    encoder.BindGroup(pipeline, 0, group);
-    encoder.PushConstants(pipeline, sizeof(constants), &constants);
+    pipeline.Bind(encoder, constants, variant);
     encoder.Dispatch(groups, 1, 1);
 }
 
-void ParticleGpuSorter::RecordIndirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                                       rhi::BindGroupHandle group, const GpuParticleSortConstants &constants) const
+void ParticleGpuSorter::RecordIndirect(const rhi::ComputeCommandEncoder &encoder,
+                                       const ParticleComputePipeline &pipeline, uint32_t variant,
+                                       const GpuParticleSortConstants &constants) const
 {
-    if (!IsValid() || !encoder.IsValid() || !pipeline.IsValid() || !group.IsValid())
-        return;
-    encoder.BindPipeline(pipeline);
-    encoder.BindGroup(pipeline, 0, group);
-    encoder.PushConstants(pipeline, sizeof(constants), &constants);
+    pipeline.Bind(encoder, constants, variant);
     encoder.DispatchIndirect(m_dispatchArguments);
 }
 

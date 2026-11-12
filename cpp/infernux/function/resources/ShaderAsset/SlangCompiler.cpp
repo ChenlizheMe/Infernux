@@ -309,7 +309,7 @@ try {
         if (!layout)
             throw ShaderCompilationError(FailureDiagnostics("reflect", source.path, diagnostics, targetName));
         AppendDiagnostics(result, diagnostics, "reflect", targetName);
-        target.resources = ReflectSlangResources(layout->getGlobalParamsTypeLayout());
+        target.resources = ReflectSlangResources(layout->getGlobalParamsTypeLayout(), target.rootConstants);
 
         for (SlangInt entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
             Slang::ComPtr<slang::IBlob> code;

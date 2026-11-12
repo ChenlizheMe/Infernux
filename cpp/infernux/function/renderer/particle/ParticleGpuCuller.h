@@ -14,16 +14,16 @@ namespace infernux::particle
 
 struct GpuParticleCullProgram
 {
-    ShaderBytecode reset;
-    ShaderBytecode cull;
-    ShaderBytecode finalize;
+    CompiledParticleShader reset;
+    CompiledParticleShader cull;
+    CompiledParticleShader finalize;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleCullProgramStorage
 {
-    std::array<std::vector<uint32_t>, 3> shaders;
+    std::array<CompiledParticleShader, 3> shaders;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleCullProgram &program);
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
@@ -85,7 +85,7 @@ class ParticleGpuCuller
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint32_t PlaneCount = 6;
 
-    ParticleGpuCuller() = default;
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuCuller();
     INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuCuller();
 
     ParticleGpuCuller(const ParticleGpuCuller &) = delete;
@@ -149,7 +149,7 @@ class ParticleGpuCuller
     INFERNUX_PARTICLE_RUNTIME_API void RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const;
 
   private:
-    void Record(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
+    void Record(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
                 const GpuParticleCullConstants &constants, uint32_t groups) const;
 
     rhi::Device *m_device = nullptr;
@@ -165,11 +165,9 @@ class ParticleGpuCuller
     rhi::BufferHandle m_visibleIndices;
     rhi::BufferHandle m_drawIndirectArguments;
     rhi::BufferHandle m_sortDispatchArguments;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::BindGroupHandle m_group;
-    rhi::ComputePipelineHandle m_resetPipeline;
-    rhi::ComputePipelineHandle m_cullPipeline;
-    rhi::ComputePipelineHandle m_finalizePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_resetPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_cullPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_finalizePipeline;
 };
 
 static_assert(sizeof(GpuParticleCullConstants) == 112);

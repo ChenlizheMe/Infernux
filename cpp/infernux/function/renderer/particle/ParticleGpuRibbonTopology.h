@@ -23,18 +23,18 @@ struct GpuParticleRibbonShaderSources
 
 struct GpuParticleRibbonProgram
 {
-    ShaderBytecode reset;
-    ShaderBytecode initialize;
-    ShaderBytecode histogram;
-    ShaderBytecode scan;
-    ShaderBytecode scatter;
+    CompiledParticleShader reset;
+    CompiledParticleShader initialize;
+    CompiledParticleShader histogram;
+    CompiledParticleShader scan;
+    CompiledParticleShader scatter;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
 };
 
 struct GpuParticleRibbonProgramStorage
 {
-    std::array<std::vector<uint32_t>, 5> shaders;
+    std::array<CompiledParticleShader, 5> shaders;
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool Assign(const GpuParticleRibbonProgram &program);
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
@@ -71,7 +71,7 @@ class ParticleGpuRibbonTopology
     static constexpr uint32_t KeyCount = 3;
     static constexpr uint32_t PassCount = PassesPerKey * KeyCount;
 
-    ParticleGpuRibbonTopology() = default;
+    INFERNUX_PARTICLE_RUNTIME_API ParticleGpuRibbonTopology();
     INFERNUX_PARTICLE_RUNTIME_API ~ParticleGpuRibbonTopology();
 
     ParticleGpuRibbonTopology(const ParticleGpuRibbonTopology &) = delete;
@@ -144,10 +144,10 @@ class ParticleGpuRibbonTopology
 
   private:
     [[nodiscard]] GpuParticleRibbonConstants Constants(uint32_t passIndex = 0) const noexcept;
-    void RecordDirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                      rhi::BindGroupHandle group, const GpuParticleRibbonConstants &constants, uint32_t groups) const;
-    void RecordIndirect(const rhi::ComputeCommandEncoder &encoder, rhi::ComputePipelineHandle pipeline,
-                        rhi::BindGroupHandle group, const GpuParticleRibbonConstants &constants) const;
+    void RecordDirect(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
+                      uint32_t variant, const GpuParticleRibbonConstants &constants, uint32_t groups) const;
+    void RecordIndirect(const rhi::ComputeCommandEncoder &encoder, const ParticleComputePipeline &pipeline,
+                        uint32_t variant, const GpuParticleRibbonConstants &constants) const;
 
     rhi::Device *m_device = nullptr;
     uint32_t m_capacity = 0;
@@ -162,13 +162,11 @@ class ParticleGpuRibbonTopology
     rhi::BufferHandle m_histograms;
     rhi::BufferHandle m_blockOffsets;
     rhi::BufferHandle m_globalOffsets;
-    rhi::BindingLayoutHandle m_layout;
-    std::array<rhi::BindGroupHandle, 2> m_groups{};
-    rhi::ComputePipelineHandle m_resetPipeline;
-    rhi::ComputePipelineHandle m_initializePipeline;
-    rhi::ComputePipelineHandle m_histogramPipeline;
-    rhi::ComputePipelineHandle m_scanPipeline;
-    rhi::ComputePipelineHandle m_scatterPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_resetPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_initializePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_histogramPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_scanPipeline;
+    std::unique_ptr<ParticleComputePipeline> m_scatterPipeline;
 };
 
 static_assert(sizeof(GpuParticleRibbonConstants) == 16);

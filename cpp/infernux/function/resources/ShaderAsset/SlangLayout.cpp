@@ -188,10 +188,10 @@ struct BindingOffset
 };
 
 void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, const std::string &path,
-                  std::vector<ShaderResourceLayout> &result);
+                  std::vector<ShaderResourceLayout> &result, std::optional<ShaderValueLayout> &rootConstants);
 
 void ReflectContainer(slang::TypeLayoutReflection *container, BindingOffset offset, const std::string &path,
-                      std::vector<ShaderResourceLayout> &result)
+                      std::vector<ShaderResourceLayout> &result, std::optional<ShaderValueLayout> &rootConstants)
 {
     if (container->getKind() == Kind::ParameterBlock)
         offset.binding = 0; // A parameter block owns its descriptor set.
@@ -206,18 +206,21 @@ void ReflectContainer(slang::TypeLayoutReflection *container, BindingOffset offs
         resource.binding.type = rhi::BindingType::UniformBuffer;
         resource.value = ValueLayout(value);
         resource.binding.minBufferBindingSize = resource.value.byteSize;
-        result.push_back(std::move(resource));
+        if (location.set == rhi::RootConstantGroup && location.binding == rhi::RootConstantBinding)
+            rootConstants = std::move(resource.value);
+        else
+            result.push_back(std::move(resource));
     }
     // The element variable holds offsets relative to the container. Its type
     // is unadjusted; getElementTypeLayout() already folds these offsets in.
-    ReflectValue(value, offset.At(element), path, result);
+    ReflectValue(value, offset.At(element), path, result, rootConstants);
 }
 
 void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, const std::string &path,
-                  std::vector<ShaderResourceLayout> &result)
+                  std::vector<ShaderResourceLayout> &result, std::optional<ShaderValueLayout> &rootConstants)
 {
     if (layout->getKind() == Kind::ConstantBuffer || layout->getKind() == Kind::ParameterBlock) {
-        ReflectContainer(layout, offset, path, result);
+        ReflectContainer(layout, offset, path, result, rootConstants);
         return;
     }
     const auto rangeCount = layout->getBindingRangeCount();
@@ -231,6 +234,10 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
         const auto first = layout->getBindingRangeFirstDescriptorRangeIndex(index);
         const auto count = layout->getBindingRangeDescriptorRangeCount(index);
         auto *type = layout->getBindingRangeLeafTypeLayout(index);
+        if (bindingType == slang::BindingType::PushConstant) {
+            rootConstants = ValueLayout(type->getElementTypeLayout());
+            continue;
+        }
         for (SlangInt range = first; range < first + count; ++range) {
             ShaderResourceLayout resource;
             resource.name = names[index];
@@ -286,7 +293,7 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
         const auto type = layout->getBindingRangeType(range);
         if (type == slang::BindingType::ConstantBuffer || type == slang::BindingType::ParameterBlock)
             ReflectContainer(layout->getBindingRangeLeafTypeLayout(range),
-                             offset.At(layout->getSubObjectRangeOffset(index)), names[range], result);
+                             offset.At(layout->getSubObjectRangeOffset(index)), names[range], result, rootConstants);
     }
 }
 void StageType(slang::TypeLayoutReflection *type, SlangParameterCategory category, uint32_t location,
@@ -337,10 +344,11 @@ void StageType(slang::TypeLayoutReflection *type, SlangParameterCategory categor
 }
 } // namespace
 
-std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout)
+std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout,
+                                                        std::optional<ShaderValueLayout> &rootConstants)
 {
     std::vector<ShaderResourceLayout> result;
-    ReflectValue(layout, {}, {}, result);
+    ReflectValue(layout, {}, {}, result, rootConstants);
     std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
         return std::tie(left.set, left.binding.binding) < std::tie(right.set, right.binding.binding);
     });

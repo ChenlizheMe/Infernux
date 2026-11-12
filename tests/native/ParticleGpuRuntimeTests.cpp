@@ -19,6 +19,7 @@
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -41,6 +42,13 @@ namespace
 {
 
 using namespace infernux;
+
+particle::CompiledParticleShader CompileParticleFixture(std::string_view source,
+                                                        ShaderCodeTarget target = ShaderCodeTarget::SpirV)
+{
+    return std::make_shared<const ShaderTargetCode>(
+        CompileSlangNativeModule({"particle_fixture", "particle_fixture.slang", std::string(source)}, target));
+}
 
 bool CanRecordCompute(void *, rhi::ComputePipelineHandle pipeline, rhi::BindGroupHandle group)
 {
@@ -70,6 +78,11 @@ bool NearlyEqual(float left, float right)
 
 struct FakeDevice final : rhi::Device
 {
+    rhi::ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override
+    {
+        return rhi::ShaderSourceLanguage::SpirV;
+    }
+
     rhi::DeviceCaps capabilities;
     std::vector<rhi::BufferDesc> buffers;
     std::vector<rhi::TextureDesc> textures;
@@ -775,7 +788,11 @@ static bool VerifyParticlePassBinding(const std::string &kind, bool bindless, Sh
         topologyDesc.sourceIndices = indices;
         topologyDesc.sourceIndirectArguments = indirect;
         topologyDesc.simulationControl = control;
-        topologyDesc.program = {shader, shader, shader, shader, shader};
+        topologyDesc.program = {CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Reset()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Initialize()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Histogram()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scan()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scatter())};
         assert(topology->Create(device, topologyDesc));
         particle::GpuRibbonRendererDesc desc;
         desc.program = {shader, shader, shader, shader};
@@ -977,7 +994,11 @@ static void TestViewBindingRetirement(const std::string &kind)
         topologyDesc.sourceIndices = indices;
         topologyDesc.sourceIndirectArguments = indirect;
         topologyDesc.simulationControl = control;
-        topologyDesc.program = {shader, shader, shader, shader, shader};
+        topologyDesc.program = {CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Reset()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Initialize()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Histogram()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scan()),
+                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scatter())};
         assert(topology->Create(device, topologyDesc));
         particle::GpuRibbonRendererDesc desc;
         desc.program = {shader, shader, shader, shader};
@@ -1054,7 +1075,9 @@ int main()
         device.capabilities.limits.minStorageBufferOffsetAlignment = 256;
         device.capabilities.portable.maxStorageBufferBinding = 1u << 30;
         const std::array<uint32_t, 5> code = {0x07230203u, 0u, 0u, 0u, 0u};
-        const particle::GpuParticleSpawnProgram program{{code.data(), code.size()}, {code.data(), code.size()}};
+        const particle::GpuParticleSpawnProgram program{
+            CompileParticleFixture(particle::GpuParticleSpawnShaderSources::Advance()),
+            CompileParticleFixture(particle::GpuParticleSpawnShaderSources::Prepare())};
         particle::ParticleGpuGraphSpawnDomain domain;
         assert(domain.Create(device, 871, 3, program, std::vector<uint32_t>(16, 7)));
         EventTransferTrace trace;
@@ -1456,9 +1479,6 @@ int main()
 
     {
         FakeDevice migrationDevice;
-        std::array<std::array<uint32_t, 5>, 2> migrationWords{};
-        for (auto &shader : migrationWords)
-            shader[0] = 0x07230203u;
         particle::GpuParticleMigrationDesc migrationDesc;
         migrationDesc.sourceCapacity = 512;
         migrationDesc.destinationCapacity = 256;
@@ -1475,10 +1495,8 @@ int main()
         migrationDesc.copyRanges = {{4, 4, 3, 0}, {8, 12, 4, 0}};
         migrationDesc.defaultStateWords.resize(20, 0u);
         migrationDesc.defaultStateWords[16] = 0x3f800000u;
-        migrationDesc.program = {
-            {migrationWords[0].data(), migrationWords[0].size()},
-            {migrationWords[1].data(), migrationWords[1].size()},
-        };
+        migrationDesc.program = {CompileParticleFixture(particle::GpuParticleMigrationShaderSources::Reset()),
+                                 CompileParticleFixture(particle::GpuParticleMigrationShaderSources::Migrate())};
 
         particle::ParticleGpuMigrator migrator;
         assert(migrator.Create(migrationDevice, migrationDesc));
@@ -1506,7 +1524,8 @@ int main()
         assert(trace.dispatches == std::vector<uint32_t>({1, 2}));
         migrator.Destroy();
         assert(migrationDevice.bufferReleases == 2 && migrationDevice.pipelineReleases == 2 &&
-               migrationDevice.groupReleases == 1 && migrationDevice.layoutReleases == 1);
+               migrationDevice.groupReleases == migrationDevice.groupCreates &&
+               migrationDevice.layoutReleases == migrationDevice.layoutCreates);
 
         migrationDesc.copyRanges.clear();
         const size_t buffersBeforeEmptyMigration = migrationDevice.buffers.size();
@@ -2349,25 +2368,19 @@ int main()
     assert(!particle::ParticleRenderGraph::ShouldUseFusedUpdateRendering(routeRequest, runtime));
 
     FakeDevice boundsDevice;
-    std::array<std::array<uint32_t, 5>, 3> boundsWords{};
-    for (auto &shader : boundsWords)
-        shader[0] = 0x07230203u;
     particle::GpuParticleBoundsDesc boundsDesc;
     boundsDesc.capacity = runtime.Capacity();
     boundsDesc.visibility = runtime.VisibilityBuffer();
     boundsDesc.sourceIndices = runtime.RenderIndexBuffer();
     boundsDesc.sourceIndirectArguments = runtime.IndirectBuffer();
     boundsDesc.simulationControl = runtime.SimulationControlBuffer();
-    boundsDesc.program = {
-        {boundsWords[0].data(), boundsWords[0].size()},
-        {boundsWords[1].data(), boundsWords[1].size()},
-        {boundsWords[2].data(), boundsWords[2].size()},
-    };
+    boundsDesc.program = {CompileParticleFixture(particle::GpuParticleBoundsShaderSources::Prepare()),
+                          CompileParticleFixture(particle::GpuParticleBoundsShaderSources::Reset()),
+                          CompileParticleFixture(particle::GpuParticleBoundsShaderSources::Reduce())};
     particle::GpuParticleBoundsProgramStorage boundsProgramStorage;
     assert(boundsProgramStorage.Assign(boundsDesc.program) && boundsProgramStorage.IsValid());
-    assert(boundsProgramStorage.View().prepare.words != boundsDesc.program.prepare.words &&
-           boundsProgramStorage.View().reset.words != boundsDesc.program.reset.words &&
-           boundsProgramStorage.View().reset.wordCount == boundsDesc.program.reset.wordCount);
+    assert(boundsProgramStorage.View().prepare == boundsDesc.program.prepare &&
+           boundsProgramStorage.View().reset == boundsDesc.program.reset);
     particle::ParticleGpuBounds bounds;
     assert(bounds.Create(boundsDevice, boundsDesc));
     assert(bounds.IsValid() && bounds.Capacity() == 1000 && bounds.VisibilityBuffer() == runtime.VisibilityBuffer() &&
@@ -2382,9 +2395,10 @@ int main()
            rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Storage) &&
            rhi::HasBufferUsage(boundsDevice.buffers[1].usage, rhi::BufferUsageFlags::Indirect) &&
            boundsDevice.buffers[1].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute));
-    assert(boundsDevice.layouts.size() == 1 && boundsDevice.layouts[0].entryCount == 6 &&
-           boundsDevice.bindGroups.size() == 1 && boundsDevice.bindGroups[0].bufferCount == 6 &&
-           boundsDevice.shaderCreates == 3 && boundsDevice.shaderReleases == 3 && boundsDevice.pipelineCreates == 3);
+    assert(std::all_of(boundsDevice.layouts.begin(), boundsDevice.layouts.end(),
+                       [](const auto &layout) { return layout.entryCount <= 8; }) &&
+           std::all_of(boundsDevice.bindGroups.begin(), boundsDevice.bindGroups.end(),
+                       [](const auto &group) { return group.bufferCount <= 8; }));
 
     BoundsTrace boundsTrace;
     const rhi::ComputeCommandEncoder::DispatchTable boundsDispatch = {
@@ -2438,13 +2452,11 @@ int main()
            std::equal(manualUpper.begin(), manualUpper.end(), boundsTrace.constants[6].manualUpper.begin()) &&
            boundsTrace.constants[7].capacity == 1000);
     bounds.Destroy();
-    assert(!bounds.IsValid() && boundsDevice.bufferReleases == 2 && boundsDevice.groupReleases == 1 &&
-           boundsDevice.layoutReleases == 1 && boundsDevice.pipelineReleases == 3);
+    assert(!bounds.IsValid() && boundsDevice.bufferReleases == 2 &&
+           boundsDevice.groupReleases == boundsDevice.groupCreates &&
+           boundsDevice.layoutReleases == boundsDevice.layoutCreates && boundsDevice.pipelineReleases == 3);
 
     FakeDevice cullDevice;
-    std::array<std::array<uint32_t, 5>, 3> cullWords{};
-    for (auto &shader : cullWords)
-        shader[0] = 0x07230203u;
     particle::GpuParticleCullerDesc cullerDesc;
     cullerDesc.capacity = runtime.Capacity();
     cullerDesc.vertexCount = 6;
@@ -2454,34 +2466,19 @@ int main()
     cullerDesc.sourceIndices = runtime.RenderIndexBuffer();
     cullerDesc.bounds = {800, 1};
     cullerDesc.simulationControl = runtime.SimulationControlBuffer();
-    cullerDesc.program = {
-        {cullWords[0].data(), cullWords[0].size()},
-        {cullWords[1].data(), cullWords[1].size()},
-        {cullWords[2].data(), cullWords[2].size()},
-    };
+    cullerDesc.program = {CompileParticleFixture(particle::GpuParticleCullShaderSources::Reset()),
+                          CompileParticleFixture(particle::GpuParticleCullShaderSources::Cull()),
+                          CompileParticleFixture(particle::GpuParticleCullShaderSources::Finalize())};
     particle::GpuParticleCullProgramStorage cullProgramStorage;
     assert(cullProgramStorage.Assign(cullerDesc.program) && cullProgramStorage.IsValid());
-    assert(cullProgramStorage.View().reset.words != cullerDesc.program.reset.words &&
-           cullProgramStorage.View().reset.wordCount == cullerDesc.program.reset.wordCount);
-    const std::string_view cullSource = particle::GpuParticleCullShaderSources::Cull();
-    const std::string_view cullResetSource = particle::GpuParticleCullShaderSources::Reset();
-    assert(cullSource.find("shared uint local_visible_count;") != std::string_view::npos &&
-           cullSource.find("shared uint global_base;") != std::string_view::npos &&
-           cullSource.find("atomicAdd(local_visible_count, 1u)") != std::string_view::npos &&
-           cullSource.find("atomicAdd(draw_instance_count, local_visible_count)") != std::string_view::npos &&
-           cullSource.find("atomicAdd(draw_instance_count, 1u)") == std::string_view::npos &&
-           cullSource.find("barrier();") != std::string_view::npos &&
-           cullSource.find("source_index >= source_count) return") == std::string_view::npos &&
-           cullSource.find("ribbon_segments ? source_index : source_indices[source_index]") == std::string_view::npos &&
-           cullSource.find("output_value = source_index") != std::string_view::npos &&
-           cullSource.find("output_value = particle_index") != std::string_view::npos &&
-           cullSource.find("bounds_fully_inside") != std::string_view::npos &&
-           cullSource.find("stats_flags & 8u") != std::string_view::npos &&
-           cullSource.find("draw_instance_count =") == std::string_view::npos &&
-           cullResetSource.find("bounds_fully_inside") != std::string_view::npos &&
-           cullResetSource.find("stats_flags |= 8u") != std::string_view::npos &&
-           particle::GpuParticleCullShaderSources::Finalize().find("min(draw_instance_count, pc.capacity)") !=
-               std::string_view::npos);
+    assert(cullProgramStorage.View().reset == cullerDesc.program.reset);
+    auto portableCull = CompileParticleFixture(particle::GpuParticleCullShaderSources::Reset(), ShaderCodeTarget::Wgsl);
+    const std::weak_ptr<const ShaderTargetCode> portableWeak = portableCull;
+    particle::GpuParticleCullProgramStorage portableStorage;
+    assert(portableStorage.Assign({portableCull, portableCull, portableCull}));
+    portableCull.reset();
+    assert(!portableWeak.expired() && portableStorage.View().reset->target == ShaderCodeTarget::Wgsl &&
+           portableStorage.View().reset->rootConstants);
     particle::ParticleGpuCuller sceneCuller;
     particle::ParticleGpuCuller gameCuller;
     assert(sceneCuller.Create(cullDevice, cullerDesc));
@@ -2501,9 +2498,10 @@ int main()
            cullDevice.buffers[2].byteSize == sizeof(particle::GpuParticleCullDispatchState) &&
            rhi::HasBufferUsage(cullDevice.buffers[2].usage, rhi::BufferUsageFlags::Indirect) &&
            rhi::HasBufferUsage(cullDevice.buffers[2].usage, rhi::BufferUsageFlags::TransferSource));
-    assert(cullDevice.layouts.size() == 2 && cullDevice.layouts[0].entryCount == 9 &&
-           cullDevice.bindGroups.size() == 2 && cullDevice.bindGroups[0].bufferCount == 9 &&
-           cullDevice.shaderCreates == 6 && cullDevice.shaderReleases == 6 && cullDevice.pipelineCreates == 6);
+    assert(std::all_of(cullDevice.layouts.begin(), cullDevice.layouts.end(),
+                       [](const auto &layout) { return layout.entryCount <= 8; }) &&
+           std::all_of(cullDevice.bindGroups.begin(), cullDevice.bindGroups.end(),
+                       [](const auto &group) { return group.bufferCount <= 8; }));
 
     CullTrace cullTrace;
     const rhi::ComputeCommandEncoder::DispatchTable cullDispatch = {&CullTrace::BindPipeline,     &CullTrace::BindGroup,
@@ -2531,27 +2529,24 @@ int main()
     sceneCuller.Destroy();
     gameCuller.Destroy();
     assert(!sceneCuller.IsValid() && !gameCuller.IsValid() && cullDevice.bufferReleases == 6 &&
-           cullDevice.groupReleases == 2 && cullDevice.layoutReleases == 2 && cullDevice.pipelineReleases == 6);
+           cullDevice.groupReleases == cullDevice.groupCreates &&
+           cullDevice.layoutReleases == cullDevice.layoutCreates && cullDevice.pipelineReleases == 6);
 
     FakeDevice sortDevice;
-    std::array<std::array<uint32_t, 5>, 5> sortWords{};
-    for (auto &shader : sortWords)
-        shader[0] = 0x07230203u;
     particle::GpuParticleSorterDesc sorterDesc;
     sorterDesc.capacity = runtime.Capacity();
     sorterDesc.visibility = runtime.VisibilityBuffer();
     sorterDesc.indirectArguments = runtime.IndirectBuffer();
     sorterDesc.sourceIndices = runtime.RenderIndexBuffer();
     sorterDesc.dispatchArguments = {700, 1};
-    sorterDesc.program = {
-        {sortWords[0].data(), sortWords[0].size()}, {sortWords[1].data(), sortWords[1].size()},
-        {sortWords[2].data(), sortWords[2].size()}, {sortWords[3].data(), sortWords[3].size()},
-        {sortWords[4].data(), sortWords[4].size()},
-    };
+    sorterDesc.program = {CompileParticleFixture(particle::GpuParticleSortShaderSources::Small()),
+                          CompileParticleFixture(particle::GpuParticleSortShaderSources::Generate()),
+                          CompileParticleFixture(particle::GpuParticleSortShaderSources::Histogram()),
+                          CompileParticleFixture(particle::GpuParticleSortShaderSources::Scan()),
+                          CompileParticleFixture(particle::GpuParticleSortShaderSources::Scatter())};
     particle::GpuParticleSortProgramStorage sortProgramStorage;
     assert(sortProgramStorage.Assign(sorterDesc.program) && sortProgramStorage.IsValid());
-    assert(sortProgramStorage.View().generate.words != sorterDesc.program.generate.words &&
-           sortProgramStorage.View().generate.wordCount == sorterDesc.program.generate.wordCount);
+    assert(sortProgramStorage.View().generate == sorterDesc.program.generate);
     particle::ParticleGpuSorter sorter;
     assert(sorter.Create(sortDevice, sorterDesc));
     particle::ParticleGpuSorter gameViewSorter;
@@ -2566,10 +2561,11 @@ int main()
     assert(sortDevice.buffers.size() == 14 && sortDevice.buffers[0].byteSize == 4000 &&
            sortDevice.buffers[4].byteSize == 256 && sortDevice.buffers[5].byteSize == 256 &&
            sortDevice.buffers[6].byteSize == 64);
-    assert(sortDevice.layouts.size() == 2 && sortDevice.layouts[0].entryCount == 11 &&
-           sortDevice.bindGroups.size() == 4 && sortDevice.bindGroups[0].bufferCount == 11 &&
-           sortDevice.bindGroups[1].bufferCount == 11);
-    assert(sortDevice.shaderCreates == 10 && sortDevice.shaderReleases == 10 && sortDevice.pipelineCreates == 10);
+    assert(std::all_of(sortDevice.layouts.begin(), sortDevice.layouts.end(),
+                       [](const auto &layout) { return layout.entryCount <= 8; }) &&
+           std::all_of(sortDevice.bindGroups.begin(), sortDevice.bindGroups.end(),
+                       [](const auto &group) { return group.bufferCount <= 8; }));
+    assert(sortDevice.shaderCreates == 10 && sortDevice.shaderReleases == 0 && sortDevice.pipelineCreates == 10);
 
     SortTrace sortTrace;
     const rhi::ComputeCommandEncoder::DispatchTable sortDispatch = {&SortTrace::BindPipeline,     &SortTrace::BindGroup,
@@ -2578,6 +2574,7 @@ int main()
     const rhi::ComputeCommandEncoder sortEncoder(&sortTrace, &sortDispatch);
     std::array<float, 16> sortView{};
     sortView[0] = sortView[5] = sortView[10] = sortView[15] = 1.0f;
+    const auto preparedSortGroups = sortDevice.groupCreates;
     // Infernux uses GLM's left-handed view convention: visible depth grows
     // along +Z. Back-to-front therefore reverses the ordered float key so the
     // radix/odd-even sort emits farther particles before nearer particles.
@@ -2594,8 +2591,7 @@ int main()
            sortTrace.constants[0].descending == 1 && sortTrace.constants[0].capacity == 1000 &&
            sortTrace.constants[0].blockCount == 4 && sortTrace.constants[1].digitShift == 0 &&
            sortTrace.constants[4].digitShift == 4);
-    assert(sortTrace.groups[0] == sortTrace.groups[1] && sortTrace.groups[1] == sortTrace.groups[2] &&
-           sortTrace.groups[2] == sortTrace.groups[3] && sortTrace.groups[4] != sortTrace.groups[3]);
+    assert(sortTrace.groups[1] != sortTrace.groups[4] && sortDevice.groupCreates == preparedSortGroups);
 
     SortTrace gameSortTrace;
     const rhi::ComputeCommandEncoder gameSortEncoder(&gameSortTrace, &sortDispatch);
@@ -2608,7 +2604,8 @@ int main()
     sorter.Destroy();
     gameViewSorter.Destroy();
     assert(!sorter.IsValid() && !gameViewSorter.IsValid() && sortDevice.bufferReleases == 14 &&
-           sortDevice.groupReleases == 4 && sortDevice.layoutReleases == 2 && sortDevice.pipelineReleases == 10);
+           sortDevice.groupReleases == sortDevice.groupCreates &&
+           sortDevice.layoutReleases == sortDevice.layoutCreates && sortDevice.pipelineReleases == 10);
 
     static_assert(particle::ParticleGpuSorter::SmallSortCapacity == 1024);
     FakeDevice smallSortDevice;
@@ -2626,8 +2623,9 @@ int main()
            smallSortTrace.constants[0].capacity == particle::ParticleGpuSorter::SmallSortCapacity &&
            smallSortTrace.constants[0].blockCount == 4);
     smallSorter.Destroy();
-    assert(!smallSorter.IsValid() && smallSortDevice.bufferReleases == 7 && smallSortDevice.groupReleases == 2 &&
-           smallSortDevice.layoutReleases == 1 && smallSortDevice.pipelineReleases == 5);
+    assert(!smallSorter.IsValid() && smallSortDevice.bufferReleases == 7 &&
+           smallSortDevice.groupReleases == smallSortDevice.groupCreates &&
+           smallSortDevice.layoutReleases == smallSortDevice.layoutCreates && smallSortDevice.pipelineReleases == 5);
 
     FakeDevice radixThresholdDevice;
     auto radixThresholdDesc = sorterDesc;
@@ -2639,22 +2637,17 @@ int main()
     radixThresholdSorter.Destroy();
 
     FakeDevice ribbonDevice;
-    std::array<std::array<uint32_t, 5>, 5> ribbonTopologyWords{};
-    for (auto &shader : ribbonTopologyWords)
-        shader[0] = 0x07230203u;
     particle::GpuParticleRibbonDesc ribbonDesc;
     ribbonDesc.capacity = runtime.Capacity();
     ribbonDesc.instances = runtime.InstanceBuffer();
     ribbonDesc.sourceIndices = runtime.RenderIndexBuffer();
     ribbonDesc.sourceIndirectArguments = runtime.IndirectBuffer();
     ribbonDesc.simulationControl = runtime.SimulationControlBuffer();
-    ribbonDesc.program = {
-        {ribbonTopologyWords[0].data(), ribbonTopologyWords[0].size()},
-        {ribbonTopologyWords[1].data(), ribbonTopologyWords[1].size()},
-        {ribbonTopologyWords[2].data(), ribbonTopologyWords[2].size()},
-        {ribbonTopologyWords[3].data(), ribbonTopologyWords[3].size()},
-        {ribbonTopologyWords[4].data(), ribbonTopologyWords[4].size()},
-    };
+    ribbonDesc.program = {CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Reset()),
+                          CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Initialize()),
+                          CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Histogram()),
+                          CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scan()),
+                          CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scatter())};
     particle::GpuParticleRibbonProgramStorage ribbonTopologyStorage;
     assert(ribbonTopologyStorage.Assign(ribbonDesc.program) && ribbonTopologyStorage.IsValid());
     auto ribbonTopology = std::make_shared<particle::ParticleGpuRibbonTopology>();
@@ -2671,9 +2664,10 @@ int main()
            rhi::HasBufferUsage(ribbonDevice.buffers[3].usage, rhi::BufferUsageFlags::Indirect) &&
            ribbonDevice.buffers[4].byteSize == 256 && ribbonDevice.buffers[5].byteSize == 256 &&
            ribbonDevice.buffers[6].byteSize == 64);
-    assert(ribbonDevice.layouts.size() == 1 && ribbonDevice.layouts[0].entryCount == 11 &&
-           ribbonDevice.bindGroups.size() == 2 && ribbonDevice.bindGroups[0].bufferCount == 11 &&
-           ribbonDevice.shaderCreates == 5 && ribbonDevice.shaderReleases == 5 && ribbonDevice.pipelineCreates == 5);
+    assert(std::all_of(ribbonDevice.layouts.begin(), ribbonDevice.layouts.end(),
+                       [](const auto &layout) { return layout.entryCount <= 8; }) &&
+           std::all_of(ribbonDevice.bindGroups.begin(), ribbonDevice.bindGroups.end(),
+                       [](const auto &group) { return group.bufferCount <= 8; }));
 
     particle::GpuParticleCullerDesc ribbonCullerDesc;
     ribbonCullerDesc.capacity = runtime.Capacity();

@@ -76,15 +76,15 @@ struct alignas(16) GpuParticleSpawnDomainConstants
 
 struct GpuParticleSpawnProgram
 {
-    ShaderBytecode advance;
-    ShaderBytecode prepare;
+    CompiledParticleShader advance;
+    CompiledParticleShader prepare;
 
     [[nodiscard]] bool IsValid() const noexcept;
 };
 
 struct GpuParticleSpawnProgramStorage
 {
-    std::array<std::vector<uint32_t>, 2> shaders;
+    std::array<CompiledParticleShader, 2> shaders;
 
     [[nodiscard]] bool Assign(const GpuParticleSpawnProgram &program);
     [[nodiscard]] bool IsValid() const noexcept;
@@ -132,7 +132,7 @@ class ParticleGpuGraphSpawnDomain
     static constexpr uint32_t WorkgroupSize = 256;
     static constexpr uint64_t IndirectOffset = offsetof(GpuParticleSpawnMetadata, dispatchGroupCountX);
 
-    ParticleGpuGraphSpawnDomain() = default;
+    ParticleGpuGraphSpawnDomain();
     ~ParticleGpuGraphSpawnDomain();
 
     ParticleGpuGraphSpawnDomain(const ParticleGpuGraphSpawnDomain &) = delete;
@@ -253,10 +253,8 @@ class ParticleGpuGraphSpawnDomain
     rhi::BufferHandle m_spawnMetadata;
     rhi::BufferHandle m_parameterBuffer;
     uint32_t m_parameterWordCount = 0;
-    rhi::BindingLayoutHandle m_domainLayout;
-    rhi::BindGroupHandle m_advanceGroup;
-    rhi::ComputePipelineHandle m_advancePipeline;
-    rhi::ComputePipelineHandle m_preparePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_advancePipeline;
+    std::unique_ptr<ParticleComputePipeline> m_preparePipeline;
     bool m_resetPending = true;
     bool m_framePending = false;
     std::vector<rhi::BindGroupHandle> m_runtimeGroups;

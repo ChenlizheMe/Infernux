@@ -1,4 +1,5 @@
 #include "ParticleGpuSystemManager.h"
+#include "ParticleComputePipeline.h"
 
 #include "ParticleGpuCollisionScene.h"
 #include "ParticleGpuDrawRegistry.h"
@@ -70,62 +71,27 @@ class StateGatherProgram
     static constexpr uint32_t IdentityWords = 3;
     static constexpr uint32_t SkipIdentities = UINT32_MAX;
 
-    StateGatherProgram(rhi::Device &device, ShaderBytecode bytecode) : m_device(device)
+    StateGatherProgram(rhi::Device &device, const CompiledParticleShader &code) : m_program(device, *code)
     {
-        rhi::BindingLayoutDesc layout;
-        for (uint32_t binding = 0; binding < 5; ++binding)
-            layout.entries[layout.entryCount++] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute,
-                                                   1};
-        m_layout = device.CreateBindingLayout(layout);
-        const auto shader =
-            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(bytecode.words, bytecode.wordCount));
-        if (m_layout.IsValid() && shader.IsValid()) {
-            rhi::ComputePipelineDesc pipeline;
-            pipeline.computeShader = shader;
-            pipeline.bindingLayouts[0] = m_layout;
-            pipeline.bindingLayoutCount = 1;
-            pipeline.pushConstantBytes = sizeof(StateGatherConstants);
-            m_pipeline = device.CreateComputePipeline(pipeline);
-        }
-        device.Release(shader);
-    }
-
-    ~StateGatherProgram()
-    {
-        m_device.Release(m_pipeline);
-        m_device.Release(m_layout);
-    }
-
-    [[nodiscard]] bool IsValid() const noexcept
-    {
-        return m_pipeline.IsValid();
     }
 
     [[nodiscard]] rhi::BindGroupHandle Bind(const ParticleGpuRuntime &runtime, rhi::BufferHandle output,
                                             rhi::BufferHandle identities) const
     {
-        rhi::BindGroupDesc group;
-        group.layout = m_layout;
-        const std::array buffers = {runtime.StateBuffer(), runtime.AliveIndexBuffer(runtime.AliveReadSlot()),
-                                    runtime.AliveControlBuffer(), output, identities};
-        for (uint32_t binding = 0; binding < buffers.size(); ++binding)
-            group.buffers[group.bufferCount++] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
-        return m_device.CreateBindGroup(group);
+        return m_program.CreateBindings(
+            ParticleBufferBindings({runtime.StateBuffer(), runtime.AliveIndexBuffer(runtime.AliveReadSlot()),
+                                    runtime.AliveControlBuffer(), output, identities}));
     }
 
     void Record(const rhi::ComputeCommandEncoder &encoder, rhi::BindGroupHandle group,
                 const StateGatherConstants &constants) const
     {
-        encoder.BindPipeline(m_pipeline);
-        encoder.BindGroup(m_pipeline, 0, group);
-        encoder.PushConstants(m_pipeline, sizeof(constants), &constants);
-        encoder.Dispatch(1 + (constants.rowCount - 1) / WorkgroupSize);
+        m_program.BindGroup(encoder, group, constants);
+        encoder.Dispatch((constants.rowCount + WorkgroupSize - 1) / WorkgroupSize);
     }
 
   private:
-    rhi::Device &m_device;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::ComputePipelineHandle m_pipeline;
+    ParticleComputePipeline m_program;
 };
 
 struct StateGatherBindings
@@ -187,14 +153,12 @@ uint32_t FloatBits(float value) noexcept
 
 std::string_view GpuParticleStateGatherShaderSource() noexcept
 {
-    return R"glsl(#version 450
-layout(local_size_x = 64) in;
-layout(std430, set = 0, binding = 0) readonly buffer State { uint state[]; };
-layout(std430, set = 0, binding = 1) readonly buffer LiveSlots { uint live_slots[]; };
-layout(std430, set = 0, binding = 2) readonly buffer LiveControl { uint live_counts[2]; };
-layout(std430, set = 0, binding = 3) writeonly buffer Samples { uint samples[]; };
-layout(std430, set = 0, binding = 4) writeonly buffer Identities { uint identities[]; };
-layout(push_constant) uniform Gather {
+    return R"slang([[vk::binding(0, 0)]] StructuredBuffer<uint> state;
+[[vk::binding(1, 0)]] StructuredBuffer<uint> live_slots;
+[[vk::binding(2, 0)]] StructuredBuffer<uint> live_counts;
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint> samples;
+[[vk::binding(4, 0)]] RWStructuredBuffer<uint> identities;
+struct Gather {
     uint stride_words;
     uint field_word;
     uint field_words;
@@ -203,10 +167,12 @@ layout(push_constant) uniform Gather {
     uint row_count;
     uint output_word;
     uint identity_word;
-} pc;
+};
+INX_ROOT_CONSTANTS ConstantBuffer<Gather> pc;
 
-void main() {
-    uint row = gl_GlobalInvocationID.x;
+[shader("compute")] [numthreads(64, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_id : SV_GroupID, uint3 group_thread_id : SV_GroupThreadID, uint group_index : SV_GroupIndex) {
+    uint row = dispatch_id.x;
     if (row >= pc.row_count)
         return;
 
@@ -230,7 +196,7 @@ void main() {
     for (uint field = 0u; field < pc.field_words; ++field)
         samples[dest + field] = live ? state[source + pc.field_word + field] : 0u;
 }
-)glsl";
+)slang";
 }
 
 struct ParticleGpuSystemManager::Impl
@@ -2349,7 +2315,7 @@ bool ParticleGpuSystemManager::Initialize(
     const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
     const GpuParticleMigrationProgram &migrationProgram, const GpuParticleSpawnProgram &spawnProgram,
     const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram,
-    ShaderBytecode stateGatherShader)
+    CompiledParticleShader stateGatherShader)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
         !spawnProgram.IsValid() || ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid()) {
@@ -2395,13 +2361,8 @@ bool ParticleGpuSystemManager::Initialize(
         return false;
     }
     m_impl->spawnProgram = std::move(spawnStorage);
-    if (stateGatherShader.wordCount != 0) {
+    if (IsCompiledParticleShaderValid(stateGatherShader)) {
         m_impl->stateGatherProgram = std::make_unique<StateGatherProgram>(context.GetRhiDevice(), stateGatherShader);
-        if (!m_impl->stateGatherProgram->IsValid()) {
-            INXLOG_ERROR("ParticleGpuSystemManager failed to create the state gather program");
-            Shutdown();
-            return false;
-        }
     }
     if (ribbonTopologyProgram.IsValid()) {
         auto ribbonTopologyStorage = std::make_shared<GpuParticleRibbonProgramStorage>();

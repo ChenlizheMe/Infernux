@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ParticleRuntimeApi.h"
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include "ParticleGpuContactRuntime.h"
 #include "ParticleGpuContinuationRuntime.h"
@@ -17,10 +18,20 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace infernux::particle
 {
+
+class ParticleComputePipeline;
+using CompiledParticleShader = std::shared_ptr<const ShaderTargetCode>;
+
+inline bool IsCompiledParticleShaderValid(const CompiledParticleShader &shader) noexcept
+{
+    return shader && shader->entries.size() == 1 && shader->entries[0].stage == rhi::ShaderStage::Compute &&
+           !shader->entries[0].code.empty();
+}
 
 enum class GpuKernelStage : uint8_t
 {
@@ -81,6 +92,37 @@ struct ShaderBytecode
     {
         return IsSpirV() || IsWgsl();
     }
+
+    [[nodiscard]] rhi::ShaderModuleDesc ModuleDesc(bool writableStorage = true) const noexcept
+    {
+        return IsWgsl() ? rhi::ShaderModuleDesc::FromWgsl(wgsl, wgslByteSize, writableStorage)
+                        : rhi::ShaderModuleDesc::FromSpirV(words, wordCount);
+    }
+};
+
+/// Own one concrete target program. Copies preserve its format and original
+/// byte length; a WGSL module is never stored in a SPIR-V word container.
+class ShaderBytecodeStorage
+{
+  public:
+    void Assign(ShaderBytecode source)
+    {
+        if (source.IsWgsl())
+            m_code = std::string(source.wgsl, source.wgslByteSize);
+        else
+            m_code = std::vector<uint32_t>(source.words, source.words + source.wordCount);
+    }
+
+    [[nodiscard]] ShaderBytecode View() const noexcept
+    {
+        if (const auto *text = std::get_if<std::string>(&m_code))
+            return ShaderBytecode::FromWgsl(text->data(), text->size());
+        const auto &words = std::get<std::vector<uint32_t>>(m_code);
+        return ShaderBytecode::FromSpirV(words.data(), words.size());
+    }
+
+  private:
+    std::variant<std::vector<uint32_t>, std::string> m_code;
 };
 
 struct GpuMeshInterfaceDesc
