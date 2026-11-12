@@ -265,6 +265,15 @@ class PhysicsWorld
     /// False retains the same epoch/step and its shared-source continuation.
     bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
     void CompletePendingStep();
+    /// Budgeted author-only GPU pose publication after the Transform frame cache.
+    /// Retains the previous complete pose while this same-source control waits.
+    void RefreshRenderPoses();
+    /// Continue an existing managed control within this host's shared budget.
+    /// Does not capture author input, admit a solver or wait synchronously.
+    void ServiceGpuWork();
+    /// Promote a complete immutable export after the fixed publication gate.
+    /// Control-only callers promote immediately when no fixed gate is pending.
+    [[nodiscard]] bool PublishRenderPoses() const;
     [[nodiscard]] bool HasPendingStep() const noexcept;
     [[nodiscard]] bool HasPendingControl() const noexcept;
     /// Whole-runtime Stop only; never cancel other loaded actors for a Scene swap.
@@ -708,6 +717,9 @@ class PhysicsWorld
     void RequireHealthyStep() const;
     void FailStep() noexcept;
     bool AdvanceFixedStep(bool synchronous);
+    bool AdvanceGpuJob(bool synchronous) const;
+    bool BeginGpuControl(bool numericalChange, const JoltGpuScene::Consumer &consumer = {}) const;
+    bool AdvanceGpuControl(bool synchronous) const;
     void RetryCapacityBodyCreations();
     void RequireGpu() const;
     void FlushAuthoring() const;
@@ -745,6 +757,8 @@ class PhysicsWorld
     };
     FixedGpuPhase m_fixedGpuPhase = FixedGpuPhase::Idle;
     bool m_waitingForSlot = false;
+    mutable bool m_controlPending = false;
+    mutable bool m_controlNumericalChange = false;
     float m_admittedDeltaTime = 0;
     std::optional<JoltGpuStepParameters> m_admittedParameters;
     uint64_t m_stepEpoch = 0;

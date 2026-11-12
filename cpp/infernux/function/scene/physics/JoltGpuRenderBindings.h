@@ -42,10 +42,9 @@ class JoltGpuRenderBindings final
     JoltGpuRenderBindings &operator=(const JoltGpuRenderBindings &) = delete;
 
     /// Capture at the logical job's author boundary. Ordinary local channels
-    /// come directly from CPU storage; explicit frame-cache world targets are
+    /// come directly from CPU storage; physics frame-cache world channels are
     /// resolved through cached local getters without acquiring GPU samples.
     [[nodiscard]] SnapshotPtr Capture() const;
-    [[nodiscard]] static bool HasWorldOverrides(const Snapshot &snapshot) noexcept;
     [[nodiscard]] bool NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const;
 
     /// Resolves accepted actor identities and COMs against the captured author
@@ -54,8 +53,10 @@ class JoltGpuRenderBindings final
 
     /// Called only for the completed export packet, including an empty mapping.
     /// Each renderer keeps a count-one endpoint selecting the packed buffers.
-    void Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
-                 const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration);
+    /// False retains the previous automatic generation when live author
+    /// metadata no longer matches. Manual and retired targets leave this set.
+    [[nodiscard]] bool Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
+                               const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration);
     /// World calls this for teleport/reset, independently of ordinary ticks.
     void MarkDiscontinuity(uint32_t bodyId);
     void RetireBody(uint32_t bodyId) noexcept;

@@ -18,6 +18,7 @@
 #include "PhysicsMass.h"
 #include "PhysicsShapeAuthoring.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/threading/FrameWorkOwner.h>
@@ -139,9 +140,18 @@ struct PhysicsWorld::CompiledGpuPrograms
 };
 struct PhysicsWorld::GpuRenderState
 {
+    using Keys = std::array<uint64_t, 3>;
+    static Keys CaptureKeys()
+    {
+        const auto &manager = SceneManager::Instance();
+        return {manager.GetGlobalTransformSerial(), manager.GetMeshRendererVersion(),
+                manager.GetRenderContentRevision()};
+    }
     struct Job
     {
         JoltGpuRenderBindings::SnapshotPtr snapshot;
+        Keys keys{};
+        uint64_t numericalGeneration = 0;
         std::optional<JoltGpuRenderBindings::Prepared> bindings;
         JoltGpuRenderPoseBatch output;
         const JoltGpuScene::Publication *publication = nullptr;
@@ -152,6 +162,8 @@ struct PhysicsWorld::GpuRenderState
     JoltGpuRenderBindings bindings;
     JoltGpuRenderPoses program;
     std::shared_ptr<Job> pending;
+    std::shared_ptr<Job> ready;
+    std::optional<Keys> checkedKeys;
 };
 PhysicsWorld &PhysicsWorld::Instance()
 {
@@ -312,11 +324,46 @@ void PhysicsWorld::ObserveGpuPublication(bool numericalChange) const
             FrameWorkOwner::Scope publication(*m_gpuWork);
             auto &rendering = *m_gpuRenderState;
             const auto &job = rendering.pending;
-            if (job && job->bindings && job->publication == p.get())
-                rendering.bindings.Publish(*job->bindings, job->output.models, job->output.bounds,
-                                           GetQueryGeneration());
+            if (job && job->bindings && job->publication == p.get()) {
+                // Preserve this complete value before another Prepare reuses
+                // the live output endpoints, even while the fixed gate waits.
+                if (job->output.models)
+                    job->output.models = job->output.models->Freeze();
+                if (job->output.bounds)
+                    job->output.bounds = job->output.bounds->Freeze();
+                job->output.batch.reset();
+                job->numericalGeneration = GetQueryGeneration();
+                rendering.ready = job;
+            }
             rendering.pending.reset();
         }
+        auto &manager = SceneManager::Instance();
+        if (!manager.HasPendingFixedStep())
+            manager.PublishPhysicsStateToRenderer();
+    }
+}
+bool PhysicsWorld::PublishRenderPoses() const
+{
+    RequireOwnerThread();
+    if (!m_initialized || !m_gpuRenderState || m_gpuCancelled || m_fixedGpuPhase == FixedGpuPhase::Failed)
+        return false;
+    auto &rendering = *m_gpuRenderState;
+    const auto &job = rendering.ready;
+    if (!job)
+        return false;
+    FrameWorkOwner::Scope publication(*m_gpuWork);
+    try {
+        const bool published = rendering.bindings.Publish(*job->bindings, job->output.models, job->output.bounds,
+                                                          job->numericalGeneration);
+        if (published)
+            rendering.checkedKeys = job->keys;
+        else
+            rendering.checkedKeys.reset();
+        rendering.ready.reset();
+        return published;
+    } catch (...) {
+        const_cast<PhysicsWorld *>(this)->FailStep();
+        throw;
     }
 }
 std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
@@ -324,14 +371,21 @@ PhysicsWorld::PrepareRenderConsumer(bool numericalChange) const
 {
     FrameWorkOwner::Scope preparation(*m_gpuWork);
     auto &rendering = *m_gpuRenderState;
+    const auto keys = GpuRenderState::CaptureKeys();
     auto snapshot = rendering.bindings.Capture();
     const auto generation = GetQueryGeneration() + static_cast<uint64_t>(numericalChange);
+    if (rendering.ready && rendering.ready->numericalGeneration == generation && rendering.ready->keys == keys) {
+        rendering.pending.reset();
+        return {};
+    }
     if (!rendering.bindings.NeedsExport(*snapshot, generation)) {
         rendering.pending.reset();
+        rendering.checkedKeys = keys;
         return {};
     }
     auto job = std::make_shared<GpuRenderState::Job>();
     job->snapshot = std::move(snapshot);
+    job->keys = keys;
     rendering.pending = job;
     return [this, job = std::move(job)](const JoltGpuScene::Publication &publication) {
         auto &state = *m_gpuRenderState;
@@ -397,14 +451,18 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             m_stepIndex = index;
             m_admittedDeltaTime = dt;
             m_admittedParameters = StepParameters(dt);
-            if (m_waitingForSlot) {
-                m_gpuScene->BeginControl(epoch, {}, PrepareRenderConsumer(true));
+            // Own this fixed identity before waiting for an earlier visual
+            // control. Scripts and accounting cannot be replayed meanwhile.
+            m_stepPending = true;
+            if (m_controlPending) {
+                m_fixedGpuPhase = FixedGpuPhase::RetireControl;
+            } else if (m_waitingForSlot) {
+                (void)BeginGpuControl(true);
                 m_fixedGpuPhase = FixedGpuPhase::RetireControl;
             } else {
                 m_gpuScene->BeginTick(epoch, index, dt, *m_admittedParameters, PrepareRenderConsumer(true));
                 m_fixedGpuPhase = FixedGpuPhase::Solver;
             }
-            m_stepPending = true;
         }
         if (!AdvanceFixedStep(false))
             return false;
@@ -426,7 +484,7 @@ bool PhysicsWorld::AdvanceFixedStep(bool synchronous)
                 RetryCapacityBodyCreations();
                 RefreshGpuSurfaces();
                 if (m_waitingForSlot) {
-                    m_gpuScene->BeginControl(m_stepEpoch, {}, PrepareRenderConsumer(true));
+                    (void)BeginGpuControl(true);
                     m_fixedGpuPhase = FixedGpuPhase::RetireControl;
                 } else {
                     m_gpuScene->BeginTick(m_stepEpoch, m_stepIndex, m_admittedDeltaTime, *m_admittedParameters,
@@ -434,25 +492,14 @@ bool PhysicsWorld::AdvanceFixedStep(bool synchronous)
                     m_fixedGpuPhase = FixedGpuPhase::Solver;
                 }
             }
-            if (synchronous) {
-                DrainGpuSource();
-            } else {
-                if (!m_gpuWork->IsActive() || m_gpuWork->IsLate())
-                    return false;
-                AdmissionScope admission(*m_gpuScene);
-                (void)m_gpuWork->AdvanceRequired(m_gpuScene->GetSourceId(),
-                                                 [this] { return Availability(*m_gpuHost); });
-            }
-            if (m_gpuScene->GetTickStatus() == JoltGpuTick::Status::Failed)
-                throw std::runtime_error("GPU physics step failed; stop the runtime before restarting");
-            if (m_gpuScene->GetTickStatus() != JoltGpuTick::Status::Complete)
-                return false;
             if (m_fixedGpuPhase == FixedGpuPhase::RetireControl) {
-                if (m_gpuScene->PublishCompletedControl())
-                    ObserveGpuPublication(true);
+                if (!AdvanceGpuControl(synchronous))
+                    return false;
                 m_fixedGpuPhase = FixedGpuPhase::RetryCreation;
                 continue;
             }
+            if (!AdvanceGpuJob(synchronous))
+                return false;
             if (m_gpuScene->PublishCompletedTick())
                 ObserveGpuPublication(true);
             m_stepCompleted = true;
@@ -483,7 +530,7 @@ bool PhysicsWorld::HasPendingStep() const noexcept
 bool PhysicsWorld::HasPendingControl() const noexcept
 {
     const auto &store = PhysicsECSStore::Instance();
-    return (m_gpuScene && m_gpuScene->HasPendingControl()) || store.HasDirtyColliders() ||
+    return m_controlPending || (m_gpuScene && m_gpuScene->HasPendingControl()) || store.HasDirtyColliders() ||
            store.HasPendingBodyCreations() || store.HasPendingBroadphaseAdds() || store.HasPendingBroadphaseRemoves() ||
            (m_gpuScene && !m_gpuCancelled && PhysicMaterial::GetSurfaceRevision() != m_surfaceRevision);
 }
@@ -499,20 +546,119 @@ void PhysicsWorld::DrainGpuSource() const
     if (m_gpuScene->GetTickStatus() != JoltGpuTick::Status::Complete)
         throw std::runtime_error("GPU physics did not complete its synchronous dependency prefix");
 }
+bool PhysicsWorld::AdvanceGpuJob(bool synchronous) const
+{
+    if (synchronous) {
+        DrainGpuSource();
+    } else {
+        if (!m_gpuWork->IsActive() || m_gpuWork->IsLate())
+            return false;
+        AdmissionScope admission(*m_gpuScene);
+        (void)m_gpuWork->AdvanceRequired(m_gpuScene->GetSourceId(), [this] { return Availability(*m_gpuHost); });
+    }
+    if (m_gpuScene->GetTickStatus() == JoltGpuTick::Status::Failed)
+        throw std::runtime_error("GPU physics step failed; stop the runtime before restarting");
+    return m_gpuScene->GetTickStatus() == JoltGpuTick::Status::Complete;
+}
+bool PhysicsWorld::BeginGpuControl(bool numericalChange, const JoltGpuScene::Consumer &consumer) const
+{
+    FrameWorkOwner::Scope preparation(*m_gpuWork);
+    auto rendering = PrepareRenderConsumer(numericalChange);
+    if (!numericalChange && !consumer && !rendering)
+        return false;
+    m_gpuScene->BeginControl(SceneManager::Instance().GetSimulationEpoch(), consumer, std::move(rendering));
+    m_controlNumericalChange = numericalChange;
+    m_controlPending = true;
+    return true;
+}
+bool PhysicsWorld::AdvanceGpuControl(bool synchronous) const
+{
+    if (!m_controlPending)
+        return true;
+    if (!AdvanceGpuJob(synchronous))
+        return false;
+    if (!m_gpuScene->PublishCompletedControl())
+        throw std::runtime_error("GPU control failed to publish its complete result");
+    ObserveGpuPublication(m_controlNumericalChange);
+    m_controlPending = false;
+    m_controlNumericalChange = false;
+    return true;
+}
 void PhysicsWorld::CompletePendingStep()
 {
     RequireOwnerThread();
     RequireHealthyStep();
-    if (!m_stepPending || m_stepCompleted)
+    if ((!m_stepPending || m_stepCompleted) && !m_controlPending)
         return;
     RequireGpu();
-    (void)AdvanceFixedStep(true);
+    try {
+        if (m_stepPending && !m_stepCompleted)
+            (void)AdvanceFixedStep(true);
+        else
+            (void)AdvanceGpuControl(true);
+    } catch (...) {
+        FailStep();
+        throw;
+    }
+}
+void PhysicsWorld::ServiceGpuWork()
+{
+    RequireOwnerThread();
+    if (!m_initialized || !m_gpuScene || m_gpuCancelled || m_fixedGpuPhase == FixedGpuPhase::Failed)
+        return;
+    try {
+        // A public host opportunity can continue this already admitted prefix
+        // even when the renderer is waiting and skips Update/LateUpdate.
+        (void)AdvanceGpuControl(false);
+        if (!SceneManager::Instance().HasPendingFixedStep())
+            SceneManager::Instance().PublishPhysicsStateToRenderer();
+    } catch (...) {
+        FailStep();
+        throw;
+    }
+}
+void PhysicsWorld::RefreshRenderPoses()
+{
+    RequireOwnerThread();
+    if (!m_initialized || !m_gpuScene || !m_gpuRenderState || m_gpuCancelled ||
+        m_fixedGpuPhase == FixedGpuPhase::Failed)
+        return;
+    ServiceGpuWork();
+    if (m_controlPending || m_stepPending || SceneManager::Instance().HasPendingFixedStep())
+        return;
+    // This automatic publication uses the existing host allowance. It never
+    // opens an opportunity or turns render extraction into a strict GPU wait.
+    if (!m_gpuWork->IsActive() || !m_gpuWork->IsAccepting() || m_gpuWork->IsLate() || m_gpuWork->Remaining() <= 0 ||
+        !m_gpuWork->ResourceRemaining(FrameWorkResource::Cpu))
+        return;
+    try {
+        auto &rendering = *m_gpuRenderState;
+        if (!HasPendingControl() && rendering.checkedKeys && *rendering.checkedKeys == GpuRenderState::CaptureKeys())
+            return;
+        {
+            FrameWorkOwner::Scope preparation(*m_gpuWork);
+            FlushAuthoring();
+        }
+        while (m_waitingForSlot) {
+            (void)BeginGpuControl(true);
+            if (!AdvanceGpuControl(false))
+                return;
+            RetryCapacityBodyCreations();
+        }
+        if (BeginGpuControl(m_gpuScene->HasPendingControl()))
+            (void)AdvanceGpuControl(false);
+    } catch (...) {
+        FailStep();
+        throw;
+    }
 }
 void PhysicsWorld::CancelPendingStep() noexcept
 {
     if (m_gpuRenderState) {
         m_gpuRenderState->bindings.Clear();
         m_gpuRenderState->pending.reset();
+        m_gpuRenderState->ready.reset();
+        m_gpuRenderState->checkedKeys.reset();
     }
     if (m_gpuScene) {
         if (!m_gpuCancelled) {
@@ -540,6 +686,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
     m_fixedGpuPhase = FixedGpuPhase::Idle;
     m_admittedParameters.reset();
     m_waitingForSlot = false;
+    m_controlPending = m_controlNumericalChange = false;
     m_requestedMotion.clear();
 }
 void PhysicsWorld::FlushAuthoring() const
@@ -562,28 +709,20 @@ void PhysicsWorld::RunControl(
         throw std::logic_error("Physics query cannot reenter its synchronous source");
     FlagScope reading(m_synchronousRead);
     try {
+        // This also completes an earlier managed render-control before a new
+        // query consumer or later author prefix can acquire the same tick.
         const_cast<PhysicsWorld *>(this)->CompletePendingStep();
         {
             FrameWorkOwner::Scope preparation(*m_gpuWork);
             FlushAuthoring();
         }
         while (m_waitingForSlot) {
-            m_gpuScene->BeginControl(SceneManager::Instance().GetSimulationEpoch(), {}, PrepareRenderConsumer(true));
-            DrainGpuSource();
-            if (m_gpuScene->PublishCompletedControl())
-                ObserveGpuPublication(true);
+            (void)BeginGpuControl(true);
+            (void)AdvanceGpuControl(true);
             const_cast<PhysicsWorld *>(this)->RetryCapacityBodyCreations();
         }
-        const bool changed = m_gpuScene->HasPendingControl();
-        {
-            FrameWorkOwner::Scope preparation(*m_gpuWork);
-            m_gpuScene->BeginControl(SceneManager::Instance().GetSimulationEpoch(), consumer,
-                                     PrepareRenderConsumer(changed));
-        }
-        DrainGpuSource();
-        if (!m_gpuScene->PublishCompletedControl())
-            throw std::runtime_error("GPU control failed to publish its complete result");
-        ObserveGpuPublication(changed);
+        if (BeginGpuControl(m_gpuScene->HasPendingControl(), consumer))
+            (void)AdvanceGpuControl(true);
     } catch (...) {
         const_cast<PhysicsWorld *>(this)->FailStep();
         throw;

@@ -115,6 +115,14 @@ void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
         m_renderTransformRevision = 1;
 }
 
+void SceneManager::PublishPhysicsStateToRenderer()
+{
+    if (!PhysicsWorld::Instance().PublishRenderPoses())
+        return;
+    InvalidatePhysicsSkeletonPoses();
+    PublishPhysicsTransformsToRenderer();
+}
+
 Scene *SceneManager::CreateScene(const std::string &name)
 {
     auto scene = std::make_unique<Scene>(name);
@@ -963,9 +971,11 @@ void SceneManager::Step(float deltaTime)
         return;
     if (m_runtimePersistentScene)
         TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
-    PublishSkeletonPoses();
-    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
-    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationTimeline);
+    if (!TransformECSStore::Instance().IsFrameCacheActive()) {
+        PublishSkeletonPoses();
+        EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
+        EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationTimeline);
+    }
     m_lastFrameProfile.endFrameMs += ProfileMsSince(phaseStarted);
     // Keep the lifecycle frame open. The renderer still has to publish
     // RenderExtraction, RenderGraph and Snapshot before EndFrame owns pending
@@ -1170,8 +1180,7 @@ void SceneManager::PrepareActiveSceneReplacement()
             throw std::logic_error("Completed physical step did not retire at the scene replacement boundary");
     }
     if (needsPublication) {
-        InvalidatePhysicsSkeletonPoses();
-        PublishPhysicsTransformsToRenderer();
+        PublishPhysicsStateToRenderer();
     }
     // SceneDocumentTransaction replaces the active graph in place, so the
     // Scene pointer does not change and SetActiveScene cannot publish this
@@ -1280,7 +1289,7 @@ void SceneManager::PublishAuthoredTransformsToPhysics()
         TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
 
     auto &store = PhysicsECSStore::Instance();
-    if ((m_scenes.empty() && !m_runtimePersistentScene) || !store.HasDirtyColliders())
+    if (m_scenes.empty() && !m_runtimePersistentScene)
         return;
 
     // Transform writes performed by Update/LateUpdate are collected by the
@@ -1288,8 +1297,13 @@ void SceneManager::PublishAuthoredTransformsToPhysics()
     // synchronizing on every property setter. This preserves high-FPS editor
     // performance while preventing Rigidbody interpolation from restoring an
     // older pose on the following frame.
-    FlushPendingBroadphase();
-    SyncCollidersToPhysics(0.0f);
+    if (store.HasDirtyColliders()) {
+        FlushPendingBroadphase();
+        SyncCollidersToPhysics(0.0f);
+    }
+    // Ordinary child meshes can change without dirtying a physical actor.
+    // Admit their export after authored local channels have been committed.
+    PhysicsWorld::Instance().RefreshRenderPoses();
 }
 
 bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const SimulationState &admittedState)
@@ -1370,7 +1384,8 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             return false;
     }
     if (m_fixedPhase == FixedPhase::Integration) {
-        if (PhysicsWorld::Instance().HasPendingStep() || PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+        if (PhysicsWorld::Instance().HasPendingStep() || PhysicsWorld::Instance().HasPendingControl() ||
+            PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
             m_fixedHasPhysics = true;
             const auto phaseStart = ProfileClock::now();
             PhysicsStepProfile profile;
@@ -1417,8 +1432,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             const auto phaseStart = ProfileClock::now();
             // The world published one completed GPU generation. Invalidating
             // consumers here does not read every body back into Transform.
-            InvalidatePhysicsSkeletonPoses();
-            PublishPhysicsTransformsToRenderer();
+            PublishPhysicsStateToRenderer();
             m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(phaseStart);
         }
         m_publishedFixedStepIndex = m_completedFixedStepIndex;

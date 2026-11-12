@@ -32,18 +32,18 @@ int main()
     (void)store.EndFrameCache();
     assert(store.GetGlobalTransformSerial() == unchangedSerial);
     store.BeginFrameCache();
-    // The child writes first, retaining its world position while its parent moves.
+    // The child resolves its local position at the call and follows its parent.
     heldChild->GetTransform()->SetWorldPosition(glm::vec3(2, 0, 0));
     heldParent->GetTransform()->SetWorldPosition(glm::vec3(3, 0, 0));
     (void)store.EndFrameCache();
-    assert(heldChild->GetTransform()->GetWorldPosition() == glm::vec3(2, 0, 0));
-    assert(heldChild->GetTransform()->GetLocalPosition() == glm::vec3(-1, 0, 0));
+    assert(heldChild->GetTransform()->GetWorldPosition() == glm::vec3(5, 0, 0));
+    assert(heldChild->GetTransform()->GetLocalPosition() == glm::vec3(2, 0, 0));
 
     store.BeginFrameCache();
     const auto serial = store.GetGlobalTransformSerial();
     for (int index = 1; index <= 4; ++index) {
         object->GetTransform()->SetPosition(float(index), 2.0f, 3.0f);
-        // World overrides have not yet advanced the committed transform serial.
+        // Authored changes have not yet advanced the committed transform serial.
         assert(store.GetGlobalTransformSerial() == serial);
         const auto current = world.Poll();
         assert(current != worldRevision);

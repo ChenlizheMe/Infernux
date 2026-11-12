@@ -191,6 +191,10 @@ class SceneManager
     /// poses is committed. This intentionally does not dirty colliders.
     void PublishPhysicsTransformsToRenderer() noexcept;
 
+    /// Publish a completed physical generation to ordinary meshes and bone
+    /// palettes at the same consumer boundary, without sampling every body.
+    void PublishPhysicsStateToRenderer();
+
     [[nodiscard]] const FrameProfile &GetLastFrameProfile() const
     {
         return m_lastFrameProfile;

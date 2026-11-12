@@ -75,7 +75,6 @@ struct JoltGpuRenderBindings::Snapshot
     std::vector<RendererValue> renderers;
     std::unordered_map<uint32_t, uint64_t> continuity;
     uint64_t lifetime = 0;
-    bool worldOverrides = false;
 };
 
 namespace
@@ -216,11 +215,9 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture() const
             TransformECSStore::PhysicsPoseReadScope cachedAuthor(transforms);
             if (transforms.HasFrameCacheWorldPositionOverride(handle)) {
                 value.position = transform->GetLocalPosition();
-                snapshot->worldOverrides = true;
             }
             if (transforms.HasFrameCacheWorldRotationOverride(handle)) {
                 value.rotation = transform->GetLocalRotation();
-                snapshot->worldOverrides = true;
             }
         }
         value.authored = transforms.GetAuthoredPoseRevision(handle);
@@ -251,11 +248,6 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture() const
                                        renderer->GetLocalBoundsMin(), renderer->GetLocalBoundsMax()});
     }
     return snapshot;
-}
-
-bool JoltGpuRenderBindings::HasWorldOverrides(const Snapshot &snapshot) noexcept
-{
-    return snapshot.worldOverrides;
 }
 
 bool JoltGpuRenderBindings::NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const
@@ -343,15 +335,20 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
     return prepared;
 }
 
-void JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
+bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
                                     const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration)
 {
     const auto &snapshot = *prepared.snapshot;
     if (snapshot.lifetime != m_impl->lifetime)
-        return; // A completed old job cannot reacquire bindings after Stop.
+        return false; // A completed old job cannot reacquire bindings after Stop.
     auto &physics = PhysicsECSStore::Instance();
     std::unordered_set<MeshRenderer *> retained;
+    std::vector<size_t> outputs;
+    outputs.reserve(prepared.targets.size());
     bool allPublished = true;
+    // Inspect the complete automatic set before changing any endpoint. Scene
+    // extraction then sees either the previous or this completed generation,
+    // even when an author edited one child while its export was pending.
     for (size_t output = 0; output < prepared.targets.size(); ++output) {
         const auto &target = prepared.targets[output];
         const auto &captured = snapshot.renderers[target.renderer];
@@ -360,19 +357,14 @@ void JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
             !renderer->GetGameObject()->IsActiveInHierarchy() || renderer->RequiresCpuPoseForGeometry() ||
             !physics.IsValid(target.actor->actor) ||
             physics.GetActor(target.actor->actor).bodyId != target.actor->bodyId) {
-            allPublished = false;
             continue;
         }
         auto found = m_impl->entries.find(renderer);
-        if (found != m_impl->entries.end() && found->second.reference.GetComponent() != renderer) {
-            m_impl->entries.erase(found);
+        if (found != m_impl->entries.end() && found->second.reference.GetComponent() != renderer)
             found = m_impl->entries.end();
-        }
         const auto &current = renderer->GetPoseBuffer();
-        if (current && (found == m_impl->entries.end() || current != found->second.source)) {
-            allPublished = false;
+        if (current && (found == m_impl->entries.end() || current != found->second.source))
             continue;
-        }
         retained.insert(renderer);
         const auto pivot = renderer->GetSubmeshIndex() >= 0 ? renderer->GetMeshPivotOffset() : glm::vec3(0);
         const auto currentContinuity = m_impl->continuity.find(target.actor->bodyId);
@@ -383,6 +375,31 @@ void JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
             allPublished = false;
             continue;
         }
+        outputs.push_back(output);
+    }
+    // Removed components and explicit replacement sources no longer belong
+    // to the automatic publication. Clearing them cannot release a user source.
+    for (auto it = m_impl->entries.begin(); it != m_impl->entries.end();) {
+        if (retained.find(it->first) == retained.end()) {
+            Impl::ClearOwned(it->first, it->second);
+            it = m_impl->entries.erase(it);
+        } else
+            ++it;
+    }
+    if (!allPublished) {
+        m_impl->published.reset();
+        return false;
+    }
+    for (const auto output : outputs) {
+        const auto &target = prepared.targets[output];
+        const auto &captured = snapshot.renderers[target.renderer];
+        auto *renderer = captured.identity;
+        auto found = m_impl->entries.find(renderer);
+        if (found != m_impl->entries.end() && found->second.reference.GetComponent() != renderer) {
+            m_impl->entries.erase(found);
+            found = m_impl->entries.end();
+        }
+        const auto &current = renderer->GetPoseBuffer();
         if (found == m_impl->entries.end())
             found = m_impl->entries.emplace(renderer, Impl::Entry{}).first;
         auto &entry = found->second;
@@ -406,21 +423,9 @@ void JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
             renderer->SetPoseBuffer(entry.source, 0, entry.continuity);
         }
     }
-    for (auto it = m_impl->entries.begin(); it != m_impl->entries.end();) {
-        if (retained.find(it->first) == retained.end()) {
-            Impl::ClearOwned(it->first, it->second);
-            it = m_impl->entries.erase(it);
-        } else
-            ++it;
-    }
-    if (allPublished) {
-        m_impl->published = prepared.snapshot;
-        m_impl->numericalGeneration = numericalGeneration;
-    } else {
-        // Completion belongs to the old captured job. A changed component or
-        // author hierarchy must be recaptured, not remembered as exported.
-        m_impl->published.reset();
-    }
+    m_impl->published = prepared.snapshot;
+    m_impl->numericalGeneration = numericalGeneration;
+    return true;
 }
 
 void JoltGpuRenderBindings::MarkDiscontinuity(uint32_t bodyId)

@@ -1096,6 +1096,9 @@ void Infernux::BeginRuntimeFrame(float deltaTime)
     if (m_frameWork.AdvanceEarly())
         if (m_renderer)
             m_renderer->RequestFullSpeedFrame();
+    // Existing control work must progress even when rendering waits on a
+    // consumer and skips scene callbacks. This never admits another solver.
+    PhysicsWorld::Instance().ServiceGpuWork();
     if (auto callback = m_runtimeAfterWork)
         callback();
 }
