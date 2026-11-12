@@ -20,6 +20,23 @@ struct JoltGpuModel
     std::vector<JPH::GPU::WorldRange> worlds;
 };
 
+/// One validated step description, reusing the shared device record. Contact
+/// settings and iteration counts are prepared once; only gravity/dt change in
+/// place during normal stepping. Zero velocity/position iterations are legal.
+class JoltGpuStepParameters
+{
+  public:
+    explicit JoltGpuStepParameters(JPH::GPU::StepParams parameters);
+    void SetGravityAndDeltaTime(JPH::GPU::Float4 gravityDt);
+    [[nodiscard]] const JPH::GPU::StepParams &Get() const noexcept
+    {
+        return m_parameters;
+    }
+
+  private:
+    JPH::GPU::StepParams m_parameters;
+};
+
 /// Physics-owned resident values. Compilation, submission, budgets, fences and
 /// resource retirement remain services of the shared engine compute runtime.
 class JoltGpuStorage
@@ -31,7 +48,7 @@ class JoltGpuStorage
     PrepareInitialization(const std::vector<JPH::GPU::BodyState> &states,
                           const std::vector<JPH::GPU::BodyForces> &forces);
     /// Updating step parameters never overwrites a device-produced force input.
-    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareParameters(JPH::GPU::StepParams parameters);
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareParameters(const JoltGpuStepParameters &parameters);
     /// Explicit CPU input path. A GPU controller can instead write the resident
     /// BodyForces port directly; the normal compute dependency orders its use.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
@@ -62,6 +79,7 @@ class JoltGpuStorage
     }
 
   private:
+    friend class JoltGpuPrograms;
     rhi::ComputeHost m_host;
     const JoltGpuModel m_model;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 8> m_buffers;
@@ -75,21 +93,32 @@ class JoltGpuPrograms
   public:
     JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target);
 
-    /// Prepare exactly one legal numerical stage. The host may admit several
-    /// ready stages in one service period, or resume at the next stage later.
-    /// Preparing/accepting a batch does not publish a physics tick.
-    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareStage(JPH::GPU::Stage stage,
-                                                                          const JoltGpuStorage &storage);
+    /// Prepare one dependency-ordered ready prefix, including repeated solver
+    /// iterations. The caller owns its stage cursor and selects a bounded prefix.
+    /// Preparation does not submit; accepting the resulting batch does not
+    /// publish a physics tick. A single stage is {stage}; an empty list/model
+    /// returns a batch with no work.
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareStages(const JoltGpuStorage &storage,
+                                                                           const std::vector<JPH::GPU::Stage> &stages);
 
   private:
+    struct Binding
+    {
+        size_t slot;
+        rhi::ComputeBufferAccess access;
+        bool read;
+        bool completeWrite;
+    };
     struct Entry
     {
         JPH::GPU::StageDefinition definition;
         std::shared_ptr<rhi::ComputeKernel> kernel;
-        std::vector<JPH::GPU::Resource> resources;
+        std::vector<Binding> bindings;
     };
+    [[nodiscard]] rhi::ComputeDispatchDesc BuildDispatch(const Entry &entry, const JoltGpuStorage &storage) const;
+    static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
-    std::vector<Entry> m_entries;
+    std::array<Entry, StageCount> m_entries;
 };
 
 } // namespace infernux

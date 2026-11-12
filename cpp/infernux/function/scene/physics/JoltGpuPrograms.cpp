@@ -33,7 +33,7 @@ constexpr Port Ports[] = {
      sizeof(BodyModel),
      {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"},
      1},
-    {Resource::ShapeModels, "shape_models", sizeof(ShapeModel), {"geometry"}, 0},
+    {Resource::ShapeModels, "shape_models", sizeof(ShapeModel), {"geometry", "localPositionCOM", "localRotation"}, 0},
     {Resource::Worlds, "worlds", sizeof(WorldRange), {"range"}, 1},
     {Resource::BodyForces, "body_forces", sizeof(BodyForces), {"force", "torque"}, 0},
     {Resource::BodyStates,
@@ -48,6 +48,64 @@ constexpr Port Ports[] = {
      {"meta", "normalDepth", "localAnchorA", "localAnchorB", "impulse"},
      1},
 };
+
+constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
+constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
+
+constexpr size_t PortIndex(Resource resource)
+{
+    switch (resource) {
+    case Resource::StepParams:
+        return 0;
+    case Resource::BodyModels:
+        return 1;
+    case Resource::ShapeModels:
+        return 2;
+    case Resource::Worlds:
+        return 3;
+    case Resource::BodyForces:
+        return 4;
+    case Resource::BodyStates:
+        return 5;
+    case Resource::Bounds:
+        return 6;
+    case Resource::Contacts:
+        return 7;
+    }
+    return PortCount;
+}
+
+// These two stage bodies initialize every slot. Access qualifiers alone do not
+// establish complete stores: all read/write solvers retain their input proof.
+constexpr uint32_t CompleteWrites(Stage stage)
+{
+    switch (stage) {
+    case Stage::BuildBounds:
+        return Mask(Resource::Bounds);
+    case Stage::CollidePairs:
+        return Mask(Resource::Contacts);
+    default:
+        return 0;
+    }
+}
+
+constexpr bool IndexedDefinitions()
+{
+    for (size_t slot = 0; slot < PortCount; ++slot)
+        if (Mask(Ports[slot].resource) != (1u << slot) || PortIndex(Ports[slot].resource) != slot)
+            return false;
+    for (size_t slot = 0; slot < StageCount; ++slot) {
+        const auto &stage = Stages[slot];
+        if (static_cast<size_t>(stage.stage) != slot || stage.groupSizeX == 0 || stage.groupSizeY == 0 ||
+            stage.groupSizeZ == 0 || (CompleteWrites(stage.stage) & ~stage.writes) != 0 ||
+            (CompleteWrites(stage.stage) & stage.reads) != 0)
+            return false;
+    }
+    return true;
+}
+
+static_assert(PortCount == 8, "Jolt GPU storage slots must match the resource table");
+static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
 {
@@ -87,15 +145,6 @@ void ValidateLayout(const Port &port, const ShaderResourceLayout &resource)
     }
 }
 
-size_t PortIndex(Resource resource)
-{
-    const auto port = std::find_if(std::begin(Ports), std::end(Ports),
-                                   [resource](const Port &value) { return value.resource == resource; });
-    if (port == std::end(Ports))
-        throw std::invalid_argument("Unknown Jolt GPU resource");
-    return static_cast<size_t>(port - std::begin(Ports));
-}
-
 template <class T> std::vector<uint8_t> Bytes(const T *values, size_t count)
 {
     std::vector<uint8_t> bytes(count * sizeof(T));
@@ -109,6 +158,22 @@ uint32_t Groups(uint32_t count, uint32_t width)
     return count / width + static_cast<uint32_t>(count % width != 0);
 }
 } // namespace
+
+JoltGpuStepParameters::JoltGpuStepParameters(StepParams parameters) : m_parameters(parameters)
+{
+    if (parameters.solve.y == 0 || !Finite4(parameters.contact) || parameters.contact.x < 0 ||
+        parameters.contact.y < 0 || parameters.contact.z < 0 || parameters.contact.w < 0 || parameters.contact.w > 1 ||
+        !std::isfinite(parameters.restitution.x) || parameters.restitution.x < 0)
+        throw std::invalid_argument("Jolt GPU substep count and contact parameters are invalid");
+    SetGravityAndDeltaTime(parameters.gravityDt);
+}
+
+void JoltGpuStepParameters::SetGravityAndDeltaTime(Float4 gravityDt)
+{
+    if (!Finite4(gravityDt) || gravityDt.w <= 0.0f)
+        throw std::invalid_argument("Jolt GPU gravity and substep duration must be finite with positive duration");
+    m_parameters.gravityDt = gravityDt;
+}
 
 JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
     : m_host(host), m_model(std::move(modelData))
@@ -132,7 +197,10 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
                 (record.meta.z != MotionStatic && record.meta.z != MotionDynamic) ||
                 (record.meta.y == ShapeBox && record.meta.z != MotionStatic))
                 throw std::invalid_argument("Unsupported body in the Jolt GPU bootstrap model");
-            const auto geometry = model.shapes[record.meta.x].geometry;
+            const auto &shape = model.shapes[record.meta.x];
+            const auto geometry = shape.geometry;
+            if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 || !Normalized(shape.localRotation))
+                throw std::invalid_argument("Jolt GPU shape local position or rotation is invalid");
             const bool dynamic = record.meta.z == MotionDynamic;
             if (!Finite4(record.mass) || record.mass.y < 0 || record.mass.z < 0 || record.mass.z > 1 ||
                 (dynamic ? record.mass.x <= 0 : record.mass.x != 0) || !Finite4(record.damping) ||
@@ -168,8 +236,7 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
                               uint64_t(m_bodyCount) * sizeof(Aabb),
                               uint64_t(m_contactCount) * sizeof(Contact)};
     for (size_t port = 0; port < m_buffers.size(); ++port) {
-        const bool mixed = port == PortIndex(Resource::StepParams) || port == PortIndex(Resource::BodyModels) ||
-                           port == PortIndex(Resource::Worlds) || port == PortIndex(Resource::Contacts);
+        const bool mixed = Ports[port].integerFields != 0;
         // Preserve the scalar type for homogeneous float ports so numerical
         // consumers need no hidden host cast. Mixed records remain raw words;
         // their structured element interpretation comes from target reflection.
@@ -182,7 +249,10 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
 
 const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStorage::Get(Resource resource) const
 {
-    return m_buffers[PortIndex(resource)];
+    const auto slot = PortIndex(resource);
+    if (slot == PortCount)
+        throw std::invalid_argument("Unknown Jolt GPU resource");
+    return m_buffers[slot];
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization(const std::vector<BodyState> &states,
@@ -210,15 +280,11 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
     return rhi::PrepareComputeBatch(m_host, std::move(updates), {});
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareParameters(StepParams parameters)
+std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareParameters(const JoltGpuStepParameters &prepared)
 {
-    if (!Finite4(parameters.gravityDt) || parameters.gravityDt.w <= 0.0f || parameters.solve.y == 0 ||
-        !Finite4(parameters.contact) || parameters.contact.x < 0 || parameters.contact.y < 0 ||
-        parameters.contact.z < 0 || parameters.contact.w < 0 || parameters.contact.w > 1 ||
-        !std::isfinite(parameters.restitution.x) || parameters.restitution.x < 0)
-        throw std::invalid_argument("Jolt GPU step duration and contact parameters are invalid");
     if (m_bodyCount == 0)
         return rhi::PrepareComputeBatch(m_host, {}, {});
+    auto parameters = prepared.Get();
     parameters.counts.x = m_bodyCount;
     parameters.counts.y = m_worldCount;
     parameters.counts.z = m_maxBodiesPerWorld;
@@ -263,7 +329,13 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
             if ((definition.writes & Mask(port->resource)) && resource.binding.readOnlyStorage)
                 throw std::invalid_argument("Jolt GPU writer cannot bind a read-only target port");
             bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
-            entry.resources.push_back(port->resource);
+            const bool read = (definition.reads & Mask(port->resource)) != 0;
+            const bool write = (definition.writes & Mask(port->resource)) != 0;
+            const auto access = read && write ? rhi::ComputeBufferAccess::ReadWrite
+                                : write       ? rhi::ComputeBufferAccess::Write
+                                              : rhi::ComputeBufferAccess::Read;
+            entry.bindings.push_back({PortIndex(port->resource), access, read,
+                                      (CompleteWrites(definition.stage) & Mask(port->resource)) != 0});
             actualResources |= Mask(port->resource);
         }
         if (actualResources != (definition.reads | definition.writes))
@@ -282,43 +354,31 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
                 m_host, rhi::ShaderModuleDesc::FromWgsl(code->code.data(), code->code.size()), code->name,
                 std::move(bindings), 0);
         }
-        m_entries.push_back(std::move(entry));
+        m_entries[static_cast<size_t>(definition.stage)] = std::move(entry);
     }
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStage(Stage stage, const JoltGpuStorage &storage)
+rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage) const
 {
-    if (!m_host.SharesServicesWith(storage.GetHost()))
-        throw std::invalid_argument("Jolt GPU programs and state belong to different compute owners");
-    const auto entry = std::find_if(m_entries.begin(), m_entries.end(),
-                                    [stage](const Entry &value) { return value.definition.stage == stage; });
-    if (entry == m_entries.end())
-        throw std::invalid_argument("Unknown Jolt GPU stage");
-    if (storage.GetBodyCount() == 0)
-        return rhi::PrepareComputeBatch(m_host, {}, {});
-
     rhi::ComputeDispatchDesc dispatch;
-    dispatch.kernel = entry->kernel;
+    dispatch.kernel = entry.kernel;
+    dispatch.buffers.reserve(entry.bindings.size());
+    dispatch.bufferAccesses.reserve(entry.bindings.size());
     rhi::ComputeDispatchProof proof;
-    for (size_t index = 0; index < entry->resources.size(); ++index) {
-        const auto resource = entry->resources[index];
-        const auto &buffer = storage.Get(resource);
+    proof.reads.reserve(entry.bindings.size());
+    proof.writes.reserve(entry.bindings.size());
+    for (size_t index = 0; index < entry.bindings.size(); ++index) {
+        const auto &binding = entry.bindings[index];
+        const auto &buffer = storage.m_buffers[binding.slot];
         dispatch.buffers.push_back(buffer);
-        const bool read = (entry->definition.reads & Mask(resource)) != 0;
-        const bool write = (entry->definition.writes & Mask(resource)) != 0;
-        dispatch.bufferAccesses.push_back(read && write ? rhi::ComputeBufferAccess::ReadWrite
-                                          : write       ? rhi::ComputeBufferAccess::Write
-                                                        : rhi::ComputeBufferAccess::Read);
-        if (read)
+        dispatch.bufferAccesses.push_back(binding.access);
+        if (binding.read)
             proof.reads.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
-        // Bounds and pair construction overwrite every slot. Read/write
-        // solvers preserve already initialized values and may skip inactive
-        // bodies/contacts; they must not claim stores they never execute.
-        if (write && !read)
+        if (binding.completeWrite)
             proof.writes.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
     }
     dispatch.proof = std::move(proof);
-    const auto &definition = entry->definition;
+    const auto &definition = entry.definition;
     switch (definition.domain) {
     case Domain::Bodies:
         dispatch.groupCountX = Groups(storage.GetBodyCount(), definition.groupSizeX);
@@ -335,7 +395,24 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStage(Stage s
         dispatch.groupCountX = Groups(storage.GetWorldCount(), definition.groupSizeX);
         break;
     }
-    return rhi::PrepareComputeBatch(m_host, {}, {std::move(dispatch)});
+    return dispatch;
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,
+                                                                          const std::vector<Stage> &stages)
+{
+    if (!m_host.SharesServicesWith(storage.GetHost()))
+        throw std::invalid_argument("Jolt GPU programs and state belong to different compute owners");
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    dispatches.reserve(storage.GetBodyCount() == 0 ? 0 : stages.size());
+    for (const auto stage : stages) {
+        const auto index = static_cast<size_t>(stage);
+        if (index >= m_entries.size())
+            throw std::invalid_argument("Unknown Jolt GPU stage");
+        if (storage.GetBodyCount() != 0)
+            dispatches.push_back(BuildDispatch(m_entries[index], storage));
+    }
+    return rhi::PrepareComputeBatch(m_host, {}, std::move(dispatches));
 }
 
 } // namespace infernux
