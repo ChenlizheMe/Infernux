@@ -33,6 +33,36 @@ public struct InxMeshInput
     public float view_depth : TEXCOORD6;
     public float4 line_color : TEXCOORD7;
 };
+public struct InxSurfaceData
+{
+    public float3 albedo;
+    public float3 normal_ws;
+    public float metallic;
+    public float smoothness;
+    public float occlusion;
+    public float3 emission;
+    public float alpha;
+    public float specular_highlights;
+    public float shading_param0;
+    public float shading_param1;
+};
+public InxSurfaceData inx_surface_data(float3 albedo, float3 normal_ws, float metallic, float smoothness,
+                                      float occlusion, float3 emission, float alpha, float specular_highlights,
+                                      float shading_param0, float shading_param1)
+{
+    InxSurfaceData result;
+    result.albedo = albedo;
+    result.normal_ws = normal_ws;
+    result.metallic = metallic;
+    result.smoothness = smoothness;
+    result.occlusion = occlusion;
+    result.emission = emission;
+    result.alpha = alpha;
+    result.specular_highlights = specular_highlights;
+    result.shading_param0 = shading_param0;
+    result.shading_param1 = shading_param1;
+    return result;
+}
 public struct InxCameraData
 {
     public column_major float4x4 model;

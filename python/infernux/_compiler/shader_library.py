@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
-from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES
+from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS
 from .diagnostics import parse_gpu_module
 
 
@@ -33,6 +33,9 @@ class ShaderEmitter(SlangEmitter):
         self.functions = dict(functions or {})
 
     def infer(self, node):
+        if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) == "SurfaceData"
+                and self.symbol(qualified(node.func)) != qualified(node.func)):
+            return "InxSurfaceData"
         if isinstance(node, ast.Attribute):
             fields = STRUCT_FIELDS.get(self.infer(node.value))
             if fields is not None:
@@ -51,6 +54,13 @@ class ShaderEmitter(SlangEmitter):
 
     def visit_Call(self, node):
         operation = self.symbol(qualified(node.func))
+        if operation == "SurfaceData" and operation != qualified(node.func):
+            values = {keyword.arg: keyword.value for keyword in node.keywords}
+            if node.args or values.keys() - SURFACE_FIELDS.keys() or len(values) != len(node.keywords):
+                self.error(node, "SurfaceData uses named surface fields", code="author.type")
+            fields = (self.visit(values[name]) if name in values else default
+                      for name, (_, default) in SURFACE_FIELDS.items())
+            return "inx_surface_data(" + ", ".join(fields) + ")"
         image_operations = {"sample": (2, "Sample"), "sample_level": (3, "SampleLevel"),
                             "sample_grad": (4, "SampleGrad"), "load": (3, "Load"), "dimensions": (2, "GetDimensions")}
         if operation in image_operations and operation != qualified(node.func):

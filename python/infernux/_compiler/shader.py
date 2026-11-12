@@ -214,7 +214,6 @@ FullscreenVertex vertex_main(uint id : SV_VulkanVertexID)
 """
 
 _MESH_VERTEX = """
-import inx_geometry;
 [[vk::binding(5, 1)]] ConstantBuffer<InxCameraData> inx_view;
 [[vk::binding(1, 2)]] StructuredBuffer<InxModelMatrix> inx_models;
 [[vk::binding(2, 2)]] StructuredBuffer<InxSkinState> inx_skins;
@@ -265,7 +264,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                              code="author.parameter")
         if inputs:
             author.error(declaration, "Mesh image resources are declared as material properties")
-    code = ["import " + RESOURCE_MODULE[0] + ";", *("import " + name + ";" for name in dependencies),
+    code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies),
             _MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX]
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),

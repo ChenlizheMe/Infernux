@@ -26,7 +26,9 @@ class Painted(shader.frag):
         transformed = self.transform @ shader.vec4(self.tint.rgb, 0.0)
         image = shader.sample(self.image, ctx.uv0).rgb
         detail = shader.sample_level(self.detail, ctx.uv0, 0.0).rgb
-        return shader.vec4(transformed.rgb * self.gain * image + detail * 0.08, self.tint.a)
+        surface = shader.SurfaceData(albedo=transformed.rgb * self.gain * image + detail * 0.08,
+                                     normal_ws=ctx.normal_ws, alpha=self.tint.a)
+        return shader.vec4(surface.albedo, surface.alpha)
 '''
 
 

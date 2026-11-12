@@ -40,6 +40,21 @@ class fragment_input:
     uv: vec2
 
 
+class SurfaceData:
+    """Linear material properties shared by visible and auxiliary geometry passes."""
+
+    albedo: vec3
+    normal_ws: vec3
+    metallic: float
+    smoothness: float
+    occlusion: float
+    emission: vec3
+    alpha: float
+    specular_highlights: float
+    shading_param0: float
+    shading_param1: float
+
+
 class Color2D:
     """A typed sampled RGBA image and the sampler supplied by its graph port."""
 
@@ -135,4 +150,4 @@ for _name in INTRINSICS:
 for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions"):
     globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "frag", "fragment_input", "mesh_input", "parameter", "material", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "fragment_input", "mesh_input", "SurfaceData", "parameter", "material", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]

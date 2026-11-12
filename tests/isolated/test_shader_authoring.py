@@ -32,11 +32,15 @@ class Grid(shader.frag):
     image = shader.material.texture_2d(default="white", label="纹理")
     detail = shader.material.texture_2d(default="normal")
 
+    def describe(self, normal: shader.vec3) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=self.tint.rgb, normal_ws=normal, alpha=self.tint.a)
+
     def main(self, ctx: shader.mesh_input) -> shader.vec4:
         stripe = shader.step(0.5, shader.frac(ctx.position_ws.x * self.scale))
         image = shader.sample(self.image, ctx.uv0)
         detail = shader.sample_level(self.detail, ctx.uv0, 0.0)
-        return shader.vec4(self.tint.rgb * stripe, self.tint.a) * image * detail
+        surface = self.describe(ctx.normal_ws)
+        return shader.vec4(surface.albedo * stripe, surface.alpha) * image * detail
 '''
     definition = parse_shader(source, "网格.frag.py", "mesh_grid")
     assert definition.domain == "mesh"
