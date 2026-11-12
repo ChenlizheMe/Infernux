@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .shader_library import LibraryGraph, ShaderEmitter, declarations
 from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
+from .shading_model import default_shading_model, read_shading_model
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,8 @@ class ShaderDefinition:
     source_ranges: tuple = ()
     domain: str = "fullscreen"
     surface: bool = False
+    shading_model: str | None = None
+    deferred_model: str | None = None
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -284,17 +287,12 @@ InxSurfaceData inx_evaluate_surface(InxMeshInput input, bool front_facing)
 [shader("fragment")]
 float4 fragment_main(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
-    return inx_shade_pbr<false>(inx_evaluate_surface(input, front_facing), input);
+    return inx_shade_surface<false>(inx_evaluate_surface(input, front_facing), input);
 }
 [shader("fragment")]
 float4 fragment_forward_plus(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
-    return inx_shade_pbr<true>(inx_evaluate_surface(input, front_facing), input);
-}
-[shader("fragment")]
-InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsFrontFace)
-{
-    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input);
+    return inx_shade_surface<true>(inx_evaluate_surface(input, front_facing), input);
 }
 [shader("fragment")]
 void fragment_depth(InxMeshInput input, bool front_facing : SV_IsFrontFace)
@@ -327,6 +325,22 @@ float4 fragment_base_color(InxMeshInput input, bool front_facing : SV_IsFrontFac
 """
 
 
+_SURFACE_LIGHTING = """
+float4 inx_shade_surface<let tiled_lighting : bool>(InxSurfaceData surface, InxMeshInput input)
+{
+    return float4(inx_shading_model::shade<tiled_lighting>(surface, inx_shading_context(input)), surface.alpha);
+}
+"""
+
+_SURFACE_GBUFFER = """
+[shader("fragment")]
+InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsFrontFace)
+{
+    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input, INX_MODEL_ID);
+}
+"""
+
+
 def parse_shader(source: str, source_path: str, module_name: str, *, reader=None) -> ShaderDefinition:
     author = _Author(source, source_path)
     author.alias, imports, body = declarations(source, source_path)
@@ -342,9 +356,19 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     author.domain = bases[author.qualified(declaration.bases[0])]
     author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
     entry_name = "surface" if author.is_surface else "main"
-    main, helpers = None, []
+    main, helpers, model_reference = None, [], None
     for statement in declaration.body:
-        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        if (author.is_surface and isinstance(statement, ast.Assign) and len(statement.targets) == 1
+                and author.qualified(statement.targets[0]) == "shading_model"):
+            call = statement.value
+            if (model_reference is not None or not isinstance(call, ast.Call)
+                    or author.qualified(call.func) != author.alias + ".ref" or call.keywords or len(call.args) != 1):
+                author.error(statement, "shading_model refers to one .shadingmodel.py asset with shader.ref", code="author.reference")
+            reference = author.literal(call.args[0])
+            if not isinstance(reference, str) or not reference.endswith(".shadingmodel.py"):
+                author.error(call, "A shading model reference names a .shadingmodel.py asset", code="author.reference")
+            model_reference = (Path(source_path).parent / reference, statement)
+        elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
             author.parameter(statement)
         elif isinstance(statement, ast.FunctionDef) and statement.name == entry_name and main is None:
             main = statement
@@ -360,6 +384,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if author.is_surface:
         author.fields["_alpha_clip_threshold"] = ShaderParameter("_alpha_clip_threshold", "float", 0.0, "", internal=True)
         author.field_nodes["_alpha_clip_threshold"] = declaration
+    model = None
+    if author.is_surface:
+        model_path, location = model_reference or (default_shading_model(), declaration)
+        model = read_shading_model(model_path, graph, author, location)
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
     if author.domain == "mesh":
@@ -372,7 +400,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies),
             _MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX]
     if author.is_surface:
-        code.insert(0, "import inx_lighting;")
+        code.insert(0, "import inx_surface_model;")
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),
                      RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";"])
@@ -400,10 +428,17 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         author.source_ranges.extend(emitter.source_ranges)
     code.extend(author.function(main))
     if author.is_surface:
+        code.append(_SURFACE_LIGHTING)
         code.append(_SURFACE_PASSES)
+        if model.deferred_model:
+            code.append(_SURFACE_GBUFFER.replace("INX_MODEL_ID", "INX_" + model.deferred_model.upper() + "_MODEL_ID"))
+    libraries = graph.sources()
+    if model:
+        libraries = (*libraries, ("inx_surface_model", model.path, model.source))
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
-                            "\n".join(code), graph.sources(), inputs,
-                            tuple(dict.fromkeys((*graph.ranges(), *author.source_ranges))), author.domain, author.is_surface)
+                            "\n".join(code), libraries, inputs,
+                            tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *author.source_ranges))),
+                            author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -414,6 +449,13 @@ def _prepare_source(source, source_path, module_name, reader):
     """Return a plain native preparation snapshot; no Python object enters GPU work."""
     from infernux._source_kinds import source_extension
 
+    if source_extension(source_path) == ".shadingmodel.py":
+        graph = LibraryGraph(reader)
+        owner = ShaderEmitter(source, source_path)
+        model = read_shading_model(source_path, graph, owner, ast.Constant(value=None, lineno=1, col_offset=0), source=source)
+        schema = {"name": model.name, "domain": "shadingmodel", "lighting_contract": model.contract,
+                  "parameters": [], "inputs": []}
+        return model.source, graph.sources(), json.dumps(schema, ensure_ascii=False), (*graph.ranges(), *model.source_ranges)
     if source_extension(source_path) == ".shaderlib.py":
         graph = LibraryGraph(reader)
         owner = ShaderEmitter(source, source_path)
@@ -426,6 +468,7 @@ def _prepare_source(source, source_path, module_name, reader):
         return module.source, libraries, json.dumps(schema, ensure_ascii=False), graph.ranges()
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
     schema = {"name": definition.name, "domain": definition.domain, "surface": definition.surface,
+              "shading_model": definition.shading_model, "deferred_model": definition.deferred_model,
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}
     return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False), definition.source_ranges

@@ -52,6 +52,33 @@ public struct InxSurfaceData
     public float shading_param0;
     public float shading_param1;
 };
+public struct InxShadingContext
+{
+    public float3 position_ws;
+    public float3 geometric_normal_ws;
+    public float view_depth;
+    public float2 pixel_position;
+    public uint layer_mask;
+    public bool receives_shadows;
+};
+public struct InxLight
+{
+    public float3 direction;
+    public float3 color;
+    public float attenuation;
+    public float shadow;
+};
+public InxShadingContext inx_shading_context(InxMeshInput input)
+{
+    InxShadingContext result;
+    result.position_ws = input.position_ws;
+    result.geometric_normal_ws = input.normal_ws;
+    result.view_depth = input.view_depth;
+    result.pixel_position = input.position.xy;
+    result.layer_mask = input.layer_mask;
+    result.receives_shadows = (input.object_flags & 2u) == 0u;
+    return result;
+}
 public InxSurfaceData inx_surface_data(float3 albedo, float3 normal_ws, float metallic, float smoothness,
                                       float occlusion, float3 emission, float alpha, float specular_highlights,
                                       float shading_param0, float shading_param1)
@@ -193,7 +220,11 @@ public struct InxGBufferOutput
     public float4 emission : SV_Target3;
     public uint4 metadata : SV_Target4;
 };
-public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput input)
+public static const uint INX_PBR_MODEL_ID = )slang" +
+                                               std::to_string(ShadingModelId("PBR")) + R"slang(u;
+public static const uint INX_UNLIT_MODEL_ID = )slang" +
+                                               std::to_string(ShadingModelId("Unlit")) + R"slang(u;
+public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput input, uint model_id)
 {
     InxGBufferOutput result;
     result.albedo_alpha = float4(surface.albedo, surface.alpha);
@@ -201,8 +232,7 @@ public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput in
     result.material = float4(saturate(surface.metallic), saturate(surface.occlusion),
                              saturate(surface.specular_highlights), surface.shading_param0);
     result.emission = float4(surface.emission, surface.shading_param1);
-    result.metadata = uint4(input.layer_mask, )slang" +
-                                               std::to_string(ShadingModelId("PBR")) + R"slang(u,
+    result.metadata = uint4(input.layer_mask, model_id,
                             (input.object_flags & 2u) == 0u ? 1u : 0u, 0u);
     return result;
 }

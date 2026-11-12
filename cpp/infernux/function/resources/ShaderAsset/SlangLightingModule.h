@@ -66,12 +66,6 @@ struct InxCanonicalLight {
     float4 position_range, direction_outer_cos, color_intensity, shadow_and_inner_cos, area_right_width, area_up_height;
     uint4 metadata, identity_and_shadow;
 };
-struct InxLight {
-    float3  direction;    
-    float3  color;        
-    float attenuation;  
-    float shadow;       
-};
 [[vk::binding(0, 1)]] DepthTexture2D shadow_image;
 [[vk::binding(6, 1)]] SamplerState shadow_sampler;
 [[vk::binding(4, 1)]] ConstantBuffer<InxLightingData> lighting;
@@ -417,9 +411,10 @@ if (tiled_lighting) {
     if (light_counts().x > 0u) {
         InxCanonicalLight dl = load_light(0);
         l.direction = normalize(-dl.direction_outer_cos.xyz);
-        l.color = dl.color_intensity.rgb * dl.color_intensity.w;
-        l.attenuation = 1.0;
-        l.shadow = calculate_shadow(world_pos, normal, frag_view_depth_val);
+        bool affects_surface = (dl.metadata.w & 1u) != 0u && (dl.metadata.y & layer_mask) != 0u;
+        l.color = affects_surface ? dl.color_intensity.rgb * dl.color_intensity.w : float3(0.0);
+        l.attenuation = affects_surface ? 1.0 : 0.0;
+        l.shadow = affects_surface ? calculate_shadow(world_pos, normal, frag_view_depth_val) : 1.0;
     } else {
         l.direction = float3(0.0, 1.0, 0.0);
         l.color = float3(0.0);
@@ -430,9 +425,10 @@ if (tiled_lighting) {
     if (lighting.light_counts.x > 0) {
         InxDirectionalLight dl = lighting.directional_lights[0];
         l.direction = normalize(-dl.direction.xyz);
-        l.color = dl.color.rgb * dl.color.w;
-        l.attenuation = 1.0;
-        l.shadow = calculate_shadow(world_pos, normal, frag_view_depth_val);
+        bool affects_surface = (dl.metadata.y & 1u) != 0u && (dl.metadata.x & layer_mask) != 0u;
+        l.color = affects_surface ? dl.color.rgb * dl.color.w : float3(0.0);
+        l.attenuation = affects_surface ? 1.0 : 0.0;
+        l.shadow = affects_surface ? calculate_shadow(world_pos, normal, frag_view_depth_val) : 1.0;
     } else {
         l.direction = float3(0.0, 1.0, 0.0);
         l.color = float3(0.0);
@@ -616,7 +612,7 @@ if (tiled_lighting) {
 }
     return lo;
 }
-float4 shade(InxSurfaceData s, InxMeshInput ctx) {
+float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx) {
     float3 albedo = clamp(s.albedo, 0.0, 1.0);
     float metallic = clamp(s.metallic, 0.0, 1.0);
     float perceptual_roughness = clamp(1.0 - s.smoothness, 0.045, 1.0);
@@ -633,13 +629,16 @@ float4 shade(InxSurfaceData s, InxMeshInput ctx) {
         R"slang(    float2  env_brdf      = env_brdf_approx(perceptual_roughness, ndot_v);
     float reflectivity = env_brdf.x + env_brdf.y;
     float3  energy_compensation = 1.0 + F0 * (1.0 / max(reflectivity, 0.001) - 1.0);
-    InxLight main_light = get_main_light(ctx.position_ws, N, ctx.view_depth);
-    float3 lo = calculate_all_lighting(ctx.position_ws, N, V,
+    float3 lo = float3(0.0);
+    if (!indirect_only) {
+        InxLight main_light = get_main_light(ctx.position_ws, N, ctx.view_depth);
+        lo = calculate_all_lighting(ctx.position_ws, N, V,
                                    albedo, metallic,
                                    roughness, perceptual_roughness,
                                    F0, f90, energy_compensation,
                                    s.specular_highlights,
                                    ctx.view_depth, main_light.shadow);
+    }
     float3 diffuse_irradiance = sample_ambient_irradiance(N);
     float3 refl_dir = get_specular_ambient_direction(N, V, perceptual_roughness);
     float prefilter = saturate(perceptual_roughness * (1.7 - 0.7 * perceptual_roughness));
@@ -650,7 +649,7 @@ float4 shade(InxSurfaceData s, InxMeshInput ctx) {
     float3 k_d_env = (1.0 - k_s_env) * (1.0 - metallic);
     float3 diffuse_env = k_d_env * albedo * diffuse_irradiance * ao;
     float spec_occlusion = compute_specular_occlusion(ndot_v, ao, perceptual_roughness);
-    float3 geom_n = normalize(ctx.normal_ws);
+    float3 geom_n = normalize(ctx.geometric_normal_ws);
     geom_n = (dot(geom_n, N) < 0.0) ? -geom_n : geom_n;
     float horizon_fade = horizon_occlusion(refl_dir, geom_n);
     float3 spec_env = specular_irradiance
@@ -659,16 +658,32 @@ float4 shade(InxSurfaceData s, InxMeshInput ctx) {
                  * (spec_occlusion * horizon_fade)
                  * s.specular_highlights;
     float3 ambient = diffuse_env + spec_env;
-    return float4(ambient + lo + s.emission, s.alpha);
+    return indirect_only ? ambient : ambient + lo + s.emission;
 }
 };
-public float4 inx_shade_pbr<let tiled_lighting : bool>(InxSurfaceData surface, InxMeshInput input)
+InxLighting<tiled_lighting> inx_lighting_context<let tiled_lighting : bool>(InxShadingContext input)
 {
     InxLighting<tiled_lighting> context;
     context.layer_mask = input.layer_mask;
-    context.receives_shadows = (input.object_flags & 2u) == 0u;
-    context.pixel_position = input.position.xy;
-    return context.shade(surface, input);
+    context.receives_shadows = input.receives_shadows;
+    context.pixel_position = input.pixel_position;
+    return context;
+}
+public float3 inx_shade_pbr<let tiled_lighting : bool>(InxSurfaceData surface, InxShadingContext input)
+{
+    return inx_lighting_context<tiled_lighting>(input).shade<false>(surface, input);
+}
+public float3 inx_pbr_indirect(InxSurfaceData surface, InxShadingContext input)
+{
+    return inx_lighting_context<false>(input).shade<true>(surface, input);
+}
+public InxLight inx_main_light<let tiled_lighting : bool>(InxShadingContext input, float3 normal_ws)
+{
+    return inx_lighting_context<tiled_lighting>(input).get_main_light(input.position_ws, normal_ws, input.view_depth);
+}
+public float3 inx_view_direction(InxShadingContext input)
+{
+    return normalize(lighting.camera_pos.xyz - input.position_ws);
 }
 )slang"};
     return module;

@@ -16,6 +16,7 @@ class Function:
     symbol: str
     result: str
     arguments: tuple[str, ...]
+    lighting_specialization: bool = False
 
 
 @dataclass
@@ -85,7 +86,8 @@ class ShaderEmitter(SlangEmitter):
             return super().visit_Call(node)
         if node.keywords or len(node.args) != len(function.arguments):
             self.error(node, "Shader helper arguments must match its typed positional signature")
-        return function.symbol + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
+        specialization = "<tiled_lighting>" if function.lighting_specialization else ""
+        return function.symbol + specialization + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
 
     def annotation(self, node):
         spelling = qualified(node)
@@ -121,8 +123,9 @@ class ShaderEmitter(SlangEmitter):
         self.local_declarations()
         self.block(definition.body)
         parameters = ", ".join(kind + " " + field.arg for field, kind in zip(fields, function.arguments))
+        specialization = "<let tiled_lighting : bool>" if function.lighting_specialization else ""
         return [self.source_directive(definition),
-                f'{"public " if public else ""}{function.result} {definition.name}({parameters})',
+                f'{"public " if public else ""}{function.result} {definition.name}{specialization}({parameters})',
                 "{", *self.lines, "}"]
 
 

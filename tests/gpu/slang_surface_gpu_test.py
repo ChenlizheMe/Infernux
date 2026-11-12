@@ -39,19 +39,64 @@ void surface(out SurfaceData s) {
 }
 '''
 
+MODEL = '''import infernux.shader as shader
+class BandResponse(shader.shadingmodel):
+    lighting_contract = "custom_response"
+    def response(self, value: float) -> float:
+        return shader.mix(0.25, 1.0, shader.step(0.55, value))
+    def shade(self, surface: shader.SurfaceData, ctx: shader.ShadingContext) -> shader.vec3:
+        light = shader.lighting.main_light(ctx, surface.normal_ws)
+        weight = self.response(shader.max(0.0, shader.dot(surface.normal_ws, light.direction)))
+        direct = surface.albedo * light.color * light.attenuation * light.shadow * weight
+        return direct + surface.emission
+'''
+
+REFERENCE_MODEL = '''ShadingModelInfo {
+    Name "BaselineBand"
+    Imports ["Lighting"]
+    Requires [Lighting]
+}
+void shading(in SurfaceData s, out vec4 color) {
+    ShadingContext ctx = GetShadingContext();
+    Light light = getMainLight(ctx.positionWS, s.normalWS, ctx.viewDepth);
+#ifdef INX_FORWARD_PLUS_PASS
+    bool affects = (canonicalLights[0].metadata.y & _inx_ObjectLayerMask) != 0u && (canonicalLights[0].metadata.w & 1u) != 0u;
+#else
+    bool affects = (lighting.directionalLights[0].metadata.x & _inx_ObjectLayerMask) != 0u && (lighting.directionalLights[0].metadata.y & 1u) != 0u;
+#endif
+    light.color *= affects ? 1.0 : 0.0;
+    float weight = mix(0.25, 1.0, step(0.55, max(0.0, dot(s.normalWS, light.direction))));
+    color = vec4(s.albedo * light.color * light.attenuation * light.shadow * weight + s.emission, s.alpha);
+}
+'''
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pipeline", choices=("forward", "forward_plus", "deferred"), required=True)
     parser.add_argument("--skinned", action="store_true")
+    parser.add_argument("--model", choices=("pbr", "unlit", "band"), default="pbr")
     options = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="infernux-slang-surface-") as directory:
         root = Path(directory)
         for name in ("Assets", "Packages", "ProjectSettings"):
             (root / name).mkdir()
         source, reference = root / "Assets/表面.frag.py", root / "Assets/baseline.frag"
-        source.write_text(SOURCE, encoding="utf-8")
-        reference.write_text(REFERENCE, encoding="utf-8")
+        author_source, reference_source = SOURCE, REFERENCE
+        model_path = None
+        if options.model == "unlit":
+            from infernux._compiler.shading_model import default_shading_model
+            model_path = default_shading_model().with_name("unlit.shadingmodel.py")
+            author_source = SOURCE.replace("(shader.surface):", f"(shader.surface):\n    shading_model = shader.ref({model_path.as_posix()!r})")
+            reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel Unlit")
+        elif options.model == "band":
+            model_path = root / "Assets/band.shadingmodel.py"
+            model_path.write_text(MODEL, encoding="utf-8")
+            (root / "Assets/baseline.shadingmodel").write_text(REFERENCE_MODEL, encoding="utf-8")
+            author_source = SOURCE.replace("(shader.surface):", '(shader.surface):\n    shading_model = shader.ref("./band.shadingmodel.py")')
+            reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel BaselineBand")
+        source.write_text(author_source, encoding="utf-8")
+        reference.write_text(reference_source, encoding="utf-8")
         mask_path = root / "Assets/mask.png"
         texels = np.full((8, 8, 4), 255, dtype=np.uint8)
         texels[4:, :4, 3] = 0
@@ -71,6 +116,9 @@ def main():
             native.set_editor_fps_cap(240)
             native.set_editor_idle_fps(0)
             database = frontend.get_asset_database()
+            if options.model == "band":
+                imported = AssetManager.import_asset(str(model_path), database=database)
+                assert imported, imported.error
             for path in (source, reference, mask_path):
                 imported = AssetManager.import_asset(str(path), database=database)
                 assert imported, imported.error
@@ -164,14 +212,14 @@ def main():
                             elif phase == 9:
                                 occluder_renderer.set_parameter("coverage", 0.0)
                         else:
-                            if phase in (6, 8):
+                            if phase in (6, 10) or (phase == 8 and options.model != "unlit"):
                                 assert abs(pixels - expected).max() > .02, "A changed surface or caster control did not affect the draw"
                             else:
                                 np.testing.assert_allclose(pixels, expected, atol=.006)
-                            print("SURFACE", options.pipeline, phase, "max_error", float(abs(pixels - expected).max()), flush=True)
+                            print("SURFACE", options.pipeline, options.model, phase, "max_error", float(abs(pixels - expected).max()), flush=True)
                             side = 0
                             phase += 1
-                            if phase == 10:
+                            if phase == (12 if options.model == "band" else 10):
                                 complete = True
                                 native.exit()
                                 return
@@ -188,6 +236,7 @@ def main():
                                 obj.layer = 1
                             elif phase == 4:
                                 obj.layer = 0
+                                lights[0].culling_mask = 0xffffffff
                                 lights[1].culling_mask = 0xffffffff
                                 lights[1].shadows = LightShadows.Hard
                                 occluder.active = True
@@ -197,8 +246,8 @@ def main():
                                     material.alpha_clip_enabled = True
                                     material.alpha_clip_threshold = .5
                             elif phase in (6, 7):
-                                source.write_text(SOURCE.replace("albedo=self.tint.rgb", "albedo=self.tint.rgb * 0.5")
-                                                  if phase == 6 else SOURCE, encoding="utf-8")
+                                source.write_text(author_source.replace("albedo=self.tint.rgb", "albedo=self.tint.rgb * 0.5")
+                                                  if phase == 6 else author_source, encoding="utf-8")
                                 assert inx.Shader.reload(str(source))
                             elif phase == 8:
                                 renderer.receives_shadows = True
@@ -211,13 +260,17 @@ def main():
                                 override_reference = baseline.clone()
                                 override_reference.set_float("coverage", 0.0)
                                 occluder_renderer.casts_shadows = True
+                            elif phase in (10, 11):
+                                model_path.write_text(MODEL.replace("return direct + surface.emission", "return direct * 0.5 + surface.emission")
+                                                      if phase == 10 else MODEL, encoding="utf-8")
+                                assert inx.Shader.reload(str(model_path))
                             renderer.set_material(0, baseline)
                             occluder_renderer.set_material(override_reference if phase == 9 else baseline)
                             if options.skinned and phase in (1, 4, 7):
                                 seconds = {1: .5, 4: 1., 7: 2.}[phase]
                                 occluder_renderer.submit_animation_pose("Scale", seconds, seconds / 3, loop=False)
                         changed, ticket = frame, None
-                    if frame > 400:
+                    if frame > 500:
                         raise AssertionError("Surface audit did not complete")
                 except BaseException as error:
                     failures.append(error)

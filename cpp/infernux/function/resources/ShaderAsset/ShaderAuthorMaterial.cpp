@@ -28,7 +28,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     result.key.stages = {"Standard", std::move(guid)};
     result.domain = ShaderProgramDomain::Mesh;
     const bool surface = source.value("surface", false);
-    result.shadingModel = surface ? "PBR" : "";
+    result.shadingModel = surface ? source.at("shading_model").get<std::string>() : "";
     result.compatibilitySignature =
         ComputeShaderProgramRevision(schema, "InxMeshInput", ShaderCompileTarget::Forward, 0);
     result.materialLayoutSignature = result.compatibilitySignature;
@@ -102,7 +102,8 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     addVariant(ShaderCompileTarget::ForwardPlus, "vertex_main", surface ? "fragment_forward_plus" : "fragment_main");
     if (surface) {
         addVariant(ShaderCompileTarget::Shadow, "vertex_shadow", "fragment_depth");
-        addVariant(ShaderCompileTarget::GBuffer, "vertex_main", "fragment_gbuffer");
+        if (!source.at("deferred_model").is_null())
+            addVariant(ShaderCompileTarget::GBuffer, "vertex_main", "fragment_gbuffer");
         addVariant(ShaderCompileTarget::Depth, "vertex_main", "fragment_depth");
         addVariant(ShaderCompileTarget::Picking, "vertex_main", "fragment_picking");
         addVariant(ShaderCompileTarget::Motion, "vertex_motion", "fragment_motion");

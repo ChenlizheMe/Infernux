@@ -9,13 +9,16 @@ SURFACE_FIELDS = {
     "shading_param0": ("float", "0.0"), "shading_param1": ("float", "0.0"),
 }
 STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
-                "SurfaceData": "InxSurfaceData"}
+                "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight"}
 STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
                  "InxMeshInput": {"position": "float4", "position_ws": "float3", "normal_ws": "float3",
                                   "tangent_ws": "float4", "color": "float3", "uv0": "float2", "uv1": "float2",
                                   "view_depth": "float", "line_color": "float4", "object_id": "uint2",
                                   "object_flags": "uint", "layer_mask": "uint"},
-                 "InxSurfaceData": {name: kind for name, (kind, _) in SURFACE_FIELDS.items()}}
+                 "InxSurfaceData": {name: kind for name, (kind, _) in SURFACE_FIELDS.items()},
+                 "InxShadingContext": {"position_ws": "float3", "geometric_normal_ws": "float3", "view_depth": "float",
+                                       "pixel_position": "float2", "layer_mask": "uint", "receives_shadows": "bool"},
+                 "InxLight": {"direction": "float3", "color": "float3", "attenuation": "float", "shadow": "float"}}
 
 # A logical image carries its sampler through typed library calls. Slang
 # flattens the pair for each target; neither authors nor helpers name slots.

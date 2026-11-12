@@ -84,6 +84,68 @@ def test_static_fullscreen_schema_and_both_targets():
         assert block["fields"][-1]["type"]["scalarType"] == "uint32"
 
 
+def test_unlit_model_retains_geometry_passes_without_lighting_resources(tmp_path):
+    from infernux._compiler.shading_model import default_shading_model
+
+    model = default_shading_model().with_name("unlit.shadingmodel.py")
+    source = f'''import infernux.shader as shader
+class Painted(shader.surface):
+    shading_model = shader.ref({model.as_posix()!r})
+    tint = shader.material.color(default=(0.2, 0.4, 0.8, 1.0))
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=self.tint.rgb, emission=shader.vec3(0.1), alpha=self.tint.a)
+'''
+    definition = parse_shader(source, str(tmp_path / "painted.frag.py"), "painted_unlit")
+    assert definition.shading_model == definition.deferred_model == "Unlit"
+    assert str(model) in {path for _, path, _ in definition.libraries}
+    for target in definition.compile()["targets"]:
+        entries = {entry["name"]: {tuple(binding) for binding in entry["bindings"]} for entry in target["entries"]}
+        assert "fragment_gbuffer" in entries
+        assert not any(binding[0] == 1 for binding in entries["fragment_main"])
+        assert not any(binding[0] == 1 for binding in entries["fragment_forward_plus"])
+
+
+def test_custom_shading_model_has_typed_context_imports_and_specialized_lights(tmp_path):
+    from infernux._compiler.shader import _prepare_source
+
+    (tmp_path / "bands.shaderlib.py").write_text('''import infernux.shader as shader
+def band(value: float, threshold: float) -> float:
+    return shader.mix(0.25, 1.0, shader.step(threshold, value))
+''', encoding="utf-8")
+    model = tmp_path / "band.shadingmodel.py"
+    model.write_text('''import infernux.shader as shader
+from .bands import band
+class Band(shader.shadingmodel):
+    lighting_contract = "custom_response"
+    def response(self, value: float, threshold: float) -> float:
+        return band(value, threshold)
+    def shade(self, surface: shader.SurfaceData, ctx: shader.ShadingContext) -> shader.vec3:
+        light = shader.lighting.main_light(ctx, surface.normal_ws)
+        weight = self.response(shader.max(0.0, shader.dot(surface.normal_ws, light.direction)), surface.shading_param0)
+        direct = surface.albedo * light.color * light.attenuation * light.shadow * weight
+        return direct + shader.lighting.pbr_indirect(surface, ctx) + surface.emission
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+class Painted(shader.surface):
+    shading_model = shader.ref("./band.shadingmodel.py")
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(0.5), shading_param0=0.55)
+'''
+    definition = parse_shader(source, str(tmp_path / "painted.frag.py"), "painted_band")
+    assert definition.shading_model == "Band" and definition.deferred_model is None
+    for target in definition.compile()["targets"]:
+        entries = {entry["name"]: {tuple(binding) for binding in entry["bindings"]} for entry in target["entries"]}
+        assert "fragment_gbuffer" not in entries
+        assert not {(1, 1), (1, 2), (1, 3)} & entries["fragment_main"]
+        assert (1, 1) in entries["fragment_forward_plus"]
+    _, libraries, schema, _ = _prepare_source(model.read_text(encoding="utf-8"), str(model), "band", None)
+    assert json.loads(schema)["lighting_contract"] == "custom_response"
+    assert str(tmp_path / "bands.shaderlib.py") in {path for _, path, _ in libraries}
+    model.write_text(model.read_text(encoding="utf-8").replace("ctx, surface.normal_ws", "ctx.uv0, surface.normal_ws"), encoding="utf-8")
+    with pytest.raises(SyntaxError, match="Unknown shader stage input: uv0"):
+        parse_shader(source, str(tmp_path / "painted.frag.py"), "invalid_band")
+
+
 def test_surface_specializes_light_resources_and_preserves_context():
     source = '''import infernux.shader as shader
 class Painted(shader.surface):

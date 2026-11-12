@@ -23,6 +23,35 @@ class surface:
     """Material surface evaluated by the engine's shared lighting and geometry passes."""
 
 
+class shadingmodel:
+    """A typed lighting response shared by surfaces referring to this GPU asset."""
+
+
+class ShadingContext:
+    """Lighting geometry independent of mesh UVs, vertex colors and tangent streams."""
+
+    position_ws: vec3
+    geometric_normal_ws: vec3
+    view_depth: float
+    pixel_position: vec2
+    layer_mask: uint
+    receives_shadows: bool
+
+
+class LightData:
+    """Incident light; color, distance attenuation and visibility are separate."""
+
+    direction: vec3
+    color: vec3
+    attenuation: float
+    shadow: float
+
+
+def ref(path: str):
+    """Reference a statically compiled GPU asset relative to this author file."""
+    return path
+
+
 class mesh_input:
     """Interpolated mesh data in the current geometry view."""
 
@@ -169,4 +198,14 @@ for _name in INTRINSICS:
 for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions"):
     globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "frag", "surface", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
+
+class _Lighting:
+    pbr = staticmethod(_gpu_intrinsic("lighting.pbr"))
+    pbr_indirect = staticmethod(_gpu_intrinsic("lighting.pbr_indirect"))
+    main_light = staticmethod(_gpu_intrinsic("lighting.main_light"))
+    view_direction = staticmethod(_gpu_intrinsic("lighting.view_direction"))
+
+
+lighting = _Lighting()
+
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
