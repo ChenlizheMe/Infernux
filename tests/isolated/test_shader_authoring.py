@@ -100,6 +100,35 @@ class Painted(shader.surface):
         assert {(1, 0), (1, 4), (1, 6)} <= entries["fragment_main"]
         assert not {(1, 1), (1, 2), (1, 3)} & entries["fragment_main"]
         assert {(1, 1), (1, 2), (1, 3)} <= entries["fragment_forward_plus"]
+        assert {"vertex_motion", "fragment_gbuffer", "fragment_depth", "fragment_picking", "fragment_motion",
+                "fragment_normal", "fragment_base_color"} <= entries.keys()
+        # Geometry outputs retain the authored surface and alpha decision,
+        # without linking light lists or shadow resources into their stages.
+        for name in ("fragment_gbuffer", "fragment_depth", "fragment_picking", "fragment_motion",
+                     "fragment_normal", "fragment_base_color"):
+            assert not any(binding[0] == 1 for binding in entries[name])
+
+
+def test_depth_and_integer_ports_keep_their_value_types_and_reject_filtered_ids():
+    source = '''import infernux.shader as shader
+class ReadBuffers(shader.fullscreen):
+    depth = shader.input("depth", shader.Depth2D)
+    identity = shader.input("object", shader.UInt2D)
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        pixel = shader.ivec2(ctx.position.xy)
+        z = shader.load(self.depth, pixel, 0)
+        identity = shader.load(self.identity, pixel, 0)
+        size = shader.dimensions(self.identity, 0)
+        return shader.vec4(z, float(identity.x), float(size.x), 1.0)
+'''
+    for target in parse_shader(source, "场景缓冲.frag.py", "read_buffers").compile()["targets"]:
+        images = {resource["name"]: resource for resource in target["resources"]}
+        assert images["inx_depth.texture"]["depth"]
+        assert images["inx_identity.texture"]["sample_type"] == 3  # Uint, never a filtered float image.
+        assert "inx_identity.sampler" not in images
+    with pytest.raises(SyntaxError, match="pixel coordinates"):
+        parse_shader(source.replace("shader.load(self.identity, pixel, 0)", "shader.sample(self.identity, ctx.uv)"),
+                     "场景缓冲.frag.py", "read_buffers")
 
 
 def test_shader_files_never_enter_host_discovery(tmp_path):

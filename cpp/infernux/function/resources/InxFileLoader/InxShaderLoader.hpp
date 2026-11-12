@@ -266,9 +266,6 @@ class InxShaderLoader
     std::string BuildDeferredShadingRegistry(const std::unordered_map<std::string, std::string> &shaderIdMap,
                                              std::vector<ShaderDescriptor> &models) const;
 
-    /// Stable model identifier stored in the GBuffer object metadata target.
-    static uint32_t ShadingModelId(std::string_view name) noexcept;
-
     /// Build a mapping of shader_id → file_path by recursively scanning shader directories.
     std::unordered_map<std::string, std::string> BuildShaderIdMap(const std::string &dir);
 

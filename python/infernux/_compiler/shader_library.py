@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
-from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS
+from .shader_types import RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS
 from .diagnostics import parse_gpu_module
 
 
@@ -44,7 +44,9 @@ class ShaderEmitter(SlangEmitter):
                 return fields[node.attr]
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) in {"sample", "sample_level", "sample_grad", "load"}):
-            return "float4"
+            if not node.args:
+                self.error(node, "A texture operation needs a declared GPU image", code="author.type")
+            return RESOURCE_ELEMENTS.get(self.infer(node.args[0]))
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) == "dimensions"):
             return "uint2"
@@ -67,8 +69,11 @@ class ShaderEmitter(SlangEmitter):
             arity, intrinsic = image_operations[operation]
             if node.keywords or len(node.args) != arity:
                 self.error(node, f"shader.{operation} takes {arity} typed positional arguments")
-            if self.infer(node.args[0]) not in RESOURCE_TYPES.values():
+            kind = self.infer(node.args[0])
+            if kind not in RESOURCE_ELEMENTS:
                 self.error(node, "Texture operations receive a declared GPU image")
+            if kind == "InxUInt2D" and operation not in {"load", "dimensions"}:
+                self.error(node, "Integer images use shader.load with pixel coordinates", code="author.type")
             image, *arguments = (self.visit(argument) for argument in node.args)
             if operation == "dimensions":
                 return f"inx_image_dimensions({image}, uint({arguments[0]}))"

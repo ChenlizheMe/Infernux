@@ -70,6 +70,14 @@ class Color2D:
     """A typed sampled RGBA image and the sampler supplied by its graph port."""
 
 
+class Depth2D:
+    """A depth attachment read as a scalar through its graph port."""
+
+
+class UInt2D:
+    """An unsigned integer attachment loaded as uvec4 at pixel coordinates."""
+
+
 @dataclass(frozen=True)
 class _Input:
     semantic: str
@@ -161,4 +169,4 @@ for _name in INTRINSICS:
 for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions"):
     globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "frag", "surface", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]

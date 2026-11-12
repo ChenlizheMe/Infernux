@@ -1,10 +1,23 @@
 #pragma once
 
+#include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace infernux
 {
+
+/// Stable scene/GBuffer identity, independent of compiler and asset import order.
+[[nodiscard]] constexpr uint32_t ShadingModelId(std::string_view name) noexcept
+{
+    uint32_t hash = 2166136261u;
+    for (const unsigned char character : name) {
+        hash ^= character;
+        hash *= 16777619u;
+    }
+    return hash == 0u ? 1u : hash;
+}
 
 /// Authored render-state defaults shared by assets and device publication.
 struct ShaderRenderMeta
@@ -126,11 +139,11 @@ enum class ShaderCompileTarget : int
     case ShaderCompileTarget::GBuffer:
     case ShaderCompileTarget::Picking:
     case ShaderCompileTarget::Motion:
-        return true;
     case ShaderCompileTarget::Normal:
     case ShaderCompileTarget::BaseColor:
-    case ShaderCompileTarget::Shadow:
     case ShaderCompileTarget::Depth:
+        return true;
+    case ShaderCompileTarget::Shadow:
     case ShaderCompileTarget::Count:
         return false;
     }

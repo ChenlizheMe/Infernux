@@ -227,11 +227,84 @@ _MESH_VERTEX = """
 [[vk::binding(2, 2)]] StructuredBuffer<InxSkinState> inx_skins;
 [[vk::binding(3, 2)]] StructuredBuffer<InxModelMatrix> inx_bones;
 [[vk::binding(4, 2)]] StructuredBuffer<InxInstanceData> inx_instances;
-[shader("vertex")]
-InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
+InxMeshInput inx_mesh_vertex(InxVertexInput input, uint instance)
 {
     input = inx_skin_vertex(input, inx_skins[instance], inx_bones);
     return inx_transform_vertex(input, inx_models[instance].value, inx_view.view, inx_view.projection, inx_instances[instance]);
+}
+[shader("vertex")]
+InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
+{
+    return inx_mesh_vertex(input, instance);
+}
+"""
+
+
+_SURFACE_PASSES = """
+[shader("vertex")]
+InxMeshInput vertex_motion(InxVertexInput input, uint instance : SV_VulkanInstanceID)
+{
+    InxMeshInput result = inx_mesh_vertex(input, instance);
+    InxInstanceData history = inx_instances[instance];
+    if ((history.object_flags & 1u) != 0u)
+    {
+        InxSkinState skin = inx_skins[instance];
+        skin.bone_offset = skin.previous_bone_offset;
+        float3 previous_local = inx_skin_vertex(input, skin, inx_bones).position;
+        float4 previous_clip = mul(inx_view.previous_view_projection, mul(history.previous_model, float4(previous_local, 1.0)));
+        result.motion_vector = (result.position.xy / max(abs(result.position.w), 1e-6)
+            - float2(previous_clip.x, -previous_clip.y) / max(abs(previous_clip.w), 1e-6)) * 0.5;
+    }
+    return result;
+}
+InxSurfaceData inx_evaluate_surface(InxMeshInput input, bool front_facing)
+{
+    InxSurfaceData surface = inx_prepare_surface(inx_author_surface(input), input, front_facing);
+    if (inx_parameters._alpha_clip_threshold > 0.0 && surface.alpha < inx_parameters._alpha_clip_threshold) discard;
+    return surface;
+}
+[shader("fragment")]
+float4 fragment_main(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    return inx_shade_pbr<false>(inx_evaluate_surface(input, front_facing), input);
+}
+[shader("fragment")]
+float4 fragment_forward_plus(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    return inx_shade_pbr<true>(inx_evaluate_surface(input, front_facing), input);
+}
+[shader("fragment")]
+InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsFrontFace)
+{
+    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input);
+}
+[shader("fragment")]
+void fragment_depth(InxMeshInput input, bool front_facing : SV_IsFrontFace)
+{
+    inx_evaluate_surface(input, front_facing);
+}
+[shader("fragment")]
+uint2 fragment_picking(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    inx_evaluate_surface(input, front_facing);
+    return input.object_id;
+}
+[shader("fragment")]
+float2 fragment_motion(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    inx_evaluate_surface(input, front_facing);
+    return input.motion_vector;
+}
+[shader("fragment")]
+float4 fragment_normal(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    return float4(inx_evaluate_surface(input, front_facing).normal_ws * 0.5 + 0.5, 1.0);
+}
+[shader("fragment")]
+float4 fragment_base_color(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    InxSurfaceData surface = inx_evaluate_surface(input, front_facing);
+    return float4(surface.albedo, surface.alpha);
 }
 """
 
@@ -309,11 +382,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         author.source_ranges.extend(emitter.source_ranges)
     code.extend(author.function(main))
     if author.is_surface:
-        for name, tiled in (("fragment_main", "false"), ("fragment_forward_plus", "true")):
-            code.extend(['[shader("fragment")]', f"float4 {name}(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0",
-                         "{", "    InxSurfaceData surface = inx_prepare_surface(inx_author_surface(input), input, front_facing);",
-                         "    if (surface.alpha < inx_parameters._alpha_clip_threshold) discard;",
-                         f"    return inx_shade_pbr<{tiled}>(surface, input);", "}"])
+        code.append(_SURFACE_PASSES)
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
                             "\n".join(code), graph.sources(), inputs,
                             tuple(dict.fromkeys((*graph.ranges(), *author.source_ranges))), author.domain, author.is_surface)

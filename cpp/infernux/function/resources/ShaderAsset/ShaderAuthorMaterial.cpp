@@ -27,6 +27,8 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     ShaderProgramArtifact result;
     result.key.stages = {"Standard", std::move(guid)};
     result.domain = ShaderProgramDomain::Mesh;
+    const bool surface = source.value("surface", false);
+    result.shadingModel = surface ? "PBR" : "";
     result.compatibilitySignature =
         ComputeShaderProgramRevision(schema, "InxMeshInput", ShaderCompileTarget::Forward, 0);
     result.materialLayoutSignature = result.compatibilitySignature;
@@ -81,12 +83,10 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
             result.alphaClipThresholdOffset = property.bufferOffset;
         result.properties.push_back(std::move(property));
     }
-    const auto &vertex = entry("vertex_main");
     const auto publication = std::shared_ptr<const ShaderTargetCode>(compilation, &*target);
-    for (const auto pass : {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus}) {
-        const auto &fragment =
-            entry(source.value("surface", false) && pass == ShaderCompileTarget::ForwardPlus ? "fragment_forward_plus"
-                                                                                             : "fragment_main");
+    const auto addVariant = [&](ShaderCompileTarget pass, const char *vertexName, const char *fragmentName) {
+        const auto &vertex = entry(vertexName);
+        const auto &fragment = entry(fragmentName);
         ShaderProgramArtifact::PassVariant variant;
         variant.target = pass;
         variant.compatibilitySignature = result.compatibilitySignature;
@@ -97,6 +97,16 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
         variant.vertexTarget = publication;
         variant.fragmentTarget = publication;
         result.variants.push_back(std::move(variant));
+    };
+    addVariant(ShaderCompileTarget::Forward, "vertex_main", "fragment_main");
+    addVariant(ShaderCompileTarget::ForwardPlus, "vertex_main", surface ? "fragment_forward_plus" : "fragment_main");
+    if (surface) {
+        addVariant(ShaderCompileTarget::GBuffer, "vertex_main", "fragment_gbuffer");
+        addVariant(ShaderCompileTarget::Depth, "vertex_main", "fragment_depth");
+        addVariant(ShaderCompileTarget::Picking, "vertex_main", "fragment_picking");
+        addVariant(ShaderCompileTarget::Motion, "vertex_motion", "fragment_motion");
+        addVariant(ShaderCompileTarget::Normal, "vertex_main", "fragment_normal");
+        addVariant(ShaderCompileTarget::BaseColor, "vertex_main", "fragment_base_color");
     }
     result.key.revision = ComputeShaderProgramArtifactRevision(result);
     return result;

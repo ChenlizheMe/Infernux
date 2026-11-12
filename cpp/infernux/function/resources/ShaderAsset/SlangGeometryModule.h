@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SlangCompiler.h"
+#include <core/types/ShaderTypes.h>
 
 namespace infernux
 {
@@ -9,7 +10,8 @@ namespace infernux
 // and their ShaderLibs. Resource ownership stays in the program, never here.
 inline const ShaderSourceModule &GetSlangGeometryModule()
 {
-    static const ShaderSourceModule module{"inx_geometry", "<infernux/shader/geometry>", R"slang(
+    static const ShaderSourceModule module{"inx_geometry", "<infernux/shader/geometry>",
+                                           R"slang(
 public struct InxVertexInput
 {
     [[vk::location(0)]] public float3 position : POSITION;
@@ -35,6 +37,7 @@ public struct InxMeshInput
     public nointerpolation uint2 object_id : TEXCOORD8;
     public nointerpolation uint object_flags : TEXCOORD9;
     public nointerpolation uint layer_mask : TEXCOORD10;
+    public float2 motion_vector : TEXCOORD11;
 };
 public struct InxSurfaceData
 {
@@ -162,6 +165,7 @@ public InxMeshInput inx_transform_vertex(InxVertexInput input, float4x4 model, f
     result.object_id = instance.object_id;
     result.object_flags = instance.object_flags;
     result.layer_mask = instance.layer_mask;
+    result.motion_vector = float2(0.0);
     result.position = mul(projection, mul(view, world));
     // The existing shared camera buffer stores a Vulkan viewport projection.
     // Return canonical Y-up before the common target compiler's clip lowering.
@@ -175,6 +179,27 @@ public InxSurfaceData inx_prepare_surface(InxSurfaceData surface, InxMeshInput i
     float3 normal = dot(surface.normal_ws, surface.normal_ws) > 1e-8 ? surface.normal_ws : input.normal_ws;
     surface.normal_ws = normalize(normal) * (front_facing ? 1.0 : -1.0);
     return surface;
+}
+public struct InxGBufferOutput
+{
+    public float4 albedo_alpha : SV_Target0;
+    public float4 normal_smoothness : SV_Target1;
+    public float4 material : SV_Target2;
+    public float4 emission : SV_Target3;
+    public uint4 metadata : SV_Target4;
+};
+public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput input)
+{
+    InxGBufferOutput result;
+    result.albedo_alpha = float4(surface.albedo, surface.alpha);
+    result.normal_smoothness = float4(surface.normal_ws * 0.5 + 0.5, surface.smoothness);
+    result.material = float4(saturate(surface.metallic), saturate(surface.occlusion),
+                             saturate(surface.specular_highlights), surface.shading_param0);
+    result.emission = float4(surface.emission, surface.shading_param1);
+    result.metadata = uint4(input.layer_mask, )slang" +
+                                               std::to_string(ShadingModelId("PBR")) + R"slang(u,
+                            (input.object_flags & 2u) == 0u ? 1u : 0u, 0u);
+    return result;
 }
 )slang"};
     return module;

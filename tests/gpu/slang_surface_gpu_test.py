@@ -38,7 +38,7 @@ void surface(out SurfaceData s) {
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pipeline", choices=("forward", "forward_plus"), required=True)
+    parser.add_argument("--pipeline", choices=("forward", "forward_plus", "deferred"), required=True)
     options = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="infernux-slang-surface-") as directory:
         root = Path(directory)
@@ -50,8 +50,9 @@ def main():
         frontend, console = inx.Engine(), ConsolePanel()
         native = frontend.get_native_engine()
         failures, complete = [], False
-        pipeline = (inx.renderstack.DefaultForwardPipeline if options.pipeline == "forward" else
-                    inx.renderstack.DefaultForwardPlusPipeline)()
+        pipeline = {"forward": inx.renderstack.DefaultForwardPipeline,
+                    "forward_plus": inx.renderstack.DefaultForwardPlusPipeline,
+                    "deferred": inx.renderstack.DefaultDeferredPipeline}[options.pipeline]()
         pipeline.msaa_samples = 1
         pipeline.shadow_resolution = 512
         try:

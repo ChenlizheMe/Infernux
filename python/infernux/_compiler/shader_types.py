@@ -1,6 +1,7 @@
 """Resource value types consumed by the static Shader frontends."""
 
-RESOURCE_TYPES = {"Color2D": "InxColor2D"}
+RESOURCE_TYPES = {"Color2D": "InxColor2D", "Depth2D": "InxDepth2D", "UInt2D": "InxUInt2D"}
+RESOURCE_ELEMENTS = {"InxColor2D": "float4", "InxDepth2D": "float", "InxUInt2D": "uint4"}
 SURFACE_FIELDS = {
     "albedo": ("float3", "float3(1.0)"), "normal_ws": ("float3", "float3(0.0)"),
     "metallic": ("float", "0.0"), "smoothness": ("float", "0.5"), "occlusion": ("float", "1.0"),
@@ -24,15 +25,25 @@ public struct InxColor2D
     public Texture2D<float4> texture;
     public SamplerState sampler;
 };
+public struct InxDepth2D
+{
+    public DepthTexture2D texture;
+    public SamplerState sampler;
+};
+public struct InxUInt2D
+{
+    [format("unknown")] public Texture2D<uint4> texture;
+};
 public struct InxFragmentInput
 {
     public float4 position : SV_Position;
     public float2 uv : TEXCOORD0;
 };
-public uint2 inx_image_dimensions(InxColor2D image, uint mip)
+""" + "\n".join("""
+public uint2 inx_image_dimensions(TYPE image, uint mip)
 {
     uint width, height, levels;
     image.texture.GetDimensions(mip, width, height, levels);
     return uint2(width, height);
 }
-""")
+""".replace("TYPE", kind) for kind in RESOURCE_TYPES.values()))

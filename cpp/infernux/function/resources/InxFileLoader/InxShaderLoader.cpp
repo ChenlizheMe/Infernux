@@ -1206,18 +1206,6 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
     return desc;
 }
 
-uint32_t InxShaderLoader::ShadingModelId(std::string_view name) noexcept
-{
-    // FNV-1a keeps authored model IDs stable across processes, platforms, and
-    // asset import order. Zero is reserved for an invalid GBuffer record.
-    uint32_t hash = 2166136261u;
-    for (const unsigned char character : name) {
-        hash ^= character;
-        hash *= 16777619u;
-    }
-    return hash == 0u ? 1u : hash;
-}
-
 std::string
 InxShaderLoader::BuildDeferredShadingRegistry(const std::unordered_map<std::string, std::string> &shaderIdMap,
                                               std::vector<ShaderDescriptor> &models) const
