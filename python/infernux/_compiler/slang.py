@@ -31,6 +31,7 @@ class KernelCompilationPlan:
     gradient_parameters: tuple[int, ...]
     work_item: WorkItem
     continuation: RangeContract
+    target: str
     fast_math: bool = WORK_ITEM_FAST_MATH
     generated_source: str = ""
     lowering: object = None
@@ -74,7 +75,7 @@ def _continuation_contract(work_item, params, *, autodiff_mode, gradient_paramet
         inner_range=inner if not diagnostics else None)
 
 
-def prepare_kernel(function, params, *, receiver_fields=None, autodiff_mode="none", gradient_parameters=(), _lowered=None):
+def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(), _lowered=None):
     from infernux.compute import Buffer
     from infernux.lib import _Infernux
 
@@ -86,12 +87,12 @@ def prepare_kernel(function, params, *, receiver_fields=None, autodiff_mode="non
     continuation = _continuation_contract(item, params, autodiff_mode=autodiff_mode, gradient_parameters=gradients,
                                           proof=None if _lowered is None else _lowered.continuation)
     plan = KernelCompilationPlan("", copy.deepcopy(item.definition), copy.deepcopy(item.helpers), dict(item.globals_map),
-                                 item.domain_parameter, autodiff_mode, gradients, item, continuation)
+                                 item.domain_parameter, autodiff_mode, gradients, item, continuation, target)
     plan.generated_source, plan.lowering = _source(plan, params, function)
     # Cache the exact compiler input, including its generated ABI and work
     # proof. Runtime scalar values and buffer identities are not specializations.
     identity = {
-        "abi": _CACHE_ABI, "compiler": _Infernux._slang_version(), "source": plan.generated_source,
+        "abi": _CACHE_ABI, "compiler": _Infernux._slang_version(), "source": plan.generated_source, "target": target,
         "parameters": parameter_key(params), "continuation": asdict(continuation),
         "autodiff": autodiff_mode, "gradients": gradients, "precise": True,
     }
@@ -498,7 +499,7 @@ def _artifact(compiled, emitter, plan, params, function):
     identity = f"{function.__module__}.{function.__qualname__}"
     if plan.continuation.inner_range is not None:
         identity += "#" + plan.continuation.inner_range.kind
-    return CompilerArtifact(spirv_tasks=(entry["code"],), task_metadata=(metadata,), domain_parameter=plan.domain_parameter,
+    return CompilerArtifact(target=compiled["target"], tasks=(entry["code"],), task_metadata=(metadata,), domain_parameter=plan.domain_parameter,
         argument_layout={"size": arguments["byte_size"], "parameters": layouts},
         required_capabilities={"shader_int64": any(isinstance(value, Buffer) and value._dtype.scalar.name == "int64" for value in params)},
         diagnostic_locations=({"entry_point": entry["name"], "path": str(function.__code__.co_filename),
@@ -508,19 +509,19 @@ def _artifact(compiled, emitter, plan, params, function):
         gradient_parameters=plan.gradient_parameters, identity=plan.artifact_key)
 
 
-def compile_kernel(function, params, *, receiver_fields=None, autodiff_mode="none", gradient_parameters=(), _lowered=None):
+def compile_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(), _lowered=None):
     from infernux.lib import _Infernux
 
-    plan = prepare_kernel(function, params, receiver_fields=receiver_fields, autodiff_mode=autodiff_mode,
+    plan = prepare_kernel(function, params, target=target, receiver_fields=receiver_fields, autodiff_mode=autodiff_mode,
                           gradient_parameters=gradient_parameters, _lowered=_lowered)
     root = compiler_cache_root()
     path = root / (plan.artifact_key + ".inxgpu")
-    specialization = _specialization_identity(params, autodiff_mode=autodiff_mode, gradient_parameters=plan.gradient_parameters)
+    specialization = _specialization_identity(params, target=target, autodiff_mode=autodiff_mode, gradient_parameters=plan.gradient_parameters)
     cached = _decode_artifact(path, specialization=specialization)
     if cached is not None:
         return cached
     compiled = _Infernux._compile_shader_program(plan.generated_source, str(function.__code__.co_filename), "inx_kernel",
-                                                targets=["spirv"], precise=True, source_ranges=plan.lowering.source_ranges)
+                                                targets=[target], precise=True, source_ranges=plan.lowering.source_ranges)
     artifact = _artifact(compiled["targets"][0], plan.lowering, plan, params, function)
     root.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")

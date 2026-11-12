@@ -21,6 +21,10 @@ namespace
 class TestDevice final : public Device
 {
   public:
+    ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override
+    {
+        return ShaderSourceLanguage::SpirV;
+    }
     DeviceId GetDeviceId() const noexcept override
     {
         return 1;

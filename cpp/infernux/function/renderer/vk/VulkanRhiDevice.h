@@ -232,6 +232,11 @@ class VulkanRhiDevice final : public rhi::Device
 
     INFERNUX_VULKAN_BACKEND_API ~VulkanRhiDevice();
 
+    [[nodiscard]] rhi::ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override
+    {
+        return rhi::ShaderSourceLanguage::SpirV;
+    }
+
     [[nodiscard]] rhi::DeviceId GetDeviceId() const noexcept override
     {
         return m_deviceId;

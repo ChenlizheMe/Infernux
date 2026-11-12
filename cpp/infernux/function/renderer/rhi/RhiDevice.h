@@ -19,7 +19,7 @@ namespace infernux::rhi
 /// RHI ABI version. The major component changes whenever a plugin must be
 /// rebuilt; the minor component is for additive contracts understood by the
 /// existing device vtable.
-inline constexpr uint32_t kRhiApiVersionMajor = 4;
+inline constexpr uint32_t kRhiApiVersionMajor = 5;
 inline constexpr uint32_t kRhiApiVersionMinor = 0;
 inline constexpr uint32_t kRhiApiVersion = (kRhiApiVersionMajor << 16u) | kRhiApiVersionMinor;
 
@@ -120,6 +120,10 @@ class Device
 {
   public:
     virtual ~Device() = default;
+
+    /// Source format accepted by this device's native shader compiler path.
+    /// Backend identity remains opaque; callers never infer format from it.
+    [[nodiscard]] virtual ShaderSourceLanguage GetShaderSourceLanguage() const noexcept = 0;
 
     [[nodiscard]] virtual uint32_t GetApiVersion() const noexcept
     {

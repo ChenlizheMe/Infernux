@@ -8,8 +8,8 @@ from ._programs import ProgramSource, _key
 
 def _forward(program):
     values = [value for value in program._sealed_artifacts.values() if value.autodiff_mode == "none"]
-    if len(values) != 1:
-        raise ValueError("NN program requires one fixed forward argument contract")
+    if not values or len({value.target for value in values}) != len(values):
+        raise ValueError("NN program requires one fixed forward argument contract per target")
     return values[0]
 
 
@@ -135,10 +135,10 @@ class GpuProgramSource(ProgramSource):
 
     @property
     def native_blocks(self):
-        # Retained SPIR-V bytes, including partially decoded input. Kernels
+        # Retained target code, including partially decoded input. Kernels
         # borrow these same immutable tasks; they do not create driver pipelines.
         return tuple({("gpu-code", id(task)): len(task)
-                      for _, artifact in self.artifacts.values() for task in artifact.spirv_tasks}.items())
+                      for _, artifact in self.artifacts.values() for task in artifact.tasks}.items())
 
     def stage(self):
         files = []

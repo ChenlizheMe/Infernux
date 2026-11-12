@@ -23,6 +23,10 @@ class MetadataDevice final : public Device
     uint32_t next = 1;
 
   public:
+    ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override
+    {
+        return ShaderSourceLanguage::SpirV;
+    }
     const DeviceCaps &GetCapabilities() const noexcept override
     {
         return caps;

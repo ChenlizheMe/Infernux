@@ -605,6 +605,17 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                                [](const rhi::PreparedComputeBatch &batch) { return batch.GetSubmission().serial; });
 
     py::class_<rhi::ComputeHost>(m, "_ComputeHost")
+        .def_property_readonly("shader_target",
+                               [](const rhi::ComputeHost &host) {
+                                   host.RequireAlive();
+                                   switch (host.device.GetShaderSourceLanguage()) {
+                                   case rhi::ShaderSourceLanguage::SpirV:
+                                       return "spirv";
+                                   case rhi::ShaderSourceLanguage::Wgsl:
+                                       return "wgsl";
+                                   }
+                                   throw std::logic_error("Compute device declared an unknown shader source language");
+                               })
         .def_property_readonly("shader_float32_preserve",
                                [](rhi::ComputeHost &host) {
                                    host.RequireAlive();

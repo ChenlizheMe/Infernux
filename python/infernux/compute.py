@@ -2710,14 +2710,16 @@ class _KernelExecutable:
     def __init__(self, artifact, host, params) -> None:
         from infernux._compiler.gpu_artifact import _specialization_identity
 
+        if artifact.target != host.shader_target:
+            raise ComputeCapabilityError(f"GPU program target '{artifact.target}' does not match this device's '{host.shader_target}' target")
         if not host.shader_float32_preserve:
             raise ComputeCapabilityError("native compute requires signed-zero, infinity and NaN preservation for float32")
         if any(isinstance(value, Buffer) and value._dtype.scalar == np.dtype(np.int64) for value in params) and not host.shader_int64:
-            raise ComputeCapabilityError("this Vulkan device has no enabled shaderInt64 capability")
+            raise ComputeCapabilityError("this compute device has no enabled shaderInt64 capability")
 
         self.artifact = artifact
         self.host = host
-        self.specialization = _specialization_identity(params, autodiff_mode=artifact.autodiff_mode,
+        self.specialization = _specialization_identity(params, target=artifact.target, autodiff_mode=artifact.autodiff_mode,
                                                       gradient_parameters=artifact.gradient_parameters)
         self.cost_identity = artifact.identity
         # A launch specialization is immutable: resident buffer identities and
@@ -2732,10 +2734,10 @@ class _KernelExecutable:
         self.max_dispatch_rows = host.max_dispatch_groups_x * self.dispatch_grain if widths else None
         native = None
         try:
-            for spirv, metadata in zip(artifact.spirv_tasks, artifact.task_metadata):
+            for code, metadata in zip(artifact.tasks, artifact.task_metadata):
                 bindings = sorted(metadata["buffer_bindings"], key=lambda binding: binding["binding"])
                 layout = [(binding["binding"], binding["binding_type"]) for binding in bindings]
-                native = host._create_kernel_from_compiler(spirv, layout, entry_point=metadata["entry_point"])
+                native = host._create_kernel_from_compiler(code, layout, entry_point=metadata["entry_point"], target=artifact.target)
                 self.tasks.append((native, bindings, int(metadata["threads_per_group"])))
         except Exception:
             # A failed constructor is not registered in the declaration cache.
@@ -3111,14 +3113,14 @@ class Kernel:
             executable = self._executables.pop(key, None)
             if executable is None:
                 if self._sealed_artifacts is not None:
-                    identity = _specialization_identity(params, autodiff_mode=autodiff_mode,
+                    identity = _specialization_identity(params, target=host.shader_target, autodiff_mode=autodiff_mode,
                                                         gradient_parameters=gradient_parameters)
                     try:
                         artifact = self._sealed_artifacts[identity]
                     except KeyError:
-                        raise ComputeCapabilityError("built GPU program does not contain the requested argument/gradient role") from None
+                        raise ComputeCapabilityError(f"built GPU program does not contain the requested {host.shader_target} argument/gradient role") from None
                 else:
-                    artifact = self._compile_artifact(params, receiver_fields, autodiff_mode, gradient_parameters)
+                    artifact = self._compile_artifact(params, receiver_fields, autodiff_mode, gradient_parameters, host.shader_target)
                 executable = _KernelExecutable(artifact, host, params)
                 if len(self._executables) >= 64:
                     _, retired = self._executables.popitem(last=False)
@@ -3128,12 +3130,12 @@ class Kernel:
                 self._executables[key] = executable
             return executable
 
-    def _compile_artifact(self, params, receiver_fields, autodiff_mode, gradient_parameters):
+    def _compile_artifact(self, params, receiver_fields, autodiff_mode, gradient_parameters, target):
         from infernux._compiler.slang import compile_kernel
 
         try:
             return compile_kernel(
-                self.function, params, receiver_fields=receiver_fields,
+                self.function, params, target=target, receiver_fields=receiver_fields,
                 autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters,
                 **({"_lowered": self._lowered_work_item} if self._lowered_work_item is not None else {}),
             )

@@ -307,7 +307,7 @@ def _specialization_parameters(specialization: str) -> tuple:
 
     dtypes = {"int": int, "float": float, "vector2": vector2, "vector3": vector3, "vector4": vector4}
     identity = json.loads(specialization)
-    if not isinstance(identity, dict) or set(identity) != {"parameters", "autodiff_mode", "gradient_parameters", "fast_math"}:
+    if not isinstance(identity, dict) or set(identity) != {"parameters", "autodiff_mode", "gradient_parameters", "fast_math", "target"}:
         raise ValueError("invalid GPU specialization identity")
     if type(identity["fast_math"]) is not bool or identity["fast_math"] is not WORK_ITEM_FAST_MATH:
         raise ValueError("GPU specialization changed the fixed WorkItem floating-point policy")
@@ -326,7 +326,7 @@ def _specialization_parameters(specialization: str) -> tuple:
             raise ValueError(f"invalid GPU specialization parameter: {record!r}")
     params = tuple(result)
     gradients = _compilation_request(params, identity["autodiff_mode"], identity["gradient_parameters"])
-    return params, {"autodiff_mode": identity["autodiff_mode"], "gradient_parameters": gradients}
+    return params, {"target": identity["target"], "autodiff_mode": identity["autodiff_mode"], "gradient_parameters": gradients}
 
 
 def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: tuple[str, ...]):
@@ -365,9 +365,9 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
     manifest = []
     missing: set[str] = set()
 
-    def select(function, params, *, bindings=None, autodiff_mode="none", gradient_parameters=()):
+    def select(function, params, *, target="spirv", bindings=None, autodiff_mode="none", gradient_parameters=()):
         name = f"{function.__module__}.{function.__qualname__}"
-        request = {"autodiff_mode": autodiff_mode, "gradient_parameters": gradient_parameters}
+        request = {"target": target, "autodiff_mode": autodiff_mode, "gradient_parameters": gradient_parameters}
         plan = frontend.prepare_kernel(function, params, receiver_fields=bindings, **request)
         path = cache / f"{plan.artifact_key}.inxgpu"
         if not path.is_file():

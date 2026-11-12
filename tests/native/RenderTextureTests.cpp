@@ -17,6 +17,10 @@ namespace
 class TestDevice final : public Device
 {
   public:
+    ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override
+    {
+        return ShaderSourceLanguage::SpirV;
+    }
     DeviceCaps caps;
     std::shared_ptr<DeviceLifetime> lifetime = std::make_shared<DeviceLifetime>();
     std::set<uint32_t> live;

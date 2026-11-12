@@ -9,7 +9,7 @@ import numpy as np
 from .kernel_contract import WORK_ITEM_FAST_MATH, ARRAY_KINDS
 
 _CACHE_MAGIC = b"INXGPU\x02"
-_CACHE_ABI = "infernux-slang-work-item"
+_CACHE_ABI = "infernux-slang-target-work-item"
 
 def parameter_key(params) -> tuple:
     """Return the bounded specialization key; runtime sizes are not compiled in."""
@@ -62,7 +62,8 @@ class RangeContract:
 
 @dataclass(slots=True)
 class CompilerArtifact:
-    spirv_tasks: tuple[bytes, ...]
+    target: str
+    tasks: tuple[bytes, ...]
     task_metadata: tuple[dict, ...]
     domain_parameter: int
     argument_layout: dict
@@ -222,9 +223,9 @@ class CompilerArtifact:
                     raise ValueError("Local VJP primal and gradient buffer ranges must not overlap")
         return bytes(payload)
 
-def _specialization_identity(params, *, autodiff_mode="none", gradient_parameters=()) -> str:
+def _specialization_identity(params, *, target="spirv", autodiff_mode="none", gradient_parameters=()) -> str:
     return json.dumps({"parameters": parameter_key(params), "autodiff_mode": autodiff_mode,
-                       "gradient_parameters": gradient_parameters, "fast_math": WORK_ITEM_FAST_MATH},
+                       "gradient_parameters": gradient_parameters, "fast_math": WORK_ITEM_FAST_MATH, "target": target},
                       sort_keys=True, separators=(",", ":"))
 
 def _compilation_request(params, autodiff_mode, gradient_parameters):
@@ -279,6 +280,7 @@ def _read_artifact_payload(payload, *, specialization: str | None = None, path="
     identity = json.loads(header["specialization"])
     if (identity["autodiff_mode"] != header["autodiff_mode"]
             or identity["gradient_parameters"] != header["gradient_parameters"]
+            or identity["target"] != header["target"]
             or type(identity.get("fast_math")) is not bool or identity["fast_math"] is not fast_math):
         raise RuntimeError(f"GPU artifact compilation identity mismatch: {path}")
     if specialization is not None and header.get("specialization") != specialization:
@@ -292,7 +294,8 @@ def _read_artifact_payload(payload, *, specialization: str | None = None, path="
     if cursor != len(payload):
         raise RuntimeError(f"Invalid Infernux GPU compiler cache artifact size: {path}")
     artifact = CompilerArtifact(
-        spirv_tasks=tuple(tasks),
+        target=header["target"],
+        tasks=tuple(tasks),
         task_metadata=tuple(dict(item) for item in header["task_metadata"]),
         domain_parameter=int(header["domain_parameter"]),
         argument_layout=dict(header["argument_layout"]),
@@ -328,7 +331,8 @@ def _encode_artifact(artifact, specialization):
         "autodiff_mode": artifact.autodiff_mode,
         "gradient_parameters": artifact.gradient_parameters,
         "identity": artifact.identity,
-        "task_sizes": [len(task) for task in artifact.spirv_tasks],
+        "target": artifact.target,
+        "task_sizes": [len(task) for task in artifact.tasks],
         "task_metadata": artifact.task_metadata,
         "domain_parameter": artifact.domain_parameter,
         "argument_layout": artifact.argument_layout,
@@ -337,4 +341,4 @@ def _encode_artifact(artifact, specialization):
         "continuation": asdict(artifact.continuation),
         "specialization": specialization,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return _CACHE_MAGIC + struct.pack("<I", len(header)) + header + b"".join(artifact.spirv_tasks)
+    return _CACHE_MAGIC + struct.pack("<I", len(header)) + header + b"".join(artifact.tasks)
