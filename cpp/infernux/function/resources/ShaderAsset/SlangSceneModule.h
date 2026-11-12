@@ -11,6 +11,7 @@ namespace infernux
 inline const ShaderSourceModule &GetSlangSceneModule()
 {
     static const ShaderSourceModule module{"inx_scene", "<infernux/renderer/scene>", R"slang(
+import inx_geometry;
 
 struct PunctualLightData {
     float4 position_range;
@@ -22,7 +23,7 @@ struct PunctualLightData {
 struct CameraData {
     column_major float4x4 view_projection;
     column_major float4x4 inverse_view_projection;
-    column_major float4x4 light_view_projection;
+    column_major float4x4 view;
     float4 camera_position;
     float4 light_direction_strength;
     float4 light_color_intensity;
@@ -42,28 +43,25 @@ struct CameraData {
 [[vk::binding(2, 0)]] SamplerComparisonState shadow_sampler;
 
 struct DrawData {
-    column_major float4x4 model;
-    column_major float4x4 normal;
+    float4 color;
+    float4 emission;
+    float4 material;
+    float4 surface;
+    float4 texture_uv_sets0;
+    float4 texture_uv_sets1;
+    float4 metallic_channels;
+    float4 smoothness_channels;
+    // xy = roughness conversion / occlusion strength, z = normal scale,
+    // w = receives directional shadows.
+    float4 material_sampling;
+    // model index, bounds index, first bone, bone count.
+    uint4 geometry;
 };
 [[vk::binding(3, 0)]] StructuredBuffer<DrawData> draws;
-
-struct VertexInput {
-    [[vk::location(0)]] float3 position : TEXCOORD0;
-    [[vk::location(1)]] float3 normal : TEXCOORD1;
-    [[vk::location(2)]] float2 uv : TEXCOORD2;
-    [[vk::location(3)]] float4 color : TEXCOORD3;
-    [[vk::location(4)]] float4 emission : TEXCOORD4;
-    [[vk::location(5)]] float4 material : TEXCOORD5;
-    [[vk::location(6)]] float4 surface : TEXCOORD6;
-    [[vk::location(7)]] float4 tangent : TEXCOORD7;
-    [[vk::location(8)]] float2 uv1 : TEXCOORD8;
-    [[vk::location(9)]] float4 texture_uv_sets0 : TEXCOORD9;
-    [[vk::location(10)]] float2 texture_uv_sets1 : TEXCOORD10;
-    [[vk::location(11)]] float4 metallic_channels : TEXCOORD11;
-    [[vk::location(12)]] float4 smoothness_channels : TEXCOORD12;
-    [[vk::location(13)]] float2 material_sampling : TEXCOORD13;
-    uint draw_index : SV_InstanceID;
-};
+[[vk::binding(4, 0)]] StructuredBuffer<InxModelMatrix> shadow_camera;
+[[vk::binding(5, 0)]] StructuredBuffer<InxWorldBounds> world_bounds;
+[[vk::binding(0, 2)]] StructuredBuffer<InxModelMatrix> models;
+[[vk::binding(1, 2)]] StructuredBuffer<InxModelMatrix> bones;
 
 struct VertexOutput {
     float4 position : SV_Position;
@@ -71,17 +69,10 @@ struct VertexOutput {
     [[vk::location(1)]] float4 color : TEXCOORD1;
     [[vk::location(2)]] float3 world_position : TEXCOORD2;
     [[vk::location(3)]] float4 shadow_position : TEXCOORD3;
-    [[vk::location(4)]] float4 emission : TEXCOORD4;
-    [[vk::location(5)]] float4 material : TEXCOORD5;
-    [[vk::location(6)]] float4 surface : TEXCOORD6;
-    [[vk::location(7)]] float2 uv : TEXCOORD7;
-    [[vk::location(8)]] float4 tangent : TEXCOORD8;
-    [[vk::location(9)]] float2 uv1 : TEXCOORD9;
-    [[vk::location(10)]] float4 texture_uv_sets0 : TEXCOORD10;
-    [[vk::location(11)]] float2 texture_uv_sets1 : TEXCOORD11;
-    [[vk::location(12)]] float4 metallic_channels : TEXCOORD12;
-    [[vk::location(13)]] float4 smoothness_channels : TEXCOORD13;
-    [[vk::location(14)]] float2 material_sampling : TEXCOORD14;
+    [[vk::location(4)]] float2 uv : TEXCOORD4;
+    [[vk::location(5)]] float4 tangent : TEXCOORD5;
+    [[vk::location(6)]] float2 uv1 : TEXCOORD6;
+    [[vk::location(7)]] nointerpolation uint draw_index : TEXCOORD7;
 };
 
 [[vk::binding(0, 1)]] SamplerState material_base_color_sampler;
@@ -99,27 +90,42 @@ struct VertexOutput {
 
 uint2 shadow_dimensions() { uint w,h; shadow_map.GetDimensions(w,h); return uint2(w,h); }
 
+bool scene_bounds_visible(InxWorldBounds bounds, float4x4 view_projection) {
+    float3 center = (bounds.minimum.xyz + bounds.maximum.xyz) * 0.5;
+    float3 extent = (bounds.maximum.xyz - bounds.minimum.xyz) * 0.5;
+    float4 planes[6] = {
+        view_projection[3] + view_projection[0], view_projection[3] - view_projection[0],
+        view_projection[3] + view_projection[1], view_projection[3] - view_projection[1],
+        view_projection[2], view_projection[3] - view_projection[2]};
+    for (uint i = 0; i < 6; ++i)
+        if (dot(planes[i].xyz, center) + planes[i].w + dot(abs(planes[i].xyz), extent) < 0.0)
+            return false;
+    return true;
+}
+
+InxMeshInput scene_geometry(InxVertexInput input, DrawData draw) {
+    InxSkinState skin = {draw.geometry.z, draw.geometry.w, draw.geometry.w != 0u ? 1u : 0u, 0u};
+    input = inx_skin_vertex(input, skin, bones);
+    InxInstanceData instance = (InxInstanceData)0;
+    return inx_transform_vertex(input, models[draw.geometry.x].value, camera.view, float4x4(1.0), instance);
+}
+
 [shader("vertex")]
-VertexOutput scene_vertex(VertexInput input) {
+VertexOutput scene_vertex(InxVertexInput input, uint draw_index : SV_VulkanInstanceID) {
     VertexOutput output;
-    var draw = draws[input.draw_index];
-    var world_position = mul(draw.model, float4(input.position, 1.0));
-    output.position = mul(camera.view_projection, world_position);
-    output.normal = normalize((mul(draw.normal, float4(input.normal, 0.0))).xyz);
-    output.color = input.color;
-    output.world_position = world_position.xyz;
-    output.shadow_position = mul(camera.light_view_projection, world_position);
-    output.emission = input.emission;
-    output.material = input.material;
-    output.surface = input.surface;
-    output.uv = input.uv;
-    output.tangent = float4(normalize((mul(draw.model, float4(input.tangent.xyz, 0.0))).xyz), input.tangent.w);
-    output.uv1 = input.uv1;
-    output.texture_uv_sets0 = input.texture_uv_sets0;
-    output.texture_uv_sets1 = input.texture_uv_sets1;
-    output.metallic_channels = input.metallic_channels;
-    output.smoothness_channels = input.smoothness_channels;
-    output.material_sampling = input.material_sampling;
+    var draw = draws[draw_index];
+    var geometry = scene_geometry(input, draw);
+    var world = float4(geometry.position_ws, 1.0);
+    output.position = scene_bounds_visible(world_bounds[draw.geometry.y], camera.view_projection)
+                          ? mul(camera.view_projection, world) : float4(2.0, 2.0, 2.0, 1.0);
+    output.normal = geometry.normal_ws;
+    output.color = float4(input.color, geometry.line_color.a) * draw.color;
+    output.world_position = geometry.position_ws;
+    output.shadow_position = mul(shadow_camera[0].value, world);
+    output.uv = geometry.uv0;
+    output.tangent = float4(geometry.tangent_ws.xyz, geometry.tangent_ws.w * draw.material_sampling.z);
+    output.uv1 = geometry.uv1;
+    output.draw_index = draw_index;
     return output;
 }
 
@@ -303,7 +309,7 @@ float2 material_uv(VertexOutput input, float selector) {
     return (selector >= 0.5 ? input.uv1 : input.uv);
 }
 
-float3 sample_material_normal(VertexOutput input, float3 geometric_normal) {
+float3 sample_material_normal(VertexOutput input, float3 geometric_normal, float normal_uv_set) {
     var tangent = input.tangent.xyz - geometric_normal * dot(input.tangent.xyz, geometric_normal);
     if (dot(tangent, tangent) <= 1.0e-8) {
         var fallback = (abs(geometric_normal.y) > 0.999 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0));
@@ -313,7 +319,7 @@ float3 sample_material_normal(VertexOutput input, float3 geometric_normal) {
     }
     var handedness = (input.tangent.w >= 0.0 ? 1.0 : -1.0);
     var bitangent = normalize(cross(geometric_normal, tangent)) * handedness;
-    var uv = material_uv(input, input.texture_uv_sets1.x);
+    var uv = material_uv(input, normal_uv_set);
     var tangent_normal = material_normal_map.Sample(material_normal_sampler, uv).rgb * 2.0 - 1.0;
     tangent_normal.x *= abs(input.tangent.w);
     tangent_normal.y *= abs(input.tangent.w);
@@ -338,58 +344,59 @@ float3 sample_material_normal(VertexOutput input, float3 geometric_normal) {
     var derivative_normal = normalize(derivative_tangent * inverse_basis_length * tangent_normal.x +
                                       derivative_bitangent * inverse_basis_length * tangent_normal.y +
                                       geometric_normal * tangent_normal.z);
-    var use_derivative_basis = input.texture_uv_sets1.x >= 0.5 && basis_length_sq > 1.0e-12;
+    var use_derivative_basis = normal_uv_set >= 0.5 && basis_length_sq > 1.0e-12;
     return (use_derivative_basis ? derivative_normal : authored_normal);
 }
 
 [shader("fragment")]
 float4 scene_fragment(VertexOutput input) : SV_Target0 {
+    var draw = draws[input.draw_index];
     var geometric_normal = normalize(input.normal);
-    var normal = sample_material_normal(input, geometric_normal);
-    var sampled_color = material_base_color.Sample(material_base_color_sampler, material_uv(input, input.texture_uv_sets0.x));
+    var normal = sample_material_normal(input, geometric_normal, draw.texture_uv_sets1.x);
+    var sampled_color = material_base_color.Sample(material_base_color_sampler, material_uv(input, draw.texture_uv_sets0.x));
     var surface_color = input.color * sampled_color;
-    if (input.surface.w >= 0.0 && surface_color.a < input.surface.w) {
+    if (draw.surface.w >= 0.0 && surface_color.a < draw.surface.w) {
         discard;
     }
-    var sampled_metallic_texel = material_metallic_map.Sample(material_metallic_sampler, material_uv(input, input.texture_uv_sets0.y));
-    var sampled_metallic = dot(sampled_metallic_texel, input.metallic_channels);
-    var sampled_smoothness_texel = material_smoothness_map.Sample(material_smoothness_sampler, material_uv(input, input.texture_uv_sets0.z));
-    var sampled_smoothness_channel = dot(sampled_smoothness_texel, input.smoothness_channels);
-    var direct_smoothness = sampled_smoothness_channel * input.material.y;
-    var roughness_smoothness = 1.0 - sampled_smoothness_channel * (1.0 - input.material.y);
+    var sampled_metallic_texel = material_metallic_map.Sample(material_metallic_sampler, material_uv(input, draw.texture_uv_sets0.y));
+    var sampled_metallic = dot(sampled_metallic_texel, draw.metallic_channels);
+    var sampled_smoothness_texel = material_smoothness_map.Sample(material_smoothness_sampler, material_uv(input, draw.texture_uv_sets0.z));
+    var sampled_smoothness_channel = dot(sampled_smoothness_texel, draw.smoothness_channels);
+    var direct_smoothness = sampled_smoothness_channel * draw.material.y;
+    var roughness_smoothness = 1.0 - sampled_smoothness_channel * (1.0 - draw.material.y);
     var sampled_smoothness = lerp(direct_smoothness, roughness_smoothness,
-                                 clamp(input.material_sampling.x, 0.0, 1.0));
-    var sampled_occlusion = material_ao_map.Sample(material_ao_sampler, material_uv(input, input.texture_uv_sets0.w)).r;
-    var occlusion_strength = clamp(input.material_sampling.y, 0.0, 1.0);
+                                 clamp(draw.material_sampling.x, 0.0, 1.0));
+    var sampled_occlusion = material_ao_map.Sample(material_ao_sampler, material_uv(input, draw.texture_uv_sets0.w)).r;
+    var occlusion_strength = clamp(draw.material_sampling.y, 0.0, 1.0);
     var material_occlusion = lerp(1.0, sampled_occlusion, occlusion_strength);
-    var sampled_emission = material_emission_map.Sample(material_emission_sampler, material_uv(input, input.texture_uv_sets1.y)).rgb;
-    var emission = sampled_emission * input.emission.rgb * input.emission.a;
+    var sampled_emission = material_emission_map.Sample(material_emission_sampler, material_uv(input, draw.texture_uv_sets1.y)).rgb;
+    var emission = sampled_emission * draw.emission.rgb * draw.emission.a;
     var perceptual_roughness = clamp(1.0 - sampled_smoothness, 0.045, 1.0);
     var roughness = perceptual_roughness * perceptual_roughness;
     // Derivatives must execute in uniform fragment control flow on WebGPU.
     // Evaluate geometric AA before the per-material unlit early return.
     roughness = geometric_specular_aa(normal, roughness);
     perceptual_roughness = max(perceptual_roughness, sqrt(roughness));
-    if (input.surface.x > 0.5 && input.surface.x < 1.5) {
+    if (draw.surface.x > 0.5 && draw.surface.x < 1.5) {
         return float4(surface_color.rgb + emission, surface_color.a);
     }
     var view_direction = normalize(camera.camera_position.xyz - input.world_position);
-    if (input.surface.x >= 1.5) {
+    if (draw.surface.x >= 1.5) {
         var toward_light = normalize(camera.light_direction_strength.xyz);
-        var shadow = sample_shadow(input.shadow_position, normal);
+        var shadow = (draw.material_sampling.w > 0.5 ? sample_shadow(input.shadow_position, normal) : 1.0);
         var radiance = camera.light_color_intensity.rgb * camera.light_color_intensity.w;
         var direct = evaluate_toon_light(
             normal, view_direction, toward_light, radiance, surface_color.rgb,
-            clamp(input.surface.y, 0.0, 1.0), clamp(input.surface.z, 0.0, 0.25),
-            input.material.y, input.material.w) * shadow;
+            clamp(draw.surface.y, 0.0, 1.0), clamp(draw.surface.z, 0.0, 0.25),
+            draw.material.y, draw.material.w) * shadow;
         for (var light_index = 0u; light_index < camera.light_counts.x; light_index = light_index + 1u) {
             var light = camera.punctual_lights[light_index];
             if (light.parameters.z > 0.5) {
                 direct += evaluate_toon_light(
                     normal, view_direction, -normalize(light.direction_outer_cos.xyz),
                     light.color_intensity.rgb * light.color_intensity.w,
-                    surface_color.rgb, clamp(input.surface.y, 0.0, 1.0),
-                    clamp(input.surface.z, 0.0, 0.25), input.material.y, input.material.w);
+                    surface_color.rgb, clamp(draw.surface.y, 0.0, 1.0),
+                    clamp(draw.surface.z, 0.0, 0.25), draw.material.y, draw.material.w);
                 continue;
             }
             var to_light = light.position_range.xyz - input.world_position;
@@ -408,25 +415,25 @@ float4 scene_fragment(VertexOutput input) : SV_Target0 {
             direct += evaluate_toon_light(
                 normal, view_direction, local_direction,
                 light.color_intensity.rgb * light.color_intensity.w * attenuation,
-                surface_color.rgb, clamp(input.surface.y, 0.0, 1.0),
-                clamp(input.surface.z, 0.0, 0.25), input.material.y, input.material.w);
+                surface_color.rgb, clamp(draw.surface.y, 0.0, 1.0),
+                clamp(draw.surface.z, 0.0, 0.25), draw.material.y, draw.material.w);
         }
         var ambient = sample_ambient_irradiance(normal) * surface_color.rgb
-                      * clamp(input.material.z * material_occlusion, 0.0, 1.0) * 0.65;
+                      * clamp(draw.material.z * material_occlusion, 0.0, 1.0) * 0.65;
         return float4(ambient + direct + emission,
                          surface_color.a);
     }
     var ndotv = max(dot(normal, view_direction), 0.0);
-    var metallic = clamp(input.material.x * sampled_metallic, 0.0, 1.0);
-    var occlusion = clamp(input.material.z * material_occlusion, 0.0, 1.0);
-    var specular_highlights = clamp(input.material.w, 0.0, 1.0);
+    var metallic = clamp(draw.material.x * sampled_metallic, 0.0, 1.0);
+    var occlusion = clamp(draw.material.z * material_occlusion, 0.0, 1.0);
+    var specular_highlights = clamp(draw.material.w, 0.0, 1.0);
     var f0 = lerp(float3(0.04), surface_color.rgb, float3(metallic));
     var f90 = clamp(50.0 * dot(f0, float3(0.33333)), 0.0, 1.0);
     var env_brdf = env_brdf_approx(perceptual_roughness, ndotv);
     var reflectivity = env_brdf.x + env_brdf.y;
     var energy_compensation = float3(1.0) + f0 * (1.0 / max(reflectivity, 0.001) - 1.0);
     var toward_light = normalize(camera.light_direction_strength.xyz);
-    var shadow = sample_shadow(input.shadow_position, normal);
+    var shadow = (draw.material_sampling.w > 0.5 ? sample_shadow(input.shadow_position, normal) : 1.0);
     var radiance = camera.light_color_intensity.rgb * camera.light_color_intensity.w;
     var direct = evaluate_pbr_light(normal, view_direction, toward_light, radiance, surface_color.rgb,
                                     metallic, perceptual_roughness, roughness, f0, f90,
@@ -520,8 +527,11 @@ float4 sky_fragment(SkyOutput input) : SV_Target0 {
 }
 
 [shader("vertex")]
-float4 shadow_vertex([[vk::location(0)]] float3 position : TEXCOORD0, uint draw_index : SV_InstanceID) : SV_Position {
-    return mul(camera.light_view_projection, mul(draws[draw_index].model, float4(position, 1.0)));
+float4 shadow_vertex(InxVertexInput input, uint draw_index : SV_VulkanInstanceID) : SV_Position {
+    var draw = draws[draw_index];
+    var geometry = scene_geometry(input, draw);
+    return scene_bounds_visible(world_bounds[draw.geometry.y], shadow_camera[0].value)
+               ? mul(shadow_camera[0].value, float4(geometry.position_ws, 1.0)) : float4(2.0, 2.0, 2.0, 1.0);
 }
 )slang"};
     return module;

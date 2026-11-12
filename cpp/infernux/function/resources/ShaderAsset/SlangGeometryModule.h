@@ -14,14 +14,16 @@ inline const ShaderSourceModule &GetSlangGeometryModule()
                                            R"slang(
 public struct InxVertexInput
 {
-    [[vk::location(0)]] public float3 position : POSITION;
-    [[vk::location(1)]] public float3 normal : NORMAL;
-    [[vk::location(2)]] public float4 tangent : TANGENT;
-    [[vk::location(3)]] public float3 color : COLOR;
-    [[vk::location(4)]] public float2 uv0 : TEXCOORD0;
-    [[vk::location(5)]] public uint4 bone_indices : BLENDINDICES;
-    [[vk::location(6)]] public float4 bone_weights : BLENDWEIGHT;
-    [[vk::location(7)]] public float2 uv1 : TEXCOORD1;
+    // One indexed semantic space preserves the canonical locations on both
+    // SPIR-V and WGSL, including targets that allocate mixed HLSL semantics.
+    [[vk::location(0)]] public float3 position : TEXCOORD0;
+    [[vk::location(1)]] public float3 normal : TEXCOORD1;
+    [[vk::location(2)]] public float4 tangent : TEXCOORD2;
+    [[vk::location(3)]] public float3 color : TEXCOORD3;
+    [[vk::location(4)]] public float2 uv0 : TEXCOORD4;
+    [[vk::location(5)]] public uint4 bone_indices : TEXCOORD5;
+    [[vk::location(6)]] public float4 bone_weights : TEXCOORD6;
+    [[vk::location(7)]] public float2 uv1 : TEXCOORD7;
 };
 public struct InxVertexData
 {
