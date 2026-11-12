@@ -5,17 +5,14 @@ import numpy as np
 import pytest
 
 import infernux as inx
-from infernux.engine.build.compute_cpu import build_cpu_compute_source
 
 
-@pytest.mark.parametrize("web", [False, True])
 @pytest.mark.parametrize("vector", [False, True])
-def test_readonly_numpy_borrows_preserve_owner_updates(monkeypatch, web, vector):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1" if web else "0")
+def test_readonly_numpy_borrows_preserve_owner_updates(vector):
     data = np.arange(18 if vector else 6, dtype=np.float32).reshape((6, 3) if vector else (6,))
     with ExitStack() as stack:
         owner = stack.enter_context(inx.buffer(shape=6, dtype=inx.vector3 if vector else np.float32,
-                                               device="gpu" if web else "cpu", data=data))
+                                               device="cpu", data=data))
         read = stack.enter_context(owner.view(offset=1, count=4, readonly=True))
         nested = stack.enter_context(read.view(offset=1, count=2, readonly=False))
         write = stack.enter_context(owner.view(offset=2, count=2))
@@ -42,12 +39,9 @@ def test_readonly_numpy_borrows_preserve_owner_updates(monkeypatch, web, vector)
     ('cpu', True, True),
     ('gpu', False, True),
     ('gpu', True, False),
-    ('web', False, False),
-    ('web', True, True),
 ])
 def test_copy_out_rejects_readonly_or_closed_destination_before_consuming(
         engine, monkeypatch, device, asynchronous, closed):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1" if device == "web" else "0")
     host = engine._acquire_compute_host() if device == "gpu" else None
     if host is not None:
         monkeypatch.setattr(inx.compute, "_native_compute_host", lambda: host)
@@ -97,29 +91,6 @@ def test_closed_source_is_rejected_at_public_copy_boundary(operation):
         np.testing.assert_array_equal(target.numpy(), [0, 0, 0])
         if operation != "readback_cached":
             request.get_data().close()
-
-
-@pytest.mark.parametrize("atomic", ["none", "scalar", "indexed"])
-def test_cooked_web_kernel_cannot_write_readonly_mapping(monkeypatch, atomic):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-    assignment = {"none": "output[i] = values[i] + 1",
-                  "scalar": "inx.compute.atomic_add(output[0], values[i])",
-                  "indexed": "inx.compute.atomic_add(output[i], values[i])"}[atomic]
-    text = ("import infernux as inx\n@inx.compute.kernel\ndef solve(values, output):\n"
-            f"    i = inx.compute.index(values)\n    {assignment}\n")
-    namespace = {}
-    exec(compile(build_cpu_compute_source(text), "<readonly-cooked>", "exec"), namespace)
-    with ExitStack() as stack:
-        values = stack.enter_context(inx.buffer(shape=3, dtype=np.int32, device="gpu", data=[1, 2, 3]))
-        inputs = stack.enter_context(values.view(readonly=True))
-        output = stack.enter_context(inx.buffer(shape=3, dtype=np.int32, device="gpu"))
-        readonly = stack.enter_context(output.view(readonly=True))
-        with pytest.raises((ValueError, RuntimeError), match="read.only"):
-            inx.compute.launch(namespace["solve"], (inputs, readonly))
-        np.testing.assert_array_equal(output.numpy(), [0, 0, 0])
-        inx.compute.launch(namespace["solve"], (inputs, output))
-        np.testing.assert_array_equal(output.numpy(), {"none": [2, 3, 4], "scalar": [6, 0, 0],
-                                                       "indexed": [1, 2, 3]}[atomic])
 
 
 @inx.compute.kernel

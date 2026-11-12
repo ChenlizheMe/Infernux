@@ -184,55 +184,6 @@ def test_vertex_buffer_capacity_is_explicit_and_cannot_shrink_below_mesh(scene):
         renderer.create_vertex_buffer(capacity=3.5)
 
 
-def test_web_cpu_world_vertex_stream_preserves_world_space(scene, monkeypatch):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-    owner = scene.create_game_object("Web CPU world stream")
-    owner.transform.position = vector3(10.0, 0.0, 0.0)
-    renderer = owner.add_component("MeshRenderer")
-    local_positions = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
-    renderer.set_inline_mesh_data(
-        local_positions,
-        np.tile(np.array([0, 0, 1], dtype=np.float32), (3, 1)),
-        np.zeros((3, 2), dtype=np.float32),
-        np.array([0, 1, 2], dtype=np.uint32),
-    )
-    stream = renderer.create_vertex_buffer()
-    stream.numpy(copy=False)[:, 0] += 10.0
-
-    renderer.set_vertex_buffer(stream, (10, 0, 0), (11, 1, 0), space="world")
-
-    np.testing.assert_allclose(renderer.get_positions(), local_positions, atol=1e-6)
-
-
-def test_web_cpu_mesh_publication_is_coalesced_to_native_frame(scene, monkeypatch):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-    owner = scene.create_game_object("Web CPU frame stream")
-    renderer = owner.add_component("MeshRenderer")
-    original = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
-    renderer.set_inline_mesh_data(
-        original,
-        np.tile(np.array([0, 0, 1], dtype=np.float32), (3, 1)),
-        np.zeros((3, 2), dtype=np.float32),
-        np.array([0, 1, 2], dtype=np.uint32),
-    )
-    stream = renderer.create_vertex_buffer()
-    renderer.set_vertex_buffer(stream, (0, 0, 0), (1, 1, 0))
-
-    from infernux.compute import (
-        _begin_cpu_mesh_frame,
-        _cpu_dirty_mesh_buffers,
-        _end_cpu_mesh_frame,
-    )
-
-    _begin_cpu_mesh_frame()
-    stream.numpy(copy=False)[:, 1] += 4.0
-    _cpu_dirty_mesh_buffers.add(stream)
-    np.testing.assert_allclose(renderer.get_positions(), original, atol=1e-6)
-    _end_cpu_mesh_frame()
-
-    np.testing.assert_allclose(renderer.get_positions(), original + np.array([0, 4, 0]), atol=1e-6)
-
-
 def test_native_normal_generation_is_area_weighted_and_manual_normals_are_preserved(scene):
     renderer = scene.create_game_object("generated normals").add_component("MeshRenderer")
     positions = np.array([[0, 0, 0], [2, 0, 0], [0, 1, 0], [0, 0, 2], [10, 0, 0]], dtype=np.float32)

@@ -15,7 +15,6 @@ from typing import Any
 root = Path(__file__).resolve().parents[3]
 bootstrap_path = root / 'external/plugins/infernux_web/native/bootstrap.py'
 os.environ['INFERNUX_WEB_RUNTIME'] = '1'
-os.environ['INFERNUX_WEB_CPU_COMPUTE'] = '1'
 # The top-level bootstrap mounts MEMFS assets and registers actual GPU shaders.
 # Execute the complete, unchanged assembler functions with their real peers.
 tree = ast.parse(bootstrap_path.read_text(encoding='utf-8'))

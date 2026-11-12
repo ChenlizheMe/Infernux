@@ -6,6 +6,7 @@ import weakref
 from typing import TYPE_CHECKING
 
 from infernux.lib import Infernux, InxGUIRenderable, LogLevel, RuntimeMode, lib_dir
+from infernux.engine.work_runtime import WorkRuntime
 from infernux.engine.project_context import set_project_root
 from infernux.engine.path_utils import safe_path as _safe_path
 from infernux.debug import Debug
@@ -31,7 +32,7 @@ def _runtime_acceptance_services():
     return _RUNTIME_ACCEPTANCE_TYPE, _APPLICATION_TYPE
 
 
-class Engine():
+class Engine(WorkRuntime):
     def __init__(self, engine_log_level=LogLevel.Info, mode=RuntimeMode.Graphical):
         from infernux.engine.runtime_dispatch import bind_runtime_dispatch_owner
 
@@ -43,7 +44,7 @@ class Engine():
             else "editor"
         )
         self._engine = Infernux(_safe_path(lib_dir), self._mode)
-        self._frame_work = self._engine.frame_work
+        self._initialize_work_runtime(self._engine.frame_work)
         if not _PLAYER_MODE:
             from infernux.engine.model_import.toolchain import configure_database
             configure_database(self._engine.get_asset_database())
@@ -64,12 +65,6 @@ class Engine():
         self._last_native_transform_serial = None
         self._render_pipeline = None  # prevents GC of pybind11 trampoline
         self._last_frame_time = time.time()
-        # CPU range ownership is lazy: no compiler/GPU host is loaded at idle.
-        self._cpu_range_tasks = set()
-        self._cpu_range_accepting = False
-        self._cpu_work_owner = None
-        self._result_consumers = []
-        self._graph_event_signals = None
         self._gizmos_collector = None  # lazy-init GizmosCollector
         self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
         # Authoritative Scene View Gizmos switch. Keep this Python-side so it
@@ -234,93 +229,9 @@ class Engine():
             self.exit()
             raise
 
-    def _cpu_work(self, budget=None):
-        from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
-        assert_runtime_owner_thread()
-        from infernux.engine.cpu_continuation import CpuWorkOwner
-        owner = self._cpu_work_owner
-        if owner is None:
-            owner = CpuWorkOwner(self, budget)
-            self._cpu_work_owner = owner
-        elif budget is not None:
-            owner.configure_budget(budget)
-        owner.wake()
-        return owner
-
-    @property
-    def work_budget(self):
-        """Shared host-work limits for compute and IO.
-
-        Assign a new Budget to tune running work. Accepted work keeps its
-        completion ticket; increasing an allowance takes effect next frame.
-        Individual submit calls inherit this policy when budget is omitted.
-        """
-        return self._cpu_work().budget
-
-    @work_budget.setter
-    def work_budget(self, budget):
-        self._cpu_work().set_budget(budget)
-
-    @property
-    def _service_opportunity(self):
-        return self._frame_work.opportunity
-
-    def _wake_cpu_request(self, owner, request):
-        try:
-            if self._mode != RuntimeMode.Headless:
-                self._engine.request_full_speed_frame()
-        except BaseException:
-            owner._cancel(request, "failed", "initial owner wake failed")
-            owner._retire(request)
-            raise
-        return request
-
-    def _request_nn_inference(self, model, x, *, window_opportunities, budget=None, result_device=None):
-        """Continue a cold-prepared CPU or GPU forward on the shared owner."""
-        owner = self._cpu_work(budget)
-        request = owner.release_nn(model, x, window_opportunities=window_opportunities, result_device=result_device)
-        return self._wake_cpu_request(owner, request)
-
-    def _request_nn_training(self, model, x, target, optimizer, *, window_opportunities, record_loss=False, budget=None,
-                             result_device=None, objective="mse", clear_grad=False):
-        """Continue one prepared MLP step; GPU local VJP remains a whole operation."""
-        owner = self._cpu_work(budget)
-        request = owner.release_training(model, x, target, optimizer,
-            window_opportunities=window_opportunities, record_loss=record_loss, result_device=result_device,
-            objective=objective, clear_grad=clear_grad)
-        return self._wake_cpu_request(owner, request)
-
-    def _apply_result(self, request, targets, apply, *, boundary, required):
-        from infernux.engine.cpu_continuation import CpuRequest
-        from infernux.execution import ResultConsumer, _active_result_boundary, capture_execution_scope
-        from infernux.lib import SceneManager
-        if not isinstance(request, CpuRequest) or request._owner() is not self._cpu_work_owner:
-            raise TypeError('a result consumer requires a request from this Engine')
-        if not callable(apply):
-            raise TypeError('a result consumer requires an application callback')
-        targets = tuple(targets)
-        if not targets:
-            raise ValueError('a result consumer requires its target components')
-        manager = SceneManager.instance()
-        if boundary == 'physics' and not manager.is_playing():
-            raise RuntimeError('physics result application requires a Play world')
-        scope = capture_execution_scope()
-        if (required and boundary == 'render' and (scope is None or scope.state != 'paused')
-                and _active_result_boundary.get() == boundary and
-                self._cpu_work_owner._waits_for_render_input(request)):
-            raise ValueError('result dependency cycle: the active boundary prevents its input render submission')
-        consumer = ResultConsumer(request, targets, apply, manager, boundary=boundary, required=required)
-        self._result_consumers.append(consumer)
-        manager._set_result_consumers_present(True)
-        if boundary != 'physics' and (required or request.done):
-            manager._retain_step_frame()
-        return consumer
-
-    def _retire_result_consumers(self):
-        from infernux.lib import SceneManager
-        manager = SceneManager.instance()
-        self._result_consumers[:] = [consumer for consumer in self._result_consumers if consumer._current(manager)]
-        manager._set_result_consumers_present(bool(self._result_consumers))
+    def _request_full_speed_frame(self):
+        if self._mode != RuntimeMode.Headless:
+            self._engine.request_full_speed_frame()
 
     def _initialize_headless_authoring(self, project_path) -> None:
         """Create the non-visual editor services required for authoring.
@@ -1098,22 +1009,7 @@ class Engine():
             except Exception as exc:
                 Debug.log_suppressed("Engine.exit.before_exit_callback", exc)
 
-        cpu_owner = self._cpu_work_owner
-        for consumer in self._result_consumers:
-            consumer.cancel()
-        self._result_consumers.clear()
-        if cpu_owner is not None:
-            cpu_owner.shutdown_begin()
-        self._cpu_range_accepting = False
-        if self._cpu_range_tasks:
-            from infernux.cpu_execution import _shutdown_cpu_ranges
-
-            _shutdown_cpu_ranges(self)
-        if cpu_owner is not None:
-            # The common owner waits only for its already accepted GPU tickets
-            # here, while the host is live; normal frame retirement never waits.
-            cpu_owner.shutdown_finish()
-            self._cpu_work_owner = None
+        self._shutdown_work_runtime()
 
         # 0. If still in play mode, tear down Python components before C++
         #    objects are destroyed.  Without this, the C++ renderer

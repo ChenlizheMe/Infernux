@@ -1784,9 +1784,7 @@ class CpuWorkOwner:
             source = compute._pending_managed_source(source) or source
         if isinstance(source, BufferSource):
             from .input_binding import InputBindings
-            web = compute._web_cpu_compute_enabled()
-            source_storage = 'cpu' if web else source.device
-            target_storage = 'cpu' if web else device
+            source_storage, target_storage = source.device, device
             chunk = compute._transfer_chunk_bytes(self.transfer_chunk_bytes, source.dtype.itemsize)
             request = TransferRequest(**facts, cursor=None, destination=device,
                 reserved_bytes=source.nbytes,

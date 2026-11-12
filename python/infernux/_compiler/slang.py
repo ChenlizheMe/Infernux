@@ -533,7 +533,12 @@ def _artifact(compiled, emitter, plan, params, function):
         identity += "#" + plan.continuation.inner_range.kind
     return CompilerArtifact(target=compiled["target"], tasks=(entry["code"],), task_metadata=(metadata,), domain_parameter=plan.domain_parameter,
         argument_layout={"size": arguments["byte_size"], "parameters": layouts},
-        required_capabilities={"shader_int64": any(isinstance(value, Buffer) and value._dtype.scalar.name == "int64" for value in params)},
+        # SPIR-V carries SignedZeroInfNanPreserve execution modes. WGSL uses
+        # its native finite-f32 contract; it cannot promise those IEEE values.
+        required_capabilities={
+            "shader_int64": any(isinstance(value, Buffer) and value._dtype.scalar.name == "int64" for value in params),
+            "shader_float32_preserve": compiled["target"] == "spirv",
+        },
         diagnostic_locations=({"entry_point": entry["name"], "path": plan.work_item.origin.path,
                                "line": plan.work_item.origin.line_offset + 1, "column": 0,
                                "function": identity},),

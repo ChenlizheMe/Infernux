@@ -2663,10 +2663,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             cooked = _jit_kernels.build_auto_parallel_embedded_source(cooked) or cooked
         else:
             cooked = _jit_kernels.build_interpreted_cpu_source(cooked)
-        if str(getattr(self, "_runtime_platform", "")).casefold() == "web":
-            from infernux.engine.build.compute_cpu import build_cpu_compute_source
-
-            cooked = build_cpu_compute_source(cooked)
         return embed_compute_sources(cooked)
 
 

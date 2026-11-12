@@ -18,8 +18,6 @@ def _check_options(dtype, device, *, allow_automatic_recording=False):
         compute.assert_runtime_owner_thread()
         if compute._explicit_recording_depth() or (not allow_automatic_recording and compute._recording_depth()):
             raise RuntimeError("synchronous offline nn cannot run inside compute.recording")
-        if compute._web_cpu_compute_enabled():
-            raise compute.ComputeCapabilityError("nn GPU execution requires native Vulkan, without a CPU fallback")
 
 
 def _empty(shape, device, dtype=np.float32, *, managed=False):

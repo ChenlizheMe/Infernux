@@ -177,6 +177,9 @@ def test_target_program_and_layout_roundtrip(tmp_path, target):
     header, loaded = _read_artifact_payload(_encode_artifact(artifact, specialization), specialization=specialization)
     assert loaded.target == artifact.target == header['target'] == target
     assert loaded.tasks == artifact.tasks and loaded.argument_layout == artifact.argument_layout
+    assert loaded.required_capabilities == artifact.required_capabilities == {
+        "shader_int64": False, "shader_float32_preserve": target == "spirv",
+    }
     assert loaded.task_metadata[0]['entry_point'] == 'main'
     assert loaded.task_metadata[0]['threads_per_group'] == 64
     assert loaded.argument_layout['size'] > 0

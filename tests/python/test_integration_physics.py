@@ -811,35 +811,6 @@ class TestRigidbodyStateBatch:
         PublicPhysics.get_rigidbody_states(bodies, out=state)
         np.testing.assert_allclose(state["linear_velocity"].numpy()[:3], np.full((3, 3), 0.125), atol=1e-6)
 
-    def test_web_mapped_feedback_uses_only_the_live_body_prefix(self, scene, monkeypatch):
-        import infernux as inx
-        import numpy as np
-        from infernux.physics import Physics as PublicPhysics
-
-        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-        bodies = [_make_ball(scene, pos=Vector3(index * 2, 4, 0), mass=2)[1]
-                  for index in range(3)]
-        for body in bodies:
-            body.use_gravity = False
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-
-        capacity = 8
-        linear = inx.buffer(
-            shape=capacity,
-            dtype=inx.vector3,
-            device="gpu",
-            data=np.full((capacity, 3), 0.25, np.float32),
-        )
-        angular = inx.buffer(shape=capacity, dtype=inx.vector3, device="gpu")
-        assert linear.device == "gpu" and linear._cpu_mapped
-
-        PublicPhysics.apply_rigidbody_impulses(bodies, linear, angular)
-        state = PublicPhysics.get_rigidbody_states(bodies)
-        np.testing.assert_allclose(
-            state["linear_velocity"], np.full((3, 3), 0.125), atol=1e-6
-        )
 
     def test_aggregated_impulse_batch_and_boundary_validation(self, scene):
         import numpy as np

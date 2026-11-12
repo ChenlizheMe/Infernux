@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from infernux.application import ContentPublication
 from infernux.debug import Debug
 from infernux.engine.player_scene import PlayerSceneService
+from infernux.engine.work_runtime import WorkRuntime
 from infernux.timing import Time
 
 if TYPE_CHECKING:
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
     )
 
 
-class PlayerRuntimeSession:
+class PlayerRuntimeSession(WorkRuntime):
     """Own the standalone Player scene without editor document services."""
 
     def __init__(
@@ -29,12 +30,18 @@ class PlayerRuntimeSession:
         native_engine: Any = None,
         scheduler: Any = None,
         scene_service: Any = None,
+        frame_work: Any = None,
     ):
         from infernux.engine.runtime_dispatch import bind_runtime_dispatch_owner
 
         bind_runtime_dispatch_owner()
         self._asset_database = asset_database
         self._native_engine = native_engine
+        if frame_work is None:
+            from infernux.lib import _Infernux
+
+            frame_work = native_engine.frame_work if native_engine is not None else _Infernux._FrameWorkOwner()
+        self._initialize_work_runtime(frame_work, accepting=True)
         if scheduler is None:
             from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 
@@ -54,6 +61,12 @@ class PlayerRuntimeSession:
         self._last_frame_time = time.perf_counter()
         self._membership_warmup_frames = 0
         self._startup_warmup = None
+
+    def _request_full_speed_frame(self):
+        # Browser frames already run continuously; desktop sessions borrow the
+        # native loop's wake operation instead of creating a second driver.
+        if self._native_engine is not None:
+            self._native_engine.request_full_speed_frame()
 
     def schedule_startup_warmup(self, warmup: Any) -> None:
         """Install the post-present warmup queue before the native loop starts."""
@@ -123,6 +136,10 @@ class PlayerRuntimeSession:
         if self._asset_database is None:
             raise RuntimeError("Player runtime asset database is not configured")
         return self._asset_database
+
+    def get_native_engine(self) -> Any:
+        """Return the desktop host, or None for a platform-owned frame loop."""
+        return self._native_engine
 
     @property
     def runtime_manifest(self) -> Optional[RuntimeProductManifest]:
@@ -410,6 +427,7 @@ class PlayerRuntimeSession:
         from infernux.lib import SceneManager
 
         self._state = "stopping"
+        self._shutdown_work_runtime()
         if self._pending_content is not None:
             publication, _ = self._pending_content
             self.get_asset_database()._discard_runtime_asset_catalog()
@@ -423,6 +441,14 @@ class PlayerRuntimeSession:
         while native.scene_count:
             native.unload_scene(native.get_scene_at(native.scene_count - 1))
         self._execution_scheduler.clear()
+        from infernux.application import Application
+
+        if Application._current_engine() is self:
+            from infernux.compute import _release_engine_resources
+
+            _release_engine_resources()
+            self._frame_work.stop()
+        self._graph_event_signals = None
         if self._scene_service_installed:
             try:
                 from infernux.scene import SceneManager as RuntimeSceneManager

@@ -815,15 +815,14 @@ def remaining_model_service(request, owner, opportunity, *, capacity_bytes):
             return bind
         stages.append(bind)
         source, target = request.plan.device, request.result_device
-        web = compute._web_cpu_compute_enabled()
-        source_storage, target_storage = ("cpu", "cpu") if web else (source, target)
+        source_storage, target_storage = source, target
         capacity = owner.budget.capacity_bytes - (owner._capacity() if capacity_bytes is None else capacity_bytes)
         for index, nbytes, dtype in request._result_transfer_layouts():
             chunk = compute._fit_transfer_chunk(min(nbytes, owner.transfer_chunk_bytes), dtype.itemsize, capacity,
                                                 source_storage, target_storage)
             if not chunk:
                 return ServiceDemand(reason="result staging does not fit the current capacity profile")
-            identity = source, target, dtype.name, 0 if web else int(request.host.identity)
+            identity = source, target, dtype.name, int(request.host.identity)
             blocks = compute._transfer_work(nbytes, chunk, source_storage=source_storage, target_storage=target_storage)
             stages.append(value_transfer_service(owner, blocks, identity, nbytes, request._transfer_service_tag(index)))
         stages.append(host_service(owner, (*request.service_signature, "publish")))

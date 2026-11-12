@@ -4,7 +4,7 @@ Each input signature captures a fixed value graph over shared model parameters.
 Call Module.recompile() after structure changes. This
 package shares the same Plan with offline calls and Engine-managed continuation.
 Model/checkpoint IO is cold by default, or managed with a completion window.
-Baked CPU/Vulkan models reuse built programs without importing the source compiler.
+Baked CPU/GPU models reuse built programs without importing the source compiler.
 """
 from numpy import float32, int32, uint32, int64
 

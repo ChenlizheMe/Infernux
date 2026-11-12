@@ -100,7 +100,6 @@ class RuntimeExecutionScheduler:
         self._dispatch_types_dirty = True
         self._counters = defaultdict(int)
         self._native_frame: RuntimeExecutionFrame | None = None
-        self._cpu_mesh_frame_open = False
         self._execution_snapshot: _RuntimeExecutionSnapshot | None = None
         # Native work availability is maintained incrementally: registration is
         # O(1) and only a false<->true transition crosses to the SceneManager.
@@ -916,10 +915,6 @@ class RuntimeExecutionScheduler:
     def begin_native_frame(self) -> None:
         self.end_native_frame()
         self._native_frame = self.begin_frame()
-        from infernux.compute import _begin_cpu_mesh_frame
-
-        _begin_cpu_mesh_frame()
-        self._cpu_mesh_frame_open = True
         self._counters["native_frame_begins"] += 1
 
     def execute_native_phase(self, phase: str, delta_time: float) -> None:
@@ -999,28 +994,18 @@ class RuntimeExecutionScheduler:
         return changes
 
     def end_native_frame(self) -> None:
-        if self._native_frame is None and not self._cpu_mesh_frame_open:
+        if self._native_frame is None:
             return
-        try:
-            if self._native_frame is not None:
-                from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+        from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
-                self.consume_runtime_changes(
-                    RuntimeFrameBarrier.RETIREMENT,
-                    frame=self._native_frame,
-                )
-                self._last_completed_frame_changes = dict(self._native_frame.barrier_changes)
-                self._last_completed_barrier_sequence = tuple(
-                    self._native_frame.barrier_sequence
-                )
-                self._native_frame.close()
-                self._native_frame = None
-        finally:
-            if self._cpu_mesh_frame_open:
-                from infernux.compute import _end_cpu_mesh_frame
-
-                self._cpu_mesh_frame_open = False
-                _end_cpu_mesh_frame()
+        self.consume_runtime_changes(
+            RuntimeFrameBarrier.RETIREMENT,
+            frame=self._native_frame,
+        )
+        self._last_completed_frame_changes = dict(self._native_frame.barrier_changes)
+        self._last_completed_barrier_sequence = tuple(self._native_frame.barrier_sequence)
+        self._native_frame.close()
+        self._native_frame = None
         self._counters["native_frame_ends"] += 1
 
     def profiler_snapshot(self) -> dict[str, int]:

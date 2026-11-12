@@ -5,6 +5,10 @@ Use :func:`buffer` for explicit CPU or GPU storage and declare GPU work with
 kernel's ``inx.compute.index(buffer)`` domain and records work into the current
 engine phase.  CPU function compilation is deliberately separate at
 ``inx.jit.compile``.
+
+GPU storage and execution stay native on Vulkan and WebGPU. Arithmetic follows
+the compiled target: precise SPIR-V preserves signed zero, infinities and NaNs;
+WGSL follows its finite-f32 contract and makes no such IEEE-value guarantee.
 """
 
 from collections import OrderedDict, deque
@@ -14,9 +18,8 @@ from functools import lru_cache, wraps
 from itertools import count
 from queue import Empty, SimpleQueue
 import math
-import os
 import threading
-from time import perf_counter, perf_counter_ns
+from time import perf_counter_ns
 from typing import Literal
 import weakref
 
@@ -35,28 +38,10 @@ _readbacks = weakref.WeakSet()
 _kernel_declarations = weakref.WeakSet()
 _transform_bindings = weakref.WeakSet()
 _command_recording = threading.local()
-_cpu_work_item = threading.local()
-_cpu_dirty_mesh_buffers = weakref.WeakSet()
-_cpu_dirty_transform_bindings = weakref.WeakSet()
 _buffer_generations = count(1)
 _command_source_ids = count(1)
 _retiring_native_kernels = {}
 _retired_launch_generations = SimpleQueue()
-_cpu_statistics = {
-    "submission_count": 0,
-    "dispatch_count": 0,
-    "cpu_submit_ms": 0.0,
-}
-
-
-def _web_cpu_compute_enabled() -> bool:
-    """Return the build-selected Web compute execution model.
-
-    Web Player sets this before importing cooked project modules. Authored
-    ``device='gpu'`` remains the public contract; only its physical execution
-    storage changes for the Web target.
-    """
-    return os.environ.get("INFERNUX_WEB_RUNTIME", "") == "1"
 
 
 class ComputeCapabilityError(RuntimeError):
@@ -179,30 +164,6 @@ def _automatic_cost(function):
             finally:
                 owner = engine = None
     return measured
-
-
-def _cpu_mesh_frame_depth() -> int:
-    return int(getattr(_command_recording, "cpu_mesh_frame_depth", 0))
-
-
-def _begin_cpu_mesh_frame() -> None:
-    """Defer Web CPU mesh publication until the native frame is complete."""
-    if _web_cpu_compute_enabled():
-        _command_recording.cpu_mesh_frame_depth = _cpu_mesh_frame_depth() + 1
-
-
-def _end_cpu_mesh_frame() -> None:
-    if not _web_cpu_compute_enabled():
-        return
-    depth = _cpu_mesh_frame_depth()
-    if depth <= 0:
-        raise RuntimeError("Web CPU mesh frame boundary is unbalanced")
-    _command_recording.cpu_mesh_frame_depth = depth - 1
-    if depth == 1 and (_cpu_dirty_transform_bindings or _cpu_dirty_mesh_buffers):
-        with _record_commands():
-            _flush_cpu_transform_bindings()
-            if _cpu_dirty_mesh_buffers:
-                _flush_cpu_meshes()
 
 
 @dataclass(slots=True, eq=False)
@@ -729,7 +690,7 @@ def _request_compute_frame() -> None:
         return
     stream = _command_streams().get(int(host.identity))
     if (stream is not None and stream["failure"] is None and stream["pending"]) or int(host.collect()) > 0:
-        engine.get_native_engine().request_full_speed_frame()
+        engine._request_full_speed_frame()
 
 
 def discard_pending() -> None:
@@ -753,27 +714,6 @@ def _discard_commands() -> None:
         stream["failure"] = None
         stream["host"] = None
     streams.clear()
-
-
-@_automatic_cost
-def _flush_cpu_meshes() -> None:
-    """Publish CPU-lowered compute vertex streams once per native frame."""
-    for value in tuple(_cpu_dirty_mesh_buffers):
-        _cpu_dirty_mesh_buffers.discard(value)
-        binding = getattr(value, "_cpu_mesh_binding", None)
-        if binding is None or value.closed:
-            continue
-        renderer, vertex_count, indices, name, space = binding
-        renderer._publish_cpu_vertex_buffer(
-            value, vertex_count, indices, name, space
-        )
-
-
-def _flush_cpu_transform_bindings() -> None:
-    """Publish the final CPU-lowered simulation pose for the native frame."""
-    for binding in tuple(_cpu_dirty_transform_bindings):
-        _cpu_dirty_transform_bindings.discard(binding)
-        binding._flush_cpu_pose()
 
 
 def _collect_retiring_native_kernels() -> None:
@@ -901,9 +841,6 @@ class _RecordingScope:
             if explicit_depth == 0:
                 _command_recording.block = self._block
             _command_recording.explicit_depth = explicit_depth + 1
-        if outermost and _web_cpu_compute_enabled():
-            _command_recording.cpu_batch_started = perf_counter()
-            _command_recording.cpu_batch_dispatches = int(_cpu_statistics["dispatch_count"])
         _command_recording.depth = _recording_depth() + 1
         return None
 
@@ -939,20 +876,6 @@ class _RecordingScope:
                 # An enclosing automatic scope must not retry an explicit
                 # failure or turn an explicit nonblocking boundary into a wait.
                 _command_recording.boundary_activity = getattr(_command_recording, "activity", 0)
-        if outermost:
-            if _cpu_mesh_frame_depth() == 0 and _cpu_dirty_mesh_buffers:
-                _flush_cpu_meshes()
-            if _web_cpu_compute_enabled():
-                dispatches = int(_cpu_statistics["dispatch_count"]) - int(
-                    _command_recording.cpu_batch_dispatches
-                )
-                if dispatches > 0:
-                    _cpu_statistics["submission_count"] += 1
-                    _cpu_statistics["cpu_submit_ms"] += (
-                        perf_counter() - _command_recording.cpu_batch_started
-                    ) * 1000.0
-                _command_recording.cpu_batch_started = None
-                _command_recording.cpu_batch_dispatches = 0
         return False
 
 
@@ -1054,16 +977,17 @@ def _native_compute_host():
     from infernux.application import Application
 
     engine = Application._current_engine()
+    host = getattr(engine, "_infernux_compute_host", None)
+    if host is not None:
+        return host
     native = engine.get_native_engine() if engine is not None else None
     if native is None or not native.has_gpu_compute:
         raise ComputeCapabilityError("GPU buffers require graphical startup or init_headless(..., gpu=True)")
-    host = getattr(engine, "_infernux_compute_host", None)
-    if host is None:
-        try:
-            host = native._acquire_compute_host()
-        except Exception as exception:
-            raise ComputeCapabilityError("The active engine cannot provide GPU compute") from exception
-        engine._infernux_compute_host = host
+    try:
+        host = native._acquire_compute_host()
+    except Exception as exception:
+        raise ComputeCapabilityError("The active engine cannot provide GPU compute") from exception
+    engine._infernux_compute_host = host
     return host
 
 
@@ -1104,8 +1028,6 @@ class Buffer:
         self._host = None
         self._native = None
         self._array = None
-        self._cpu_mapped = bool(device == "gpu" and _web_cpu_compute_enabled())
-        self._cpu_mesh_binding = None
         self._mesh_attribute_state = None
         self._dependent_resources = []
         self._launch_owners = weakref.WeakSet()
@@ -1141,11 +1063,11 @@ class Buffer:
             initial = self._coerce_data(data)
             # Host-backed ownership needs an independent ndarray. Vulkan takes
             # its immutable byte snapshot below, without another array copy.
-            if device == "cpu" or self._cpu_mapped:
+            if device == "cpu":
                 initial = initial.copy(order="C")
         elif initialize:
             initial = np.zeros(self._storage_shape, dtype=self._dtype.scalar)
-        if device == "cpu" or self._cpu_mapped:
+        if device == "cpu":
             self._array = np.empty(self._storage_shape, dtype=self._dtype.scalar) if initial is None else initial
         else:
             self._host = _native_compute_host()
@@ -1418,8 +1340,6 @@ class Buffer:
         result._host = self._host
         result._native = self._native
         result._mesh_attribute_state = None
-        result._cpu_mapped = self._cpu_mapped
-        result._cpu_mesh_binding = None
         result._dependent_resources = []
         result._launch_owners = weakref.WeakSet()
         result._launch_finalizer = None
@@ -1441,7 +1361,7 @@ class Buffer:
                 result._array = result._array.reshape(result._storage_shape)
             if result._readonly:
                 # Permissions belong to this borrowed ndarray, not its owner.
-                # NumPy slices and cooked CPU kernels inherit the same flag
+                # NumPy slices inherit the same flag
                 # without checks or copies on each access.
                 result._array.flags.writeable = False
         if result._device == "gpu":
@@ -1456,8 +1376,6 @@ class Buffer:
         if self._array is None:
             raise RuntimeError("GPU buffers cannot be indexed from Python; use get_data()")
         value = self._array[index]
-        if self._cpu_mapped:
-            return value
         if self._dtype.lanes == 1:
             return value.item() if np.isscalar(value) else value
         if getattr(value, "ndim", 0) != 1:
@@ -1486,8 +1404,7 @@ class Buffer:
         if self._closed:
             return
         self._require_open()
-        if not flush and (self._mesh_attribute_state is not None or self._cpu_mesh_binding is not None
-                          or self._dependent_resources):
+        if not flush and (self._mesh_attribute_state is not None or self._dependent_resources):
             raise ValueError("private retirement requires plain numerical storage")
         if self._device == "gpu" and self._host is not None:
             # Derived mesh work still needs its topology while sealing.
@@ -1508,7 +1425,6 @@ class Buffer:
         self._native = None
         self._host = None
         self._array = None
-        self._cpu_mesh_binding = None
         self._closed = True
 
     def _retain_dependent(self, resource) -> None:
@@ -1787,7 +1703,7 @@ class _TransferCursor:
         self.chunk_bytes = _transfer_chunk_bytes(chunk_bytes, self.dtype.itemsize)
         self.device = device
         self.host = source._host
-        if device == "gpu" and not _web_cpu_compute_enabled():
+        if device == "gpu":
             self.host = _native_compute_host()
         if source._native is not None:
             self.source_version = _accepted_buffer_version(source)
@@ -2350,8 +2266,7 @@ class TransformBinding:
         self._readback_source = None
         self._closed = False
         self._native_transform_exchange = None
-        if (type(pose) is Buffer and not pose._cpu_mapped
-                and not _web_cpu_compute_enabled()
+        if (type(pose) is Buffer
                 and isinstance(owner, InxComponent) and self._execution_scope is not None
                 and self._execution_scope._component_state is not None):
             from infernux.lib import GameObject, _Infernux
@@ -2383,7 +2298,7 @@ class TransformBinding:
         if self._readback is not None:
             self._readback.cancel()
             self._readback = None
-        host = self._pose._host if self._pose.device == "gpu" and not self._pose._cpu_mapped else None
+        host = self._pose._host if self._pose.device == "gpu" else None
         try:
             with recording():
                 self._pose.set_data(_pose_array(current_pose))
@@ -2412,7 +2327,6 @@ class TransformBinding:
             raise
         self._published_pose = current_pose
         self._pending_cpu_pose = None
-        _cpu_dirty_transform_bindings.discard(self)
 
     def _apply_native_cpu_authoring(self, previous_pose, current_pose, paused: bool) -> None:
         self._apply_authored_pose(previous_pose, current_pose)
@@ -2469,22 +2383,7 @@ class TransformBinding:
             previous_pose = self._initial_pose
             self._apply_authored_pose(previous_pose, current_pose)
             self._initial_pose = None
-            if self._pose._cpu_mapped:
-                self._readback = None
-                return
             self._finish_transform_authoring(False)
-            return
-        if self._pose._cpu_mapped:
-            if self._published_pose is not None and _pose_changed(
-                current_pose, self._published_pose
-            ):
-                self._apply_authored_pose(self._published_pose, current_pose)
-                return
-            self._pending_cpu_pose = _buffer_pose(self._pose)
-            _cpu_dirty_transform_bindings.add(self)
-            if _cpu_mesh_frame_depth() == 0:
-                _cpu_dirty_transform_bindings.discard(self)
-                self._flush_cpu_pose()
             return
         # Authored TRS wins even while an older snapshot is still Busy/in flight.
         if self._published_pose is not None and _pose_changed(current_pose, self._published_pose):
@@ -2508,30 +2407,6 @@ class TransformBinding:
             self._publish_simulated_pose(transform, snapshot)
         self._request_readback()
 
-    @_automatic_cost
-    def _flush_cpu_pose(self) -> None:
-        """Resolve CPU simulation/Transform ownership once at frame end."""
-        if self._closed or self._pending_cpu_pose is None:
-            return
-        scope = self._execution_scope
-        if scope is not None and scope.state == 'closed':
-            self.close()
-            return
-        if scope is not None and scope.state == 'paused':
-            return
-        owner = self._owner()
-        transform = self._resolve_live_transform(owner)
-        if transform is None:
-            return
-        current_pose = _transform_pose(transform)
-        if self._published_pose is not None and _pose_changed(
-            current_pose, self._published_pose
-        ):
-            self._apply_authored_pose(self._published_pose, current_pose)
-            return
-        value = self._pending_cpu_pose
-        self._pending_cpu_pose = None
-        self._publish_simulated_pose(transform, value)
 
     def close(self) -> None:
         if self._closed:
@@ -2539,7 +2414,6 @@ class TransformBinding:
         assert_runtime_owner_thread()
         self._closed = True
         _transform_bindings.discard(self)
-        _cpu_dirty_transform_bindings.discard(self)
         if self._readback is not None:
             self._readback.cancel()
             self._readback = None
@@ -2629,10 +2503,10 @@ def statistics(*, reset: bool = False) -> Statistics:
     """
     from infernux.application import Application
     host = getattr(Application._current_engine(), "_infernux_compute_host", None)
-    if host is None or _web_cpu_compute_enabled():
+    if host is None:
         values = Statistics(
-            submission_count=int(_cpu_statistics["submission_count"]),
-            dispatch_count=int(_cpu_statistics["dispatch_count"]),
+            submission_count=0,
+            dispatch_count=0,
             upload_request_count=0,
             upload_bytes=0,
             copy_request_count=0,
@@ -2643,17 +2517,13 @@ def statistics(*, reset: bool = False) -> Statistics:
             host_map_count=0,
             native_boundary_count=0,
             wait_count=0,
-            cpu_submit_ms=float(_cpu_statistics["cpu_submit_ms"]),
+            cpu_submit_ms=0.0,
             wait_ms=0.0,
             pending_submission_count=0,
             gpu_profile_available=False,
             gpu_profile_serial=0,
             gpu_time_ms=None,
         )
-        if reset:
-            _cpu_statistics.update(
-                submission_count=0, dispatch_count=0, cpu_submit_ms=0.0
-            )
         return values
     assert_runtime_owner_thread()
     raw = dict(host.get_statistics())
@@ -2686,10 +2556,6 @@ def set_profiling_enabled(enabled: bool) -> None:
     """Enable optional GPU timestamps; changing query resources drains compute."""
     if not isinstance(enabled, bool):
         raise TypeError("inx.compute profiling enabled must be a bool")
-    if _web_cpu_compute_enabled():
-        raise ComputeCapabilityError(
-            "GPU timestamp profiling is unavailable for Web CPU compute"
-        )
     if not _native_compute_host().set_profiling_enabled(enabled):
         raise ComputeCapabilityError("GPU compute timestamp profiling is unavailable")
 
@@ -2712,10 +2578,9 @@ class _KernelExecutable:
 
         if artifact.target != host.shader_target:
             raise ComputeCapabilityError(f"GPU program target '{artifact.target}' does not match this device's '{host.shader_target}' target")
-        if not host.shader_float32_preserve:
-            raise ComputeCapabilityError("native compute requires signed-zero, infinity and NaN preservation for float32")
-        if any(isinstance(value, Buffer) and value._dtype.scalar == np.dtype(np.int64) for value in params) and not host.shader_int64:
-            raise ComputeCapabilityError("this compute device has no enabled shaderInt64 capability")
+        for capability, required in artifact.required_capabilities.items():
+            if required and not getattr(host, capability):
+                raise ComputeCapabilityError(f"this compute device cannot satisfy the program's {capability} requirement")
 
         self.artifact = artifact
         self.host = host
@@ -2897,129 +2762,14 @@ class _KernelExecutable:
         self.host = None
 
 
-class _CpuKernelExecutable:
-    """Cook-selected sequential execution of one GPU work-item function."""
-
-    host = None
-
-    def __init__(self, function, *, vectorized: bool = False, domain_parameter: int | None = None) -> None:
-        self.function = function
-        self.vectorized = bool(vectorized)
-        if domain_parameter is None:
-            # Uncooked engine declarations are analyzed once on preparation.
-            # Cooked project kernels carry the same slot explicitly.
-            import ast
-            from infernux._compiler.kernel_contract import execution_domain
-            from infernux._compiler.work_item import _function_source
-
-            domain_parameter = execution_domain(ast.parse(_function_source(function)).body[0])[3]
-        self.domain_parameter = domain_parameter
-        self._last_params = None
-        self._last_buffers = ()
-        self._last_mapped = ()
-        self._last_domain = None
-        self._last_mesh_buffers = ()
-
-    def prepare(self, params):
-        return (), ()
-
-    def execute(self, params) -> None:
-        if self._last_params == params:
-            buffers = self._last_buffers
-            mapped = self._last_mapped
-            domain = self._last_domain
-            mesh_buffers = self._last_mesh_buffers
-        else:
-            buffers = tuple(value for value in params if isinstance(value, Buffer))
-            if not buffers:
-                raise TypeError("Compute kernel launch requires at least one inx.buffer")
-            if any(not value._cpu_mapped for value in buffers):
-                raise TypeError(
-                    "Web CPU compute requires build-mapped device='gpu' buffers"
-                )
-            if not 0 <= self.domain_parameter < len(params):
-                raise TypeError("Compute kernel execution-domain parameter is missing")
-            domain = params[self.domain_parameter]
-            if not isinstance(domain, Buffer) or len(domain.shape) != 1:
-                raise TypeError("inx.compute.index currently requires a one-dimensional GPU inx.buffer")
-            mapped = tuple(
-                value._array if isinstance(value, Buffer) else value
-                for value in params
-            )
-            mesh_buffers = tuple(
-                value for value in buffers if value._cpu_mesh_binding is not None
-            )
-            self._last_params = params
-            self._last_buffers = buffers
-            self._last_mapped = mapped
-            self._last_domain = domain
-            self._last_mesh_buffers = mesh_buffers
-        if any(value.closed for value in buffers):
-            raise RuntimeError("Compute buffer is closed")
-        started = perf_counter() if _recording_depth() == 0 else None
-        if self.vectorized:
-            self.function(*mapped)
-        else:
-            _cpu_work_item.active = True
-            try:
-                for work_item in range(domain.element_count):
-                    _cpu_work_item.index = work_item
-                    self.function(*params)
-            finally:
-                _cpu_work_item.active = False
-                _cpu_work_item.index = None
-        _cpu_statistics["dispatch_count"] += 1
-        if started is not None:
-            _cpu_statistics["cpu_submit_ms"] += (perf_counter() - started) * 1000.0
-        for value in mesh_buffers:
-            _cpu_dirty_mesh_buffers.add(value)
-
-
-def _cpu_atomic_add(target, indices, values, mask=None) -> None:
-    """Apply one cooked CPU atomic reduction without a Python work-item loop."""
-    target = np.asarray(target)
-    # NumPy's indexed add.at can write through a non-writeable ndarray, unlike
-    # ordinary assignment. Enforce the same permission before that operation.
-    if not target.flags.writeable:
-        raise RuntimeError("CPU compute atomic target is read-only")
-    if target.ndim != 1:
-        raise ValueError("CPU compute atomic targets must expose one scalar lane")
-    indices = np.asarray(indices)
-    values = np.asarray(values)
-    active_count = None
-    if mask is not None:
-        mask = np.asarray(mask, dtype=np.bool_)
-        active_count = int(np.count_nonzero(mask))
-        if indices.ndim:
-            indices = indices[mask]
-            if values.ndim:
-                values = values[mask]
-        elif values.ndim:
-            values = values[mask]
-    if indices.ndim == 0:
-        if values.ndim:
-            delta = np.sum(values, dtype=target.dtype)
-        elif active_count is None:
-            delta = values
-        else:
-            delta = values * active_count
-        target[int(indices)] += delta
-        return
-    if values.ndim == 0:
-        values = np.full(indices.shape, values, dtype=target.dtype)
-    np.add.at(target, indices.astype(np.intp, copy=False), values)
-
-
 class Kernel:
     """A GPU single-work-item declaration prepared or compiled on first launch."""
 
-    def __init__(self, function, *, cpu_vectorized: bool = False, cpu_domain_parameter: int | None = None) -> None:
+    def __init__(self, function) -> None:
         if not callable(function):
             raise TypeError("inx.compute.kernel requires a callable")
         self._init_runtime()
         self.function = function
-        self._cpu_vectorized = bool(cpu_vectorized)
-        self._cpu_domain_parameter = cpu_domain_parameter
         for attribute in ("__name__", "__qualname__", "__module__", "__doc__"):
             setattr(self, attribute, getattr(function, attribute, None))
 
@@ -3028,15 +2778,12 @@ class Kernel:
         self._sealed_artifacts = None
         self._lowered_work_item = None
         self._inner_variants = {}
-        self._cpu_vectorized = False
-        self._cpu_domain_parameter = None
         self._executables = OrderedDict()
         self._lock = threading.RLock()
         # Receiver source analysis is a declaration property.  Bound launches
         # still snapshot live field values every time, but do not re-parse the
         # method source on every frame.
         self._receiver_field_names = None
-        self._cpu_executable = None
         _kernel_declarations.add(self)
 
     def __get__(self, instance, owner=None):
@@ -3076,25 +2823,6 @@ class Kernel:
         buffers = [value for value in params if isinstance(value, Buffer)]
         if not buffers:
             raise TypeError("GPU kernel launch requires at least one GPU inx.buffer")
-        if any(value._cpu_mapped for value in buffers):
-            if self._sealed_artifacts is not None:
-                raise ComputeCapabilityError("built Vulkan programs require the native GPU backend")
-            if self._lowered_work_item is not None:
-                raise ComputeCapabilityError("ordered GPU work items require the native GPU backend")
-            if differentiated:
-                raise ComputeCapabilityError("Local VJP requires native GPU execution; Web CPU compute has no reverse fallback")
-            if receiver_fields is not None:
-                raise KernelCompilationError(
-                    "Web CPU compute requires module-level or static kernels"
-                )
-            if any(not value._cpu_mapped for value in buffers):
-                raise TypeError("A compute launch cannot mix Web CPU and native GPU buffers")
-            if self._cpu_executable is None:
-                self._cpu_executable = _CpuKernelExecutable(
-                    self.function, vectorized=self._cpu_vectorized,
-                    domain_parameter=self._cpu_domain_parameter,
-                )
-            return self._cpu_executable
         if any(value.device != "gpu" for value in buffers):
             raise TypeError(
                 "GPU kernel launch requires GPU inx.buffer parameters; "
@@ -3246,8 +2974,6 @@ class Function:
             setattr(self, attribute, getattr(value, attribute, None))
 
     def __call__(self, *_args, **_kwargs):
-        if bool(getattr(_cpu_work_item, "active", False)):
-            return self.function(*_args, **_kwargs)
         raise RuntimeError("@inx.compute.function helpers are valid only inside a GPU kernel")
 
 
@@ -3262,7 +2988,6 @@ def _release_engine_resources() -> None:
     # Engine shutdown cancels the entire unaccepted authoring stream. Accepted
     # GPU work already belongs to the native queue and retires during cleanup.
     _discard_commands()
-    _flush_cpu_meshes()
     # An asynchronous readback owns the compute-host lease until its result is
     # consumed or abandoned. Components may intentionally leave a completed
     # telemetry readback unread on the final frame, so teardown must retire
@@ -3295,13 +3020,6 @@ def kernel(function) -> Kernel:
     return Kernel(function)
 
 
-def _cpu_kernel(*, domain_parameter: int, vectorized: bool):
-    """Internal decorator carrying the cook-selected execution contract."""
-    def decorate(function):
-        return Kernel(function, cpu_vectorized=vectorized, cpu_domain_parameter=domain_parameter)
-    return decorate
-
-
 def function(value) -> Function:
     """Declare a reusable numeric helper for :func:`kernel` functions."""
     return Function(value)
@@ -3309,17 +3027,11 @@ def function(value) -> Function:
 
 def index(domain: Buffer) -> int:
     """Declare and return the current work-item index inside a GPU kernel."""
-    if bool(getattr(_cpu_work_item, "active", False)):
-        return int(_cpu_work_item.index)
     raise RuntimeError("inx.compute.index is valid only inside @inx.compute.kernel")
 
 
 def atomic_add(target, value):
     """Atomically add ``value`` to one buffer element inside a GPU kernel."""
-    if bool(getattr(_cpu_work_item, "active", False)):
-        raise KernelCompilationError(
-            "Web CPU cook did not lower compute.atomic_add to an assignment"
-        )
     raise RuntimeError("inx.compute.atomic_add is valid only inside @inx.compute.kernel")
 
 
@@ -3478,7 +3190,7 @@ def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_port
         if not isinstance(value, Buffer):
             raise TypeError("compute work storage and ports must be inx.compute.Buffer values")
         value._require_open()
-        if value.device != "gpu" or value._cpu_mapped or value._native is None:
+        if value.device != "gpu" or value._native is None:
             raise ComputeCapabilityError("compute work requires native GPU storage")
     host = private_buffers[0]._host
     if any(int(value._host.identity) != int(host.identity)
@@ -3892,9 +3604,6 @@ def launch(declaration: Kernel, params, *, autodiff_mode="none", gradients=None)
         request = {"autodiff_mode": autodiff_mode, "gradient_parameters": tuple(gradients or ())}
     if isinstance(declaration, _BoundKernel):
         executable, effective_params = declaration._resolve(params, **request)
-    elif declaration._cpu_executable is not None and not request:
-        executable = declaration._cpu_executable
-        effective_params = params
     else:
         executable = declaration._executable(params, **request)
         effective_params = params
@@ -3904,12 +3613,6 @@ def launch(declaration: Kernel, params, *, autodiff_mode="none", gradients=None)
 @_automatic_cost
 def _launch_executable(executable, effective_params, *, gradients=None):
     """Record a cold-bound signature through the same authoring FIFO."""
-    if isinstance(executable, _CpuKernelExecutable):
-        executable.execute(effective_params)
-        if _recording_depth() == 0:
-            _cpu_statistics["submission_count"] += 1
-            _flush_cpu_meshes()
-        return
     batch = _command_stream(executable.host)
     if _append_kernel_commands(batch, executable, effective_params, gradients=gradients):
         _record_activity()

@@ -557,20 +557,6 @@ class MeshRenderer(BuiltinComponent):
         storage = np.zeros((capacity, data.shape[1]), dtype=np.float32)
         storage[:vertex_count] = data
         result = buffer(shape=storage.shape, dtype=np.float32, device="gpu", data=storage)
-        if result._cpu_mapped:
-            result._cpu_mesh_source = (
-                vertex_count,
-                np.asarray(cpp.get_indices(), dtype=np.uint32),
-                "Compute Mesh",
-            )
-        elif auto_normals or auto_tangents:
-            _enable_automatic_mesh_attributes(
-                result,
-                np.asarray(cpp.get_positions(), dtype=np.float32),
-                np.asarray(cpp.get_indices(), dtype=np.int32),
-                normals=bool(auto_normals),
-                tangents=bool(auto_tangents),
-            )
         return result
 
     def set_pose_buffer(self, source, element=0, *, continuity=0) -> None:
@@ -614,48 +600,15 @@ class MeshRenderer(BuiltinComponent):
             raise ValueError("MeshRenderer vertex buffer space must be 'local' or 'world'")
         from infernux.math.coerce import coerce_vec3
 
-        if value._cpu_mapped:
-            source = getattr(value, "_cpu_mesh_source", None)
-            if source is None:
-                raise RuntimeError("Web CPU vertex storage has no authored mesh topology")
-            vertex_count, indices, name = source
-            value._cpu_mesh_binding = (self, vertex_count, indices, name, space)
-            self._infernux_cpu_vertex_buffer = value
-            self._publish_cpu_vertex_buffer(
-                value, vertex_count, indices, name, space
-            )
-            return
         if value._byte_offset or value.nbytes != value._native.byte_size:
             raise ValueError("MeshRenderer vertex storage must cover the whole GPU allocation")
         self._require_cpp_component().set_vertex_buffer(
             value._native, coerce_vec3(bounds_min), coerce_vec3(bounds_max), space == "world"
         )
 
-    def _publish_cpu_vertex_buffer(
-        self, value, vertex_count: int, indices, name: str, space: str
-    ) -> None:
-        """Publish one cooked CPU stream through the ordinary mesh RHI path."""
-        import numpy as np
-
-        data = value._array[:vertex_count]
-        positions = data[:, 0:3]
-        if space == "world":
-            matrix = np.asarray(
-                self.transform.world_to_local_matrix(), dtype=np.float32
-            ).reshape((4, 4), order="F")
-            positions = np.ascontiguousarray(
-                positions @ matrix[:3, :3].T + matrix[:3, 3]
-            )
-        self.set_inline_mesh_data(
-            positions, None, data[:, 13:15], indices, name, None
-        )
 
     def clear_vertex_buffer(self) -> None:
         """Return rendering to the authored CPU vertex stream."""
-        value = getattr(self, "_infernux_cpu_vertex_buffer", None)
-        if value is not None:
-            value._cpu_mesh_binding = None
-            self._infernux_cpu_vertex_buffer = None
         self._require_cpp_component().clear_vertex_buffer()
 
     @property

@@ -1,5 +1,5 @@
 """Target-native CPU programs on the common range binding and JobSystem ABI."""
-import ctypes
+from functools import cache
 import os
 from pathlib import Path
 
@@ -8,8 +8,16 @@ from ._compiler.kernel_contract import ARRAY_DTYPES
 from .jit_hir import ContinuationPlan, InnerRangeContract, OrderedReductionRegion, ResourceExtent
 
 _SUFFIX = {"windows-x86_64": ".dll", "linux-x86_64": ".so"}
-_CALL = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.POINTER(ctypes.c_void_p),
-                        ctypes.POINTER(ctypes.c_int32), ctypes.c_int32, ctypes.c_int32, ctypes.c_int32)
+
+
+@cache
+def _call_type():
+    # Model recipes and GPU programs also import this module. Loading an OS
+    # call ABI belongs to the native CPU entry, not to recipe declaration.
+    import ctypes
+
+    return ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.POINTER(ctypes.c_void_p),
+                           ctypes.POINTER(ctypes.c_int32), ctypes.c_int32, ctypes.c_int32, ctypes.c_int32)
 
 
 def library_directory(model_directory):
@@ -110,7 +118,7 @@ class _NativeEntry:
         self.library = library
         self.module = library._module
         self.address = self.module.address(symbol)
-        self.call = _CALL(self.address)
+        self.call = _call_type()(self.address)
 
 
 class NativeCpuProgram(CpuRangeProgram):
@@ -147,6 +155,8 @@ class NativeCpuProgram(CpuRangeProgram):
         return () if not owner.identity else ((("cpu-code", owner.identity), owner.image_bytes),)
 
     def __call__(self, *params, begin, end):
+        import ctypes
+
         self._c_entry.module.require_published()
         storage, owners, slots, count, begin, end = _range_payload(self, params, begin, end)
         pointers = (ctypes.c_void_p * len(slots))(*(slot[0] for slot in slots))

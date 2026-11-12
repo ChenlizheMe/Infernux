@@ -207,8 +207,7 @@ class _CpuRangeTask:
                 self._poll()
             # An accepted failure remains in the one registry until retirement.
             raise
-        if engine._mode != lib.RuntimeMode.Headless:
-            engine.get_native_engine().request_full_speed_frame()
+        engine._request_full_speed_frame()
         return self
 
     def _poll(self):

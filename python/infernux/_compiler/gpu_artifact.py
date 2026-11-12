@@ -9,7 +9,7 @@ import numpy as np
 from .kernel_contract import WORK_ITEM_FAST_MATH, ARRAY_KINDS
 
 _CACHE_MAGIC = b"INXGPU\x02"
-_CACHE_ABI = "infernux-slang-target-work-item"
+_CACHE_ABI = "infernux-slang-target-numerics"
 
 def parameter_key(params) -> tuple:
     """Return the bounded specialization key; runtime sizes are not compiled in."""

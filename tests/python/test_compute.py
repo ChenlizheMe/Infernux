@@ -1,13 +1,11 @@
-"""Unified compute entry and real CPU compilation regressions."""
+"""Shared compute storage, recording and continuation contracts."""
 
 from __future__ import annotations
 
-import ast
 import numpy as np
 import pytest
 
 import infernux as inx
-from infernux import _jit_kernels as kernels
 
 
 def _compute_frontend(native, host=None):
@@ -210,187 +208,6 @@ class _PreparedComputeBatch:
         return self.submit()
 
 
-def test_web_cpu_cook_vectorizes_scalar_range_and_atomic_reductions(monkeypatch):
-    from infernux.engine.build.compute_cpu import build_cpu_compute_source
-
-    source = """
-import infernux as inx
-
-@inx.compute.kernel
-def solve(domain, positions, limits, shifts, bins, totals, contacts, count):
-    i = inx.compute.index(domain)
-    px = positions[i][0]
-    for barrier in range(count):
-        if px < limits[barrier]:
-            px += shifts[barrier]
-            inx.compute.atomic_add(totals[bins[i]][0], px)
-            inx.compute.atomic_add(contacts[0], 1)
-    positions[i][0] = px
-"""
-    cooked = build_cpu_compute_source(source)
-    assert "@inx.compute._cpu_kernel" in cooked
-    namespace = {}
-    exec(compile(cooked, "<web-cpu-range-test>", "exec"), namespace)
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-
-    domain = inx.buffer(shape=4, dtype=np.int32, device="gpu")
-    positions = inx.buffer(
-        shape=4,
-        dtype=inx.vector3,
-        device="gpu",
-        data=np.array(((0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)), np.float32),
-    )
-    limits = inx.buffer(shape=2, dtype=np.float32, device="gpu", data=(2.5, 4.0))
-    shifts = inx.buffer(shape=2, dtype=np.float32, device="gpu", data=(1.0, 0.5))
-    bins = inx.buffer(shape=4, dtype=np.int32, device="gpu", data=(0, 1, 0, 1))
-    totals = inx.buffer(shape=2, dtype=inx.vector3, device="gpu")
-    contacts = inx.buffer(shape=1, dtype=np.int32, device="gpu")
-
-    inx.compute.launch(
-        namespace["solve"],
-        (domain, positions, limits, shifts, bins, totals, contacts, 2),
-    )
-
-    np.testing.assert_allclose(positions.numpy(copy=False)[:, 0], (1.5, 2.5, 3.5, 3.5))
-    np.testing.assert_allclose(totals.numpy(copy=False)[:, 0], (9.0, 8.0))
-    assert int(contacts.numpy(copy=False)[0]) == 7
-
-
-def test_web_cpu_atomic_add_preserves_lane_and_scalar_reductions(monkeypatch):
-    from infernux.engine.build.compute_cpu import build_cpu_compute_source
-
-    source = """
-import infernux as inx
-
-@inx.compute.kernel
-def accumulate(domain, bins, values, vectors, count):
-    i = inx.compute.index(domain)
-    inx.compute.atomic_add(vectors[bins[i]][0], values[i][0])
-    inx.compute.atomic_add(vectors[bins[i]][1], values[i][1])
-    inx.compute.atomic_add(vectors[bins[i]][2], values[i][2])
-    inx.compute.atomic_add(count[0], 1)
-"""
-    cooked = build_cpu_compute_source(source)
-    assert cooked.count("_cpu_atomic_add") == 4
-    namespace = {}
-    exec(compile(cooked, "<web-cpu-atomic-test>", "exec"), namespace)
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-
-    domain = inx.buffer(shape=4, dtype=np.int32, device="gpu")
-    bins = inx.buffer(shape=4, dtype=np.int32, device="gpu", data=(0, 1, 0, 1))
-    values = inx.buffer(
-        shape=4,
-        dtype=inx.vector3,
-        device="gpu",
-        data=np.arange(12, dtype=np.float32).reshape(4, 3),
-    )
-    vectors = inx.buffer(shape=2, dtype=inx.vector3, device="gpu")
-    count = inx.buffer(shape=1, dtype=np.int32, device="gpu")
-
-    inx.compute.launch(namespace["accumulate"], (domain, bins, values, vectors, count))
-
-    np.testing.assert_allclose(vectors.numpy(copy=False), ((6.0, 8.0, 10.0), (12.0, 14.0, 16.0)))
-    assert int(count.numpy(copy=False)[0]) == 4
-
-
-def test_web_cpu_atomic_add_never_indexes_inactive_lanes(monkeypatch):
-    from infernux.engine.build.compute_cpu import build_cpu_compute_source
-
-    source = """
-import infernux as inx
-
-@inx.compute.kernel
-def accumulate(domain, bins, totals):
-    i = inx.compute.index(domain)
-    if i < 2:
-        inx.compute.atomic_add(totals[bins[i]], 1)
-"""
-    cooked = build_cpu_compute_source(source)
-    namespace = {}
-    exec(compile(cooked, "<web-cpu-masked-atomic-test>", "exec"), namespace)
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-
-    domain = inx.buffer(shape=4, dtype=np.int32, device="gpu")
-    bins = inx.buffer(shape=4, dtype=np.int32, device="gpu", data=(0, 1, 99, 99))
-    totals = inx.buffer(shape=2, dtype=np.int32, device="gpu")
-
-    inx.compute.launch(namespace["accumulate"], (domain, bins, totals))
-
-    np.testing.assert_array_equal(totals.numpy(copy=False), (1, 1))
-
-
-def _execute_pair_lowered(source: str, *args):
-    from infernux._compiler.taichi.frontend import _lower_serial_loops
-
-    module = ast.parse(source)
-    definition = module.body[0]
-    assert isinstance(definition, ast.FunctionDef)
-    _lower_serial_loops(definition)
-    ast.fix_missing_locations(module)
-    namespace = {}
-    exec(compile(module, "<pair-lowered-test>", "exec"), namespace)
-    return namespace[definition.name](*args)
-
-
-def test_gpu_dynamic_range_pair_lowering_preserves_control_and_else():
-    source = """
-def probe(limit):
-    values = []
-    for index in range(limit):
-        if index == 1:
-            continue
-        values.append(index)
-        if index == 4:
-            break
-    else:
-        values.append(99)
-    return values
-"""
-    for limit in (0, 1, 4, 8):
-        namespace = {}
-        exec(compile(source, "<ordinary-range-test>", "exec"), namespace)
-        expected = namespace["probe"](limit)
-        assert _execute_pair_lowered(source, limit) == expected
-
-
-def test_gpu_dynamic_negative_range_pair_lowering_preserves_order():
-    source = """
-def probe(start, stop):
-    values = []
-    for index in range(start, stop, -2):
-        values.append(index)
-    return values
-"""
-    for arguments in ((7, -2), (2, 2), (-3, -8)):
-        namespace = {}
-        exec(compile(source, "<ordinary-negative-range-test>", "exec"), namespace)
-        expected = namespace["probe"](*arguments)
-        assert _execute_pair_lowered(source, *arguments) == expected
-
-
-def test_gpu_dynamic_while_pair_lowering_preserves_control_and_else():
-    source = """
-def probe(limit):
-    index = -1
-    values = []
-    while index < limit:
-        index += 1
-        if index == 1:
-            continue
-        values.append(index)
-        if index == 4:
-            break
-    else:
-        values.append(99)
-    return values
-"""
-    for limit in (-2, 0, 3, 8):
-        namespace = {}
-        exec(compile(source, "<ordinary-while-test>", "exec"), namespace)
-        expected = namespace["probe"](limit)
-        assert _execute_pair_lowered(source, limit) == expected
-
-
 def test_buffer_cpu_typed_storage_and_explicit_snapshot():
     values = inx.buffer(shape=4, dtype=inx.vector3, device="cpu")
     values.set_data(np.arange(12, dtype=np.float32).reshape(4, 3))
@@ -478,132 +295,6 @@ def test_transform_binding_requires_three_vector4_pose_rows():
             Owner(),
             pose=inx.buffer(shape=1, dtype=inx.vector3, device="cpu"),
         )
-
-
-def test_web_mapped_transform_binding_publishes_current_pose_without_readback_lag(
-    monkeypatch,
-):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-
-    class Transform:
-        position = inx.vector3(0.0, 0.0, 0.0)
-        rotation = inx.quaternion.identity
-        local_scale = inx.vector3(1.0, 1.0, 1.0)
-
-    class Owner:
-        class GameObject:
-            id = 42
-            handle = object()
-
-        game_object = GameObject()
-        transform = Transform()
-
-    owner = Owner()
-    monkeypatch.setattr(inx.compute, "_resolve_bound_transform", lambda *_: owner.transform)
-    pose = inx.buffer(
-        shape=3,
-        dtype=inx.vector4,
-        device="gpu",
-        data=np.array(
-            [[3.0, 4.0, 5.0, 1.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
-            dtype=np.float32,
-        ),
-    )
-    binding = inx.compute.bind_transform(owner, pose=pose)
-
-    binding._poll()
-
-    assert pose._cpu_mapped
-    assert tuple(owner.transform.position) == (3.0, 4.0, 5.0)
-
-
-def test_web_mapped_transform_binding_coalesces_to_final_native_frame_pose(
-    monkeypatch,
-):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-
-    class Transform:
-        position = inx.vector3(0.0, 0.0, 0.0)
-        rotation = inx.quaternion.identity
-        local_scale = inx.vector3(1.0, 1.0, 1.0)
-
-    class Owner:
-        class GameObject:
-            id = 42
-            handle = object()
-
-        game_object = GameObject()
-        transform = Transform()
-
-    owner = Owner()
-    monkeypatch.setattr(inx.compute, "_resolve_bound_transform", lambda *_: owner.transform)
-    pose = inx.buffer(
-        shape=3,
-        dtype=inx.vector4,
-        device="gpu",
-        data=np.array(
-            [[1.0, 2.0, 3.0, 1.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
-            dtype=np.float32,
-        ),
-    )
-    binding = inx.compute.bind_transform(owner, pose=pose)
-
-    inx.compute._begin_cpu_mesh_frame()
-    try:
-        binding._poll()
-        assert tuple(owner.transform.position) == (0.0, 0.0, 0.0)
-        pose.numpy(copy=False)[0, :3] = (4.0, 5.0, 6.0)
-        binding._poll()
-        assert tuple(owner.transform.position) == (0.0, 0.0, 0.0)
-    finally:
-        inx.compute._end_cpu_mesh_frame()
-
-    assert tuple(owner.transform.position) == (4.0, 5.0, 6.0)
-
-
-def test_web_mapped_transform_authored_edit_wins_at_frame_boundary(monkeypatch):
-    monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
-
-    class Transform:
-        position = inx.vector3(0.0, 0.0, 0.0)
-        rotation = inx.quaternion.identity
-        local_scale = inx.vector3(1.0, 1.0, 1.0)
-
-    class Owner:
-        class GameObject:
-            id = 42
-            handle = object()
-
-        game_object = GameObject()
-        transform = Transform()
-
-    owner = Owner()
-    monkeypatch.setattr(inx.compute, "_resolve_bound_transform", lambda *_: owner.transform)
-    pose = inx.buffer(
-        shape=3,
-        dtype=inx.vector4,
-        device="gpu",
-        data=np.array(
-            [[1.0, 2.0, 3.0, 1.0], [0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
-            dtype=np.float32,
-        ),
-    )
-    authored = []
-    binding = inx.compute.bind_transform(owner, pose=pose, on_transform=lambda old, new: authored.append((old, new)))
-
-    binding._poll()
-    inx.compute._begin_cpu_mesh_frame()
-    try:
-        pose.numpy(copy=False)[0, :3] = (4.0, 5.0, 6.0)
-        binding._poll()
-        owner.transform.position = inx.vector3(7.0, 8.0, 9.0)
-    finally:
-        inx.compute._end_cpu_mesh_frame()
-
-    np.testing.assert_allclose(pose.numpy(copy=False)[0, :3], (7.0, 8.0, 9.0))
-    assert len(authored) == 1
-    assert authored[0][0].position == (1.0, 2.0, 3.0)
-    assert authored[0][1].position == (7.0, 8.0, 9.0)
 
 
 @pytest.mark.parametrize("retirement", ["destroyed", "collected"])
@@ -790,13 +481,10 @@ def test_transform_binding_closes_before_touching_a_destroyed_owner(monkeypatch)
     assert tuple(owner.transform.position) == (0.0, 0.0, 0.0)
 
 
-@pytest.mark.parametrize("device,web_runtime", [("cpu", False), ("gpu", True)])
-def test_owned_buffer_copies_contiguous_initial_storage(monkeypatch, device, web_runtime):
-    if web_runtime:
-        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
+def test_owned_buffer_copies_contiguous_initial_storage():
     source = np.arange(12, dtype=np.float32).reshape(4, 3)
-    first = inx.buffer(shape=4, dtype=inx.vector3, device=device, data=source)
-    second = inx.buffer(shape=4, dtype=inx.vector3, device=device, data=source)
+    first = inx.buffer(shape=4, dtype=inx.vector3, device="cpu", data=source)
+    second = inx.buffer(shape=4, dtype=inx.vector3, device="cpu", data=source)
 
     first.numpy(copy=False)[0, 1] = 99.0
 
@@ -1071,15 +759,15 @@ def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
 
 def test_gpu_kernel_specializations_are_bounded_and_retire_lru(monkeypatch):
     from infernux._compiler import gpu_artifact
-    from infernux._compiler.taichi import frontend
+    from infernux._compiler import slang as frontend
 
     class Host:
         identity = 31
+        shader_target = "spirv"
 
     class CompilerBuffer:
         device = "gpu"
         _host = Host()
-        _cpu_mapped = False
 
     class Executable:
         def __init__(self, artifact, host, _params):
