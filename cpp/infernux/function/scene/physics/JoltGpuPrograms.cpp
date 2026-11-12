@@ -18,7 +18,7 @@ struct Port
     Resource resource;
     std::string_view name;
     uint64_t stride;
-    std::array<std::string_view, 5> fields;
+    std::array<std::string_view, 6> fields;
     uint32_t integerFields;
 };
 
@@ -31,8 +31,8 @@ constexpr Port Ports[] = {
     {Resource::BodyModels,
      "body_models",
      sizeof(BodyModel),
-     {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"},
-     1},
+     {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping", "surface"},
+     (1u << 0) | (1u << 5)},
     {Resource::ShapeModels, "shape_models", sizeof(ShapeModel), {"geometry", "localPositionCOM", "localRotation"}, 0},
     {Resource::Worlds, "worlds", sizeof(WorldRange), {"range"}, 1},
     {Resource::BodyForces, "body_forces", sizeof(BodyForces), {"force", "torque"}, 0},
@@ -193,11 +193,14 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
         for (uint32_t body = range.x; body < range.x + range.y; ++body) {
             const auto &record = model.bodies[body];
             if (record.meta.w != world || record.meta.x >= model.shapes.size() ||
-                (record.meta.y != ShapeSphere && record.meta.y != ShapeBox) ||
+                (record.meta.y != ShapeSphere && record.meta.y != ShapeBox && record.meta.y != ShapeEmpty) ||
                 (record.meta.z != MotionStatic && record.meta.z != MotionDynamic) ||
                 (record.meta.y == ShapeBox && record.meta.z != MotionStatic))
                 throw std::invalid_argument("Unsupported body in the Jolt GPU bootstrap model");
             const auto &shape = model.shapes[record.meta.x];
+            if (record.surface.x >= 32 || record.surface.z > MaterialCombineMaximum ||
+                record.surface.w > MaterialCombineMaximum)
+                throw std::invalid_argument("Jolt GPU body layer or material combine mode is invalid");
             const auto geometry = shape.geometry;
             if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 || !Normalized(shape.localRotation))
                 throw std::invalid_argument("Jolt GPU shape local position or rotation is invalid");
@@ -212,8 +215,9 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
             if (record.meta.y == ShapeSphere) {
                 if (!std::isfinite(geometry.w) || geometry.w <= 0)
                     throw std::invalid_argument("Jolt GPU sphere radius must be positive and finite");
-            } else if (!Finite4(geometry) || geometry.x <= 0 || geometry.y <= 0 || geometry.z <= 0 || geometry.w < 0 ||
-                       geometry.w > std::min({geometry.x, geometry.y, geometry.z})) {
+            } else if (record.meta.y == ShapeBox &&
+                       (!Finite4(geometry) || geometry.x <= 0 || geometry.y <= 0 || geometry.z <= 0 || geometry.w < 0 ||
+                        geometry.w > std::min({geometry.x, geometry.y, geometry.z}))) {
                 throw std::invalid_argument("Jolt GPU box dimensions or convex radius are invalid");
             }
         }

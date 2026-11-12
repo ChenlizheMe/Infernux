@@ -15,7 +15,7 @@ class Shape;
 namespace infernux
 {
 
-/// One GPU primitive prepared from immutable authored Jolt geometry.
+/// One GPU primitive or empty free body from immutable authored Jolt geometry.
 struct PreparedGpuShape
 {
     JPH::GPU::ShapeModel model;
@@ -28,7 +28,7 @@ struct PreparedGpuShape
 };
 
 /// Resolve decorators through Jolt's leaf collector. The GPU bootstrap accepts
-/// exactly one Sphere or Box with unit leaf scale; unsupported geometry throws
+/// exactly one Sphere, Box or Empty leaf with unit leaf scale; unsupported geometry throws
 /// std::invalid_argument. Pending/null geometry remains the owner's concern.
 [[nodiscard]] PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape);
 

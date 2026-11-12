@@ -39,6 +39,10 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape)
     prepared.model.localRotation = {leaf.mShapeRotation.GetX(), leaf.mShapeRotation.GetY(), leaf.mShapeRotation.GetZ(),
                                     leaf.mShapeRotation.GetW()};
     switch (leaf.mShape->GetSubType()) {
+    case JPH::EShapeSubType::Empty:
+        prepared.type = JPH::GPU::ShapeEmpty;
+        prepared.model.geometry = {};
+        break;
     case JPH::EShapeSubType::Sphere: {
         const float radius = static_cast<const JPH::SphereShape *>(leaf.mShape.GetPtr())->GetRadius();
         prepared.type = JPH::GPU::ShapeSphere;
@@ -54,7 +58,7 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape)
         break;
     }
     default:
-        throw std::invalid_argument("Jolt GPU shape preparation supports only Sphere and Box leaves");
+        throw std::invalid_argument("Jolt GPU shape preparation supports only Sphere, Box and Empty leaves");
     }
     return prepared;
 }
