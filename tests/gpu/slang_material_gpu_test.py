@@ -5,8 +5,10 @@ import json
 import tempfile
 
 import numpy as np
+from PIL import Image
 import infernux as inx
 from infernux.core.assets import AssetManager
+from infernux.core.asset_types import TextureImportSettings, TextureCompression
 from infernux.lib import AssetRegistry, ConsolePanel, RenderPipelineCallback, SceneManager, Vector3
 from infernux.rendergraph import Format, RenderGraph
 
@@ -18,9 +20,13 @@ class Painted(shader.frag):
     gain = shader.material.float(default=0.75, range=(0.0, 2.0), label="强度")
     transform = shader.material.mat4(default=((1.0, 0.25, 0.0, 0.0), (0.0, 1.0, 0.5, 0.0),
                                              (0.1, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
+    image = shader.material.texture_2d(default="white", label="底色纹理")
+    detail = shader.material.texture_2d(default="black")
     def main(self, ctx: shader.mesh_input) -> shader.vec4:
         transformed = self.transform @ shader.vec4(self.tint.rgb, 0.0)
-        return shader.vec4(transformed.rgb * self.gain, self.tint.a)
+        image = shader.sample(self.image, ctx.uv0).rgb
+        detail = shader.sample_level(self.detail, ctx.uv0, 0.0).rgb
+        return shader.vec4(transformed.rgb * self.gain * image + detail * 0.08, self.tint.a)
 '''
 
 
@@ -75,6 +81,18 @@ def main():
             from infernux.engine.ui.inspector_shader_utils import parse_shader_properties
             fields = parse_shader_properties(str(path))
             assert fields[1]["range"] == [0.0, 2.0] and fields[1]["label"] == "强度"
+            assert fields[3]["type"] == "Texture2D" and fields[3]["label"] == "底色纹理"
+            texture_paths, texture_guids = [], []
+            texture_rgb = np.array(((128, 192, 64), (32, 64, 128)), dtype=np.float32) / 255.0
+            texture_settings = TextureImportSettings(generate_mipmaps=False, compression=TextureCompression.NONE)
+            for index, rgb in enumerate(texture_rgb):
+                texture_path = project / f"Assets/纹理{index}.png"
+                Image.new("RGBA", (8, 8), tuple((rgb * 255).astype(int)) + (255,)).save(texture_path)
+                imported_texture = AssetManager.import_asset(str(texture_path), database=frontend.get_asset_database())
+                assert imported_texture, imported_texture.error
+                assert AssetManager.apply_import_settings("texture", str(texture_path), texture_settings)
+                texture_paths.append(texture_path)
+                texture_guids.append(imported_texture.guid)
             scene = SceneManager.instance().get_active_scene()
             for obj in scene.get_root_objects():
                 scene.destroy_game_object(obj)
@@ -101,6 +119,7 @@ def main():
                 assert imported, imported.error
                 material = inx.Material.load(str(saved))
                 assert material is not None and material.get_float("gain") == 0.75
+                assert material.to_dict()["properties"]["image"]["guid"] == ""
                 renderer.set_material(0, material)
                 materials.append(material)
             matrix = np.array(((1, 0.25, 0, 0), (0, 1, 0.5, 0), (0.1, 0, 1, 0), (0, 0, 0, 1)), dtype=np.float32)
@@ -135,7 +154,8 @@ class Fill(shader.fullscreen):
                 nonlocal frame, changed, phase, ticket, baseline, baseline_retirements, completed
                 try:
                     frame += 1
-                    if ticket is None and frame >= changed + 6:
+                    AssetManager.flush_pending_gpu_texture_reloads()
+                    if ticket is None and frame >= changed + 10:
                         ticket = frontend.request_render_target_readback(True)
                     elif ticket is not None and ticket.done:
                         pixels = ticket.result_numpy().copy().astype(np.float32)
@@ -152,6 +172,12 @@ class Fill(shader.fullscreen):
                             gain = 0.25 if phase >= 1 and index == 0 else 0.75
                             multiplier = 0.6 if index else (0.5 if phase == 3 else 1.0)
                             linear = (transform @ np.array(tint))[:3] * gain * multiplier
+                            if index == 0 and phase in (5, 6):
+                                samples = texture_rgb if phase == 6 else np.where(
+                                    texture_rgb <= 0.04045, texture_rgb / 12.92, ((texture_rgb + 0.055) / 1.055) ** 2.4)
+                                linear = linear * samples[0] + samples[1] * 0.08
+                            elif index == 0 and phase == 8:
+                                linear = np.full(3, 0.08)
                             half = pixels[:, index * 80:(index + 1) * 80, :3]
                             visible = half[np.max(half, axis=-1) > 0.05]
                             assert len(visible) > 50, console._get_visible_log_snapshot(500)
@@ -178,6 +204,10 @@ class Fill(shader.fullscreen):
                             assert native.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == baseline_retirements, (
                                 "Two same-named author assets must retain independent programs across ordinary draws")
                         if phase == 4:
+                            baseline_retirements = native.gpu_residency_snapshot["shader_hot_reload_retirement_count"]
+                        if phase >= 5:
+                            assert native.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == baseline_retirements
+                        if phase == 8:
                             completed = True
                             native.exit()
                             return
@@ -186,12 +216,31 @@ class Fill(shader.fullscreen):
                             materials[0].set_float("gain", 0.25)
                         elif phase == 2:
                             materials[0].set_matrix("transform", matrix.T)
-                        else:
+                        elif phase in (3, 4):
                             source = SOURCE.replace("transformed.rgb * self.gain", "transformed.rgb * self.gain * 0.5") if phase == 3 else SOURCE
                             path.write_text(source, encoding="utf-8")
                             assert inx.Shader.reload(str(path))
+                        elif phase == 5:
+                            for name, guid in zip(("image", "detail"), texture_guids):
+                                materials[0].set_texture(name, guid)
+                            saved = project / "Assets/纹理材质.mat"
+                            assert materials[0].save(str(saved))
+                            assert AssetManager.import_asset(str(saved), database=frontend.get_asset_database())
+                            restored = inx.Material.load(str(saved))
+                            for name, guid in zip(("image", "detail"), texture_guids):
+                                assert restored.to_dict()["properties"][name]["guid"] == guid
+                        elif phase == 6:
+                            texture_settings.srgb = False
+                            for texture_path in texture_paths:
+                                assert AssetManager.apply_import_settings("texture", str(texture_path), texture_settings)
+                        elif phase == 7:
+                            for name in ("image", "detail"):
+                                materials[0].set_texture(name, "")
+                        elif phase == 8:
+                            materials[0].set_texture("image", "black")
+                            materials[0].set_texture("detail", "white")
                         changed, ticket = frame, None
-                    if frame > 160:
+                    if frame > 300:
                         raise AssertionError("Mesh author audit did not finish")
                 except BaseException as error:
                     failures.append(error)

@@ -71,6 +71,11 @@ class _Parameter:
 
 class _Parameters:
     @staticmethod
+    def texture_2d(default="white", *, label=None):
+        """A material image using the referenced asset's import format and sampler."""
+        return _Parameter("texture_2d", default, label=label)
+
+    @staticmethod
     def float(default=0.0, *, range=None, label=None):
         return _Parameter("float", default, range, label)
 

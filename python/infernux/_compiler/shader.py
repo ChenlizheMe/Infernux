@@ -52,6 +52,7 @@ class ShaderDefinition:
 _PARAMETER_TYPES = {"float": "float", "int": "int", "uint": "uint", "bool": "uint", "color": "float4",
                     "vec2": "float2", "vec3": "float3", "vec4": "float4", "mat3": "float3x3", "mat4": "float4x4"}
 _DEFAULTS = {"float": 0.0, "int": 0, "uint": 0, "bool": False, "color": (1.0, 1.0, 1.0, 1.0),
+             "texture_2d": "white",
              "vec2": (0.0, 0.0), "vec3": (0.0, 0.0, 0.0), "vec4": (0.0, 0.0, 0.0, 0.0),
              "mat3": tuple(tuple(float(row == column) for column in range(3)) for row in range(3)),
              "mat4": tuple(tuple(float(row == column) for column in range(4)) for row in range(4))}
@@ -113,7 +114,7 @@ class _Author(ShaderEmitter):
             self.types["self." + name] = RESOURCE_TYPES[kind]
             return
         prefix = self.alias + (".material." if self.domain == "mesh" else ".parameter.")
-        if not declaration.startswith(prefix) or declaration[len(prefix):] not in _PARAMETER_TYPES:
+        if not declaration.startswith(prefix) or declaration[len(prefix):] not in {*_PARAMETER_TYPES, "texture_2d"}:
             self.error(call, "Expected " + prefix + " followed by a supported value type")
         kind = declaration[len(prefix):]
         values = {keyword.arg: self.literal(keyword.value) for keyword in call.keywords}
@@ -126,13 +127,19 @@ class _Author(ShaderEmitter):
                                 values.get("range"), values.get("hdr", False))
         self.validate_default(value, call)
         self.fields[name] = value
-        self.types["self." + name] = "bool" if kind == "bool" else _PARAMETER_TYPES[kind]
+        self.types["self." + name] = (RESOURCE_TYPES["Color2D"] if kind == "texture_2d" else
+                                     "bool" if kind == "bool" else _PARAMETER_TYPES[kind])
 
     def validate_default(self, field, node):
         value, kind = field.default, field.kind
         numeric = lambda item: type(item) in (int, float)
         valid = True
-        if kind == "float":
+        if kind == "texture_2d":
+            if self.domain != "mesh":
+                self.error(node, "Texture asset properties belong to mesh materials; fullscreen images use shader.input",
+                           code="author.parameter")
+            valid = value in ("white", "black", "normal")
+        elif kind == "float":
             valid = numeric(value)
         elif kind in {"int", "uint"}:
             minimum, maximum = (-2**31, 2**31 - 1) if kind == "int" else (0, 2**32 - 1)
@@ -157,7 +164,7 @@ class _Author(ShaderEmitter):
     def visit_Attribute(self, node):
         if isinstance(node.value, ast.Name) and node.value.id == "self":
             field = self.fields.get(node.attr)
-            if isinstance(field, ShaderInput):
+            if isinstance(field, ShaderInput) or (isinstance(field, ShaderParameter) and field.kind == "texture_2d"):
                 return "inx_" + node.attr
             if field is None:
                 self.error(node, "Unknown shader parameter: " + node.attr)
@@ -263,9 +270,14 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),
                      RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";"])
-    if parameters:
+    textures = tuple(field for field in parameters if field.kind == "texture_2d")
+    for index, field in enumerate(textures):
+        code.extend([author.source_directive(author.field_nodes[field.name]),
+                     f"[[vk::binding({1 + 2 * index}, 0)]] InxColor2D inx_{field.name};"])
+    uniforms = tuple(field for field in parameters if field.kind != "texture_2d")
+    if uniforms:
         code.append("struct ShaderParameters {")
-        for field in parameters:
+        for field in uniforms:
             code.extend([author.source_directive(author.field_nodes[field.name]),
                          "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
         binding = "[[vk::binding(0, 0)]] " if author.domain == "mesh" else ""

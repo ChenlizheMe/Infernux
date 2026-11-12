@@ -69,23 +69,12 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_scene_icon_picking_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.scene_icon_picking COMMAND infernux_scene_icon_picking_tests)
 
-    set(_material_texture_readiness_vert "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.vert.spv")
-    set(_material_texture_readiness_frag "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.frag.spv")
-    foreach(_stage IN ITEMS vert frag)
-        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.${_stage}.spv"
-            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-                "${CMAKE_SOURCE_DIR}/tests/native/shaders/MaterialTextureReadiness.${_stage}"
-                -o "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.${_stage}.spv"
-            DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/MaterialTextureReadiness.${_stage}"
-            VERBATIM)
-    endforeach()
     infernux_add_native_test(infernux_material_texture_readiness_vulkan_tests
-        tests/native/MaterialTextureReadinessVulkanTests.cpp
-        "${_material_texture_readiness_vert}" "${_material_texture_readiness_frag}")
-    target_link_libraries(infernux_material_texture_readiness_vulkan_tests PRIVATE infernux_runtime_test_support)
+        tests/native/MaterialTextureReadinessVulkanTests.cpp)
+    target_link_libraries(infernux_material_texture_readiness_vulkan_tests
+        PRIVATE infernux_runtime_test_support InfernuxShaderCompiler)
     add_test(NAME infernux.material_texture_readiness_vulkan
-        COMMAND infernux_material_texture_readiness_vulkan_tests
-            "${_material_texture_readiness_vert}" "${_material_texture_readiness_frag}")
+        COMMAND infernux_material_texture_readiness_vulkan_tests)
     set_tests_properties(infernux.material_texture_readiness_vulkan PROPERTIES
         LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
 

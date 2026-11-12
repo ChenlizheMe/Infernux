@@ -5,6 +5,7 @@
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/scene/SpriteRenderer.h>
 
 #ifdef NDEBUG
@@ -13,29 +14,30 @@
 #include <array>
 #include <cassert>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <unordered_map>
 
 using namespace infernux;
 
-static std::vector<char> ReadSpirv(const char *path)
+static constexpr const char *Source = R"(
+struct SampledImage { Texture2D<float4> image; SamplerState sampler; };
+[[vk::binding(0, 0)]] SampledImage source_image;
+[[vk::binding(2, 0)]] SampledImage detail_image;
+[shader("vertex")]
+float4 vertex_main(uint id : SV_VulkanVertexID) : SV_Position
 {
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    assert(input);
-    const auto size = static_cast<size_t>(input.tellg());
-    assert(size > 0 && size % sizeof(uint32_t) == 0);
-    std::vector<char> bytes(size);
-    input.seekg(0);
-    input.read(bytes.data(), static_cast<std::streamsize>(size));
-    assert(input);
-    return bytes;
+    return float4(float2((id << 1) & 2, id & 2) * 2.0 - 1.0, 0, 1);
 }
-
-int main(int argc, char **argv)
+[shader("fragment")]
+float4 fragment_main() : SV_Target0
 {
-    assert(argc == 3);
+    return source_image.image.Sample(source_image.sampler, float2(0.5)) *
+           detail_image.image.Sample(detail_image.sampler, float2(0.5));
+})";
+
+int main()
+{
     assert(SDL_Init(SDL_INIT_VIDEO));
     auto *window = SDL_CreateWindow("Material texture readiness", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
     assert(window);
@@ -47,15 +49,36 @@ int main(int argc, char **argv)
 
     ShaderProgram program;
     ShaderProgramVariantKey key;
-    key.program.stages = {"Tests/MaterialTextureReadiness.vert", "Tests/MaterialTextureReadiness.frag"};
+    key.program.stages = {"Tests/texture_readiness.vert.py", "Tests/texture_readiness.frag.py"};
     key.program.revision = 1;
     key.target = ShaderCompileTarget::Forward;
-    assert(program.Create(context.GetDevice(), ReadSpirv(argv[1]), ReadSpirv(argv[2]), key));
+    const auto compilation = SlangCompiler::Get().Compile({"texture_readiness", "<texture readiness>", Source}, {},
+                                                          {ShaderCodeTarget::SpirV});
+    const auto &target = compilation.targets.front();
+    const auto &vertex = target.entries[0];
+    const auto &fragment = target.entries[1];
+    std::vector<ShaderProgramPropertyBinding> properties(2);
+    properties[0].name = "texSampler";
+    properties[0].resourcePath = "source_image";
+    properties[1].name = "detailTex";
+    properties[1].resourcePath = "detail_image";
+    assert(program.Create(context.GetDevice(), vertex.code, fragment.code, key,
+                          {ShaderProgramDomain::Mesh, vertex.name, fragment.name, &target, &target, &properties}));
     std::unordered_map<std::string, uint32_t> slots;
     for (const auto &binding : program.GetDescriptorBindings())
-        if (binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+        if (binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
             slots.emplace(binding.name, binding.binding);
     assert(slots.size() == 2 && slots.find("texSampler") != slots.end() && slots.find("detailTex") != slots.end());
+    const auto checkPairs = [&](const MaterialDescriptorSet &descriptor) {
+        for (const auto &binding : program.GetDescriptorBindings()) {
+            if (binding.type != VK_DESCRIPTOR_TYPE_SAMPLER)
+                continue;
+            const auto &image = descriptor.textureBindings.at(slots.at(binding.name));
+            const auto &sampler = descriptor.textureBindings.at(binding.binding);
+            assert(image.gpuView == sampler.gpuView && image.gpuSlot == sampler.gpuSlot);
+            assert(image.imageView == sampler.imageView && image.sampler == sampler.sampler);
+        }
+    };
 
     rhi::TextureDesc textureDesc;
     textureDesc.format = rhi::PixelFormat::RGBA8UNorm;
@@ -96,7 +119,7 @@ int main(int argc, char **argv)
         return TextureResolveResult{};
     });
 
-    // Texture defaults come from ShaderInfo, regardless of the property name.
+    // Texture defaults come from the declaration, regardless of the property name.
     // A project texture GUID remains empty until an asset is explicitly assigned.
     ShaderProgramArtifact defaults;
     ShaderProgramPropertyBinding declaredNormal;
@@ -118,6 +141,7 @@ int main(int argc, char **argv)
     const bool declaredDefaultCorrect =
         defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1];
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[0]);
+    checkPairs(*defaultDescriptor);
     const uint64_t defaultAuthoredVersion = defaultMaterial.GetAuthoredVersion();
     defaults.properties[0].textureDefault = "white";
     defaults.properties[1].textureDefault = "Black";
@@ -217,6 +241,8 @@ int main(int argc, char **argv)
         assert(replaced && replaced->descriptorSet != previousDescriptor);
         assert(replaced->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
         assert(ready->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[2]);
+        checkPairs(*ready);
+        checkPairs(*replaced);
         auto missingParameters = std::make_shared<RendererParameterBlock>(*selectedParameters);
         statuses["draw-guid"] = TextureResolveStatus::Failed;
         assert(!descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, missingParameters));
@@ -289,6 +315,7 @@ int main(int argc, char **argv)
         assert(descriptor->textureBindings.at(detailSlot).gpuView == gpuViews[detailView]);
         assert(descriptor->textureBindings.at(iconSlot).resolvedExplicitTexture == (iconView != 0));
         assert(descriptor->textureBindings.at(detailSlot).resolvedExplicitTexture == (detailView != 0));
+        checkPairs(*descriptor);
     };
 
     // The dedicated icon draw must wait while its first explicit texture is missing.
@@ -331,7 +358,7 @@ int main(int argc, char **argv)
     SDL_DestroyWindow(window);
     SDL_Quit();
     if (!declaredDefaultCorrect) {
-        std::cerr << "ShaderInfo Texture2D texSampler = normal did not bind the declared normal texture\n";
+        std::cerr << "Texture2D texSampler = normal did not bind the declared normal texture\n";
         return 1;
     }
     std::cout << "Material texture readiness regression passed\n";

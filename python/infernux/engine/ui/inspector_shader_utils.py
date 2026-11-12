@@ -390,7 +390,7 @@ def parse_shader_properties(filepath: str) -> list:
         schema = Shader.get_schema(filepath)
         if schema["domain"] != "mesh":
             return []
-        kinds = {"float": "Float", "int": "Int", "vec2": "Float2", "vec3": "Float3",
+        kinds = {"texture_2d": "Texture2D", "float": "Float", "int": "Int", "vec2": "Float2", "vec3": "Float3",
                  "vec4": "Float4", "color": "Color", "mat4": "Mat4"}
         fields = []
         for parameter in schema["parameters"]:

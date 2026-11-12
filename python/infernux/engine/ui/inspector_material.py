@@ -267,7 +267,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
     else:
         display = _resolve_texture_display(prop)
         texture_path = ""
-    field_label(ctx, prop_name, plw)
+    field_label(ctx, prop.get("label", prop_name), plw)
 
     from .igui import IGUI
 

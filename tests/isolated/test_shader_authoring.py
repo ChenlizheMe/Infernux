@@ -29,10 +29,14 @@ def test_mesh_fragment_uses_native_geometry_and_material_domain():
 class Grid(shader.frag):
     tint = shader.material.color(default=(0.8, 0.3, 0.1, 1.0), hdr=True, label="颜色")
     scale = shader.material.float(default=2.0, range=(0.0, 4.0))
+    image = shader.material.texture_2d(default="white", label="纹理")
+    detail = shader.material.texture_2d(default="normal")
 
     def main(self, ctx: shader.mesh_input) -> shader.vec4:
         stripe = shader.step(0.5, shader.frac(ctx.position_ws.x * self.scale))
-        return shader.vec4(self.tint.rgb * stripe, self.tint.a)
+        image = shader.sample(self.image, ctx.uv0)
+        detail = shader.sample_level(self.detail, ctx.uv0, 0.0)
+        return shader.vec4(self.tint.rgb * stripe, self.tint.a) * image * detail
 '''
     definition = parse_shader(source, "网格.frag.py", "mesh_grid")
     assert definition.domain == "mesh"
@@ -44,6 +48,18 @@ class Grid(shader.frag):
         assert {(0, 0), (1, 5), (2, 1), (2, 2), (2, 3)} <= locations.keys()
         fields = locations[0, 0]["value"]["fields"]
         assert [field["name"] for field in fields] == ["tint", "scale"]
+        assert [(locations[0, index]["name"], locations[0, index]["type"]) for index in range(1, 5)] == [
+            ("inx_image.texture", 2), ("inx_image.sampler", 4),
+            ("inx_detail.texture", 2), ("inx_detail.sampler", 4),
+        ]
+    texture_only = '''import infernux.shader as shader
+class Sample(shader.frag):
+    image = shader.material.texture_2d()
+    def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        return shader.sample(self.image, ctx.uv0)
+'''
+    for target in parse_shader(texture_only, "纹理.frag.py", "texture_only").compile()["targets"]:
+        assert not any(resource["set"] == 0 and resource["type"] == 0 for resource in target["resources"])
 
 
 def test_static_fullscreen_schema_and_both_targets():

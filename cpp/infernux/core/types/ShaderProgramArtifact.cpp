@@ -158,6 +158,7 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
         hash = AppendString(hash, property.type);
         hash = AppendString(hash, property.defaultValue);
         hash = AppendString(hash, property.textureDefault);
+        hash = AppendString(hash, property.resourcePath);
         const auto stages = static_cast<uint8_t>(property.stages);
         hash = AppendBytes(hash, &stages, sizeof(stages));
         hash = AppendBytes(hash, &property.hdr, sizeof(property.hdr));

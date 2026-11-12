@@ -12,6 +12,26 @@ namespace infernux
 namespace
 {
 
+bool IsSampledImage(VkDescriptorType type)
+{
+    return type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+}
+
+bool IsTextureDescriptor(VkDescriptorType type)
+{
+    return IsSampledImage(type) || type == VK_DESCRIPTOR_TYPE_SAMPLER;
+}
+
+void SetTextureBindings(std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textures,
+                        const std::vector<MergedDescriptorBinding> &layout, const std::string &name,
+                        const MaterialDescriptorSet::TextureBinding &texture)
+{
+    // An image and its separate sampler publish the same asset revision.
+    for (const auto &binding : layout)
+        if (binding.set == 0 && binding.name == name && IsTextureDescriptor(binding.type))
+            textures[binding.binding] = texture;
+}
+
 bool StorageBuffersMatch(const MaterialDescriptorSet &descriptor, const ShaderProgram &program,
                          const InxMaterial &material, const RendererParameterBlock *parameters,
                          const BufferCapture &capture)
@@ -50,8 +70,8 @@ void AppendBufferWrite(std::vector<VkWriteDescriptorSet> &writes, std::vector<Vk
 }
 
 void AppendImageWrite(std::vector<VkWriteDescriptorSet> &writes, std::vector<VkDescriptorImageInfo> &imageInfos,
-                      VkDescriptorSet dstSet, uint32_t binding, VkImageView imageView, VkSampler sampler,
-                      VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                      VkDescriptorSet dstSet, uint32_t binding, VkDescriptorType descriptorType, VkImageView imageView,
+                      VkSampler sampler, VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 {
     VkDescriptorImageInfo imageInfo{};
     imageInfo.imageLayout = imageLayout;
@@ -65,7 +85,7 @@ void AppendImageWrite(std::vector<VkWriteDescriptorSet> &writes, std::vector<VkD
     write.dstBinding = binding;
     write.dstArrayElement = 0;
     write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorType = descriptorType;
     write.pImageInfo = &imageInfos.back();
     writes.push_back(write);
 }
@@ -384,6 +404,9 @@ MaterialDescriptorManager::ResolveExplicitTextureBinding(const std::string &text
                                                          MaterialDescriptorSet::TextureBinding &outBinding,
                                                          const MaterialTextureSampler *sampler) const
 {
+    if (IsPlaceholderTexturePath(texturePath))
+        return TryGetDefaultTextureBinding(texturePath, outBinding) ? TextureResolveStatus::Ready
+                                                                    : TextureResolveStatus::Failed;
     if (!m_textureResolver || texturePath.empty()) {
         return TextureResolveStatus::Failed;
     }
@@ -550,7 +573,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     // Property names have no role in choosing a default texture.
     if (!matDescSet->usesBindlessTextureABI) {
         for (const auto &binding : matDescSet->bindings) {
-            if (binding.set != 0 || binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            if (binding.set != 0 || !IsSampledImage(binding.type))
                 continue;
             MaterialDescriptorSet::TextureBinding defaultBinding{};
             if (!TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), defaultBinding)) {
@@ -558,25 +581,13 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                 RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
                 return nullptr;
             }
-            matDescSet->textureBindings[binding.binding] = std::move(defaultBinding);
+            SetTextureBindings(matDescSet->textureBindings, matDescSet->bindings, binding.name, defaultBinding);
         }
     }
-    if (!UpdateDescriptorBindings(*matDescSet, program)) {
-        m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
-        RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
-        return nullptr;
-    }
-
     // Resolve material Texture2D properties → actual GPU textures
     if (m_textureResolver) {
         const auto &properties = material.GetAllProperties();
         const auto &bindings = program.GetDescriptorBindings();
-
-        // Collect all descriptor writes and flush as a single batch
-        std::vector<VkWriteDescriptorSet> texWrites;
-        std::vector<VkDescriptorImageInfo> texImageInfos;
-        texWrites.reserve(properties.size());
-        texImageInfos.reserve(properties.size());
 
         if (matDescSet->usesBindlessTextureABI) {
             const auto *indexLayout = program.GetBindlessTextureIndexLayout();
@@ -606,8 +617,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
 
                 MaterialDescriptorSet::TextureBinding resolvedBinding{};
                 TextureResolveStatus resolveStatus = TextureResolveStatus::Failed;
-                const bool hasExplicitTexture =
-                    renderTexture || (texturePath && !texturePath->empty() && !IsPlaceholderTexturePath(*texturePath));
+                const bool hasExplicitTexture = renderTexture || (texturePath && !texturePath->empty());
                 if (hasExplicitTexture)
                     resolveStatus = renderTexture
                                         ? ResolveRenderTextureBinding(renderTexture, resolvedBinding)
@@ -647,11 +657,9 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                 const auto renderTexture = material.GetRenderTexture(propName);
                 if (!renderTexture && (!texturePath || texturePath->empty()))
                     continue;
-                const bool isPlaceholderTexture = !renderTexture && IsPlaceholderTexturePath(*texturePath);
-
-                // Find the matching sampler binding by name (set 0 only)
+                // Resolve each logical image once, then publish every physical descriptor.
                 for (const auto &binding : bindings) {
-                    if (binding.set != 0 || binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                    if (binding.set != 0 || !IsSampledImage(binding.type))
                         continue;
 
                     if (binding.name != propName)
@@ -659,13 +667,11 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                     MaterialDescriptorSet::TextureBinding resolvedBinding{};
                     const TextureResolveStatus resolveStatus =
                         renderTexture ? ResolveRenderTextureBinding(renderTexture, resolvedBinding)
-                        : isPlaceholderTexture
-                            ? TextureResolveStatus::Pending
-                            : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding,
-                                                            material.GetTextureSampler(binding.name));
+                                      : ResolveExplicitTextureBinding(*texturePath, binding.name, resolvedBinding,
+                                                                      material.GetTextureSampler(binding.name));
                     const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
 
-                    if (!isPlaceholderTexture && resolveStatus != TextureResolveStatus::Ready) {
+                    if (resolveStatus != TextureResolveStatus::Ready) {
                         matDescSet->hasUnresolvedExplicitTextures = true;
                         if (resolveStatus == TextureResolveStatus::Pending)
                             matDescSet->hasPendingTextures = true;
@@ -677,23 +683,23 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                         break;
                     }
 
-                    matDescSet->textureBindings[binding.binding] = resolvedBinding;
+                    SetTextureBindings(matDescSet->textureBindings, bindings, propName, resolvedBinding);
 
                     if (!resolvedExplicit && resolveStatus == TextureResolveStatus::Failed) {
                         INXLOG_WARN("Failed to resolve texture '", *texturePath, "' for material '", materialName,
                                     "' property '", propName, "' — binding default texture");
                     }
 
-                    AppendImageWrite(texWrites, texImageInfos, matDescSet->descriptorSet, binding.binding,
-                                     resolvedBinding.imageView, resolvedBinding.sampler);
                     break;
                 }
             }
         }
+    }
 
-        if (!texWrites.empty()) {
-            vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(texWrites.size()), texWrites.data(), 0, nullptr);
-        }
+    if (!UpdateDescriptorBindings(*matDescSet, program)) {
+        m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+        RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
+        return nullptr;
     }
 
     m_descriptorManager->SetUploadSources(matDescSet->descriptorLease, matDescSet->GetTextureUploadSources());
@@ -794,9 +800,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
 
     const auto resolveTexture = [&](const std::string &name, const std::string &guid,
                                     MaterialDescriptorSet::TextureBinding &binding) {
-        if (IsPlaceholderTexturePath(guid))
-            return TryGetDefaultTextureBinding(guid, binding);
-        if (!guid.empty() && !IsPlaceholderTexturePath(guid)) {
+        if (!guid.empty()) {
             const TextureResolveStatus status =
                 ResolveExplicitTextureBinding(guid, name, binding, material.GetTextureSampler(name));
             if (status == TextureResolveStatus::Ready)
@@ -832,15 +836,9 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
                 break;
             }
         } else {
-            for (const auto &declaredBinding : descriptor->bindings) {
-                if (declaredBinding.set != 0 || declaredBinding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
-                    declaredBinding.name != name)
-                    continue;
-                MaterialDescriptorSet::TextureBinding binding{};
-                if (resolveTexture(name, *guid, binding))
-                    descriptor->textureBindings[declaredBinding.binding] = std::move(binding);
-                break;
-            }
+            MaterialDescriptorSet::TextureBinding binding{};
+            if (resolveTexture(name, *guid, binding))
+                SetTextureBindings(descriptor->textureBindings, descriptor->bindings, name, binding);
         }
     }
 
@@ -993,7 +991,7 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
             }
             AppendBufferWrite(writes, bufferInfos, matDescSet.descriptorSet, binding.binding, binding.type, bufferInfo);
             matDescSet.bufferBindings[binding.binding] = bufferInfo;
-        } else if (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+        } else if (IsTextureDescriptor(binding.type)) {
             if (matDescSet.usesBindlessTextureABI)
                 continue;
             // Check if we have a texture bound for this slot
@@ -1006,8 +1004,8 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
                 return false;
             }
 
-            AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding, textureBinding.imageView,
-                             textureBinding.sampler);
+            AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding, binding.type,
+                             textureBinding.imageView, textureBinding.sampler);
         }
     }
 
@@ -1138,7 +1136,7 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
                               binding.descriptorCount);
             continue;
         }
-        if (binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+        if (!IsTextureDescriptor(binding.type)) {
             INXLOG_ERROR("Cannot publish material descriptor replacement: unsupported set-0 descriptor type ",
                          static_cast<int>(binding.type), " at binding ", binding.binding);
             m_descriptorManager->Retire(replacement);
@@ -1164,7 +1162,7 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
             m_descriptorManager->Retire(replacement);
             return false;
         }
-        AppendImageWrite(writes, imageInfos, replacement.set, binding.binding, textureBinding.imageView,
+        AppendImageWrite(writes, imageInfos, replacement.set, binding.binding, binding.type, textureBinding.imageView,
                          textureBinding.sampler);
     }
 
@@ -1247,12 +1245,10 @@ bool MaterialDescriptorManager::UpdateMaterialProperties(const InxMaterial &mate
             const auto previous = candidates.find(binding);
             MaterialDescriptorSet::TextureBinding next;
             if (target || (path && !path->empty())) {
-                const bool placeholder = !target && IsPlaceholderTexturePath(*path);
                 const auto status =
-                    target        ? ResolveRenderTextureBinding(target, next)
-                    : placeholder ? TextureResolveStatus::Pending
-                                  : ResolveExplicitTextureBinding(*path, name, next, material.GetTextureSampler(name));
-                if (!placeholder && status != TextureResolveStatus::Ready) {
+                    target ? ResolveRenderTextureBinding(target, next)
+                           : ResolveExplicitTextureBinding(*path, name, next, material.GetTextureSampler(name));
+                if (status != TextureResolveStatus::Ready) {
                     pending |= status == TextureResolveStatus::Pending;
                     // Keep the preceding complete texture while the asset
                     // resolver prepares or rejects its replacement.
@@ -1270,7 +1266,10 @@ bool MaterialDescriptorManager::UpdateMaterialProperties(const InxMaterial &mate
 
             bindingsChanged |= previous == candidates.end() || !HasSameGpuBinding(previous->second, next) ||
                                previous->second.gpuSlot != next.gpuSlot || previous->second.gpuView != next.gpuView;
-            candidates[binding] = std::move(next);
+            if (descriptor.usesBindlessTextureABI)
+                candidates[binding] = std::move(next);
+            else
+                SetTextureBindings(candidates, descriptor.bindings, name, next);
         };
 
         if (descriptor.usesBindlessTextureABI) {
@@ -1281,7 +1280,7 @@ bool MaterialDescriptorManager::UpdateMaterialProperties(const InxMaterial &mate
                 resolveBinding(layout->members[slot].name, slot);
         } else {
             for (const auto &binding : program.GetDescriptorBindings())
-                if (binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                if (binding.set == 0 && IsSampledImage(binding.type))
                     resolveBinding(binding.name, binding.binding);
         }
     }

@@ -145,6 +145,8 @@ struct ShaderProgramPropertyBinding
     uint32_t byteSize = 0;
     uint32_t byteAlignment = 0;
     uint32_t arrayCount = 1;
+    /// Qualified author resource root; its target descriptors are compiler-owned.
+    std::string resourcePath;
 
     [[nodiscard]] bool IsTexture() const noexcept
     {

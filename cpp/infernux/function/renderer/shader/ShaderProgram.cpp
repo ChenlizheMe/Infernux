@@ -181,6 +181,17 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
 
     // Merge reflection data
     MergeReflectionData();
+    if (metadata.properties) {
+        for (auto &binding : m_descriptorBindings) {
+            for (const auto &property : *metadata.properties) {
+                if (!property.resourcePath.empty() &&
+                    binding.name.compare(0, property.resourcePath.size() + 1, property.resourcePath + ".") == 0) {
+                    binding.name = property.name;
+                    break;
+                }
+            }
+        }
+    }
     const bool hasReflectedBindlessTextureABI =
         std::any_of(m_descriptorBindings.begin(), m_descriptorBindings.end(), [](const auto &binding) {
             return binding.set == BindlessTextureSet && binding.binding == BindlessTextureBinding &&
@@ -688,7 +699,8 @@ uint32_t ShaderProgram::GetTextureBindingCount() const
 {
     uint32_t count = 0;
     for (const auto &binding : m_descriptorBindings) {
-        if (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+        if (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+            binding.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
             count += binding.descriptorCount;
         }
     }

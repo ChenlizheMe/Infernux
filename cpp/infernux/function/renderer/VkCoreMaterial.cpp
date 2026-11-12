@@ -474,7 +474,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
             material, *vertCode, *fragCode, programKey,
             {artifact ? artifact->domain : ShaderProgramDomain::Mesh, forward ? forward->vertexEntryPoint : "main",
              forward ? forward->fragmentEntryPoint : "main", forward ? forward->vertexTarget.get() : nullptr,
-             forward ? forward->fragmentTarget.get() : nullptr});
+             forward ? forward->fragmentTarget.get() : nullptr, artifact ? &artifact->properties : nullptr});
 
         bool forwardOk = renderData && renderData->isValid;
         if (forwardOk)

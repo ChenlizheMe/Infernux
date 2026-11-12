@@ -49,6 +49,7 @@ struct ShaderProgramMetadata
     std::string_view fragmentEntryPoint = "main";
     const ShaderTargetCode *vertexTarget = nullptr;
     const ShaderTargetCode *fragmentTarget = nullptr;
+    const std::vector<ShaderProgramPropertyBinding> *properties = nullptr;
 };
 
 /**
