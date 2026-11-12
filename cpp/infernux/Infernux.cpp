@@ -1102,7 +1102,13 @@ void Infernux::BeginRuntimeFrame(float deltaTime)
 
 bool Infernux::AdvanceRequiredWork(FrameWorkOwner::SourceId source)
 {
-    const bool pending = m_frameWork.AdvanceRequired(source, [this] { return BackgroundGpuAvailability(true); });
+    const bool pending = m_frameWork.AdvanceRequired(source, [this] {
+        const auto availability = BackgroundGpuAvailability(true);
+        // Required work may queue dependencies behind accepted compute. The
+        // shared budget and TrySubmit still limit admission; in-flight work is
+        // not a reason to drain the queue between dependent stage packets.
+        return availability == FrameGpuAvailability::BackgroundPending ? FrameGpuAvailability::Ready : availability;
+    });
     if (pending && m_renderer)
         m_renderer->RequestFullSpeedFrame();
     return pending;
