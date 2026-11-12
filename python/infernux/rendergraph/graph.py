@@ -1882,7 +1882,7 @@ class RenderGraph:
         self._linear_output = self.get_texture("color").name
         self.create_texture("_display_encode", format=Format.RGBA16_SFLOAT)
         with self.add_pass("_DisplayEncode") as p:
-            p.set_texture("_SourceTex", "color")
+            p.set_texture("source_tex", "color")
             p.write_color("_display_encode")
             # The native per-camera render context overwrites these values at
             # draw time without rebuilding the graph.

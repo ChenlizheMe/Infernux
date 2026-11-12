@@ -17,9 +17,9 @@ from infernux.renderstack.render_effect_asset import EffectAssetReference, Rende
 SCALE_SHADER = '''#version 450
 ShaderInfo {
  Name "HDR Parity Scale" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D _SourceTex } Inputs { Float2 inUV } Outputs { Float4 outColor }
+ Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor }
 }
-void main() { vec4 c = texture(_SourceTex, inUV); outColor = vec4(c.rgb * 0.125, c.a); }
+void main() { vec4 c = texture(source_tex, inUV); outColor = vec4(c.rgb * 0.125, c.a); }
 '''
 
 

@@ -5,7 +5,7 @@ ShaderInfo {
     Hidden On
     Capabilities [Fullscreen]
     Resources {
-        Texture2D _SourceTex
+        Texture2D source_tex
     }
     PushConstants pc {
         Float mode
@@ -66,7 +66,7 @@ vec3 Reinhard(vec3 x) {
 }
 
 void main() {
-    vec4 source = texture(_SourceTex, inUV);
+    vec4 source = texture(source_tex, inUV);
     vec3 hdr = source.rgb;
 
     // Apply exposure

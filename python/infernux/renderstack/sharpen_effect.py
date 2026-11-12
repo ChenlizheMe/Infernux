@@ -47,7 +47,7 @@ class SharpenEffect(FullScreenEffect):
     # ------------------------------------------------------------------
 
     def get_shader_list(self) -> List[str]:
-        return ["Fullscreen Triangle", "Sharpen CAS"]
+        return ["sharpen_cas"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
@@ -57,7 +57,7 @@ class SharpenEffect(FullScreenEffect):
             bus,
             output_name="_sharpen_out",
             pass_name="Sharpen_CAS",
-            shader_name="Sharpen CAS",
+            shader_name="sharpen_cas",
             format=Format.RGBA16_SFLOAT,
             params={"intensity": self.intensity},
         )

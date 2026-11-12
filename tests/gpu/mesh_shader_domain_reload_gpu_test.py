@@ -26,8 +26,8 @@ def main():
         full_vertex = (resources / 'fullscreen_triangle.vert').read_text(encoding='utf-8').replace('Fullscreen Triangle', 'Domain Transition Vertex')
         full_fragment = '''#version 450
 ShaderInfo { Name "Domain Transition Fragment" Hidden On Capabilities [Fullscreen]
-    Resources { Texture2D _SourceTex } Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() { outColor = texture(_SourceTex, inUV); }
+    Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor } }
+void main() { outColor = texture(source_tex, inUV); }
 '''
         mesh_vertex = '#version 450\nShaderInfo { Name "Domain Transition Vertex" }\nvoid vertex(inout VertexInput v) {}\n'
         mesh_fragment = '#version 450\nShaderInfo { Name "Domain Transition Fragment" ShadingModel Unlit }\nvoid surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(1.0,0.1,0.05); }\n'

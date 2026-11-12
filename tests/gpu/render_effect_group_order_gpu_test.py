@@ -36,15 +36,15 @@ void main() { outColor=vec4(0.08,0.12,0.2,1); }
 ''',
  'Scale': '''#version 450
 ShaderInfo { Name "Group Order Scale" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D _SourceTex } Inputs { Float2 inUV } Outputs { Float4 outColor }
+ Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor }
  PushConstants pc { Float multiplier } }
-void main() { vec4 c=texture(_SourceTex,inUV); outColor=vec4(c.rgb*pc.multiplier,c.a); }
+void main() { vec4 c=texture(source_tex,inUV); outColor=vec4(c.rgb*pc.multiplier,c.a); }
 ''',
  'Offset': '''#version 450
 ShaderInfo { Name "Group Order Offset" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D _SourceTex } Inputs { Float2 inUV } Outputs { Float4 outColor }
+ Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor }
  PushConstants pc { Float bias } }
-void main() { vec4 c=texture(_SourceTex,inUV); outColor=vec4(c.rgb+pc.bias,c.a); }
+void main() { vec4 c=texture(source_tex,inUV); outColor=vec4(c.rgb+pc.bias,c.a); }
 ''',
 }
 

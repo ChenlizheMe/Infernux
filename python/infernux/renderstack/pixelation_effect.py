@@ -76,42 +76,26 @@ class PixelationEffect(FullScreenEffect):
         tooltip="Keep thin isolated geometry visible across an occupied pixel cell",
     )
 
-    @staticmethod
-    def _normalize_sampling(value) -> PixelationSampling:
-        if isinstance(value, PixelationSampling):
-            return value
-        try:
-            return PixelationSampling(int(value))
-        except (TypeError, ValueError):
-            return PixelationSampling.BALANCED
-
-    def set_params_dict(self, params) -> None:
-        super().set_params_dict(params)
-        self.sampling = self._normalize_sampling(self.sampling)
-
     def get_shader_list(self):
-        return ["Fullscreen Triangle", "Pixelation"]
+        return ["pixelation"]
 
     def setup_passes(self, graph, bus) -> None:
         from infernux.rendergraph.graph import Format
 
-        sampling = self._normalize_sampling(self.sampling)
-        self.sampling = sampling
         self.apply_single_source_effect(
             graph,
             bus,
             output_name="_pixelation_out",
             pass_name="Pixelation_Apply",
-            shader_name="Pixelation",
+            shader_name="pixelation",
             format=Format.RGBA16_SFLOAT,
             params={
-                "pixelSize": float(max(1, min(int(self.pixel_size), 256))),
-                "pixelAspect": min(max(float(self.pixel_aspect), 0.25), 4.0),
-                "gridOffsetX": min(max(float(self.grid_offset_x), -1.0), 1.0),
-                "gridOffsetY": min(max(float(self.grid_offset_y), -1.0), 1.0),
-                "intensity": min(max(float(self.intensity), 0.0), 1.0),
-                "samplingMode": float(int(sampling)),
-                "preserveAlphaCoverage": 1.0 if self.preserve_alpha_coverage else 0.0,
+                "pixel_size": self.pixel_size,
+                "pixel_aspect": self.pixel_aspect,
+                "grid_offset": (self.grid_offset_x, self.grid_offset_y),
+                "intensity": self.intensity,
+                "sampling_mode": int(PixelationSampling(self.sampling)),
+                "preserve_alpha_coverage": self.preserve_alpha_coverage,
             },
         )
 

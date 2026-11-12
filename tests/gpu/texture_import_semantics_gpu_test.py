@@ -16,11 +16,11 @@ ShaderInfo {
     Name "Tutorial Texture Swatch"
     Hidden On
     Capabilities [Fullscreen]
-    Resources { Texture2D _SourceTex }
+    Resources { Texture2D source_tex }
     Inputs { Float2 inUV }
     Outputs { Float4 outColor }
 }
-void main() { outColor = texture(_SourceTex, inUV); }
+void main() { outColor = texture(source_tex, inUV); }
 '''
 
 class SwatchPipeline(RenderPipeline):
@@ -36,7 +36,7 @@ class SwatchPipeline(RenderPipeline):
             render_pass.set_clear(depth=0.0)
             render_pass.draw_renderers(material_pass="depth")
         with graph.add_pass("SampleSwatch") as render_pass:
-            render_pass.set_texture("_SourceTex", sampled)
+            render_pass.set_texture("source_tex", sampled)
             render_pass.write_color(color)
             render_pass.fullscreen_quad("Tutorial Texture Swatch")
         graph.screen_ui_section(resources={"color"})

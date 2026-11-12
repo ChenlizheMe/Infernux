@@ -6,7 +6,7 @@ ShaderInfo {
     Imports ["Lib Color"]
     Capabilities [Fullscreen]
     Resources {
-        Texture2D _SourceTex
+        Texture2D source_tex
     }
     PushConstants pc {
         Float sphereRadius
@@ -25,13 +25,13 @@ ShaderInfo {
 // free of black halos. The sRGB attachment, not this shader, encodes the result.
 void main() {
     ivec2 origin = ivec2(gl_FragCoord.xy) * 2;
-    float sourceSize = float(textureSize(_SourceTex, 0).x);
+    float sourceSize = float(textureSize(source_tex, 0).x);
     vec3 premultiplied = vec3(0.0);
     float alphaSum = 0.0;
     for (int y = 0; y < 2; ++y) {
         for (int x = 0; x < 2; ++x) {
             ivec2 pixel = origin + ivec2(x, y);
-            vec4 sampleColor = texelFetch(_SourceTex, pixel, 0);
+            vec4 sampleColor = texelFetch(source_tex, pixel, 0);
             float alpha = clamp(sampleColor.a, 0.0, 1.0);
             vec3 color = max(sampleColor.rgb, vec3(0.0));
             if (pc.sphereRadius > 0.0) {

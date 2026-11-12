@@ -195,7 +195,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
         color_out = self.get_or_create_texture(graph, output_name, format=format)
 
         with graph.add_pass(pass_name) as p:
-            p.set_texture("_SourceTex", color_in)
+            p.set_texture("source_tex", color_in)
             p.write_color(color_out)
             for param_name, param_value in (params or {}).items():
                 p.set_param(param_name, param_value)

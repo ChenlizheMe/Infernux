@@ -5,7 +5,7 @@ ShaderInfo {
     Hidden On
     Capabilities [Fullscreen]
     Resources {
-        Texture2D _SourceTex
+        Texture2D source_tex
         Texture2D _HistoryTex
         Texture2D _MotionTex
         Texture2D _DepthTex
@@ -25,13 +25,13 @@ ShaderInfo {
 }
 
 void main() {
-    vec4 current = texture(_SourceTex, inUV);
+    vec4 current = texture(source_tex, inUV);
     if (pc._InfernuxHistoryValid < 0.5 || pc.feedback <= 0.0) {
         outColor = current;
         return;
     }
 
-    vec2 extent = vec2(textureSize(_SourceTex, 0));
+    vec2 extent = vec2(textureSize(source_tex, 0));
     vec2 texel = 1.0 / max(extent, vec2(1.0));
     vec2 motion = texture(_MotionTex, inUV).xy;
     vec2 historyUV = inUV - motion;
@@ -47,7 +47,7 @@ void main() {
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             vec2 sampleUV = clamp(inUV + vec2(x, y) * texel, vec2(0.0), vec2(1.0));
-            vec3 sampleColor = texture(_SourceTex, sampleUV).rgb;
+            vec3 sampleColor = texture(source_tex, sampleUV).rgb;
             neighborhoodMin = min(neighborhoodMin, sampleColor);
             neighborhoodMax = max(neighborhoodMax, sampleColor);
             maxDepthDelta = max(maxDepthDelta, abs(texture(_DepthTex, sampleUV).r - centerDepth));

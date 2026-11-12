@@ -5,7 +5,7 @@ ShaderInfo {
     Hidden On
     Capabilities [Fullscreen]
     Resources {
-        Texture2D _SourceTex
+        Texture2D source_tex
     }
     PushConstants pc {
         Float intensity
@@ -34,10 +34,10 @@ void main() {
     // Offset increases with distance from center (radial CA)
     vec2 offset = center * dist * pc.intensity * 0.02;
 
-    float r = texture(_SourceTex, inUV - offset).r;
-    vec4 centerSample = texture(_SourceTex, inUV);
+    float r = texture(source_tex, inUV - offset).r;
+    vec4 centerSample = texture(source_tex, inUV);
     float g = centerSample.g;
-    float b = texture(_SourceTex, inUV + offset).b;
+    float b = texture(source_tex, inUV + offset).b;
 
     outColor = vec4(r, g, b, centerSample.a);
 }

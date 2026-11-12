@@ -38,7 +38,7 @@ class VignetteEffect(FullScreenEffect):
     color: Color = Color(0.0, 0.0, 0.0, 1.0)
 
     def get_shader_list(self) -> List[str]:
-        return ["Fullscreen Triangle", "Vignette"]
+        return ["vignette"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
@@ -48,15 +48,13 @@ class VignetteEffect(FullScreenEffect):
             bus,
             output_name="_vignette_out",
             pass_name="Vignette_Apply",
-            shader_name="Vignette",
+            shader_name="vignette",
             format=Format.RGBA16_SFLOAT,
             params={
                 "intensity": self.intensity,
                 "smoothness": self.smoothness,
                 "roundness": self.roundness,
-                "rounded": 1.0 if self.rounded else 0.0,
-                "colorR": self.color[0],
-                "colorG": self.color[1],
-                "colorB": self.color[2],
+                "rounded": self.rounded,
+                "color": tuple(self.color),
             },
         )

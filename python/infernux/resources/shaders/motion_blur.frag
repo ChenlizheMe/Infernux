@@ -5,7 +5,7 @@ ShaderInfo {
     Hidden On
     Capabilities [Fullscreen]
     Resources {
-        Texture2D _SourceTex
+        Texture2D source_tex
         Texture2D _MotionTex
         Texture2D _DepthTex
     }
@@ -26,8 +26,8 @@ ShaderInfo {
 // Motion is currentUV - previousUV. Twelve fixed taps keep topology stable
 // while parameters update through the RenderEffect parameter block.
 void main() {
-    vec4 centerColor = texture(_SourceTex, inUV);
-    vec2 textureSizePixels = vec2(textureSize(_SourceTex, 0));
+    vec4 centerColor = texture(source_tex, inUV);
+    vec2 textureSizePixels = vec2(textureSize(source_tex, 0));
     vec2 motion = texture(_MotionTex, inUV).xy * pc.intensity;
     float motionPixels = length(motion * textureSizePixels);
 
@@ -56,7 +56,7 @@ void main() {
         float spatialWeight = 1.0 - abs(unitOffset) * 1.4;
         float weight = max(spatialWeight, 0.05) * depthWeight;
 
-        accumulated += texture(_SourceTex, sampleUV) * weight;
+        accumulated += texture(source_tex, sampleUV) * weight;
         totalWeight += weight;
     }
 

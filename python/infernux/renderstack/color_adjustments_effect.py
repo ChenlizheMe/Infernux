@@ -37,7 +37,7 @@ class ColorAdjustmentsEffect(FullScreenEffect):
     hue_shift: float = serialized_field(default=0.0, range=(-180.0, 180.0), slider=False)
 
     def get_shader_list(self) -> List[str]:
-        return ["Fullscreen Triangle", "Color Adjustments"]
+        return ["color_adjustments"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
@@ -47,12 +47,12 @@ class ColorAdjustmentsEffect(FullScreenEffect):
             bus,
             output_name="_coloradj_out",
             pass_name="ColorAdj_Apply",
-            shader_name="Color Adjustments",
+            shader_name="color_adjustments",
             format=Format.RGBA16_SFLOAT,
             params={
-                "postExposure": self.post_exposure,
+                "post_exposure": self.post_exposure,
                 "contrast": self.contrast,
                 "saturation": self.saturation,
-                "hueShift": self.hue_shift,
+                "hue_shift": self.hue_shift,
             },
         )

@@ -41,13 +41,13 @@ ShaderInfo {
     Hidden On
     Imports ["Lib Color"]
     Capabilities [Fullscreen]
-    Resources { Texture2D _SourceTex }
+    Resources { Texture2D source_tex }
     PushConstants pc { Float temperature Float tint Float _pad0 Float _pad1 }
     Inputs { Float2 inUV }
     Outputs { Float4 outColor }
 }
 void main() {
-    vec4 source = texture(_SourceTex, inUV);
+    vec4 source = texture(source_tex, inUV);
     outColor = vec4(whiteBalance(source.rgb, pc.temperature, pc.tint), source.a);
 }
 '''
@@ -57,12 +57,12 @@ ShaderInfo {
     Name "White Balance Acceptance Monitor"
     Hidden On
     Capabilities [Fullscreen]
-    Resources { Texture2D _SourceTex }
+    Resources { Texture2D source_tex }
     Inputs { Float2 inUV }
     Outputs { Float4 outColor }
 }
 void main() {
-    vec4 value = texture(_SourceTex, inUV);
+    vec4 value = texture(source_tex, inUV);
     outColor = vec4(value.rgb / 32.0, value.a);
 }
 '''
@@ -127,7 +127,7 @@ class WhiteBalancePipeline(RenderPipeline):
             else:
                 self.effect.setup_passes(graph, bus)
         target = graph.create_texture('color', camera_target=True)
-        graph.add_pass('Commit').write_color(target).set_texture('_SourceTex', bus.get('color')).fullscreen_quad('White Balance Acceptance Monitor')
+        graph.add_pass('Commit').write_color(target).set_texture('source_tex', bus.get('color')).fullscreen_quad('White Balance Acceptance Monitor')
         graph.screen_ui_section(resources={'color'})
         graph.set_output(target)
 

@@ -25,7 +25,7 @@ class StageEffect(inx.renderstack.FullScreenEffect):
         assert graph.current_pass_result.sample("color") is color
         target = graph.create_texture("stage_out", format=inx.rendergraph.Format.RGBA16_SFLOAT, samples=1)
         with graph.add_pass("Stage Context") as render_pass:
-            render_pass.set_texture("_SourceTex", color).write_color(target).fullscreen_quad("Stage Context GPU")
+            render_pass.set_texture("source_tex", color).write_color(target).fullscreen_quad("Stage Context GPU")
             for name, value in {"strength": self.strength, "bytes": lights.byte_size / 1024.0,
                                 "depth": .02 if bus.has("depth") else .01, "samples": color.samples * .01}.items():
                 render_pass.set_param(name, value)
@@ -87,7 +87,7 @@ def main():
             database = frontend.get_asset_database()
             sources = {
                 "Baseline": '#version 450\nShaderInfo { Name "Stage Baseline GPU" Hidden On Capabilities [Fullscreen] Inputs { Float2 inUV } Outputs { Float4 outColor } }\nvoid main() { outColor=vec4(.03,.04,.05,1); }\n',
-                "Effect": '#version 450\nShaderInfo { Name "Stage Context GPU" Hidden On Capabilities [Fullscreen] Resources { Texture2D _SourceTex } Inputs { Float2 inUV } Outputs { Float4 outColor } PushConstants pc { Float strength Float bytes Float depth Float samples } }\nvoid main() { outColor=vec4(texture(_SourceTex,inUV).rgb*pc.strength+vec3(pc.bytes,pc.depth,pc.samples),1); }\n',
+                "Effect": '#version 450\nShaderInfo { Name "Stage Context GPU" Hidden On Capabilities [Fullscreen] Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor } PushConstants pc { Float strength Float bytes Float depth Float samples } }\nvoid main() { outColor=vec4(texture(source_tex,inUV).rgb*pc.strength+vec3(pc.bytes,pc.depth,pc.samples),1); }\n',
             }
             shader_guid = None
             for name, text in sources.items():

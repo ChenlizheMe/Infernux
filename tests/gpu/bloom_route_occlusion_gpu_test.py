@@ -40,7 +40,7 @@ class EdgeDetectionProbe(FullScreenEffect):
 EDGE_SHADER = '''#version 450
 ShaderInfo {
     Name "Probe Edge Detection"
-    Resources { Texture2D _SourceTex }
+    Resources { Texture2D source_tex }
     Capabilities [Fullscreen]
     PushConstants pc { Float intensity }
     Inputs { Float2 inUV }
@@ -48,12 +48,12 @@ ShaderInfo {
 }
 void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
-    ivec2 last = textureSize(_SourceTex, 0) - 1;
-    vec4 source = texelFetch(_SourceTex, pixel, 0);
-    vec3 dx = texelFetch(_SourceTex, min(pixel + ivec2(1, 0), last), 0).rgb
-            - texelFetch(_SourceTex, max(pixel - ivec2(1, 0), ivec2(0)), 0).rgb;
-    vec3 dy = texelFetch(_SourceTex, min(pixel + ivec2(0, 1), last), 0).rgb
-            - texelFetch(_SourceTex, max(pixel - ivec2(0, 1), ivec2(0)), 0).rgb;
+    ivec2 last = textureSize(source_tex, 0) - 1;
+    vec4 source = texelFetch(source_tex, pixel, 0);
+    vec3 dx = texelFetch(source_tex, min(pixel + ivec2(1, 0), last), 0).rgb
+            - texelFetch(source_tex, max(pixel - ivec2(1, 0), ivec2(0)), 0).rgb;
+    vec3 dy = texelFetch(source_tex, min(pixel + ivec2(0, 1), last), 0).rgb
+            - texelFetch(source_tex, max(pixel - ivec2(0, 1), ivec2(0)), 0).rgb;
     vec3 edges = vec3(step(0.2, length(dx) + length(dy)));
     outColor = vec4(mix(source.rgb, edges, pc.intensity), source.a);
 }

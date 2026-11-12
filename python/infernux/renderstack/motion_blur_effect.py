@@ -77,7 +77,7 @@ class MotionBlurEffect(FullScreenEffect):
         with graph.add_pass("MotionBlur_Apply") as render_pass:
             render_pass.set_textures(
                 {
-                    "_SourceTex": color_in,
+                    "source_tex": color_in,
                     "_MotionTex": motion,
                     "_DepthTex": depth,
                 }

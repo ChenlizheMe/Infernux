@@ -5,7 +5,7 @@ ShaderInfo {
     Hidden On
     Capabilities [Fullscreen, EngineGlobals]
     Resources {
-        Texture2D _SourceTex
+        Texture2D source_tex
     }
     PushConstants pc {
         Float intensity
@@ -49,7 +49,7 @@ float softGrain(vec2 p, uint seed) {
 
 void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
-    vec4 source = texelFetch(_SourceTex, pixel, 0);
+    vec4 source = texelFetch(source_tex, pixel, 0);
     if (pc.intensity <= 0.0) {
         outColor = source;
         return;

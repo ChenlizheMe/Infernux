@@ -83,7 +83,7 @@ class TemporalAAEffect(FullScreenEffect):
         with graph.add_pass("TAA_Resolve") as render_pass:
             render_pass.set_textures(
                 {
-                    "_SourceTex": color_in,
+                    "source_tex": color_in,
                     "_HistoryTex": history_read,
                     "_MotionTex": motion,
                     "_DepthTex": depth,

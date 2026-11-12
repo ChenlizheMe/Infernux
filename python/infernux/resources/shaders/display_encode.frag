@@ -6,7 +6,7 @@ ShaderInfo {
     Imports ["Lib Color"]
     Capabilities [Fullscreen]
     Resources {
-        Texture2D _SourceTex
+        Texture2D source_tex
     }
     PushConstants pc {
         Float dithering
@@ -43,7 +43,7 @@ float triangularDither(vec2 pixel, vec2 offset) {
 }
 
 void main() {
-    vec4 source = texelFetch(_SourceTex, ivec2(gl_FragCoord.xy), 0);
+    vec4 source = texelFetch(source_tex, ivec2(gl_FragCoord.xy), 0);
     if (pc.stopNaNs > 0.5 && (any(isnan(source)) || any(isinf(source)))) {
         source = vec4(0.0, 0.0, 0.0, 1.0);
     }
