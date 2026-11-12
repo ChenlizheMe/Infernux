@@ -204,6 +204,7 @@ class JoltGpuScene::Impl
         auto identity = std::make_shared<PublishedActor>();
         identity->bodyId = id;
         identity->slot = index;
+        identity->acceptedMotionType = actor.body.meta.z & ~MotionNotResident;
         identity->actor = slot.actor;
         identity->rigidbody = actor.initialRigidbody;
         identity->owner = slot.owner;
@@ -345,9 +346,8 @@ class JoltGpuScene::Impl
         byId.erase(id);
     }
 
-    JoltGpuTickControl
-    PrepareControl(uint64_t epoch, uint64_t step, bool controlOnly,
-                   std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)> consumer = {})
+    JoltGpuTickControl PrepareControl(uint64_t epoch, uint64_t step, bool controlOnly, Consumer consumer = {},
+                                      Consumer finalConsumer = {})
     {
         RequireUsable();
         if (tick.GetStatus() != JoltGpuTick::Status::Idle && tick.GetStatus() != JoltGpuTick::Status::Complete)
@@ -373,11 +373,17 @@ class JoltGpuScene::Impl
         };
         if (consumer)
             capture.prepareWork = [publication, consumer = std::move(consumer)] { return consumer(*publication); };
+        JoltGpuTickControl control;
+        if (finalConsumer)
+            control.prepareFinalWork =
+                [publication, consumer = std::move(finalConsumer)](const std::shared_ptr<rhi::ComputeBuffer> &states) {
+                    publication->bodyStates = states;
+                    return consumer(*publication);
+                };
         // Reserve before moving any pending work so allocation failure leaves
         // the authored queue intact and no initialization packet is orphaned.
         pending.reserve(pending.size() + 1);
         pending.push_back(std::move(capture));
-        JoltGpuTickControl control;
         control.initialization = std::move(initialization);
         control.commandProgram = &commands;
         control.groups = std::move(pending);
@@ -386,9 +392,10 @@ class JoltGpuScene::Impl
         return control;
     }
 
-    void BeginTick(uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters &parameters)
+    void BeginTick(uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters &parameters,
+                   Consumer finalConsumer)
     {
-        auto control = PrepareControl(epoch, step, false);
+        auto control = PrepareControl(epoch, step, false, {}, std::move(finalConsumer));
         try {
             tick.Begin(dt, parameters, std::move(control));
         } catch (...) {
@@ -399,11 +406,10 @@ class JoltGpuScene::Impl
         }
     }
 
-    void BeginControl(uint64_t epoch,
-                      std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)> consumer)
+    void BeginControl(uint64_t epoch, Consumer consumer, Consumer finalConsumer)
     {
         const auto step = published && published->simulationEpoch == epoch ? published->fixedStepIndex : 0;
-        auto control = PrepareControl(epoch, step, true, std::move(consumer));
+        auto control = PrepareControl(epoch, step, true, std::move(consumer), std::move(finalConsumer));
         try {
             tick.BeginControl(std::move(control));
         } catch (...) {
@@ -521,7 +527,13 @@ bool JoltGpuScene::HasPendingControl() const noexcept
 
 void JoltGpuScene::BeginTick(uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters &parameters)
 {
-    m_impl->BeginTick(epoch, step, dt, parameters);
+    BeginTick(epoch, step, dt, parameters, {});
+}
+
+void JoltGpuScene::BeginTick(uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters &parameters,
+                             Consumer finalConsumer)
+{
+    m_impl->BeginTick(epoch, step, dt, parameters, std::move(finalConsumer));
 }
 
 bool JoltGpuScene::PublishCompletedTick()
@@ -534,10 +546,14 @@ void JoltGpuScene::BeginControl(uint64_t epoch)
     BeginControl(epoch, {});
 }
 
-void JoltGpuScene::BeginControl(uint64_t epoch,
-                                std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)> consumer)
+void JoltGpuScene::BeginControl(uint64_t epoch, Consumer consumer)
 {
-    m_impl->BeginControl(epoch, std::move(consumer));
+    BeginControl(epoch, std::move(consumer), {});
+}
+
+void JoltGpuScene::BeginControl(uint64_t epoch, Consumer consumer, Consumer finalConsumer)
+{
+    m_impl->BeginControl(epoch, std::move(consumer), std::move(finalConsumer));
 }
 
 bool JoltGpuScene::PublishCompletedControl()

@@ -271,6 +271,9 @@ class PhysicsWorld
     void CancelPendingStep() noexcept;
     /// Implemented at the CPU Transform access boundary; never returns a Future.
     void EnsureCpuPhysicsPose(Transform &transform);
+    /// Transfer a surviving object's final pose before detaching its Rigidbody.
+    /// Destruction of the whole object does not require this CPU consumer.
+    void MaterializeCpuPoseForRelease(Transform &transform);
 
     /// Bodies that were active immediately before or after the latest step.
     /// The union includes bodies that entered sleep during the step so their
@@ -693,6 +696,7 @@ class PhysicsWorld
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
     struct CompiledGpuPrograms;
+    struct GpuRenderState;
     struct CachedMotionState
     {
         uint64_t generation = 0;
@@ -709,6 +713,8 @@ class PhysicsWorld
     void FlushAuthoring() const;
     void DrainGpuSource() const;
     void ObserveGpuPublication(bool numericalChange) const;
+    [[nodiscard]] std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
+    PrepareRenderConsumer(bool numericalChange) const;
     void RunControl(const std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
                         &consumer) const;
     void RefreshGpuActor(uint32_t bodyId, const std::function<void(PreparedGpuActor &)> &edit = {});
@@ -723,6 +729,7 @@ class PhysicsWorld
     std::unique_ptr<CompiledGpuPrograms> m_gpuPrograms;
     std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;
+    std::unique_ptr<GpuRenderState> m_gpuRenderState;
     bool m_gpuCancelled = false;
     std::vector<PhysicsActorHandle> m_recreateActors;
     uint64_t m_surfaceRevision = 0;

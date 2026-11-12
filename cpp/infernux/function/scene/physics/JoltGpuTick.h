@@ -39,6 +39,12 @@ struct JoltGpuTickControl
     // Required when any group has commands; must outlive control acceptance.
     JoltGpuBodyCommands *commandProgram = nullptr;
     std::vector<JoltGpuControlGroup> groups;
+    /// Prepare exactly once after every numerical writer is accepted, including
+    /// for a control-only/empty world. The frozen final state may be null for
+    /// an empty world. The packet uses this source's admission and receipts;
+    /// completion waits for it too. Do not submit, wait or reenter the owner.
+    std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const std::shared_ptr<rhi::ComputeBuffer> &)>
+        prepareFinalWork;
 };
 
 /// One PhysicsWorld-owned stage cursor using the engine's existing work source,

@@ -41,6 +41,8 @@ class JoltGpuScene final
     {
         uint32_t bodyId = InvalidBodyId;
         uint32_t slot = UINT32_MAX;
+        /// Accepted author motion type, without the independent residency bit.
+        uint32_t acceptedMotionType = JPH::GPU::MotionStatic;
         PhysicsActorHandle actor;
         /// Component generation contributing the dynamic author model.
         PhysicsECSStore::RigidbodyHandle rigidbody;
@@ -68,6 +70,7 @@ class JoltGpuScene final
         std::shared_ptr<rhi::ComputeBuffer> worlds;
         std::vector<std::shared_ptr<const PublishedActor>> actors;
     };
+    using Consumer = std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)>;
 
     /// Targets come from the common compiler. This owner creates no compiler,
     /// device or queue. One fixed world range contains all capacity slots;
@@ -107,6 +110,11 @@ class JoltGpuScene final
     /// BeginTick itself requires the previous tick to be complete/published.
     void BeginTick(uint64_t simulationEpoch, uint64_t fixedStepIndex, float fixedDeltaTime,
                    const JoltGpuStepParameters &parameters);
+    /// The final consumer runs once after the final solver writer is accepted,
+    /// with frozen final body states. Its packet shares this tick's source;
+    /// publication waits for that packet as well. Empty worlds also call it.
+    void BeginTick(uint64_t simulationEpoch, uint64_t fixedStepIndex, float fixedDeltaTime,
+                   const JoltGpuStepParameters &parameters, Consumer finalConsumer);
     /// Accept and complete only the queued author/command prefix, without
     /// advancing a solver or a clock. Uses the last published fixed-step
     /// identity (zero before the first tick) within the supplied epoch.
@@ -116,8 +124,10 @@ class JoltGpuScene final
     /// callback may prepare GPU work only: it must not submit, wait, author
     /// scene changes or reenter the world. Control publication waits for its
     /// returned packet to complete as well as the preceding author prefix.
-    void BeginControl(uint64_t simulationEpoch,
-                      std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)> consumer);
+    void BeginControl(uint64_t simulationEpoch, Consumer consumer);
+    /// The optional final consumer follows all control/query work. Both
+    /// consumers may prepare GPU work only under the callback contract above.
+    void BeginControl(uint64_t simulationEpoch, Consumer consumer, Consumer finalConsumer);
     /// Publishes only a completed tick. Returns true exactly once per tick;
     /// pending/failed/cancelled work retains the previous full publication.
     bool PublishCompletedTick();

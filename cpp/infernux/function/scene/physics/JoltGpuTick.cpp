@@ -102,6 +102,8 @@ class JoltGpuTick::Impl
         modelUpdate.reset();
         commandCursor.reset();
         controlAccepted = false;
+        finalPrepared = finalAccepted = !control.prepareFinalWork;
+        finalStates.reset();
         cursor = 0;
         inputAccepted = controlOnly || (reuseParameters && !cpuForces);
         planLength = 0;
@@ -129,6 +131,7 @@ class JoltGpuTick::Impl
         parameters.reset();
         cpuForces.reset();
         control = {};
+        finalStates.reset();
         modelUpdate.reset();
         commandCursor.reset();
         submissionBusy = false;
@@ -176,6 +179,7 @@ class JoltGpuTick::Impl
         Model,
         Commands,
         Work,
+        FinalWork,
         Inputs,
         Stages,
         Preservation
@@ -192,7 +196,6 @@ class JoltGpuTick::Impl
         CostKey key;
         PacketKind kind;
         size_t stageCount;
-        bool finalStage;
         uint64_t submittedOpportunity;
         uint64_t gpuGrant;
         uint64_t transferGrant;
@@ -251,14 +254,11 @@ class JoltGpuTick::Impl
                 lastCommandCount = receipt.stageCount;
                 lastCommandEstimate = estimate;
             }
-            if (status == Status::Running && receipt.finalStage) {
-                Complete();
-            }
             receipts.pop_front();
             submissionBusy = false;
             work.ReportProgress();
         }
-        FinishWithoutSolver();
+        FinishCompleted();
     }
 
     void CancelPackets() noexcept
@@ -281,22 +281,28 @@ class JoltGpuTick::Impl
                 inputs.Capture(storage, JPH::GPU::Resource::BodyForces);
         }
         controlAccepted = true;
-        FinishWithoutSolver();
+        FinishCompleted();
     }
 
     void Complete()
     {
-        completedStates = storage.GetBodyCount() ? storage.Get(JPH::GPU::Resource::BodyStates)->Freeze() : nullptr;
+        completedStates = finalPrepared && finalStates ? std::move(finalStates)
+                          : storage.GetBodyCount()     ? storage.Get(JPH::GPU::Resource::BodyStates)->Freeze()
+                                                       : nullptr;
         status = Status::Complete;
         inputs = {};
         parameters.reset();
         cpuForces.reset();
     }
 
-    void FinishWithoutSolver()
+    bool NumericalInputsAccepted() const noexcept
     {
-        if (status == Status::Running && controlAccepted && (controlOnly || storage.GetBodyCount() == 0) &&
-            receipts.empty())
+        return controlAccepted && (controlOnly || storage.GetBodyCount() == 0 || cursor == stages.size());
+    }
+
+    void FinishCompleted()
+    {
+        if (status == Status::Running && NumericalInputsAccepted() && finalAccepted && receipts.empty())
             Complete();
     }
 
@@ -363,13 +369,13 @@ class JoltGpuTick::Impl
         facts.pending = status == Status::Running || !receipts.empty();
         if (status != Status::Running)
             return facts;
-        if (controlAccepted && (controlOnly || storage.GetBodyCount() == 0)) {
+        if (NumericalInputsAccepted() && finalAccepted) {
             if (!receipts.empty())
                 facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
             facts.gpuBusy = !receipts.empty();
             return facts;
         }
-        if ((!batch && (!controlAccepted || !inputAccepted || cursor < stages.size())) ||
+        if ((!batch && (!controlAccepted || !inputAccepted || cursor < stages.size() || !finalPrepared)) ||
             (batch && !preservation && (batch->RequiresPreparation() || batch->HasPreservationWork()))) {
             facts.host = {static_cast<uint64_t>(HostAction::Prepare), 0, true, false};
         } else if (!submissionBusy && CanSubmit()) {
@@ -472,6 +478,25 @@ class JoltGpuTick::Impl
     bool Prepare()
     {
         if (!batch) {
+            if (NumericalInputsAccepted()) {
+                if (!finalPrepared) {
+                    finalStates =
+                        storage.GetBodyCount() ? storage.Get(JPH::GPU::Resource::BodyStates)->Freeze() : nullptr;
+                    auto prepareFinalWork = std::move(control.prepareFinalWork);
+                    control.prepareFinalWork = {};
+                    finalPrepared = true;
+                    batch = prepareFinalWork(finalStates);
+                    ValidateControlPacket(batch);
+                    if (batch) {
+                        batchKind = PacketKind::FinalWork;
+                    } else {
+                        finalAccepted = true;
+                        FinishCompleted();
+                    }
+                    return true;
+                }
+                return false;
+            }
             if (!controlAccepted) {
                 if (control.initialization) {
                     batch = control.initialization;
@@ -535,11 +560,10 @@ class JoltGpuTick::Impl
         const auto kind = preservation ? PacketKind::Preservation : batchKind;
         const auto bytes = packet->GetTransferBytes();
         const bool prefix = kind == PacketKind::Stages || kind == PacketKind::Commands;
-        receipts.emplace_back(Receipt{packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0,
-                                      kind == PacketKind::Stages && batchEnd == stages.size(), work.Opportunity(),
-                                      work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
-                                      bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0,
-                                      bytes, started});
+        receipts.emplace_back(
+            Receipt{packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0,
+                    work.Opportunity(), work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
+                    bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes, started});
         if (kind == PacketKind::Preservation) {
             preservation.reset();
         } else {
@@ -561,6 +585,8 @@ class JoltGpuTick::Impl
                 inputAccepted = true;
             } else if (kind == PacketKind::Stages) {
                 cursor = batchEnd;
+            } else if (kind == PacketKind::FinalWork) {
+                finalAccepted = true;
             }
             if (!controlAccepted)
                 FinishControlGroup();
@@ -635,6 +661,8 @@ class JoltGpuTick::Impl
     std::unique_ptr<JoltGpuCommandCursor> commandCursor;
     bool controlAccepted = false;
     bool controlOnly = false;
+    bool finalPrepared = true, finalAccepted = true;
+    std::shared_ptr<rhi::ComputeBuffer> finalStates;
     std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces;
     JoltGpuStepInputs inputs;
     JoltGpuStepInputs parameterInput;

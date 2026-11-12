@@ -118,12 +118,23 @@ bool Transform::HasSimulatedLocalPose() const
 
 void PhysicsWorld::EnsureCpuPhysicsPose(Transform &requested)
 {
+    requested.ResolveCpuPhysicsPose(*this, false);
+}
+
+void PhysicsWorld::MaterializeCpuPoseForRelease(Transform &requested)
+{
+    requested.ResolveCpuPhysicsPose(*this, true);
+}
+
+void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
+{
     auto &transforms = TransformECSStore::Instance();
-    if (!IsInitialized() || !SceneManager::Instance().IsPlaying() || transforms.IsPhysicsPoseReadSuppressed())
+    if (!world.IsInitialized() || !SceneManager::Instance().IsPlaying() ||
+        (!release && transforms.IsPhysicsPoseReadSuppressed()))
         return;
 
     auto &physics = PhysicsECSStore::Instance();
-    auto *object = requested.GetGameObject();
+    auto *object = GetGameObject();
     auto actorHandle = physics.FindActor(object);
     while (object && !physics.IsValid(actorHandle)) {
         object = object->GetParent();
@@ -131,50 +142,61 @@ void PhysicsWorld::EnsureCpuPhysicsPose(Transform &requested)
     }
     if (!object || !physics.IsValid(actorHandle))
         return;
-    auto &actor = physics.GetActor(actorHandle);
-    auto *body = actor.rigidbody;
-    if (!body || !body->IsEnabled() || body->IsKinematic() || actor.sceneSuspended || actor.bodyId == UINT32_MAX)
+    auto *body = physics.GetActor(actorHandle).rigidbody;
+    if (!body || object->IsDestroying() || physics.GetActor(actorHandle).bodyId == UINT32_MAX ||
+        (!release && (!body->IsEnabled() || body->IsKinematic() || physics.GetActor(actorHandle).sceneSuspended)))
         return;
+    const auto bodyHandle = body->GetECSHandle();
+    const auto bodyId = physics.GetActor(actorHandle).bodyId;
     auto *target = object->GetTransform();
     // Independent dynamic children retain their world pose. Resolve only
     // their physical ancestors needed for world-to-local conversion.
-    if (auto *parent = target->GetParentTransformSafe())
-        parent->EnsureCpuPhysicsPose();
+    if (auto *parent = target->GetParentTransformSafe()) {
+        if (release)
+            parent->ResolveCpuPhysicsPose(world, true);
+        else
+            parent->EnsureCpuPhysicsPose();
+    }
 
-    const auto generation = GetQueryGeneration();
+    const auto generation = world.GetQueryGeneration();
     const auto epoch = SceneManager::Instance().GetSimulationEpoch();
-    const auto bodyId = actor.bodyId;
-    if (!HasPendingStep() && !HasPendingControl() && target->m_cpuPhysicsPoseGeneration == generation &&
-        target->m_cpuPhysicsPoseBodyId == bodyId && target->m_cpuPhysicsPoseEpoch == epoch)
+    if (!release && !world.HasPendingStep() && !world.HasPendingControl() &&
+        target->m_cpuPhysicsPoseGeneration == generation && target->m_cpuPhysicsPoseBodyId == bodyId &&
+        target->m_cpuPhysicsPoseEpoch == epoch)
         return;
 
     const auto transformHandle = target->GetECSHandle();
     const auto authoredBefore = transforms.GetAuthoredPoseRevision(transformHandle);
-    const auto &before = physics.GetRigidbody(body->GetECSHandle());
+    const auto &before = physics.GetRigidbody(bodyHandle);
     const bool positionAuthored = authoredBefore[0] != before.lastAuthoredPoseRevision[0];
     const bool rotationAuthored = authoredBefore[1] != before.lastAuthoredPoseRevision[1];
     // Ancestor/scale/reparent writes need the same protection as local pose
     // writes; their world interpretation is not encoded by two local counters.
-    const bool hierarchyAuthored =
-        (actor.centerTransformDirty || actor.shapeTransformDirty) && !positionAuthored && !rotationAuthored;
+    const auto &currentBefore = physics.GetActor(actorHandle);
+    const bool hierarchyAuthored = (currentBefore.centerTransformDirty || currentBefore.shapeTransformDirty) &&
+                                   !positionAuthored && !rotationAuthored;
 
     constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Position) |
                                                             static_cast<uint32_t>(PhysicsStateFields::Rotation));
     const auto sample = [&] {
         TransformECSStore::PhysicsPoseReadScope reading(transforms);
-        return GetBodyMotionState(bodyId, fields);
+        return world.GetBodyMotionState(bodyId, fields);
     }();
     // Completing the query may also publish an authored parent boundary.
     // Rebase against that parent before caching this independent body's local
     // pose, otherwise the parent's subsequent lazy read would move it twice.
-    if (auto *parent = target->GetParentTransformSafe())
-        parent->EnsureCpuPhysicsPose();
-    if (!physics.IsValid(actorHandle) || !transforms.IsValid(transformHandle) ||
+    if (auto *parent = target->GetParentTransformSafe()) {
+        if (release)
+            parent->ResolveCpuPhysicsPose(world, true);
+        else
+            parent->EnsureCpuPhysicsPose();
+    }
+    if (!physics.IsValid(actorHandle) || !physics.IsValid(bodyHandle) || !transforms.IsValid(transformHandle) ||
         physics.GetActor(actorHandle).bodyId != bodyId)
         return;
     TransformECSStore::PhysicsPoseReadScope applying(transforms);
     const auto authoredAfter = transforms.GetAuthoredPoseRevision(transformHandle);
-    const auto &after = physics.GetRigidbody(body->GetECSHandle());
+    const auto &after = physics.GetRigidbody(bodyHandle);
     const auto &currentActor = physics.GetActor(actorHandle);
     const bool hierarchyPending =
         hierarchyAuthored && (currentActor.centerTransformDirty || currentActor.shapeTransformDirty);
@@ -190,7 +212,18 @@ void PhysicsWorld::EnsureCpuPhysicsPose(Transform &requested)
         target->ApplyWorldPoseFromPhysics(position, rotation, applyRotation);
         body->CacheCpuPhysicsPose(target->GetWorldPosition(), target->GetWorldRotation(), applyPosition, applyRotation);
     }
-    target->m_cpuPhysicsPoseGeneration = GetQueryGeneration();
+    if (release && (hierarchyPending || (positionAuthored && !applyPosition) || (rotationAuthored && !applyRotation))) {
+        // A disabled body can leave a collider-only actor behind. Preserve its
+        // unconsumed CPU author channels, but compare their next static update
+        // against actual device state rather than the older CPU sample.
+        auto &handoff = physics.GetActor(actorHandle);
+        if (hierarchyPending || (positionAuthored && !applyPosition))
+            handoff.lastSyncedPos = sample.position;
+        if (hierarchyPending || (rotationAuthored && !applyRotation))
+            handoff.lastSyncedRot = sample.rotation;
+        physics.MarkAuthoredHierarchyDirty(object);
+    }
+    target->m_cpuPhysicsPoseGeneration = world.GetQueryGeneration();
     target->m_cpuPhysicsPoseBodyId = bodyId;
     target->m_cpuPhysicsPoseEpoch = epoch;
 }

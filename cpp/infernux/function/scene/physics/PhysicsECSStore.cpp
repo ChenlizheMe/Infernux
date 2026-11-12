@@ -195,11 +195,19 @@ void PhysicsECSStore::RefreshHierarchy(GameObject *root, const Rigidbody *exclud
 
 void PhysicsECSStore::DetachRigidbody(Rigidbody *body)
 {
-    auto &data = GetRigidbody(body->GetECSHandle());
-    const auto handle = data.actorHandle;
-    data.actorHandle = {};
+    const auto bodyHandle = body->GetECSHandle();
+    const auto handle = GetRigidbody(bodyHandle).actorHandle;
     if (!IsValid(handle))
         return;
+    // A live owner keeps its current device pose when this component leaves.
+    // Complete this demand before exposing a half-detached actor to authoring
+    // collection. Whole-object retirement has no CPU pose consumer.
+    if (!GetActor(handle).owner->IsDestroying() && GetActor(handle).bodyId != UINT32_MAX)
+        PhysicsWorld::Instance().MaterializeCpuPoseForRelease(*GetActor(handle).owner->GetTransform());
+    // Demand collection can grow either pool; retain identities, not references.
+    if (!IsValid(bodyHandle) || !IsValid(handle))
+        return;
+    GetRigidbody(bodyHandle).actorHandle = {};
     auto &actor = GetActor(handle);
     actor.rigidbody = nullptr;
     if (actor.bodyId != 0xFFFFFFFF)

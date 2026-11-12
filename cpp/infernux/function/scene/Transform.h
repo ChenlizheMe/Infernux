@@ -16,6 +16,8 @@
 namespace infernux
 {
 
+class PhysicsWorld;
+
 /**
  * @brief Transform component for position, rotation, and scale.
  *
@@ -492,6 +494,7 @@ class Transform : public Component
     friend class PhysicsWorld;
 
     void EnsureCpuPhysicsPose() const;
+    void ResolveCpuPhysicsPose(PhysicsWorld &world, bool release);
     [[nodiscard]] bool HasSimulatedLocalPose() const;
 
     [[nodiscard]] glm::quat LocalRotationToWorld(const glm::quat &local) const;

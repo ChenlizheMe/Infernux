@@ -12,6 +12,8 @@
 #include "../TransformECSStore.h"
 #include "JoltGpuProgramSources.h"
 #include "JoltGpuQueries.h"
+#include "JoltGpuRenderBindings.h"
+#include "JoltGpuRenderPoses.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsMass.h"
 #include "PhysicsShapeAuthoring.h"
@@ -135,6 +137,22 @@ struct PhysicsWorld::CompiledGpuPrograms
 {
     ShaderTargetCode step, mutations, commands;
 };
+struct PhysicsWorld::GpuRenderState
+{
+    struct Job
+    {
+        JoltGpuRenderBindings::SnapshotPtr snapshot;
+        std::optional<JoltGpuRenderBindings::Prepared> bindings;
+        JoltGpuRenderPoseBatch output;
+        const JoltGpuScene::Publication *publication = nullptr;
+    };
+    GpuRenderState(rhi::ComputeHost &host, const ShaderTargetCode &target) : program(host, target)
+    {
+    }
+    JoltGpuRenderBindings bindings;
+    JoltGpuRenderPoses program;
+    std::shared_ptr<Job> pending;
+};
 PhysicsWorld &PhysicsWorld::Instance()
 {
     static PhysicsWorld *world = new PhysicsWorld();
@@ -201,8 +219,11 @@ bool PhysicsWorld::EnsureGpuReady()
         p->commands = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyCommands);
         const auto target = CompileProgram(*m_gpuHost, JoltGpuProgram::Queries);
         auto queries = std::make_unique<JoltGpuQueries>(*m_gpuHost, target);
+        auto rendering =
+            std::make_unique<GpuRenderState>(*m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::RenderPoses));
         m_gpuPrograms = std::move(p);
         m_gpuQueries = std::move(queries);
+        m_gpuRenderState = std::move(rendering);
     }
     if (!m_gpuScene) {
         m_recreateActors.reserve(MaxBodiesPerWorld);
@@ -226,6 +247,7 @@ void PhysicsWorld::Shutdown()
 {
     CancelPendingStep();
     m_gpuScene.reset(); // Explicit shutdown drain. Normal Stop remains nonblocking.
+    m_gpuRenderState.reset();
     m_gpuQueries.reset();
     m_gpuPrograms.reset();
     m_lastPublication.reset();
@@ -286,7 +308,38 @@ void PhysicsWorld::ObserveGpuPublication(bool numericalChange) const
             m_queryGeneration.fetch_add(1, std::memory_order_release);
             m_requestedMotion.clear();
         }
+        if (m_gpuRenderState) {
+            FrameWorkOwner::Scope publication(*m_gpuWork);
+            auto &rendering = *m_gpuRenderState;
+            const auto &job = rendering.pending;
+            if (job && job->bindings && job->publication == p.get())
+                rendering.bindings.Publish(*job->bindings, job->output.models, job->output.bounds,
+                                           GetQueryGeneration());
+            rendering.pending.reset();
+        }
     }
+}
+std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
+PhysicsWorld::PrepareRenderConsumer(bool numericalChange) const
+{
+    FrameWorkOwner::Scope preparation(*m_gpuWork);
+    auto &rendering = *m_gpuRenderState;
+    auto snapshot = rendering.bindings.Capture();
+    const auto generation = GetQueryGeneration() + static_cast<uint64_t>(numericalChange);
+    if (!rendering.bindings.NeedsExport(*snapshot, generation)) {
+        rendering.pending.reset();
+        return {};
+    }
+    auto job = std::make_shared<GpuRenderState::Job>();
+    job->snapshot = std::move(snapshot);
+    rendering.pending = job;
+    return [this, job = std::move(job)](const JoltGpuScene::Publication &publication) {
+        auto &state = *m_gpuRenderState;
+        job->bindings = state.bindings.Prepare(job->snapshot, publication);
+        job->output = state.program.Prepare(publication.bodyStates, job->bindings->nodes, job->bindings->bindings);
+        job->publication = &publication;
+        return job->output.batch;
+    };
 }
 void PhysicsWorld::RequireHealthyStep() const
 {
@@ -345,10 +398,10 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             m_admittedDeltaTime = dt;
             m_admittedParameters = StepParameters(dt);
             if (m_waitingForSlot) {
-                m_gpuScene->BeginControl(epoch);
+                m_gpuScene->BeginControl(epoch, {}, PrepareRenderConsumer(true));
                 m_fixedGpuPhase = FixedGpuPhase::RetireControl;
             } else {
-                m_gpuScene->BeginTick(epoch, index, dt, *m_admittedParameters);
+                m_gpuScene->BeginTick(epoch, index, dt, *m_admittedParameters, PrepareRenderConsumer(true));
                 m_fixedGpuPhase = FixedGpuPhase::Solver;
             }
             m_stepPending = true;
@@ -373,10 +426,11 @@ bool PhysicsWorld::AdvanceFixedStep(bool synchronous)
                 RetryCapacityBodyCreations();
                 RefreshGpuSurfaces();
                 if (m_waitingForSlot) {
-                    m_gpuScene->BeginControl(m_stepEpoch);
+                    m_gpuScene->BeginControl(m_stepEpoch, {}, PrepareRenderConsumer(true));
                     m_fixedGpuPhase = FixedGpuPhase::RetireControl;
                 } else {
-                    m_gpuScene->BeginTick(m_stepEpoch, m_stepIndex, m_admittedDeltaTime, *m_admittedParameters);
+                    m_gpuScene->BeginTick(m_stepEpoch, m_stepIndex, m_admittedDeltaTime, *m_admittedParameters,
+                                          PrepareRenderConsumer(true));
                     m_fixedGpuPhase = FixedGpuPhase::Solver;
                 }
             }
@@ -456,6 +510,10 @@ void PhysicsWorld::CompletePendingStep()
 }
 void PhysicsWorld::CancelPendingStep() noexcept
 {
+    if (m_gpuRenderState) {
+        m_gpuRenderState->bindings.Clear();
+        m_gpuRenderState->pending.reset();
+    }
     if (m_gpuScene) {
         if (!m_gpuCancelled) {
             m_recreateActors.clear();
@@ -510,7 +568,7 @@ void PhysicsWorld::RunControl(
             FlushAuthoring();
         }
         while (m_waitingForSlot) {
-            m_gpuScene->BeginControl(SceneManager::Instance().GetSimulationEpoch());
+            m_gpuScene->BeginControl(SceneManager::Instance().GetSimulationEpoch(), {}, PrepareRenderConsumer(true));
             DrainGpuSource();
             if (m_gpuScene->PublishCompletedControl())
                 ObserveGpuPublication(true);
@@ -519,7 +577,8 @@ void PhysicsWorld::RunControl(
         const bool changed = m_gpuScene->HasPendingControl();
         {
             FrameWorkOwner::Scope preparation(*m_gpuWork);
-            m_gpuScene->BeginControl(SceneManager::Instance().GetSimulationEpoch(), consumer);
+            m_gpuScene->BeginControl(SceneManager::Instance().GetSimulationEpoch(), consumer,
+                                     PrepareRenderConsumer(changed));
         }
         DrainGpuSource();
         if (!m_gpuScene->PublishCompletedControl())
@@ -571,6 +630,8 @@ void PhysicsWorld::DestroyBody(uint32_t id)
     if (!m_gpuScene || m_gpuScene->FindBody(id).bodyId == UINT32_MAX)
         return;
     m_gpuScene->StageRetire(id);
+    if (m_gpuRenderState)
+        m_gpuRenderState->bindings.RetireBody(id);
     m_requestedMotion.erase(id);
 }
 void PhysicsWorld::RefreshGpuActor(uint32_t id, const std::function<void(PreparedGpuActor &)> &edit)
@@ -617,6 +678,7 @@ void PhysicsWorld::SetBodyPosition(uint32_t id, const glm::vec3 &position, const
     c.value = Vector(position);
     c.auxiliary = Rotation(rotation);
     m_gpuScene->QueueCommand(id, c);
+    m_gpuRenderState->bindings.MarkDiscontinuity(id);
 }
 void PhysicsWorld::SetBodyPositionOnly(uint32_t id, const glm::vec3 &position)
 {
@@ -625,6 +687,7 @@ void PhysicsWorld::SetBodyPositionOnly(uint32_t id, const glm::vec3 &position)
     c.meta.y = CommandSetPosition;
     c.value = Vector(position);
     m_gpuScene->QueueCommand(id, c);
+    m_gpuRenderState->bindings.MarkDiscontinuity(id);
 }
 void PhysicsWorld::SetBodyRotationOnly(uint32_t id, const glm::quat &rotation)
 {
@@ -633,6 +696,7 @@ void PhysicsWorld::SetBodyRotationOnly(uint32_t id, const glm::quat &rotation)
     c.meta.y = CommandSetRotation;
     c.auxiliary = Rotation(rotation);
     m_gpuScene->QueueCommand(id, c);
+    m_gpuRenderState->bindings.MarkDiscontinuity(id);
 }
 void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate> &updates)
 {
