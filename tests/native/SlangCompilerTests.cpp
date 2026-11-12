@@ -2,6 +2,7 @@
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -109,6 +110,58 @@ void derivative(uint3 id : SV_DispatchThreadID)
                 }
             }
         }
+
+        // Import resolution follows the frozen source snapshot, independently
+        // of vector order. An unused library is not parsed or diagnosed.
+        const ShaderSourceModule top{"top", "Assets/top.shaderlib.py",
+                                     "import leaf; public float apply(float x) { return twice(x) + 3.0; }"};
+        ShaderSourceModule leaf{"leaf", "Assets/数学库🌱.shaderlib.py",
+                                "public float twice(float x) { return x * 2.0; }"};
+        const ShaderSourceModule unused{"unused", "Assets/unused.shaderlib.py", "this is not valid Slang"};
+        const ShaderSourceModule imported{"imports", "Assets/imports.compute.py", R"(
+import top;
+RWStructuredBuffer<float> values;
+[shader("compute")][numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) { values[id.x] = apply(float(id.x)); }
+)"};
+        const auto transitive =
+            compiler.Compile(imported, {top, unused, leaf}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        Require(transitive.targets.size() == 2 && transitive.targets[0].entries.size() == 1,
+                "Unordered transitive imports did not compile to both targets");
+        leaf.source = "public float twice(float x) { return x * 5.0; }";
+        const auto changedImport = compiler.Compile(imported, {top, unused, leaf}, {ShaderCodeTarget::SpirV});
+        Require(changedImport.targets[0].entries[0].code != transitive.targets[0].entries[0].code,
+                "A dependency edit reused a module from another source snapshot");
+        leaf.source = "public float twice(float x) {\n    return missing_value;\n}";
+        bool libraryLocated = false;
+        try {
+            compiler.Compile(imported, {top, unused, leaf}, {ShaderCodeTarget::SpirV});
+        } catch (const ShaderCompilationError &error) {
+            libraryLocated = std::any_of(error.diagnostics.begin(), error.diagnostics.end(),
+                                         [&](const auto &item) { return item.path == leaf.path && item.line == 2; });
+        }
+        Require(libraryLocated, "Lazy import diagnostics lost the original dependency path or line");
+
+        const ShaderSourceModule definitions{"definitions", "Assets/native/types/values.h",
+                                             "static const float multiplier = 7.0;"};
+        const ShaderSourceModule included{"included", "Assets/native/kernels/included.slang", R"(
+#include "../types/values.h"
+public float apply_value(float x) { return x * multiplier; }
+)"};
+        const ShaderSourceModule nativeInclude{"native_include", "Assets/native/main.slang", R"(
+#include "kernels/included.slang"
+RWStructuredBuffer<float> values;
+[shader("compute")][numthreads(1,1,1)] void main() { values[0] = apply_value(3.0); }
+)"};
+        const auto includeProgram =
+            compiler.Compile(nativeInclude, {definitions, included}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        Require(includeProgram.targets[0].entries.size() == 1, "Frozen nested includes did not compile");
+        auto importedInclude = nativeInclude;
+        importedInclude.source.replace(importedInclude.source.find("#include \"kernels/included.slang\""),
+                                       std::strlen("#include \"kernels/included.slang\""), "import included;");
+        const auto includeModule = compiler.Compile(importedInclude, {definitions, included},
+                                                    {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        Require(includeModule.targets[0].entries.size() == 1, "Imported module lost its original include directory");
 
         const auto stageProgram = compiler.Compile({"stage_io", "stage_io.frag.py", R"(
 struct VertexInput {

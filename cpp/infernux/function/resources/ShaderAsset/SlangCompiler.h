@@ -68,6 +68,9 @@ class SlangCompiler
     PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader,
                         ShaderAuthorPhase phase = ShaderAuthorPhase::Program, const ShaderSourceModule &vertex = {});
 
+    /// Libraries contain the frozen import/include closure with original source
+    /// paths. Relative includes use those paths; only packaged binary standard
+    /// modules are read from disk during compilation.
     INFERNUX_SHADER_COMPILER_API ShaderCompilation Compile(const ShaderSourceModule &source,
                                                            const std::vector<ShaderSourceModule> &libraries,
                                                            const std::vector<ShaderCodeTarget> &targets,

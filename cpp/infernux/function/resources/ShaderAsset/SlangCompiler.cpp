@@ -1,7 +1,6 @@
 #include "SlangCompiler.h"
-#include "SlangGeometryModule.h"
 #include "SlangLayout.h"
-#include "SlangLightingModule.h"
+#include "SlangModuleFiles.h"
 
 #include <slang-com-ptr.h>
 #include <slang.h>
@@ -261,29 +260,23 @@ try {
     description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
     description.compilerOptionEntries = options;
     description.compilerOptionEntryCount = 5;
-    const char *moduleDirectory = impl->standardModuleDirectory.c_str();
-    description.searchPaths = &moduleDirectory;
-    description.searchPathCount = impl->standardModuleDirectory.empty() ? 0 : 1;
+    const std::array searchPaths{SlangModuleFiles::Mount, impl->standardModuleDirectory.c_str()};
+    description.searchPaths = searchPaths.data();
+    description.searchPathCount = impl->standardModuleDirectory.empty() ? 1 : 2;
+    Slang::ComPtr<ISlangFileSystem> files(new SlangModuleFiles(source, libraries));
+    description.fileSystem = files;
 
     Slang::ComPtr<slang::ISession> session;
     CheckCompilation(impl->global->createSession(description, session.writeRef()), "create_session", nullptr,
                      source.path);
 
     ShaderCompilation result;
-    auto loadModule = [&](const ShaderSourceModule &module) {
-        Slang::ComPtr<slang::IBlob> diagnostics;
-        auto *loaded = session->loadModuleFromSourceString(module.name.c_str(), module.path.c_str(),
-                                                           module.source.c_str(), diagnostics.writeRef());
-        AppendDiagnostics(result, diagnostics, "compile");
-        if (!loaded)
-            throw ShaderCompilationError(FailureDiagnostics("compile", module.path, diagnostics));
-        return loaded;
-    };
-    loadModule(GetSlangGeometryModule());
-    loadModule(GetSlangLightingModule());
-    for (const auto &library : libraries)
-        loadModule(library);
-    auto *module = loadModule(source);
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    auto *module = session->loadModuleFromSourceString(source.name.c_str(), source.path.c_str(), source.source.c_str(),
+                                                       diagnostics.writeRef());
+    if (!module)
+        throw ShaderCompilationError(FailureDiagnostics("compile", source.path, diagnostics));
+    AppendDiagnostics(result, diagnostics, "compile");
 
     const auto entryCount = module->getDefinedEntryPointCount();
     std::vector<Slang::ComPtr<slang::IEntryPoint>> entries(static_cast<size_t>(entryCount));
@@ -294,8 +287,8 @@ try {
         components.push_back(entries[index].get());
     }
 
-    Slang::ComPtr<slang::IBlob> diagnostics;
     Slang::ComPtr<slang::IComponentType> composed;
+    diagnostics.setNull();
     auto status = session->createCompositeComponentType(components.data(), static_cast<SlangInt>(components.size()),
                                                         composed.writeRef(), diagnostics.writeRef());
     CheckCompilation(status, "compose", diagnostics, source.path);
