@@ -1,6 +1,7 @@
 #include "SlangCompiler.h"
 #include "SlangGeometryModule.h"
 #include "SlangLayout.h"
+#include "SlangLightingModule.h"
 
 #include <slang-com-ptr.h>
 #include <slang.h>
@@ -278,6 +279,7 @@ try {
         return loaded;
     };
     loadModule(GetSlangGeometryModule());
+    loadModule(GetSlangLightingModule());
     for (const auto &library : libraries)
         loadModule(library);
     auto *module = loadModule(source);

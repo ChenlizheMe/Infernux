@@ -32,7 +32,7 @@ ${SURFACE_CALL}
     s.alpha *= postSurfaceCoverage;
     if (!gl_FrontFacing)
         s.normalWS = -s.normalWS;
-    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
+    if (material._alpha_clip_threshold > 0.0 && s.alpha < material._alpha_clip_threshold) discard;
     ShadingContext ctx = InitShadingContext();
     ctx.positionWS = v_WorldPos;
     ctx.geometricNormalWS = gl_FrontFacing ? normalize(v_Normal) : -normalize(v_Normal);

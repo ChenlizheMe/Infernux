@@ -234,7 +234,7 @@ struct RenderState
     MaterialBlendFactor dstAlphaBlendFactor = MaterialBlendFactor::One;
     MaterialBlendOp alphaBlendOp = MaterialBlendOp::Add;
 
-    // Alpha clip (runtime toggle — controls _AlphaClipThreshold material property)
+    // Alpha clip (runtime toggle — controls _alpha_clip_threshold material property)
     bool alphaClipEnabled = false;
     float alphaClipThreshold = 0.5f;
 
@@ -525,7 +525,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
                                const std::string &blend, int queue, const std::string &passTag = "",
                                const std::string &stencil = "", const std::string &alphaClip = "");
 
-    /// @brief Sync the internal _AlphaClipThreshold material property from the RenderState.
+    /// @brief Sync the internal _alpha_clip_threshold material property from the RenderState.
     /// Must be called after any change to alphaClipEnabled / alphaClipThreshold.
     void SyncAlphaClipProperty();
 

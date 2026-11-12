@@ -17,9 +17,9 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
                                      [](const auto &value) { return value.target == ShaderCodeTarget::SpirV; });
     if (target == compilation->targets.end())
         throw std::logic_error("Mesh author has no native shader target");
-    const auto entry = [&](rhi::ShaderStage stage) -> const ShaderEntryPointCode & {
+    const auto entry = [&](const char *name) -> const ShaderEntryPointCode & {
         const auto found = std::find_if(target->entries.begin(), target->entries.end(),
-                                        [stage](const auto &value) { return value.stage == stage; });
+                                        [name](const auto &value) { return value.name == name; });
         if (found == target->entries.end())
             throw std::logic_error("Mesh author has an incomplete graphics program");
         return *found;
@@ -77,12 +77,16 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
             // Offsets already satisfy the compiler's target alignment.
             property.byteAlignment = 1;
         }
+        if (property.name == "_alpha_clip_threshold")
+            result.alphaClipThresholdOffset = property.bufferOffset;
         result.properties.push_back(std::move(property));
     }
-    const auto &vertex = entry(rhi::ShaderStage::Vertex);
-    const auto &fragment = entry(rhi::ShaderStage::Fragment);
+    const auto &vertex = entry("vertex_main");
     const auto publication = std::shared_ptr<const ShaderTargetCode>(compilation, &*target);
     for (const auto pass : {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus}) {
+        const auto &fragment =
+            entry(source.value("surface", false) && pass == ShaderCompileTarget::ForwardPlus ? "fragment_forward_plus"
+                                                                                             : "fragment_main");
         ShaderProgramArtifact::PassVariant variant;
         variant.target = pass;
         variant.compatibilitySignature = result.compatibilitySignature;

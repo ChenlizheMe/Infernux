@@ -1281,7 +1281,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
 void InxMaterial::SyncAlphaClipProperty()
 {
     float value = m_renderState.alphaClipEnabled ? m_renderState.alphaClipThreshold : 0.0f;
-    SetFloat("_AlphaClipThreshold", value);
+    SetFloat("_alpha_clip_threshold", value);
 }
 
 nlohmann::json InxMaterial::SerializeDocument() const
@@ -1351,7 +1351,7 @@ nlohmann::json InxMaterial::SerializeDocument() const
     json props = json::object();
     for (const auto &[propName, prop] : m_properties) {
         // Preserve sparse authored documents so defaults continue to follow the shader.
-        if (propName == "_AlphaClipThreshold" || prop.inheritsShaderDefault)
+        if (propName == "_alpha_clip_threshold" || prop.inheritsShaderDefault)
             continue;
         json propJson;
         propJson["type"] = static_cast<int>(prop.type);

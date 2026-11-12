@@ -247,7 +247,7 @@ void AssignPropertyLayout(ShaderProgramInterfaceArtifact &artifact, bool include
         bufferCursor = AlignUp(bufferCursor, 4);
         artifact.alphaClipThresholdOffset = bufferCursor;
         bufferCursor += 4;
-        signature = HashBytes(signature, "_AlphaClipThreshold");
+        signature = HashBytes(signature, "_alpha_clip_threshold");
         signature = HashNumber(signature, *artifact.alphaClipThresholdOffset);
     }
     artifact.materialBufferSize = AlignUp(bufferCursor, 16);

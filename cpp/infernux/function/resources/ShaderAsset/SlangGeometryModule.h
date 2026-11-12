@@ -32,6 +32,9 @@ public struct InxMeshInput
     public float2 uv1 : TEXCOORD5;
     public float view_depth : TEXCOORD6;
     public float4 line_color : TEXCOORD7;
+    public nointerpolation uint2 object_id : TEXCOORD8;
+    public nointerpolation uint object_flags : TEXCOORD9;
+    public nointerpolation uint layer_mask : TEXCOORD10;
 };
 public struct InxSurfaceData
 {
@@ -74,6 +77,13 @@ public struct InxCameraData
     public float4 depth_params;
 };
 public struct InxModelMatrix { public column_major float4x4 value; };
+public struct InxInstanceData
+{
+    public column_major float4x4 previous_model;
+    public uint2 object_id;
+    public uint object_flags;
+    public uint layer_mask;
+};
 public struct InxSkinState
 {
     public uint bone_offset;
@@ -106,7 +116,8 @@ public InxVertexInput inx_skin_vertex(InxVertexInput input, InxSkinState skin,
     }
     return input;
 }
-public InxMeshInput inx_transform_vertex(InxVertexInput input, float4x4 model, float4x4 view, float4x4 projection)
+public InxMeshInput inx_transform_vertex(InxVertexInput input, float4x4 model, float4x4 view, float4x4 projection,
+                                        InxInstanceData instance)
 {
     InxMeshInput result;
     float4 world = mul(model, float4(input.position, 1.0));
@@ -148,11 +159,22 @@ public InxMeshInput inx_transform_vertex(InxVertexInput input, float4x4 model, f
     result.uv1 = input.uv1;
     result.view_depth = mul(view, world).z;
     result.line_color = line ? float4(input.color, input.bone_weights.y) : float4(1.0);
+    result.object_id = instance.object_id;
+    result.object_flags = instance.object_flags;
+    result.layer_mask = instance.layer_mask;
     result.position = mul(projection, mul(view, world));
     // The existing shared camera buffer stores a Vulkan viewport projection.
     // Return canonical Y-up before the common target compiler's clip lowering.
     result.position.y = -result.position.y;
     return result;
+}
+public InxSurfaceData inx_prepare_surface(InxSurfaceData surface, InxMeshInput input, bool front_facing)
+{
+    surface.albedo *= input.line_color.rgb;
+    surface.alpha *= input.line_color.a;
+    float3 normal = dot(surface.normal_ws, surface.normal_ws) > 1e-8 ? surface.normal_ws : input.normal_ws;
+    surface.normal_ws = normalize(normal) * (front_facing ? 1.0 : -1.0);
+    return surface;
 }
 )slang"};
     return module;

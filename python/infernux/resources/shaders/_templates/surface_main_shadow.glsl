@@ -6,5 +6,5 @@ void main() {
     s.normalWS = normalize(v_Normal);
 ${SURFACE_CALL}
     s.alpha *= v_LineColor.a;
-    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
+    if (material._alpha_clip_threshold > 0.0 && s.alpha < material._alpha_clip_threshold) discard;
 }

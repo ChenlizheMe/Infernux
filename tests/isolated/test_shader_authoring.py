@@ -84,6 +84,24 @@ def test_static_fullscreen_schema_and_both_targets():
         assert block["fields"][-1]["type"]["scalarType"] == "uint32"
 
 
+def test_surface_specializes_light_resources_and_preserves_context():
+    source = '''import infernux.shader as shader
+class Painted(shader.surface):
+    tint = shader.material.color(default=(0.2, 0.4, 0.8, 1.0))
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=self.tint.rgb, normal_ws=ctx.normal_ws, alpha=self.tint.a)
+'''
+    definition = parse_shader(source, "表面.frag.py", "painted_surface")
+    assert definition.surface and definition.domain == "mesh"
+    assert definition.parameters[-1].name == "_alpha_clip_threshold" and definition.parameters[-1].internal
+    for target in definition.compile()["targets"]:
+        entries = {entry["name"]: {tuple(binding) for binding in entry["bindings"]} for entry in target["entries"]}
+        assert (2, 4) in entries["vertex_main"]  # Identity, layer and receive-shadow flags.
+        assert {(1, 0), (1, 4), (1, 6)} <= entries["fragment_main"]
+        assert not {(1, 1), (1, 2), (1, 3)} & entries["fragment_main"]
+        assert {(1, 1), (1, 2), (1, 3)} <= entries["fragment_forward_plus"]
+
+
 def test_shader_files_never_enter_host_discovery(tmp_path):
     root = str(tmp_path)
     for suffix in GPU_SOURCE_SUFFIXES:

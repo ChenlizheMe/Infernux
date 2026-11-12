@@ -6,6 +6,6 @@ void main() {
 ${SURFACE_CALL}
     s.albedo *= v_LineColor.rgb;
     s.alpha *= v_LineColor.a;
-    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
+    if (material._alpha_clip_threshold > 0.0 && s.alpha < material._alpha_clip_threshold) discard;
     outBaseColor = vec4(s.albedo, s.alpha);
 }

@@ -19,6 +19,7 @@ class ShaderParameter:
     label: str
     range: tuple[float, float] | None = None
     hdr: bool = False
+    internal: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class ShaderDefinition:
     inputs: tuple[ShaderInput, ...] = ()
     source_ranges: tuple = ()
     domain: str = "fullscreen"
+    surface: bool = False
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -66,6 +68,7 @@ class _Author(ShaderEmitter):
         self.fields = {}
         self.field_nodes = {}
         self.domain = "fullscreen"
+        self.is_surface = False
 
     def qualified(self, node):
         if isinstance(node, ast.Name):
@@ -176,6 +179,8 @@ class _Author(ShaderEmitter):
         if main.decorator_list or main.args.vararg or main.args.kwarg or main.args.kwonlyargs or main.args.defaults:
             self.error(main, "Shader entry parameters have a fixed typed signature")
         arguments = main.args.args
+        if self.is_surface and len(arguments) != 2:
+            self.error(main, "Surface accepts self and a typed surface context")
         if not arguments or arguments[0].arg != "self":
             self.error(main, "Shader main is an instance method")
         if len(arguments) > 2:
@@ -190,14 +195,17 @@ class _Author(ShaderEmitter):
                            "Fullscreen input is shader.vec2 or shader.fragment_input")
             signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
-        if main.returns is None or self.annotation(main.returns) != "float4":
-            self.error(main, "Fragment main returns shader.vec4")
+        result = "InxSurfaceData" if self.is_surface else "float4"
+        if main.returns is None or self.annotation(main.returns) != result:
+            self.error(main, "Surface returns shader.SurfaceData" if self.is_surface else "Fragment main returns shader.vec4")
         self.aliases = (self.alias,)
         self.declare_locals(main.body)
         self.local_declarations()
         self.block(main.body)
-        return ['[shader("fragment")]', self.source_directive(main),
-                "float4 fragment_main(" + signature + ") : SV_Target0", "{", *self.lines, "}"]
+        declaration = ("InxSurfaceData inx_author_surface(" + signature + ")" if self.is_surface else
+                       "float4 fragment_main(" + signature + ") : SV_Target0")
+        return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
+            declaration, "{", *self.lines, "}"]
 
 
 _FULLSCREEN_VERTEX = """
@@ -218,11 +226,12 @@ _MESH_VERTEX = """
 [[vk::binding(1, 2)]] StructuredBuffer<InxModelMatrix> inx_models;
 [[vk::binding(2, 2)]] StructuredBuffer<InxSkinState> inx_skins;
 [[vk::binding(3, 2)]] StructuredBuffer<InxModelMatrix> inx_bones;
+[[vk::binding(4, 2)]] StructuredBuffer<InxInstanceData> inx_instances;
 [shader("vertex")]
 InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
 {
     input = inx_skin_vertex(input, inx_skins[instance], inx_bones);
-    return inx_transform_vertex(input, inx_models[instance].value, inx_view.view, inx_view.projection);
+    return inx_transform_vertex(input, inx_models[instance].value, inx_view.view, inx_view.projection, inx_instances[instance]);
 }
 """
 
@@ -236,17 +245,19 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if len(body) != 1 or not isinstance(body[0], ast.ClassDef):
         author.error(ast.Constant(lineno=1, col_offset=0), "Declare one shader class")
     declaration = body[0]
-    bases = {author.alias + ".fullscreen": "fullscreen", author.alias + ".frag": "mesh"}
+    bases = {author.alias + ".fullscreen": "fullscreen", author.alias + ".frag": "mesh", author.alias + ".surface": "mesh"}
     if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) not in bases:
-        author.error(declaration, "Declare shader.fullscreen or shader.frag")
+        author.error(declaration, "Declare shader.fullscreen, shader.frag or shader.surface")
     author.domain = bases[author.qualified(declaration.bases[0])]
+    author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
+    entry_name = "surface" if author.is_surface else "main"
     main, helpers = None, []
     for statement in declaration.body:
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             author.parameter(statement)
-        elif isinstance(statement, ast.FunctionDef) and statement.name == "main" and main is None:
+        elif isinstance(statement, ast.FunctionDef) and statement.name == entry_name and main is None:
             main = statement
-        elif isinstance(statement, ast.FunctionDef) and statement.name != "main":
+        elif isinstance(statement, ast.FunctionDef) and statement.name != entry_name:
             author.functions["self." + statement.name] = author.signature(statement, statement.name, method=True)
             helpers.append(statement)
         elif isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and isinstance(statement.value.value, str):
@@ -254,7 +265,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         else:
             author.error(statement, "Expected a shader parameter or typed method")
     if main is None:
-        author.error(declaration, "Shader class needs a main entry")
+        author.error(declaration, "Shader class needs a " + entry_name + " entry")
+    if author.is_surface:
+        author.fields["_alpha_clip_threshold"] = ShaderParameter("_alpha_clip_threshold", "float", 0.0, "", internal=True)
+        author.field_nodes["_alpha_clip_threshold"] = declaration
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
     if author.domain == "mesh":
@@ -266,6 +280,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(declaration, "Mesh image resources are declared as material properties")
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies),
             _MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX]
+    if author.is_surface:
+        code.insert(0, "import inx_lighting;")
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),
                      RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";"])
@@ -292,9 +308,15 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
         author.source_ranges.extend(emitter.source_ranges)
     code.extend(author.function(main))
+    if author.is_surface:
+        for name, tiled in (("fragment_main", "false"), ("fragment_forward_plus", "true")):
+            code.extend(['[shader("fragment")]', f"float4 {name}(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0",
+                         "{", "    InxSurfaceData surface = inx_prepare_surface(inx_author_surface(input), input, front_facing);",
+                         "    if (surface.alpha < inx_parameters._alpha_clip_threshold) discard;",
+                         f"    return inx_shade_pbr<{tiled}>(surface, input);", "}"])
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
                             "\n".join(code), graph.sources(), inputs,
-                            tuple(dict.fromkeys((*graph.ranges(), *author.source_ranges))), author.domain)
+                            tuple(dict.fromkeys((*graph.ranges(), *author.source_ranges))), author.domain, author.is_surface)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -316,7 +338,7 @@ def _prepare_source(source, source_path, module_name, reader):
         libraries = tuple(item for item in graph.sources() if item[0] != module.name)
         return module.source, libraries, json.dumps(schema, ensure_ascii=False), graph.ranges()
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
-    schema = {"name": definition.name, "domain": definition.domain,
+    schema = {"name": definition.name, "domain": definition.domain, "surface": definition.surface,
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}
     return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False), definition.source_ranges

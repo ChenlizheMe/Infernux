@@ -435,7 +435,7 @@ void surface(out SurfaceData s)
     assert(depthCompilation != completeCompilation.compiledVariants.end());
     assert(depthCompilation->generatedFragmentSource.find("#define INX_DEPTH_PASS 1") != std::string::npos);
     assert(depthCompilation->generatedFragmentSource.find("surface(s);") != std::string::npos);
-    assert(depthCompilation->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") !=
+    assert(depthCompilation->generatedFragmentSource.find("s.alpha < material._alpha_clip_threshold") !=
            std::string::npos);
     assert(depthCompilation->generatedFragmentSource.find("outObjectId") == std::string::npos);
 
@@ -473,7 +473,7 @@ void surface(out SurfaceData s)
            std::string::npos);
     assert(baseColorCompilation->generatedFragmentSource.find("outBaseColor = vec4(s.albedo, s.alpha);") !=
            std::string::npos);
-    assert(baseColorCompilation->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") !=
+    assert(baseColorCompilation->generatedFragmentSource.find("s.alpha < material._alpha_clip_threshold") !=
            std::string::npos);
     assert(baseColorCompilation->generatedFragmentSource.find("void shading(") == std::string::npos);
 
@@ -944,7 +944,7 @@ void surface(out SurfaceData s) {
                              [target](const auto &value) { return value.target == target; });
             assert(variant != runtimeCutout.compiledVariants.end());
             assert(variant->generatedFragmentSource.find("surface(s);") != std::string::npos);
-            assert(variant->generatedFragmentSource.find("s.alpha < material._AlphaClipThreshold") !=
+            assert(variant->generatedFragmentSource.find("s.alpha < material._alpha_clip_threshold") !=
                    std::string::npos);
             if (target == infernux::ShaderCompileTarget::Shadow) {
                 assert(variant->usesBindlessTextureABI == bindless);
@@ -1067,7 +1067,7 @@ void surface(out SurfaceData s) {
     assert(bindlessCutoutShadow->generatedFragmentSource.find("surface(s);") != std::string::npos);
     // Authored surface discard still runs when the optional uniform alpha test
     // is disabled. An early return here would restore the Shadow/Depth mismatch.
-    assert(bindlessCutoutShadow->generatedFragmentSource.find("if (material._AlphaClipThreshold <= 0.0) return;") ==
+    assert(bindlessCutoutShadow->generatedFragmentSource.find("if (material._alpha_clip_threshold <= 0.0) return;") ==
            std::string::npos);
     infernux::ShaderReflection bindlessShadowReflection;
     assert(bindlessShadowReflection.Reflect(bindlessCutoutShadow->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));

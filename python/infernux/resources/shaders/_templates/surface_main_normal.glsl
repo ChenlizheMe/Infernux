@@ -8,7 +8,7 @@ ${SURFACE_CALL}
     s.normalWS = ResolveSurfaceNormal(s.normalWS, v_Normal);
     if (!gl_FrontFacing)
         s.normalWS = -s.normalWS;
-    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
+    if (material._alpha_clip_threshold > 0.0 && s.alpha < material._alpha_clip_threshold) discard;
     vec3 normalWS = normalize(s.normalWS);
     outNormal = vec4(normalWS * 0.5 + 0.5, 1.0);
 }

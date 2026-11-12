@@ -19,6 +19,10 @@ class frag:
     """Mesh fragment program paired with the standard instanced/skinned vertex path."""
 
 
+class surface:
+    """Material surface evaluated by the engine's shared lighting and geometry passes."""
+
+
 class mesh_input:
     """Interpolated mesh data in the current geometry view."""
 
@@ -31,6 +35,13 @@ class mesh_input:
     uv1: vec2
     view_depth: float
     line_color: vec4
+    object_id: uvec2
+    object_flags: uint
+    layer_mask: uint
+
+
+class SurfaceContext(mesh_input):
+    """Geometry and object identity supplied to a material surface."""
 
 
 class fragment_input:
@@ -150,4 +161,4 @@ for _name in INTRINSICS:
 for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions"):
     globals()[_name] = _gpu_intrinsic(_name)
 
-__all__ = ["fullscreen", "frag", "fragment_input", "mesh_input", "SurfaceData", "parameter", "material", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]

@@ -385,7 +385,7 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
                     validateMember(property.schema.name, *property.bufferOffset);
             }
             if (stage == ShaderStageVisibility::Fragment && artifact.alphaClipThresholdOffset)
-                validateMember("_AlphaClipThreshold", *artifact.alphaClipThresholdOffset);
+                validateMember("_alpha_clip_threshold", *artifact.alphaClipThresholdOffset);
         }
     }
 
@@ -1773,7 +1773,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     // MaterialProperties UBO  (skip for shadow unless alpha clip)
     // ================================================================
-    // Surface fragment shaders always get _AlphaClipThreshold injected
+    // Surface fragment shaders always get _alpha_clip_threshold injected
     // so that alpha clip can be toggled at runtime via material properties.
     bool isSurfaceFragment = desc.isFragmentShader && hasSurfaceFunc;
     const ShaderStageVisibility linkedStage =
@@ -1835,9 +1835,9 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 writeByType("vec4");
                 writeByType("vec3");
                 writeByType("vec2");
-                // Inject _AlphaClipThreshold for surface fragment shaders (before user floats)
+                // Inject _alpha_clip_threshold for surface fragment shaders (before user floats)
                 if (isSurfaceFragment) {
-                    result << "    float _AlphaClipThreshold;\n";
+                    result << "    float _alpha_clip_threshold;\n";
                 }
                 writeByType("float");
                 writeByType("int");
@@ -1951,7 +1951,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                 result << "\n// Engine-generated canonical GBuffer packing\n" << packing << "\n";
             }
 
-            // Alpha clip is now uniform-based (material._AlphaClipThreshold),
+            // Alpha clip is now uniform-based (material._alpha_clip_threshold),
             // baked into the surface_main templates — no placeholder needed.
             if (target == ShaderCompileTarget::GBuffer && hasGBufferTarget) {
                 std::string mainTpl = LoadTemplate("surface_main_gbuffer.glsl");

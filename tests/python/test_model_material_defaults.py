@@ -147,7 +147,7 @@ def test_source_surface_survives_import_copy_and_binary_reload(imported_model, a
         assert state.depth_write_enable is (alpha_mode != "BLEND")
         assert state.alpha_clip_enabled is (alpha_mode == "MASK")
         assert state.render_queue == {"OPAQUE": 2000, "MASK": 2450, "BLEND": 3000}[alpha_mode]
-        assert material.get_float("_AlphaClipThreshold") == pytest.approx(0.37 if alpha_mode == "MASK" else 0)
+        assert material.get_float("_alpha_clip_threshold") == pytest.approx(0.37 if alpha_mode == "MASK" else 0)
         assert material.get_color("baseColor").w == pytest.approx(1 if alpha_mode == "OPAQUE" else 0.4)
         if alpha_mode == "BLEND":
             assert state.src_color_blend_factor == 6

@@ -193,7 +193,7 @@ std::string GlslStageInterfaceEmitter::EmitMaterialBlockMembers(const ShaderProg
             source << "    " << type << " " << property.schema.name << ";\n";
     }
     if (artifact.alphaClipThresholdOffset)
-        source << "    float _AlphaClipThreshold;\n";
+        source << "    float _alpha_clip_threshold;\n";
     return source.str();
 }
 

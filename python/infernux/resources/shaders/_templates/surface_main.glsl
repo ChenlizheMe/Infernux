@@ -4,7 +4,7 @@
 // Calls surface() to fill SurfaceData, then invokes the pipeline-agnostic
 // shading() function from the referenced .shadingmodel file.
 //
-// _AlphaClipThreshold is always available in MaterialProperties UBO.
+// _alpha_clip_threshold is always available in MaterialProperties UBO.
 // When > 0.0, fragments with alpha below the threshold are discarded.
 // ============================================================================
 
@@ -23,7 +23,7 @@ ${SURFACE_CALL}
     // normal inherits the same facing.
     if (!gl_FrontFacing)
         s.normalWS = -s.normalWS;
-    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) discard;
+    if (material._alpha_clip_threshold > 0.0 && s.alpha < material._alpha_clip_threshold) discard;
     ShadingContext ctx = InitShadingContext();
     ctx.positionWS = v_WorldPos;
     ctx.geometricNormalWS = gl_FrontFacing ? normalize(v_Normal) : -normalize(v_Normal);
