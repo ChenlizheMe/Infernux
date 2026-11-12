@@ -27,16 +27,16 @@ class ExtentEffect(FullScreenEffect):
         with graph.add_pass("ResizeProbe") as render_pass:
             render_pass.set_texture("source_tex", bus.get("color"))
             render_pass.write_color(output)
-            render_pass.fullscreen_quad("fullscreen_blit")
+            render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
         bus.set("color", output)
 
 
 @pytest.mark.parametrize(
     ("parameters", "shader"),
     [
-        ({}, "fullscreen_copy"),
-        ({"divisor": 2}, "fullscreen_blit"),
-        ({"fixed_size": True}, "fullscreen_blit"),
+        ({}, "infernux/internal/fullscreen_copy"),
+        ({"divisor": 2}, "infernux/internal/fullscreen_blit"),
+        ({"fixed_size": True}, "infernux/internal/fullscreen_blit"),
     ],
 )
 def test_effect_commit_uses_the_declared_output_extent(parameters, shader):

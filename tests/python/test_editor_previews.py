@@ -74,14 +74,14 @@ def test_preview_material_keeps_other_material_autosaves_working(tmp_path, previ
     scope = previews.begin("material-panel")
     scope.capture_material(first)
     scope.set(first, "alpha_clip_threshold", 0.6)
-    first.set_color("baseColor", 1, 0, 0, 1)
-    second.set_color("baseColor", 0, 1, 0, 1)
+    first.set_color("base_color", 1, 0, 0, 1)
+    second.set_color("base_color", 0, 1, 0, 1)
     second.flush()
     Material.flush_all_pending()
     assert first_path.read_bytes() == before
-    assert second.get_color("baseColor") == (0, 1, 0, 1)
+    assert second.get_color("base_color") == (0, 1, 0, 1)
     scope.close()
-    assert first.get_color("baseColor") == (1, 1, 1, 1)
+    assert first.get_color("base_color") == (1, 1, 1, 1)
     assert first_path.read_bytes() == before and not first._preview_active
 
 

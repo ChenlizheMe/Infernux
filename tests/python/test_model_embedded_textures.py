@@ -58,7 +58,7 @@ def test_embedded_texture_is_registered_previewable_reusable_and_cooked(imported
     assert metadata["import_owner_guid"]["value"] == mesh.guid
     texture = AssetRegistry.instance().load_texture_by_guid(guid)
     assert texture is not None and texture.guid == guid
-    assert renderer.get_material(0).serialize_document()["properties"]["texSampler"]["guid"] == guid
+    assert renderer.get_material(0).serialize_document()["properties"]["albedo_map"]["guid"] == guid
     assert guid in AssetDependencyGraph.instance().get_dependencies(mesh.guid)
 
     target = source.with_suffix(".mat")
@@ -151,7 +151,7 @@ def test_removing_owner_unregisters_children_without_erasing_material_reference(
     source.unlink()
     assert database.delete_asset(str(source))
     assert not database.get_path_from_guid(child["guid"])
-    assert json.loads(target.read_text(encoding="utf-8"))["properties"]["texSampler"]["guid"] == child["guid"]
+    assert json.loads(target.read_text(encoding="utf-8"))["properties"]["albedo_map"]["guid"] == child["guid"]
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

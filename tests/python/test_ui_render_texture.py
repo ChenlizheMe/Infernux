@@ -99,7 +99,7 @@ def test_material_live_source_revision_and_explicit_image_priority():
     native = SimpleNamespace(guid='authored-material', name='Authored Material', file_path='', get_version=lambda: 2,
         _texture_assets_pending=False,
         _get_render_texture=lambda name: runtime,
-        has_property=lambda name: name == 'texSampler',
+        has_property=lambda name: name == 'albedo_map',
         get_texture=lambda _name: 'material-texture-guid')
     image = UIImage()
     material = Material(native)
@@ -124,7 +124,7 @@ def test_material_sampled_texture_keeps_guid_identity_until_cache_resolution():
         get_version=lambda: 2,
         _texture_assets_pending=False,
         _get_render_texture=lambda _name: None,
-        has_property=lambda name: name in {"baseColor", "texSampler"},
+        has_property=lambda name: name in {"base_color", "albedo_map"},
         get_color=lambda _name: [1.0, 1.0, 1.0, 1.0],
         get_texture=lambda _name: texture_guid,
     )

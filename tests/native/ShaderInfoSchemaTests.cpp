@@ -2,6 +2,7 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderInfoSchema.h>
 
+#include "ShaderParserRecoveryTests.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -12,7 +13,6 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
-#include "ShaderParserRecoveryTests.h"
 
 namespace
 {
@@ -142,8 +142,8 @@ void shading(in SurfaceData s, out vec4 color) {
     const bool removedOverride = std::filesystem::remove(unlitOverride);
     assert(removedOverride);
     infernux::InxShaderLoader::InvalidateDirectoryCache(unlitOverride.parent_path().generic_u8string());
-    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath)
-               .find("inxProjectUnlitMarker") == std::string::npos);
+    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath).find("inxProjectUnlitMarker") ==
+           std::string::npos);
     RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
 
     const auto packages = root / "Packages";
@@ -234,7 +234,7 @@ ShaderInfo
     {
         Float amplitude = 0.35 Range(0.0, 4.0)
         Color crestColor = [0.2, 0.75, 0.9, 1.0] HDR
-        Texture2D normalMap = Normal Internal
+        Texture2D normal_map = Normal Internal
     }
 
     Inputs
@@ -564,7 +564,8 @@ ShaderInfo {
     Queue 3100 DepthWrite On Blend Additive PassTag "custom-transparent"
 }
 void surface(out SurfaceData s) { s = InitSurfaceData(); }
-)", "TransparentOverrides.frag");
+)",
+                                                                "TransparentOverrides.frag");
     assert(explicitTransparent.renderQueue == 3100);
     assert(explicitTransparent.depthWrite == "on");
     assert(explicitTransparent.surfaceOptions.blendMode == "additive");
@@ -573,7 +574,8 @@ void surface(out SurfaceData s) { s = InitSurfaceData(); }
     const auto opaque = compiler.ParseShaderSource(R"(
 ShaderInfo { Name "Tests/OpaqueDefaults" }
 void surface(out SurfaceData s) { s = InitSurfaceData(); }
-)", "OpaqueDefaults.frag");
+)",
+                                                   "OpaqueDefaults.frag");
     assert(opaque.renderQueue == 2000);
     assert(opaque.depthWrite.empty());
     assert(opaque.surfaceOptions.blendMode == "off");
@@ -612,15 +614,15 @@ ShaderInfo {
     Surface Opaque
     Queue 2000
     Properties {
-        Color baseColor = [1.0, 0.5, 0.25, 1.0] HDR
-        Texture2D texSampler = white
+        Color base_color = [1.0, 0.5, 0.25, 1.0] HDR
+        Texture2D albedo_map = white
     }
 }
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
-    vec4 sampled = texture(texSampler, v_TexCoord);
-    s.albedo = sampled.rgb * material.baseColor.rgb;
-    s.alpha = sampled.a * material.baseColor.a;
+    vec4 sampled = texture(albedo_map, v_TexCoord);
+    s.albedo = sampled.rgb * material.base_color.rgb;
+    s.alpha = sampled.a * material.base_color.a;
 }
 )";
     RequireCompiles(compiler, fragmentSource, "StructuredUnlit.frag");

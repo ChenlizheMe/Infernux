@@ -41,7 +41,7 @@ class AuthorPipeline(RenderPipeline):
         graph.add_pass("Grayscale").write_color(graded).set_texture("image", source).bind_parameter_block(
             "grayscale", {"strength": 0},
         ).fullscreen_quad(str(self.gray))
-        graph.add_pass("Copy").write_color(color).set_texture("source_tex", graded).fullscreen_quad("fullscreen_copy")
+        graph.add_pass("Copy").write_color(color).set_texture("source_tex", graded).fullscreen_quad("infernux/internal/fullscreen_copy")
         graph.screen_ui_overlay_section(resources={"color"})
         graph.set_output(color)
 
@@ -170,7 +170,7 @@ class Grayscale(shader.fullscreen):
                     np.testing.assert_allclose(pixels, np.broadcast_to(expected, pixels.shape), atol=0.005)
                     assert pipeline.builds == 1
                     assert inx.Shader.is_loaded(str(fill), "fragment")
-                    assert inx.Shader.is_loaded("fullscreen_copy", "fragment")
+                    assert inx.Shader.is_loaded("infernux/internal/fullscreen_copy", "fragment")
                     errors = [item for item in console._get_visible_log_snapshot(3000) if item["level"] in ("ERROR", "FATAL")]
                     python_errors = DebugConsole.instance().get_filtered_entries(
                         show_logs=False, show_warnings=False, show_errors=True,

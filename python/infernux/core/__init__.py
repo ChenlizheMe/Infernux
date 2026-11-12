@@ -16,7 +16,7 @@ Usage::
 
     # Context-managed resource lifecycle
     with Material.create("MyMaterial") as mat:
-        mat.set_color("baseColor", 1.0, 0.0, 0.0)
+        mat.set_color("base_color", 1.0, 0.0, 0.0)
         mat.set_float("metallic", 0.8)
         renderer.material = mat
 

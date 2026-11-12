@@ -22,13 +22,13 @@ ShaderInfo {
     Name "Instance Normal Map"
     ShadingModel PBR
     Cull Off
-    Properties { Texture2D normalMap = normal Float normalScale = 1.0 }
+    Properties { Texture2D normal_map = normal Float normal_scale = 1.0 }
 }
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
     s.albedo = vec3(0.65,0.4,0.2);
     s.smoothness = 0.3;
-    s.normalWS = sampleNormal(normalMap, getUV(0), 0, material.normalScale);
+    s.normalWS = sampleNormal(normal_map, getUV(0), 0, material.normal_scale);
 }
 '''
 
@@ -104,7 +104,7 @@ class MeshNormalMapCase:
         self.renderer = self.owner.add_component('MeshRenderer')
         self.material = Material.create_lit()
         self.material.frag_shader_name = 'Instance Normal Map'
-        self.material.set_texture('normalMap', normal_guid)
+        self.material.set_texture('normal_map', normal_guid)
         self.renderer.set_material(0, self.material.native)
         self.pipeline = {'forward':DefaultForwardPipeline, 'forward_plus':DefaultForwardPlusPipeline,
                          'deferred':DefaultDeferredPipeline}[pipeline]()
@@ -133,7 +133,7 @@ class MeshNormalMapCase:
                 tangents=np.tile(tangent, (4,1)).astype(np.float32))
         else:
             self.renderer.set_mesh_asset_guid(self.mesh)
-        self.material.set_float('normalScale', 0. if step == 'flat' else 1.)
+        self.material.set_float('normal_scale', 0. if step == 'flat' else 1.)
 
     def observe(self, pixels):
         pixels = pixels.copy().astype(np.float32)

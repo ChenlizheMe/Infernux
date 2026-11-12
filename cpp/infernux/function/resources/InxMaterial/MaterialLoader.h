@@ -25,7 +25,6 @@ class MaterialLoader final : public IAssetLoader
 
   private:
     static bool PrepareDocument(class InxMaterial &staged, const std::string &filePath, AssetDatabase *adb);
-    static void PrepareShaderDefaults(class InxMaterial &staged, AssetDatabase *adb);
 };
 
 } // namespace infernux

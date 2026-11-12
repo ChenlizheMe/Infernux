@@ -2041,7 +2041,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     billboardShaderProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
     billboardShaderProgram->compatibilitySignature = 42;
     infernux::ShaderProgramPropertyBinding billboardTextureProperty;
-    billboardTextureProperty.name = "texSampler";
+    billboardTextureProperty.name = "albedo_map";
     billboardTextureProperty.type = "texture2d";
     billboardTextureProperty.textureDefault = "white";
     billboardTextureProperty.stages = infernux::ShaderProgramStageMask::Fragment;
@@ -2065,7 +2065,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName,
                                         infernux::particle::GpuParticleTextureRequest request) {
         assert(request == infernux::particle::GpuParticleTextureRequest::Poll);
-        if (bindingName != "texSampler")
+        if (bindingName != "albedo_map")
             return infernux::particle::GpuBillboardTextureLease{};
         const auto texture = rhi.RegisterTextureView(resources.graph.ResolveTextureView(particleTexture));
         const auto sampler = rhi.RegisterSampler(resources.sampledTextureSampler);

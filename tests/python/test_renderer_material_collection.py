@@ -113,7 +113,7 @@ def test_mixed_materials_keep_identity_and_survive_document_reload(scene, kind, 
 
 @pytest.mark.parametrize("kind", RENDERERS)
 def test_truncated_slots_release_parameters_and_material_dependencies(engine, scene, kind, authored_material):
-    authored_material.set_texture("texSampler", "white")
+    authored_material.set_texture("albedo_map", "white")
     authored_material.flush()
     database = engine.get_asset_database()
     folder = Path(database.get_path_from_guid(authored_material.guid)).parent
@@ -130,20 +130,20 @@ def test_truncated_slots_release_parameters_and_material_dependencies(engine, sc
     material = Material.create_unlit("Retained")
     renderer.set_material(0, material)
     renderer.set_material(2, authored_material)
-    renderer.set_parameter("baseColor", (.25, .5, .75, 1.), material_slot=0, persistent=True)
+    renderer.set_parameter("base_color", (.25, .5, .75, 1.), material_slot=0, persistent=True)
     owned = set(graph.get_dependents(authored_material.guid)) - before
     assert owned
-    renderer.set_parameter("baseColor", (1., 0., 0., 1.), material_slot=2, persistent=True)
-    renderer.set_parameter("baseColor", (0., 1., 0., 1.), material_slot=2, owner="test")
-    renderer.set_parameter("texSampler", texture_guids[0], material_slot=2, persistent=True)
-    renderer.set_parameter("texSampler", texture_guids[1], material_slot=2, owner="test")
+    renderer.set_parameter("base_color", (1., 0., 0., 1.), material_slot=2, persistent=True)
+    renderer.set_parameter("base_color", (0., 1., 0., 1.), material_slot=2, owner="test")
+    renderer.set_parameter("albedo_map", texture_guids[0], material_slot=2, persistent=True)
+    renderer.set_parameter("albedo_map", texture_guids[1], material_slot=2, owner="test")
     for guid in texture_guids:
         assert owned <= set(graph.get_dependents(guid))
     renderer.materials = [material]
-    assert renderer.get_parameter("baseColor", material_slot=0, persistent_only=True) == pytest.approx((.25, .5, .75, 1.))
+    assert renderer.get_parameter("base_color", material_slot=0, persistent_only=True) == pytest.approx((.25, .5, .75, 1.))
     assert not (owned & set(graph.get_dependents(authored_material.guid)))
     for guid in texture_guids:
         assert not (owned & set(graph.get_dependents(guid)))
     renderer.set_material_slot_count(3)
-    assert renderer.get_parameter("baseColor", material_slot=2, persistent_only=True) is None
-    assert renderer.get_parameter("baseColor", material_slot=2, owner="test") is None
+    assert renderer.get_parameter("base_color", material_slot=2, persistent_only=True) is None
+    assert renderer.get_parameter("base_color", material_slot=2, owner="test") is None

@@ -27,7 +27,7 @@ ShaderInfo {
 // Resource order (matches GBuffer MRT + depth + shadow map):
 //   binding 0 — gAlbedo     (RGBA16_SFLOAT: base color + alpha)
 //   binding 1 — gNormal     (RGBA16_SFLOAT: encoded world normal.xyz)
-//   binding 2 — gMaterial   (RGBA16_SFLOAT: metallic, occlusion, specularHighlights, shadingParam0)
+//   binding 2 — gMaterial   (RGBA16_SFLOAT: metallic, occlusion, specular_highlights, shadingParam0)
 //   binding 3 — gEmission   (RGBA16_SFLOAT: emission.rgb, shadingParam1)
 //   binding 4 — gObject     (RGBA32_UINT: layer mask, shading model, receive shadows, reserved)
 //   binding 5 — sceneDepth  (D32_SFLOAT)
@@ -79,7 +79,7 @@ void main() {
     surfaceData.occlusion = materialData.g;
     surfaceData.emission = emissionData.rgb;
     surfaceData.alpha = base.a;
-    surfaceData.specularHighlights = materialData.b;
+    surfaceData.specular_highlights = materialData.b;
     surfaceData.shadingParam0 = materialData.a;
     surfaceData.shadingParam1 = emissionData.a;
 

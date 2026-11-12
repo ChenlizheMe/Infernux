@@ -19,11 +19,11 @@ ShaderInfo {
     Cull Off
     AlphaClip 0.5
     CastShadows CAST
-    Properties { Color baseColor = [1.0, 0.0, 1.0, 1.0] }
+    Properties { Color base_color = [1.0, 0.0, 1.0, 1.0] }
 }
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
-    s.albedo = material.baseColor.rgb;
+    s.albedo = material.base_color.rgb;
     s.alpha = ALPHA;
 }
 '''
@@ -108,7 +108,7 @@ def main():
             caster.set_mesh_asset_guid(imported.guid)
             cast_material = InxMaterial.create_default_unlit()
             cast_material.frag_shader_name = 'Tutorial Shadow Caster'
-            cast_material.set_color('baseColor', 1.0, 0.0, 1.0, 1.0)
+            cast_material.set_color('base_color', 1.0, 0.0, 1.0, 1.0)
             caster.set_material(0, cast_material)
             caster.enabled = False
             other_obj = scene.create_game_object('Shared Material Caster')

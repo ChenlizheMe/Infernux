@@ -1,4 +1,5 @@
 #include "InxShaderLoader.hpp"
+#include <function/resources/ShaderAsset/ShaderAuthorMetadata.h>
 
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Public/ShaderLang.h>
@@ -800,16 +801,12 @@ void InxShaderLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData)
     const CompilationGuard guard;
     const auto content = source.Bytes();
     const auto &filePath = source.Path();
-    metaData.InitFromSource(source, ResourceType::Shader);
 
-    if (const auto *kind = asset_formats::FindShaderSourceKind(filePath)) {
-        const auto filename = FromFsPath(ToFsPath(filePath).filename());
-        metaData.AddMetadata("type", std::string(kind->stage));
-        metaData.AddMetadata("file_extension", std::string(kind->suffix));
-        metaData.AddMetadata("shader_source_kind", std::string(kind->stage));
-        metaData.AddMetadata("shader_id", filename.substr(0, filename.size() - kind->suffix.size()));
+    if (asset_formats::FindShaderSourceKind(filePath)) {
+        CreateShaderAuthorMetadata(source, metaData);
         return;
     }
+    metaData.InitFromSource(source, ResourceType::Shader);
 
     // Parse shader into structured descriptor (single pass)
     auto desc = ParseShaderSource(std::string(content), filePath);

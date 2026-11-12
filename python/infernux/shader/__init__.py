@@ -11,19 +11,35 @@ from dataclasses import dataclass
 from ._language import INTRINSICS, TYPES
 
 
-class fullscreen:
+class _ShaderAsset:
+    shader_id: str
+    hidden: bool
+    surface_type: str
+    render_queue: int
+    cull_mode: str
+    depth_write: bool | None
+    depth_test: str
+    blend: str
+    pass_tag: str
+    stencil: str
+    alpha_clip: float | None
+    cast_shadows: bool
+    receive_shadows: bool
+
+
+class fullscreen(_ShaderAsset):
     """Fragment program paired with the engine's fullscreen triangle."""
 
 
-class frag:
+class frag(_ShaderAsset):
     """Mesh fragment program paired with the standard instanced/skinned vertex path."""
 
 
-class surface:
+class surface(_ShaderAsset):
     """Material surface evaluated by the engine's shared lighting and geometry passes."""
 
 
-class shadingmodel:
+class shadingmodel(_ShaderAsset):
     """A typed lighting response shared by surfaces referring to this GPU asset."""
 
 

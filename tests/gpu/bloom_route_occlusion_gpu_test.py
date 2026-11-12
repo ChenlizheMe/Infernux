@@ -143,7 +143,7 @@ def main():
                 renderer = obj.add_component("MeshRenderer")
                 renderer.set_mesh_asset_guid(imported.guid)
                 material = InxMaterial.create_default_unlit()
-                material.set_color("baseColor", *color)
+                material.set_color("base_color", *color)
                 material.set_render_queue(queue)
                 renderer.set_material(0, material)
             pipeline = StackProbe(args.path, args.scope)

@@ -581,7 +581,7 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
     assert _operations(smoke.update)[0].opcode == "attribute.modify_velocity"
     assert smoke.render_plan.outputs[0].shader == "Particle Six-Way Smoke"
     assert {item.name for item in smoke.render_plan.outputs[0].shader_properties} >= {
-        "baseColor",
+        "base_color",
         "positiveAxesMap",
         "negativeAxesMap",
     }

@@ -8,7 +8,7 @@
     },
     "fragment": {
       "guid": "",
-      "shader_id": "Unlit"
+      "shader_id": "infernux/unlit"
     }
   },
   "renderState": {
@@ -37,7 +37,7 @@
     "stencilTestEnable": false
   },
   "properties": {
-    "baseColor": {
+    "base_color": {
       "type": 7,
       "value": [1.0, 1.0, 1.0, 1.0]
     }

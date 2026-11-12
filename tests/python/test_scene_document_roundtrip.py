@@ -199,8 +199,8 @@ class TestSceneSerialization:
         scene.create_game_object("MissingResourceReference").add_component("MeshRenderer")
         renderer = scene.create_game_object("ClearedEmbeddedTexture").add_component("MeshRenderer")
         embedded = InxMaterial.create_default_unlit()
-        embedded.set_texture("texSampler", "white")
-        embedded.clear_texture("texSampler")
+        embedded.set_texture("albedo_map", "white")
+        embedded.clear_texture("albedo_map")
         renderer.material = embedded
         scene.create_game_object("ResourcePreflightSuccess").add_component("BoxCollider")
         database = AssetRegistry.instance().get_asset_database()
@@ -218,7 +218,7 @@ class TestSceneSerialization:
         texture_artifact.write_bytes(b"invalid texture artifact")
         textured = scene.create_game_object("UnreadableTexture").add_component("MeshRenderer")
         textured.material = InxMaterial.create_default_unlit()
-        textured.material.set_texture("texSampler", texture_guid)
+        textured.material.set_texture("albedo_map", texture_guid)
         try:
             document = scene.serialize_document()
             by_name = {record["name"]: record for record in document["objects"]}
@@ -231,7 +231,7 @@ class TestSceneSerialization:
             assert transaction.run_to_completion(raise_on_failure=False)
             assert transaction.state is SceneDocumentTransactionState.COMPLETED
             assert (
-                scene.find("UnreadableTexture").get_component("MeshRenderer").material.get_texture("texSampler")
+                scene.find("UnreadableTexture").get_component("MeshRenderer").material.get_texture("albedo_map")
                 == texture_guid
             )
             missing = scene.find("MissingResourceReference").get_component("MeshRenderer").serialize_document()
@@ -244,14 +244,14 @@ class TestSceneSerialization:
                 == guid
             )
             assert (
-                scene.find("ClearedEmbeddedTexture").get_component("MeshRenderer").material.get_texture("texSampler")
+                scene.find("ClearedEmbeddedTexture").get_component("MeshRenderer").material.get_texture("albedo_map")
                 == ""
             )
             assert SceneDocumentTransaction(scene, document=scene.serialize_document()).run_to_completion(
                 raise_on_failure=False
             )
             assert (
-                scene.find("ClearedEmbeddedTexture").get_component("MeshRenderer").material.get_texture("texSampler")
+                scene.find("ClearedEmbeddedTexture").get_component("MeshRenderer").material.get_texture("albedo_map")
                 == ""
             )
         finally:

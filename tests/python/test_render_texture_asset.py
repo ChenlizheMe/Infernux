@@ -138,24 +138,24 @@ def test_material_target_reimport_delete_restore_includes_runtime_clones(importe
     metadata = meta_path.read_text(encoding="utf-8")
     material = inx.Material.create_unlit("OriginalMonitor")
     target = RenderTexture.load_by_guid(guid)
-    material.set_texture("texSampler", target)
-    assert material.to_dict()["properties"]["texSampler"]["guid"] == guid
+    material.set_texture("albedo_map", target)
+    assert material.to_dict()["properties"]["albedo_map"]["guid"] == guid
     clone = material.clone()
     for item in (material, clone):
         engine._prepare_material_texture_assets(item.native)
-        assert item.native._get_render_texture("texSampler") is target._native
+        assert item.native._get_render_texture("albedo_map") is target._native
     document["size"] = {"width": 91, "height": 47}
     publish(source, document, database)
     for item in (material, clone):
         # Reimport already replaced the resource generation atomically. Do not
         # drop a live owner and allocate another while rebuilding descriptors.
-        assert item.native._get_render_texture("texSampler") is target._native
+        assert item.native._get_render_texture("albedo_map") is target._native
         engine._prepare_material_texture_assets(item.native)
-        assert item.native._get_render_texture("texSampler").width == 91
+        assert item.native._get_render_texture("albedo_map").width == 91
     assert AssetManager.delete_asset(str(source), database=database).succeeded
     for item in (material, clone):
-        assert item.native._get_render_texture("texSampler") is None
-        assert item.to_dict()["properties"]["texSampler"]["guid"] == guid
+        assert item.native._get_render_texture("albedo_map") is None
+        assert item.to_dict()["properties"]["albedo_map"]["guid"] == guid
         engine._prepare_material_texture_assets(item.native)
     source.write_text(json.dumps(document), encoding="utf-8")
     meta_path.write_text(metadata, encoding="utf-8")
@@ -163,27 +163,27 @@ def test_material_target_reimport_delete_restore_includes_runtime_clones(importe
     assert result.succeeded, result.error
     for item in (material, clone):
         engine._prepare_material_texture_assets(item.native)
-        assert item.native._get_render_texture("texSampler") is target._native
+        assert item.native._get_render_texture("albedo_map") is target._native
 
 
 def test_material_runtime_override_does_not_replace_persistent_slot(imported_target, engine):
     source, guid, _, database = imported_target
     material = inx.Material.create_unlit("OverrideMonitor")
-    material.set_texture_guid("texSampler", guid)
+    material.set_texture_guid("albedo_map", guid)
     transient = RenderTexture(7, 5)
-    material.set_texture("texSampler", transient)
+    material.set_texture("albedo_map", transient)
     engine._prepare_material_texture_assets(material.native)
-    assert material.native._get_render_texture("texSampler") is transient._native
-    assert material.to_dict()["properties"]["texSampler"]["guid"] == guid
+    assert material.native._get_render_texture("albedo_map") is transient._native
+    assert material.to_dict()["properties"]["albedo_map"]["guid"] == guid
     clone = material.clone()
     engine._prepare_material_texture_assets(clone.native)
-    assert clone.native._get_render_texture("texSampler") is transient._native
+    assert clone.native._get_render_texture("albedo_map") is transient._native
     assert AssetManager.delete_asset(str(source), database=database).succeeded
-    assert clone.native._get_render_texture("texSampler") is transient._native
-    clone.clear_texture("texSampler")
+    assert clone.native._get_render_texture("albedo_map") is transient._native
+    clone.clear_texture("albedo_map")
     engine._prepare_material_texture_assets(clone.native)
-    assert clone.native._get_render_texture("texSampler") is None
-    assert clone.to_dict()["properties"]["texSampler"]["guid"] == ""
+    assert clone.native._get_render_texture("albedo_map") is None
+    assert clone.to_dict()["properties"]["albedo_map"]["guid"] == ""
 
 
 def test_ui_material_samples_imported_target_without_source_path_lookup(imported_target, engine):
@@ -191,7 +191,7 @@ def test_ui_material_samples_imported_target_without_source_path_lookup(imported
 
     _, guid, _, _ = imported_target
     material = inx.Material.create_unlit("UIMonitor")
-    material.set_texture_guid("texSampler", guid)
+    material.set_texture_guid("albedo_map", guid)
     from infernux.ui import UIImage
 
     image = UIImage()

@@ -56,7 +56,7 @@ def _visual_material(elem, slot):
             engine = Application._current_engine()
             if engine is not None:
                 engine.get_native_engine()._prepare_material_texture_assets(native)
-        runtime_texture = native._get_render_texture("texSampler")
+        runtime_texture = native._get_render_texture("albedo_map")
     return native, runtime_texture
 
 
@@ -84,7 +84,7 @@ def material_visual_state(elem, slot: str = "material") -> dict:
 
     UI geometry keeps using the dedicated screen/world vertex path. The
     material owns its visual parameters through the same asset/GUID system as
-    every other renderer: ``baseColor`` tints vertices and ``texSampler`` may
+    every other renderer: ``base_color`` tints vertices and ``albedo_map`` may
     provide the sampled texture. An empty slot means the engine UI material
     (white tint and no authored texture).
     """
@@ -99,13 +99,13 @@ def material_visual_state(elem, slot: str = "material") -> dict:
         }
     signature = _material_signature(native, runtime_texture)
     color = (
-        list(native.get_color("baseColor"))
-        if native.has_property("baseColor")
+        list(native.get_color("base_color"))
+        if native.has_property("base_color")
         else [1.0, 1.0, 1.0, 1.0]
     )
     texture_guid = (
-        str(native.get_texture("texSampler") or "")
-        if native.has_property("texSampler")
+        str(native.get_texture("albedo_map") or "")
+        if native.has_property("albedo_map")
         else ""
     )
     texture = runtime_texture

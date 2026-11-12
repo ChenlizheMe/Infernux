@@ -224,7 +224,7 @@ public static const uint INX_PBR_MODEL_ID = )slang" +
                                                std::to_string(ShadingModelId("PBR")) + R"slang(u;
 public static const uint INX_UNLIT_MODEL_ID = )slang" +
                                                std::to_string(ShadingModelId("Unlit")) + R"slang(u;
-public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput input, uint model_id)
+public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput input, uint model_id, bool receives_shadows)
 {
     InxGBufferOutput result;
     result.albedo_alpha = float4(surface.albedo, surface.alpha);
@@ -233,7 +233,7 @@ public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput in
                              saturate(surface.specular_highlights), surface.shading_param0);
     result.emission = float4(surface.emission, surface.shading_param1);
     result.metadata = uint4(input.layer_mask, model_id,
-                            (input.object_flags & 2u) == 0u ? 1u : 0u, 0u);
+                            receives_shadows && (input.object_flags & 2u) == 0u ? 1u : 0u, 0u);
     return result;
 }
 )slang"};

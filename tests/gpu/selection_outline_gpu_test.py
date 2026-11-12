@@ -96,7 +96,7 @@ def main():
             renderer = probe.add_component("MeshRenderer")
             renderer.set_mesh_asset_guid(imported.guid)
             material = InxMaterial.create_default_unlit()
-            material.set_color("baseColor", 0.0, 0.0, 1.0, 1.0)
+            material.set_color("base_color", 0.0, 0.0, 1.0, 1.0)
             material.vert_shader_name = "Outline Shift Probe"
             if args.check == "properties":
                 material.set_float("xShift", 1.4)

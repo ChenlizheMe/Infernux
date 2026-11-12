@@ -30,7 +30,7 @@ class Recovery(ParticleScript):
         def update(self, ctx, particles):
             pass
         def rendering(self, ctx, particles):
-            particles.sprite(properties={{"texSampler": AssetReference(guid={guid!r})}})
+            particles.sprite(properties={{"albedo_map": AssetReference(guid={guid!r})}})
 '''
 
 

@@ -160,7 +160,7 @@ def main() -> int:
                     renderer = model.get_component_in_children("MeshRenderer")
                     assert renderer is not None
                     material = InxMaterial.create_default_lit()
-                    material.set_texture_guid("texSampler", texture_guid)
+                    material.set_texture_guid("albedo_map", texture_guid)
                     renderer.set_material(0, material)
 
                     floor = scene.create_game_object(f"SoakFloor{cycle}")
@@ -180,7 +180,7 @@ def main() -> int:
                         primitive.add_component("BoxCollider")
                         primitive_renderer = primitive.get_component("MeshRenderer")
                         runtime_material = InxMaterial.create_default_lit()
-                        runtime_material.set_texture_guid("texSampler", texture_guid)
+                        runtime_material.set_texture_guid("albedo_map", texture_guid)
                         primitive_renderer.set_material(0, runtime_material)
 
                     manager.play()

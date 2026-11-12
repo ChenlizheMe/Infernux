@@ -33,11 +33,11 @@ vec3 normalFromTangentSpace(vec3 tangentNormal, vec3 worldNormal, vec4 worldTang
 }
 
 // Sample normal map and transform to world-space
-// normalMap: standard tangent-space normal map ([0,1] encoded)
+// normal_map: standard tangent-space normal map ([0,1] encoded)
 // scale: normal strength (1.0 = normal, <1 = flatter, >1 = sharper)
-vec3 getNormalFromMap(sampler2D normalMap, vec2 uv, float scale,
+vec3 getNormalFromMap(sampler2D normal_map, vec2 uv, float scale,
                       vec3 worldNormal, vec4 worldTangent) {
-    vec2 encodedXY = texture(normalMap, uv).rg * 2.0 - 1.0;
+    vec2 encodedXY = texture(normal_map, uv).rg * 2.0 - 1.0;
     vec3 tsNormal = vec3(encodedXY, sqrt(max(1.0 - dot(encodedXY, encodedXY), 0.0)));
     tsNormal.xy *= scale;
     tsNormal = normalize(tsNormal);

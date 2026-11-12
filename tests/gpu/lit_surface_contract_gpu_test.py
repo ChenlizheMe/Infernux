@@ -1,4 +1,4 @@
-import json,re,tempfile
+import json,tempfile
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -6,16 +6,7 @@ import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.core.asset_types import TextureImportSettings,TextureType,TextureCompression,read_mesh_import_settings
 from infernux.lib import ConsolePanel, InxMaterial, SceneManager, Vector3
-from infernux.engine.path_utils import resolved_path
-ROOT=Path(resolved_path(__file__)).parents[2]
-
-text=(ROOT/'docs/learn/fragment-materials.md').read_text(encoding='utf-8')
-functions=[block for block in re.findall(r'```glsl\n(.*?)```',text,re.S) if block.startswith('void surface(out SurfaceData s)')]
-assert len(functions)==2 and functions[0]==functions[1],functions
-exact=functions[0]
-header=(Path(inx.__file__).parent/'resources/shaders/lit.frag').read_text(encoding='utf-8').split('void surface(')[0]
-header=header.replace('Name "Lit"','Name "Exact Tutorial Lit Surface"')
-assert 'Name "Exact Tutorial Lit Surface"' in header
+SOURCE=(Path(inx.__file__).parent/'resources/shaders/lit.frag.py').read_text(encoding='utf-8').replace('class Lit(', 'class LitContract(').replace('"infernux/lit"', '"tests/lit_contract"')
 CHECK='''#version 450
 ShaderInfo { Name "Tutorial Lit Contract Consumer" Hidden On Capabilities [Fullscreen]
  Resources { Texture2D colorTex Texture2D normalTex Texture2D baseTex }
@@ -57,12 +48,12 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
     mirrored.write_text(mesh.read_text(encoding='ascii').replace('vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1','vt 0 1\nvt 1 1\nvt 1 0\nvt 0 0'),encoding='ascii')
     normal_path=project/'Assets/TiltedNormal.png'
     Image.new('RGBA',(8,8),(128,218,218,255)).save(normal_path)
-    fragment=project/'Assets/LitContract.frag'
-    fragment.write_text(header+exact,encoding='utf-8')
+    fragment=project/'Assets/lit_contract.frag.py'
+    fragment.write_text(SOURCE,encoding='utf-8')
     consumer=project/'Assets/Check.frag'
     consumer.write_text(CHECK,encoding='ascii')
     frontend=inx.Engine();native=frontend.get_native_engine();console=ConsolePanel();pipeline=ContractPipeline();pipeline.builds=0
-    proof={'scope':'Independent installed GPU exact bilingual Lit function: flat and non-unit world normal, tangent normal map, mirrored UV handedness, rotated world TBN and exact restore. Measured normal buffer values compared with analytical world normals. No Editor image access.','phases':[]}
+    proof={'scope':'Builtin typed Lit surface: flat and non-unit world normal, tangent normal map, mirrored UV handedness, rotated world TBN and exact restore. Measured normal buffers compared with analytical world normals.','phases':[]}
     failures=[];complete=False
     try:
         frontend.init_renderer(160,120,str(project));frontend.resize_game_render_target(160,120)
@@ -82,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
         for obj in scene.get_root_objects():scene.destroy_game_object(obj)
         camera=scene.create_game_object('Lit Contract Camera');camera.transform.position=Vector3(0,0,-5);camera.add_component('Camera')
         obj=scene.create_game_object('Lit Contract Quad');renderer=obj.add_component('MeshRenderer');renderer.set_mesh_asset_guid(mesh_guid)
-        material=InxMaterial.create_default_lit();material.vert_shader_name='Standard';material.frag_shader_name='Exact Tutorial Lit Surface';renderer.set_material(0,material)
+        material=InxMaterial.create_default_lit();material.vert_shader_name='Standard';material.frag_shader_name='tests/lit_contract';renderer.set_material(0,material)
         frontend.set_render_pipeline(pipeline);native.set_game_camera_enabled(True)
         frame=0;changed=0;phase=0;ticket=None;initial=None
         def after_draw():
@@ -116,11 +107,12 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
                     proof['phases'].append(record);print(record,flush=True)
                     if phase==5:complete=True;proof['passed']=True;native.exit();return
                     phase+=1
-                    body=exact.replace('s.normalWS = sampleNormal(normalMap, material.normalScale);','s.normalWS = vec3(0,0,-4);') if phase==1 else exact
-                    fragment.write_text(header+body,encoding='utf-8')
-                    imported=AssetManager.reimport_asset(str(fragment),database=database);assert imported,imported.error
+                    body=SOURCE.replace('normal_ws=sample_normal(self.normal_map, normal_uv, self.normal_uv_set, self.normal_scale, ctx),',
+                                        'normal_ws=shader.vec3(0.0, 0.0, -4.0),') if phase==1 else SOURCE
+                    fragment.write_text(body,encoding='utf-8')
+                    assert inx.Shader.reload(str(fragment))
                     if phase==2:
-                        material.set_texture_guid('normalMap',normal_guid)
+                        material.set_texture_guid('normal_map',normal_guid)
                     elif phase==3:
                         renderer.set_mesh_asset_guid(mirrored_guid)
                     elif phase==4:
@@ -128,7 +120,7 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
                     elif phase==5:
                         renderer.set_mesh_asset_guid(mesh_guid)
                         obj.transform.euler_angles=Vector3(0,0,0)
-                        material.set_texture_guid('normalMap','')
+                        material.set_texture_guid('normal_map','')
                     changed=frame;ticket=None
                 if frame>160:raise AssertionError('Lit normal mapping GPU audit did not finish')
             except BaseException as exc:failures.append(exc);native.exit()
@@ -138,4 +130,4 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
     finally:
         frontend.set_render_pipeline(None);pipeline.dispose();native.cleanup()
     print(json.dumps(proof,indent=2),flush=True)
-    print('PASS exact Lit function, tangent/handed/world normal mapping, normalization and restore',flush=True)
+    print('PASS builtin Lit surface, tangent/handed/world normal mapping, normalization and restore',flush=True)

@@ -834,7 +834,8 @@ std::string ShaderPathIndexKey(const InxResourceMeta &metadata)
     if (!metadata.HasKey("type") || !metadata.HasKey("shader_id"))
         return {};
     const auto type = metadata.GetDataAs<std::string>("type");
-    if (type != "vertex" && type != "fragment")
+    if (std::none_of(asset_formats::kShaderSourceKinds.begin(), asset_formats::kShaderSourceKinds.end(),
+                     [&](const auto &kind) { return kind.stage == type; }))
         return {};
     return type + ":" + metadata.GetDataAs<std::string>("shader_id");
 }
@@ -6660,18 +6661,34 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
 
 std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const std::string &shaderType) const
 {
-    const char *stage;
+    if (shaderType.empty()) {
+        std::string path;
+        for (const auto &kind : asset_formats::kShaderSourceKinds) {
+            const auto candidate = FindShaderPathById(shaderId, std::string(kind.stage));
+            if (candidate.empty())
+                continue;
+            if (!path.empty() && path != candidate)
+                throw std::invalid_argument("Shader ID is ambiguous across source kinds: " + shaderId);
+            path = candidate;
+        }
+        return path;
+    }
+    std::string stage;
     if (shaderType == "vertex" || shaderType == ".vert" || shaderType == "vert") {
         stage = "vertex";
     } else if (shaderType == "fragment" || shaderType == ".frag" || shaderType == "frag") {
         stage = "fragment";
     } else {
-        return "";
+        stage = shaderType;
     }
 
     const auto snapshot = LoadQuerySnapshot();
-    const auto found = snapshot->shaderPaths.find(std::string(stage) + ":" + shaderId);
-    return found == snapshot->shaderPaths.end() ? std::string{} : found->second;
+    const auto found = snapshot->shaderPaths.find(stage + ":" + shaderId);
+    if (found == snapshot->shaderPaths.end())
+        return {};
+    if (found->second.empty())
+        throw std::invalid_argument("Shader ID is ambiguous: " + shaderId + "; use an asset GUID or path");
+    return found->second;
 }
 
 void AssetDatabase::BuildShaderPathIndex(QuerySnapshot &snapshot)
@@ -6684,8 +6701,11 @@ void AssetDatabase::BuildShaderPathIndex(QuerySnapshot &snapshot)
         if (key.empty())
             continue;
         const auto path = snapshot.guidToPath.find(guid);
-        if (path != snapshot.guidToPath.end())
-            snapshot.shaderPaths.try_emplace(std::move(key), path->second);
+        if (path != snapshot.guidToPath.end()) {
+            const auto [found, inserted] = snapshot.shaderPaths.try_emplace(std::move(key), path->second);
+            if (!inserted && found->second != path->second)
+                found->second.clear();
+        }
     }
 }
 

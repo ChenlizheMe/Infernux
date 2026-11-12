@@ -21,12 +21,12 @@ ShaderInfo {
     Blend MODE
     CastShadows Off
     ReceiveShadows Off
-    Properties { Color baseColor = [1.0, 0.0, 0.0, 0.5] }
+    Properties { Color base_color = [1.0, 0.0, 0.0, 0.5] }
 }
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
-    s.albedo = material.baseColor.rgb MULTIPLY;
-    s.alpha = material.baseColor.a;
+    s.albedo = material.base_color.rgb MULTIPLY;
+    s.alpha = material.base_color.a;
 }
 '''
 
@@ -48,7 +48,7 @@ def main():
                         'vn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n', encoding='ascii')
         shader = project/'Assets/Transparent.frag'
         def source(mode):
-            text = SHADER.replace('MULTIPLY','* material.baseColor.a' if mode=='Premultiplied' else '')
+            text = SHADER.replace('MULTIPLY','* material.base_color.a' if mode=='Premultiplied' else '')
             if mode == 'Alpha':
                 return text.replace('    Blend MODE\n','')
             if mode == 'Opaque':
@@ -88,7 +88,7 @@ def main():
                 material = InxMaterial()
                 material.vert_shader_name = 'Standard'
                 material.frag_shader_name = 'Tutorial Transparent'
-                material.set_color('baseColor',*rgb,.5)
+                material.set_color('base_color',*rgb,.5)
                 renderer.set_material(0,material)
                 renderers.append(renderer)
             blocker = scene.create_game_object('Opaque Blue')
@@ -96,7 +96,7 @@ def main():
             blocker_renderer = blocker.add_component('MeshRenderer')
             blocker_renderer.set_mesh_asset_guid(imported.guid)
             blue = InxMaterial.create_default_unlit()
-            blue.set_color('baseColor',0,0,1,1)
+            blue.set_color('base_color',0,0,1,1)
             blocker_renderer.set_material(0,blue)
             blocker_renderer.enabled = False
             pipeline.msaa_samples = MSAASamples(args.samples)

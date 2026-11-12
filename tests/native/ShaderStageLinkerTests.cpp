@@ -216,7 +216,7 @@ ShaderInfo
     {
         Float amplitude = 0.35 Range(0.0, 4.0)
         Color deepColor = [0.01, 0.08, 0.16, 1.0]
-        Texture2D normalMap = Normal
+        Texture2D normal_map = Normal
     }
     Inputs
     {
@@ -228,7 +228,7 @@ ShaderInfo
 void surface(out SurfaceData s)
 {
     s = InitSurfaceData();
-    s.albedo = material.deepColor.rgb * texture(normalMap, fragmentInput.waveUV).rgb;
+    s.albedo = material.deepColor.rgb * texture(normal_map, fragmentInput.waveUV).rgb;
     s.emission = vec3(fragmentInput.waveUV, fragmentInput.waveHeight);
     s.metallic = float(fragmentInput.waveBand) * 0.1;
 }
@@ -266,7 +266,7 @@ void surface(out SurfaceData s)
     assert(displacement.textureSlot == 0);
     const auto &deepColor = RequireProperty(artifact, "deepColor");
     assert(deepColor.bufferOffset == 32);
-    const auto &normalMap = RequireProperty(artifact, "normalMap");
+    const auto &normalMap = RequireProperty(artifact, "normal_map");
     assert(normalMap.textureSlot == 1);
     assert(artifact.alphaClipThresholdOffset == 48);
     assert(artifact.materialBufferSize == 64);
@@ -324,7 +324,7 @@ void surface(out SurfaceData s)
     assert(infernux::HasStage(runtimeAmplitude.stages, infernux::ShaderProgramStageMask::Vertex));
     assert(infernux::HasStage(runtimeAmplitude.stages, infernux::ShaderProgramStageMask::Fragment));
     assert(runtimeAmplitude.range == amplitude.schema.range);
-    const auto &runtimeNormalMap = RequireRuntimeProperty(runtimeArtifact, "normalMap");
+    const auto &runtimeNormalMap = RequireRuntimeProperty(runtimeArtifact, "normal_map");
     assert(runtimeNormalMap.IsTexture());
     assert(runtimeNormalMap.textureSlot == normalMap.textureSlot);
     assert(runtimeNormalMap.textureDefault == "Normal");
@@ -355,7 +355,7 @@ void surface(out SurfaceData s)
     assert(compiledProgram.generatedFragmentSource.find("surface(s);") != std::string::npos);
     assert(compiledProgram.generatedVertexSource.find("binding = 2) uniform sampler2D displacement;") !=
            std::string::npos);
-    assert(compiledProgram.generatedFragmentSource.find("binding = 3) uniform sampler2D normalMap;") !=
+    assert(compiledProgram.generatedFragmentSource.find("binding = 3) uniform sampler2D normal_map;") !=
            std::string::npos);
     assert(compiledProgram.generatedFragmentSource.find("binding = 14) uniform MaterialProperties") !=
            std::string::npos);
@@ -604,16 +604,16 @@ ShaderInfo
     Surface Transparent
     Properties
     {
-        Color baseColor = [1.0, 1.0, 1.0, 1.0]
-        Texture2D texSampler = white
+        Color base_color = [1.0, 1.0, 1.0, 1.0]
+        Texture2D albedo_map = white
     }
 }
 void surface(out SurfaceData surface)
 {
     surface = InitSurfaceData();
-    vec4 sampled = texture(texSampler, v_TexCoord);
-    surface.albedo = sampled.rgb * v_Color * material.baseColor.rgb;
-    surface.alpha = sampled.a * material.baseColor.a;
+    vec4 sampled = texture(albedo_map, v_TexCoord);
+    surface.albedo = sampled.rgb * v_Color * material.base_color.rgb;
+    surface.alpha = sampled.a * material.base_color.a;
 }
 )";
     const auto particleVertexDescriptor = compiler.ParseShaderSource(particleVertex, "ParticleSprite.vert");
@@ -689,14 +689,14 @@ ShaderInfo
     Surface Transparent
     Properties
     {
-        Color baseColor = [1.0, 0.5, 0.25, 1.0]
+        Color base_color = [1.0, 0.5, 0.25, 1.0]
     }
 }
 void surface(out SurfaceData surface)
 {
     surface = InitSurfaceData();
-    surface.albedo = material.baseColor.rgb * v_Color;
-    surface.alpha = material.baseColor.a;
+    surface.albedo = material.base_color.rgb * v_Color;
+    surface.alpha = material.base_color.a;
     surface.smoothness = 0.4;
 }
 )";
@@ -791,9 +791,27 @@ void main() {
         assert(!dataMaskCompilation.passPlan.Find(target)->enabled);
         assert(dataMaskArtifact.FindVariant(target) == nullptr);
     }
+    const std::string linkedLitSource = R"glsl(#version 450
+ShaderInfo {
+    Name "Linked Lit"
+    Capabilities [BindlessTextures]
+    ShadingModel PBR
+    Properties { Color base_color=[1,1,1,1] Texture2D albedo_map=white }
+}
+void surface(out SurfaceData s) {
+    s=InitSurfaceData();
+    vec4 base=sampleAlbedoAlpha(albedo_map);
+    s.albedo=base.rgb * material.base_color.rgb;
+    s.alpha=base.a * material.base_color.a;
+}
+)glsl";
+    const std::string linkedUnlitSource = R"glsl(#version 450
+ShaderInfo { Name "Linked Unlit" ShadingModel Unlit Properties { Color base_color=[1,1,1,1] } }
+void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=material.base_color.rgb; s.alpha=material.base_color.a; }
+)glsl";
     const auto builtinParticleCompilation = compiler.CompileLinkedProgramArtifact(
-        ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
-        ReadText(shaderRoot + "/unlit.frag"), shaderRoot + "/unlit.frag");
+        ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert", linkedUnlitSource,
+        "LinkedUnlit.frag");
     if (!builtinParticleCompilation.IsValid()) {
         for (const auto &error : builtinParticleCompilation.errors)
             std::cerr << error << '\n';
@@ -803,7 +821,7 @@ void main() {
     assert(builtinParticleArtifact.IsValid());
     assert(builtinParticleArtifact.domain == infernux::ShaderProgramDomain::ParticleSprite);
     assert(builtinParticleArtifact.key.stages.vertexKey == "Particle Sprite");
-    assert(builtinParticleArtifact.key.stages.fragmentKey == "Unlit");
+    assert(builtinParticleArtifact.key.stages.fragmentKey == "Linked Unlit");
     assert(builtinParticleArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
 
     const auto defaultParticleCompilation = compiler.CompileLinkedProgramArtifact(
@@ -823,10 +841,10 @@ void main() {
            std::string::npos);
     assert(
         defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
-            "vec4 texColor = sampleAlbedoAlpha(texSampler, transformTextureUV(v_TexCoord, material.texSampler_ST));") !=
+            "vec4 texColor = sampleAlbedoAlpha(albedo_map, transformTextureUV(v_TexCoord, material.albedo_map_st));") !=
         std::string::npos);
     assert(defaultParticleCompilation.compiledVariants.front().generatedFragmentSource.find(
-               "s.alpha = texColor.a * material.baseColor.a;") != std::string::npos);
+               "s.alpha = texColor.a * material.base_color.a;") != std::string::npos);
 
     const auto sixWaySmokeCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
@@ -845,14 +863,13 @@ void main() {
     assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(sixWaySmokeArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
 
-    // Lit declares the bindless capability in its source, but the loader must
+    // The linked fixture declares bindless capability, but the loader must
     // still honor the active device contract. A device without descriptor
     // indexing receives the original bounded sampler ABI and must not emit
     // the bindless set or the texture-index UBO.
     infernux::InxShaderLoader::SetBindlessTextureABIEnabled(false);
-    const auto boundedLitCompilation =
-        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
-                                              ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");
+    const auto boundedLitCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert", linkedLitSource, "LinkedLit.frag");
     if (!boundedLitCompilation.IsValid()) {
         for (const auto &error : boundedLitCompilation.errors)
             std::cerr << error << '\n';
@@ -865,7 +882,7 @@ void main() {
     assert(boundedForward != boundedLitCompilation.compiledVariants.end());
     assert(boundedForward->generatedFragmentSource.find("layout(set = 3, binding = 0)") == std::string::npos);
     assert(boundedForward->generatedFragmentSource.find("layout(std140, set = 0, binding = 15)") == std::string::npos);
-    assert(boundedForward->generatedFragmentSource.find("binding = 2) uniform sampler2D texSampler;") !=
+    assert(boundedForward->generatedFragmentSource.find("binding = 2) uniform sampler2D albedo_map;") !=
            std::string::npos);
     assert(boundedForward->generatedFragmentSource.find("sampleAlbedoAlpha(uint textureIndex)") == std::string::npos);
     infernux::ShaderReflection boundedReflection;
@@ -874,7 +891,7 @@ void main() {
                         [](const auto &image) { return image.set == 3 && image.binding == 0; }));
     assert(std::any_of(
         boundedReflection.GetSampledImages().begin(), boundedReflection.GetSampledImages().end(),
-        [](const auto &image) { return image.name == "texSampler" && image.set == 0 && image.binding == 2; }));
+        [](const auto &image) { return image.name == "albedo_map" && image.set == 0 && image.binding == 2; }));
     assert(std::none_of(boundedReflection.GetUniformBuffers().begin(), boundedReflection.GetUniformBuffers().end(),
                         [](const auto &buffer) { return buffer.set == 0 && buffer.binding == 15; }));
 
@@ -885,15 +902,15 @@ ShaderInfo {
     ShadingModel Unlit
     AlphaClip 0.5
     Properties {
-        Color baseColor = [1.0, 1.0, 1.0, 1.0]
-        Texture2D texSampler = white
+        Color base_color = [1.0, 1.0, 1.0, 1.0]
+        Texture2D albedo_map = white
     }
 }
 void surface(out SurfaceData surface) {
     surface = InitSurfaceData();
-    vec4 sampled = sampleAlbedoAlpha(texSampler);
-    surface.albedo = sampled.rgb * material.baseColor.rgb;
-    surface.alpha = sampled.a * material.baseColor.a;
+    vec4 sampled = sampleAlbedoAlpha(albedo_map);
+    surface.albedo = sampled.rgb * material.base_color.rgb;
+    surface.alpha = sampled.a * material.base_color.a;
 }
 )";
     const auto boundedCutoutCompilation =
@@ -970,9 +987,9 @@ void surface(out SurfaceData s) {
     // The same source must compile to the bindless ABI when the device
     // advertises the complete descriptor-indexing contract.
     infernux::InxShaderLoader::SetBindlessTextureABIEnabled(true);
-    const auto builtinLitParticleCompilation = compiler.CompileLinkedProgramArtifact(
-        ReadText(shaderRoot + "/particle_sprite.vert"), shaderRoot + "/particle_sprite.vert",
-        ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");
+    const auto builtinLitParticleCompilation =
+        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/particle_sprite.vert"),
+                                              shaderRoot + "/particle_sprite.vert", linkedLitSource, "LinkedLit.frag");
     if (!builtinLitParticleCompilation.IsValid()) {
         for (const auto &error : builtinLitParticleCompilation.errors)
             std::cerr << error << '\n';
@@ -988,11 +1005,10 @@ void surface(out SurfaceData s) {
     assert(builtinLitParticleForward.generatedFragmentSource.find("set = 3, binding = 0") != std::string::npos);
     assert(builtinLitParticleForward.generatedFragmentSource.find(
                "layout(std140, set = 2, binding = 2) uniform InxMaterialTextureIndices") != std::string::npos);
-    assert(builtinLitParticleForward.generatedFragmentSource.find("uniform sampler2D texSampler") == std::string::npos);
+    assert(builtinLitParticleForward.generatedFragmentSource.find("uniform sampler2D albedo_map") == std::string::npos);
 
-    const auto builtinLitCompilation =
-        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
-                                              ReadText(shaderRoot + "/lit.frag"), shaderRoot + "/lit.frag");
+    const auto builtinLitCompilation = compiler.CompileLinkedProgramArtifact(
+        ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert", linkedLitSource, "LinkedLit.frag");
     if (!builtinLitCompilation.IsValid()) {
         for (const auto &error : builtinLitCompilation.errors)
             std::cerr << error << '\n';
@@ -1002,7 +1018,7 @@ void surface(out SurfaceData s) {
     assert(builtinLitArtifact.IsValid());
     assert(builtinLitArtifact.usesBindlessTextureABI);
     assert(builtinLitArtifact.key.stages.vertexKey == "Standard");
-    assert(builtinLitArtifact.key.stages.fragmentKey == "Lit");
+    assert(builtinLitArtifact.key.stages.fragmentKey == "Linked Lit");
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
     assert(builtinLitArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
@@ -1178,17 +1194,17 @@ ShaderInfo
     ShadingModel "Unlit"
     Properties
     {
-        Color baseColor = [0.15, 0.65, 1.0, 1.0] HDR
+        Color base_color = [0.15, 0.65, 1.0, 1.0] HDR
         Float intensity = 1.0 Range(0.0, 2.0)
-        Texture2D texSampler = white
+        Texture2D albedo_map = white
     }
 }
 void surface(out SurfaceData surface)
 {
     surface = InitSurfaceData();
-    vec4 sampled = texture(texSampler, v_TexCoord);
-    surface.albedo = sampled.rgb * material.baseColor.rgb * material.intensity;
-    surface.alpha = sampled.a * material.baseColor.a;
+    vec4 sampled = texture(albedo_map, v_TexCoord);
+    surface.albedo = sampled.rgb * material.base_color.rgb * material.intensity;
+    surface.alpha = sampled.a * material.base_color.a;
 }
 )";
     const auto migrationMaterialProgram = compiler.CompileLinkedForward(

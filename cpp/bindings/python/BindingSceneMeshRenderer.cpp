@@ -26,7 +26,7 @@ static void BindRendererMaterials(NativeClass<MeshRenderer, Component> &cls)
         .def(
             "get_effective_material",
             [](const MeshRenderer &mr, uint32_t slot) { return mr.GetEffectiveMaterial(slot); }, py::arg("slot") = 0,
-            "Get the effective material for a given slot (custom or default)")
+            py::call_guard<py::gil_scoped_release>(), "Get the effective material for a given slot (custom or default)")
         // Multi-material API
         .def_property_readonly(
             "material_count",
@@ -34,7 +34,7 @@ static void BindRendererMaterials(NativeClass<MeshRenderer, Component> &cls)
             "Number of material slots")
         .def(
             "get_material", [](const MeshRenderer &mr, uint32_t slot) { return mr.GetMaterial(slot); }, py::arg("slot"),
-            "Get material at slot index")
+            py::call_guard<py::gil_scoped_release>(), "Get material at slot index")
         .def(
             "set_material",
             [](MeshRenderer &mr, uint32_t slot, py::object material) {

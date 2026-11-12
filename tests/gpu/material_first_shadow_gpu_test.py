@@ -63,15 +63,15 @@ ShaderInfo {
     ShadingModel Unlit
     AlphaClip 0.5
     Properties {
-        Color baseColor = [1.0, 0.2, 0.1, 1.0]
+        Color base_color = [1.0, 0.2, 0.1, 1.0]
         Texture2D mainTexture = white
     }
 }
 void surface(out SurfaceData s) {
     s = InitSurfaceData();
     vec4 texel = sampleAlbedoAlpha(mainTexture);
-    s.albedo = texel.rgb * material.baseColor.rgb;
-    s.alpha = texel.a * material.baseColor.a;
+    s.albedo = texel.rgb * material.base_color.rgb;
+    s.alpha = texel.a * material.base_color.a;
 }
 ''', encoding="utf-8")
                         imported = AssetManager.import_asset(str(fragment), database=frontend.get_asset_database())

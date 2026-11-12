@@ -208,7 +208,8 @@ void SlangCompiler::SetAuthorFrontend(ShaderAuthorFrontend frontend)
     impl->authorFrontend = std::move(frontend);
 }
 
-ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader)
+ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader,
+                                                      ShaderAuthorPhase phase)
 {
     ShaderAuthorFrontend frontend;
     {
@@ -219,7 +220,7 @@ ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &
         throw std::logic_error("Static GPU authoring frontend is not registered");
     // Frontend work may acquire the host interpreter. Never hold a compiler
     // lock across that boundary; only the returned C++ snapshot enters Slang.
-    return frontend(source, reader);
+    return frontend(source, reader, phase);
 }
 
 ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,

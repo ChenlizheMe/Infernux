@@ -75,17 +75,17 @@ vec3 worldToTangent(vec3 worldDirection) {
     return transpose(getTBN()) * worldDirection;
 }
 
-vec3 sampleNormal(sampler2D normalMap, vec2 uv, float scale) {
-    return getNormalFromMap(normalMap, uv, scale, v_Normal, v_Tangent);
+vec3 sampleNormal(sampler2D normal_map, vec2 uv, float scale) {
+    return getNormalFromMap(normal_map, uv, scale, v_Normal, v_Tangent);
 }
 
-vec3 sampleNormal(sampler2D normalMap, vec2 uv, int uvSet, float scale) {
-    return sampleNormal(normalMap, uv, scale);
+vec3 sampleNormal(sampler2D normal_map, vec2 uv, int uvSet, float scale) {
+    return sampleNormal(normal_map, uv, scale);
 }
 
-vec3 sampleNormal(sampler2D normalMap, float scale) {
-    vec3 currentNormal = texture(normalMap, v_TexCoord).rgb * 2.0 - 1.0;
-    vec3 nextNormal = texture(normalMap, v_ParticleFlipbookNextTexCoord).rgb * 2.0 - 1.0;
+vec3 sampleNormal(sampler2D normal_map, float scale) {
+    vec3 currentNormal = texture(normal_map, v_TexCoord).rgb * 2.0 - 1.0;
+    vec3 nextNormal = texture(normal_map, v_ParticleFlipbookNextTexCoord).rgb * 2.0 - 1.0;
     vec3 tangentNormal = normalize(mix(currentNormal, nextNormal, v_ParticleFlipbookBlend));
     tangentNormal.xy *= scale;
     return normalize(getTBN() * normalize(tangentNormal));

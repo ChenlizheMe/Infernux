@@ -185,8 +185,8 @@ ShaderPreviewMapping ParseShaderPreviewMapping(const std::string &shaderSource)
             return "emission";
         if (field == "alpha")
             return "alpha";
-        if (field == "specularHighlights")
-            return "specularHighlights";
+        if (field == "specular_highlights")
+            return "specular_highlights";
         return field; // pass through unknown fields
     };
 
@@ -364,14 +364,14 @@ void MaterialPreviewRenderer::RenderPreview(const InxMaterial &material, int siz
         }
 
         // Specular highlights
-        if (auto it = mapping->slots.find("specularHighlights"); it != mapping->slots.end()) {
+        if (auto it = mapping->slots.find("specular_highlights"); it != mapping->slots.end()) {
             if (auto v = TryGetFloat(material, it->second.scalarProp))
                 params.specularHighlights = *v;
         }
 
     } else {
         // No shader mapping available — use standard PBR property names.
-        TryGetColor(material, "baseColor", params.baseColor);
+        TryGetColor(material, "base_color", params.baseColor);
 
         if (auto v = TryGetFloat(material, "metallic"))
             params.metallic = *v;
@@ -381,17 +381,17 @@ void MaterialPreviewRenderer::RenderPreview(const InxMaterial &material, int siz
         else if (auto v2 = TryGetFloat(material, "smoothness"))
             params.roughness = 1.0f - *v2;
 
-        if (auto v = TryGetFloat(material, "ambientOcclusion"))
+        if (auto v = TryGetFloat(material, "ambient_occlusion"))
             params.ambientOcclusion = *v;
 
-        if (auto v = TryGetFloat(material, "normalScale"))
+        if (auto v = TryGetFloat(material, "normal_scale"))
             params.normalScale = *v;
 
-        if (auto v = TryGetFloat(material, "specularHighlights"))
+        if (auto v = TryGetFloat(material, "specular_highlights"))
             params.specularHighlights = *v;
 
         {
-            const auto *prop = material.GetProperty("emissionColor");
+            const auto *prop = material.GetProperty("emission_color");
             if (prop && (prop->type == MaterialPropertyType::Color || prop->type == MaterialPropertyType::Float4)) {
                 const auto &v = std::get<glm::vec4>(prop->value);
                 params.emissionColor = glm::vec3(v.x, v.y, v.z) * v.w;
@@ -399,35 +399,35 @@ void MaterialPreviewRenderer::RenderPreview(const InxMaterial &material, int siz
         }
 
         albedoTex = TryResolveTexture(material, "baseColorTexture", resolver);
-        metallicTex = TryResolveTexture(material, "metallicMap", resolver);
-        smoothnessTex = TryResolveTexture(material, "smoothnessMap", resolver);
-        aoTex = TryResolveTexture(material, "aoMap", resolver);
-        normalTex = TryResolveTexture(material, "normalMap", resolver);
+        metallicTex = TryResolveTexture(material, "metallic_map", resolver);
+        smoothnessTex = TryResolveTexture(material, "smoothness_map", resolver);
+        aoTex = TryResolveTexture(material, "occlusion_map", resolver);
+        normalTex = TryResolveTexture(material, "normal_map", resolver);
     }
 
     // Standard Lit's channel selection is explicit, not inferred from an
     // arbitrary surface() expression by the lightweight preview parser.
-    if (material.GetProperty("metallicChannels")) {
+    if (material.GetProperty("metallic_channels")) {
         const auto readChannels = [&material](const char *key, glm::vec4 &channels) {
             const auto *property = material.GetProperty(key);
             if (property)
                 if (const auto *value = std::get_if<glm::vec4>(&property->value))
                     channels = *value;
         };
-        readChannels("metallicChannels", params.metallicChannels);
-        readChannels("smoothnessChannels", params.smoothnessChannels);
-        if (auto value = TryGetFloat(material, "smoothnessFromRoughness"))
+        readChannels("metallic_channels", params.metallicChannels);
+        readChannels("smoothness_channels", params.smoothnessChannels);
+        if (auto value = TryGetFloat(material, "smoothness_from_roughness"))
             params.smoothnessFromRoughness = *value;
-        if (auto value = TryGetFloat(material, "occlusionStrength"))
+        if (auto value = TryGetFloat(material, "occlusion_strength"))
             params.occlusionStrength = *value;
         if (auto value = TryGetFloat(material, "metallic"))
             params.metallic = *value;
         if (auto value = TryGetFloat(material, "smoothness"))
             params.roughness = 1.0f - *value;
-        metallicTex = TryResolveTexture(material, "metallicMap", resolver);
-        smoothnessTex = TryResolveTexture(material, "smoothnessMap", resolver);
-        aoTex = TryResolveTexture(material, "aoMap", resolver);
-        emissionTex = TryResolveTexture(material, "emissionMap", resolver);
+        metallicTex = TryResolveTexture(material, "metallic_map", resolver);
+        smoothnessTex = TryResolveTexture(material, "smoothness_map", resolver);
+        aoTex = TryResolveTexture(material, "occlusion_map", resolver);
+        emissionTex = TryResolveTexture(material, "emission_map", resolver);
     }
     params.albedoTex = albedoTex.IsValid() ? &albedoTex : nullptr;
     params.metallicTex = metallicTex.IsValid() ? &metallicTex : nullptr;

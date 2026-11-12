@@ -2,6 +2,8 @@ import infernux.shader as shader
 
 
 class BloomPrefilter(shader.fullscreen):
+    shader_id = "infernux/post/bloom_prefilter"
+    hidden = True
     source_tex = shader.input("source", shader.Color2D, domain="scene_linear_hdr")
     threshold = shader.parameter.float(default=1.0)
     knee = shader.parameter.float(default=0.5)

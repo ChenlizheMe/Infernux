@@ -49,25 +49,18 @@ ShaderInfo {{
 }}
 '''
 
-FRAGMENT_SHADER_TEMPLATE = '''#version 450
+FRAGMENT_SHADER_TEMPLATE = '''import infernux.shader as shader
 
-ShaderInfo {{
-    Name "{shader_id}"
-    ShadingModel "Unlit"
-    Surface Opaque
-    Queue 2000
-    Properties {{
-        Color baseColor = [1.0, 1.0, 1.0, 1.0]
-        Texture2D texSampler = white
-    }}
-}}
 
-void surface(out SurfaceData s) {{
-    s = InitSurfaceData();
-    vec4 texColor = texture(texSampler, v_TexCoord);
-    s.albedo = texColor.rgb * v_Color * material.baseColor.rgb;
-    s.alpha  = texColor.a * material.baseColor.a;
-}}
+class {shader_id}(shader.surface):
+    shader_id = "project/{file_stem}"
+    base_color = shader.material.color(label="颜色")
+    albedo_map = shader.material.texture_2d()
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        base = shader.sample(self.albedo_map, ctx.uv0)
+        return shader.SurfaceData(albedo=base.rgb * ctx.color * self.base_color.rgb,
+                                  alpha=base.a * self.base_color.a)
 '''
 
 # ---------------------------------------------------------------------------
@@ -705,20 +698,24 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
 
     shader_type = str(shader_type).strip().lower()
     if shader_type not in {"vert", "frag"}:
-        return AssetCreationResult(False, "Shader type must be 'vert' or 'frag'. Compute shaders are not supported; "
-            "use an external parallel backend.")
+        return AssetCreationResult(False, "Shader type must be 'vert' or 'frag'; GPU kernels use infernux.compute.kernel.")
 
-    for ext in ['.vert', '.frag']:
+    for ext in ['.frag.py', '.vert', '.frag']:
         if shader_name.endswith(ext):
             shader_name = shader_name[:-len(ext)]
             break
 
-    # Shader ids follow the "Title Case With Spaces" convention (e.g. "My
-    # Shader"), regardless of how the file name was typed.
     words = re.split(r'[\s_\-]+', shader_name)
-    shader_id = ' '.join(w[:1].upper() + w[1:] for w in words if w)
-    extension = f'.{shader_type}'
-    file_name = shader_name + extension
+    if shader_type == 'frag':
+        shader_id = ''.join(word[:1].upper() + word[1:] for word in words if word)
+        if not shader_id.isidentifier() or keyword.iskeyword(shader_id):
+            return AssetCreationResult(False, "Shader name must form a Python class identifier")
+        stem = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', shader_name)
+        stem = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', stem)
+        file_name = re.sub(r'[\s_\-]+', '_', stem).lower() + '.frag.py'
+    else:
+        shader_id = ' '.join(word[:1].upper() + word[1:] for word in words if word)
+        file_name = shader_name + '.vert'
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
@@ -727,7 +724,7 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
     if shader_type == 'vert':
         content = VERTEX_SHADER_TEMPLATE.format(shader_id=shader_id)
     else:
-        content = FRAGMENT_SHADER_TEMPLATE.format(shader_id=shader_id)
+        content = FRAGMENT_SHADER_TEMPLATE.format(shader_id=shader_id, file_stem=file_name[:-len('.frag.py')])
 
     written, error = _write_new_text_asset(file_path, content)
     if not written:

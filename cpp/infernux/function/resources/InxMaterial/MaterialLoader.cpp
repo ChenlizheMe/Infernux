@@ -118,7 +118,7 @@ bool MaterialLoader::Reload(const RuntimeAssetPayload &existing, const std::stri
     InxMaterial staged(*mat);
     if (!PrepareDocument(staged, filePath, adb))
         return false;
-    PrepareShaderDefaults(staged, adb);
+    staged.PrepareShaderDefaults();
     staged.m_name = mat->GetName();
     mat->PublishDocument(std::move(staged));
 
@@ -193,20 +193,9 @@ void MaterialLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::
     material->SetName(FromFsPath(ToFsPath(filePath).stem()));
 }
 
-void MaterialLoader::PrepareShaderDefaults(InxMaterial &material, AssetDatabase *adb)
-{
-    const auto &fragment = material.GetFragShaderReference();
-    if (!fragment.guid.empty() && asset_formats::FindShaderSourceKind(adb->GetPathFromGuid(fragment.guid))) {
-        const auto shader = AssetRegistry::Instance().LoadAsset<ShaderAsset>(fragment.guid, ResourceType::Shader);
-        if (!shader || !shader->materialProgram)
-            throw std::invalid_argument("Material requires a compiled mesh shader author");
-        material.SynchronizeShaderPropertyDefaults(*shader->materialProgram);
-    }
-}
-
 void MaterialLoader::PreparePublication(const RuntimeAssetPayload &payload, const std::string &, AssetDatabase *adb)
 {
-    PrepareShaderDefaults(*payload.Get<InxMaterial>(), adb);
+    payload.Get<InxMaterial>()->PrepareShaderDefaults();
 }
 
 void MaterialLoader::OnPublished(const RuntimeAssetPayload &payload, const std::string &, AssetDatabase *adb)

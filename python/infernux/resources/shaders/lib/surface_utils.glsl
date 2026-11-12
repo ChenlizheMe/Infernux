@@ -141,19 +141,19 @@ float getFresnelPower(float power) {
 // ============================================================================
 
 // Sample a normal map → world-space normal  (Unity: Normal Map / Sample Texture 2D Normal)
-vec3 sampleNormal(sampler2D normalMap, vec2 uv, float scale) {
-    return getNormalFromMap(normalMap, uv, scale, v_Normal, v_Tangent);
+vec3 sampleNormal(sampler2D normal_map, vec2 uv, float scale) {
+    return getNormalFromMap(normal_map, uv, scale, v_Normal, v_Tangent);
 }
 
 // Imported geometry owns one authored tangent stream, conventionally derived
 // from UV0. A normal map selecting UV1 therefore reconstructs the basis from
 // that UV set's derivatives instead of incorrectly reusing the UV0 tangent.
-vec3 sampleNormal(sampler2D normalMap, vec2 uv, int uvSet, float scale) {
+vec3 sampleNormal(sampler2D normal_map, vec2 uv, int uvSet, float scale) {
     if (uvSet == 0) {
-        return sampleNormal(normalMap, uv, scale);
+        return sampleNormal(normal_map, uv, scale);
     }
 
-    vec3 tangentNormal = texture(normalMap, uv).rgb * 2.0 - 1.0;
+    vec3 tangentNormal = texture(normal_map, uv).rgb * 2.0 - 1.0;
     tangentNormal.xy *= scale;
     tangentNormal = normalize(tangentNormal);
     vec3 normalWS = normalize(v_Normal);
@@ -167,7 +167,7 @@ vec3 sampleNormal(sampler2D normalMap, vec2 uv, int uvSet, float scale) {
     vec3 bitangent = dyPerpendicular * uvDx.y + dxPerpendicular * uvDy.y;
     float basisLengthSq = max(dot(tangent, tangent), dot(bitangent, bitangent));
     if (basisLengthSq <= 1e-12) {
-        return sampleNormal(normalMap, uv, scale);
+        return sampleNormal(normal_map, uv, scale);
     }
     float inverseBasisLength = inversesqrt(basisLengthSq);
     mat3 uvBasis = mat3(tangent * inverseBasisLength,
@@ -177,8 +177,8 @@ vec3 sampleNormal(sampler2D normalMap, vec2 uv, int uvSet, float scale) {
 }
 
 // Overload: uses primary UV
-vec3 sampleNormal(sampler2D normalMap, float scale) {
-    return getNormalFromMap(normalMap, v_TexCoord, scale, v_Normal, v_Tangent);
+vec3 sampleNormal(sampler2D normal_map, float scale) {
+    return getNormalFromMap(normal_map, v_TexCoord, scale, v_Normal, v_Tangent);
 }
 
 // Sample height map → world-space normal (bump mapping)  (Unity: Normal From Height)

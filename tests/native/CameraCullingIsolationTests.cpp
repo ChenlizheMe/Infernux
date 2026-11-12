@@ -559,25 +559,26 @@ int main()
     assert(shadowRestored && shadowRestored->castsShadows && shadowRestored->receivesShadows);
     bool rejectedNonFiniteOverride = false;
     try {
-        leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, std::numeric_limits<float>::infinity(), 0.2f, 1.0f),
+        leftRenderer->SetParameter(0, "base_color", glm::vec4(0.1f, std::numeric_limits<float>::infinity(), 0.2f, 1.0f),
                                    false);
     } catch (const std::invalid_argument &) {
         rejectedNonFiniteOverride = true;
     }
     assert(rejectedNonFiniteOverride && !leftRenderer->GetParameterBlock(0));
-    leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
+    leftRenderer->SetParameter(0, "base_color", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
     const auto stableRuntimePublication = leftRenderer->GetParameterBlock(0);
     assert(stableRuntimePublication);
-    leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
+    leftRenderer->SetParameter(0, "base_color", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
     assert(leftRenderer->GetParameterBlock(0) == stableRuntimePublication);
-    leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.8f, 0.2f, 0.1f, 1.0f), false, "animation");
+    leftRenderer->SetParameter(0, "base_color", glm::vec4(0.8f, 0.2f, 0.1f, 1.0f), false, "animation");
     const auto laterOwnerPublication = leftRenderer->GetParameterBlock(0);
     assert(laterOwnerPublication && laterOwnerPublication != stableRuntimePublication);
     // Repeating script's own value is not a no-op after another owner wrote
     // the field: actual write order remains authoritative.
-    leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
+    leftRenderer->SetParameter(0, "base_color", glm::vec4(0.1f, 0.8f, 0.2f, 1.0f), false);
     assert(leftRenderer->GetParameterBlock(0) != laterOwnerPublication);
-    assert(std::get<glm::vec4>(leftRenderer->GetParameter(0, "baseColor")->value) == glm::vec4(0.1f, 0.8f, 0.2f, 1.0f));
+    assert(std::get<glm::vec4>(leftRenderer->GetParameter(0, "base_color")->value) ==
+           glm::vec4(0.1f, 0.8f, 0.2f, 1.0f));
     bridge.PrepareFrame(false);
     CameraDrawCallResult leftParameterChanged = bridge.CullAndBuildForCamera(leftCamera, false);
     const DrawCall *afterParameter = findLeftDraw(leftParameterChanged);
@@ -617,23 +618,23 @@ int main()
     twoSlotRenderer->SetMeshAsset(twoSlotMeshGuid, twoSlotMesh);
     twoSlotRenderer->SetMaterial(0, sharedMaterial);
     twoSlotRenderer->SetMaterial(1, sharedMaterial);
-    twoSlotRenderer->SetParameter(0, "baseColor", glm::vec4(0.8f, 0.1f, 0.1f, 1.0f), true);
-    twoSlotRenderer->SetParameter(1, "baseColor", glm::vec4(0.1f, 0.8f, 0.1f, 1.0f), true);
+    twoSlotRenderer->SetParameter(0, "base_color", glm::vec4(0.8f, 0.1f, 0.1f, 1.0f), true);
+    twoSlotRenderer->SetParameter(1, "base_color", glm::vec4(0.1f, 0.8f, 0.1f, 1.0f), true);
     const auto stablePersistentPublication = twoSlotRenderer->GetParameterBlock(1);
-    twoSlotRenderer->SetParameter(1, "baseColor", glm::vec4(0.1f, 0.8f, 0.1f, 1.0f), true);
+    twoSlotRenderer->SetParameter(1, "base_color", glm::vec4(0.1f, 0.8f, 0.1f, 1.0f), true);
     assert(twoSlotRenderer->GetParameterBlock(1) == stablePersistentPublication);
     twoSlotRenderer->SetParameter(1, "metallic", 0.65f, false, "play-runtime");
     auto rendererClone = twoSlotRenderer->Clone();
     auto *clonedRenderer = static_cast<MeshRenderer *>(rendererClone.get());
-    assert(clonedRenderer->GetParameter(1, "baseColor", true));
+    assert(clonedRenderer->GetParameter(1, "base_color", true));
     assert(!clonedRenderer->GetParameter(1, "metallic"));
     const auto serializedRenderer = twoSlotRenderer->SerializeDocument();
     assert(serializedRenderer.contains("parameterOverrides"));
-    assert(serializedRenderer["parameterOverrides"][1].contains("baseColor"));
+    assert(serializedRenderer["parameterOverrides"][1].contains("base_color"));
     assert(!serializedRenderer["parameterOverrides"][1].contains("metallic"));
     MeshRenderer restoredRenderer;
     assert(restoredRenderer.DeserializeDocument(serializedRenderer));
-    assert(restoredRenderer.GetParameter(1, "baseColor", true));
+    assert(restoredRenderer.GetParameter(1, "base_color", true));
     assert(!restoredRenderer.GetParameter(1, "metallic"));
     assert(twoSlotRenderer->RemoveParameter(1, "metallic", false, "play-runtime"));
     const auto slotOneBlock = twoSlotRenderer->GetParameterBlock(1);
@@ -653,24 +654,24 @@ int main()
     assert(twoSlotDraws[0]->material == sharedMaterial && twoSlotDraws[1]->material == sharedMaterial);
 
     auto texturedMaterial = sharedMaterial->Clone();
-    texturedMaterial->SetTextureGuid("texSampler", "white");
+    texturedMaterial->SetTextureGuid("albedo_map", "white");
     twoSlotRenderer->SetMaterial(0, texturedMaterial);
-    twoSlotRenderer->SetParameter(0, "texSampler", std::string("white"), false, "gameplay");
+    twoSlotRenderer->SetParameter(0, "albedo_map", std::string("white"), false, "gameplay");
     const auto textureBlockBeforeReload = twoSlotRenderer->GetParameterBlock(0);
     twoSlotRenderer->OnParameterTextureAssetEvent("white", AssetEvent::Modified);
     const auto textureBlockAfterReload = twoSlotRenderer->GetParameterBlock(0);
     assert(textureBlockAfterReload && textureBlockAfterReload != textureBlockBeforeReload);
-    assert(std::get<std::string>(textureBlockAfterReload->properties.at("texSampler").value) == "white");
+    assert(std::get<std::string>(textureBlockAfterReload->properties.at("albedo_map").value) == "white");
     // A delete publishes another generation while already captured draw data
     // retains the prior generation until its GPU submission can retire.
     twoSlotRenderer->OnParameterTextureAssetEvent("white", AssetEvent::Deleted);
     const auto textureBlockAfterDelete = twoSlotRenderer->GetParameterBlock(0);
     assert(textureBlockAfterDelete && textureBlockAfterDelete != textureBlockAfterReload);
-    assert(std::get<std::string>(textureBlockBeforeReload->properties.at("texSampler").value) == "white");
-    assert(std::get<std::string>(textureBlockAfterReload->properties.at("texSampler").value) == "white");
-    assert(twoSlotRenderer->RemoveParameter(0, "texSampler", false, "gameplay"));
+    assert(std::get<std::string>(textureBlockBeforeReload->properties.at("albedo_map").value) == "white");
+    assert(std::get<std::string>(textureBlockAfterReload->properties.at("albedo_map").value) == "white");
+    assert(twoSlotRenderer->RemoveParameter(0, "albedo_map", false, "gameplay"));
 
-    assert(twoSlotRenderer->RemoveParameter(0, "baseColor", true));
+    assert(twoSlotRenderer->RemoveParameter(0, "base_color", true));
     bridge.PrepareFrame(false);
     CameraDrawCallResult oneSlotRemoved = bridge.CullAndBuildForCamera(leftCamera, false);
     twoSlotDraws.clear();
@@ -819,8 +820,7 @@ int main()
     GameObject *importRoot = scene->CreateGameObject("ImportedCharacter");
     importRoot->SetParent(importParent, false);
     importRoot->GetTransform()->SetLocalPosition({1.0f, 0.5f, -0.25f});
-    importRoot->GetTransform()->SetLocalRotation(
-        glm::angleAxis(glm::radians(-21.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
+    importRoot->GetTransform()->SetLocalRotation(glm::angleAxis(glm::radians(-21.0f), glm::vec3(0.0f, 0.0f, 1.0f)));
     auto *skeleton = importRoot->AddComponent<SkeletonInstance>();
     skeleton->SetSourceModelGuid(importedGuid);
     GameObject *importChild = scene->CreateGameObject("ImportedNearNode");

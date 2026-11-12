@@ -13,6 +13,7 @@
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <platform/filesystem/AssetDocument.h>
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 #include <function/renderer/shader/ShaderProgram.h>
@@ -20,6 +21,7 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/scene/MeshRenderer.h>
 #include <functional>
 #include <nlohmann/json.hpp>
@@ -289,8 +291,8 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
     material->SetRenderState(state);
     material->SyncAlphaClipProperty();
 
-    material->SetColor("baseColor", glm::vec4(1.0f));
-    material->SetTextureGuid("texSampler", ResolveEngineTextureGuid(textureRef));
+    material->SetColor("base_color", glm::vec4(1.0f));
+    material->SetTextureGuid("albedo_map", ResolveEngineTextureGuid(textureRef));
     MaterialTextureSampler iconSampler;
     iconSampler.minFilter = MaterialSamplerFilter::Linear;
     iconSampler.magFilter = MaterialSamplerFilter::Linear;
@@ -301,7 +303,7 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
     iconSampler.mipFilter = MaterialSamplerFilter::Nearest;
     iconSampler.addressU = MaterialSamplerAddress::Clamp;
     iconSampler.addressV = MaterialSamplerAddress::Clamp;
-    material->SetTextureSampler("texSampler", iconSampler);
+    material->SetTextureSampler("albedo_map", iconSampler);
     material->SetBuiltin(true);
 
     return material;
@@ -630,8 +632,9 @@ void InxMaterial::PublishDependencies()
 }
 
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
-    : m_name(name), m_vertexShader{"", shaderName, ""}, m_fragmentShader{"", shaderName, ""}
+    : m_name(name), m_fragmentShader(ResolveFragmentShaderReference({"", shaderName, ""}))
 {
+    m_vertexShader = {"", m_fragmentShader.guid.empty() ? shaderName : "Standard", ""};
 }
 
 InxMaterial::InxMaterial(const InxMaterial &other)
@@ -1499,6 +1502,59 @@ bool InxMaterial::Deserialize(const std::string &jsonStr)
     }
 }
 
+ShaderAssetReference InxMaterial::ResolveFragmentShaderReference(ShaderAssetReference reference)
+{
+    if (!reference.guid.empty() || !reference.pathHint.empty())
+        return reference;
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+    if (auto *database = AssetRegistry::Instance().GetAssetDatabase()) {
+        const auto path = database->FindShaderPathById(reference.shaderId, "fragment");
+        if (asset_formats::FindShaderSourceKind(path))
+            reference = {database->GetGuidFromPath(path), reference.shaderId, path};
+    }
+#endif
+    return reference;
+}
+
+void InxMaterial::SetShader(const std::string &name)
+{
+    auto fragment = ResolveFragmentShaderReference({"", name, ""});
+    const ShaderAssetReference vertex{"", fragment.guid.empty() ? name : "Standard", ""};
+    if (m_vertexShader == vertex && m_fragmentShader == fragment)
+        return;
+    const bool switched =
+        !ReferencesSameShader(m_vertexShader, vertex) || !ReferencesSameShader(m_fragmentShader, fragment);
+    m_vertexShader = vertex;
+    m_fragmentShader = std::move(fragment);
+    TrackRuntimeShaderReferences();
+    if (switched)
+        ResetRenderStateAuthorship();
+    m_pipelineDirty = true;
+    ++m_version;
+    NotifyRoutingChanged();
+    PublishDependencies();
+}
+
+void InxMaterial::SetFragShader(const std::string &name)
+{
+    SetFragShaderReference({"", name, ""});
+}
+
+void InxMaterial::PrepareShaderDefaults()
+{
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+    auto &registry = AssetRegistry::Instance();
+    const auto &fragment = GetFragShaderReference();
+    if (!fragment.guid.empty() &&
+        asset_formats::FindShaderSourceKind(registry.GetAssetDatabase()->GetPathFromGuid(fragment.guid))) {
+        const auto shader = registry.LoadAsset<ShaderAsset>(fragment.guid, ResourceType::Shader);
+        if (!shader || !shader->materialProgram)
+            throw std::invalid_argument("Material requires a compiled mesh shader author");
+        SynchronizeShaderPropertyDefaults(*shader->materialProgram);
+    }
+#endif
+}
+
 void InxMaterial::TrackRuntimeShaderReferences()
 {
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
@@ -1601,7 +1657,7 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
 
         const auto &shaders = j["shaders"];
         m_vertexShader = DeserializeShaderReference(shaders["vertex"]);
-        m_fragmentShader = DeserializeShaderReference(shaders["fragment"]);
+        m_fragmentShader = ResolveFragmentShaderReference(DeserializeShaderReference(shaders["fragment"]));
 
         const auto &rs = j["renderState"];
         m_renderState.cullMode = static_cast<MaterialCullMode>(rs["cullMode"].get<int>());
@@ -1747,7 +1803,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
 
     // Use the shared standard vertex shader with the lit fragment shader.
     material->SetVertShader("Standard");
-    material->SetFragShader("Lit");
+    material->SetFragShader("infernux/lit");
 
     // Default lit opaque render state
     RenderState state;
@@ -1759,18 +1815,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
     state.renderQueue = 2000; // Opaque queue
     material->SetRenderState(state);
 
-    // Default properties from lit shader annotations
-    material->SetColor("baseColor", glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
-    material->SetFloat("metallic", 0.0f);
-    material->SetFloat("smoothness", 0.5f);
-    material->SetFloat("ambientOcclusion", 1.0f);
-    material->SetColor("emissionColor", glm::vec4(0.0f, 0.0f, 0.0f, 0.0f));
-    material->SetFloat("normalScale", 1.0f);
-    material->SetFloat("specularHighlights", 1.0f);
-    material->SetVector4("metallicChannels", glm::vec4(1, 0, 0, 0));
-    material->SetVector4("smoothnessChannels", glm::vec4(1, 0, 0, 0));
-    material->SetFloat("smoothnessFromRoughness", 0.0f);
-    material->SetFloat("occlusionStrength", 1.0f);
+    material->PrepareShaderDefaults();
 
     // Mark as built-in (shader cannot be changed by user)
     material->SetBuiltin(true);
@@ -1784,7 +1829,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
 
     // Use the shared standard vertex shader with the unlit fragment shader.
     material->SetVertShader("Standard");
-    material->SetFragShader("Unlit");
+    material->SetFragShader("infernux/unlit");
 
     // Default unlit opaque render state
     RenderState state;
@@ -1796,8 +1841,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
     state.renderQueue = 2000; // Opaque queue
     material->SetRenderState(state);
 
-    // Default property from shader annotation: baseColor
-    material->SetColor("baseColor", glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    material->PrepareShaderDefaults();
 
     return material;
 }
@@ -1806,7 +1850,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLineMaterial()
 {
     auto material = std::make_shared<InxMaterial>("DefaultLineMaterial");
     material->SetVertShader("Standard");
-    material->SetFragShader("Unlit");
+    material->SetFragShader("infernux/unlit");
 
     // A camera-facing ribbon is not a closed surface: both windings must be
     // visible. Line colour alpha is carried per vertex, so the default also
@@ -1831,7 +1875,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLineMaterial()
     // of a trail that folds back on itself (reversed winding) and flicker the
     // live tip as its winding flips frame to frame.
     material->SetRenderState(state);
-    material->SetColor("baseColor", glm::vec4(1.0f));
+    material->PrepareShaderDefaults();
     material->SetBuiltin(true);
     return material;
 }
@@ -1856,8 +1900,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
     state.alphaBlendOp = MaterialBlendOp::Add;
     state.renderQueue = 3000;
     material->SetRenderState(state);
-    material->SetColor("baseColor", glm::vec4(1.0f));
-    material->SetTextureGuid("texSampler", "white");
+    material->SetColor("base_color", glm::vec4(1.0f));
+    material->SetTextureGuid("albedo_map", "white");
     material->SetFloat("softness", 0.18f);
     material->SetBuiltin(true);
     return material;
@@ -1884,8 +1928,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSixWaySmokeMaterial()
     state.renderQueue = 3000;
     material->SetRenderState(state);
 
-    material->SetColor("baseColor", glm::vec4(0.66f, 0.66f, 0.66f, 1.0f));
-    material->SetColor("emissionColor", glm::vec4(1.0f, 0.28f, 0.04f, 1.0f));
+    material->SetColor("base_color", glm::vec4(0.66f, 0.66f, 0.66f, 1.0f));
+    material->SetColor("emission_color", glm::vec4(1.0f, 0.28f, 0.04f, 1.0f));
     material->SetFloat("lightingIntensity", 1.0f);
     material->SetFloat("ambientIntensity", 0.0f);
     material->SetFloat("ambientSaturation", 0.0f);
@@ -2169,6 +2213,7 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     // Deep copy all properties (floats, vecs, colors, texture GUIDs, etc.)
     // Texture references are GUIDs (strings) — shared by value, same as Unity.
     clone->m_properties = m_properties;
+    clone->m_shaderPropertyOrder = m_shaderPropertyOrder;
     clone->m_textureSamplers = m_textureSamplers;
     clone->m_renderTextures = m_renderTextures;
     clone->m_buffers = m_buffers;

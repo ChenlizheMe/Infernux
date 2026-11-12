@@ -2,6 +2,8 @@ import infernux.shader as shader
 
 
 class SharpenCas(shader.fullscreen):
+    shader_id = "infernux/post/sharpen_cas"
+    hidden = True
     source_tex = shader.input("color", shader.Color2D, domain="display_linear_ldr")
     intensity = shader.parameter.float(default=0.5)
 

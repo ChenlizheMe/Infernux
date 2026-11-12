@@ -72,7 +72,7 @@ class RenderTexture(ResourceProxy):
     Use ``require_current_write=True`` when a consumer needs an active
     producer in the same render opportunity.
 
-    ``material.set_texture('texSampler', target)`` binds the sampled color
+    ``material.set_texture('albedo_map', target)`` binds the sampled color
     (the resolved color for MSAA). The binding follows resize automatically
     and retains the resource. It does not alter a saved texture asset reference.
     Keep that material out of its producer camera's culling mask to avoid

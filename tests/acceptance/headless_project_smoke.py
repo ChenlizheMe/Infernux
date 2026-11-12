@@ -86,7 +86,7 @@ def _capture_renderer_materials(objects: list[Any]) -> dict[str, list[dict[str, 
                     material = get_material(slot)
                     if material is None:
                         continue
-                    color = material.get_color("baseColor")
+                    color = material.get_color("base_color")
                     slots.append(
                         {
                             "component": _component_name(renderer),

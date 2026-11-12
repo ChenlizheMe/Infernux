@@ -1174,19 +1174,19 @@ class TestMaterial:
         assert json.loads(wrapper_path.read_text(encoding="utf-8"))["name"] == "WrapperSave"
         material = InxMaterial.create_default_unlit()
         material.name = "InlineRuntimeMaterial"
-        material.set_texture("texSampler", "white")
-        assert material.get_texture("texSampler") == "white"
+        material.set_texture("albedo_map", "white")
+        assert material.get_texture("albedo_map") == "white"
         with pytest.raises(ValueError, match="texture GUID does not exist"):
-            material.set_texture("texSampler", "Assets/Textures/legacy-path.png")
+            material.set_texture("albedo_map", "Assets/Textures/legacy-path.png")
         with pytest.raises(ValueError, match="texture GUID does not exist"):
-            material.set_texture("texSampler", "missing-texture-guid")
-        assert material.get_texture("texSampler") == "white"
+            material.set_texture("albedo_map", "missing-texture-guid")
+        assert material.get_texture("albedo_map") == "white"
         document = json.loads(material.serialize())
         missing_guid = "52f6a608180f248634255ab26ccbd0a3"
-        document["properties"]["texSampler"]["guid"] = missing_guid
+        document["properties"]["albedo_map"]["guid"] = missing_guid
         assert material.deserialize(json.dumps(document))
-        assert material.get_texture("texSampler") == missing_guid
-        assert json.loads(material.serialize())["properties"]["texSampler"]["guid"] == missing_guid
+        assert material.get_texture("albedo_map") == missing_guid
+        assert json.loads(material.serialize())["properties"]["albedo_map"]["guid"] == missing_guid
         path = tmp_path / "atomic.mat"
         assert material.save_to(str(path))
         assert "material_version" not in json.loads(path.read_text(encoding="utf-8"))
@@ -1201,7 +1201,7 @@ class TestMaterial:
         restored = scene.find("InlineMaterialCube").get_component("MeshRenderer")
         restored_slot = json.loads(restored.serialize())["materials"][0]
         assert restored_slot["material"]["name"] == "InlineRuntimeMaterial"
-        assert restored_slot["material"]["properties"]["texSampler"]["guid"] == missing_guid
+        assert restored_slot["material"]["properties"]["albedo_map"]["guid"] == missing_guid
 
 
 # ═══════════════════════════════════════════════════════════════════════════

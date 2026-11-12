@@ -94,7 +94,7 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
         with graph.add_pass("AuthorNormal") as render_pass:
             render_pass.set_texture("source_tex", current.sample("normal"))
             render_pass.write_color(authored_normal)
-            render_pass.fullscreen_quad("fullscreen_blit")
+            render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
         graph.replace_current_pass_result(graph.write_buffer("effect:normal", current, "normal", authored_normal))
 
     graph._effect_stage_callback = replace_gbuffer_normal

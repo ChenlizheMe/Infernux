@@ -49,9 +49,9 @@ void VerifyCookedDocumentsLoadAndRemainImmutable()
     InxMaterial authored("Authored", "Unlit");
     authored.SetFloat("roughness", 0.375f);
     const std::string textureGuid(32, 'a');
-    authored.SetTextureGuid("texSampler", "white");
+    authored.SetTextureGuid("albedo_map", "white");
     auto document = authored.SerializeDocument();
-    document["properties"]["texSampler"]["guid"] = textureGuid;
+    document["properties"]["albedo_map"]["guid"] = textureGuid;
     const auto path = write("Surface.inxdoc", document);
     infernux::MaterialLoader loader;
     const auto loaded = loader.Load(path, "material-guid", nullptr).Get<InxMaterial>();
@@ -144,7 +144,7 @@ void VerifyGizmoIconPreservesAuthoredAlpha()
     assert(!state.alphaClipEnabled);
     assert(state.alphaClipThreshold == 0.0f);
     assert(state.depthTestEnable && !state.depthWriteEnable);
-    const auto *sampler = material->GetTextureSampler("texSampler");
+    const auto *sampler = material->GetTextureSampler("albedo_map");
     assert(sampler != nullptr);
     assert(sampler->minFilter == MaterialSamplerFilter::Linear);
     assert(sampler->magFilter == MaterialSamplerFilter::Linear);
@@ -446,11 +446,11 @@ void VerifyBackendNeutralRenderStateSchema()
 void VerifySparseMaterialUsesLinkedShaderDefaults()
 {
     InxMaterial material("Sparse", "Lit");
-    material.SetColor("baseColor", glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
+    material.SetColor("base_color", glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
 
     ShaderProgramArtifact artifact;
     ShaderProgramPropertyBinding baseColor;
-    baseColor.name = "baseColor";
+    baseColor.name = "base_color";
     baseColor.type = "Color";
     baseColor.defaultValue = "[1.0,1.0,1.0,1.0]";
     baseColor.stages = ShaderProgramStageMask::Fragment;
@@ -472,13 +472,13 @@ void VerifySparseMaterialUsesLinkedShaderDefaults()
     const uint64_t authoredVersion = material.GetAuthoredVersion();
     assert(material.SynchronizeShaderPropertyDefaults(artifact));
     assert(material.GetAuthoredVersion() == authoredVersion);
-    assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
+    assert(std::get<glm::vec4>(material.GetProperty("base_color")->value) == glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
     assert(std::get<float>(material.GetProperty("smoothness")->value) == 0.5f);
     const uint64_t synchronizedVersion = material.GetVersion();
     assert(!material.SynchronizeShaderPropertyDefaults(artifact));
     assert(material.GetVersion() == synchronizedVersion);
     const auto sparse = material.SerializeDocument();
-    assert(sparse["_shader_property_order"] == nlohmann::json::array({"baseColor"}));
+    assert(sparse["_shader_property_order"] == nlohmann::json::array({"base_color"}));
     InxMaterial restored;
     assert(restored.DeserializeDocument(sparse));
     assert(restored.SynchronizeShaderPropertyDefaults(artifact));
@@ -487,7 +487,7 @@ void VerifySparseMaterialUsesLinkedShaderDefaults()
     assert(material.GetAuthoredVersion() == authoredVersion);
     material.InvalidateTextureAssets("unused", false);
     assert(material.GetAuthoredVersion() == authoredVersion);
-    material.SetColor("baseColor", glm::vec4(1.0f));
+    material.SetColor("base_color", glm::vec4(1.0f));
     assert(material.GetAuthoredVersion() > authoredVersion);
 }
 
@@ -524,10 +524,10 @@ void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
 {
     InxMaterial material("AuthoredTint", "Unlit");
     const glm::vec4 tint(1.0f, 0.55f, 0.12f, 1.0f);
-    material.SetVector4("baseColor", tint);
+    material.SetVector4("base_color", tint);
     ShaderProgramArtifact artifact;
     ShaderProgramPropertyBinding binding;
-    binding.name = "baseColor";
+    binding.name = "base_color";
     binding.type = "Color";
     binding.defaultValue = "[1,1,1,1]";
     artifact.properties.push_back(binding);
@@ -541,9 +541,9 @@ void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
         assert(material.GetVersion() > version);
         const auto expected = std::string(type) == "Color" ? infernux::MaterialPropertyType::Color
                                                            : infernux::MaterialPropertyType::Float4;
-        assert(material.GetProperty("baseColor")->type == expected);
-        assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == tint);
-        assert(material.SerializeDocument()["properties"]["baseColor"]["type"] == static_cast<int>(expected));
+        assert(material.GetProperty("base_color")->type == expected);
+        assert(std::get<glm::vec4>(material.GetProperty("base_color")->value) == tint);
+        assert(material.SerializeDocument()["properties"]["base_color"]["type"] == static_cast<int>(expected));
         const auto synchronized = material.GetVersion();
         assert(!material.SynchronizeShaderPropertyDefaults(artifact));
         assert(material.GetVersion() == synchronized);
@@ -553,20 +553,20 @@ void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
     const auto version = material.GetVersion();
     bool rejected = false;
     try {
-        material.SetFloat("baseColor", 0.25f);
+        material.SetFloat("base_color", 0.25f);
     } catch (const std::invalid_argument &) {
         rejected = true;
     }
     assert(rejected && material.GetVersion() == version);
-    material.SetVector4("baseColor", tint);
-    assert(material.GetProperty("baseColor")->type == infernux::MaterialPropertyType::Color);
-    assert(material.GetColor("baseColor") == tint);
+    material.SetVector4("base_color", tint);
+    assert(material.GetProperty("base_color")->type == infernux::MaterialPropertyType::Color);
+    assert(material.GetColor("base_color") == tint);
 }
 
 void VerifyTextureSamplerBindingRoundTrip()
 {
     InxMaterial material("SamplerBinding", "Lit");
-    material.SetTextureGuid("texSampler", "white");
+    material.SetTextureGuid("albedo_map", "white");
     MaterialTextureSampler sampler;
     sampler.minFilter = MaterialSamplerFilter::Nearest;
     sampler.magFilter = MaterialSamplerFilter::Linear;
@@ -574,30 +574,30 @@ void VerifyTextureSamplerBindingRoundTrip()
     sampler.addressU = MaterialSamplerAddress::Clamp;
     sampler.addressV = MaterialSamplerAddress::Mirror;
     sampler.addressW = MaterialSamplerAddress::Repeat;
-    material.SetTextureSampler("texSampler", sampler);
-    assert(material.GetTextureSampler("texSampler") && *material.GetTextureSampler("texSampler") == sampler);
+    material.SetTextureSampler("albedo_map", sampler);
+    assert(material.GetTextureSampler("albedo_map") && *material.GetTextureSampler("albedo_map") == sampler);
 
     const auto document = material.SerializeDocument();
-    assert(document.at("textureSamplers").at("texSampler").at("addressV") ==
+    assert(document.at("textureSamplers").at("albedo_map").at("addressV") ==
            static_cast<uint32_t>(MaterialSamplerAddress::Mirror));
     InxMaterial restored;
     assert(restored.DeserializeDocument(document));
-    assert(restored.GetTextureSampler("texSampler") && *restored.GetTextureSampler("texSampler") == sampler);
-    assert(restored.Clone()->GetTextureSampler("texSampler") &&
-           *restored.Clone()->GetTextureSampler("texSampler") == sampler);
+    assert(restored.GetTextureSampler("albedo_map") && *restored.GetTextureSampler("albedo_map") == sampler);
+    assert(restored.Clone()->GetTextureSampler("albedo_map") &&
+           *restored.Clone()->GetTextureSampler("albedo_map") == sampler);
 
     const auto before = restored.SerializeDocument();
     auto invalid = before;
-    invalid["textureSamplers"]["texSampler"]["minFilter"] = 99;
+    invalid["textureSamplers"]["albedo_map"]["minFilter"] = 99;
     assert(!restored.DeserializeDocument(invalid));
     assert(restored.SerializeDocument() == before);
     invalid = before;
-    invalid["textureSamplers"]["missing"] = invalid["textureSamplers"]["texSampler"];
+    invalid["textureSamplers"]["missing"] = invalid["textureSamplers"]["albedo_map"];
     assert(!restored.DeserializeDocument(invalid));
     assert(restored.SerializeDocument() == before);
 
-    assert(restored.RemoveProperty("texSampler"));
-    assert(restored.GetTextureSampler("texSampler") == nullptr);
+    assert(restored.RemoveProperty("albedo_map"));
+    assert(restored.GetTextureSampler("albedo_map") == nullptr);
     assert(!restored.SerializeDocument().contains("textureSamplers"));
 }
 
@@ -640,11 +640,11 @@ void VerifyLineWidthParticipatesInPipelineState()
 void VerifyDocumentRepublishesTextureReadiness()
 {
     InxMaterial material("TexturePublication", "Unlit");
-    material.SetTextureGuid("texSampler", "white");
+    material.SetTextureGuid("albedo_map", "white");
     material.PublishTextureAssets({});
     assert(!material.NeedsTextureAssetResolution());
     auto document = material.SerializeDocument();
-    document["properties"]["texSampler"]["guid"] = "black";
+    document["properties"]["albedo_map"]["guid"] = "black";
     assert(material.DeserializeDocument(document));
     assert(material.NeedsTextureAssetResolution());
     material.PublishTextureAssets({});
@@ -653,7 +653,7 @@ void VerifyDocumentRepublishesTextureReadiness()
     assert(!material.DeserializeDocument(document));
     assert(!material.NeedsTextureAssetResolution());
     assert(material.GetVersion() == version);
-    assert(std::get<std::string>(material.GetProperty("texSampler")->value) == "black");
+    assert(std::get<std::string>(material.GetProperty("albedo_map")->value) == "black");
 }
 
 } // namespace

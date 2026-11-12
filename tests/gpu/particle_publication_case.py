@@ -38,7 +38,7 @@ class ParticlePublicationCase:
             parameters=(self.keep, ParticleParameter(stable_id='removed', name='Removed', default=2.0)),
             emitters=(
                 ParticleEmitterAsset(stable_id='emitter-keep', name='Keep', settings=self.settings,
-                    rendering=rendering('sprite', {'shader.baseColor':[1.,0.,0.,1.]})),
+                    rendering=rendering('sprite', {'shader.base_color':[1.,0.,0.,1.]})),
                 ParticleEmitterAsset(stable_id='emitter-removed', name='Removed', settings=self.settings),
             ))
         self.source = self.directory / 'Publication.particlegraph'
@@ -66,7 +66,7 @@ class ParticlePublicationCase:
             emitters=[item.stable_id for item in component._particle_metadata.emitters],
             artifact_revision=component._artifact_revision,
             native_revisions={str(i):self.native._gpu_particle_artifact_revision(i) for i in component._gpu_emitter_ids},
-            color=list(material.native.get_color('baseColor')),
+            color=list(material.native.get_color('base_color')),
             controller_ids=[id(item) for item in component._gpu_controllers],
             material_id=id(material), metadata_id=id(component._particle_metadata),
             kernel_id=id(component._particle_kernel),
@@ -76,7 +76,7 @@ class ParticlePublicationCase:
         self.second = ParticleGraphAsset(stable_id=self.first.stable_id, name=self.first.name,
             parameters=() if empty_parameters else (self.keep,), emitters=(
                 ParticleEmitterAsset(stable_id='emitter-keep', name='Keep', settings=self.settings,
-                    rendering=rendering('sprite', {'shader.baseColor':[0.,1.,0.,1.]})),
+                    rendering=rendering('sprite', {'shader.base_color':[0.,1.,0.,1.]})),
                 ParticleEmitterAsset(stable_id='emitter-new', name='Mesh', settings=self.settings,
                     rendering=rendering('mesh', {'mesh':AssetReference(guid=self.mesh_guid).to_dict()})),
             ))

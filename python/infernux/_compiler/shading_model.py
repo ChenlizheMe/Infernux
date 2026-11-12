@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .shader_library import ShaderEmitter, declarations
 from .slang_ast import qualified
+from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 
 
 _BUILTIN_ROOT = Path(__file__).parents[1] / "resources" / "shaders"
@@ -55,6 +56,7 @@ class ShadingModel:
     dependencies: tuple[str, ...]
     source_ranges: tuple
     deferred_model: str | None
+    info: dict
 
 
 def read_shading_model(path, graph, owner, location, *, source=None):
@@ -76,6 +78,8 @@ def read_shading_model(path, graph, owner, location, *, source=None):
         author.error(declaration, "Declare a shader.shadingmodel class")
     contract, methods = None, []
     for statement in declaration.body:
+        if info_field(statement) in INFO_DEFAULTS:
+            continue
         if (isinstance(statement, ast.Assign) and len(statement.targets) == 1
                 and qualified(statement.targets[0]) == "lighting_contract" and contract is None):
             if not isinstance(statement.value, ast.Constant) or statement.value.value not in {
@@ -113,7 +117,7 @@ def read_shading_model(path, graph, owner, location, *, source=None):
         ranges.extend(emitter.source_ranges)
     code.append("}")
     return ShadingModel(declaration.name, str(path), contract, "\n".join(code), dependencies, tuple(ranges),
-                        _BUILTIN_MODELS.get(path))
+                        _BUILTIN_MODELS.get(path), read_shader_info(source, str(path)))
 
 
 def default_shading_model():

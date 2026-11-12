@@ -60,7 +60,7 @@ vec3 inxSixWayAmbient(float alpha) {
     vec3 upAxis = basis[1];
     vec3 backAxis = basis[2];
     float absorptionRange = inxSixWayAbsorptionRange(alpha);
-    vec3 densityScales = inxSixWayDensityScales(material.baseColor.rgb);
+    vec3 densityScales = inxSixWayDensityScales(material.base_color.rgb);
     vec3 ambient =
         inxSixWayTransmissionPrepared(_inxSixWayPositive.r, absorptionRange, densityScales) *
             sampleAmbientIrradiance(rightAxis) +
@@ -102,7 +102,7 @@ vec3 inxSixWayDirectLighting(float alpha) {
     ShadingContext ctx = GetShadingContext();
     vec3 directLighting = vec3(0.0);
     float absorptionRange = inxSixWayAbsorptionRange(alpha);
-    vec3 densityScales = inxSixWayDensityScales(material.baseColor.rgb);
+    vec3 densityScales = inxSixWayDensityScales(material.base_color.rgb);
     const uint particleLightDomain = 2u;
 
 #ifdef INX_FORWARD_PLUS_PASS

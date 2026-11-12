@@ -75,7 +75,7 @@ def main():
             colors = ((.9, .1, .2, 1), (.2, .7, .1, 1))
             plans = [('red_implicit', 0), ('green_implicit', 1), ('red_explicit', 0),
                      ('green_explicit', 1), ('moved_green', 1), ('restored_green', 1)]
-            material.set_color('baseColor', *colors[0])
+            material.set_color('base_color', *colors[0])
             phase = frames = changed = 0
             tickets = None
             images, previews = {}, {}
@@ -136,7 +136,7 @@ def main():
                             native.exit()
                             return
                         phase += 1
-                        material.set_color('baseColor', *colors[plans[phase][1]])
+                        material.set_color('base_color', *colors[plans[phase][1]])
                         if phase == 2:
                             stack = scene.create_game_object('Explicit Default Forward').add_component(inx.RenderStack)
                             stack.pipeline_class_name = 'Default Forward'

@@ -68,7 +68,7 @@ def test_native_shader_metadata_owns_the_imported_schema_and_normalizes_hdr_valu
     shader = tmp_path / "structured.frag"
     shader.write_text('ShaderInfo { Name "Source/ShouldNotBeParsed" }\nvoid main() {}\n', encoding="utf-8")
     color = {
-        "name": "baseColor",
+        "name": "base_color",
         "type": "Color",
         "default": [1.0, 0.5, 0.25, 1.0],
         "hdr": True,
@@ -76,7 +76,7 @@ def test_native_shader_metadata_owns_the_imported_schema_and_normalizes_hdr_valu
         "line": 7,
         "column": 9,
     }
-    encoded = {"name": "emissionColor", "type": "Color", "default": "[0.0, 0.0, 0.0, 0.0], HDR", "hdr": False}
+    encoded = {"name": "emission_color", "type": "Color", "default": "[0.0, 0.0, 0.0, 0.0], HDR", "hdr": False}
     _write_meta(
         shader,
         {
@@ -89,7 +89,7 @@ def test_native_shader_metadata_owns_the_imported_schema_and_normalizes_hdr_valu
     assert inspector_shader_utils.parse_shader_id(str(shader)) == "Imported/Structured"
     assert inspector_shader_utils.parse_shader_properties(str(shader)) == [
         color,
-        {"name": "emissionColor", "type": "Color", "default": [0.0, 0.0, 0.0, 0.0], "hdr": True},
+        {"name": "emission_color", "type": "Color", "default": [0.0, 0.0, 0.0, 0.0], "hdr": True},
     ]
     assert inspector_shader_utils.is_shader_hidden(str(shader))
 
@@ -97,18 +97,18 @@ def test_native_shader_metadata_owns_the_imported_schema_and_normalizes_hdr_valu
 def test_shader_schema_sync_drives_material_edits_and_removes_retired_range():
     data = {
         "properties": {
-            "emissionColor": {"type": 0, "value": "[0.0, 0.0, 0.0, 0.0], HDR"},
+            "emission_color": {"type": 0, "value": "[0.0, 0.0, 0.0, 0.0], HDR"},
             "amount": {"type": 0, "value": 0.25},
             "steps": {"type": 4, "value": 1},
         }
     }
     schema = [
-        {"name": "emissionColor", "type": "Color", "default": "[0.1, 0.2, 0.3, 1.0], HDR", "hdr": False},
+        {"name": "emission_color", "type": "Color", "default": "[0.1, 0.2, 0.3, 1.0], HDR", "hdr": False},
         {"name": "amount", "type": "Float", "default": 0.5, "hdr": False, "range": [0.0, 1.0]},
         {"name": "steps", "type": "Int", "default": 2, "hdr": False, "range": [0, 8]},
     ]
     inspector_shader_utils._apply_shader_props_to_mat(data, schema)
-    assert data["properties"]["emissionColor"] == {"type": 7, "value": [0.1, 0.2, 0.3, 1.0], "hdr": True}
+    assert data["properties"]["emission_color"] == {"type": 7, "value": [0.1, 0.2, 0.3, 1.0], "hdr": True}
     amount, steps = data["properties"]["amount"], data["properties"]["steps"]
     assert amount["value"] == 0.25 and amount["range"] == [0.0, 1.0]
     context = _RangePropertyContext()

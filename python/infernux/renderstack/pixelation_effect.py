@@ -77,7 +77,7 @@ class PixelationEffect(FullScreenEffect):
     )
 
     def get_shader_list(self):
-        return ["pixelation"]
+        return ["infernux/post/pixelation"]
 
     def setup_passes(self, graph, bus) -> None:
         from infernux.rendergraph.graph import Format
@@ -87,7 +87,7 @@ class PixelationEffect(FullScreenEffect):
             bus,
             output_name="_pixelation_out",
             pass_name="Pixelation_Apply",
-            shader_name="pixelation",
+            shader_name="infernux/post/pixelation",
             format=Format.RGBA16_SFLOAT,
             params={
                 "pixel_size": self.pixel_size,

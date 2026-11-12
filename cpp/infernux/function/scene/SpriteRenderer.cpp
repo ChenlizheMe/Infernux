@@ -49,14 +49,14 @@ void RequireFiniteSpriteVector(const glm::vec4 &value)
 void SpriteRenderer::PublishSpriteTexture()
 {
     SetRuntimeParameterProperty(
-        0, {"texSampler", MaterialPropertyType::Texture2D, InxMaterial::RequireTextureGuid(m_spriteGuid)},
+        0, {"albedo_map", MaterialPropertyType::Texture2D, InxMaterial::RequireTextureGuid(m_spriteGuid)},
         "sprite-renderer");
 }
 
 void SpriteRenderer::PublishSpriteColor()
 {
     RequireFiniteSpriteVector(m_color);
-    SetRuntimeParameterProperty(0, {"baseColor", MaterialPropertyType::Color, m_color}, "sprite-renderer");
+    SetRuntimeParameterProperty(0, {"base_color", MaterialPropertyType::Color, m_color}, "sprite-renderer");
 }
 
 void SpriteRenderer::PublishSpriteUV(const glm::vec4 &uvRect, const glm::vec4 &displayScale)

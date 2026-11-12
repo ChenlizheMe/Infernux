@@ -26,8 +26,14 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureShaderAuthorMaterial(co
     const auto &program = *asset->materialProgram;
     if (stages != program.key.stages)
         return {true, false, "Mesh fragment requires its declared standard vertex program"};
-    if (!m_renderer->HasShaderProgramArtifact(program.key) && !m_renderer->PublishShaderProgramArtifact(program))
-        return {true, false, "Mesh author program could not be published"};
+    if (!m_renderer->HasShaderProgramArtifact(program.key)) {
+        if (!m_renderer->PublishShaderProgramArtifact(program))
+            return {true, false, "Mesh author program could not be published"};
+        const auto &meta = asset->renderMeta;
+        m_renderer->StoreShaderRenderMeta(program.key.stages.fragmentKey, meta.cullMode, meta.depthWrite,
+                                          meta.depthTest, meta.blend, meta.queue, meta.passTag, meta.stencil,
+                                          meta.alphaClip);
+    }
     return {true, true, {}};
 }
 
@@ -69,6 +75,12 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
         // this same owner boundary; device readers retain immutable code.
         for (auto &[root, asset] : candidates) {
             const bool fullscreen = asset->programDomain == ShaderProgramDomain::Fullscreen;
+            if (m_renderer && asset->materialProgram) {
+                const auto &meta = asset->renderMeta;
+                m_renderer->StoreShaderRenderMeta(asset->materialProgram->key.stages.fragmentKey, meta.cullMode,
+                                                  meta.depthWrite, meta.depthTest, meta.blend, meta.queue, meta.passTag,
+                                                  meta.stencil, meta.alphaClip);
+            }
             registry.PublishShader(root, std::move(asset));
             if (m_renderer && fullscreen)
                 m_renderer->InvalidateShaderCache(root);

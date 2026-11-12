@@ -67,9 +67,9 @@ class MeshPreviewDependencyCase:
             imported = AssetManager.import_asset(str(self.texture))
             assert imported, imported.error
             self.assets.append(self.texture)
-            material.set_texture_guid('texSampler', imported.guid)
+            material.set_texture_guid('albedo_map', imported.guid)
         else:
-            material.set_vector4('baseColor', 1., 0., 0., 1.)
+            material.set_vector4('base_color', 1., 0., 0., 1.)
         assert material.save_to(str(self.material_path))
         imported = AssetManager.import_asset(str(self.material_path))
         assert imported, imported.error
@@ -105,7 +105,7 @@ class MeshPreviewDependencyCase:
             if self.phase == 0:
                 old = self.material.serialize_document()
                 new = copy.deepcopy(old)
-                new['properties']['baseColor']['value'] = [0., 0., 1., 1.]
+                new['properties']['base_color']['value'] = [0., 0., 1., 1.]
                 assert self.history.execute(MaterialDocumentCommand(self.material, old, new), raise_errors=True)
             elif self.phase == 1:
                 self.history.undo()
@@ -117,13 +117,13 @@ class MeshPreviewDependencyCase:
             assert result, result.error
         elif self.mode == 'material_import':
             authored = InxMaterial.create_default_unlit()
-            authored.set_vector4('baseColor', 0., 0., 1., 1.)
+            authored.set_vector4('base_color', 0., 0., 1., 1.)
             assert authored.save_to(str(self.material_path))
             result = AssetManager.reimport_asset(str(self.material_path))
             assert result, result.error
         else:
             target = self.registry.load_material(str(self.other)) if self.mode == 'unrelated' else self.material
-            target.set_vector4('baseColor', 0., 0., 1., 1.)
+            target.set_vector4('base_color', 0., 0., 1., 1.)
             if self.mode == 'snapshot':
                 self.write_ticket = AssetManager._submit_document_snapshot(str(self.material_path), target.serialize())
             else:

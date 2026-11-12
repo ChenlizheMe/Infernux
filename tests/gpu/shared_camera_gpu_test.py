@@ -76,7 +76,7 @@ def main():
                 camera.background_color=vec4f(0,0,0,1);camera.clear_flags=CameraClearFlags.SolidColor;cameras.append(camera)
                 obj=scene.create_game_object('Layer'+str(i));obj.layer=i;obj.transform.position=Vector3(x,0,0);objects.append(obj)
                 renderer=obj.add_component(inx.MeshRenderer);renderer.set_mesh_asset_guid(mesh_guid)
-                material=inx.Material.create_unlit();material.set_color('baseColor',*color);renderer.set_material(0,material)
+                material=inx.Material.create_unlit();material.set_color('base_color',*color);renderer.set_material(0,material)
             owner=scene.create_game_object('Monitor');owner.transform.position=Vector3(0,0,-5);monitor=owner.add_component(inx.Camera);monitor.culling_mask=0;monitor.depth=-1;scene.main_camera=monitor
             router.monitor_id=monitor.component_id;router.monitor.targets=targets
             frontend.set_render_pipeline(router);native.set_game_camera_enabled(True)

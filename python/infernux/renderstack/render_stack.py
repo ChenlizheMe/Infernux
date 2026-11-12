@@ -855,7 +855,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                             and effect_color.size_divisor == stage_color.size_divisor
                         )
                         render_pass.fullscreen_quad(
-                            "fullscreen_copy" if same_extent else "fullscreen_blit"
+                            "infernux/internal/fullscreen_copy" if same_extent else "infernux/internal/fullscreen_blit"
                         )
                 bus.set(COLOR_TEXTURE, stage_color)
 

@@ -86,10 +86,11 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def_property_readonly("dependency_graph",
                                [](const AssetDatabase &database) { return database.GetDependencyGraph(); })
         .def("initialize", &AssetDatabase::Initialize, py::arg("project_root"),
-             "Initialize asset database with project root")
+             py::call_guard<py::gil_scoped_release>(), "Initialize asset database with project root")
         .def("is_owner_thread", &AssetDatabase::IsOwnerThread,
              "Whether the caller owns this initialized asset database")
-        .def("refresh", &AssetDatabase::Refresh, "Refresh assets by scanning Assets folder")
+        .def("refresh", &AssetDatabase::Refresh, py::call_guard<py::gil_scoped_release>(),
+             "Refresh assets by scanning Assets folder")
         .def("configure_blender_import", &AssetDatabase::ConfigureBlenderImport, py::arg("executable"),
              py::arg("export_script"))
         .def("begin_refresh", &AssetDatabase::BeginRefresh,
@@ -99,10 +100,10 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("_complete_runtime_artifact_publication", &AssetDatabase::CompleteRuntimeArtifactPublication,
              py::call_guard<py::gil_scoped_release>())
         .def("complete_pending_refresh", &AssetDatabase::CompletePendingRefresh,
-             "Wait for and commit the currently pending asynchronous refresh")
+             py::call_guard<py::gil_scoped_release>(), "Wait for and commit the currently pending asynchronous refresh")
         .def_property_readonly("refresh_pending", &AssetDatabase::IsRefreshPending)
         .def("flush_derived_index", &AssetDatabase::FlushDerivedIndex, py::arg("wait_for_pending_scan") = true,
-             "Persist a dirty derived AssetIndex")
+             py::call_guard<py::gil_scoped_release>(), "Persist a dirty derived AssetIndex")
         .def("add_scan_root", &AssetDatabase::AddScanRoot, py::arg("path"),
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
         .def("_begin_runtime_asset_catalog", &AssetDatabase::BeginRuntimeAssetCatalog, py::arg("package_root"),
@@ -198,6 +199,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
              "Check if GUID exists")
         .def("contains_path", &AssetDatabase::ContainsPath, py::arg("path"), py::call_guard<py::gil_scoped_release>(),
              "Check if path exists")
+        .def("find_shader_path_by_id", &AssetDatabase::FindShaderPathById, py::arg("shader_id"),
+             py::arg("shader_type") = "")
         .def("get_guid_from_path", &AssetDatabase::GetGuidFromPath, py::arg("path"),
              py::call_guard<py::gil_scoped_release>(), "Get GUID from asset path")
         .def("get_guid_from_catalog_path", &AssetDatabase::GetGuidFromCatalogPath, py::arg("path"),

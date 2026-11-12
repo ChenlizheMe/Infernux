@@ -61,11 +61,11 @@ class BloomEffect(FullScreenEffect):
 
     def get_shader_list(self) -> List[str]:
         return [
-            "fullscreen_copy",
-            "bloom_prefilter",
-            "bloom_downsample",
-            "bloom_upsample",
-            "bloom_composite",
+            "infernux/internal/fullscreen_copy",
+            "infernux/post/bloom_prefilter",
+            "infernux/post/bloom_downsample",
+            "infernux/post/bloom_upsample",
+            "infernux/post/bloom_composite",
         ]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
@@ -135,7 +135,7 @@ class BloomEffect(FullScreenEffect):
         with graph.add_pass("Bloom_SceneCopy") as p:
             p.set_texture("source_tex", color_handle)
             p.write_color(scene_copy)
-            p.fullscreen_quad("fullscreen_copy")
+            p.fullscreen_quad("infernux/internal/fullscreen_copy")
 
         # ---- Pass 1: Prefilter (scene_copy → mip0) ----
         with graph.add_pass("Bloom_Prefilter") as p:
@@ -144,7 +144,7 @@ class BloomEffect(FullScreenEffect):
             p.set_param("knee", 0.5)
             p.set_param("clamp_max", self.clamp)
             p.write_color(mip_textures[0])
-            p.fullscreen_quad("bloom_prefilter")
+            p.fullscreen_quad("infernux/post/bloom_prefilter")
 
         # ---- Passes 2..N: Downsample chain (mip[i-1] → mip[i]) ----
         for i in range(1, iterations):
@@ -153,7 +153,7 @@ class BloomEffect(FullScreenEffect):
             with graph.add_pass(f"Bloom_Down{i}") as p:
                 p.set_texture("source_tex", src)
                 p.write_color(dst)
-                p.fullscreen_quad("bloom_downsample")
+                p.fullscreen_quad("infernux/post/bloom_downsample")
 
         # ---- Passes N..2: Upsample chain ----
         # Each step reads (lower-res mip OR previous up result) + higher-res mip,
@@ -172,7 +172,7 @@ class BloomEffect(FullScreenEffect):
                 p.set_texture("destination_tex", higher)
                 p.write_color(up_textures[i - 1])
                 p.set_param("scatter", self.scatter)
-                p.fullscreen_quad("bloom_upsample")
+                p.fullscreen_quad("infernux/post/bloom_upsample")
 
         # A one-level pyramid has no upsample pass; its prefiltered mip is the
         # final bloom source. Larger pyramids finish in up_textures[0].
@@ -189,7 +189,7 @@ class BloomEffect(FullScreenEffect):
             p.write_color(color_out)
             p.set_param("intensity", self.intensity)
             p.set_param("tint", tuple(self.tint))
-            p.fullscreen_quad("bloom_composite")
+            p.fullscreen_quad("infernux/post/bloom_composite")
 
         # Update bus so subsequent effects read the bloom result
         bus.set("color", color_out)

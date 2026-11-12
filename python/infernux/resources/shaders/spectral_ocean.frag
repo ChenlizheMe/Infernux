@@ -97,5 +97,5 @@ void surface(out SurfaceData s) {
     s.emission = material.crestColor.rgb * foam * material.crestGlow +
         material.horizonColor.rgb * fresnel * 0.025;
     s.alpha = 1.0;
-    s.specularHighlights = 1.0;
+    s.specular_highlights = 1.0;
 }

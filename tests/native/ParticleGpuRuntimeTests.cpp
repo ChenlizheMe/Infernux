@@ -699,7 +699,7 @@ static std::shared_ptr<ShaderProgramArtifact> PassBindingArtifact(bool bindless)
     result->domain = ShaderProgramDomain::ParticleSprite;
     result->compatibilitySignature = 1;
     result->usesBindlessTextureABI = bindless;
-    result->properties = {{"texSampler", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
+    result->properties = {{"albedo_map", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
                            std::nullopt, std::nullopt, 0, 0, 0}};
     for (const auto target :
          {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus, ShaderCompileTarget::Motion}) {
@@ -732,11 +732,11 @@ static bool VerifyParticlePassBinding(const std::string &kind, bool bindless, Sh
     const auto textureView = device.CreateTextureView({});
     const auto sampler = device.CreateSampler({});
     auto resolver = [&](const std::string &guid, const std::string &name, particle::GpuParticleTextureRequest request) {
-        assert(name == "texSampler" && request == particle::GpuParticleTextureRequest::Poll);
+        assert(name == "albedo_map" && request == particle::GpuParticleTextureRequest::Poll);
         return AcquireTestTexture(device, textureSlots, guid, 1, textureView, sampler);
     };
     auto material = std::make_shared<InxMaterial>("ParticlePassBinding");
-    material->SetTextureGuid("texSampler", "white");
+    material->SetTextureGuid("albedo_map", "white");
     const auto artifact = PassBindingArtifact(bindless);
     GraphicsTrace trace;
     const rhi::GraphicsCommandEncoder::Dispatch dispatch = GraphicsTrace::Commands();
@@ -873,7 +873,7 @@ static std::shared_ptr<ShaderProgramArtifact> ViewBindingTestArtifact(bool bindl
     result->domain = ShaderProgramDomain::ParticleSprite;
     result->compatibilitySignature = 1;
     result->usesBindlessTextureABI = bindless;
-    result->properties = {{"texSampler", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
+    result->properties = {{"albedo_map", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
                            std::nullopt, std::nullopt, 0, 0, 0}};
     for (const auto target : {ShaderCompileTarget::Forward, ShaderCompileTarget::Motion}) {
         ShaderProgramArtifact::PassVariant variant;
@@ -907,11 +907,11 @@ static void TestViewBindingRetirement(const std::string &kind)
     const auto textureView = device.CreateTextureView({});
     const auto sampler = device.CreateSampler({});
     auto resolver = [&](const std::string &guid, const std::string &name, particle::GpuParticleTextureRequest request) {
-        assert(name == "texSampler" && request == particle::GpuParticleTextureRequest::Poll);
+        assert(name == "albedo_map" && request == particle::GpuParticleTextureRequest::Poll);
         return AcquireTestTexture(device, textureSlots, guid, 1, textureView, sampler);
     };
     auto material = std::make_shared<InxMaterial>("AuditMotionBinding");
-    material->SetTextureGuid("texSampler", "white");
+    material->SetTextureGuid("albedo_map", "white");
     const auto artifact = ViewBindingTestArtifact(bindless);
     GraphicsTrace trace;
     const rhi::GraphicsCommandEncoder::Dispatch dispatch = GraphicsTrace::Commands();
@@ -2836,7 +2836,7 @@ int main()
     billboardArtifact->usesParticleSceneDepthBinding = true;
     billboardArtifact->compatibilitySignature = 1;
     billboardArtifact->properties = {
-        {"texSampler", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false, std::nullopt, std::nullopt, 0,
+        {"albedo_map", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false, std::nullopt, std::nullopt, 0,
          0, 0},
     };
     ShaderProgramArtifact::PassVariant billboardForward;
@@ -2869,7 +2869,7 @@ int main()
     liveMaterialState.blendEnable = true;
     liveMaterialState.depthWriteEnable = false;
     billboardDesc.material->SetRenderState(liveMaterialState);
-    billboardDesc.material->SetTextureGuid("texSampler", "white");
+    billboardDesc.material->SetTextureGuid("albedo_map", "white");
     uint32_t textureResolveCount = 0;
     bool normalTextureReady = false;
     TestTextureSlots textureSlots;
@@ -2877,7 +2877,7 @@ int main()
                                      &textureSlots](const std::string &textureGuid, const std::string &name,
                                                     particle::GpuParticleTextureRequest request) {
         assert(request == particle::GpuParticleTextureRequest::Poll);
-        assert(name == "texSampler");
+        assert(name == "albedo_map");
         ++textureResolveCount;
         if (textureGuid == "normal" && !normalTextureReady)
             return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Pending};
@@ -2937,14 +2937,14 @@ int main()
     assert((graphicsTrace.constants.back().alignmentReference == std::array<float, 4>{0.0f, 0.0f, 1.0f, 2.0f}));
 
     billboardDesc.material->SetRenderQueue(3150);
-    billboardDesc.material->SetColor("baseColor", glm::vec4(0.25f, 0.5f, 0.75f, 0.8f));
+    billboardDesc.material->SetColor("base_color", glm::vec4(0.25f, 0.5f, 0.75f, 0.8f));
     assert(billboard.RenderQueue() == 3150);
     assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
     assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
     assert(graphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
     assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
-    billboardDesc.material->SetTextureGuid("texSampler", "normal");
+    billboardDesc.material->SetTextureGuid("albedo_map", "normal");
     assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(textureResolveCount == 3 && device.groupCreates == groupCreatesBeforeBillboard + 4u &&
            device.groupReleases == groupReleasesBeforeBillboard);
@@ -3088,7 +3088,7 @@ int main()
     linkedArtifact->alphaClipThresholdOffset = 20;
     linkedArtifact->compatibilitySignature = 99;
     linkedArtifact->properties = {
-        {"baseColor", "Color", "[1.0, 1.0, 1.0, 1.0]", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 0,
+        {"base_color", "Color", "[1.0, 1.0, 1.0, 1.0]", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 0,
          std::nullopt, 16, 16},
         {"intensity", "Float", "2.0", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 16, std::nullopt, 4,
          4},
@@ -3120,7 +3120,7 @@ int main()
     linkedDesc.instances = instanceBuffer;
     linkedDesc.renderIndices = renderIndexBuffer;
     linkedDesc.material = std::make_shared<InxMaterial>("linked-particle-material");
-    linkedDesc.material->SetColor("baseColor", glm::vec4(0.2f, 0.4f, 0.6f, 0.8f));
+    linkedDesc.material->SetColor("base_color", glm::vec4(0.2f, 0.4f, 0.6f, 0.8f));
     linkedDesc.material->SetFloat("intensity", 3.5f);
     linkedDesc.material->SetTextureGuid("albedo", "white");
     linkedDesc.material->SetTextureGuid("detail", "normal");
@@ -3429,13 +3429,13 @@ int main()
         meshDesc.shaderProgram = billboardArtifact;
         meshDesc.material = std::make_shared<InxMaterial>("particle-mesh-material");
         meshDesc.material->SetRenderQueue(2450);
-        meshDesc.material->SetColor("baseColor", glm::vec4(0.2f, 0.4f, 0.8f, 0.75f));
-        meshDesc.material->SetTextureGuid("texSampler", "white");
+        meshDesc.material->SetColor("base_color", glm::vec4(0.2f, 0.4f, 0.8f, 0.75f));
+        meshDesc.material->SetTextureGuid("albedo_map", "white");
         TestTextureSlots meshTextureSlots;
         meshDesc.textureResolver = [&meshDevice, &meshTextureSlots](const std::string &guid, const std::string &name,
                                                                     particle::GpuParticleTextureRequest request) {
             assert(request == particle::GpuParticleTextureRequest::Poll);
-            assert(name == "texSampler");
+            assert(name == "albedo_map");
             return AcquireTestTexture(meshDevice, meshTextureSlots, guid, 1, {980, 1}, {981, 1});
         };
 

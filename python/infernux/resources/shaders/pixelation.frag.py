@@ -2,6 +2,8 @@ import infernux.shader as shader
 
 
 class Pixelation(shader.fullscreen):
+    shader_id = "infernux/post/pixelation"
+    hidden = True
     source_tex = shader.input("color", shader.Color2D, domain="scene_linear_hdr")
     pixel_size = shader.parameter.int(default=8)
     pixel_aspect = shader.parameter.float(default=1.0)

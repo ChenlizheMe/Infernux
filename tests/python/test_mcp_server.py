@@ -404,12 +404,12 @@ def test_schema_gateway_can_edit_real_material_document(engine):
             "infernux.material.property.set",
             {
                 "asset_guid": guid,
-                "pointer": "/properties/baseColor/value",
+                "pointer": "/properties/base_color/value",
                 "value": [0.25, 0.5, 0.75, 1.0],
             },
         )
         assert changed["ok"] is True
-        assert changed["data"]["result"]["document"]["properties"]["baseColor"]["value"] == [
+        assert changed["data"]["result"]["document"]["properties"]["base_color"]["value"] == [
             0.25,
             0.5,
             0.75,
@@ -417,7 +417,7 @@ def test_schema_gateway_can_edit_real_material_document(engine):
         ]
         AssetManager.flush_all_asset_writes()
         document = json.loads(path.read_text(encoding="utf-8"))
-        assert document["properties"]["baseColor"]["value"] == pytest.approx([0.25, 0.5, 0.75, 1.0])
+        assert document["properties"]["base_color"]["value"] == pytest.approx([0.25, 0.5, 0.75, 1.0])
         assert len(undo.action_journal.applied_entries()) == 1
         repeated = mcp.tools["operation_command_execute"](
             "infernux.material.property.set",
@@ -435,7 +435,7 @@ def test_schema_gateway_can_edit_real_material_document(engine):
             "infernux.material.property.set",
             {
                 "asset_guid": guid,
-                "pointer": "/properties/baseColor/value",
+                "pointer": "/properties/base_color/value",
                 "value": [0.8, 0.4, 0.6, 1.0],
             },
         )

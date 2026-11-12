@@ -52,7 +52,7 @@ class DepthAudit(RenderPipeline):
         with graph.add_pass('Commit') as p:
             p.write_color(color)
             p.set_texture('source_tex',resolved)
-            p.fullscreen_quad('fullscreen_blit')
+            p.fullscreen_quad('infernux/internal/fullscreen_blit')
         graph.screen_ui_section(resources={'color'})
         graph.set_output(color)
 

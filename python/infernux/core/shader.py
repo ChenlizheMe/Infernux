@@ -111,6 +111,11 @@ class Shader:
         path = database.get_path_from_guid(selector)
         if path:
             return database, path, selector
+        if source_extension(selector) not in SHADER_SOURCE_KINDS:
+            path = database.find_shader_path_by_id(selector)
+            if not path:
+                raise FileNotFoundError(f"Shader ID is not registered: {selector}")
+            return database, path, database.get_guid_from_path(path)
         candidate = Path(selector)
         if not candidate.is_absolute():
             candidate = Path(database.project_root) / candidate

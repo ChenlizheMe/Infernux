@@ -385,7 +385,7 @@ def test_failed_effect_compile_rolls_back_partial_graph_mutation():
             graph.create_texture("partial")
             with graph.add_pass("Partial") as render_pass:
                 render_pass.write_color("partial")
-                render_pass.fullscreen_quad("fullscreen_blit")
+                render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
             raise ValueError("intentional compile failure")
 
     register_render_effect_feature("tests.post.broken", BrokenEffect)

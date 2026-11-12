@@ -10,6 +10,7 @@ from pathlib import Path
 from .shader_library import LibraryGraph, ShaderEmitter, declarations
 from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
+from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class ShaderDefinition:
     surface: bool = False
     shading_model: str | None = None
     deferred_model: str | None = None
+    info: dict | None = None
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -205,6 +207,13 @@ class _Author(ShaderEmitter):
         self.declare_locals(main.body)
         self.local_declarations()
         self.block(main.body)
+        if self.domain == "mesh" and not self.is_surface:
+            argument = arguments[1].arg if len(arguments) == 2 else ""
+            return [self.source_directive(main), "float4 inx_author_fragment(" + signature + ")",
+                    "{", *self.lines, "}", '[shader("fragment")]',
+                    "float4 fragment_main(" + signature + ") : SV_Target0", "{",
+                    "    float4 color = inx_author_fragment(" + argument + ");",
+                    "    clip(color.a - inx_parameters._alpha_clip_threshold);", "    return color;", "}"]
         declaration = ("InxSurfaceData inx_author_surface(" + signature + ")" if self.is_surface else
                        "float4 fragment_main(" + signature + ") : SV_Target0")
         return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
@@ -328,7 +337,9 @@ float4 fragment_base_color(InxMeshInput input, bool front_facing : SV_IsFrontFac
 _SURFACE_LIGHTING = """
 float4 inx_shade_surface<let tiled_lighting : bool>(InxSurfaceData surface, InxMeshInput input)
 {
-    return float4(inx_shading_model::shade<tiled_lighting>(surface, inx_shading_context(input)), surface.alpha);
+    InxShadingContext context = inx_shading_context(input);
+    context.receives_shadows = context.receives_shadows && INX_RECEIVE_SHADOWS;
+    return float4(inx_shading_model::shade<tiled_lighting>(surface, context), surface.alpha);
 }
 """
 
@@ -336,12 +347,13 @@ _SURFACE_GBUFFER = """
 [shader("fragment")]
 InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsFrontFace)
 {
-    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input, INX_MODEL_ID);
+    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input, INX_MODEL_ID, INX_RECEIVE_SHADOWS);
 }
 """
 
 
 def parse_shader(source: str, source_path: str, module_name: str, *, reader=None) -> ShaderDefinition:
+    info = read_shader_info(source, source_path)
     author = _Author(source, source_path)
     author.alias, imports, body = declarations(source, source_path)
     author.aliases = (author.alias,)
@@ -358,6 +370,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     entry_name = "surface" if author.is_surface else "main"
     main, helpers, model_reference = None, [], None
     for statement in declaration.body:
+        if info_field(statement) in INFO_DEFAULTS:
+            continue
         if (author.is_surface and isinstance(statement, ast.Assign) and len(statement.targets) == 1
                 and author.qualified(statement.targets[0]) == "shading_model"):
             call = statement.value
@@ -365,9 +379,21 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                     or author.qualified(call.func) != author.alias + ".ref" or call.keywords or len(call.args) != 1):
                 author.error(statement, "shading_model refers to one .shadingmodel.py asset with shader.ref", code="author.reference")
             reference = author.literal(call.args[0])
-            if not isinstance(reference, str) or not reference.endswith(".shadingmodel.py"):
-                author.error(call, "A shading model reference names a .shadingmodel.py asset", code="author.reference")
-            model_reference = (Path(source_path).parent / reference, statement)
+            if not isinstance(reference, str):
+                author.error(call, "A shading model reference uses an asset ID or a .shadingmodel.py path", code="author.reference")
+            if reference.endswith(".shadingmodel.py"):
+                model_path = Path(source_path).parent / reference
+            else:
+                from infernux.lib import _Infernux
+
+                try:
+                    resolved = _Infernux._shader_source_path(reference, "shadingmodel")
+                except (RuntimeError, ValueError) as error:
+                    author.error(call, str(error), code="author.reference")
+                if not resolved:
+                    author.error(call, "Shading model ID is not registered: " + reference, code="author.reference")
+                model_path = Path(resolved)
+            model_reference = (model_path, statement)
         elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
             author.parameter(statement)
         elif isinstance(statement, ast.FunctionDef) and statement.name == entry_name and main is None:
@@ -381,7 +407,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(statement, "Expected a shader parameter or typed method")
     if main is None:
         author.error(declaration, "Shader class needs a " + entry_name + " entry")
-    if author.is_surface:
+    if author.domain == "mesh":
         author.fields["_alpha_clip_threshold"] = ShaderParameter("_alpha_clip_threshold", "float", 0.0, "", internal=True)
         author.field_nodes["_alpha_clip_threshold"] = declaration
     model = None
@@ -428,6 +454,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         author.source_ranges.extend(emitter.source_ranges)
     code.extend(author.function(main))
     if author.is_surface:
+        code.append("static const bool INX_RECEIVE_SHADOWS = " + ("true" if info["receive_shadows"] else "false") + ";")
         code.append(_SURFACE_LIGHTING)
         code.append(_SURFACE_PASSES)
         if model.deferred_model:
@@ -438,22 +465,26 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
                             "\n".join(code), libraries, inputs,
                             tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *author.source_ranges))),
-                            author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None)
+                            author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None, info)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
     return parse_shader(path.read_text(encoding="utf-8-sig"), str(path), module_name)
 
 
-def _prepare_source(source, source_path, module_name, reader):
+def _prepare_source(source, source_path, module_name, reader, *, metadata_only=False):
     """Return a plain native preparation snapshot; no Python object enters GPU work."""
     from infernux._source_kinds import source_extension
 
+    source = source.removeprefix("\ufeff")
+    if metadata_only:
+        return "", (), json.dumps(read_shader_info(source, source_path), ensure_ascii=False), ()
     if source_extension(source_path) == ".shadingmodel.py":
         graph = LibraryGraph(reader)
         owner = ShaderEmitter(source, source_path)
         model = read_shading_model(source_path, graph, owner, ast.Constant(value=None, lineno=1, col_offset=0), source=source)
         schema = {"name": model.name, "domain": "shadingmodel", "lighting_contract": model.contract,
+                  "info": model.info,
                   "parameters": [], "inputs": []}
         return model.source, graph.sources(), json.dumps(schema, ensure_ascii=False), (*graph.ranges(), *model.source_ranges)
     if source_extension(source_path) == ".shaderlib.py":
@@ -461,6 +492,7 @@ def _prepare_source(source, source_path, module_name, reader):
         owner = ShaderEmitter(source, source_path)
         module = graph.load(Path(source_path), owner, ast.Constant(lineno=1, col_offset=0), source=source)
         schema = {"name": Path(source_path).name[:-len(".shaderlib.py")], "domain": "library",
+                  "info": read_shader_info(source, source_path),
                   "parameters": [], "inputs": [],
                   "functions": [{"name": name, "return_type": function.result, "arguments": function.arguments}
                                 for name, function in module.functions.items()]}
@@ -468,6 +500,7 @@ def _prepare_source(source, source_path, module_name, reader):
         return module.source, libraries, json.dumps(schema, ensure_ascii=False), graph.ranges()
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
     schema = {"name": definition.name, "domain": definition.domain, "surface": definition.surface,
+              "info": definition.info,
               "shading_model": definition.shading_model, "deferred_model": definition.deferred_model,
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}

@@ -44,7 +44,7 @@ def imported_model(engine, scene, tmp_path, monkeypatch):
 
 
 def color(renderer, slot=0):
-    value = renderer.get_material(slot).get_color("baseColor")
+    value = renderer.get_material(slot).get_color("base_color")
     return [value.x, value.y, value.z, value.w]
 
 
@@ -59,7 +59,7 @@ def test_material_creation_mode_controls_artifacts_and_keeps_overrides(imported_
     mesh = registry.load_mesh(str(source))
     target = source.with_suffix(".mat")
     blue = mesh.create_material_copy(0)
-    blue.set_color("baseColor", [0, 0, 1, 1])
+    blue.set_color("base_color", [0, 0, 1, 1])
     target.write_text(json.dumps(blue.serialize_document()), encoding="utf-8")
     imported = AssetManager.import_asset(str(target), database=database)
     assert imported, imported.error
@@ -111,7 +111,7 @@ def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
     material = mesh.create_material_copy(1)
     assert material.name == "Green"
     assert material.serialize_document() == renderer.get_material(1).serialize_document()
-    material.set_color("baseColor", [0, 0, 1, 1])
+    material.set_color("base_color", [0, 0, 1, 1])
     np.testing.assert_allclose(color(renderer, 1), [0, 1, 0, 1])
     with pytest.raises(IndexError, match="no imported material"):
         mesh.create_material_copy(999)
@@ -148,7 +148,7 @@ def test_source_surface_survives_import_copy_and_binary_reload(imported_model, a
         assert state.alpha_clip_enabled is (alpha_mode == "MASK")
         assert state.render_queue == {"OPAQUE": 2000, "MASK": 2450, "BLEND": 3000}[alpha_mode]
         assert material.get_float("_alpha_clip_threshold") == pytest.approx(0.37 if alpha_mode == "MASK" else 0)
-        assert material.get_color("baseColor").w == pytest.approx(1 if alpha_mode == "OPAQUE" else 0.4)
+        assert material.get_color("base_color").w == pytest.approx(1 if alpha_mode == "OPAQUE" else 0.4)
         if alpha_mode == "BLEND":
             assert state.src_color_blend_factor == 6
             assert state.dst_color_blend_factor == 7
@@ -295,7 +295,7 @@ def test_reimport_updates_only_unmodified_source_materials(imported_model, overr
     renderer.submesh_index = 1
     expected = [0, 0, 1, 1]
     if override == "edit":
-        renderer.get_material(0).set_color("baseColor", [1, 0, 1, 1])
+        renderer.get_material(0).set_color("base_color", [1, 0, 1, 1])
         expected = [1, 0, 1, 1]
     elif override == "assign_same":
         renderer.set_material(0, renderer.get_material(0))
@@ -348,7 +348,7 @@ def test_model_material_remap_follows_source_not_slot_and_preserves_overrides(im
     assert [row["source_id"] for row in mesh.get_material_slot_data()] == ["material/Red", "material/Green"]
     target = source.with_suffix(".mat")
     blue = mesh.create_material_copy(0)
-    blue.set_color("baseColor", [0, 0, 1, 1])
+    blue.set_color("base_color", [0, 0, 1, 1])
     target.write_text(json.dumps(blue.serialize_document()), encoding="utf-8")
     imported = AssetManager.import_asset(str(target), database=database)
     assert imported, imported.error

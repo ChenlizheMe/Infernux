@@ -38,8 +38,8 @@ def sprite_assets(engine, scene, tmp_path, monkeypatch):
     material = Material.load(str(material_path))
     material.frag_shader_name = "Sprite Unlit"
     assert engine.refresh_material_pipeline(material.native)
-    material.set_color("baseColor", .25, .5, .75, 1.)
-    material.set_texture("texSampler", textures[0])
+    material.set_color("base_color", .25, .5, .75, 1.)
+    material.set_texture("albedo_map", textures[0])
     material.flush()
     try:
         yield material, material_path, textures, frames
@@ -84,12 +84,12 @@ def test_sprite_instances_keep_shared_document_and_parameters_independent(scene,
     assert path.read_bytes() == before
     assert material.serialize_document() == authored
     assert left.shared_material is material and right.shared_material is material
-    assert left.get_parameter("baseColor") == pytest.approx((1, 0, 0, 1))
-    assert right.get_parameter("baseColor") == pytest.approx((0, 0, 1, 1))
+    assert left.get_parameter("base_color") == pytest.approx((1, 0, 0, 1))
+    assert right.get_parameter("base_color") == pytest.approx((0, 0, 1, 1))
     assert left.get_parameter("uvRect") == pytest.approx((0, 1, .5, -1))
     assert right.get_parameter("uvRect") == pytest.approx((1, 1, -.5, -1))
-    assert left.get_parameter("texSampler") == textures[0]
-    assert right.get_parameter("texSampler") == textures[1]
+    assert left.get_parameter("albedo_map") == textures[0]
+    assert right.get_parameter("albedo_map") == textures[1]
     for renderer in (left, right):
         document = renderer.serialize_document()
         assert not document.get("parameterOverrides")
@@ -107,8 +107,8 @@ def test_sprite_document_restore_rebuilds_derived_values_without_authoring_mater
     document = renderer.serialize_document()
     assert renderer.deserialize_document(copy.deepcopy(document))
     renderer.sync_visual()
-    assert renderer.get_parameter("baseColor") == pytest.approx((.1, .2, .3, 1))
-    assert renderer.get_parameter("texSampler") == textures[1]
+    assert renderer.get_parameter("base_color") == pytest.approx((.1, .2, .3, 1))
+    assert renderer.get_parameter("albedo_map") == textures[1]
     assert renderer.get_parameter("uvRect") == pytest.approx((.5, 1, .5, -1))
     Material.flush_all_pending()
     assert path.read_bytes() == before
@@ -122,8 +122,8 @@ def test_clearing_one_sprite_texture_does_not_clear_other_sprite_or_shared_asset
     left.sprite = textures[0]
     right.sprite = textures[1]
     left.sprite = ""
-    assert left.get_parameter("texSampler") == ""
-    assert right.get_parameter("texSampler") == textures[1]
+    assert left.get_parameter("albedo_map") == ""
+    assert right.get_parameter("albedo_map") == textures[1]
     Material.flush_all_pending()
     assert path.read_bytes() == before
 
@@ -145,11 +145,11 @@ def test_sprite_undo_redo_restores_parameters_and_empty_texture(scene, sprite_as
     for _ in range(3):
         command.undo()
         assert renderer.sprite == ""
-        assert renderer.get_parameter("texSampler") == ""
-        assert renderer.get_parameter("baseColor") == pytest.approx((1, 1, 1, 1))
+        assert renderer.get_parameter("albedo_map") == ""
+        assert renderer.get_parameter("base_color") == pytest.approx((1, 1, 1, 1))
         command.redo()
-        assert renderer.get_parameter("texSampler") == textures[1]
-        assert renderer.get_parameter("baseColor") == pytest.approx((.4, .5, .6, 1))
+        assert renderer.get_parameter("albedo_map") == textures[1]
+        assert renderer.get_parameter("base_color") == pytest.approx((.4, .5, .6, 1))
         assert renderer.get_parameter("uvRect") == pytest.approx((.5, 0, .5, 1))
     Material.flush_all_pending()
     assert path.read_bytes() == before
@@ -178,12 +178,12 @@ def test_sprite_copy_rebuilds_instance_parameters(scene, sprite_assets, operatio
     assert renderer.game_object.id == copied.id
     assert original.game_object.name == "Source"
     assert renderer.shared_material is material
-    assert renderer.get_parameter("texSampler") == textures[1]
+    assert renderer.get_parameter("albedo_map") == textures[1]
     assert renderer.get_parameter("uvRect") == pytest.approx((.5, 1, .5, -1))
-    assert renderer.get_parameter("baseColor") == pytest.approx((.2, .4, .6, 1))
+    assert renderer.get_parameter("base_color") == pytest.approx((.2, .4, .6, 1))
     renderer.sprite_color = (1., 0., 0., 1.)
     renderer.sync_visual()
-    assert original.get_parameter("baseColor") == pytest.approx((.2, .4, .6, 1))
+    assert original.get_parameter("base_color") == pytest.approx((.2, .4, .6, 1))
     Material.flush_all_pending()
     assert path.read_bytes() == before
 
@@ -220,12 +220,12 @@ def test_sprite_shader_refresh_keeps_other_parameter_owners(scene, sprite_assets
     material, _, textures, _ = sprite_assets
     renderer = _sprite(scene, "Sprite", material)
     renderer.sprite = textures[0]
-    renderer.set_parameter("baseColor", (0., 1., 0., 1.), owner="gameplay")
+    renderer.set_parameter("base_color", (0., 1., 0., 1.), owner="gameplay")
     renderer.sync_visual()
-    assert renderer.get_parameter("baseColor") == pytest.approx((0, 1, 0, 1))
-    material.set_color("baseColor", .5, .5, .5, 1.)
+    assert renderer.get_parameter("base_color") == pytest.approx((0, 1, 0, 1))
+    material.set_color("base_color", .5, .5, .5, 1.)
     material.flush()
     renderer.sync_visual()
-    assert renderer.get_parameter("baseColor", owner="gameplay") == pytest.approx((0, 1, 0, 1))
-    assert renderer.get_parameter("baseColor", owner="sprite-renderer") == pytest.approx((1, 1, 1, 1))
-    assert renderer.get_parameter("texSampler") == textures[0]
+    assert renderer.get_parameter("base_color", owner="gameplay") == pytest.approx((0, 1, 0, 1))
+    assert renderer.get_parameter("base_color", owner="sprite-renderer") == pytest.approx((1, 1, 1, 1))
+    assert renderer.get_parameter("albedo_map") == textures[0]

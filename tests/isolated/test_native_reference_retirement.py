@@ -188,11 +188,11 @@ def exercise(project, kind, retirement, access):
                     # Headless projects have no implicit rendering material.
                     # Establish a valid parameter path before retiring its owner.
                     material = InxMaterial("RetirementProbe", "Unlit")
-                    material.set_color("baseColor", (1, 0, 0, 1))
+                    material.set_color("base_color", (1, 0, 0, 1))
                     renderer.set_material(0, material)
-                    renderer.set_parameter("baseColor", (1, 0, 0, 1))
-                    assert renderer.get_parameter("baseColor") == (1, 0, 0, 1)
-                    invoke = lambda _value: renderer.set_parameter("baseColor", RetiringColor([1, 0, 0, 1]))
+                    renderer.set_parameter("base_color", (1, 0, 0, 1))
+                    assert renderer.get_parameter("base_color") == (1, 0, 0, 1)
+                    invoke = lambda _value: renderer.set_parameter("base_color", RetiringColor([1, 0, 0, 1]))
                 else:
                     invoke = owner._commit_document
             document["native_retirement_probe"] = RetiringJsonList([0])

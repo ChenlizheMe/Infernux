@@ -39,7 +39,7 @@ class MonitorPipeline(inx.renderstack.RenderPipeline):
         self.builds+=1;g.set_msaa_samples(1)
         sampled=g.import_texture('producer',self.target,require_current_write=True)
         color=g.create_texture('color',camera_target=True)
-        g.add_pass('ReadCurrentCameraOutput').write_color(color).set_texture('source_tex',sampled).fullscreen_quad('fullscreen_blit')
+        g.add_pass('ReadCurrentCameraOutput').write_color(color).set_texture('source_tex',sampled).fullscreen_quad('infernux/internal/fullscreen_blit')
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
     def render_camera(self,context,camera,culling):
         self.views[camera.component_id]={'graph_instance_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'output_samples':int(context.output_samples),'visible_objects':int(culling.visible_object_count)}
@@ -81,7 +81,7 @@ def main():
             router.producer_id=producer.component_id
             obj=scene.create_game_object('Draw After Commit');obj.transform.position=Vector3(-.4,0,0)
             renderer=obj.add_component(inx.MeshRenderer);renderer.set_mesh_asset_guid(mesh_guid)
-            material=inx.Material.create_unlit();material.set_color('baseColor',1,0,0,1);renderer.set_material(0,material)
+            material=inx.Material.create_unlit();material.set_color('base_color',1,0,0,1);renderer.set_material(0,material)
             if args.target=='asset':
                 imported=AssetManager.import_asset(str(rt_path),database=database);assert imported,imported.error
                 target=inx.RenderTexture.load_by_guid(imported.guid)

@@ -118,7 +118,7 @@ def test_ui_material_generation_rebuilds_screen_and_world_packets(ui):
         _texture_assets_pending=False,
         get_version=lambda: revision[0],
         _get_render_texture=lambda _name: None,
-        has_property=lambda name: name == "texSampler",
+        has_property=lambda name: name == "albedo_map",
         get_texture=lambda _name: "material-texture",
         shader_name="Authored UI",
         vert_shader_name="ui-vertex-guid",
@@ -731,7 +731,7 @@ def test_material_owner_replacement_does_not_hide_other_reference_owners(ui, mon
 
     original = Material(InxMaterial("Previous owner", "Unlit"))
     replacement = Material(InxMaterial("Replacement owner", "Unlit"))
-    replacement.set_color("baseColor", 0.1, 0.5, 0.9, 1.0)
+    replacement.set_color("base_color", 0.1, 0.5, 0.9, 1.0)
     first, second = ui.add(), ui.add()
     first.material = original
     second.material = original
@@ -754,7 +754,7 @@ def test_material_binding_document_restore_and_removal_match_fresh(ui, monkeypat
     from infernux.lib import InxMaterial
 
     material = Material(InxMaterial("Inspector material", "Unlit"))
-    material.set_color("baseColor", 0.2, 0.4, 0.8, 1.0)
+    material.set_color("base_color", 0.2, 0.4, 0.8, 1.0)
     monkeypatch.setattr(AssetManager, "load_by_guid", lambda *_args, **_kwargs: material)
     label = ui.add()
     ui.add()

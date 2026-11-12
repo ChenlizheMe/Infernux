@@ -81,9 +81,12 @@ def test_created_scene_and_material_use_current_native_document_contract(scene, 
     document = json.loads((directory / "共享材质 {01}.mat").read_bytes())
     material = InxMaterial()
     assert material.deserialize_document(document)
-    assert document["shaders"]["fragment"]["shader_id"] == "Lit"
+    assert document["shaders"]["fragment"]["shader_id"] == "infernux/lit"
     assert document["builtin"] is False
-    assert document["properties"]["baseColor"]["type"] == 7
+    assert "base_color" not in document["properties"]  # Shader defaults are not authored overrides.
+    from infernux.lib import AssetRegistry
+    loaded = AssetRegistry.instance().load_material_by_guid(database.get_guid_from_path(str(directory / "共享材质 {01}.mat")))
+    assert tuple(loaded.get_color("base_color")) == (1.0, 1.0, 1.0, 1.0)
     assert material.render_state_overrides == 0
     material.apply_shader_render_meta("back", "off", "less_equal", "alpha", 3000, "transparent")
     inherited_state = material.get_render_state()

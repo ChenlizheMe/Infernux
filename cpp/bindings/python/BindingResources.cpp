@@ -1022,9 +1022,10 @@ void RegisterResourceBindings(py::module_ &m)
                 return material.DeserializeDocument(PythonToJson(document));
             },
             py::arg("document"), "Deserialize material from a Python document")
-        .def_static("create_default_lit", &InxMaterial::CreateDefaultLit,
+        .def_static("create_default_lit", &InxMaterial::CreateDefaultLit, py::call_guard<py::gil_scoped_release>(),
                     "Create the default lit opaque material (built-in)")
-        .def_static("create_default_unlit", &InxMaterial::CreateDefaultUnlit, "Create a default unlit opaque material")
+        .def_static("create_default_unlit", &InxMaterial::CreateDefaultUnlit, py::call_guard<py::gil_scoped_release>(),
+                    "Create a default unlit opaque material")
         // Render state access
         .def(
             "get_render_state", [](const InxMaterial &mat) -> RenderState { return mat.GetRenderState(); },

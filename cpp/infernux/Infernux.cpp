@@ -3146,7 +3146,7 @@ bool Infernux::ExecuteTimelineCubePreviewRender(float px, float py, float pz, fl
             m_cubePreviewCubeMat = defaultLit->Clone();
             if (!m_cubePreviewCubeMat)
                 return false;
-            m_cubePreviewCubeMat->SetColor("baseColor", glm::vec4(0.62f, 0.63f, 0.66f, 1.0f));
+            m_cubePreviewCubeMat->SetColor("base_color", glm::vec4(0.62f, 0.63f, 0.66f, 1.0f));
             m_cubePreviewCubeMat->SetFloat("metallic", 0.0f);
             m_cubePreviewCubeMat->SetFloat("smoothness", 0.35f);
         }
@@ -3155,7 +3155,7 @@ bool Infernux::ExecuteTimelineCubePreviewRender(float px, float py, float pz, fl
             if (floorSrc) {
                 m_cubePreviewFloorMat = floorSrc->Clone();
                 if (m_cubePreviewFloorMat)
-                    m_cubePreviewFloorMat->SetColor("baseColor", glm::vec4(0.20f, 0.21f, 0.23f, 1.0f));
+                    m_cubePreviewFloorMat->SetColor("base_color", glm::vec4(0.20f, 0.21f, 0.23f, 1.0f));
             }
         }
         auto cubeMat = m_cubePreviewCubeMat;
@@ -3453,21 +3453,6 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
 
-        // The material core immediately reflects DefaultLit during
-        // PreparePipeline(). The tiny "default" startup pair is a
-        // presentation program and cannot provide Standard|Lit's material
-        // ABI, so publish the canonical pair before material initialization in
-        // both Editor and Player.
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> defaultMaterialShaderStages{{
-            {"Standard", "vertex"},
-            {"Lit", "fragment"},
-        }};
-        for (const auto &[shaderId, shaderType] : defaultMaterialShaderStages) {
-            if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
-                INXLOG_ERROR("Default material shader is unavailable: '", shaderId, "' (", shaderType, ")");
-            }
-        }
-
         // The procedural sky is renderer-owned: no authored material GUID
         // creates a dependency edge that can prewarm it for a Player. Its two
         // Standalone main() stages are compiled independently, so publish both
@@ -3514,6 +3499,17 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     phaseBegin = StartupClock::now();
     m_renderer->PreparePipeline();
     startupPhase("prepare_pipeline", phaseBegin);
+    // Material programs require the shared descriptor layouts and the device
+    // program cache established by PreparePipeline. A resident source compiler
+    // can prepare code earlier; GPU publication belongs after these owners.
+    if (!projectPath.empty()) {
+        phaseBegin = StartupClock::now();
+        const auto defaultMaterial = InxMaterial::CreateDefaultLit();
+        const auto defaultProgram = EnsureLinkedShaderProgramArtifact(defaultMaterial);
+        if (!defaultProgram.usesLinkedArtifact || !defaultProgram.success)
+            throw std::runtime_error("Default material program is unavailable: " + defaultProgram.error);
+        startupPhase("default_material_program", phaseBegin);
+    }
     if (!m_renderer->PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 

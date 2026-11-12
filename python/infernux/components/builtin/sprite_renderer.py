@@ -702,7 +702,7 @@ class SpriteRenderer(BuiltinComponent):
         # Material identity is native ownership, not its display name. A runtime
         # component ID would change the embedded scene document on every reopen.
         mat._native.name = "Sprite Unlit (Generated)"
-        mat.set_color("baseColor", 1.0, 1.0, 1.0, 1.0)
+        mat.set_color("base_color", 1.0, 1.0, 1.0, 1.0)
         mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
         self._sprite_material = mat._native
         self._material_ready = True
@@ -758,7 +758,7 @@ class SpriteRenderer(BuiltinComponent):
         self._apply_texture_to_material()
 
     def _apply_texture_to_material(self):
-        """Bind this sprite's texSampler without modifying the shared asset."""
+        """Bind this sprite's albedo_map without modifying the shared asset."""
         cpp = self._cpp_component
         if cpp is not None:
             cpp._publish_sprite_texture()

@@ -8,6 +8,7 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
+#include <function/resources/ShaderAsset/ShaderAuthorMetadata.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <platform/filesystem/InxPath.h>
@@ -56,6 +57,18 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->descriptor.fileExtension = kind->suffix;
         asset->authoringSchema = prepared.schema;
         const auto schema = nlohmann::json::parse(prepared.schema);
+        const auto &info = schema.at("info");
+        asset->descriptor.hidden = info.at("hidden").get<bool>();
+        asset->renderMeta.cullMode = info.at("cull_mode");
+        asset->renderMeta.depthWrite = info.at("depth_write").is_null()     ? std::string{}
+                                       : info.at("depth_write").get<bool>() ? "on"
+                                                                            : "off";
+        asset->renderMeta.depthTest = info.at("depth_test");
+        asset->renderMeta.blend = info.at("blend");
+        asset->renderMeta.queue = info.at("render_queue");
+        asset->renderMeta.passTag = info.at("pass_tag");
+        asset->renderMeta.stencil = info.at("stencil");
+        asset->renderMeta.alphaClip = info.at("alpha_clip").is_null() ? std::string{} : info.at("alpha_clip").dump();
         if (schema.at("domain") == "fullscreen")
             asset->programDomain = ShaderProgramDomain::Fullscreen;
         else if (schema.at("domain") == "mesh")
@@ -271,6 +284,10 @@ std::set<std::string> ShaderLoader::ScanDependencies(const std::string & /*fileP
 
 void ShaderLoader::CreateMeta(AssetSource &source, InxResourceMeta &metaData) const
 {
+    if (asset_formats::FindShaderSourceKind(source.Path())) {
+        CreateShaderAuthorMetadata(source, metaData);
+        return;
+    }
     InxShaderLoader compiler(true, false, false, false, false, false, false, false, false, false);
     compiler.CreateMeta(source, metaData);
 }

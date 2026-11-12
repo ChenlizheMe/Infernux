@@ -2,7 +2,7 @@
 from pathlib import Path
 import tempfile
 
-from infernux import Engine
+from infernux import Engine, Shader
 from infernux.lib import ConsolePanel, LightShadows, PrimitiveType, SceneManager, Vector3
 from infernux.renderstack import DefaultForwardPipeline
 
@@ -34,7 +34,12 @@ def main() -> None:
             sun.transform.euler_angles = Vector3(0, 45, 0)
             sun.add_component("Light").shadows = LightShadows.Hard
             cube = scene.create_primitive(PrimitiveType.Cube, "First Cube")
-            assert cube.get_component("MeshRenderer").get_material(0) is None
+            renderer = cube.get_component("MeshRenderer")
+            assert renderer.get_material(0) is None
+            default_material = renderer.get_effective_material(0)
+            assert default_material.frag_shader_name == "infernux/lit"
+            assert default_material.native.frag_shader_reference["guid"]
+            assert Shader.get_schema("infernux/lit")["surface"]
             pipeline = DefaultForwardPipeline()
             pipeline.shadow_resolution = 256
             frontend.set_render_pipeline(pipeline)

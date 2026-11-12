@@ -196,7 +196,7 @@ struct TextureResolveResult
  *
  * Given a texture asset GUID (from material Texture2D properties) and the
  * binding name from shader reflection (e.g.
- * "normalMap", "albedoTex"), returns the VkImageView and VkSampler for that texture. The callback should handle
+ * "normal_map", "albedoTex"), returns the VkImageView and VkSampler for that texture. The callback should handle
  * caching, format selection (e.g. UNORM for normal maps), and GPU upload internally. Pending is distinct from
  *
  * failure so asynchronous residency does not produce a false error while the default texture is bound.

@@ -4,7 +4,7 @@ layout(location = 0) in vec4 inColor;
 layout(location = 1) in vec2 inUv;
 layout(location = 0) out vec4 outColor;
 
-layout(set = 2, binding = 2) uniform sampler2D texSampler;
+layout(set = 2, binding = 2) uniform sampler2D albedo_map;
 
 layout(push_constant) uniform ViewConstants
 {
@@ -21,5 +21,5 @@ layout(push_constant) uniform ViewConstants
 
 void main()
 {
-    outColor = texture(texSampler, inUv) * inColor * view.materialTint;
+    outColor = texture(albedo_map, inUv) * inColor * view.materialTint;
 }

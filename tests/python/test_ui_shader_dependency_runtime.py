@@ -242,10 +242,10 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
     vertex_body = WORLD_VERTEX if world else VERTEX
     vertex, vertex_guid = create('Vertex', '.vert',
         f'#version 450\nShaderInfo {{ Name "{vertex_name}" Capabilities [{domain}] }}\n' + vertex_body.removeprefix('#version 450\n'))
-    properties = ' Properties { Color baseColor = [1,1,1,1] }' if material_properties else ''
+    properties = ' Properties { Color base_color = [1,1,1,1] }' if material_properties else ''
     fragment_body = (WORLD_FRAGMENT if world else FRAGMENT).removeprefix('#version 450\n')
     if material_properties:
-        fragment_body = fragment_body.replace('pc.materialColor;', 'pc.materialColor * material.baseColor;')
+        fragment_body = fragment_body.replace('pc.materialColor;', 'pc.materialColor * material.base_color;')
     fragment, fragment_guid = create('Fragment', '.frag',
         '#version 450\n#extension GL_EXT_control_flow_attributes : require\n'
         f'ShaderInfo {{ Name "{fragment_name}" Capabilities [{domain}] Imports ["{library_name}"]{properties} }}\n' + fragment_body)

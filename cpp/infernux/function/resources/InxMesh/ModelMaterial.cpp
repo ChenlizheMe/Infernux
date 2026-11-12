@@ -8,10 +8,11 @@ namespace infernux
 {
 namespace
 {
-constexpr std::array<const char *, ModelTextureCount> TextureProperties{"texSampler",    "normalMap", "metallicMap",
-                                                                        "smoothnessMap", "aoMap",     "emissionMap"};
-constexpr std::array<const char *, ModelTextureCount> TextureUvProperties{
-    "baseColorUvSet", "normalUvSet", "metallicUvSet", "smoothnessUvSet", "occlusionUvSet", "emissionUvSet"};
+constexpr std::array<const char *, ModelTextureCount> TextureProperties{
+    "albedo_map", "normal_map", "metallic_map", "smoothness_map", "occlusion_map", "emission_map"};
+constexpr std::array<const char *, ModelTextureCount> TextureUvProperties{"base_color_uv_set", "normal_uv_set",
+                                                                          "metallic_uv_set",   "smoothness_uv_set",
+                                                                          "occlusion_uv_set",  "emission_uv_set"};
 
 std::string TextureIdentity(const MaterialSlotData &data, size_t index)
 {
@@ -85,11 +86,11 @@ bool InxMesh::MatchesMaterialCopy(uint32_t slot, const InxMaterial &material) co
             return false;
     }
     return material.GetName() == name && material.GetFilePath() == path && state == material.GetRenderState() &&
-           matches("baseColor", SourceBaseColor(data)) && matches("emissionColor", data.emissionColor) &&
-           matches("normalScale", data.normalScale) && matches("occlusionStrength", data.occlusionStrength) &&
-           matches("metallicChannels", MetallicChannels(data)) &&
-           matches("smoothnessChannels", RoughnessChannels(data)) &&
-           matches("smoothnessFromRoughness", UsesRoughnessMap(data)) && matches("metallic", data.metallic) &&
+           matches("base_color", SourceBaseColor(data)) && matches("emission_color", data.emissionColor) &&
+           matches("normal_scale", data.normalScale) && matches("occlusion_strength", data.occlusionStrength) &&
+           matches("metallic_channels", MetallicChannels(data)) &&
+           matches("smoothness_channels", RoughnessChannels(data)) &&
+           matches("smoothness_from_roughness", UsesRoughnessMap(data)) && matches("metallic", data.metallic) &&
            matches("smoothness", data.smoothness);
 }
 
@@ -102,8 +103,8 @@ std::shared_ptr<InxMaterial> InxMesh::CreateMaterialCopy(uint32_t slot) const
         base = InxMaterial::CreateDefaultLit();
     auto material = base->Clone();
     const auto &data = m_materialSlotData[slot];
-    material->SetColor("baseColor", SourceBaseColor(data));
-    material->SetColor("emissionColor", data.emissionColor);
+    material->SetColor("base_color", SourceBaseColor(data));
+    material->SetColor("emission_color", data.emissionColor);
     material->SetFloat("metallic", data.metallic);
     material->SetFloat("smoothness", data.smoothness);
     for (size_t index = 0; index < ModelTextureCount; ++index) {
@@ -111,11 +112,11 @@ std::shared_ptr<InxMaterial> InxMesh::CreateMaterialCopy(uint32_t slot) const
         material->SetInt(TextureUvProperties[index], static_cast<int>(data.textureUvSets[index]));
         material->SetTextureSampler(TextureProperties[index], data.textureSamplers[index]);
     }
-    material->SetFloat("normalScale", data.normalScale);
-    material->SetFloat("occlusionStrength", data.occlusionStrength);
-    material->SetVector4("metallicChannels", MetallicChannels(data));
-    material->SetVector4("smoothnessChannels", RoughnessChannels(data));
-    material->SetFloat("smoothnessFromRoughness", UsesRoughnessMap(data));
+    material->SetFloat("normal_scale", data.normalScale);
+    material->SetFloat("occlusion_strength", data.occlusionStrength);
+    material->SetVector4("metallic_channels", MetallicChannels(data));
+    material->SetVector4("smoothness_channels", RoughnessChannels(data));
+    material->SetFloat("smoothness_from_roughness", UsesRoughnessMap(data));
     auto state = material->GetRenderState();
     ApplySourceSurface(state, data);
     material->SetRenderState(state);

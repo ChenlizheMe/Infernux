@@ -836,7 +836,7 @@ class RenderPassBuilder:
         to bind input textures before calling this method.
 
         Args:
-            shader: Fragment shader id (e.g. ``"bloom_prefilter"``).
+            shader: Fragment shader id (e.g. ``"infernux/post/bloom_prefilter"``).
             depth_test: Comparison against ``write_depth()``; None disables it.
             depth_write: Write shader/fixed fragment depth. Requires depth_test;
                 use DepthCompare.ALWAYS for unconditional writes.
@@ -1892,7 +1892,7 @@ class RenderGraph:
         with self.add_pass("_DisplayEncode_Commit") as p:
             p.set_texture("source_tex", "_display_encode")
             p.write_color("color")
-            p.fullscreen_quad("fullscreen_copy")
+            p.fullscreen_quad("infernux/internal/fullscreen_copy")
 
     # ---- Pass management ----
 

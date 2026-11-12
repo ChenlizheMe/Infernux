@@ -71,13 +71,13 @@ def test_connected_numeric_output_parameter_uses_graph_default():
 
 
 @pytest.mark.parametrize("source_type, default, override, property_name, expected_default, expected_override", [
-    ("f32", .25, .75, "baseColor", [.25] * 4, [.75] * 4),
-    ("vec2", [.25, .5], [.5, .75], "baseColor", [.25, .5, 0, 0], [.5, .75, 0, 0]),
-    ("vec3", [.25, .5, .75], [.5, .75, 1], "baseColor", [.25, .5, .75, 0], [.5, .75, 1, 0]),
+    ("f32", .25, .75, "base_color", [.25] * 4, [.75] * 4),
+    ("vec2", [.25, .5], [.5, .75], "base_color", [.25, .5, 0, 0], [.5, .75, 0, 0]),
+    ("vec3", [.25, .5, .75], [.5, .75, 1], "base_color", [.25, .5, .75, 0], [.5, .75, 1, 0]),
     ("vec4", [.25, .5, .75, 1], [.5, .75, 1, .25], "glow", .25, .5),
     ("color", [.25, .5, .75, 1], [.5, .75, 1, .25], "glow", .25, .5),
     ("i32", 2, 3, "glow", 2., 3.),
-    ("u32", 2, 3, "baseColor", [2.] * 4, [3.] * 4),
+    ("u32", 2, 3, "base_color", [2.] * 4, [3.] * 4),
 ])
 def test_connected_numeric_output_matches_compiled_port_shape(
     source_type, default, override, property_name, expected_default, expected_override,
@@ -117,7 +117,7 @@ def test_six_way_smoke_material_keeps_independent_axis_defaults():
     assert material.serialize_document()["properties"]["negativeAxesMap"]["guid"] == "black"
 
 
-@pytest.mark.parametrize("property_name", ["texSampler", "normalNamedSurface"])
+@pytest.mark.parametrize("property_name", ["albedo_map", "normalNamedSurface"])
 @pytest.mark.parametrize("declared_default, initial", [
     ("white", ""), ("black", ""), ("normal", ""),
     ("white", "black"), ("black", "normal"), ("normal", "white"),

@@ -22,7 +22,7 @@ def create_skybox_asset(directory, database, kind='procedural'):
         imported = AssetManager.import_asset(str(texture), database=database)
         assert imported.succeeded, imported.error
         material.set_shader('Skybox Panoramic')
-        material.set_texture_guid('texSampler', imported.guid)
+        material.set_texture_guid('albedo_map', imported.guid)
         material.set_color('tint', 1, 1, 1)
         material.set_float('rotation', 90)
     for key in ('skyTopColor','skyHorizonColor','groundColor'):

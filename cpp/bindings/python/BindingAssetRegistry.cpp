@@ -210,6 +210,8 @@ void RegisterAssetRegistryBindings(py::module_ &m)
     NativeClass<AssetDatabase>(m, "AssetDatabase")
         .def("contains_guid", &AssetDatabase::ContainsGuid, py::arg("guid"))
         .def("contains_path", &AssetDatabase::ContainsPath, py::arg("path"))
+        .def("find_shader_path_by_id", &AssetDatabase::FindShaderPathById, py::arg("shader_id"),
+             py::arg("shader_type") = "")
         .def("get_guid_from_path", &AssetDatabase::GetGuidFromPath, py::arg("path"))
         .def("get_path_from_guid", &AssetDatabase::GetPathFromGuid, py::arg("guid"))
         .def(
@@ -452,6 +454,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
             },
             "Get per-slot material data extracted from model file")
         .def("create_material_copy", &InxMesh::CreateMaterialCopy, py::arg("slot"),
+             py::call_guard<py::gil_scoped_release>(),
              "Create an independent material instance from one imported model slot; does not save a file")
         .def(
             "get_bounds",

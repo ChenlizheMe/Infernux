@@ -347,24 +347,10 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     /// shader's defaults. Declared before the inline shader setters so every
     /// supported compiler resolves the call consistently.
     void ResetRenderStateAuthorship();
+    void PrepareShaderDefaults();
 
     /// @brief Set both vertex and fragment shader to the same name (convenience).
-    void SetShader(const std::string &shaderName)
-    {
-        const ShaderAssetReference reference{"", shaderName, ""};
-        if (m_vertexShader == reference && m_fragmentShader == reference)
-            return;
-        const bool switched =
-            !ReferencesSameShader(m_vertexShader, reference) || !ReferencesSameShader(m_fragmentShader, reference);
-        m_vertexShader = reference;
-        m_fragmentShader = reference;
-        if (switched)
-            ResetRenderStateAuthorship();
-        m_pipelineDirty = true;
-        ++m_version;
-        NotifyRoutingChanged();
-        PublishDependencies();
-    }
+    void SetShader(const std::string &shaderName);
 
     /// @brief Set vertex shader name independently.
     void SetVertShader(const std::string &name)
@@ -383,20 +369,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     }
 
     /// @brief Set fragment shader name independently.
-    void SetFragShader(const std::string &name)
-    {
-        const ShaderAssetReference reference{"", name, ""};
-        if (m_fragmentShader == reference)
-            return;
-        const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
-        m_fragmentShader = reference;
-        if (switched)
-            ResetRenderStateAuthorship();
-        m_pipelineDirty = true;
-        ++m_version;
-        NotifyRoutingChanged();
-        PublishDependencies();
-    }
+    void SetFragShader(const std::string &name);
 
     void SetVertShaderReference(ShaderAssetReference reference)
     {
@@ -415,6 +388,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
     void SetFragShaderReference(ShaderAssetReference reference)
     {
+        reference = ResolveFragmentShaderReference(std::move(reference));
         if (m_fragmentShader == reference)
             return;
         const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
@@ -850,6 +824,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
   private:
     static uint64_t AllocateRuntimeId() noexcept;
+    static ShaderAssetReference ResolveFragmentShaderReference(ShaderAssetReference reference);
     void TrackRuntimeShaderReferences();
     void PublishDependencies();
     bool ApplyDocument(const nlohmann::json &document);

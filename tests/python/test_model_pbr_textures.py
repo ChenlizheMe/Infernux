@@ -68,7 +68,7 @@ def test_all_pbr_maps_survive_binary_reload_extraction_and_none(imported_model, 
     assert result, result.error
     expected = dict(
         zip(
-            ("texSampler", "normalMap", "metallicMap", "smoothnessMap", "aoMap", "emissionMap"),
+            ("albedo_map", "normal_map", "metallic_map", "smoothness_map", "occlusion_map", "emission_map"),
             (guids[0], guids[1], guids[2], guids[2], guids[2], guids[3]),
         )
     )
@@ -82,12 +82,12 @@ def test_all_pbr_maps_survive_binary_reload_extraction_and_none(imported_model, 
         for material in (renderer.get_material(0), mesh.create_material_copy(0)):
             props = material.serialize_document()["properties"]
             assert {key: props[key]["guid"] for key in expected} == expected
-            assert material.get_float("normalScale") == pytest.approx(0.35)
+            assert material.get_float("normal_scale") == pytest.approx(0.35)
             assert material.get_float("smoothness") == pytest.approx(0.4)
-            assert material.get_float("smoothnessFromRoughness") == 1
-            assert material.get_float("occlusionStrength") == pytest.approx(0.4)
-            metal_channels = material.get_vector4("metallicChannels")
-            rough_channels = material.get_vector4("smoothnessChannels")
+            assert material.get_float("smoothness_from_roughness") == 1
+            assert material.get_float("occlusion_strength") == pytest.approx(0.4)
+            metal_channels = material.get_vector4("metallic_channels")
+            rough_channels = material.get_vector4("smoothness_channels")
             assert (metal_channels.x, metal_channels.y, metal_channels.z, metal_channels.w) == (0, 0, 1, 0)
             assert (rough_channels.x, rough_channels.y, rough_channels.z, rough_channels.w) == (0, 1, 0, 0)
         assert set(guids) <= set(AssetDependencyGraph.instance().get_dependencies(mesh.guid))
@@ -135,7 +135,7 @@ def test_model_sampler_survives_binary_reload_as_per_binding_override(imported_m
         "address_v": 3,  # mirror
         "address_w": 1,  # repeat
     }
-    document_sampler = mesh.create_material_copy(0).serialize_document()["textureSamplers"]["texSampler"]
+    document_sampler = mesh.create_material_copy(0).serialize_document()["textureSamplers"]["albedo_map"]
     assert document_sampler == {
         "minFilter": 2,
         "magFilter": 1,
@@ -196,8 +196,8 @@ def test_each_pbr_binding_consumes_secondary_uv_after_binary_reload(imported_mod
     ):
         assert slot[key] == 1
     material = mesh.create_material_copy(0)
-    for key in ("baseColorUvSet", "normalUvSet", "metallicUvSet", "smoothnessUvSet", "occlusionUvSet", "emissionUvSet"):
+    for key in ("base_color_uv_set", "normal_uv_set", "metallic_uv_set", "smoothness_uv_set", "occlusion_uv_set", "emission_uv_set"):
         assert material.get_int(key) == 1
-    assert renderer.get_material(0).get_int("baseColorUvSet") == 1
+    assert renderer.get_material(0).get_int("base_color_uv_set") == 1
     report = json.loads(database.get_meta_by_path(str(source)).get_string("model_material_diagnostics"))
     assert not [item for item in report if item["code"] == "unsupported_uv_set"]

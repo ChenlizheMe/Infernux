@@ -3,6 +3,8 @@ from .lib.color import white_balance
 
 
 class WhiteBalance(shader.fullscreen):
+    shader_id = "infernux/post/white_balance"
+    hidden = True
     source_tex = shader.input("color", shader.Color2D, domain="scene_linear_hdr")
     temperature = shader.parameter.float(default=0.0)
     tint = shader.parameter.float(default=0.0)

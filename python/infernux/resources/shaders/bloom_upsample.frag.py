@@ -2,6 +2,8 @@ import infernux.shader as shader
 
 
 class BloomUpsample(shader.fullscreen):
+    shader_id = "infernux/post/bloom_upsample"
+    hidden = True
     """Nine-tap tent reconstruction blended with the higher-resolution level."""
 
     source_tex = shader.input("low", shader.Color2D, domain="scene_linear_hdr")

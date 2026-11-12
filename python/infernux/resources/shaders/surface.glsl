@@ -18,7 +18,7 @@ ShaderInfo {
 //   ShaderInfo ShadingModel: PBR    (or ShaderInfo ShadingModel: Unlit)
 //   void surface(out SurfaceData s) {
 //       s = InitSurfaceData();
-//       s.albedo = texture(texSampler, v_TexCoord).rgb;
+//       s.albedo = texture(albedo_map, v_TexCoord).rgb;
 //       // ... fill other fields ...
 //   }
 // ============================================================================
@@ -31,7 +31,7 @@ struct SurfaceData {
     float occlusion;           // Ambient occlusion [0, 1]
     vec3  emission;            // Emissive color (linear RGB, pre-multiplied by intensity)
     float alpha;               // Opacity [0, 1]
-    float specularHighlights;  // Specular highlights multiplier [0, 1]
+    float specular_highlights;  // Specular highlights multiplier [0, 1]
     float shadingParam0;       // Shading-model-defined scalar, preserved by the canonical GBuffer
     float shadingParam1;       // Shading-model-defined scalar, preserved by the canonical GBuffer
 };
@@ -70,7 +70,7 @@ SurfaceData InitSurfaceData() {
     s.occlusion = 1.0;
     s.emission = vec3(0.0);
     s.alpha = 1.0;
-    s.specularHighlights = 1.0;
+    s.specular_highlights = 1.0;
     s.shadingParam0 = 0.0;
     s.shadingParam1 = 0.0;
     return s;

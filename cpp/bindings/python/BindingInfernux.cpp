@@ -1007,6 +1007,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("init_renderer", [](Infernux &engine, int width, int height, const std::string &projectPath,
                                   const std::string &builtinResourcePath, std::function<void()> prepareSettings) {
             try {
+                py::gil_scoped_release release;
                 engine.InitRenderer(width, height, projectPath, builtinResourcePath, std::move(prepareSettings));
             } catch (const py::error_already_set &) {
                 throw;
@@ -1023,7 +1024,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("init_headless", &Infernux::InitHeadless, py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string(),
              py::arg("prepare_settings") = py::none(),
-             py::arg("gpu") = false,
+             py::arg("gpu") = false, py::call_guard<py::gil_scoped_release>(),
              "Initialize scene, physics, assets and workers without a window; explicitly enable GPU compute at startup")
         .def("tick", &Infernux::Tick, py::arg("delta_time"),
              "Advance one deterministic frame: simulation-only in headless mode, a fully simulated and "

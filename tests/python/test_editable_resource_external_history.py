@@ -78,12 +78,12 @@ def test_accepted_external_material_revision_retires_old_document_history(materi
         history.undo()
         _flush(controller)
     external = json.loads(path.read_text(encoding="utf-8"))
-    external["properties"]["baseColor"]["value"] = [0.125, 0.25, 0.5, 1.0]
+    external["properties"]["base_color"]["value"] = [0.125, 0.25, 0.5, 1.0]
     path.write_text(json.dumps(external), encoding="utf-8")
     expected_bytes = path.read_bytes()
     handler._commit_modified(str(path))
     expected_live = controller.capture_document()
-    assert expected_live["properties"]["baseColor"]["value"] == [0.125, 0.25, 0.5, 1.0]
+    assert expected_live["properties"]["base_color"]["value"] == [0.125, 0.25, 0.5, 1.0]
     with pytest.raises(RuntimeError, match="external.*revision"):
         getattr(command, direction)()
     _flush(controller)
@@ -97,7 +97,7 @@ def test_new_material_edit_undo_uses_the_accepted_external_baseline(material_edi
     _rename(controller, "Before external")
     old_command = history.action_journal.peek_undo().action
     external = json.loads(path.read_text(encoding="utf-8"))
-    external["properties"]["baseColor"]["value"] = [0.125, 0.25, 0.5, 1.0]
+    external["properties"]["base_color"]["value"] = [0.125, 0.25, 0.5, 1.0]
     path.write_text(json.dumps(external), encoding="utf-8")
     handler._commit_modified(str(path))
     _rename(controller, "After external")
@@ -107,7 +107,7 @@ def test_new_material_edit_undo_uses_the_accepted_external_baseline(material_edi
     history.undo()
     _flush(controller)
     assert controller.capture_document()["name"] == "Before external"
-    assert controller.capture_document()["properties"]["baseColor"]["value"] == [0.125, 0.25, 0.5, 1.0]
+    assert controller.capture_document()["properties"]["base_color"]["value"] == [0.125, 0.25, 0.5, 1.0]
     assert json.loads(path.read_text(encoding="utf-8")) == controller.capture_document()
 
 

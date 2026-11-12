@@ -296,7 +296,7 @@ std::array<float, 4> ParticleGpuSurfaceBinding::ResolveMaterialTint() const noex
 {
     if (!m_material || m_material->IsDeleted())
         return {1.0f, 1.0f, 1.0f, 1.0f};
-    const auto *property = m_material->GetProperty("baseColor");
+    const auto *property = m_material->GetProperty("base_color");
     if (!property || (property->type != MaterialPropertyType::Color && property->type != MaterialPropertyType::Float4))
         return {1.0f, 1.0f, 1.0f, 1.0f};
     const auto *value = std::get_if<glm::vec4>(&property->value);

@@ -100,6 +100,17 @@ def _strip_glsl_comments(source: str) -> str:
 
 def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
     """Read catalog fields from a source-level ``ShaderInfo`` declaration."""
+    from infernux._source_kinds import is_gpu_source
+
+    if is_gpu_source(filepath):
+        from infernux._compiler.shader_info import read_shader_info
+
+        try:
+            with open(filepath, "r", encoding="utf-8-sig") as handle:
+                info = read_shader_info(handle.read(), filepath)
+        except (OSError, SyntaxError):
+            return {}
+        return {"shader_id": info["shader_id"], "shader_hidden": info["hidden"], "queue": info["render_queue"]}
     try:
         with open(filepath, "r", encoding="utf-8") as handle:
             source = _strip_glsl_comments(handle.read())

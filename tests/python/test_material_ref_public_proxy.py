@@ -38,12 +38,12 @@ def test_material_conversion_preserves_proxy_and_clone_mutation(native_input):
     material = inx.Material.create_unlit()
     converted = inx.Material.from_native(material.native if native_input else material)
     assert converted is material
-    before = material.get_color("baseColor")
+    before = material.get_color("base_color")
     clone = inx.Instantiate(converted)
-    clone.set_color("baseColor", 0.2, 0.5, 0.8)
+    clone.set_color("base_color", 0.2, 0.5, 0.8)
     assert clone.native is not material.native
-    assert clone.get_color("baseColor") == pytest.approx((0.2, 0.5, 0.8, 1.0))
-    assert material.get_color("baseColor") == before
+    assert clone.get_color("base_color") == pytest.approx((0.2, 0.5, 0.8, 1.0))
+    assert material.get_color("base_color") == before
 
 
 def test_renderer_material_conversion_remains_a_single_proxy(scene):

@@ -58,11 +58,13 @@ def test_material_template_roundtrip_uses_canonical_native_color_and_document_se
     from infernux.engine.ui.project_file_ops import _new_material_document
 
     native = native_lib.InxMaterial("Authored", "Unlit")
-    native.set_color("baseColor", (1.0, 0.55, 0.12, 1.0))
-    expected = native.serialize_document()["properties"]["baseColor"]["type"]
+    native.set_color("base_color", (1.0, 0.55, 0.12, 1.0))
+    expected = native.serialize_document()["properties"]["base_color"]["type"]
     document = _new_material_document("Created")
     assert "path_hint" not in document["shaders"]["vertex"] and "path_hint" not in document["shaders"]["fragment"]
-    assert document["properties"]["baseColor"]["type"] == expected
+    assert "base_color" not in document["properties"]  # The shader owns inherited defaults.
+    document["properties"]["base_color"] = native.serialize_document()["properties"]["base_color"]
+    assert document["properties"]["base_color"]["type"] == expected
     assert native.deserialize_document(document)
     material = Material(native)
     assert material.to_dict() == material.serialize_document() == native.serialize_document()

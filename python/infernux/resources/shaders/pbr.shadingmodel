@@ -45,7 +45,7 @@ void shading(in SurfaceData s, out vec4 color) {
                                    albedo, metallic,
                                    roughness, perceptualRoughness,
                                    F0, f90, energyCompensation,
-                                   s.specularHighlights,
+                                   s.specular_highlights,
                                    ctx.viewDepth, mainLight.shadow);
 
     // ---- Indirect diffuse: cosine-convolved irradiance (SH-style) ----
@@ -82,7 +82,7 @@ void shading(in SurfaceData s, out vec4 color) {
                  * (F0 * envBrdf.x + envBrdf.y)
                  * energyCompensation
                  * (specOcclusion * horizonFade)
-                 * s.specularHighlights;
+                 * s.specular_highlights;
 
     vec3 ambient = diffuseEnv + specEnv;
     color = vec4(ambient + Lo + s.emission, s.alpha);

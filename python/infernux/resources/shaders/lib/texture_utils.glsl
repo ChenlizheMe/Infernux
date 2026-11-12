@@ -61,12 +61,12 @@ vec3 unpackNormalScale(vec4 normalSample, float scale) {
 // ============================================================================
 
 // Detail texture blending (overlay-style)
-vec3 detailBlend(vec3 baseColor, vec3 detailColor, float strength) {
+vec3 detailBlend(vec3 base_color, vec3 detailColor, float strength) {
     vec3 result = mix(
-        2.0 * baseColor * detailColor,
-        1.0 - 2.0 * (1.0 - baseColor) * (1.0 - detailColor),
-        step(0.5, baseColor));
-    return mix(baseColor, result, strength);
+        2.0 * base_color * detailColor,
+        1.0 - 2.0 * (1.0 - base_color) * (1.0 - detailColor),
+        step(0.5, base_color));
+    return mix(base_color, result, strength);
 }
 
 // Heightmap-based texture blending (for terrain-like layering)

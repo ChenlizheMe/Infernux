@@ -53,7 +53,7 @@ def test_document_reconciles_texture_publication(engine, imported_target, tmp_pa
     material_guid = None
     try:
         material = InxMaterial.create_default_lit()
-        material.set_texture_guid("texSampler", guid)
+        material.set_texture_guid("albedo_map", guid)
         if api == "registry":
             material_path.write_text(material.serialize(), encoding="utf-8")
             result = database.import_asset(str(material_path))
@@ -62,24 +62,25 @@ def test_document_reconciles_texture_publication(engine, imported_target, tmp_pa
             material = registry.load_material_by_guid(material_guid)
         transient = RenderTexture(7, 5) if override else None
         if transient:
-            material._set_render_texture("texSampler", transient._native)
+            material._set_render_texture("albedo_map", transient._native)
         engine._prepare_material_texture_assets(material)
-        binding = material._get_render_texture("texSampler")
+        binding = material._get_render_texture("albedo_map")
         assert binding is not None
         assert not material._texture_assets_pending
         before = material.serialize_document()
         version = material.get_version()
         document = copy.deepcopy(before)
         if edit == "replace":
-            document["properties"]["texSampler"]["guid"] = imported.guid
+            document["properties"]["albedo_map"]["guid"] = imported.guid
         elif edit == "clear":
-            document["properties"]["texSampler"]["guid"] = ""
+            document["properties"]["albedo_map"]["guid"] = ""
         elif edit == "remove":
-            del document["properties"]["texSampler"]
+            del document["properties"]["albedo_map"]
+            document["_shader_property_order"].remove("albedo_map")
         elif edit == "float":
-            document["properties"]["texSampler"] = {"type": 0, "value": 0.375}
+            document["properties"]["albedo_map"] = {"type": 0, "value": 0.375}
         else:
-            document["properties"]["texSampler"]["guid"] = imported.guid
+            document["properties"]["albedo_map"]["guid"] = imported.guid
             document["renderState"]["lineWidth"] = 0
         if api == "registry":
             material_path.write_text(json.dumps(document), encoding="utf-8")
@@ -96,11 +97,11 @@ def test_document_reconciles_texture_publication(engine, imported_target, tmp_pa
             assert material.serialize_document() == before
             assert material.get_version() == version
             assert not material._texture_assets_pending
-            assert material._get_render_texture("texSampler") is binding
+            assert material._get_render_texture("albedo_map") is binding
             return
         assert material._texture_assets_pending
         keep_override = override and edit in ("replace", "clear")
-        assert material._get_render_texture("texSampler") is (binding if keep_override else None)
+        assert material._get_render_texture("albedo_map") is (binding if keep_override else None)
         engine._prepare_material_texture_assets(material)
         expected = (
             binding
@@ -109,7 +110,7 @@ def test_document_reconciles_texture_publication(engine, imported_target, tmp_pa
             if edit == "replace"
             else None
         )
-        assert material._get_render_texture("texSampler") is expected
+        assert material._get_render_texture("albedo_map") is expected
         assert not material._texture_assets_pending
         published = material.get_version()
         engine._prepare_material_texture_assets(material)
@@ -134,7 +135,7 @@ def test_registry_shader_resolution_precedes_publication(rename_assets, stage, e
     version = material.get_version()
     residency = registry.get_asset_residency(guid).runtime_version
     document = copy.deepcopy(before)
-    document["properties"]["metallic"]["value"] = 0.75
+    document["properties"]["metallic"] = {"type": 0, "value": 0.75}
     reference = document["shaders"][stage]
     if edit == "wrong_type":
         reference["guid"] = guid

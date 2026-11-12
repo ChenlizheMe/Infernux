@@ -50,20 +50,20 @@ static void CheckDepthSamplingDeclaration(vk::VkDeviceContext &context)
 static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTexture> &target)
 {
     auto material = InxMaterial::CreateDefaultUnlit();
-    material->SetTextureGuid("texSampler", "white");
+    material->SetTextureGuid("albedo_map", "white");
     const auto authored = material->Serialize();
-    material->SetRenderTexture("texSampler", target);
-    assert(material->GetRenderTexture("texSampler") == target);
+    material->SetRenderTexture("albedo_map", target);
+    assert(material->GetRenderTexture("albedo_map") == target);
     assert(material->Serialize() == authored); // Runtime owner never replaces the authored asset reference.
     auto clone = material->Clone();
-    assert(clone->GetRenderTexture("texSampler") == target);
-    clone->ClearTexture("texSampler");
-    assert(!clone->GetRenderTexture("texSampler") && material->GetRenderTexture("texSampler") == target);
-    material->SetTextureGuid("texSampler", "white");
-    assert(!material->GetRenderTexture("texSampler"));
-    material->SetRenderTexture("texSampler", target);
-    material->SetFloat("texSampler", 1.0f);
-    assert(!material->GetRenderTexture("texSampler"));
+    assert(clone->GetRenderTexture("albedo_map") == target);
+    clone->ClearTexture("albedo_map");
+    assert(!clone->GetRenderTexture("albedo_map") && material->GetRenderTexture("albedo_map") == target);
+    material->SetTextureGuid("albedo_map", "white");
+    assert(!material->GetRenderTexture("albedo_map"));
+    material->SetRenderTexture("albedo_map", target);
+    material->SetFloat("albedo_map", 1.0f);
+    assert(!material->GetRenderTexture("albedo_map"));
     const auto generation = target->Acquire();
     RenderGraphDescription description;
     GraphTextureDesc texture;
@@ -285,7 +285,7 @@ static void CheckSharedFullscreenPipelines(vk::VkDeviceContext &context, const c
     third.shaderName = "shared-third";
     assert(cache->EnsurePipeline(second).pipeline.IsValid());
     assert(cache->EnsurePipeline(first).pipeline == initial); // First is newest.
-    assert(cache->EnsurePipeline(third).pipeline.IsValid()); // Retires second.
+    assert(cache->EnsurePipeline(third).pipeline.IsValid());  // Retires second.
     assert(cache->EnsurePipeline(first).pipeline == initial);
     assert(host->shaderAcquisitions == 6);
     assert(cache->EnsurePipeline(second).pipeline.IsValid());
@@ -306,8 +306,8 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
     renderer.Initialize(std::make_shared<FullscreenTestHost>(device, vertex, fragment));
     // Actual fragment-depth writes, disabled writes, rejected fragments and
     // straight-alpha blending on both depth formats and single/MSAA targets.
-    for (auto depthFormat : {rhi::PixelFormat::D32SFloat, rhi::PixelFormat::D24UNormS8UInt,
-                            rhi::PixelFormat::D32SFloatS8UInt}) {
+    for (auto depthFormat :
+         {rhi::PixelFormat::D32SFloat, rhi::PixelFormat::D24UNormS8UInt, rhi::PixelFormat::D32SFloatS8UInt}) {
         for (auto samples : {rhi::SampleCount::One, rhi::SampleCount::Four}) {
             rhi::RenderTextureDesc desc;
             desc.width = 9;
@@ -316,8 +316,8 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
             desc.depthFormat = depthFormat;
             desc.samples = samples;
             const auto &caps = device.GetCapabilities();
-            const auto depthFeatures = rhi::FormatFeature::DepthStencilAttachment |
-                                       rhi::FormatFeature::TransferSource | rhi::FormatFeature::TransferDestination;
+            const auto depthFeatures = rhi::FormatFeature::DepthStencilAttachment | rhi::FormatFeature::TransferSource |
+                                       rhi::FormatFeature::TransferDestination;
             const bool supported = caps.CheckFormat(depthFormat, depthFeatures).IsSupported() &&
                                    caps.CheckSampleCount(depthFormat, samples).IsSupported();
             if (!supported) {

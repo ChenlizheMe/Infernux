@@ -2,6 +2,8 @@ import infernux.shader as shader
 
 
 class BloomComposite(shader.fullscreen):
+    shader_id = "infernux/post/bloom_composite"
+    hidden = True
     bloom_tex = shader.input("bloom", shader.Color2D, domain="scene_linear_hdr")
     scene_color = shader.input("scene", shader.Color2D, domain="scene_linear_hdr")
     intensity = shader.parameter.float(default=0.8)

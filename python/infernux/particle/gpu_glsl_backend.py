@@ -173,9 +173,9 @@ layout(location = 4) in vec2 in_uv;
 layout(location = 14) in float in_alpha;
 layout(location = 15) in vec2 in_motion;
 layout(location = 0) out vec2 out_motion;
-layout(set = 0, binding = 2) uniform sampler2D texSampler;
+layout(set = 0, binding = 2) uniform sampler2D albedo_map;
 void main() {
-    if (texture(texSampler, in_uv).a * in_alpha <= 0.0001) discard;
+    if (texture(albedo_map, in_uv).a * in_alpha <= 0.0001) discard;
     out_motion = in_motion;
 }
 """

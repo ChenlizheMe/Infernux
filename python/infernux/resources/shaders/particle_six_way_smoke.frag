@@ -11,8 +11,8 @@ ShaderInfo {
     Cull None
     CastShadows Off
     Properties {
-        Color baseColor = [0.66, 0.66, 0.66, 1.0]
-        Color emissionColor = [1.0, 0.28, 0.04, 1.0] HDR
+        Color base_color = [0.66, 0.66, 0.66, 1.0]
+        Color emission_color = [1.0, 0.28, 0.04, 1.0] HDR
         Float lightingIntensity = 1.0 Range(0.0, 8.0)
         Float ambientIntensity = 0.0 Range(0.0, 0.002) Internal
         Float ambientSaturation = 0.0 Range(0.0, 1.0) Internal
@@ -90,7 +90,7 @@ void surface(out SurfaceData s) {
     // material and lifetime fades are additional coverage and therefore must
     // attenuate RGB as well as output alpha.
     float dynamicCoverage = clamp(
-        material.alphaScale * lifetimeFade * material.baseColor.a,
+        material.alphaScale * lifetimeFade * material.base_color.a,
         0.0,
         1.0);
     // Six-way maps store linear, density-premultiplied directional
@@ -99,8 +99,8 @@ void surface(out SurfaceData s) {
     _inxSixWayPositive = max(positiveAxes.rgb, vec3(0.0)) * dynamicCoverage;
     _inxSixWayNegative = max(negativeAxes.rgb, vec3(0.0)) * dynamicCoverage;
 
-    s.albedo = material.baseColor.rgb * v_Color;
-    s.emission = material.emissionColor.rgb * negativeAxes.a * material.emissionIntensity;
-    s.alpha = clamp(densityAlpha * material.baseColor.a, 0.0, 1.0);
+    s.albedo = material.base_color.rgb * v_Color;
+    s.emission = material.emission_color.rgb * negativeAxes.a * material.emissionIntensity;
+    s.alpha = clamp(densityAlpha * material.base_color.a, 0.0, 1.0);
     s.normalWS = normalize(v_Normal);
 }

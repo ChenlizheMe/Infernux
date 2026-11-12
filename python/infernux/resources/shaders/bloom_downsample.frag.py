@@ -2,6 +2,8 @@ import infernux.shader as shader
 
 
 class BloomDownsample(shader.fullscreen):
+    shader_id = "infernux/post/bloom_downsample"
+    hidden = True
     """Thirteen bilinear taps preserve energy while reducing bright aliasing."""
 
     source_tex = shader.input("source", shader.Color2D, domain="scene_linear_hdr")

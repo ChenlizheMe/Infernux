@@ -74,7 +74,7 @@ def main():
                 camera=owner.add_component(inx.Camera);camera.culling_mask=1<<i;camera.depth=i+1;camera.render_to_texture=True;camera.target_texture=target;camera.background_color=vec4f(0,0,0,1);camera.clear_flags=CameraClearFlags.SolidColor;cameras.append(camera)
                 obj=scene.create_game_object('Layer'+str(i));obj.layer=i;obj.transform.position=Vector3(i*100+x,0,0);objects.append(obj)
                 renderer=obj.add_component(inx.MeshRenderer);renderer.set_mesh_asset_guid(mesh_guid)
-                material=inx.Material.create_lit();material.set_color('baseColor',1,1,1,1);material.set_float('metallic',0);material.set_float('smoothness',0.3);renderer.set_material(0,material)
+                material=inx.Material.create_lit();material.set_color('base_color',1,1,1,1);material.set_float('metallic',0);material.set_float('smoothness',0.3);renderer.set_material(0,material)
                 light_owner=scene.create_game_object('Light'+str(i));light_owner.transform.position=Vector3(i*100,0,-2)
                 light=light_owner.add_component(inx.Light);light.light_type=LightType.Point;light.color=color[:3];light.intensity=4;light.range=12;light.culling_mask=1<<i;lights.append(light)
             owner=scene.create_game_object('Monitor');owner.transform.position=Vector3(0,0,-5);monitor=owner.add_component(inx.Camera);monitor.culling_mask=0;monitor.depth=-1;scene.main_camera=monitor

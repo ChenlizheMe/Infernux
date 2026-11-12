@@ -27,6 +27,7 @@ def test_mesh_fragment_uses_native_geometry_and_material_domain():
     source = '''import infernux.shader as shader
 
 class Grid(shader.frag):
+    alpha_clip = 0.3
     tint = shader.material.color(default=(0.8, 0.3, 0.1, 1.0), hdr=True, label="颜色")
     scale = shader.material.float(default=2.0, range=(0.0, 4.0))
     image = shader.material.texture_2d(default="white", label="纹理")
@@ -51,7 +52,7 @@ class Grid(shader.frag):
         locations = {(resource["set"], resource["binding"]): resource for resource in target["resources"]}
         assert {(0, 0), (1, 5), (2, 1), (2, 2), (2, 3)} <= locations.keys()
         fields = locations[0, 0]["value"]["fields"]
-        assert [field["name"] for field in fields] == ["tint", "scale"]
+        assert [field["name"] for field in fields] == ["tint", "scale", "_alpha_clip_threshold"]
         assert [(locations[0, index]["name"], locations[0, index]["type"]) for index in range(1, 5)] == [
             ("inx_image.texture", 2), ("inx_image.sampler", 4),
             ("inx_detail.texture", 2), ("inx_detail.sampler", 4),
@@ -63,7 +64,8 @@ class Sample(shader.frag):
         return shader.sample(self.image, ctx.uv0)
 '''
     for target in parse_shader(texture_only, "纹理.frag.py", "texture_only").compile()["targets"]:
-        assert not any(resource["set"] == 0 and resource["type"] == 0 for resource in target["resources"])
+        parameters = next(resource for resource in target["resources"] if resource["set"] == 0 and resource["type"] == 0)
+        assert [field["name"] for field in parameters["value"]["fields"]] == ["_alpha_clip_threshold"]
 
 
 def test_static_fullscreen_schema_and_both_targets():
@@ -82,6 +84,35 @@ def test_static_fullscreen_schema_and_both_targets():
         block = reflection["parameters"][0]["type"]["elementVarLayout"]["type"]
         assert [field["name"] for field in block["fields"]] == ["strength", "color", "active"]
         assert block["fields"][-1]["type"]["scalarType"] == "uint32"
+
+
+def test_shader_identity_visibility_and_render_defaults_are_literal_metadata():
+    from infernux._compiler.shader import _prepare_source
+
+    source = '''import infernux.shader as shader
+class Paint(shader.surface):
+    shader_id = "example/materials/paint"
+    hidden = True
+    surface_type = "transparent"
+    cull_mode = "none"
+    alpha_clip = 0.25
+    cast_shadows = False
+    receive_shadows = False
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(0.8), alpha=0.6)
+'''
+    definition = parse_shader(source, "different_file_name.frag.py", "metadata_surface")
+    assert definition.info["shader_id"] == "example/materials/paint" and definition.info["hidden"]
+    assert definition.info["render_queue"] == 3000 and definition.info["depth_write"] is False
+    assert definition.info["blend"] == "alpha" and definition.info["alpha_clip"] == .25
+    assert "static const bool INX_RECEIVE_SHADOWS = false;" in definition.generated_source
+    assert not {"shader_id", "hidden", "alpha_clip", "render_queue"} & {field.name for field in definition.parameters}
+    prepared, libraries, metadata, ranges = _prepare_source(
+        source, "different_file_name.frag.py", "metadata", lambda path: pytest.fail("Metadata reads no dependencies"),
+        metadata_only=True)
+    assert not prepared and not libraries and not ranges and json.loads(metadata) == definition.info
+    with pytest.raises(SyntaxError, match="Invalid shader declaration: hidden"):
+        parse_shader(source.replace("hidden = True", "hidden = 1"), "bad.frag.py", "bad_metadata")
 
 
 def test_unlit_model_retains_geometry_passes_without_lighting_resources(tmp_path):

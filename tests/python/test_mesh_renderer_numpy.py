@@ -37,28 +37,28 @@ def test_renderer_parameters_layer_over_shared_material_without_mutation(scene):
     second = scene.create_game_object("parameter override B").add_component("MeshRenderer")
     shared = first.get_effective_material()
     assert shared is second.get_effective_material()
-    original = tuple(shared.get_color("baseColor"))
+    original = tuple(shared.get_color("base_color"))
 
-    first.set_parameter("baseColor", (0.8, 0.2, 0.1, 1.0), persistent=True)
+    first.set_parameter("base_color", (0.8, 0.2, 0.1, 1.0), persistent=True)
     first.set_parameter("metallic", 0.4, persistent=True)
-    first.set_parameter("baseColor", (0.1, 0.7, 0.2, 1.0))
+    first.set_parameter("base_color", (0.1, 0.7, 0.2, 1.0))
 
-    assert first.get_parameter("baseColor") == pytest.approx((0.1, 0.7, 0.2, 1.0))
-    assert first.get_parameter("baseColor", persistent_only=True) == pytest.approx((0.8, 0.2, 0.1, 1.0))
+    assert first.get_parameter("base_color") == pytest.approx((0.1, 0.7, 0.2, 1.0))
+    assert first.get_parameter("base_color", persistent_only=True) == pytest.approx((0.8, 0.2, 0.1, 1.0))
     assert first.get_parameter("metallic") == pytest.approx(0.4)
-    assert tuple(shared.get_color("baseColor")) == original
-    assert tuple(second.get_effective_material().get_color("baseColor")) == original
+    assert tuple(shared.get_color("base_color")) == original
+    assert tuple(second.get_effective_material().get_color("base_color")) == original
 
     document = json.loads(first._require_cpp_component().serialize())
-    assert document["parameterOverrides"][0]["baseColor"]["type"] == 7
-    assert document["parameterOverrides"][0]["baseColor"]["value"] == pytest.approx([0.8, 0.2, 0.1, 1.0])
+    assert document["parameterOverrides"][0]["base_color"]["type"] == 7
+    assert document["parameterOverrides"][0]["base_color"]["value"] == pytest.approx([0.8, 0.2, 0.1, 1.0])
     assert document["parameterOverrides"][0]["metallic"]["value"] == pytest.approx(0.4)
 
-    assert first.remove_parameter("baseColor") is True
-    assert first.get_parameter("baseColor") == pytest.approx((0.8, 0.2, 0.1, 1.0))
-    assert first.remove_parameter("baseColor") is False
+    assert first.remove_parameter("base_color") is True
+    assert first.get_parameter("base_color") == pytest.approx((0.8, 0.2, 0.1, 1.0))
+    assert first.remove_parameter("base_color") is False
     first.clear_parameters(persistent=True)
-    assert first.get_parameter("baseColor") is None
+    assert first.get_parameter("base_color") is None
     assert first.get_parameter("metallic") is None
 
     restored_object = scene.create_game_object("restored parameter override")
@@ -66,7 +66,7 @@ def test_renderer_parameters_layer_over_shared_material_without_mutation(scene):
     document["component_id"] = restored.component_id
     assert restored.deserialize_document(document) is True
     restored = restored_object.get_component("MeshRenderer")
-    assert restored.get_parameter("baseColor") == pytest.approx((0.8, 0.2, 0.1, 1.0))
+    assert restored.get_parameter("base_color") == pytest.approx((0.8, 0.2, 0.1, 1.0))
     assert restored.get_parameter("metallic") == pytest.approx(0.4)
 
 
@@ -74,28 +74,28 @@ def test_renderer_parameter_slots_clone_and_field_removal_are_isolated(scene):
     source_object = scene.create_game_object("two-slot renderer parameters")
     renderer = source_object.add_component("MeshRenderer")
     renderer.set_material_slot_count(2)
-    renderer.set_parameter("baseColor", (0.8, 0.1, 0.1, 1.0), material_slot=0, persistent=True)
-    renderer.set_parameter("baseColor", (0.1, 0.8, 0.1, 1.0), material_slot=1, persistent=True)
+    renderer.set_parameter("base_color", (0.8, 0.1, 0.1, 1.0), material_slot=0, persistent=True)
+    renderer.set_parameter("base_color", (0.1, 0.8, 0.1, 1.0), material_slot=1, persistent=True)
     renderer.set_parameter("metallic", 0.75, material_slot=1)
 
     document = json.loads(renderer._require_cpp_component().serialize())
     assert len(document["parameterOverrides"]) == 2
-    assert document["parameterOverrides"][0]["baseColor"]["value"] == pytest.approx([0.8, 0.1, 0.1, 1.0])
-    assert document["parameterOverrides"][1]["baseColor"]["value"] == pytest.approx([0.1, 0.8, 0.1, 1.0])
+    assert document["parameterOverrides"][0]["base_color"]["value"] == pytest.approx([0.8, 0.1, 0.1, 1.0])
+    assert document["parameterOverrides"][1]["base_color"]["value"] == pytest.approx([0.1, 0.8, 0.1, 1.0])
     assert "metallic" not in document["parameterOverrides"][1]
 
     clone_object, _ = scene._clone_game_object(source_object)
     clone = clone_object.get_component("MeshRenderer")
-    assert clone.get_parameter("baseColor", material_slot=0) == pytest.approx((0.8, 0.1, 0.1, 1.0))
-    assert clone.get_parameter("baseColor", material_slot=1) == pytest.approx((0.1, 0.8, 0.1, 1.0))
+    assert clone.get_parameter("base_color", material_slot=0) == pytest.approx((0.8, 0.1, 0.1, 1.0))
+    assert clone.get_parameter("base_color", material_slot=1) == pytest.approx((0.1, 0.8, 0.1, 1.0))
     assert clone.get_parameter("metallic", material_slot=1) is None
 
-    assert renderer.remove_parameter("baseColor", material_slot=0, persistent=True)
-    assert renderer.get_parameter("baseColor", material_slot=0) is None
-    assert renderer.get_parameter("baseColor", material_slot=1) == pytest.approx((0.1, 0.8, 0.1, 1.0))
+    assert renderer.remove_parameter("base_color", material_slot=0, persistent=True)
+    assert renderer.get_parameter("base_color", material_slot=0) is None
+    assert renderer.get_parameter("base_color", material_slot=1) == pytest.approx((0.1, 0.8, 0.1, 1.0))
     assert renderer.get_parameter("metallic", material_slot=1) == pytest.approx(0.75)
     renderer.clear_parameters(material_slot=1, persistent=True)
-    assert renderer.get_parameter("baseColor", material_slot=1) is None
+    assert renderer.get_parameter("base_color", material_slot=1) is None
     assert renderer.get_parameter("metallic", material_slot=1) == pytest.approx(0.75)
 
     with pytest.raises((IndexError, ValueError), match="material slot"):
@@ -121,15 +121,15 @@ def test_runtime_parameter_owners_do_not_erase_each_other(scene):
 def test_renderer_texture_parameter_uses_asset_guid_boundary(scene):
     renderer = scene.create_game_object("renderer texture boundary").add_component("MeshRenderer")
     material = renderer.get_effective_material().clone()
-    material.set_texture_guid("texSampler", "white")
+    material.set_texture_guid("albedo_map", "white")
     renderer.set_material(material)
-    renderer.set_parameter("texSampler", "white")
-    assert renderer.get_parameter("texSampler") == "white"
+    renderer.set_parameter("albedo_map", "white")
+    assert renderer.get_parameter("albedo_map") == "white"
     with pytest.raises(ValueError, match="texture GUID does not exist"):
-        renderer.set_parameter("texSampler", "missing-texture-guid")
+        renderer.set_parameter("albedo_map", "missing-texture-guid")
 
     document = json.loads(renderer._require_cpp_component().serialize())
-    document["parameterOverrides"] = [{"texSampler": {"type": 0, "value": 1.0}}]
+    document["parameterOverrides"] = [{"albedo_map": {"type": 0, "value": 1.0}}]
     restored = scene.create_game_object("invalid renderer document").add_component("MeshRenderer")
     document["component_id"] = restored.component_id
     assert restored.deserialize_document(document) is False

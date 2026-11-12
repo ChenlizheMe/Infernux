@@ -58,7 +58,7 @@ int main()
     const auto &vertex = target.entries[0];
     const auto &fragment = target.entries[1];
     std::vector<ShaderProgramPropertyBinding> properties(2);
-    properties[0].name = "texSampler";
+    properties[0].name = "albedo_map";
     properties[0].resourcePath = "source_image";
     properties[1].name = "detailTex";
     properties[1].resourcePath = "detail_image";
@@ -68,7 +68,7 @@ int main()
     for (const auto &binding : program.GetDescriptorBindings())
         if (binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
             slots.emplace(binding.name, binding.binding);
-    assert(slots.size() == 2 && slots.find("texSampler") != slots.end() && slots.find("detailTex") != slots.end());
+    assert(slots.size() == 2 && slots.find("albedo_map") != slots.end() && slots.find("detailTex") != slots.end());
     const auto checkPairs = [&](const MaterialDescriptorSet &descriptor) {
         for (const auto &binding : program.GetDescriptorBindings()) {
             if (binding.type != VK_DESCRIPTOR_TYPE_SAMPLER)
@@ -123,7 +123,7 @@ int main()
     // A project texture GUID remains empty until an asset is explicitly assigned.
     ShaderProgramArtifact defaults;
     ShaderProgramPropertyBinding declaredNormal;
-    declaredNormal.name = "texSampler";
+    declaredNormal.name = "albedo_map";
     declaredNormal.type = "Texture2D";
     declaredNormal.textureDefault = "normal";
     defaults.properties.push_back(declaredNormal);
@@ -134,12 +134,12 @@ int main()
     defaults.properties.push_back(declaredWhite);
     InxMaterial defaultMaterial("declared-texture-defaults", "Gizmo Icon");
     defaultMaterial.SynchronizeShaderPropertyDefaults(defaults);
-    assert(defaultMaterial.SerializeDocument()["properties"]["texSampler"]["guid"] == "");
+    assert(defaultMaterial.SerializeDocument()["properties"]["albedo_map"]["guid"] == "");
     auto *defaultDescriptor = descriptors.GetOrCreateDescriptorSet(defaultMaterial, program);
     assert(defaultDescriptor && defaultDescriptor->isValid);
     assert(descriptors.UpdateMaterialProperties(defaultMaterial, program));
     const bool declaredDefaultCorrect =
-        defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1];
+        defaultDescriptor->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[1];
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[0]);
     checkPairs(*defaultDescriptor);
     const uint64_t defaultAuthoredVersion = defaultMaterial.GetAuthoredVersion();
@@ -148,7 +148,7 @@ int main()
     assert(defaultMaterial.SynchronizeShaderPropertyDefaults(defaults));
     assert(defaultMaterial.GetAuthoredVersion() == defaultAuthoredVersion);
     assert(descriptors.UpdateMaterialProperties(defaultMaterial, program));
-    assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
+    assert(defaultDescriptor->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[0]);
     assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
     auto defaultClone = defaultMaterial.Clone();
     auto *cloneDescriptor = descriptors.GetOrCreateDescriptorSet(*defaultClone, program);
@@ -161,14 +161,14 @@ int main()
     for (const auto &[initialToken, initialView] : builtins) {
         InxMaterial tokens(std::string("builtin-") + initialToken, "Gizmo Icon");
         tokens.SynchronizeShaderPropertyDefaults(defaults);
-        tokens.SetTextureGuid("texSampler", initialToken);
+        tokens.SetTextureGuid("albedo_map", initialToken);
         auto *created = descriptors.GetOrCreateDescriptorSet(tokens, program);
-        assert(created && created->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[initialView]);
+        assert(created && created->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[initialView]);
         for (const auto &[token, view] : builtins) {
-            tokens.SetTextureGuid("texSampler", token);
+            tokens.SetTextureGuid("albedo_map", token);
             assert(descriptors.UpdateMaterialProperties(tokens, program));
             auto *updated = descriptors.GetOrCreateDescriptorSet(tokens, program);
-            assert(updated && updated->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[view]);
+            assert(updated && updated->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[view]);
             auto overrides = std::make_shared<RendererParameterBlock>();
             overrides->properties["detailTex"] =
                 MaterialProperty{"detailTex", MaterialPropertyType::Texture2D, std::string{token}};
@@ -214,12 +214,12 @@ int main()
     assert(defaultMaterial.SerializeDocument()["properties"]["detailTex"]["guid"] == "");
     auto parameters = std::make_shared<RendererParameterBlock>();
     parameters->properties["detailTex"] = MaterialProperty{"detailTex", MaterialPropertyType::Texture2D, std::string{}};
-    parameters->properties["texSampler"] =
-        MaterialProperty{"texSampler", MaterialPropertyType::Texture2D, std::string{"normal"}};
+    parameters->properties["albedo_map"] =
+        MaterialProperty{"albedo_map", MaterialPropertyType::Texture2D, std::string{"normal"}};
     auto *rendererDescriptor = descriptors.GetOrCreateRendererDescriptorSet(defaultMaterial, program, parameters);
     assert(rendererDescriptor && rendererDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
-    assert(rendererDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
-    assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
+    assert(rendererDescriptor->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[1]);
+    assert(defaultDescriptor->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[0]);
 
     {
         // One captured block remains immutable while its texture upload and
@@ -228,19 +228,19 @@ int main()
         InxMaterial selectedMaterial("selected-texture-publication", "Gizmo Icon");
         selectedMaterial.SynchronizeShaderPropertyDefaults(defaults);
         auto selectedParameters = std::make_shared<RendererParameterBlock>();
-        selectedParameters->properties["texSampler"] =
-            MaterialProperty{"texSampler", MaterialPropertyType::Texture2D, std::string{"draw-guid"}};
+        selectedParameters->properties["albedo_map"] =
+            MaterialProperty{"albedo_map", MaterialPropertyType::Texture2D, std::string{"draw-guid"}};
         assert(!descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters));
         statuses["draw-guid"] = TextureResolveStatus::Ready;
         auto *ready = descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters);
-        assert(ready && ready->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[2]);
+        assert(ready && ready->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[2]);
         assert(descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters) == ready);
         const auto previousDescriptor = ready->descriptorSet;
         assert(drawTextureSlot->TryPublish(gpuViews[3]));
         auto *replaced = descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters);
         assert(replaced && replaced->descriptorSet != previousDescriptor);
-        assert(replaced->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
-        assert(ready->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[2]);
+        assert(replaced->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[3]);
+        assert(ready->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[2]);
         checkPairs(*ready);
         checkPairs(*replaced);
         auto missingParameters = std::make_shared<RendererParameterBlock>(*selectedParameters);
@@ -248,7 +248,7 @@ int main()
         assert(!descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, missingParameters));
         statuses["draw-guid"] = TextureResolveStatus::Ready;
         auto *restored = descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, missingParameters);
-        assert(restored && restored->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
+        assert(restored && restored->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[3]);
     }
 
     {
@@ -288,9 +288,9 @@ int main()
         auto *sharedDescriptor = descriptors.GetOrCreateDescriptorSet(*shared, program);
         assert(leftDescriptor && rightDescriptor && sharedDescriptor);
         assert(leftDescriptor != rightDescriptor);
-        assert(leftDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
-        assert(rightDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
-        assert(sharedDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
+        assert(leftDescriptor->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[1]);
+        assert(rightDescriptor->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[3]);
+        assert(sharedDescriptor->textureBindings.at(slots.at("albedo_map")).gpuView == gpuViews[0]);
         assert(shared->SerializeDocument() == linkedDocument);
         assert(!left.SerializeDocument().contains("parameterOverrides"));
     }
@@ -298,7 +298,7 @@ int main()
     InxMaterial material("texture-readiness", "Gizmo Icon");
     material.SetFloat("gain", 1.0f);
     auto document = material.SerializeDocument();
-    document["properties"]["texSampler"] = {{"type", static_cast<int>(MaterialPropertyType::Texture2D)},
+    document["properties"]["albedo_map"] = {{"type", static_cast<int>(MaterialPropertyType::Texture2D)},
                                             {"guid", "icon-guid"}};
     document["properties"]["detailTex"] = {{"type", static_cast<int>(MaterialPropertyType::Texture2D)},
                                            {"guid", "detail-guid"}};
@@ -306,7 +306,7 @@ int main()
     const auto materialKey = material.GetMaterialKey();
     auto *descriptor = descriptors.GetOrCreateDescriptorSet(material, program);
     assert(descriptor && descriptor->isValid);
-    const auto iconSlot = slots.at("texSampler");
+    const auto iconSlot = slots.at("albedo_map");
     const auto detailSlot = slots.at("detailTex");
     const auto check = [&](bool unresolved, bool pending, size_t iconView, size_t detailView) {
         assert(descriptors.HasUnresolvedExplicitTextureProperties(materialKey) == unresolved);
@@ -358,7 +358,7 @@ int main()
     SDL_DestroyWindow(window);
     SDL_Quit();
     if (!declaredDefaultCorrect) {
-        std::cerr << "Texture2D texSampler = normal did not bind the declared normal texture\n";
+        std::cerr << "Texture2D albedo_map = normal did not bind the declared normal texture\n";
         return 1;
     }
     std::cout << "Material texture readiness regression passed\n";

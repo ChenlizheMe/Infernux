@@ -8,7 +8,7 @@ Usage::
 
     # Create via factory
     mat = Material.create_lit("MyPBR")
-    mat.set_color("baseColor", 1.0, 0.5, 0.0)
+    mat.set_color("base_color", 1.0, 0.5, 0.0)
     mat.set_float("metallic", 0.9)
     mat.set_float("smoothness", 0.9)
 
@@ -587,11 +587,11 @@ class Material(ResourceProxy):
         texture = self._native.get_property(name)
         if texture is not None and not isinstance(texture, str):
             raise TypeError(f"material property {name!r} is not a texture")
-        transform = self._native.get_property(name + "_ST")
+        transform = self._native.get_property(name + "_st")
         return (1.0, 1.0, 0.0, 0.0) if transform is None else tuple(transform)
 
     def get_texture_offset(self, name: str | int):
-        """Texture offset stored in the companion ``<name>_ST.zw`` uniform."""
+        """Texture offset stored in the companion ``<name>_st.zw`` uniform."""
         from infernux.math import Vector2
         return Vector2(*self._texture_transform(name)[2:])
 
@@ -604,10 +604,10 @@ class Material(ResourceProxy):
         if len(offset) != 2 or not all(math.isfinite(x) for x in offset):
             raise ValueError("texture offset requires two finite numbers")
         transform = self._texture_transform(name)
-        self.set_vector4(name + "_ST", *transform[:2], *offset)
+        self.set_vector4(name + "_st", *transform[:2], *offset)
 
     def get_texture_scale(self, name: str | int):
-        """Texture tiling stored in the companion ``<name>_ST.xy`` uniform."""
+        """Texture tiling stored in the companion ``<name>_st.xy`` uniform."""
         from infernux.math import Vector2
         return Vector2(*self._texture_transform(name)[:2])
 
@@ -620,7 +620,7 @@ class Material(ResourceProxy):
         if len(scale) != 2 or not all(math.isfinite(x) for x in scale):
             raise ValueError("texture scale requires two finite numbers")
         transform = self._texture_transform(name)
-        self.set_vector4(name + "_ST", *scale, *transform[2:])
+        self.set_vector4(name + "_st", *scale, *transform[2:])
 
     def set_texture_guid(self, name: str | int, texture_guid: str):
         """Set a texture shader property by asset GUID."""
@@ -640,7 +640,7 @@ class Material(ResourceProxy):
 
         Examples:
             material.set_param("metallic", 0.9)
-            material.set_param("baseColor", (1.0, 0.5, 0.2, 1.0))
+            material.set_param("base_color", (1.0, 0.5, 0.2, 1.0))
             material.set_param("tiling", (2.0, 2.0))
         """
         self._native.set_param(name, value)

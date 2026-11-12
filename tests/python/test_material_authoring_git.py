@@ -35,13 +35,13 @@ def _git(path, *args):
 
 def _source():
     document = _new_material_document("Shared Bronze")
-    document["properties"]["baseColor"]["value"] = [0.26, 0.17, 0.075, 1.0]
-    document["properties"]["metallic"]["value"] = 0.65
+    document["properties"]["base_color"] = {"type": 7, "value": [0.26, 0.17, 0.075, 1.0]}
+    document["properties"]["metallic"] = {"type": 0, "value": 0.65}
     return document
 
 
 def _native(document):
-    native = InxMaterial("Shared Bronze", "Unlit")
+    native = InxMaterial("Shared Bronze")
     assert native.deserialize_document(document)
     return native
 
@@ -68,7 +68,7 @@ def test_first_independent_material_edits_merge_without_float_or_layout_churn(tm
         if index == 0:
             after["properties"]["metallic"]["value"] = 0.55
         else:
-            after["properties"]["baseColor"]["value"] = [0.32, 0.2, 0.1, 1]
+            after["properties"]["base_color"]["value"] = [0.32, 0.2, 0.1, 1]
         assert material.deserialize_document(after)
         target.write_text(snapshot.dump(material.serialize_document()), encoding="utf-8")
         _git(author, "add", "Bronze.mat")
@@ -77,7 +77,7 @@ def test_first_independent_material_edits_merge_without_float_or_layout_churn(tm
     _git(authors[0], "merge", "--no-edit", "FETCH_HEAD")
     merged = json.loads((authors[0] / "Bronze.mat").read_text())
     assert merged["properties"]["metallic"]["value"] == pytest.approx(0.55)
-    assert merged["properties"]["baseColor"]["value"] == pytest.approx([0.32, 0.2, 0.1, 1])
+    assert merged["properties"]["base_color"]["value"] == pytest.approx([0.32, 0.2, 0.1, 1])
     assert _native(merged).serialize_document()["properties"]["metallic"]["value"] == pytest.approx(0.55)
 
 
@@ -87,12 +87,12 @@ def test_material_undo_returns_authored_values_and_omits_resolved_defaults(tmp_p
     path.write_text(dump_material_document(original), encoding="utf-8")
     before = _native(original).serialize_document()
     before["properties"]["ResolvedOnly"] = {"type": 0, "value": 0.125}
-    before["_shader_property_order"] = ["metallic", "baseColor"]
+    before["_shader_property_order"] = ["metallic", "base_color"]
     snapshot = MaterialAuthoringSnapshot(str(path), before)
     after = copy.deepcopy(before)
     after["properties"]["metallic"]["value"] = 0.55
     edited = json.loads(snapshot.dump(after))
-    assert edited["properties"]["baseColor"] == original["properties"]["baseColor"]
+    assert edited["properties"]["base_color"] == original["properties"]["base_color"]
     assert "ResolvedOnly" not in edited["properties"]
     assert "_shader_property_order" not in edited
     assert snapshot.dump(before) == dump_material_document(original)

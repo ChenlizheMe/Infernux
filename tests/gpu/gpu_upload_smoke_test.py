@@ -74,12 +74,12 @@ def main() -> int:
             / "animation_with_skeleton.fbx"
         )
         skinned_source.write_bytes(skinned_fixture.read_bytes())
-        lit_shader_path = Path(resolved_path(__file__)).parents[2] / "python/infernux/resources" / "shaders" / "lit.frag"
+        lit_shader_path = Path(resolved_path(__file__)).parents[2] / "python/infernux/resources" / "shaders" / "lit.frag.py"
         assert lit_shader_path.is_file()
-        hot_reload_shader_path = project / "Assets" / "GpuReloadProbe.frag"
+        hot_reload_shader_path = project / "Assets" / "gpu_reload_probe.frag.py"
         hot_reload_shader_source = lit_shader_path.read_text(encoding="utf-8").replace(
-            'Name "Lit"', 'Name "GPU Reload Probe"', 1
-        )
+            "class Lit(", "class GpuReloadProbe(", 1
+        ).replace('"infernux/lit"', '"tests/gpu_reload_probe"')
         assert hot_reload_shader_source != lit_shader_path.read_text(encoding="utf-8")
         hot_reload_shader_path.write_text(hot_reload_shader_source, encoding="utf-8")
 
@@ -127,8 +127,8 @@ def main() -> int:
             second_texture_guid = frontend.get_asset_database().get_guid_from_path(str(second_texture_path))
             assert second_texture_guid
             material = InxMaterial.create_default_lit()
-            material.frag_shader_name = "GPU Reload Probe"
-            material.set_texture_guid("texSampler", texture_guid)
+            material.frag_shader_name = "tests/gpu_reload_probe"
+            material.set_texture_guid("albedo_map", texture_guid)
             renderer.set_material(0, material)
 
             gui_pixels = bytes(
@@ -368,7 +368,7 @@ def main() -> int:
                     assert texture_asset.pixel_format
                     texture_cpu_release_verified = True
                 if uploads_complete and not switched_texture:
-                    material.set_texture_guid("texSampler", second_texture_guid)
+                    material.set_texture_guid("albedo_map", second_texture_guid)
                     switched_texture = True
                 elif (
                     uploads_complete
@@ -457,9 +457,8 @@ def main() -> int:
             for revision in range(8):
                 reload_gain = 0.91 + revision * 0.01
                 revision_source = hot_reload_shader_source.replace(
-                    "s.albedo     = texColor.rgb * getVertexColor() * material.baseColor.rgb;",
-                    "s.albedo     = texColor.rgb * getVertexColor() * "
-                    f"material.baseColor.rgb * {reload_gain:.2f};",
+                    "albedo=base.rgb * ctx.color * self.base_color.rgb,",
+                    f"albedo=base.rgb * ctx.color * self.base_color.rgb * {reload_gain:.2f},",
                     1,
                 )
                 assert revision_source != hot_reload_shader_source
@@ -468,7 +467,7 @@ def main() -> int:
                     encoding="utf-8",
                 )
                 error = engine.reload_shader_runtime(
-                    str(hot_reload_shader_path), "GPU Reload Probe"
+                    str(hot_reload_shader_path), "tests/gpu_reload_probe"
                 )
                 assert error == "", error
                 assert engine.refresh_material_pipeline(material), revision
@@ -492,14 +491,14 @@ def main() -> int:
             # publication, or make the material disappear. This exercises the
             # same last-known-good transaction used by editor hot reload.
             invalid_source = revision_source.replace(
-                "void surface(out SurfaceData s)",
-                "void surface(out SurfaceData s) this_is_not_valid_glsl",
+                "def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:",
+                "def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData: invalid shader syntax",
                 1,
             )
             assert invalid_source != revision_source
             hot_reload_shader_path.write_text(invalid_source, encoding="utf-8")
             invalid_error = engine.reload_shader_runtime(
-                str(hot_reload_shader_path), "GPU Reload Probe"
+                str(hot_reload_shader_path), "tests/gpu_reload_probe"
             )
             assert invalid_error, "invalid shader candidate was unexpectedly published"
             invalid_residency = engine.gpu_residency_snapshot
@@ -515,14 +514,14 @@ def main() -> int:
 
             # Recover from the rejected candidate with one more valid revision.
             recovery_source = revision_source.replace(
-                f"material.baseColor.rgb * {reload_gain:.2f};",
-                "material.baseColor.rgb * 1.03;",
+                f"self.base_color.rgb * {reload_gain:.2f},",
+                "self.base_color.rgb * 1.03,",
                 1,
             )
             assert recovery_source != revision_source
             hot_reload_shader_path.write_text(recovery_source, encoding="utf-8")
             recovery_error = engine.reload_shader_runtime(
-                str(hot_reload_shader_path), "GPU Reload Probe"
+                str(hot_reload_shader_path), "tests/gpu_reload_probe"
             )
             assert recovery_error == "", recovery_error
             assert engine.refresh_material_pipeline(material)

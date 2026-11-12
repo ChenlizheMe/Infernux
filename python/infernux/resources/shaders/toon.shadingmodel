@@ -224,7 +224,7 @@ void shading(in SurfaceData s, out vec4 color) {
     Light mainLight = getMainLight(ctx.positionWS, N, ctx.viewDepth);
     vec3 direct = calculateAllToonLighting(
         ctx.positionWS, N, V, clamp(s.albedo, 0.0, 1.0), threshold,
-        softness, s.smoothness, s.specularHighlights, ctx.viewDepth,
+        softness, s.smoothness, s.specular_highlights, ctx.viewDepth,
         mainLight.shadow);
     vec3 ambient = sampleAmbientIrradiance(N) * s.albedo
                  * clamp(s.occlusion, 0.0, 1.0) * 0.65;

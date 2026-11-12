@@ -41,15 +41,15 @@ using PreviewTextureResolver = std::function<PreviewTexture(const std::string &)
 struct SurfaceSlotMapping
 {
     std::string scalarProp;  ///< Scalar/color property name (e.g. "metallic")
-    std::string textureProp; ///< Texture2D property name (e.g. "metallicMap")
-    std::string scaleProp;   ///< Scale float for normal maps (e.g. "normalScale")
+    std::string textureProp; ///< Texture2D property name (e.g. "metallic_map")
+    std::string scaleProp;   ///< Scale float for normal maps (e.g. "normal_scale")
 };
 
 /// Parsed mapping from a shader's surface() function to PBR slots.
 struct ShaderPreviewMapping
 {
     /// Slot name → mapping. Known slots: "albedo", "metallic", "smoothness",
-    /// "occlusion", "normal", "emission", "specularHighlights", "alpha".
+    /// "occlusion", "normal", "emission", "specular_highlights", "alpha".
     std::unordered_map<std::string, SurfaceSlotMapping> slots;
 
     bool IsEmpty() const

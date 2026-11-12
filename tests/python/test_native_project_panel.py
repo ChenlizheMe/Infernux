@@ -44,7 +44,7 @@ def test_asset_creation_writes_current_documents_and_imports_guids(engine, tmp_p
     material_path = directory / "NewMaterial.mat"
     document = json.loads(material_path.read_text(encoding="utf-8"))
     assert document["shaders"]["vertex"]["shader_id"] == "Standard"
-    assert document["shaders"]["fragment"]["shader_id"] == "Lit"
+    assert document["shaders"]["fragment"]["shader_id"] == "infernux/lit"
     assert document["name"] == "NewMaterial" and document["builtin"] is False
     material = InxMaterial()
     assert material.deserialize_document(document)

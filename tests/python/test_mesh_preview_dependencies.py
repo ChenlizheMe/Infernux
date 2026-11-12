@@ -44,7 +44,7 @@ def test_mesh_preview_finishes_latest_request_without_repeated_queries(engine, s
     observations = []
 
     def publish(color):
-        case.material.set_vector4("baseColor", *color, 1.0)
+        case.material.set_vector4("base_color", *color, 1.0)
         AssetManager.note_asset_edit(str(case.material_path), material_json=case.material.serialize())
 
     def supersede(row):
@@ -144,7 +144,7 @@ def test_material_content_deduplication_does_not_outlive_its_source(engine, scen
             case = MeshPreviewDependencyCase(engine, directory, "edit", "native")
         else:
             authored = InxMaterial.create_default_unlit()
-            authored.set_vector4("baseColor", 1.0, 0.0, 0.0, 1.0)
+            authored.set_vector4("base_color", 1.0, 0.0, 0.0, 1.0)
             assert authored.save_to(str(case.material_path))
             assert AssetManager.reimport_asset(str(case.material_path))
             case.material = case.registry.load_material(str(case.material_path))

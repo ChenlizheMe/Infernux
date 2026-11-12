@@ -38,7 +38,7 @@ class VignetteEffect(FullScreenEffect):
     color: Color = Color(0.0, 0.0, 0.0, 1.0)
 
     def get_shader_list(self) -> List[str]:
-        return ["vignette"]
+        return ["infernux/post/vignette"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
@@ -48,7 +48,7 @@ class VignetteEffect(FullScreenEffect):
             bus,
             output_name="_vignette_out",
             pass_name="Vignette_Apply",
-            shader_name="vignette",
+            shader_name="infernux/post/vignette",
             format=Format.RGBA16_SFLOAT,
             params={
                 "intensity": self.intensity,

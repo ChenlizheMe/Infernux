@@ -68,7 +68,7 @@ def test_documented_selection_example_uses_the_public_namespace(scene, language)
     section = text.split('{#' + anchor + '}', 1)[1]
     source = section.split('```python\n', 1)[1].split('```', 1)[0]
     material = Material(InxMaterial('Documented mask', 'Unlit'))
-    material.set_color('baseColor', 1., 1., 1., 1.)
+    material.set_color('base_color', 1., 1., 1., 1.)
     renderer = scene.create_game_object('Guide selection').add_component('MeshRenderer')
     graph = RenderGraph('Guide selection')
     mask = graph.create_texture('mask', format=Format.RGBA16_SFLOAT)

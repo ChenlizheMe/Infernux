@@ -3,6 +3,8 @@ from .lib.color import luminance, rgb_to_hsv, hsv_to_rgb
 
 
 class ColorAdjustments(shader.fullscreen):
+    shader_id = "infernux/post/color_adjustments"
+    hidden = True
     source_tex = shader.input("color", shader.Color2D, domain="scene_linear_hdr")
     post_exposure = shader.parameter.float(default=0.0)
     contrast = shader.parameter.float(default=0.0)

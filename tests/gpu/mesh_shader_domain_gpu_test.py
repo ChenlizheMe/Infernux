@@ -16,7 +16,7 @@ def main():
     parser.add_argument('--pipeline', choices=('forward', 'forward_plus', 'deferred'), default='forward')
     parser.add_argument('--proof', type=Path)
     args = parser.parse_args()
-    wrong_pair = ('Fullscreen Triangle', 'fullscreen_blit') if args.domain == 'Fullscreen' else ('Particle Sprite', 'Particle Unlit')
+    wrong_pair = ('Fullscreen Triangle', 'infernux/internal/fullscreen_blit') if args.domain == 'Fullscreen' else ('Particle Sprite', 'Particle Unlit')
     proof = {'package': inx.__file__, 'domain': args.domain, 'pipeline': args.pipeline, 'phases': [],
              'scope': 'Independent temporary project GPU readbacks, cold rejection, valid Mesh recovery and rejected edit with previous valid pipeline. No live Editor pixels.'}
     failures = []
@@ -58,7 +58,7 @@ def main():
                 np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
                 np.array([0, 2, 1, 0, 3, 2], dtype=np.uint32), 'Domain Quad')
             material = InxMaterial.create_default_unlit()
-            material.set_color('baseColor', 1., .1, .05, 1.)
+            material.set_color('base_color', 1., .1, .05, 1.)
             material.vert_shader_name, material.frag_shader_name = wrong_pair
             renderer.set_material(0, material)
             native.set_game_camera_enabled(True)

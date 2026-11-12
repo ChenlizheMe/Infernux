@@ -109,30 +109,41 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         }
     });
     m.attr("_slang_standard_module_name") = SlangCompiler::GetStandardModuleName();
+    m.def(
+        "_shader_source_path",
+        [](const std::string &identifier, const std::string &kind) {
+            auto *database = AssetRegistry::Instance().GetAssetDatabase();
+            if (!database)
+                throw std::logic_error("Resolving a shader ID requires an AssetDatabase");
+            return database->FindShaderPathById(identifier, kind);
+        },
+        py::arg("identifier"), py::arg("kind"));
     {
         py::gil_scoped_release release;
         SlangCompiler::Get();
     }
-    SlangCompiler::Get().SetAuthorFrontend([](const ShaderSourceModule &source, const ShaderTextReader &reader) {
-        py::gil_scoped_acquire acquire;
-        try {
-            const auto prepare = py::module_::import("infernux._compiler.shader").attr("_prepare_source");
-            const auto prepared = prepare(source.source, source.path, source.name, py::cpp_function(reader));
-            const auto fields = py::cast<py::tuple>(prepared);
-            ShaderAuthorSource result;
-            result.source = {source.name, source.path, py::cast<std::string>(fields[0])};
-            for (const auto &[name, path, text] :
-                 py::cast<std::vector<std::tuple<std::string, std::string, std::string>>>(fields[1]))
-                result.libraries.push_back({name, path, text});
-            result.schema = py::cast<std::string>(fields[2]);
-            result.sourceRanges = SourceRanges(py::cast<std::vector<SourceRangeTuple>>(fields[3]));
-            return result;
-        } catch (py::error_already_set &error) {
-            // Worker tickets retain native diagnostics, never Python exception
-            // objects whose destruction could run after interpreter shutdown.
-            throw ShaderCompilationError(AuthorDiagnostics(error, source.path));
-        }
-    });
+    SlangCompiler::Get().SetAuthorFrontend(
+        [](const ShaderSourceModule &source, const ShaderTextReader &reader, ShaderAuthorPhase phase) {
+            py::gil_scoped_acquire acquire;
+            try {
+                const auto prepare = py::module_::import("infernux._compiler.shader").attr("_prepare_source");
+                const auto prepared = prepare(source.source, source.path, source.name, py::cpp_function(reader),
+                                              py::arg("metadata_only") = phase == ShaderAuthorPhase::Metadata);
+                const auto fields = py::cast<py::tuple>(prepared);
+                ShaderAuthorSource result;
+                result.source = {source.name, source.path, py::cast<std::string>(fields[0])};
+                for (const auto &[name, path, text] :
+                     py::cast<std::vector<std::tuple<std::string, std::string, std::string>>>(fields[1]))
+                    result.libraries.push_back({name, path, text});
+                result.schema = py::cast<std::string>(fields[2]);
+                result.sourceRanges = SourceRanges(py::cast<std::vector<SourceRangeTuple>>(fields[3]));
+                return result;
+            } catch (py::error_already_set &error) {
+                // Worker tickets retain native diagnostics, never Python exception
+                // objects whose destruction could run after interpreter shutdown.
+                throw ShaderCompilationError(AuthorDiagnostics(error, source.path));
+            }
+        });
     m.def(
         "_check_shader_source",
         [](const std::string &path, const std::optional<std::string> &text) {

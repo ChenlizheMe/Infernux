@@ -83,7 +83,7 @@ def main():
             renderer = caster.add_component(inx.MeshRenderer)
             renderer.mesh = mesh
             material = inx.Material.create_unlit()
-            material.set_color("baseColor", 1, 0, 1, 1)
+            material.set_color("base_color", 1, 0, 1, 1)
             renderer.material = material
             renderer.enabled = False
             frontend.set_render_pipeline(pipeline)

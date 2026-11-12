@@ -10,12 +10,17 @@ from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, RenderPipelineCallback, SceneManager, Vector3
 from infernux.rendergraph import Format, RenderGraph
 
-SURFACE = '''#version 450
-ShaderInfo {
- Name "Raster Near" ShadingModel Unlit Cull Back DepthWrite On DepthTest Less
- Properties { Color baseColor=[1,1,1,1] }
-}
-void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=material.baseColor.rgb; }
+SURFACE = '''import infernux.shader as shader
+class RasterNear(shader.surface):
+    shader_id = "tests/raster_near"
+    hidden = True
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "back"
+    depth_write = True
+    depth_test = "less"
+    base_color = shader.material.color(default=(1.0, 1.0, 1.0, 1.0))
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=self.base_color.rgb, alpha=self.base_color.a)
 '''
 
 
@@ -45,10 +50,10 @@ def main():
         project=Path(folder)
         for name in ('Assets','Packages','ProjectSettings'):
             (project/name).mkdir()
-        path=project/'Assets/Near.frag'
+        path=project/'Assets/near.frag.py'
         path.write_text(SURFACE,encoding='utf-8')
-        (project/'Assets/Writer.frag').write_text(SURFACE.replace('Raster Near','Stencil Writer').replace('DepthTest Less','DepthTest Always Stencil "always,1,replace,keep,keep"'),encoding='utf-8')
-        (project/'Assets/Reader.frag').write_text(SURFACE.replace('Raster Near','Stencil Reader').replace('DepthTest Less','DepthTest Always Stencil "equal,1,keep,keep,keep"'),encoding='utf-8')
+        (project/'Assets/writer.frag.py').write_text(SURFACE.replace('raster_near','stencil_writer').replace('depth_test = "less"','depth_test = "always"\n    stencil = "always,1,replace,keep,keep"'),encoding='utf-8')
+        (project/'Assets/reader.frag.py').write_text(SURFACE.replace('raster_near','stencil_reader').replace('depth_test = "less"','depth_test = "always"\n    stencil = "equal,1,keep,keep,keep"'),encoding='utf-8')
         frontend=inx.Engine()
         native=frontend.get_native_engine()
         console=ConsolePanel()
@@ -61,7 +66,7 @@ def main():
             native.set_editor_fps_cap(240.)
             native.set_editor_idle_fps(0.)
             database=frontend.get_asset_database()
-            for shader in project.glob('Assets/*.frag'):
+            for shader in project.glob('Assets/*.frag.py'):
                 result=AssetManager.import_asset(str(shader),database=database)
                 assert result,result.error
             scene=SceneManager.instance().get_active_scene()
@@ -76,9 +81,10 @@ def main():
                 obj.transform.position=Vector3(0,0,z)
                 renderer=obj.add_component(inx.MeshRenderer)
                 renderer.set_inline_mesh_data(np.array([[-1,-1,0],[1,-1,0],[1,1,0],[-1,1,0]],dtype=np.float32),np.array([[0,0,-1]]*4,dtype=np.float32),np.array([[0,0],[1,0],[1,1],[0,1]],dtype=np.float32),np.array([0,2,1,0,3,2],dtype=np.uint32),'State Quad')
-                material=inx.Material.create_unlit()
-                material.frag_shader_name='Stencil Writer' if name=='Writer' else 'Stencil Reader' if name=='Reader' else 'Raster Near' if name=='Near' else 'Unlit'
-                material.set_color('baseColor',*color)
+                shader_id = 'tests/stencil_writer' if name=='Writer' else 'tests/stencil_reader' if name=='Reader' else 'tests/raster_near' if name=='Near' else 'infernux/unlit'
+                material=inx.Material.from_shader(shader_id)
+                assert material.native.frag_shader_reference['guid']
+                material.set_color('base_color',*color)
                 material.render_queue=queue
                 material.cull_mode=2
                 renderer.set_material(0,material)
@@ -129,17 +135,17 @@ def main():
                         far.depth_compare_op=7 if phase==5 else 1
                         far.depth_test_enable=phase!=6
                         if phase==8:
-                            path.write_text(SURFACE.replace('Cull Back','Cull Front').replace('DepthTest Less','DepthTest Never').replace('DepthWrite On','DepthWrite Off'),encoding='utf-8')
+                            path.write_text(SURFACE.replace('cull_mode = "back"','cull_mode = "front"').replace('depth_test = "less"','depth_test = "never"').replace('depth_write = True','depth_write = False'),encoding='utf-8')
                             result=AssetManager.reimport_asset(str(path),database=database)
                             assert result,result.error
-                            error=native.reload_shader_runtime(str(path),'Raster Near')
+                            error=native.reload_shader_runtime(str(path),'tests/raster_near')
                             assert not error,error
                         if phase==13:
-                            reader_path=project/'Assets/Reader.frag'
+                            reader_path=project/'Assets/reader.frag.py'
                             reader_path.write_text(reader_path.read_text(encoding='utf-8').replace('equal,1','not_equal,1'),encoding='utf-8')
                             result=AssetManager.reimport_asset(str(reader_path),database=database)
                             assert result,result.error
-                            error=native.reload_shader_runtime(str(reader_path),'Stencil Reader')
+                            error=native.reload_shader_runtime(str(reader_path),'tests/stencil_reader')
                             assert not error,error
                         if phase in (9,11,12,15):
                             pipeline=RasterPipeline(stencil=phase in (9,12))

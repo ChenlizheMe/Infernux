@@ -130,5 +130,12 @@ def sync_resources(project_path: str) -> str:
 
     _write_sync_manifest(manifest_path, source_entries)
 
+    # A startup snapshot cannot publish identities from the previous resource
+    # tree while its replacement is being imported in the background.
+    if changed or removed:
+        from pathlib import Path
+
+        (Path(project_path) / "Library" / "AssetIndex.startup-cache.json").unlink(missing_ok=True)
+
     _log.info("Synced engine resources -> %s (%d changed, %d removed)", dst, changed, removed)
     return dst

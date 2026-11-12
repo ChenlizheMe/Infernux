@@ -3,6 +3,8 @@ from .lib.color import srgb_to_linear
 
 
 class Vignette(shader.fullscreen):
+    shader_id = "infernux/post/vignette"
+    hidden = True
     source_tex = shader.input("color", shader.Color2D, domain="scene_linear_hdr")
     intensity = shader.parameter.float(default=0.35)
     smoothness = shader.parameter.float(default=0.3)
