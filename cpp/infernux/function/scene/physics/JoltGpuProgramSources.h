@@ -9,6 +9,7 @@ enum class JoltGpuProgram
 {
     Step,
     BodyMutations,
+    BodyCommands,
     RenderPoses
 };
 

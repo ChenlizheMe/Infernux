@@ -520,8 +520,10 @@ void SceneManager::Update(float deltaTime)
         m_lastScaledDeltaTime = std::clamp(deltaTime * m_timeScale, 0.0f, m_maxFixedDeltaTime);
 
         // ---- Fixed-update accumulator (Unity-style) ----
-        if (!HasPendingFixedStep())
-            m_fixedTimeAccumulator += m_lastScaledDeltaTime;
+        // Each host update contributes time once, including while a fixed
+        // step is waiting for its dependencies. Resuming that step does not
+        // replay FixedUpdate or debit the accumulator until it completes.
+        m_fixedTimeAccumulator += m_lastScaledDeltaTime;
         while (HasPendingFixedStep() || m_fixedTimeAccumulator >= m_fixedTimeStep) {
             const bool current = RunFixedSimulationStep(useRuntimeScheduler, admittedState);
             if (!current)

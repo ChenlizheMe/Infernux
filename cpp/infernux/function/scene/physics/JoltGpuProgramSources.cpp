@@ -14,6 +14,8 @@ ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program)
     case JoltGpuProgram::BodyMutations:
         return {"jph_gpu_body_mutations", "Jolt/GPU/Shaders/rigid_body_mutations.slang",
                 jolt_gpu_sources::BodyMutations};
+    case JoltGpuProgram::BodyCommands:
+        return {"jph_gpu_body_commands", "Jolt/GPU/Shaders/body_commands.slang", jolt_gpu_sources::BodyCommands};
     case JoltGpuProgram::RenderPoses:
         return {"jph_gpu_render_poses", "Jolt/GPU/Shaders/render_poses.slang", jolt_gpu_sources::RenderPoses};
     }

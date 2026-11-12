@@ -7,6 +7,7 @@ function(infernux_embed_physics_sources target)
         "${_physics_root}/Shaders/rigid_math.slang"
         "${_physics_root}/Shaders/rigid_step.slang"
         "${_physics_root}/Shaders/rigid_body_mutations.slang"
+        "${_physics_root}/Shaders/body_commands.slang"
         "${_physics_root}/Shaders/render_poses.slang"
     )
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_physics_sources})
@@ -15,6 +16,7 @@ function(infernux_embed_physics_sources target)
     file(READ "${_physics_root}/Shaders/rigid_math.slang" JOLT_GPU_MATH_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_step.slang" JOLT_GPU_STEP_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_body_mutations.slang" JOLT_GPU_BODY_MUTATIONS_SOURCE)
+    file(READ "${_physics_root}/Shaders/body_commands.slang" JOLT_GPU_BODY_COMMANDS_SOURCE)
     file(READ "${_physics_root}/Shaders/render_poses.slang" JOLT_GPU_RENDER_POSES_SOURCE)
 
     set(_generated_include_root "${CMAKE_CURRENT_BINARY_DIR}/generated")
