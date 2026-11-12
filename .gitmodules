@@ -21,7 +21,7 @@
 [submodule "external/joltphysics_for_infernux"]
 	path = external/joltphysics_for_infernux
 	url = https://github.com/InfernuxEngine/joltphysics_for_infernux.git
-	branch = infernux-support
+	branch = slang/gpu_physics_bootstrap
 [submodule "external/VulkanMemoryAllocator"]
 	path = external/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
