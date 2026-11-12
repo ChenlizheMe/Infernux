@@ -21,6 +21,14 @@ function(infernux_embed_physics_sources target)
     file(READ "${_physics_root}/Shaders/rigid_queries.slang" JOLT_GPU_QUERIES_SOURCE)
     file(READ "${_physics_root}/Shaders/render_poses.slang" JOLT_GPU_RENDER_POSES_SOURCE)
 
+    # Keep individual literals below MSVC's limit without changing the source
+    # text or introducing runtime file access. Adjacent literals concatenate.
+    foreach(_source IN ITEMS JOLT_GPU_TYPES_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_STEP_SOURCE
+            JOLT_GPU_BODY_MUTATIONS_SOURCE JOLT_GPU_BODY_COMMANDS_SOURCE
+            JOLT_GPU_QUERIES_SOURCE JOLT_GPU_RENDER_POSES_SOURCE)
+        string(REPLACE "\n" "\n)INX_JPH_GPU\"\nR\"INX_JPH_GPU(" ${_source} "${${_source}}")
+    endforeach()
+
     set(_generated_include_root "${CMAKE_CURRENT_BINARY_DIR}/generated")
     configure_file(
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/templates/JoltGpuProgramSources.h.in"

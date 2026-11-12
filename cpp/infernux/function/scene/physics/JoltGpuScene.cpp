@@ -47,7 +47,7 @@ JoltGpuModel EmptyModel(uint32_t capacity)
     model.shapes.assign(capacity, EmptyShape());
     for (uint32_t slot = 0; slot < capacity; ++slot)
         model.bodies.push_back(Tombstone(slot));
-    model.worlds.push_back({{0, capacity, 0, capacity * capacity}});
+    model.worlds.push_back({{0, capacity, 0, capacity * capacity * MaxContactPointsPerPair}});
     return model;
 }
 

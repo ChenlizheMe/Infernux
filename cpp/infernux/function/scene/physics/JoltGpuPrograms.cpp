@@ -154,15 +154,14 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
     for (size_t world = 0; world < model.worlds.size(); ++world) {
         const auto range = model.worlds[world].range;
         if (range.x != bodyEnd || range.z != contactEnd || range.y > MaxBodiesPerWorld ||
-            range.w != range.y * range.y || bodyEnd + range.y > counts.bodies)
+            range.w != range.y * range.y * MaxContactPointsPerPair || bodyEnd + range.y > counts.bodies)
             throw std::invalid_argument("Jolt GPU bootstrap requires contiguous bounded world ranges");
         for (uint32_t body = range.x; body < range.x + range.y; ++body) {
             const auto &record = ModelRecord(model.bodies, bodyChanges, body);
             const auto motionType = record.meta.z & ~MotionNotResident;
             if (record.meta.w != world || record.meta.x >= model.shapes.size() ||
                 (record.meta.y != ShapeSphere && record.meta.y != ShapeBox && record.meta.y != ShapeEmpty) ||
-                (motionType != MotionStatic && motionType != MotionDynamic) ||
-                (record.meta.y == ShapeBox && motionType != MotionStatic))
+                (motionType != MotionStatic && motionType != MotionDynamic))
                 throw std::invalid_argument("Unsupported body in the Jolt GPU bootstrap model");
             const auto &shape = ModelRecord(model.shapes, shapeChanges, record.meta.x);
             if (record.surface.x >= 32 || record.surface.z > MaterialCombineMaximum ||

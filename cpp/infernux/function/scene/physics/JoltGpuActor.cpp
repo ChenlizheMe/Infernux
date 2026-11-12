@@ -56,9 +56,6 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
 
     PreparedGpuActor prepared{};
     prepared.geometry = PrepareJoltGpuShape(*shape);
-    if (rigidbody && prepared.geometry.type == JPH::GPU::ShapeBox)
-        throw std::invalid_argument("Jolt GPU actor preparation does not yet support dynamic Box collision");
-
     const auto *transform = actor.owner->GetTransform();
     const auto rotation = transform->GetWorldRotation();
     const auto position = transform->GetPosition();
