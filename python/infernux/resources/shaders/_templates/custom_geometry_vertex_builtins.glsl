@@ -58,6 +58,7 @@ struct InstanceAuxData {
     uvec2 objectId;
     uint flags;
     uint layerMask;
+    uvec4 poseIndices;
 };
 
 layout(std430, set = 2, binding = 4) readonly buffer InstanceAuxBuffer {

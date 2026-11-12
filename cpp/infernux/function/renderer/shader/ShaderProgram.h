@@ -220,6 +220,14 @@ class ShaderProgram
         return m_hasVertexMaterialUBO;
     }
 
+    [[nodiscard]] bool UsesDevicePoseABI() const noexcept
+    {
+        for (const auto &binding : GetDescriptorBindings())
+            if (binding.set == 2 && binding.binding == 6)
+                return true;
+        return false;
+    }
+
     /**
      * @brief Check if valid
      */

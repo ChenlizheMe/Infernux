@@ -339,6 +339,9 @@ static void BindRendererGeometry(NativeClass<MeshRenderer, Component> &cls)
             "Bind a resident inx.buffer as the canonical interleaved vertex stream")
         .def("clear_vertex_buffer", &MeshRenderer::ClearVertexBuffer,
              "Return rendering to the authored CPU vertex stream")
+        .def("set_pose_buffer", &MeshRenderer::SetPoseBuffer, py::arg("source"), py::arg("element") = 0,
+             py::arg("continuity") = 0, "Bind an accepted GPU model/bounds publication")
+        .def("clear_pose_buffer", &MeshRenderer::ClearPoseBuffer)
         .def_property_readonly("vertex_buffer_capacity", &MeshRenderer::GetVertexBufferCapacity,
                                "Allocated canonical Vertex slots in the bound resident stream")
         .def(

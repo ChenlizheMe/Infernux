@@ -719,6 +719,7 @@ void RegisterResourceBindings(py::module_ &m)
                 if (!shader || !shader->materialProgram)
                     throw std::invalid_argument("Material requires an imported mesh shader author");
                 auto material = std::make_shared<InxMaterial>(name);
+                material->SetVertShader("Standard");
                 material->SetFragShaderReference({guid, shader->shaderId, shader->filePath});
                 material->PrepareShaderDefaults();
                 return material;

@@ -5,6 +5,10 @@
 namespace infernux
 {
 
+struct ShaderAsset;
+struct ShaderMaterialPreparation;
+struct ShaderStagePair;
+
 /**
  * @brief Runtime preparation and publication for GPU author assets.
  *
@@ -17,6 +21,12 @@ namespace infernux
 class ShaderLoader final : public IAssetLoader
 {
   public:
+    [[nodiscard]] static std::shared_ptr<const ShaderMaterialPreparation>
+    CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment, const std::shared_ptr<ShaderAsset> &vertex,
+                           const ShaderStagePair &stages, AssetDatabase *database);
+    [[nodiscard]] static std::shared_ptr<const ShaderMaterialPreparation>
+    PrepareMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment, const std::shared_ptr<ShaderAsset> &vertex,
+                           const ShaderStagePair &stages, AssetDatabase *database);
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
     void OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath) override;
     void OnPublished(const RuntimeAssetPayload &payload, const std::string &guid, AssetDatabase *adb) override;

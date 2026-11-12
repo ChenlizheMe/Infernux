@@ -4,7 +4,7 @@
 
 # Vertex assets and shared deformation
 
-Create `*.vert.py` for local-space vertex deformation. This is a static GPU asset, compiled with Slang alongside the surface that references it. Its class body never executes as a game script. Ordinary surfaces already have the engine's instanced/skinned vertex path and need no vertex file.
+Create `*.vert.py` for local-space vertex deformation. This is an independent static GPU asset. A Material selects its vertex and fragment in the Inspector, and Slang compiles the selected pair. Its class body never executes as a game script. Ordinary surfaces already have the engine's instanced/skinned vertex path and need no vertex file.
 
 ## A first deformation {#minimal-stage}
 
@@ -26,7 +26,7 @@ class Wave(shader.vert):
         return vertex
 ```
 
-Reference it from `painted.frag.py`:
+Create an independent `painted.frag.py`:
 
 ```python
 import infernux.shader as shader
@@ -34,19 +34,19 @@ import infernux.shader as shader
 
 class Painted(shader.surface):
     shader_id = "example/materials/wave"
-    vertex_shader = shader.ref("./wave.vert.py")
     base_color = shader.material.color(default=(0.2, 0.6, 1.0, 1.0))
 
     def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
         return shader.SurfaceData(albedo=self.base_color.rgb, normal_ws=ctx.normal_ws)
 ```
 
-After import, the reference can also be `shader.ref("example/vertex/wave")`. A matching filename does not implicitly change a material. Create the Material from its fragment root:
+Select the vertex and fragment independently in the Material Inspector, or set the vertex ID after creating a Material from its fragment. A matching filename never changes a material:
 
 ```python
 import infernux as inx
 
 material = inx.Material.from_shader("example/materials/wave", "Water")
+material.vert_shader_name = "example/vertex/wave"
 material.set_float("amplitude", 0.2)
 renderer.set_material(material)
 ```
@@ -79,7 +79,7 @@ The standard entry preserves the engine's mesh-to-fragment contract. Arbitrary u
 
 ## One material layout {#vertex-hook}
 
-Vertex and fragment fields merge before compilation. A field declared in both files must have the same type, default and presentation metadata. It then has one value and one target layout shared by both stages. Conflicts report the fragment reference location. Vertex-only fields use normal Material APIs and serialization.
+The selected vertex and fragment fields merge before compilation. A field declared in both files must have the same type, default and presentation metadata. It then has one value and one target layout shared by both stages. Conflicts identify the field and original source. A rejected selection leaves the previous complete program active. Vertex-only fields use normal Material APIs and serialization.
 
 ShaderLib imports work as they do in surfaces. For example, save this as `bend.shaderlib.py`, then use `from .bend import bend` in the vertex asset:
 
@@ -105,7 +105,7 @@ Deformation changes GPU vertices, not CPU collision shapes or mesh bounds. Keep 
 
 ## Creation and diagnostics {#reuse}
 
-Project creation generates a snake_case `.vert.py` with a `shader.vert` class. A fragment root may reference one vertex asset and one shading model. Make the Material from the fragment; its prepared recipe supplies the declared vertex reference.
+Project creation generates a snake_case `.vert.py` with a `shader.vert` class. A surface may declare its shading model; vertex selection belongs to the Material. Change either stage in the Inspector without editing the other source. Standalone fragment creation starts with the standard vertex.
 
 ```python
 report = inx.Shader.check("Assets/Shaders/wave.vert.py")
@@ -120,7 +120,7 @@ Standalone checking verifies the typed definition and libraries. The surface ver
 
 # 顶点资产与共享变形
 
-需要局部空间顶点变形时，创建 `*.vert.py`。它是静态 GPU 资产，与引用它的 Surface 一起由 Slang 编译，类体不会作为游戏脚本执行。普通 Surface 已有引擎的实例化、蒙皮和标准变换，不必再写顶点文件。
+需要局部空间顶点变形时，创建 `*.vert.py`。它是独立的静态 GPU 资产，材质在 Inspector 分别选择顶点与片元，再由 Slang 编译所选组合，类体不会作为游戏脚本执行。普通 Surface 已有引擎的实例化、蒙皮和标准变换，不必再写顶点文件。
 
 ## 第一个变形 {#minimal-stage}
 
@@ -142,7 +142,7 @@ class Wave(shader.vert):
         return vertex
 ```
 
-在 `painted.frag.py` 中引用：
+另建独立的 `painted.frag.py`：
 
 ```python
 import infernux.shader as shader
@@ -150,19 +150,19 @@ import infernux.shader as shader
 
 class Painted(shader.surface):
     shader_id = "example/materials/wave"
-    vertex_shader = shader.ref("./wave.vert.py")
     base_color = shader.material.color(default=(0.2, 0.6, 1.0, 1.0))
 
     def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
         return shader.SurfaceData(albedo=self.base_color.rgb, normal_ws=ctx.normal_ws)
 ```
 
-导入后也可以使用 `shader.ref("example/vertex/wave")`。引擎不会因目录里出现同名文件就暗中替换阶段。由片元根创建材质：
+在材质 Inspector 中分别选择顶点与片元，也可以由片元创建材质后设置顶点 ID。引擎不会因目录里出现同名文件就暗中替换阶段：
 
 ```python
 import infernux as inx
 
 material = inx.Material.from_shader("example/materials/wave", "水面")
+material.vert_shader_name = "example/vertex/wave"
 material.set_float("amplitude", 0.2)
 renderer.set_material(material)
 ```
@@ -195,7 +195,7 @@ renderer.set_material(material)
 
 ## 一份材质布局 {#vertex-hook}
 
-编译前会合并两个阶段的材质字段。同名字段的类型、默认值与展示元数据必须一致，合并后共享一个值和一份目标布局。冲突会定位到片元引用位置。只在顶点声明的字段同样使用正常的 Material API 与序列化。
+编译前会合并所选两个阶段的材质字段。同名字段的类型、默认值与展示元数据必须一致，合并后共享一个值和一份目标布局。冲突会指出字段与源码位置，拒绝本次替换，保留上一套完整程序。只在顶点声明的字段同样使用正常的 Material API 与序列化。
 
 顶点使用与 Surface 相同的静态 ShaderLib。例如保存以下函数为 `bend.shaderlib.py`，在顶点文件中 `from .bend import bend`：
 
@@ -221,7 +221,7 @@ def bend(position: shader.vec3, time: float, amplitude: float) -> shader.vec3:
 
 ## 创建与诊断 {#reuse}
 
-Project 会生成 snake_case 的 `.vert.py` 与 `shader.vert` 类。一个片元根可以引用一个顶点和一个光照模型。创建材质时选择片元，准备后的配方会设置它声明的顶点引用。
+Project 会生成 snake_case 的 `.vert.py` 与 `shader.vert` 类。Surface 可以声明光照模型；顶点选择属于材质。在 Inspector 更换任何一端时，无须修改另一端源码。单独由片元创建材质时，初始顶点为标准顶点。
 
 ```python
 report = inx.Shader.check("Assets/Shaders/wave.vert.py")

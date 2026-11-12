@@ -934,7 +934,7 @@ void InxRenderer::PreparePipeline()
                 vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
                 for (const auto &read : graph->GetBufferReadDependencies())
                     m_vkCore->RegisterFrameBufferReadDependency(read.producer, read.stages);
-                m_vkCore->CaptureResidentVertexReads(graph->GetCachedDrawCalls(), graph->GetCachedShadowDrawCalls());
+                m_vkCore->CaptureResidentGeometryReads(graph->GetCachedDrawCalls(), graph->GetCachedShadowDrawCalls());
                 const auto &viewContext = graph->GetRenderViewContext();
                 submission.Retain(graph->AcquireComputeReadValues());
                 std::vector<uint32_t> graphDependencies = predecessors;
@@ -2732,8 +2732,12 @@ bool InxRenderer::CanPreviewMaterialOnMesh(const std::shared_ptr<InxMaterial> &m
 {
     if (!material)
         return false;
-    const auto domain = m_materialShaderDomainInspector ? m_materialShaderDomainInspector(material) : std::nullopt;
-    return !domain || *domain == ShaderProgramDomain::Mesh;
+    try {
+        const auto domain = m_materialShaderDomainInspector ? m_materialShaderDomainInspector(material) : std::nullopt;
+        return !domain || *domain == ShaderProgramDomain::Mesh;
+    } catch (const ShaderProgramSelectionError &) {
+        return false;
+    }
 }
 
 void InxRenderer::SetUIMaterialShaderValidator(
@@ -4306,7 +4310,12 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
-    const auto shaderProgram = ResolveShaderProgramArtifact(material, std::nullopt);
+    std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
+    try {
+        shaderProgram = ResolveShaderProgramArtifact(material, std::nullopt);
+    } catch (const ShaderProgramSelectionError &) {
+        return m_vkCore->RefreshMaterialPipeline(material);
+    }
 
     // Get shader names from material
     const std::string &vertName = material->GetVertShaderName();
@@ -4345,8 +4354,6 @@ std::shared_ptr<PreviewImage> InxRenderer::BeginMaterialPreviewGPU(const std::sh
     // thumbnail instead of being published into a mesh preview pipeline.
     if (!CanPreviewMaterialOnMesh(material))
         return nullptr;
-    if (m_shaderProgramArtifactResolver)
-        m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
     return m_vkCore->BeginMaterialPreviewGPU(material, size, progressed, texturePending);
 }
 
@@ -4355,12 +4362,6 @@ bool InxRenderer::PrepareMeshPreviewMaterials(const std::vector<std::shared_ptr<
 {
     if (!m_vkCore)
         return false;
-    if (prepared.empty() && m_shaderProgramArtifactResolver) {
-        for (const auto &material : sources) {
-            if (material)
-                m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
-        }
-    }
     return m_vkCore->PrepareMeshPreviewMaterials(sources, prepared, progressed);
 }
 

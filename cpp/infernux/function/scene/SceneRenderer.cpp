@@ -41,7 +41,8 @@ FrustumAABBRelation ClassifyAABB(const Frustum &frustum, const AABB &bounds)
 void SceneRenderer::RebuildCoarseCullGroups(const RenderWorldFrame &world)
 {
     if (m_coarseCullWorldId == world.WorldId() && m_coarseCullStructuralRevision == world.StructuralRevision() &&
-        m_coarseCullTransformRevision == world.TransformRevision())
+        m_coarseCullTransformRevision == world.TransformRevision() &&
+        m_coarseCullContentRevision == world.ContentRevision())
         return;
 
     constexpr size_t kProxiesPerGroup = 64;
@@ -57,6 +58,7 @@ void SceneRenderer::RebuildCoarseCullGroups(const RenderWorldFrame &world)
         for (size_t index = start; index < end; ++index) {
             const RenderProxy &proxy = proxies[index];
             group.layerMask |= proxy.structural.layerMask;
+            group.devicePoses |= proxy.frame.devicePose.HasValue();
             group.worldBounds.min = glm::min(group.worldBounds.min, proxy.frame.worldBounds.min);
             group.worldBounds.max = glm::max(group.worldBounds.max, proxy.frame.worldBounds.max);
         }
@@ -65,6 +67,7 @@ void SceneRenderer::RebuildCoarseCullGroups(const RenderWorldFrame &world)
     m_coarseCullWorldId = world.WorldId();
     m_coarseCullStructuralRevision = world.StructuralRevision();
     m_coarseCullTransformRevision = world.TransformRevision();
+    m_coarseCullContentRevision = world.ContentRevision();
 }
 
 const DrawCallResult &SceneRenderer::BuildDrawCalls()
@@ -124,7 +127,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     const bool worldMatches = cameraCache.worldId == result.worldOwner->WorldId();
     const bool structuralMatches = cameraCache.structuralRevision == result.worldOwner->StructuralRevision();
     const bool transformMatches = cameraCache.transformRevision == result.worldOwner->TransformRevision();
-    const bool contentMatches = cameraCache.contentRevision == result.worldOwner->ContentRevision();
+    const bool contentMatches = cameraCache.contentRevision == result.worldOwner->ContentRevision() &&
+                                cameraCache.poseRevision == result.worldOwner->PoseRevision();
     const bool maskMatches = cameraCache.cullingMask == camera.cullingMask;
     const bool frustumMatches = cameraCache.frustumCulling == m_frustumCulling;
     const bool viewProjectionMatches =
@@ -160,9 +164,11 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
                     destination.parameterBlock = source.parameterBlock;
                     destination.castsShadows = source.castsShadows;
                     destination.receivesShadows = source.receivesShadows;
+                    destination.devicePose = source.devicePose;
                 }
             }
             cameraCache.contentRevision = result.worldOwner->ContentRevision();
+            cameraCache.poseRevision = result.worldOwner->PoseRevision();
             cameraCache.visibleListRevision = m_nextCameraCullRevision++;
             if (m_nextCameraCullRevision == 0)
                 m_nextCameraCullRevision = 1;
@@ -205,7 +211,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     size_t coarseCandidateCount = 0;
     if (m_frustumCulling && allLayersVisible && renderables.size() >= kDenseFieldMinimumProxyCount) {
         for (const CoarseCullGroup &group : m_coarseCullGroups) {
-            if (ClassifyAABB(frustum, group.worldBounds) != FrustumAABBRelation::Outside)
+            if (group.devicePoses || ClassifyAABB(frustum, group.worldBounds) != FrustumAABBRelation::Outside)
                 coarseCandidateCount += group.proxyCount;
         }
     }
@@ -223,6 +229,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         cameraCache.structuralRevision = result.worldOwner->StructuralRevision();
         cameraCache.transformRevision = result.worldOwner->TransformRevision();
         cameraCache.contentRevision = result.worldOwner->ContentRevision();
+        cameraCache.poseRevision = result.worldOwner->PoseRevision();
         cameraCache.viewProjection = camera.viewProjection;
         cameraCache.cullingMask = camera.cullingMask;
         cameraCache.frustumCulling = m_frustumCulling;
@@ -259,7 +266,10 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         if (!allLayersVisible && (cullingMask & renderable.structural.layerMask) == 0)
             return;
 
-        const bool visible = !testBounds || frustum.IntersectsAABB(renderable.frame.worldBounds);
+        // Device bounds are tested by the GPU geometry stage. CPU matrices
+        // and AABBs remain authoring values and cannot reject those instances.
+        const bool visible = renderable.frame.devicePose.HasValue() || !testBounds ||
+                             frustum.IntersectsAABB(renderable.frame.worldBounds);
         if (!visible) {
             return;
         }
@@ -279,7 +289,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     for (const CoarseCullGroup &group : m_coarseCullGroups) {
         if (!allLayersVisible && (group.layerMask & cullingMask) == 0)
             continue;
-        const FrustumAABBRelation relation = ClassifyAABB(frustum, group.worldBounds);
+        const FrustumAABBRelation relation =
+            group.devicePoses ? FrustumAABBRelation::Intersecting : ClassifyAABB(frustum, group.worldBounds);
         if (relation == FrustumAABBRelation::Outside)
             continue;
         const bool testBounds = relation == FrustumAABBRelation::Intersecting;
@@ -292,6 +303,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     cameraCache.structuralRevision = result.worldOwner->StructuralRevision();
     cameraCache.transformRevision = result.worldOwner->TransformRevision();
     cameraCache.contentRevision = result.worldOwner->ContentRevision();
+    cameraCache.poseRevision = result.worldOwner->PoseRevision();
     cameraCache.viewProjection = camera.viewProjection;
     cameraCache.cullingMask = camera.cullingMask;
     cameraCache.frustumCulling = m_frustumCulling;

@@ -321,7 +321,7 @@ void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMater
         // shader must not change blending, depth or routing on the retained
         // valid pipeline before ResolveMeshMaterial reports the bad selection.
         artifact = ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
-    } catch (const ShaderProgramDomainMismatch &) {
+    } catch (const ShaderProgramSelectionError &) {
         return;
     }
     const std::string &fragment = artifact ? stages.fragmentKey : material->GetFragShaderName();
@@ -375,7 +375,7 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
         try {
             m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
             requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
-        } catch (const ShaderProgramDomainMismatch &) {
+        } catch (const ShaderProgramSelectionError &) {
             domainRejected = true;
         }
         forward = m_materialPipelineManager.GetRenderData(materialKey);
@@ -445,6 +445,13 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
             return true;
         }
         return false;
+    } catch (const ShaderProgramSelectionError &) {
+        // The resolver already reported the source/pair error. Retain the
+        // complete previous publication, including every pass and its layout.
+        const auto *previous = m_materialPipelineManager.GetRenderData(material->GetMaterialKey());
+        material->ClearPipelineDirty();
+        return previous && previous->isValid && previous->shaderProgram &&
+               m_materialPipelineManager.IsDescriptorSetLive(previous->descriptorSet);
     }
 
     // Material documents intentionally store only authored values. Resolve

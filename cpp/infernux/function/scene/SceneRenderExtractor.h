@@ -47,6 +47,7 @@ class SceneRenderExtractor final
     };
 
     void CollectRenderables(RenderWorldFrame &frame);
+    RenderPoseBinding CaptureDevicePose(const MeshRenderer &renderer);
     void CapturePrimaryView(RenderWorldFrame &frame, Camera *camera);
     void SortRenderables(RenderWorldFrame &frame);
     void UpdateCachedRenderableTransforms(RenderWorldFrame &frame);
@@ -58,6 +59,9 @@ class SceneRenderExtractor final
     std::vector<SceneRenderSource> m_sceneSources;
     size_t m_visibleCount = 0;
     bool m_allRenderersStatic = false;
+    uint64_t m_poseRevision = 0;
+    std::unordered_map<const RenderPoseBuffer *, std::shared_ptr<const RenderPoseValue>> m_framePoseValues;
+    std::unordered_map<const RenderPoseBuffer *, std::shared_ptr<const RenderPoseValue>> m_previousPoseValues;
 
 #if INFERNUX_FRAME_PROFILE
     SceneRendererProfileSnapshot m_profileSnapshot;

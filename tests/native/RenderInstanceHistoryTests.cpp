@@ -73,5 +73,47 @@ int main()
     history.Clear();
     assert(!history.Previous(first, 0) && !history.Previous(second, 0));
 
+    // Device generations advance independently of a camera. Only an accepted
+    // rendering sample advances that view's previous pose, including skips.
+    auto deviceA = std::make_shared<infernux::RenderPoseValue>();
+    deviceA->sourceIdentity = std::make_shared<const uint8_t>(0);
+    deviceA->generation = 1;
+    deviceA->firstModel = 3;
+    deviceA->firstBounds = 5;
+    const infernux::RenderPoseBinding poseA{deviceA, 2, 7};
+    history.BeginFrame();
+    assert(!history.Previous(first, 0, poseA));
+    history.Record(first, modelA, {}, 0, poseA);
+    history.CommitFrame();
+    auto deviceB = std::make_shared<infernux::RenderPoseValue>(*deviceA);
+    deviceB->generation = 4;
+    deviceB->firstModel = 10;
+    const infernux::RenderPoseBinding poseB{deviceB, 2, 7};
+    history.BeginFrame();
+    assert(history.Previous(first, 0, poseB)->devicePose.value == deviceA);
+    history.Record(first, modelB, {}, 0, poseB);
+    // Abandon this recording and start another. No physics tick or abandoned
+    // render recording is permitted to replace the last accepted sample.
+    history.BeginFrame();
+    assert(history.Previous(first, 0, poseB)->devicePose.value == deviceA);
+    assert(!history.Previous(first, 0));
+    assert(!history.Previous(first, 0, {deviceB, 1, 7}));
+    assert(!history.Previous(first, 0, {deviceB, 2, 8}));
+    auto unrelated = std::make_shared<infernux::RenderPoseValue>(*deviceB);
+    unrelated->sourceIdentity = std::make_shared<const uint8_t>(0);
+    assert(!history.Previous(first, 0, {unrelated, 2, 7}));
+
+    infernux::GPUInstanceAuxData auxiliary;
+    infernux::ApplyDevicePose(auxiliary, poseB, &poseA);
+    assert(auxiliary.flags == infernux::kGPUInstanceAuxFlagDevicePose);
+    assert(auxiliary.poseIndices == glm::uvec4(12, 5, 7, 0));
+    history.Record(first, modelC, {}, 0, poseB);
+    history.CommitFrame();
+    history.BeginFrame();
+    assert(history.Previous(first, 0, poseB)->devicePose.value == deviceB);
+    RenderInstanceHistory otherView;
+    otherView.BeginFrame();
+    assert(!otherView.Previous(first, 0, poseB));
+
     return 0;
 }

@@ -1,4 +1,6 @@
 #pragma once
+
+#include <function/renderer/RenderPoseBuffer.h>
 #define GLM_FORCE_RADIANS
 #ifndef GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -181,6 +183,7 @@ struct DrawCall
     uint32_t indexCount = 0;               // Number of indices to draw
     int32_t vertexStart = 0;               // Base vertex offset (for submesh rendering)
     glm::mat4 worldMatrix{1.0f};           // Object's world transform matrix
+    RenderPoseBinding devicePose;          // Optional immutable GPU model/bounds value
     std::shared_ptr<InxMaterial> material; // Owns the material for the lifetime of cached/render-thread draw calls
     // Immutable per-renderer values layered over material defaults. This is
     // parameter state only; shader and fixed-function pipeline state remain

@@ -29,11 +29,14 @@ def main():
             (root / name).mkdir()
         vertex_path = root / "Assets/translate.vert.py"
         other_path = root / "Assets/other.vert.py"
+        conflict_path = root / "Assets/conflict.vert.py"
         surface_path = root / "Assets/cutout.frag.py"
         consumer_path = root / "Assets/compare.frag.py"
-        surface_source = SURFACE.replace('(shader.surface):', '(shader.surface):\n    vertex_shader = shader.ref("./translate.vert.py")')
+        surface_source = SURFACE
         vertex_path.write_text(VERTEX, encoding="utf8")
         other_path.write_text(VERTEX.replace('tests/vertex/translate', 'tests/vertex/other').replace('ctx.time * self.rate', '0.4 + ctx.time * self.rate'), encoding="utf8")
+        conflict_path.write_text(VERTEX.replace('tests/vertex/translate', 'tests/vertex/conflict')
+                                 .replace('offset = shader.material.vec3()', 'offset = shader.material.vec3()\n    clip_edge = shader.material.vec3()'), encoding="utf8")
         surface_path.write_text(surface_source, encoding="utf8")
         consumer_path.write_text(CONSUMER, encoding="utf8")
         frontend, console, pipeline = inx.Engine(), ConsolePanel(), BuffersPipeline()
@@ -64,6 +67,8 @@ def main():
                 np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
                 np.array([0, 2, 1, 0, 3, 2], dtype=np.uint32), "Vertex Quad")
             material = inx.Material.from_shader(str(surface_path))
+            fragment_reference = material.native.frag_shader_reference
+            material.vert_shader_name = "tests/vertex/translate"
             assert material.native.vert_shader_reference["guid"] == vertex_guid
             material.alpha_clip_enabled, material.alpha_clip_threshold = True, 0.5
             renderer.set_material(material)
@@ -74,10 +79,13 @@ def main():
             ticket = baseline = None
             baseline_center = None
             labels = ("baseline", "parameter_offset", "parameter_restore", "time_motion", "motion_restore",
-                      "vertex_hot_edit", "vertex_restore", "vertex_switch", "switch_restore")
+                      "vertex_hot_edit", "vertex_restore", "vertex_switch", "switch_restore",
+                      "legacy_pair_rejected", "pair_recovered", "field_conflict_rejected", "field_conflict_recovered",
+                      "first_invalid_suspended", "first_invalid_recovered")
+            rejected = None
 
             def after_draw():
-                nonlocal frame, changed, phase, ticket, baseline, baseline_center, complete
+                nonlocal frame, changed, phase, ticket, baseline, baseline_center, complete, rejected
                 try:
                     frame += 1
                     if ticket is None and frame >= changed + 8:
@@ -88,13 +96,23 @@ def main():
                         green = (pixels[..., 1] > 0.9) & (pixels[..., 0] < 0.05) & (pixels[..., 2] < 0.05)
                         covered = red | green
                         bad = (pixels[..., 0] > 0.9) & (pixels[..., 2] > 0.9)
-                        assert not bad.any() and covered.sum() > 100, (labels[phase], np.unique(pixels[bad, 1]))
+                        assert not bad.any(), (labels[phase], np.unique(pixels[bad, 1]))
+                        if phase == 13:
+                            assert not covered.any(), labels[phase]
+                        else:
+                            assert covered.sum() > 100, labels[phase]
                         assert pipeline.builds == 1
-                        assert not [row for row in console._get_visible_log_snapshot(2000) if row["level"] in ("ERROR", "FATAL")]
-                        center = float(np.nonzero(covered)[1].mean())
+                        errors = [row for row in console._get_visible_log_snapshot(2000) if row["level"] in ("ERROR", "FATAL")]
+                        if phase < 9:
+                            assert not errors, errors
+                        elif phase == 9:
+                            assert any("requires a Python mesh fragment" in row["message"] for row in errors), errors
+                        elif phase == 11:
+                            assert any("disagree on material field" in row["message"] for row in errors), errors
+                        center = float(np.nonzero(covered)[1].mean()) if covered.any() else 0.0
                         if phase == 0:
                             baseline, baseline_center = pixels, center
-                        elif phase in (2, 4, 6, 8):
+                        elif phase in (2, 4, 6, 8, 9, 10, 11, 12, 14):
                             np.testing.assert_array_equal(pixels, baseline)
                         elif phase in (1, 5, 7):
                             assert center > baseline_center + 3, (labels[phase], center, baseline_center)
@@ -116,8 +134,27 @@ def main():
                             vertex_path.write_text(VERTEX.replace("ctx.time * self.rate", "0.4 + ctx.time * self.rate") if phase == 5 else VERTEX, encoding="utf8")
                             assert inx.Shader.reload(str(vertex_path))
                         elif phase in (7, 8):
-                            surface_path.write_text(surface_source.replace("translate.vert.py", "other.vert.py") if phase == 7 else surface_source, encoding="utf8")
-                            assert inx.Shader.reload(str(surface_path))
+                            material.vert_shader_name = "tests/vertex/other" if phase == 7 else "tests/vertex/translate"
+                        elif phase in (9, 10):
+                            if phase == 9:
+                                material.frag_shader_name = "Toon"
+                            else:
+                                material.native.frag_shader_reference = fragment_reference
+                                material.alpha_clip_enabled, material.alpha_clip_threshold = True, 0.5
+                        elif phase == 11:
+                            material.vert_shader_name = "tests/vertex/conflict"
+                        elif phase == 12:
+                            conflict_path.write_text(conflict_path.read_text(encoding="utf8").replace(
+                                'clip_edge = shader.material.vec3()', 'clip_edge = shader.material.float(default=0.5)'), encoding="utf8")
+                            assert inx.Shader.reload(str(conflict_path))
+                        elif phase == 13:
+                            rejected = inx.Material.from_shader(str(surface_path))
+                            rejected.vert_shader_name = "tests/vertex/translate"
+                            rejected.frag_shader_name = "Toon"
+                            renderer.set_material(rejected)
+                        elif phase == 14:
+                            rejected.native.frag_shader_reference = fragment_reference
+                            rejected.alpha_clip_enabled, rejected.alpha_clip_threshold = True, 0.5
                         changed, ticket = frame, None
                     if frame > 300:
                         raise AssertionError(("Vertex GPU timeout", labels[phase]))

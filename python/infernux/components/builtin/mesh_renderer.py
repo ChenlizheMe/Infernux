@@ -573,6 +573,22 @@ class MeshRenderer(BuiltinComponent):
             )
         return result
 
+    def set_pose_buffer(self, source, element=0, *, continuity=0) -> None:
+        """Render one element of a resident compute PoseBuffer.
+
+        This changes the visual pose without synchronously reading GPU state
+        into Transform. Increment continuity on a teleport to reset motion.
+        """
+        from infernux.compute import PoseBuffer
+
+        if not isinstance(source, PoseBuffer):
+            raise TypeError("MeshRenderer.set_pose_buffer expects compute.PoseBuffer")
+        self._require_cpp_component().set_pose_buffer(source._native, element, continuity)
+
+    def clear_pose_buffer(self) -> None:
+        """Use the authored Transform again and reset device pose history."""
+        self._require_cpp_component().clear_pose_buffer()
+
     def set_vertex_buffer(self, value, bounds_min, bounds_max, *, space="local") -> None:
         """Render directly from a resident GPU vertex buffer.
 

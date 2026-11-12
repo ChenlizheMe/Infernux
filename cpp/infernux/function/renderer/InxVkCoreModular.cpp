@@ -571,6 +571,10 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
     if (!publish.changed)
         return true;
 
+    // An accepted source edit can make a previously rejected selection valid
+    // without changing its stage IDs.
+    m_rejectedGeometryMaterialPrograms.clear();
+
     if (!publish.replacedProgram && m_materialPipelineManagerInitialized)
         m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(artifact.key.stages);
 

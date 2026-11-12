@@ -100,15 +100,48 @@ _MESH_VERTEX = """
 [[vk::binding(2, 2)]] StructuredBuffer<InxSkinState> inx_skins;
 [[vk::binding(3, 2)]] StructuredBuffer<InxModelMatrix> inx_bones;
 [[vk::binding(4, 2)]] StructuredBuffer<InxInstanceData> inx_instances;
+[[vk::binding(5, 2)]] StructuredBuffer<InxModelMatrix> inx_previous_models;
+[[vk::binding(6, 2)]] StructuredBuffer<InxWorldBounds> inx_pose_bounds;
+float4x4 inx_current_model(uint instance)
+{
+    InxInstanceData data = inx_instances[instance];
+    return inx_models[(data.object_flags & 4u) != 0u ? data.pose_indices.x : instance].value;
+}
+float4x4 inx_previous_model(InxInstanceData data)
+{
+    return (data.object_flags & 4u) != 0u ? inx_previous_models[data.pose_indices.y].value : data.previous_model;
+}
+bool inx_bounds_halfspace(float4 plane, float3 center, float3 extent)
+{
+    return dot(plane.xyz, center) + plane.w + dot(abs(plane.xyz), extent) >= 0.0;
+}
+void inx_clip_device_bounds(inout InxMeshInput result, uint instance, bool ignore_near = false)
+{
+    InxInstanceData data = inx_instances[instance];
+    if ((data.object_flags & 4u) == 0u) return;
+    InxWorldBounds bounds = inx_pose_bounds[data.pose_indices.z];
+    float3 center = (bounds.minimum.xyz + bounds.maximum.xyz) * 0.5;
+    float3 extent = (bounds.maximum.xyz - bounds.minimum.xyz) * 0.5;
+    float4x4 clip = mul(inx_view.projection, inx_view.view);
+    bool visible = inx_bounds_halfspace(clip[3] + clip[0], center, extent)
+        && inx_bounds_halfspace(clip[3] - clip[0], center, extent)
+        && inx_bounds_halfspace(clip[3] + clip[1], center, extent)
+        && inx_bounds_halfspace(clip[3] - clip[1], center, extent)
+        && inx_bounds_halfspace(clip[2], center, extent)
+        && (ignore_near || inx_bounds_halfspace(clip[3] - clip[2], center, extent));
+    if (!visible) result.position = float4(2.0, 2.0, 2.0, 1.0);
+}
 InxMeshInput inx_mesh_vertex(InxVertexInput input, uint instance)
 {
     input = inx_skin_vertex(input, inx_skins[instance], inx_bones);
-    return inx_transform_vertex(input, inx_models[instance].value, inx_view.view, inx_view.projection, inx_instances[instance]);
+    return inx_transform_vertex(input, inx_current_model(instance), inx_view.view, inx_view.projection, inx_instances[instance]);
 }
 [shader("vertex")]
 InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
 {
-    return inx_mesh_vertex(input, instance);
+    InxMeshInput result = inx_mesh_vertex(input, instance);
+    inx_clip_device_bounds(result, instance);
+    return result;
 }
 """
 
@@ -151,6 +184,7 @@ InxMeshInput vertex_shadow(InxVertexInput input, uint instance : SV_VulkanInstan
     if (inx_shadow_parameters.light_vector.w < 0.5)
         result.position.z = min(result.position.z, result.position.w);
     result.view_depth = 0.0;
+    inx_clip_device_bounds(result, instance, inx_shadow_parameters.light_vector.w < 0.5);
     return result;
 }
 [shader("vertex")]
@@ -163,10 +197,11 @@ InxMeshInput vertex_motion(InxVertexInput input, uint instance : SV_VulkanInstan
         InxSkinState skin = inx_skins[instance];
         skin.bone_offset = skin.previous_bone_offset;
         float3 previous_local = inx_skin_vertex(input, skin, inx_bones).position;
-        float4 previous_clip = mul(inx_view.previous_view_projection, mul(history.previous_model, float4(previous_local, 1.0)));
+        float4 previous_clip = mul(inx_view.previous_view_projection, mul(inx_previous_model(history), float4(previous_local, 1.0)));
         result.motion_vector = (result.position.xy / max(abs(result.position.w), 1e-6)
             - float2(previous_clip.x, -previous_clip.y) / max(abs(previous_clip.w), 1e-6)) * 0.5;
     }
+    inx_clip_device_bounds(result, instance);
     return result;
 }
 InxSurfaceData inx_evaluate_surface(InxMeshInput input, bool front_facing)
@@ -234,7 +269,7 @@ InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsF
 """
 
 
-def parse_shader(source: str, source_path: str, module_name: str, *, reader=None) -> ShaderDefinition:
+def parse_shader(source: str, source_path: str, module_name: str, *, reader=None, vertex_path=None) -> ShaderDefinition:
     info = read_shader_info(source, source_path)
     author = _Author(source, source_path)
     author.alias, imports, body = declarations(source, source_path)
@@ -255,12 +290,13 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         if info_field(statement) in INFO_DEFAULTS:
             continue
         if (author.domain == "mesh" and isinstance(statement, ast.Assign) and len(statement.targets) == 1
-                and author.qualified(statement.targets[0]) in {"shading_model", "vertex_shader"}):
+                and author.qualified(statement.targets[0]) == "shading_model"):
             name = author.qualified(statement.targets[0])
-            if name in references or (name == "shading_model" and not author.is_surface):
-                author.error(statement, "Declare one shading model on a Surface and one optional vertex asset", code="author.reference")
-            stage, suffix = ("shadingmodel", ".shadingmodel.py") if name == "shading_model" else ("vertex", ".vert.py")
-            references[name] = (graph.reference(statement.value, author, stage=stage, suffix=suffix), statement)
+            if name in references or not author.is_surface:
+                author.error(statement, "Declare one shading model on a Surface", code="author.reference")
+            references[name] = (graph.reference(statement.value, author, stage="shadingmodel", suffix=".shadingmodel.py"), statement)
+        elif isinstance(statement, ast.Assign) and any(author.qualified(target) == "vertex_shader" for target in statement.targets):
+            author.error(statement, "Choose the vertex shader on the material; fragment authors do not select a vertex asset", code="author.reference")
         elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
             author.parameter(statement)
         elif isinstance(statement, ast.FunctionDef) and statement.name == entry_name and main is None:
@@ -283,8 +319,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         model_path, location = references.get("shading_model", (default_shading_model(), declaration))
         model = read_shading_model(model_path, graph, author, location)
     vertex = None
-    if "vertex_shader" in references:
-        vertex_path, location = references["vertex_shader"]
+    if vertex_path is not None:
+        if author.domain != "mesh":
+            author.error(declaration, "A material vertex can only be paired with a mesh fragment", code="author.reference")
+        location = declaration
         vertex = read_vertex(vertex_path, graph, author, location)
         for name, field in vertex.author.fields.items():
             previous = author.fields.get(name)
@@ -318,7 +356,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if vertex:
         vertex_code, vertex_ranges = vertex.emit()
         code.extend([vertex_code, _VERTEX_DEFORM])
-        vertex_main = _MESH_VERTEX.replace("    input = inx_skin_vertex", "    input = inx_apply_vertex(input, instance, inx_globals.time.x, inx_models[instance].value);\n    input = inx_skin_vertex")
+        vertex_main = _MESH_VERTEX.replace("    input = inx_skin_vertex", "    input = inx_apply_vertex(input, instance, inx_globals.time.x, inx_current_model(instance));\n    input = inx_skin_vertex")
         code.append(vertex_main)
     else:
         code.append(_MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX)
@@ -339,7 +377,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         passes = _SURFACE_PASSES
         if vertex:
             passes = passes.replace("float3 previous_local = inx_skin_vertex(input, skin, inx_bones).position;",
-                                    "InxVertexInput previous = inx_apply_vertex(input, instance, inx_globals.frame_params.w, history.previous_model);\n"
+                                    "InxVertexInput previous = inx_apply_vertex(input, instance, inx_globals.frame_params.w, inx_previous_model(history));\n"
                                     "        float3 previous_local = inx_skin_vertex(previous, skin, inx_bones).position;")
         code.append(passes)
         if model.deferred_model:
@@ -359,7 +397,7 @@ def read_shader(path: Path, module_name: str) -> ShaderDefinition:
     return parse_shader(path.read_text(encoding="utf-8-sig"), str(path), module_name)
 
 
-def _prepare_source(source, source_path, module_name, reader, *, metadata_only=False):
+def _prepare_source(source, source_path, module_name, reader, *, metadata_only=False, vertex_source=None):
     """Return a plain native preparation snapshot; no Python object enters GPU work."""
     from infernux._source_kinds import source_extension
 
@@ -397,7 +435,15 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
                                 for name, function in module.functions.items()]}
         libraries = tuple(item for item in graph.sources() if item[0] != module.name)
         return module.source, libraries, json.dumps(schema, ensure_ascii=False), graph.ranges()
-    definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader)
+    vertex_path = None
+    if vertex_source is not None:
+        vertex_path, vertex_text = vertex_source
+        source_reader = reader
+        def reader(path):
+            if Path(path) == Path(vertex_path):
+                return vertex_text
+            return source_reader(path) if source_reader is not None else Path(path).read_text(encoding="utf-8-sig")
+    definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader, vertex_path=vertex_path)
     schema = {"name": definition.name, "domain": definition.domain, "surface": definition.surface,
               "info": definition.info,
               "shading_model": definition.shading_model, "deferred_model": definition.deferred_model,

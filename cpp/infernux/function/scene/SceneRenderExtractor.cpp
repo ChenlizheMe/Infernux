@@ -47,6 +47,22 @@ void CaptureOrReferenceInlineMesh(const MeshRenderer &renderer, const std::vecto
 }
 } // namespace
 
+RenderPoseBinding SceneRenderExtractor::CaptureDevicePose(const MeshRenderer &renderer)
+{
+    auto binding = renderer.GetDevicePose();
+    if (!binding.value)
+        return binding;
+    const auto *source = renderer.GetPoseBuffer().get();
+    const auto [entry, inserted] = m_framePoseValues.emplace(source, binding.value);
+    binding.value = entry->second;
+    if (inserted) {
+        const auto previous = m_previousPoseValues.find(source);
+        if (previous == m_previousPoseValues.end() || previous->second != binding.value)
+            ++m_poseRevision;
+    }
+    return binding;
+}
+
 size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling)
 {
 #if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
@@ -79,6 +95,7 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
     RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
     CapturePrimaryView(frame, m_activeCamera);
+    m_framePoseValues.clear();
     const bool fastPath =
         frame.MatchesSource(currentWorldId, currentVersion) && frame.m_proxies.size() == m_sceneSources.size();
     if (fastPath) {
@@ -126,6 +143,8 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     frame.m_structuralRevision = currentVersion;
     frame.m_transformRevision = currentTransformRevision;
     frame.m_contentRevision = currentContentRevision;
+    frame.m_poseRevision = m_poseRevision;
+    m_previousPoseValues.swap(m_framePoseValues);
     world.Publish();
     return m_visibleCount;
 #endif
@@ -155,6 +174,7 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
     const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
     RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
     CapturePrimaryView(frame, m_activeCamera);
+    m_framePoseValues.clear();
     const bool fastPath =
         frame.MatchesSource(currentWorldId, currentVersion) && frame.m_proxies.size() == m_sceneSources.size();
     if (fastPath) {
@@ -200,6 +220,8 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
     frame.m_structuralRevision = currentVersion;
     frame.m_transformRevision = currentTransformRevision;
     frame.m_contentRevision = currentContentRevision;
+    frame.m_poseRevision = m_poseRevision;
+    m_previousPoseValues.swap(m_framePoseValues);
     world.Publish();
     return m_visibleCount;
 }
@@ -256,7 +278,7 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         if (!obj || !obj->IsActiveInHierarchy())
             continue;
 
-        if (!obj->IsStatic() || dynamic_cast<SkinnedMeshRenderer *>(renderer) != nullptr)
+        if (!obj->IsStatic() || renderer->GetPoseBuffer() || dynamic_cast<SkinnedMeshRenderer *>(renderer) != nullptr)
             m_allRenderersStatic = false;
 
         uint32_t objectLayerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
@@ -272,11 +294,13 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         RenderProxy renderable;
         renderable.structural.objectId = obj->GetID();
         renderable.structural.layerMask = objectLayerBit;
-        renderable.structural.isStatic = obj->IsStatic() && dynamic_cast<SkinnedMeshRenderer *>(renderer) == nullptr;
+        renderable.structural.isStatic =
+            obj->IsStatic() && !renderer->GetPoseBuffer() && dynamic_cast<SkinnedMeshRenderer *>(renderer) == nullptr;
         renderable.structural.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
         const glm::mat4 objectWorldMatrix = obj->GetTransform()->GetWorldMatrix();
         renderable.frame.worldMatrix = renderer->ResolveRenderWorldMatrix(objectWorldMatrix);
         renderable.frame.boundsWorldMatrix = renderer->ResolveBoundsWorldMatrix(objectWorldMatrix);
+        renderable.frame.devicePose = CaptureDevicePose(*renderer);
         renderable.structural.renderMaterial = renderer->GetEffectiveMaterial();
         renderable.structural.renderQueue =
             renderable.structural.renderMaterial ? renderable.structural.renderMaterial->GetRenderQueue() : 2000;
@@ -314,6 +338,7 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
     // Optimization: skip bounds recomputation and heavy draw-call patching
     // for objects whose world transform has not changed since last frame.
     m_visibleCount = 0;
+    m_allRenderersStatic = true;
 
     for (size_t renderableIndex = 0; renderableIndex < frame.m_proxies.size(); ++renderableIndex) {
         auto &renderable = frame.m_proxies[renderableIndex];
@@ -326,6 +351,11 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
         Transform *transform = source.transform;
         if (!transform)
             continue;
+
+        frameData.devicePose = CaptureDevicePose(*mr);
+        renderable.structural.isStatic =
+            mr->GetGameObject()->IsStatic() && !source.skinnedRenderer && !frameData.devicePose.HasValue();
+        m_allRenderersStatic &= renderable.structural.isStatic;
 
         mr->RefreshProceduralGeometry(transform->GetWorldMatrix());
 
@@ -402,6 +432,8 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
 
             for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                 DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
+                dc.devicePose = frameData.devicePose;
+                dc.isStatic = renderable.structural.isStatic;
                 dc.material = mr->GetEffectiveMaterial(dc.materialSlot);
                 dc.parameterBlock = mr->GetParameterBlock(dc.materialSlot);
                 dc.castsShadows = mr->CastsShadows();
@@ -567,6 +599,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.receivesShadows = renderer->ReceivesShadows();
             dc.isStatic = structural.isStatic;
             dc.worldBounds = frame.worldBounds;
+            dc.devicePose = frame.devicePose;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
             dc.meshIndexFormat = drawIndexFormat;
@@ -593,6 +626,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.receivesShadows = renderer->ReceivesShadows();
             dc.isStatic = structural.isStatic;
             dc.worldBounds = frame.worldBounds;
+            dc.devicePose = frame.devicePose;
             dc.meshVertices = &objVertices;
             dc.meshIndices = &objIndices;
             dc.meshIndexFormat = drawIndexFormat;
@@ -639,6 +673,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
                 dc.receivesShadows = renderer->ReceivesShadows();
                 dc.isStatic = structural.isStatic;
                 dc.worldBounds = frame.worldBounds;
+                dc.devicePose = frame.devicePose;
                 dc.meshVertices = &objVertices;
                 dc.meshIndices = &objIndices;
                 dc.meshIndexFormat = drawIndexFormat;
@@ -677,6 +712,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         dc.receivesShadows = renderer->ReceivesShadows();
         dc.isStatic = structural.isStatic;
         dc.worldBounds = frame.worldBounds;
+        dc.devicePose = frame.devicePose;
         dc.meshVertices = &objVertices;
         dc.meshIndices = &objIndices;
         dc.meshDataOwner = source.inlineMeshOwner;

@@ -22,6 +22,7 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
+#include <function/resources/ShaderAsset/ShaderLoader.h>
 #include <function/scene/MeshRenderer.h>
 #include <functional>
 #include <nlohmann/json.hpp>
@@ -632,7 +633,7 @@ void InxMaterial::PublishDependencies()
 }
 
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
-    : m_name(name), m_fragmentShader(ResolveFragmentShaderReference({"", shaderName, ""}))
+    : m_name(name), m_fragmentShader(ResolveShaderReference({"", shaderName, ""}, "fragment"))
 {
     m_vertexShader = {"", m_fragmentShader.guid.empty() ? shaderName : "Standard", ""};
 }
@@ -1502,13 +1503,13 @@ bool InxMaterial::Deserialize(const std::string &jsonStr)
     }
 }
 
-ShaderAssetReference InxMaterial::ResolveFragmentShaderReference(ShaderAssetReference reference)
+ShaderAssetReference InxMaterial::ResolveShaderReference(ShaderAssetReference reference, const char *stage)
 {
     if (!reference.guid.empty() || !reference.pathHint.empty())
         return reference;
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     if (auto *database = AssetRegistry::Instance().GetAssetDatabase()) {
-        const auto path = database->FindShaderPathById(reference.shaderId, "fragment");
+        const auto path = database->FindShaderPathById(reference.shaderId, stage);
         if (asset_formats::FindShaderSourceKind(path))
             reference = {database->GetGuidFromPath(path), reference.shaderId, path};
     }
@@ -1518,7 +1519,7 @@ ShaderAssetReference InxMaterial::ResolveFragmentShaderReference(ShaderAssetRefe
 
 void InxMaterial::SetShader(const std::string &name)
 {
-    auto fragment = ResolveFragmentShaderReference({"", name, ""});
+    auto fragment = ResolveShaderReference({"", name, ""}, "fragment");
     const ShaderAssetReference vertex{"", fragment.guid.empty() ? name : "Standard", ""};
     if (m_vertexShader == vertex && m_fragmentShader == fragment)
         return;
@@ -1548,24 +1549,15 @@ void InxMaterial::PrepareShaderDefaults()
     if (!fragment.guid.empty() &&
         asset_formats::FindShaderSourceKind(registry.GetAssetDatabase()->GetPathFromGuid(fragment.guid))) {
         const auto shader = registry.LoadAsset<ShaderAsset>(fragment.guid, ResourceType::Shader);
-        if (!shader || !shader->materialProgram)
-            throw std::invalid_argument("Material requires a compiled mesh shader author");
-        const auto &vertexKey = shader->materialProgram->key.stages.vertexKey;
-        ShaderAssetReference vertex{{}, "Standard", {}};
-        if (vertexKey != "Standard") {
-            auto *database = registry.GetAssetDatabase();
-            const auto meta = database->GetMetaByGuid(vertexKey);
-            vertex = {vertexKey, meta->GetDataAs<std::string>("shader_id"), database->GetPathFromGuid(vertexKey)};
-        }
-        if (!(m_vertexShader == vertex)) {
-            m_vertexShader = std::move(vertex);
-            m_pipelineDirty = true;
-            ++m_version;
-            NotifyRoutingChanged();
-            TrackRuntimeShaderReferences();
-            PublishDependencies();
-        }
-        SynchronizeShaderPropertyDefaults(*shader->materialProgram);
+        if (!shader)
+            return;
+        const auto vertex = m_vertexShader.guid.empty()
+                                ? nullptr
+                                : registry.LoadAsset<ShaderAsset>(m_vertexShader.guid, ResourceType::Shader);
+        const auto prepared =
+            ShaderLoader::PrepareMaterialProgram(shader, vertex, GetShaderStages(), registry.GetAssetDatabase());
+        if (prepared->program)
+            SynchronizeShaderPropertyDefaults(*prepared->program);
     }
 #endif
 }
@@ -1671,8 +1663,8 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
         m_builtin = j["builtin"].get<bool>();
 
         const auto &shaders = j["shaders"];
-        m_vertexShader = DeserializeShaderReference(shaders["vertex"]);
-        m_fragmentShader = ResolveFragmentShaderReference(DeserializeShaderReference(shaders["fragment"]));
+        m_vertexShader = ResolveShaderReference(DeserializeShaderReference(shaders["vertex"]), "vertex");
+        m_fragmentShader = ResolveShaderReference(DeserializeShaderReference(shaders["fragment"]), "fragment");
 
         const auto &rs = j["renderState"];
         m_renderState.cullMode = static_cast<MaterialCullMode>(rs["cullMode"].get<int>());

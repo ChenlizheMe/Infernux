@@ -162,6 +162,7 @@ try {
 
     m_frameBufferReadDependencies.clear();
     m_frameResidentVertexReads.clear();
+    RetirePoseBindings();
     m_frameSubmission.Reset();
     if (presenting && !EnsureGuiRenderGraph(imageIndex))
         throw std::runtime_error("Failed to prepare the presentation render graph");
@@ -332,14 +333,21 @@ try {
         m_backend.Compute().LastSubmission().completionTicket.serial;
     m_frameSubmissionTelemetry.residentComputeWriteSerial = 0;
     m_frameSubmissionTelemetry.residentComputeWaitPending = false;
-    bool residentVertexBarrier = false;
+    VkPipelineStageFlags residentReadStages = 0;
+    VkAccessFlags residentReadAccess = 0;
     for (const auto &read : m_frameBufferReadDependencies) {
         const auto point = m_backend.Queues().DependencyFor(read.producer, rhi::QueueRole::Graphics);
         if (point.semaphore != VK_NULL_HANDLE)
             externalSync.producers.push_back(
                 {point.semaphore, point.value, rhi::ToVkPipelineStages(read.stages), rhi::QueueRole::Graphics});
-        else if ((read.stages & rhi::PipelineStage::VertexInput) != rhi::PipelineStage::None)
-            residentVertexBarrier = true;
+        else {
+            residentReadStages |= rhi::ToVkPipelineStages(
+                read.stages & (rhi::PipelineStage::VertexInput | rhi::PipelineStage::VertexShader));
+            if ((read.stages & rhi::PipelineStage::VertexInput) != rhi::PipelineStage::None)
+                residentReadAccess |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+            if ((read.stages & rhi::PipelineStage::VertexShader) != rhi::PipelineStage::None)
+                residentReadAccess |= VK_ACCESS_SHADER_READ_BIT;
+        }
         // Compute-only diagnostics are not a device-wide resource version.
         if (read.producer.queue == rhi::QueueRole::Compute) {
             m_frameSubmissionTelemetry.residentComputeWriteSerial =
@@ -364,19 +372,20 @@ try {
     try {
         executeResult = m_submissionExecutor.Execute(
             frameSlot, submissionPlan,
-            [this, &submissionPlan, &residentVertexBarrier](uint32_t batchIndex, VkCommandBuffer commandBuffer) {
+            [this, &submissionPlan, &residentReadStages, &residentReadAccess](uint32_t batchIndex,
+                                                                              VkCommandBuffer commandBuffer) {
                 if (batchIndex >= submissionPlan.batches.size())
                     return false;
                 const auto queue = submissionPlan.batches[batchIndex].queue;
-                if (residentVertexBarrier && queue == rhi::QueueRole::Graphics) {
+                if (residentReadStages && queue == rhi::QueueRole::Graphics) {
                     // The native lane can alias Compute. Make prior writes visible
                     // to direct vertex reads outside RenderGraph's buffer barriers.
                     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                     barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-                    barrier.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-                    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
-                    residentVertexBarrier = false;
+                    barrier.dstAccessMask = residentReadAccess;
+                    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, residentReadStages, 0, 1,
+                                         &barrier, 0, nullptr, 0, nullptr);
+                    residentReadStages = 0;
                 }
                 return m_frameSubmission.RecordBatch(submissionPlan, batchIndex, commandBuffer);
             },
@@ -527,7 +536,6 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     // Refresh cached builtin materials (avoids string-hash lookup per DrawSceneFiltered call)
     if (!m_cachedDefaultLit) {
         m_cachedDefaultLit = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
-        m_cachedErrorMat = AssetRegistry::Instance().GetBuiltinMaterial("ErrorMaterial");
     }
 
     // Track only the small unique queue set. Sorting one queue value per
@@ -653,7 +661,6 @@ void InxVkCoreModular::ReleaseActiveDrawLists() noexcept
     m_shadowViewVisible.clear();
     m_resolvedShadowMaterialsScratch.clear();
     m_cachedDefaultLit.reset();
-    m_cachedErrorMat.reset();
 }
 
 // ============================================================================
@@ -721,7 +728,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
     const auto &defaultMaterial = m_cachedDefaultLit;
-    const auto &errorMaterial = m_cachedErrorMat;
     if (!defaultMaterial) {
         return;
     }
@@ -862,12 +868,22 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // cost every frame is avoided via the is_sorted() early-out.
         float sortKey = 0.0f;
         if (sortMode == "back_to_front") {
+            if (dc.devicePose.value) {
+                if (m_reportedPoseTransparency.insert(material->GetMaterialKey()).second)
+                    INXLOG_ERROR("Material '", material->GetName(),
+                                 "' cannot draw a device pose with CPU transparency sorting; this draw is suspended");
+                continue;
+            }
             glm::vec4 viewPos = viewMatrix * glm::vec4(glm::vec3(dc.worldMatrix[3]), 1.0f);
             sortKey = viewPos.z;
         }
 
         // Material + mesh hash for grouping optimization
         size_t matHash = std::hash<void *>{}(static_cast<void *>(material));
+        if (dc.devicePose.value) {
+            const auto poseHash = std::hash<const void *>{}(dc.devicePose.value.get());
+            matHash ^= poseHash + 0x9e3779b9u + (matHash << 6u) + (matHash >> 2u);
+        }
         if (parameters && *parameters) {
             const size_t parameterHash = std::hash<const void *>{}(parameters->get());
             matHash ^= parameterHash + 0x9e3779b9u + (matHash << 6u) + (matHash >> 2u);
@@ -1106,7 +1122,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             const auto boneCount = palette ? palette->size() : 0;
             requiredBoneMatrices += boneCount;
             if (motionHistory) {
-                const auto *previous = motionHistory->Previous(entry.dc->identity, entry.dc->skinContinuity);
+                const auto *previous =
+                    motionHistory->Previous(entry.dc->identity, entry.dc->skinContinuity, entry.dc->devicePose);
                 m_previousMotionScratch.push_back(previous);
                 if (previous && previous->skin.get() != palette)
                     requiredBoneMatrices += boneCount;
@@ -1149,7 +1166,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             if (mapped) {
                 glm::mat4 *matrices = static_cast<glm::mat4 *>(mapped);
                 for (size_t i = 0; i < totalEligible; ++i) {
-                    matrices[writeBase + i] = eligibleDraws[i].dc->worldMatrix;
+                    if (!eligibleDraws[i].dc->devicePose.value)
+                        matrices[writeBase + i] = eligibleDraws[i].dc->worldMatrix;
                 }
                 instanceMatricesWritten = true;
             }
@@ -1162,11 +1180,11 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 const DrawCall &draw = *eligibleDraws[i].dc;
                 const uint64_t pickingId = draw.pickingObjectId != 0 ? draw.pickingObjectId : draw.objectId;
                 const auto *previous = motionHistory ? m_previousMotionScratch[i] : nullptr;
-                const GPUInstanceAuxData auxiliary{
-                    previous ? previous->model : draw.worldMatrix, PackGPUObjectId(pickingId),
-                    (previous ? kGPUInstanceAuxFlagValidHistory : 0u) |
-                        (draw.receivesShadows ? 0u : kGPUInstanceAuxFlagNoReceiveShadows),
-                    draw.layerMask};
+                GPUInstanceAuxData auxiliary{previous ? previous->model : draw.worldMatrix, PackGPUObjectId(pickingId),
+                                             (previous ? kGPUInstanceAuxFlagValidHistory : 0u) |
+                                                 (draw.receivesShadows ? 0u : kGPUInstanceAuxFlagNoReceiveShadows),
+                                             draw.layerMask};
+                ApplyDevicePose(auxiliary, draw.devicePose, previous ? &previous->devicePose : nullptr);
                 instanceAuxiliaryWritten &=
                     WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), auxiliary);
             }
@@ -1261,6 +1279,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     VkPipeline currentPipeline = VK_NULL_HANDLE;
     VkPipelineLayout currentLayout = VK_NULL_HANDLE;
     VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet currentGlobalsSet = VK_NULL_HANDLE;
+    VkPipelineLayout globalsPipelineLayout = VK_NULL_HANDLE;
     InxMaterial *currentMaterialRaw = nullptr;
     VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
     VkBuffer currentIndexBuffer = VK_NULL_HANDLE;
@@ -1423,6 +1443,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     const VkDescriptorSet globalsDescSet =
         m_backend.Device().GetRhiDevice().Resolve(ResolveViewGlobalsBinding(viewGlobals));
 
+    const auto previousPose = [&](size_t index) -> const RenderPoseBinding & {
+        const auto *previous = motionHistory ? m_previousMotionScratch[index] : nullptr;
+        return previous ? previous->devicePose : eligibleDraws[index].dc->devicePose;
+    };
+    const auto samePoseSources = [&](size_t first, size_t second) {
+        return eligibleDraws[first].dc->devicePose.value == eligibleDraws[second].dc->devicePose.value &&
+               previousPose(first).value == previousPose(second).value;
+    };
+
     // Batch accumulation: consecutive entries sharing (pipeline, descriptorSet, VB, IB, submesh) are
     // emitted as a single vkCmdDrawIndexed with instanceCount > 1.
     const bool allowBatching = (sortMode != "back_to_front" && sortMode != "preserve");
@@ -1455,7 +1484,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         if (motionHistory) {
             for (size_t index = batchFirstInstance; index < batchFirstInstance + batchInstanceCount; ++index) {
                 const auto &draw = *eligibleDraws[index].dc;
-                motionHistory->Record(draw.identity, draw.worldMatrix, draw.skinBoneMatrices, draw.skinContinuity);
+                motionHistory->Record(draw.identity, draw.worldMatrix, draw.skinBoneMatrices, draw.skinContinuity,
+                                      draw.devicePose);
             }
         }
         issuedDraws += batchInstanceCount;
@@ -1479,7 +1509,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             const DrawCall &batchFirst = *eligibleDraws[batchFirstInstance].dc;
             const bool batchingAllowed =
                 allowBatching || (batchFirst.allowTransparentInstancing && dc.allowTransparentInstancing);
-            if (batchingAllowed && entry.material == currentMaterialRaw && entry.vertexBuf == currentVertexBuffer &&
+            if (batchingAllowed && samePoseSources(batchFirstInstance, idx) && entry.material == currentMaterialRaw &&
+                entry.vertexBuf == currentVertexBuffer &&
                 entry.ParameterIdentity() == eligibleDraws[batchFirstInstance].ParameterIdentity() &&
                 entry.indexBuf == currentIndexBuffer && dc.indexStart == batchIndexStart &&
                 entry.indexFormat == currentIndexFormat && effectiveIndexCount == batchIndexCount &&
@@ -1494,24 +1525,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const std::shared_ptr<InxMaterial> *matOwner = entry.materialOwner;
         InxMaterial *matRaw = matOwner->get();
         ResolvedMaterialPass resolved = resolveCachedMaterialPass(*matOwner);
-        // Gizmo line topology, icon alpha masks, and sky vertices are meaningful
-        // only with their dedicated shader. DefaultLit can turn icons into solid
-        // quads and cannot draw line handles correctly during shader publication.
+        // Missing authored materials use the default at extraction. A rejected
+        // explicit program retains its own accepted publication or suspends;
+        // substituting another shader here breaks all-pass coverage and ABI.
         const bool dedicatedMaterial = skyboxPass || RenderDomainRequiresDedicatedMaterial(dc.identity.domain);
-        if (!resolved.IsValid() && !dedicatedMaterial && errorMaterial) {
-            resolved = resolveCachedMaterialPass(errorMaterial);
-            if (resolved.IsValid()) {
-                matOwner = &errorMaterial;
-                matRaw = errorMaterial.get();
-            }
-        }
-        if (!resolved.IsValid() && !dedicatedMaterial && defaultMaterial) {
-            resolved = resolveCachedMaterialPass(defaultMaterial);
-            if (resolved.IsValid()) {
-                matOwner = &defaultMaterial;
-                matRaw = defaultMaterial.get();
-            }
-        }
         if (!resolved.IsValid()) {
             emitBatch();
             continue;
@@ -1543,6 +1560,14 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         VkPipeline pipeline = resolved.pipeline;
         VkPipelineLayout pipelineLayout = resolved.layout;
         VkDescriptorSet descriptorSet = resolved.descriptorSet;
+        if (dc.devicePose.value && !resolved.program->UsesDevicePoseABI()) {
+            if (m_reportedPosePrograms.insert(resolved.program->GetShaderId()).second)
+                INXLOG_ERROR("Material '", matRaw->GetName(),
+                             "' has no resident model/bounds vertex contract; this draw is suspended");
+            emitBatch();
+            continue;
+        }
+        const VkDescriptorSet poseGlobals = ResolvePoseGlobalsBinding(globalsDescSet, dc.devicePose, previousPose(idx));
 
         const bool requiresMaterialBuffer =
             std::any_of(resolved.program->GetDescriptorBindings().begin(),
@@ -1583,7 +1608,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             const DrawCall &batchFirst = *eligibleDraws[batchFirstInstance].dc;
             const bool batchingAllowed =
                 allowBatching || (batchFirst.allowTransparentInstancing && dc.allowTransparentInstancing);
-            canExtendBatch = batchingAllowed && pipeline == currentPipeline && descriptorSet == currentDescriptorSet &&
+            canExtendBatch = batchingAllowed && samePoseSources(batchFirstInstance, idx) &&
+                             pipeline == currentPipeline && descriptorSet == currentDescriptorSet &&
                              matRaw == currentMaterialRaw && vb == currentVertexBuffer &&
                              entry.ParameterIdentity() == eligibleDraws[batchFirstInstance].ParameterIdentity() &&
                              entry.indexBuf == currentIndexBuffer && dc.indexStart == batchIndexStart &&
@@ -1652,12 +1678,6 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                                                       &perViewDescriptorSet, 0, nullptr);
             }
 
-            if (program && program->HasDeclaredDescriptorSet(2)) {
-                vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set2", cmdBuf,
-                                                      VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1,
-                                                      &globalsDescSet, 0, nullptr);
-            }
-
             // Bindless material shaders opt into the canonical device-global
             // texture table at set 3. Existing bounded and preview/special
             // shaders do not declare this set and therefore keep their old
@@ -1688,6 +1708,15 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                         textureIndices ? textureIndices->size() : 0);
                 }
             }
+        }
+
+        if (resolved.program->HasDeclaredDescriptorSet(2) &&
+            (currentGlobalsSet != poseGlobals || globalsPipelineLayout != pipelineLayout)) {
+            vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set2", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &poseGlobals,
+                                                  0, nullptr);
+            currentGlobalsSet = poseGlobals;
+            globalsPipelineLayout = pipelineLayout;
         }
 
         if (vb != currentVertexBuffer) {
@@ -1904,6 +1933,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                     m_backend.Device().GetRhiDevice().MarkBindlessTexturesUsed(
                         descriptor->bindlessTextureIndices.data(), descriptor->bindlessTextureIndices.size());
             }
+            if (dc.devicePose.value && !resources.program->UsesDevicePoseABI())
+                continue;
             m_shadowDrawScratch.push_back({&dc, bufferLease->GetVertexHandle(), bufferLease->indexBuffer->GetBuffer(),
                                            pip, resources.program, shadowMatDesc, dc.worldBounds,
                                            bufferLease->indexFormat, bufferLease->GetVertexUpload(),
@@ -1967,7 +1998,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 const ShadowDraw &draw = m_shadowDrawScratch[first + offset];
                 group.layerMaskUnion |= draw.dc->layerMask;
                 group.layerMaskIntersection &= draw.dc->layerMask;
-                if (!draw.worldBounds.IsValid()) {
+                if (draw.dc->devicePose.value || !draw.worldBounds.IsValid()) {
                     group.allBoundsValid = false;
                     continue;
                 }
@@ -2206,8 +2237,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                     const ShadowDraw &draw = m_shadowDrawScratch[drawIndex];
                     if ((draw.dc->layerMask & shadowView.cullingMask) == 0u)
                         continue;
-                    if (relation == Frustum::AABBRelation::Intersecting && draw.worldBounds.IsValid() &&
-                        !shadowFrustum.IntersectsAABB(draw.worldBounds, ignoreNearPlane))
+                    if (!draw.dc->devicePose.value && relation == Frustum::AABBRelation::Intersecting &&
+                        draw.worldBounds.IsValid() && !shadowFrustum.IntersectsAABB(draw.worldBounds, ignoreNearPlane))
                         continue;
                     m_shadowViewVisible.push_back(drawIndex);
                 }
@@ -2301,11 +2332,13 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             auto *auxiliary = static_cast<GPUInstanceAuxData *>(shadowStream.auxiliaryMapped);
             for (uint32_t vi = 0; vi < visibleCount; ++vi) {
                 const auto &draw = *m_shadowDrawScratch[(*visibleIndices)[vi]].dc;
-                matrices[writeBase + vi] = draw.worldMatrix;
+                if (!draw.devicePose.value)
+                    matrices[writeBase + vi] = draw.worldMatrix;
                 auxiliary[writeBase + vi] = {
                     draw.worldMatrix,
                     glm::uvec2(static_cast<uint32_t>(draw.objectId), static_cast<uint32_t>(draw.objectId >> 32u)),
                     draw.receivesShadows ? 0u : kGPUInstanceAuxFlagNoReceiveShadows, draw.layerMask};
+                ApplyDevicePose(auxiliary[writeBase + vi], draw.devicePose);
             }
 
             auto *skinInstances = static_cast<GPUSkinInstanceData *>(shadowStream.skinInstanceMapped);
@@ -2370,8 +2403,9 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 return;
             const auto &first = m_shadowDrawScratch[(*visibleIndices)[batchStart]];
             const VkPipelineLayout layout = first.program->GetPipelineLayout();
+            const auto poseGlobals = ResolvePoseGlobalsBinding(shadowStreamDescSet, first.dc->devicePose);
             const std::array<VkDescriptorSet, 4> descriptorSets = {batchShadowMaterialDescSet, cascadeDescSet,
-                                                                   shadowStreamDescSet, bindlessSet};
+                                                                   poseGlobals, bindlessSet};
             vkdebug::CmdBindDescriptorSetsTracked(
                 "VkCoreDraw.DrawShadowCasters.AllSets", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0,
                 first.program->UsesBindlessTextureABI() ? 4u : 3u, descriptorSets.data(), 0, nullptr);
@@ -2398,11 +2432,13 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
 
             const VkBuffer vb = sd.vertexBuf;
 
-            bool canExtend = batchCount > 0 && sd.shadowPipeline == batchPipeline && vb == currentVertexBuffer &&
-                             sd.indexBuf == currentIndexBuffer && sd.indexFormat == currentIndexFormat &&
-                             sd.shadowMaterialDescSet == batchShadowMaterialDescSet &&
-                             sd.dc->indexStart == batchIdxStart && sd.dc->indexCount == batchIdxCount &&
-                             sd.dc->vertexStart == batchVtxStart;
+            bool canExtend =
+                batchCount > 0 &&
+                sd.dc->devicePose.value == m_shadowDrawScratch[(*visibleIndices)[batchStart]].dc->devicePose.value &&
+                sd.shadowPipeline == batchPipeline && vb == currentVertexBuffer && sd.indexBuf == currentIndexBuffer &&
+                sd.indexFormat == currentIndexFormat && sd.shadowMaterialDescSet == batchShadowMaterialDescSet &&
+                sd.dc->indexStart == batchIdxStart && sd.dc->indexCount == batchIdxCount &&
+                sd.dc->vertexStart == batchVtxStart;
 
             if (canExtend) {
                 ++batchCount;
@@ -2616,14 +2652,16 @@ void InxVkCoreModular::UpdateShadowCameraStreamDescriptor(ShadowCameraResources:
         !frame.skinInstanceBuffer || !frame.skinPaletteBuffer)
         return;
 
-    std::array<VkDescriptorBufferInfo, 5> infos{};
+    std::array<VkDescriptorBufferInfo, 7> infos{};
     infos[0] = {frame.globalsBuffer, 0, sizeof(EngineGlobalsUBO)};
     infos[1] = {frame.instanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     infos[2] = {frame.skinInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     infos[3] = {frame.skinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     infos[4] = {frame.auxiliaryBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
 
-    std::array<VkWriteDescriptorSet, 5> writes{};
+    infos[5] = infos[1];
+    infos[6] = infos[1];
+    std::array<VkWriteDescriptorSet, 7> writes{};
     for (uint32_t binding = 0; binding < writes.size(); ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = frame.descriptorSet;
@@ -3208,16 +3246,16 @@ bool InxVkCoreModular::PrepareObjectBuffers(const DrawCall &draw)
     return true;
 }
 
-void InxVkCoreModular::CaptureResidentVertexReads(const std::vector<DrawCall> &draws,
-                                                  const std::vector<DrawCall> &shadowDraws)
+void InxVkCoreModular::CaptureResidentGeometryReads(const std::vector<DrawCall> &draws,
+                                                    const std::vector<DrawCall> &shadowDraws)
 {
-    if (m_residentVertexObjects.empty())
-        return;
     auto &device = m_backend.Device().GetRhiDevice();
     bool changed = false;
     const auto capture = [&](const auto &list) {
         uint64_t previous = 0;
         for (const auto &draw : list) {
+            if (draw.devicePose.value)
+                CapturePoseRead(draw.devicePose.value);
             if (draw.objectId == previous)
                 continue;
             previous = draw.objectId;

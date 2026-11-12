@@ -1,6 +1,7 @@
 #pragma once
 
 #include <function/renderer/RenderIdentity.h>
+#include <function/renderer/RenderPoseBuffer.h>
 
 #include <glm/glm.hpp>
 
@@ -16,20 +17,35 @@ namespace infernux
 
 static constexpr uint32_t kGPUInstanceAuxFlagValidHistory = 1u;
 static constexpr uint32_t kGPUInstanceAuxFlagNoReceiveShadows = 2u;
+static constexpr uint32_t kGPUInstanceAuxFlagDevicePose = 4u;
 
 /// Per-instance identity, transform history and geometry lighting controls.
-/// Shadow draws keep using the compact model-matrix-only stream.
+/// All geometry passes use the same identity and optional device-pose indices.
 struct alignas(16) GPUInstanceAuxData
 {
     glm::mat4 previousModel{1.0f};
     glm::uvec2 objectId{0u};
     uint32_t flags = 0;
     uint32_t layerMask = 1u;
+    // Current model, previous accepted-view model, world bounds, reserved.
+    glm::uvec4 poseIndices{0u};
 };
 
 static_assert(alignof(GPUInstanceAuxData) == 16, "GPU instance auxiliary data must remain std430-compatible");
-static_assert(sizeof(GPUInstanceAuxData) == 80, "GPU instance auxiliary data layout changed");
+static_assert(sizeof(GPUInstanceAuxData) == 96, "GPU instance auxiliary data layout changed");
 static_assert(offsetof(GPUInstanceAuxData, objectId) == 64, "GPU object identity must follow the previous model");
+static_assert(offsetof(GPUInstanceAuxData, poseIndices) == 80, "Device pose indices must follow instance identity");
+
+inline void ApplyDevicePose(GPUInstanceAuxData &auxiliary, const RenderPoseBinding &current,
+                            const RenderPoseBinding *previous = nullptr)
+{
+    if (!current.value)
+        return;
+    const auto &history = previous && previous->value ? *previous : current;
+    auxiliary.flags |= kGPUInstanceAuxFlagDevicePose;
+    auxiliary.poseIndices = {current.value->firstModel + current.element, history.value->firstModel + history.element,
+                             current.value->firstBounds + current.element, 0u};
+}
 
 [[nodiscard]] constexpr glm::uvec2 PackGPUObjectId(uint64_t objectId) noexcept
 {
@@ -51,6 +67,7 @@ class RenderInstanceHistory
         glm::mat4 model{1.0f};
         std::shared_ptr<const std::vector<glm::mat4>> skin;
         uint64_t skinContinuity = 0;
+        RenderPoseBinding devicePose;
     };
 
     void BeginFrame() noexcept
@@ -58,7 +75,8 @@ class RenderInstanceHistory
         ++m_recordingFrame;
     }
 
-    [[nodiscard]] const Pose *Previous(const RenderDrawIdentity &identity, uint64_t skinContinuity) const
+    [[nodiscard]] const Pose *Previous(const RenderDrawIdentity &identity, uint64_t skinContinuity,
+                                       const RenderPoseBinding &devicePose = {}) const
     {
         if (m_acceptedFrame == 0)
             return nullptr;
@@ -66,19 +84,22 @@ class RenderInstanceHistory
         if (entry == m_entries.end())
             return nullptr;
         const auto &previous = entry->second.frames[m_recordingSlot ^ 1u];
-        return previous.serial == m_acceptedFrame && previous.pose.skinContinuity == skinContinuity ? &previous.pose
-                                                                                                    : nullptr;
+        return previous.serial == m_acceptedFrame && previous.pose.skinContinuity == skinContinuity &&
+                       previous.pose.devicePose.SharesHistoryWith(devicePose)
+                   ? &previous.pose
+                   : nullptr;
     }
 
     void Record(const RenderDrawIdentity &identity, const glm::mat4 &model,
-                const std::shared_ptr<const std::vector<glm::mat4>> &skin, uint64_t skinContinuity)
+                const std::shared_ptr<const std::vector<glm::mat4>> &skin, uint64_t skinContinuity,
+                const RenderPoseBinding &devicePose = {})
     {
         if (!identity.IsValid())
             return;
         auto &entry = m_entries[identity];
         auto &current = entry.frames[m_recordingSlot];
         if (current.serial != m_recordingFrame) {
-            current.pose = {model, skin, skinContinuity};
+            current.pose = {model, skin, skinContinuity, devicePose};
             current.serial = m_recordingFrame;
         }
     }

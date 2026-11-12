@@ -462,7 +462,8 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
         work.stages = stages;
         work.vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
         work.fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
-        if (asset_formats::FindShaderSourceKind(work.fragmentPath))
+        if (asset_formats::FindShaderSourceKind(work.fragmentPath) ||
+            asset_formats::FindShaderSourceKind(work.vertexPath))
             continue; // Static author programs are prepared by the asset loader, not the legacy stage linker.
         if (work.vertexPath.empty() || work.fragmentPath.empty() || !readSource(work.vertexPath, work.vertexSource) ||
             !readSource(work.fragmentPath, work.fragmentSource)) {
@@ -847,7 +848,7 @@ void Infernux::CreateRenderer()
                 throw ShaderProgramDomainMismatch(*expectedDomain, *declaredDomain);
             if (declaredDomain &&
                 (*declaredDomain == ShaderProgramDomain::ScreenUI || *declaredDomain == ShaderProgramDomain::WorldUI)) {
-                throw std::runtime_error(
+                throw ShaderProgramSelectionError(
                     "Material shader domain mismatch before publication: expected " +
                     std::string(expectedDomain ? ShaderProgramDomainName(*expectedDomain) : "Mesh/ParticleSprite") +
                     ", got " + ShaderProgramDomainName(*declaredDomain));
@@ -859,9 +860,10 @@ void Infernux::CreateRenderer()
                 if (!entry.failureReported) {
                     entry.failureReported = true;
                     INXLOG_ERROR("Material shader combination '", stages.ToString(), "' rejected: ", prepared.error,
-                                 ". The previous valid GPU pipeline remains active; this failure will not be retried "
-                                 "until the shader inputs change.");
+                                 ". The previous complete GPU program is retained when available; otherwise the "
+                                 "material is not drawn. Retry follows a selection or source change.");
                 }
+                throw ShaderProgramSelectionError(prepared.error);
             }
         });
     m_renderer->SetUIMaterialShaderValidator(
@@ -3846,10 +3848,6 @@ Infernux::EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &
     };
 
     const std::string fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
-    if (asset_formats::FindShaderSourceKind(fragmentPath)) {
-        material->PrepareShaderDefaults();
-        return EnsureShaderAuthorMaterial(material->GetShaderStages(), fragmentPath);
-    }
     const auto stages = material->GetShaderStages();
     const std::string vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
     return EnsureLinkedShaderProgramArtifact(stages, vertexPath, fragmentPath, requireCurrentSource);
@@ -3865,7 +3863,17 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
         return result;
 
     if (asset_formats::FindShaderSourceKind(fragmentPath))
-        return EnsureShaderAuthorMaterial(stages, fragmentPath);
+        return EnsureShaderAuthorMaterial(stages, vertexPath, fragmentPath);
+
+    if (asset_formats::FindShaderSourceKind(vertexPath)) {
+        const std::string error = "Python vertex shader '" + vertexPath +
+                                  "' requires a Python mesh fragment; selected fragment: " + fragmentPath;
+        auto &entry = m_linkedShaderProgramCache[stages];
+        if (entry.lastError != error)
+            entry.failureReported = false;
+        entry.lastError = error;
+        return {true, false, error};
+    }
 
     const auto cached = m_linkedShaderProgramCache.find(stages);
     const auto publishPrepared = [&]() -> LinkedShaderProgramPreparation {
@@ -4047,16 +4055,17 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
         }
         if (!metadata) {
             if (!reference.guid.empty())
-                throw std::runtime_error("Material shader GUID cannot be resolved: " + reference.guid);
+                throw ShaderProgramSelectionError("Material shader GUID cannot be resolved: " + reference.guid);
             return 0u;
         }
         ++stageCount;
         if (metadata->HasKey("shader_source_kind")) {
             const auto asset = AssetRegistry::Instance().LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
             if (!asset)
-                throw std::runtime_error("Material author program could not be loaded: " + guid);
+                throw ShaderProgramSelectionError("Material author program could not be loaded: " + guid);
             if (!asset->programDomain)
-                throw std::invalid_argument("Material stage requires a graphics author program: " + asset->filePath);
+                throw ShaderProgramSelectionError("Material stage requires a graphics author program: " +
+                                                  asset->filePath);
             switch (*asset->programDomain) {
             case ShaderProgramDomain::Mesh:
                 return 0u;
@@ -4092,7 +4101,7 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
     const unsigned int fragmentFlags = stageFlags(material->GetFragShaderReference(), "fragment");
     const unsigned int flags = vertexFlags | fragmentFlags;
     if ((flags & (flags - 1u)) != 0)
-        throw std::runtime_error("Material shader stages declare conflicting geometry domains");
+        throw ShaderProgramSelectionError("Material shader stages declare conflicting geometry domains");
     if (flags == 1u)
         return ShaderProgramDomain::ScreenUI;
     if (flags == 2u)
@@ -4351,6 +4360,8 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
             };
             const auto vertexPath = stagePath(stages.vertexKey, "vertex", true);
             const auto fragmentPath = stagePath(stages.fragmentKey, "fragment", false);
+            if (asset_formats::FindShaderSourceKind(vertexPath) || asset_formats::FindShaderSourceKind(fragmentPath))
+                continue;
             std::string vertexSource, fragmentSource;
             if (!readSource(vertexPath, vertexSource) || !readSource(fragmentPath, fragmentSource)) {
                 reject(fragmentPath, "Both dependent material stage GUIDs must resolve to readable sources");
@@ -4557,6 +4568,9 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                     vertexChanged ? shaderPath : stagePath(material->GetVertShaderReference(), "vertex");
                 const std::string fragmentPath =
                     vertexChanged ? stagePath(material->GetFragShaderReference(), "fragment") : shaderPath;
+                if (asset_formats::FindShaderSourceKind(vertexPath) ||
+                    asset_formats::FindShaderSourceKind(fragmentPath))
+                    continue;
                 std::string vertexSource, fragmentSource;
                 if (!readStage(vertexPath, vertexSource) || !readStage(fragmentPath, fragmentSource))
                     return "Shader rename requires both referenced stage GUIDs to resolve to readable sources";

@@ -77,6 +77,7 @@ set(INFERNUX_SHADER_COMPILER_SOURCES
 
 # Shared device and submission contracts. View policy belongs to the runtime.
 set(INFERNUX_RENDER_CORE_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/RenderPoseBuffer.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RenderSubmissionPlan.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiComputeBuffer.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/rhi/RhiComputeKernel.cpp"

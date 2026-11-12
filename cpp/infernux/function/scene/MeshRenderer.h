@@ -252,6 +252,17 @@ class MeshRenderer : public Component
     void SetVertexBuffer(std::shared_ptr<rhi::ComputeBuffer> buffer, const glm::vec3 &boundsMin,
                          const glm::vec3 &boundsMax, bool worldSpace = false);
     void ClearVertexBuffer();
+    /// Bind a resident model/bounds publication without updating CPU Transform.
+    void SetPoseBuffer(std::shared_ptr<RenderPoseBuffer> source, uint32_t element, uint64_t continuity = 0);
+    void ClearPoseBuffer();
+    [[nodiscard]] const std::shared_ptr<RenderPoseBuffer> &GetPoseBuffer() const noexcept
+    {
+        return m_poseBuffer;
+    }
+    [[nodiscard]] RenderPoseBinding GetDevicePose() const noexcept
+    {
+        return {m_poseBuffer ? m_poseBuffer->Acquire() : nullptr, m_poseElement, m_poseContinuity};
+    }
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetVertexBuffer() const noexcept
     {
         return m_vertexBuffer;
@@ -569,6 +580,9 @@ class MeshRenderer : public Component
     // Runtime-only GPU vertex storage is deliberately absent from scene
     // serialization and cloning. Scripts recreate it for each Play lifetime.
     std::shared_ptr<rhi::ComputeBuffer> m_vertexBuffer;
+    std::shared_ptr<RenderPoseBuffer> m_poseBuffer;
+    uint32_t m_poseElement = 0;
+    uint64_t m_poseContinuity = 0;
     bool m_vertexBufferWorldSpace = false;
     glm::mat4 m_vertexBufferWorldBoundsAnchorInverse{1.0f};
 

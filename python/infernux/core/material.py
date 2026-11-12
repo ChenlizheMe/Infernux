@@ -119,7 +119,8 @@ class Material(ResourceProxy):
     def from_shader(asset: str, name: str = "New Material") -> "Material":
         """Create a mesh material from an imported ``*.frag.py`` path or GUID.
 
-        The shader owns the vertex program, field defaults and target layouts.
+        Starts with the standard vertex stage. The material selects its vertex
+        and fragment independently; the selected pair owns one field layout.
         This prepares an asset; it does not create a device pipeline.
         """
         from infernux.core.shader import Shader

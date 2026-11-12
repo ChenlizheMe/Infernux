@@ -632,14 +632,16 @@ bool GPUMeshPreview::EnsureViewResources(bool &progressed)
         throw std::runtime_error("Failed to allocate isolated mesh-preview globals descriptor set");
     m_previewGlobalsSet = m_previewGlobalsLease.set;
 
-    VkDescriptorBufferInfo buffers[5]{};
+    VkDescriptorBufferInfo buffers[7]{};
     buffers[0] = {m_previewGlobalsUbo->GetBuffer(), 0, sizeof(EngineGlobalsUBO)};
     buffers[1] = {m_previewInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     buffers[2] = {m_previewSkinInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     buffers[3] = {m_previewSkinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     buffers[4] = {m_previewInstanceAuxBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet writes[5]{};
-    for (uint32_t binding = 0; binding < 5; ++binding) {
+    buffers[5] = buffers[1];
+    buffers[6] = buffers[1];
+    VkWriteDescriptorSet writes[7]{};
+    for (uint32_t binding = 0; binding < 7; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = m_previewGlobalsSet;
         writes[binding].dstBinding = binding;
@@ -648,7 +650,7 @@ bool GPUMeshPreview::EnsureViewResources(bool &progressed)
             binding == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[binding].pBufferInfo = &buffers[binding];
     }
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 7, writes, 0, nullptr);
     progressed = true;
     return true;
 }

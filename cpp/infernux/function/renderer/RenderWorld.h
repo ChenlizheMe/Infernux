@@ -33,6 +33,7 @@ struct RenderProxyFrameData
     glm::mat4 worldMatrix{1.0f};
     glm::mat4 boundsWorldMatrix{1.0f};
     AABB worldBounds;
+    RenderPoseBinding devicePose;
     bool visible = true;
 };
 
@@ -103,6 +104,11 @@ class RenderWorldFrame final
         return m_contentRevision;
     }
 
+    [[nodiscard]] uint64_t PoseRevision() const noexcept
+    {
+        return m_poseRevision;
+    }
+
     [[nodiscard]] uint64_t FrameRevision() const noexcept
     {
         return m_frameRevision;
@@ -124,6 +130,7 @@ class RenderWorldFrame final
     uint64_t m_structuralRevision = 0;
     uint64_t m_transformRevision = 0;
     uint64_t m_contentRevision = 0;
+    uint64_t m_poseRevision = 0;
     uint64_t m_frameRevision = 0;
 };
 
@@ -153,6 +160,7 @@ class RenderWorldSnapshot final
         frame.m_structuralRevision = 0;
         frame.m_transformRevision = 0;
         frame.m_contentRevision = 0;
+        frame.m_poseRevision = 0;
         Publish();
     }
 

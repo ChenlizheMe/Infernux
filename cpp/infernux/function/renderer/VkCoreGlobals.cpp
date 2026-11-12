@@ -46,7 +46,7 @@ rhi::BindGroupHandle InxVkCoreModular::ResolveViewGlobalsBinding(vk::ViewGlobals
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.pBufferInfo = &buffer;
-    std::array<VkCopyDescriptorSet, 4> copies{};
+    std::array<VkCopyDescriptorSet, 6> copies{};
     for (uint32_t index = 0; index < copies.size(); ++index) {
         auto &copy = copies[index];
         copy.sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET;
@@ -75,47 +75,21 @@ bool InxVkCoreModular::CreateGlobalsDescriptorResources()
     if (device == VK_NULL_HANDLE)
         return false;
 
-    // Layout: set 2, binding 0 = uniform buffer (globals UBO), vertex + fragment
-    //         set 2, binding 1 = storage buffer (instance models), vertex only
-    //         set 2, binding 2 = storage buffer (skin instance metadata), vertex only
-    //         set 2, binding 3 = storage buffer (bone palettes), vertex only
-    //         set 2, binding 4 = optional previous transform + object ID stream, vertex only
-    VkDescriptorSetLayoutBinding bindings[5]{};
-
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    bindings[0].pImmutableSamplers = nullptr;
-
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    bindings[1].pImmutableSamplers = nullptr;
-
-    bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    bindings[2].pImmutableSamplers = nullptr;
-
-    bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[3].descriptorCount = 1;
-    bindings[3].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    bindings[3].pImmutableSamplers = nullptr;
-
-    bindings[4].binding = 4;
-    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[4].descriptorCount = 1;
-    bindings[4].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    bindings[4].pImmutableSamplers = nullptr;
+    // One geometry ABI: globals, models, skin metadata/palettes, instance
+    // identity, previous device models and final mesh bounds.
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    for (uint32_t index = 0; index < bindings.size(); ++index) {
+        bindings[index].binding = index;
+        bindings[index].descriptorType =
+            index == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[index].descriptorCount = 1;
+        bindings[index].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | (index == 0 ? VK_SHADER_STAGE_FRAGMENT_BIT : 0u);
+    }
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 5;
-    layoutInfo.pBindings = bindings;
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
 
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_globalsDescSetLayout) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to create globals descriptor set layout");
@@ -180,6 +154,7 @@ void InxVkCoreModular::DestroyGlobalsDescriptorResources()
     if (device == VK_NULL_HANDLE)
         return;
 
+    RetirePoseBindings();
     m_instanceBuffers.clear();
     m_skinInstanceBuffers.clear();
     m_skinPaletteBuffers.clear();
@@ -434,12 +409,14 @@ bool InxVkCoreModular::PublishGlobalsDescriptorRevision(uint32_t frameIndex)
         return false;
     }
 
-    VkDescriptorBufferInfo bufferInfos[4] = {{instances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
-                                             {skinInstances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
-                                             {skinPalette.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
-                                             {instanceAux.buffer->GetBuffer(), 0, VK_WHOLE_SIZE}};
-    VkWriteDescriptorSet writes[4]{};
-    for (uint32_t index = 0; index < 4; ++index) {
+    const std::array<VkDescriptorBufferInfo, 6> bufferInfos{{{instances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                                             {skinInstances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                                             {skinPalette.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                                             {instanceAux.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                                             {instances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE},
+                                                             {instances.buffer->GetBuffer(), 0, VK_WHOLE_SIZE}}};
+    std::array<VkWriteDescriptorSet, 6> writes{};
+    for (uint32_t index = 0; index < writes.size(); ++index) {
         writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[index].dstSet = replacement.set;
         writes[index].dstBinding = index + 1;
@@ -447,7 +424,7 @@ bool InxVkCoreModular::PublishGlobalsDescriptorRevision(uint32_t frameIndex)
         writes[index].descriptorCount = 1;
         writes[index].pBufferInfo = &bufferInfos[index];
     }
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
     const auto retired = m_globalsDescriptorLeases[frameIndex];
     m_globalsDescriptorLeases[frameIndex] = replacement;

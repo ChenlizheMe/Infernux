@@ -92,7 +92,7 @@ Lit selects UV0 or UV1 per map. A normal map on UV0 uses the authored tangent an
 
 The same surface evaluation and alpha decision feed visible color, shadow/depth, picking, motion, normal, and base-color passes. PBR and Unlit additionally produce the shared GBuffer with the correct model ID. Previous object transforms and bone offsets feed motion. Render state remains Material state: use its surface/blend, culling, depth, queue, and alpha-clip controls instead of adding a second state block to the author file.
 
-For local deformation, add `vertex_shader = shader.ref("./wave.vert.py")`. Its `shader.vert` definition and Material fields are linked into the same program; see [vertex assets](vertex-stage.html).
+For local deformation, select a `*.vert.py` asset in the Material Inspector's Vertex field, or set `material.vert_shader_name` to its ID. Vertex and Fragment are independent selections; their fields are linked into one program. See [vertex assets](vertex-stage.html).
 
 ## Separate shading models {#shading-models}
 
@@ -232,7 +232,7 @@ Lit 为每张贴图选择 UV0 或 UV1。UV0 法线使用模型提供的切线及
 
 同一份 Surface 求值与 alpha 决定可见颜色、阴影／深度、拾取、运动、法线和基础色通道。PBR 和 Unlit 还生成带正确模型标识的公共 GBuffer。运动通道使用上一对象变换和上一骨骼偏移。渲染状态仍属于 Material：使用其透明混合、剔除、深度、队列和 alpha 裁剪控制，不在作者文件中维护第二套状态声明。
 
-需要局部变形时，添加 `vertex_shader = shader.ref("./wave.vert.py")`。它的 `shader.vert` 定义与材质字段会合入同一程序，见[顶点资产](vertex-stage.html)。
+需要局部变形时，在材质 Inspector 的顶点字段选择 `*.vert.py`，或将 `material.vert_shader_name` 设置为其 ID。顶点与片元独立选择，两个阶段的字段合入同一程序，见[顶点资产](vertex-stage.html)。
 
 ## 独立 ShadingModel {#shading-models_1}
 

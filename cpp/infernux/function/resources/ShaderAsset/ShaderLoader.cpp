@@ -17,6 +17,75 @@
 #include <nlohmann/json.hpp>
 namespace infernux
 {
+std::shared_ptr<const ShaderMaterialPreparation>
+ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment,
+                                     const std::shared_ptr<ShaderAsset> &vertex, const ShaderStagePair &stages,
+                                     AssetDatabase *database)
+{
+    auto result = std::make_shared<ShaderMaterialPreparation>();
+    result->vertex = vertex ? vertex->program : nullptr;
+    try {
+        if (!fragment->materialProgram)
+            throw std::invalid_argument("Material fragment must declare a mesh shader: " + fragment->filePath);
+        const bool standard =
+            stages.vertexKey == "Standard" || (vertex && vertex->shaderId == "Standard" && !vertex->program);
+        if (standard) {
+            if (fragment->materialProgram->key.stages == stages)
+                result->program = fragment->materialProgram;
+            else {
+                auto program = std::make_shared<ShaderProgramArtifact>(*fragment->materialProgram);
+                program->key.stages = stages;
+                result->program = std::move(program);
+            }
+        } else {
+            if (!vertex || vertex->shaderType != "vertex" || !vertex->program)
+                throw std::invalid_argument("Select a Python vertex shader or the built-in Standard vertex for " +
+                                            fragment->filePath);
+            auto &compiler = SlangCompiler::Get();
+            const auto prepared = compiler.PrepareAuthorSource(
+                {"material_" + stages.fragmentKey, fragment->filePath, fragment->authorSourceText},
+                [database](const std::string &path) -> std::optional<std::string> {
+                    std::vector<char> bytes;
+                    if (!database->ReadFile(path, bytes))
+                        return std::nullopt;
+                    return std::string(bytes.begin(), bytes.end());
+                },
+                ShaderAuthorPhase::Program, {"vertex_" + stages.vertexKey, vertex->filePath, vertex->authorSourceText});
+            const auto compilation = std::make_shared<const ShaderCompilation>(
+                compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl},
+                                 false, prepared.sourceRanges));
+            result->program = std::make_shared<const ShaderProgramArtifact>(
+                CreateShaderAuthorMaterial(stages.fragmentKey, compilation, prepared.schema, stages.vertexKey));
+        }
+    } catch (const ShaderCompilationError &error) {
+        result->error = error.what();
+        result->diagnostics = error.diagnostics;
+    } catch (const std::invalid_argument &error) {
+        result->error = error.what();
+    }
+    return result;
+}
+
+std::shared_ptr<const ShaderMaterialPreparation>
+ShaderLoader::PrepareMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment,
+                                     const std::shared_ptr<ShaderAsset> &vertex, const ShaderStagePair &stages,
+                                     AssetDatabase *database)
+{
+    auto &cache = *fragment->materialPrograms;
+    {
+        const std::lock_guard lock(cache.mutex);
+        const auto found = cache.entries.find(stages.vertexKey);
+        if (found != cache.entries.end() && found->second->vertex == (vertex ? vertex->program : nullptr))
+            return found->second;
+    }
+    // The static frontend can acquire the interpreter; do not hold a cache
+    // mutex across Python compilation or native Slang work.
+    auto prepared = CompileMaterialProgram(fragment, vertex, stages, database);
+    const std::lock_guard lock(cache.mutex);
+    cache.entries[stages.vertexKey] = prepared;
+    return prepared;
+}
+
 void ShaderLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath)
 {
     const auto shader = payload.Get<ShaderAsset>();
@@ -56,6 +125,7 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->descriptor.filePath = filePath;
         asset->descriptor.fileExtension = kind->suffix;
         asset->authoringSchema = prepared.schema;
+        asset->authorSourceText = source;
         const auto schema = nlohmann::json::parse(prepared.schema);
         const auto &info = schema.at("info");
         asset->descriptor.hidden = info.at("hidden").get<bool>();
@@ -84,16 +154,8 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
             compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl},
                              false, prepared.sourceRanges));
         if (schema.at("domain") == "mesh") {
-            std::string vertexKey = "Standard";
-            if (!schema.at("vertex_source").is_null()) {
-                const auto path = schema.at("vertex_source").get<std::string>();
-                vertexKey = adb->GetGuidFromPath(path);
-                if (vertexKey.empty())
-                    throw std::invalid_argument("Vertex source is not imported: " + path);
-                asset->sourceDependencies.push_back(vertexKey);
-            }
             asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(
-                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema, std::move(vertexKey)));
+                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema, "Standard"));
         }
         return asset;
     }

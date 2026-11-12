@@ -501,6 +501,7 @@ class Infernux
     std::string ReloadShaderDependencies(const std::string &shaderPath, const std::string &previousSourcePath);
     std::string ReloadShaderAuthorSource(const std::string &shaderPath);
     [[nodiscard]] LinkedShaderProgramPreparation EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
+                                                                            const std::string &vertexPath,
                                                                             const std::string &fragmentPath);
     std::string ReloadShaderSourceBatch(const std::vector<std::string> &roots);
     // Sources checked by the last synchronous candidate publication. Diagnostic

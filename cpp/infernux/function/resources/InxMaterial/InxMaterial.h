@@ -355,17 +355,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     /// @brief Set vertex shader name independently.
     void SetVertShader(const std::string &name)
     {
-        const ShaderAssetReference reference{"", name, ""};
-        if (m_vertexShader == reference)
-            return;
-        const bool switched = !ReferencesSameShader(m_vertexShader, reference);
-        m_vertexShader = reference;
-        if (switched)
-            ResetRenderStateAuthorship();
-        m_pipelineDirty = true;
-        ++m_version;
-        NotifyRoutingChanged();
-        PublishDependencies();
+        SetVertShaderReference({"", name, ""});
     }
 
     /// @brief Set fragment shader name independently.
@@ -373,13 +363,11 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
     void SetVertShaderReference(ShaderAssetReference reference)
     {
+        reference = ResolveShaderReference(std::move(reference), "vertex");
         if (m_vertexShader == reference)
             return;
-        const bool switched = !ReferencesSameShader(m_vertexShader, reference);
         m_vertexShader = std::move(reference);
         TrackRuntimeShaderReferences();
-        if (switched)
-            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
         NotifyRoutingChanged();
@@ -388,7 +376,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
     void SetFragShaderReference(ShaderAssetReference reference)
     {
-        reference = ResolveFragmentShaderReference(std::move(reference));
+        reference = ResolveShaderReference(std::move(reference), "fragment");
         if (m_fragmentShader == reference)
             return;
         const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
@@ -824,7 +812,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
   private:
     static uint64_t AllocateRuntimeId() noexcept;
-    static ShaderAssetReference ResolveFragmentShaderReference(ShaderAssetReference reference);
+    static ShaderAssetReference ResolveShaderReference(ShaderAssetReference reference, const char *stage);
     void TrackRuntimeShaderReferences();
     void PublishDependencies();
     bool ApplyDocument(const nlohmann::json &document);

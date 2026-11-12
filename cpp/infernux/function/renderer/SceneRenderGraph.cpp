@@ -265,6 +265,10 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
     float nearest = std::numeric_limits<float>::max();
     float farthest = 0.0f;
     for (const DrawCall &drawCall : drawCalls) {
+        // Device-authored receivers cover the camera projection. Their final
+        // GPU bounds cannot participate in a CPU-only tightening of cascades.
+        if (drawCall.devicePose.value)
+            return {};
         if (!drawCall.frustumVisible || !drawCall.worldBounds.IsValid())
             continue;
         const glm::vec3 center = (drawCall.worldBounds.min + drawCall.worldBounds.max) * 0.5f;

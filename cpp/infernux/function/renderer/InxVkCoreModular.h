@@ -654,7 +654,10 @@ class InxVkCoreModular
             found->stages = found->stages | stages;
     }
 
-    void CaptureResidentVertexReads(const std::vector<DrawCall> &draws, const std::vector<DrawCall> &shadowDraws);
+    void CaptureResidentGeometryReads(const std::vector<DrawCall> &draws, const std::vector<DrawCall> &shadowDraws);
+    /// Alias a published pose's storage into the same geometry ABI used by all passes.
+    [[nodiscard]] VkDescriptorSet ResolvePoseGlobalsBinding(VkDescriptorSet base, const RenderPoseBinding &current,
+                                                            const RenderPoseBinding &previous = {});
 
     /// Optional GPU work that precedes scene rendering. It is submitted as a
     /// typed Compute batch when Compute aliases the Graphics native lane; the
@@ -1685,7 +1688,6 @@ class InxVkCoreModular
 
     // Cached builtin material lookups (refreshed per SetDrawCalls)
     std::shared_ptr<InxMaterial> m_cachedDefaultLit;
-    std::shared_ptr<InxMaterial> m_cachedErrorMat;
 
     struct ShadowDraw
     {
@@ -1889,6 +1891,19 @@ class InxVkCoreModular
         void *mapped = nullptr;    ///< Persistently mapped CPU pointer for host-visible SSBO
     };
     std::vector<InstanceBufferFrame> m_instanceBuffers; ///< One per frame-in-flight
+    struct PoseGlobalsBinding
+    {
+        VkDescriptorSet base = VK_NULL_HANDLE;
+        const RenderPoseValue *current = nullptr;
+        const RenderPoseValue *previous = nullptr;
+        vk::DescriptorLease lease;
+    };
+    std::vector<PoseGlobalsBinding> m_poseGlobalsBindings;
+    std::unordered_set<const RenderPoseValue *> m_framePoseReads;
+    std::unordered_set<std::string> m_reportedPosePrograms;
+    std::unordered_set<std::string> m_reportedPoseTransparency;
+    void CapturePoseRead(const std::shared_ptr<const RenderPoseValue> &value);
+    void RetirePoseBindings();
     static constexpr size_t INSTANCE_BUFFER_INITIAL_CAPACITY = 256;
 
     struct SkinBufferFrame

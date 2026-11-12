@@ -24,6 +24,7 @@ import numpy as np
 
 from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
 from infernux.compute_source import BufferSource
+from infernux.compute_geometry import PoseBuffer
 from infernux._compiler.value_types import SCALAR_STORAGE_TYPES
 from infernux.shader import f32, i32, u32, vec2, vec3, vec4
 

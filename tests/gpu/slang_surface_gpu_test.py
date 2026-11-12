@@ -99,6 +99,7 @@ def main():
         if options.vertex:
             (root / "Assets/translate.vert.py").write_text('''import infernux.shader as shader
 class Translate(shader.vert):
+    shader_id = "tests/vertex/translate"
     translation = shader.material.float(default=0.35)
     def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
         vertex.position_os.x += self.translation
@@ -108,7 +109,6 @@ class Translate(shader.vert):
 ShaderInfo { Name "Baseline Translate" Properties { Float translation=0.35 } }
 void vertex(inout VertexInput v) { v.position.x += material.translation; }
 ''', encoding="utf-8")
-            author_source = author_source.replace('(shader.surface):', '(shader.surface):\n    vertex_shader = shader.ref("./translate.vert.py")')
         source.write_text(author_source, encoding="utf-8")
         reference.write_text(reference_source, encoding="utf-8")
         mask_path = root / "Assets/mask.png"
@@ -157,6 +157,7 @@ void vertex(inout VertexInput v) { v.position.x += material.translation; }
             baseline = inx.Material.create_lit("基准表面")
             if options.vertex:
                 baseline.vert_shader_name = "Baseline Translate"
+                candidate.vert_shader_name = "tests/vertex/translate"
             baseline.frag_shader_name = "Surface Baseline"
             materials = (baseline, candidate)
             for material in materials:

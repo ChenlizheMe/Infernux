@@ -149,6 +149,7 @@ class SceneRenderer
         uint64_t structuralRevision = 0;
         uint64_t transformRevision = 0;
         uint64_t contentRevision = 0;
+        uint64_t poseRevision = 0;
         glm::mat4 viewProjection{1.0f};
         uint32_t cullingMask = 0xFFFFFFFFu;
         bool frustumCulling = true;
@@ -165,6 +166,7 @@ class SceneRenderer
         size_t proxyCount = 0;
         AABB worldBounds;
         uint32_t layerMask = 0;
+        bool devicePoses = false;
     };
 
     void RebuildCoarseCullGroups(const RenderWorldFrame &world);
@@ -174,6 +176,7 @@ class SceneRenderer
     uint64_t m_coarseCullWorldId = 0;
     uint64_t m_coarseCullStructuralRevision = 0;
     uint64_t m_coarseCullTransformRevision = 0;
+    uint64_t m_coarseCullContentRevision = 0;
     uint64_t m_nextCameraCullRevision = 1;
 #if INFERNUX_FRAME_PROFILE
     ProfileSnapshot m_profileSnapshot;

@@ -399,7 +399,7 @@ def parse_shader_properties(filepath: str) -> list:
     if source_extension(filepath) in {".frag.py", ".vert.py"}:
         from infernux.core.shader import Shader
         schema = Shader.get_schema(filepath)
-        if schema["domain"] != "mesh":
+        if schema["domain"] not in {"mesh", "vertex"}:
             return []
         kinds = {"texture_2d": "Texture2D", "float": "Float", "int": "Int", "vec2": "Float2", "vec3": "Float3",
                  "vec4": "Float4", "color": "Color", "mat4": "Mat4"}

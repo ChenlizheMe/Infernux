@@ -7,13 +7,31 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace infernux
 {
+
+struct ShaderAsset;
+
+struct ShaderMaterialPreparation
+{
+    std::shared_ptr<const ShaderCompilation> vertex;
+    std::shared_ptr<const ShaderProgramArtifact> program;
+    std::string error;
+    std::vector<ShaderDiagnostic> diagnostics;
+};
+
+struct ShaderMaterialPrograms
+{
+    std::mutex mutex;
+    std::unordered_map<std::string, std::shared_ptr<const ShaderMaterialPreparation>> entries;
+};
 
 struct ShaderStageVariant
 {
@@ -54,9 +72,13 @@ struct ShaderAsset
     /// fields. Device publication chooses the target without recompiling.
     std::shared_ptr<const ShaderCompilation> program;
     std::string authoringSchema;
+    std::string authorSourceText;
     std::optional<ShaderProgramDomain> programDomain;
     std::shared_ptr<const ShaderProgramArtifact> materialProgram;
     std::vector<std::string> sourceDependencies;
+    // Author selection belongs to a material. Each fragment snapshot caches
+    // its requested vertex combinations, including one rejected source pair.
+    std::shared_ptr<ShaderMaterialPrograms> materialPrograms = std::make_shared<ShaderMaterialPrograms>();
 
     [[nodiscard]] const ShaderStageVariant *FindVariant(ShaderCompileTarget target) const noexcept
     {
@@ -98,7 +120,7 @@ struct ShaderAsset
                        renderMeta.alphaClip.capacity();
         for (const auto &variant : variants)
             bytes += variant.spirv.capacity();
-        bytes += authoringSchema.capacity();
+        bytes += authoringSchema.capacity() + authorSourceText.capacity();
         bytes += sourceDependencies.capacity() * sizeof(std::string);
         for (const auto &dependency : sourceDependencies)
             bytes += dependency.capacity();

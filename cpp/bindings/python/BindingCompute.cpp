@@ -1,6 +1,7 @@
 #include "BindingRegistration.h"
 #include "BufferPyView.h"
 #include "SpirvPyBridge.h"
+#include <function/renderer/RenderPoseBuffer.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/rhi/RhiUpload.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -448,6 +449,17 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                 return py::bytes(reinterpret_cast<const char *>(bytes.data()), static_cast<py::ssize_t>(bytes.size()));
             },
             py::arg("byte_size"), py::arg("offset") = 0);
+
+    py::class_<RenderPoseBuffer, std::shared_ptr<RenderPoseBuffer>>(m, "_RenderPoseBuffer")
+        .def(py::init<const std::shared_ptr<rhi::ComputeBuffer> &, const std::shared_ptr<rhi::ComputeBuffer> &,
+                      uint32_t, uint32_t, uint32_t>(),
+             py::arg("models"), py::arg("bounds"), py::arg("count"), py::arg("first_model") = 0,
+             py::arg("first_bounds") = 0)
+        .def("publish", &RenderPoseBuffer::Publish, py::arg("models"), py::arg("bounds"), py::arg("first_model") = 0,
+             py::arg("first_bounds") = 0)
+        .def_property_readonly("count", &RenderPoseBuffer::GetCount)
+        .def_property_readonly("generation",
+                               [](const RenderPoseBuffer &source) { return source.Acquire()->generation; });
 
     py::class_<rhi::ComputeKernel, std::shared_ptr<rhi::ComputeKernel>>(m, "_ComputeKernel")
         .def_property_readonly("buffer_binding_count", &rhi::ComputeKernel::GetBufferBindingCount)

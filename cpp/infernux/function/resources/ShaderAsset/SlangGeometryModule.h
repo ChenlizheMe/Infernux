@@ -157,7 +157,9 @@ public struct InxInstanceData
     public uint2 object_id;
     public uint object_flags;
     public uint layer_mask;
+    public uint4 pose_indices;
 };
+public struct InxWorldBounds { public float4 minimum; public float4 maximum; };
 public struct InxSkinState
 {
     public uint bone_offset;

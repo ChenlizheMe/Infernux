@@ -62,13 +62,21 @@ enum class ShaderProgramDomain : unsigned char
     return "Unknown";
 }
 
-class ShaderProgramDomainMismatch : public std::runtime_error
+/// A rejected author selection is local to a material publication. It never
+/// unwinds the editor frame or changes an accepted device program.
+class ShaderProgramSelectionError : public std::runtime_error
+{
+  public:
+    using std::runtime_error::runtime_error;
+};
+
+class ShaderProgramDomainMismatch : public ShaderProgramSelectionError
 {
   public:
     ShaderProgramDomainMismatch(ShaderProgramDomain expected, ShaderProgramDomain actual)
-        : std::runtime_error("Material shader domain mismatch: expected " +
-                             std::string(ShaderProgramDomainName(expected)) + ", got " +
-                             ShaderProgramDomainName(actual)),
+        : ShaderProgramSelectionError("Material shader domain mismatch: expected " +
+                                      std::string(ShaderProgramDomainName(expected)) + ", got " +
+                                      ShaderProgramDomainName(actual)),
           expected(expected), actual(actual)
     {
     }
@@ -142,8 +150,8 @@ enum class ShaderCompileTarget : int
     case ShaderCompileTarget::Normal:
     case ShaderCompileTarget::BaseColor:
     case ShaderCompileTarget::Depth:
-        return true;
     case ShaderCompileTarget::Shadow:
+        return true;
     case ShaderCompileTarget::Count:
         return false;
     }

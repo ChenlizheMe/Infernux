@@ -478,6 +478,9 @@ void OutlineRenderer::CreateOutlineMaterialResources()
             ssboBufInfo.range = VK_WHOLE_SIZE;
             vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[i], 1,
                                                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ssboBufInfo);
+            for (uint32_t binding : {5u, 6u})
+                vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[i], binding,
+                                                        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, ssboBufInfo);
 
             if (i < m_outlineSkinInstanceBufs.size() && i < m_outlineSkinPaletteBufs.size()) {
                 if (m_outlineSkinInstanceBufs[i].buffer != VK_NULL_HANDLE) {
@@ -564,8 +567,11 @@ void OutlineRenderer::EnsureOutlineBufferCapacity(uint32_t frameIndex, size_t in
     auto &skinPalette = m_outlineSkinPaletteBufs[frameIndex];
 
     if (frameIndex < m_outlineGlobalsDescSets.size() && m_outlineGlobalsDescSets[frameIndex] != VK_NULL_HANDLE) {
-        for (const auto &[binding, buffer] : std::array<std::pair<uint32_t, VkBuffer>, 2>{
-                 {{1, m_outlineInstanceBufs[frameIndex].buffer}, {4, m_outlineInstanceAuxBufs[frameIndex].buffer}}}) {
+        for (const auto &[binding, buffer] :
+             std::array<std::pair<uint32_t, VkBuffer>, 4>{{{1, m_outlineInstanceBufs[frameIndex].buffer},
+                                                           {4, m_outlineInstanceAuxBufs[frameIndex].buffer},
+                                                           {5, m_outlineInstanceBufs[frameIndex].buffer},
+                                                           {6, m_outlineInstanceBufs[frameIndex].buffer}}}) {
             VkDescriptorBufferInfo info{buffer, 0, VK_WHOLE_SIZE};
             vkrender::UpdateDescriptorSetWithBuffer(device, m_outlineGlobalsDescSets[frameIndex], binding,
                                                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, info);
@@ -657,7 +663,7 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
     VkDevice device = m_core->GetDevice();
 
     std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertModule),
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertModule, program->GetVertexEntryPoint().c_str()),
         MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule),
     };
 
@@ -731,6 +737,8 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
         if (dc.material) {
             MaterialRenderData *renderData = m_core->ResolveMeshMaterial(dc.material);
             const ShaderProgram *fwdProgram = dc.material->GetPassShaderProgram(ShaderCompileTarget::Forward);
+            if (dc.devicePose.value && fwdProgram && !fwdProgram->UsesDevicePoseABI())
+                continue;
             if (fwdProgram) {
                 VkPipeline mtlPipeline = GetOrCreateMtlOutlinePipeline(dc.material.get());
                 VkDescriptorSet mtlDescSet =
@@ -753,6 +761,7 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
                         aux.previousModel = dc.worldMatrix;
                         aux.objectId = PackGPUObjectId(dc.pickingObjectId != 0 ? dc.pickingObjectId : dc.objectId);
                         aux.layerMask = dc.layerMask;
+                        ApplyDevicePose(aux, dc.devicePose);
                         std::memcpy(static_cast<GPUInstanceAuxData *>(m_outlineInstanceAuxBufs[frameIdx].mapped) +
                                         instanceIndex,
                                     &aux, sizeof(aux));
@@ -789,7 +798,8 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
                                                           &perViewDescSet, 0, nullptr);
 
                     // Set 2: outline globals (globals UBO + outline instance buffer)
-                    VkDescriptorSet globalsDescSet = m_outlineGlobalsDescSets[frameIdx];
+                    VkDescriptorSet globalsDescSet =
+                        m_core->ResolvePoseGlobalsBinding(m_outlineGlobalsDescSets[frameIdx], dc.devicePose);
                     vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineMask.Set2", cmdBuf,
                                                           VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
                                                           &globalsDescSet, 0, nullptr);
@@ -807,7 +817,9 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
                                                         indices ? indices->size() : 0);
                     }
 
-                    vkCmdPushConstants(cmdBuf, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &pushData);
+                    if (!fwdProgram->GetVertexReflection().GetPushConstants().empty())
+                        vkCmdPushConstants(cmdBuf, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants),
+                                           &pushData);
 
                     vkCmdDrawIndexed(cmdBuf, dc.indexCount, 1, dc.indexStart, dc.vertexStart, instanceIndex++);
                     boneOffset += skinData.boneCount;

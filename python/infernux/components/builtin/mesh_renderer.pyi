@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple, overload
 
 from infernux.components.builtin_component import BuiltinComponent
-from infernux.compute import Buffer
+from infernux.compute import Buffer, PoseBuffer
 from infernux.core.mesh import Mesh
 from infernux.core.material import Material
 from infernux.lib import InxMaterial
@@ -210,6 +210,8 @@ class MeshRenderer(BuiltinComponent):
     def set_vertex_buffer(self, value: Buffer, bounds_min: Any, bounds_max: Any, *, space: str = ...) -> None:
         """Render directly from resident vertex storage in explicit local or world space."""
         ...
+    def set_pose_buffer(self, source: PoseBuffer, element: int = ..., *, continuity: int = ...) -> None: ...
+    def clear_pose_buffer(self) -> None: ...
     def clear_vertex_buffer(self) -> None:
         """Return rendering to the authored CPU vertex stream."""
         ...

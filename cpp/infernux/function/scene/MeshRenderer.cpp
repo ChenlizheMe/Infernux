@@ -809,6 +809,24 @@ void MeshRenderer::SetMaterial(uint32_t slot, std::shared_ptr<InxMaterial> mater
     NotifyRenderableStateChanged(this);
 }
 
+void MeshRenderer::SetPoseBuffer(std::shared_ptr<RenderPoseBuffer> source, uint32_t element, uint64_t continuity)
+{
+    if (!source || element >= source->GetCount())
+        throw std::out_of_range("Renderer pose element must belong to its source range");
+    m_poseBuffer = std::move(source);
+    m_poseElement = element;
+    m_poseContinuity = continuity;
+    NotifyRenderableStateChanged(this);
+}
+
+void MeshRenderer::ClearPoseBuffer()
+{
+    m_poseBuffer.reset();
+    m_poseElement = 0;
+    m_poseContinuity = 0;
+    NotifyRenderableStateChanged(this);
+}
+
 void MeshRenderer::SetCastShadows(bool cast)
 {
     if (m_castShadows == cast)

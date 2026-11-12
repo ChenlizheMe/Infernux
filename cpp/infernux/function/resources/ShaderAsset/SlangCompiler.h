@@ -51,8 +51,8 @@ enum class ShaderAuthorPhase
     Metadata,
     Program
 };
-using ShaderAuthorFrontend =
-    std::function<ShaderAuthorSource(const ShaderSourceModule &, const ShaderTextReader &, ShaderAuthorPhase)>;
+using ShaderAuthorFrontend = std::function<ShaderAuthorSource(const ShaderSourceModule &, const ShaderTextReader &,
+                                                              ShaderAuthorPhase, const ShaderSourceModule &)>;
 
 /// The process owns one compiler and its loaded standard library. Each
 /// accepted source revision gets a separate module session, so editing a
@@ -66,7 +66,7 @@ class SlangCompiler
     INFERNUX_SHADER_COMPILER_API void SetAuthorFrontend(ShaderAuthorFrontend frontend);
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderAuthorSource
     PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader,
-                        ShaderAuthorPhase phase = ShaderAuthorPhase::Program);
+                        ShaderAuthorPhase phase = ShaderAuthorPhase::Program, const ShaderSourceModule &vertex = {});
 
     INFERNUX_SHADER_COMPILER_API ShaderCompilation Compile(const ShaderSourceModule &source,
                                                            const std::vector<ShaderSourceModule> &libraries,

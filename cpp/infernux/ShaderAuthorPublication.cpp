@@ -17,16 +17,27 @@ namespace infernux
 {
 
 Infernux::LinkedShaderProgramPreparation Infernux::EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
+                                                                              const std::string &vertexPath,
                                                                               const std::string &fragmentPath)
 {
     auto &registry = AssetRegistry::Instance();
-    const auto guid = GetAssetDatabase()->GetGuidFromPath(fragmentPath);
+    auto *database = GetAssetDatabase();
+    const auto guid = database->GetGuidFromPath(fragmentPath);
     const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-    if (!asset || !asset->materialProgram)
+    if (!asset)
         return {true, false, "This GPU author is not a mesh material: " + fragmentPath};
-    const auto &program = *asset->materialProgram;
-    if (stages != program.key.stages)
-        return {true, false, "Mesh fragment requires its declared standard vertex program"};
+    const auto vertex = vertexPath.empty() ? nullptr
+                                           : registry.LoadAsset<ShaderAsset>(database->GetGuidFromPath(vertexPath),
+                                                                             ResourceType::Shader);
+    const auto prepared = ShaderLoader::PrepareMaterialProgram(asset, vertex, stages, database);
+    auto &entry = m_linkedShaderProgramCache[stages];
+    if (!prepared->program) {
+        if (entry.lastError != prepared->error)
+            entry.failureReported = false;
+        entry.lastError = prepared->error;
+        return {true, false, prepared->error};
+    }
+    const auto &program = *prepared->program;
     if (!m_renderer->HasShaderProgramArtifact(program.key)) {
         if (!m_renderer->PublishShaderProgramArtifact(program))
             return {true, false, "Mesh author program could not be published"};
@@ -35,6 +46,9 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureShaderAuthorMaterial(co
                                           meta.depthTest, meta.blend, meta.queue, meta.passTag, meta.stencil,
                                           meta.alphaClip);
     }
+    entry.programKey = program.key;
+    entry.lastError.clear();
+    entry.failureReported = false;
     return {true, true, {}};
 }
 
@@ -65,20 +79,63 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
         }
 
         std::vector<ShaderProgramArtifact> materials;
-        std::vector<std::pair<std::string, ShaderProgramKey>> replacedRecipes;
         for (const auto &candidate : candidates) {
-            if (candidate.second->materialProgram) {
+            if (candidate.second->materialProgram)
                 materials.push_back(*candidate.second->materialProgram);
-                if (registry.IsLoaded(candidate.first)) {
-                    const auto resident = registry.LoadAsset<ShaderAsset>(candidate.first, ResourceType::Shader);
-                    if (resident->materialProgram &&
-                        resident->materialProgram->key.stages != candidate.second->materialProgram->key.stages)
-                        replacedRecipes.emplace_back(candidate.first, resident->materialProgram->key);
-                }
+        }
+
+        // A stage is an independent asset. Validate every live combination
+        // affected by this edit, using the same source snapshots that will be
+        // published; fragment source never chooses or changes a vertex asset.
+        const auto snapshot = [&](const std::string &key) -> std::shared_ptr<ShaderAsset> {
+            const auto candidate = std::find_if(candidates.begin(), candidates.end(),
+                                                [&](const auto &value) { return value.first == key; });
+            return candidate != candidates.end() ? candidate->second
+                                                 : registry.LoadAsset<ShaderAsset>(key, ResourceType::Shader);
+        };
+        struct MaterialCandidate
+        {
+            std::shared_ptr<InxMaterial> material;
+            std::shared_ptr<ShaderAsset> fragment;
+            std::shared_ptr<const ShaderMaterialPreparation> prepared;
+        };
+        std::vector<MaterialCandidate> combinations;
+        for (const auto &material : registry.GetAllMaterials()) {
+            const auto stages = material->GetShaderStages();
+            if (!std::binary_search(roots.begin(), roots.end(), stages.vertexKey) &&
+                !std::binary_search(roots.begin(), roots.end(), stages.fragmentKey))
+                continue;
+            if (!asset_formats::FindShaderSourceKind(database->GetPathFromGuid(stages.fragmentKey)))
+                continue;
+            const auto fragment = snapshot(stages.fragmentKey);
+            const auto vertex = material->GetVertShaderReference().guid.empty() ? nullptr : snapshot(stages.vertexKey);
+            const auto previous = std::find_if(combinations.begin(), combinations.end(), [&](const auto &value) {
+                return value.prepared->program->key.stages == stages;
+            });
+            const auto prepared = previous != combinations.end()
+                                      ? previous->prepared
+                                      : ShaderLoader::CompileMaterialProgram(fragment, vertex, stages, database);
+            if (!prepared->program) {
+                m_shaderReloadDiagnostics = prepared->diagnostics;
+                return prepared->error;
             }
+            const auto already = std::find_if(materials.begin(), materials.end(),
+                                              [&](const auto &value) { return value.key.stages == stages; });
+            if (already == materials.end())
+                materials.push_back(*prepared->program);
+            combinations.push_back({material, fragment, prepared});
         }
         if (m_renderer && !materials.empty() && !m_renderer->PublishShaderProgramArtifacts(materials))
             throw std::runtime_error("Mesh author candidate programs could not be published");
+
+        // PublishShader moves accepted candidate contents into the resident
+        // asset. Populate the candidate cache before that move; entries retain
+        // the immutable vertex compilation rather than its mutable asset slot.
+        for (const auto &combination : combinations) {
+            const auto &program = *combination.prepared->program;
+            const std::lock_guard lock(combination.fragment->materialPrograms->mutex);
+            combination.fragment->materialPrograms->entries[program.key.stages.vertexKey] = combination.prepared;
+        }
 
         // All frontend and target work succeeds before any program generation
         // becomes visible. Source dependencies are published by the loader at
@@ -95,16 +152,10 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
             if (m_renderer && fullscreen)
                 m_renderer->InvalidateShaderCache(root);
         }
-        if (!replacedRecipes.empty()) {
-            for (const auto &material : registry.GetAllMaterials()) {
-                const auto &fragment = material->GetFragShaderReference().guid;
-                if (std::any_of(replacedRecipes.begin(), replacedRecipes.end(),
-                                [&](const auto &recipe) { return recipe.first == fragment; }))
-                    material->PrepareShaderDefaults();
-            }
-            if (m_renderer)
-                for (const auto &[root, key] : replacedRecipes)
-                    m_renderer->RetireShaderProgramArtifact(key);
+        for (const auto &combination : combinations) {
+            const auto &program = *combination.prepared->program;
+            combination.material->SynchronizeShaderPropertyDefaults(program);
+            m_linkedShaderProgramCache.erase(program.key.stages);
         }
         return {};
     } catch (const ShaderCompilationError &error) {

@@ -105,7 +105,7 @@ int main()
     assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::Forward));
     assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::ForwardPlus));
     assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::GBuffer));
-    assert(!infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::Shadow));
+    assert(infernux::ShaderCompileTargetUsesInstanceAuxiliary(infernux::ShaderCompileTarget::Shadow));
 
     auto compiler = MakeCompiler();
     const std::string arrayVertex = R"(
