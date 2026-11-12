@@ -16,7 +16,7 @@ def main():
     parser.add_argument('--pipeline', choices=('forward', 'forward_plus', 'deferred'), default='forward')
     parser.add_argument('--proof', type=Path)
     args = parser.parse_args()
-    wrong_pair = ('Fullscreen Triangle', 'Fullscreen Blit') if args.domain == 'Fullscreen' else ('Particle Sprite', 'Particle Unlit')
+    wrong_pair = ('Fullscreen Triangle', 'fullscreen_blit') if args.domain == 'Fullscreen' else ('Particle Sprite', 'Particle Unlit')
     proof = {'package': inx.__file__, 'domain': args.domain, 'pipeline': args.pipeline, 'phases': [],
              'scope': 'Independent temporary project GPU readbacks, cold rejection, valid Mesh recovery and rejected edit with previous valid pipeline. No live Editor pixels.'}
     failures = []

@@ -846,7 +846,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                     and effect_color is not stage_color):
                 with graph.name_scope(f"effects/{stage.stable_id}"):
                     with graph.add_pass("Commit") as render_pass:
-                        render_pass.set_texture("_SourceTex", effect_color)
+                        render_pass.set_texture("source_tex", effect_color)
                         render_pass.write_color(stage_color)
                         # Custom effects may publish a different resolution.
                         # Equal-size commits must not resample their pixels.
@@ -855,7 +855,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                             and effect_color.size_divisor == stage_color.size_divisor
                         )
                         render_pass.fullscreen_quad(
-                            "Fullscreen Copy" if same_extent else "Fullscreen Blit"
+                            "fullscreen_copy" if same_extent else "fullscreen_blit"
                         )
                 bus.set(COLOR_TEXTURE, stage_color)
 

@@ -533,9 +533,9 @@ def _compile_route(
             with graph.name_scope(f"route/{route.route_id}"):
                 original_color = graph.create_texture("original", format=color_format)
                 with graph.add_pass("PreserveOriginal") as render_pass:
-                    render_pass.set_texture("_SourceTex", route_color)
+                    render_pass.set_texture("source_tex", route_color)
                     render_pass.write_color(original_color)
-                    render_pass.fullscreen_quad("Fullscreen Copy")
+                    render_pass.fullscreen_quad("fullscreen_copy")
 
         resources = _effect_resources(route_color, depth, motion, normal, shadow_map)
         for stage in route_stages:
@@ -609,9 +609,9 @@ def _compile_route(
         with graph.name_scope(f"route/{route.route_id}"):
             original_color = graph.create_texture("original", format=color_format)
             with graph.add_pass("PreserveOriginal") as render_pass:
-                render_pass.set_texture("_SourceTex", route_color)
+                render_pass.set_texture("source_tex", route_color)
                 render_pass.write_color(original_color)
-                render_pass.fullscreen_quad("Fullscreen Copy")
+                render_pass.fullscreen_quad("fullscreen_copy")
 
     resources = _effect_resources(route_color, depth, motion, normal, shadow_map)
     for stage in route_stages:
@@ -890,9 +890,9 @@ def _commit_scene_to_camera(graph, scene: _ImageAccumulator, camera_color) -> No
         return
     previous_current = scene.current
     with graph.add_pass("CommitSceneColor") as render_pass:
-        render_pass.set_texture("_SourceTex", previous_current)
+        render_pass.set_texture("source_tex", previous_current)
         render_pass.write_color(camera_color)
-        render_pass.fullscreen_quad("Fullscreen Copy")
+        render_pass.fullscreen_quad("fullscreen_copy")
     scene.current = camera_color
     scene.alternate = previous_current
 

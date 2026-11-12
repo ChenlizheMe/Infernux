@@ -51,8 +51,8 @@ class DepthAudit(RenderPipeline):
             p.fullscreen_quad('Tutorial Probe',depth_test=DepthCompare.LESS_EQUAL)
         with graph.add_pass('Commit') as p:
             p.write_color(color)
-            p.set_texture('_SourceTex',resolved)
-            p.fullscreen_quad('Fullscreen Blit')
+            p.set_texture('source_tex',resolved)
+            p.fullscreen_quad('fullscreen_blit')
         graph.screen_ui_section(resources={'color'})
         graph.set_output(color)
 

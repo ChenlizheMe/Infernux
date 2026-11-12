@@ -25,18 +25,18 @@ class ExtentEffect(FullScreenEffect):
             size_divisor=self.divisor,
         )
         with graph.add_pass("ResizeProbe") as render_pass:
-            render_pass.set_texture("_SourceTex", bus.get("color"))
+            render_pass.set_texture("source_tex", bus.get("color"))
             render_pass.write_color(output)
-            render_pass.fullscreen_quad("Fullscreen Blit")
+            render_pass.fullscreen_quad("fullscreen_blit")
         bus.set("color", output)
 
 
 @pytest.mark.parametrize(
     ("parameters", "shader"),
     [
-        ({}, "Fullscreen Copy"),
-        ({"divisor": 2}, "Fullscreen Blit"),
-        ({"fixed_size": True}, "Fullscreen Blit"),
+        ({}, "fullscreen_copy"),
+        ({"divisor": 2}, "fullscreen_blit"),
+        ({"fixed_size": True}, "fullscreen_blit"),
     ],
 )
 def test_effect_commit_uses_the_declared_output_extent(parameters, shader):
