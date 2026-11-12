@@ -11,8 +11,9 @@ from infernux.lib import ConsolePanel, SceneManager, Vector3
 SURFACE = '''import infernux.shader as shader
 class Cutout(shader.surface):
     clip_edge = shader.material.float(default=0.5)
+    image = shader.material.texture_2d(default="white")
     def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
-        return shader.SurfaceData(albedo=shader.vec3(0.2, 0.4, 0.8), normal_ws=ctx.normal_ws,
+        return shader.SurfaceData(albedo=shader.vec3(0.2, 0.4, 0.8) * shader.sample(self.image, ctx.uv0).rgb, normal_ws=ctx.normal_ws,
                                   metallic=0.2, smoothness=0.4, occlusion=0.8,
                                   alpha=shader.step(self.clip_edge, ctx.uv0.x))
 '''
