@@ -40,6 +40,8 @@ struct MaterialUBOLayout
     std::vector<ShaderValueLayout> members;
 };
 
+class ShaderProgram;
+
 /// Input metadata is borrowed only during native program creation. Publications
 /// own their entry names and parameter layouts independently of the compiler.
 struct ShaderProgramMetadata
@@ -50,6 +52,8 @@ struct ShaderProgramMetadata
     const ShaderTargetCode *vertexTarget = nullptr;
     const ShaderTargetCode *fragmentTarget = nullptr;
     const std::vector<ShaderProgramPropertyBinding> *properties = nullptr;
+    /// Semantic passes borrow the Forward publication's material layout.
+    std::shared_ptr<const ShaderProgram> materialLayoutOwner;
 };
 
 /**
@@ -278,6 +282,8 @@ class ShaderProgram
 
     // Vulkan resources (auto-generated from reflection)
     std::unordered_map<uint32_t, VkDescriptorSetLayout> m_descriptorSetLayouts;
+    std::shared_ptr<const ShaderProgram> m_materialLayoutOwner;
+    VkDescriptorSetLayout m_borrowedMaterialLayout = VK_NULL_HANDLE;
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
 
     // Material UBO layout (if present)

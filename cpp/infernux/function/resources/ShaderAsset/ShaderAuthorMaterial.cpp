@@ -101,6 +101,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     addVariant(ShaderCompileTarget::Forward, "vertex_main", "fragment_main");
     addVariant(ShaderCompileTarget::ForwardPlus, "vertex_main", surface ? "fragment_forward_plus" : "fragment_main");
     if (surface) {
+        addVariant(ShaderCompileTarget::Shadow, "vertex_shadow", "fragment_depth");
         addVariant(ShaderCompileTarget::GBuffer, "vertex_main", "fragment_gbuffer");
         addVariant(ShaderCompileTarget::Depth, "vertex_main", "fragment_depth");
         addVariant(ShaderCompileTarget::Picking, "vertex_main", "fragment_picking");

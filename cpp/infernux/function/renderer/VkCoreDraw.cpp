@@ -46,16 +46,13 @@ namespace infernux
 namespace
 {
 
-struct alignas(16) ShadowPassUniformData
+struct alignas(16) ShadowPassParameters
 {
-    glm::mat4 model{1.0f};
-    glm::mat4 view{1.0f};
-    glm::mat4 projection{1.0f};
-    glm::vec4 lightVector{}; ///< xyz = direction toward light or local-light position; w = position flag
-    glm::vec4 bias{};        ///< xy = depth/normal bias in texels, z = world texel size, w = far plane
+    glm::vec4 lightVector{};
+    glm::vec4 bias{};
 };
 
-static_assert(sizeof(ShadowPassUniformData) == 224);
+static_assert(sizeof(ShadowPassParameters) == 32);
 
 VkIndexType ToVkIndexType(MeshIndexFormat format)
 {
@@ -1797,12 +1794,17 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         if (bufferIndex >= cameraResources.mappedPointers.size() || !cameraResources.mappedPointers[bufferIndex])
             return;
         const lighting::ShadowView &shadowView = shadowFrame.views[viewIndex];
-        ShadowPassUniformData shadowUbo{};
-        shadowUbo.projection = shadowView.viewProjection;
-        shadowUbo.lightVector = glm::vec4(shadowView.lightVector, shadowView.lightVectorIsPosition ? 1.0f : 0.0f);
-        shadowUbo.bias = glm::vec4(shadowView.depthBiasTexels, shadowView.normalBiasTexels,
-                                   shadowView.worldUnitsPerTexel, shadowView.farPlane);
-        std::memcpy(cameraResources.mappedPointers[bufferIndex], &shadowUbo, sizeof(shadowUbo));
+        UniformBufferObject view{};
+        view.model = view.view = glm::mat4(1.0f);
+        view.proj = view.previousViewProj = shadowView.viewProjection;
+        view.inverseViewProj = glm::inverse(shadowView.viewProjection);
+        ShadowPassParameters parameters;
+        parameters.lightVector = glm::vec4(shadowView.lightVector, shadowView.lightVectorIsPosition ? 1.0f : 0.0f);
+        parameters.bias = glm::vec4(shadowView.depthBiasTexels, shadowView.normalBiasTexels,
+                                    shadowView.worldUnitsPerTexel, shadowView.farPlane);
+        auto *mapped = static_cast<char *>(cameraResources.mappedPointers[bufferIndex]);
+        std::memcpy(mapped, &view, sizeof(view));
+        std::memcpy(mapped + m_shadowUniformParametersOffset, &parameters, sizeof(parameters));
     }
 
     // Bind shadow pipeline once
@@ -1877,6 +1879,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 auto resolved = m_resolvedShadowMaterialsScratch.find(material.get());
                 if (resolved == m_resolvedShadowMaterialsScratch.end()) {
                     const VkDescriptorSet descriptorSet = EnsureMaterialShadowPipeline(material, depthFormat);
+                    resources.program = material->GetPassShaderProgram(ShaderCompileTarget::Shadow);
                     resources.pipeline = material->GetPassPipeline(ShaderCompileTarget::Shadow);
                     resources.descriptorSet = descriptorSet;
                     resolved = m_resolvedShadowMaterialsScratch.emplace(material.get(), resources).first;
@@ -1887,12 +1890,23 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 lastResolvedShadowResources = resources;
             }
             const VkPipeline pip = resources.pipeline;
-            const VkDescriptorSet shadowMatDesc = resources.descriptorSet;
+            VkDescriptorSet shadowMatDesc = resources.descriptorSet;
             if (pip == VK_NULL_HANDLE || shadowMatDesc == VK_NULL_HANDLE)
                 continue;
+            if (dc.parameterBlock) {
+                const auto *descriptor =
+                    m_materialPipelineManager.GetDescriptorManager().GetOrCreateRendererDescriptorSet(
+                        *material, *resources.program, dc.parameterBlock);
+                if (!descriptor || !descriptor->isValid)
+                    continue;
+                shadowMatDesc = descriptor->descriptorSet;
+                if (descriptor->usesBindlessTextureABI)
+                    m_backend.Device().GetRhiDevice().MarkBindlessTexturesUsed(
+                        descriptor->bindlessTextureIndices.data(), descriptor->bindlessTextureIndices.size());
+            }
             m_shadowDrawScratch.push_back({&dc, bufferLease->GetVertexHandle(), bufferLease->indexBuffer->GetBuffer(),
-                                           pip, shadowMatDesc, dc.worldBounds, bufferLease->indexFormat,
-                                           bufferLease->GetVertexUpload(),
+                                           pip, resources.program, shadowMatDesc, dc.worldBounds,
+                                           bufferLease->indexFormat, bufferLease->GetVertexUpload(),
                                            bufferLease->indexBuffer->GetUploadSubmission()});
         }
 
@@ -2018,6 +2032,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     auto stateMatches = [](const ShadowCameraResources::StaticShadowDrawState &cached, const ShadowDraw &current) {
         const DrawCall &draw = *current.dc;
         return cached.objectId == draw.objectId && cached.layerMask == draw.layerMask &&
+               cached.receivesShadows == draw.receivesShadows &&
                std::memcmp(&cached.worldMatrix, &draw.worldMatrix, sizeof(glm::mat4)) == 0 &&
                cached.worldBounds.min.x == draw.worldBounds.min.x &&
                cached.worldBounds.min.y == draw.worldBounds.min.y &&
@@ -2035,6 +2050,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         ShadowCameraResources::StaticShadowDrawState state;
         state.objectId = draw.objectId;
         state.layerMask = draw.layerMask;
+        state.receivesShadows = draw.receivesShadows;
         state.worldMatrix = draw.worldMatrix;
         state.worldBounds = draw.worldBounds;
         state.vertexBuffer = current.vertexBuf;
@@ -2282,8 +2298,14 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             staticUpload.skinInstanceBuffer == skinInstanceBuffer;
         if (!reuseStaticUpload) {
             auto *matrices = static_cast<glm::mat4 *>(shadowStream.instanceMapped);
+            auto *auxiliary = static_cast<GPUInstanceAuxData *>(shadowStream.auxiliaryMapped);
             for (uint32_t vi = 0; vi < visibleCount; ++vi) {
-                matrices[writeBase + vi] = m_shadowDrawScratch[(*visibleIndices)[vi]].dc->worldMatrix;
+                const auto &draw = *m_shadowDrawScratch[(*visibleIndices)[vi]].dc;
+                matrices[writeBase + vi] = draw.worldMatrix;
+                auxiliary[writeBase + vi] = {
+                    draw.worldMatrix,
+                    glm::uvec2(static_cast<uint32_t>(draw.objectId), static_cast<uint32_t>(draw.objectId >> 32u)),
+                    draw.receivesShadows ? 0u : kGPUInstanceAuxFlagNoReceiveShadows, draw.layerMask};
             }
 
             auto *skinInstances = static_cast<GPUSkinInstanceData *>(shadowStream.skinInstanceMapped);
@@ -2340,23 +2362,19 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         uint32_t batchIdxCount = 0;
         int32_t batchVtxStart = 0;
         auto &rhiDevice = m_backend.Device().GetRhiDevice();
-        const VkDescriptorSet bindlessSet = m_shadowUsesBindlessTextureTable
-                                                ? rhiDevice.Resolve(rhiDevice.GetBindlessTextureTableBinding().group)
-                                                : VK_NULL_HANDLE;
-        if (m_shadowUsesBindlessTextureTable && bindlessSet == VK_NULL_HANDLE) {
-            INXLOG_ERROR("Shadow pass requires the RHI bindless texture table");
-            return;
-        }
+        const VkDescriptorSet bindlessSet = rhiDevice.Resolve(rhiDevice.GetBindlessTextureTableBinding().group);
 
         auto *uploadReads = vk::SubmissionReadScope::Current(cmdBuf);
         auto emitShadowBatch = [&]() {
             if (batchCount == 0)
                 return;
-            const std::array<VkDescriptorSet, 4> descriptorSets = {cascadeDescSet, shadowStreamDescSet,
-                                                                   batchShadowMaterialDescSet, bindlessSet};
+            const auto &first = m_shadowDrawScratch[(*visibleIndices)[batchStart]];
+            const VkPipelineLayout layout = first.program->GetPipelineLayout();
+            const std::array<VkDescriptorSet, 4> descriptorSets = {batchShadowMaterialDescSet, cascadeDescSet,
+                                                                   shadowStreamDescSet, bindlessSet};
             vkdebug::CmdBindDescriptorSetsTracked(
-                "VkCoreDraw.DrawShadowCasters.AllSets", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipelineLayout,
-                0, m_shadowUsesBindlessTextureTable ? 4u : 3u, descriptorSets.data(), 0, nullptr);
+                "VkCoreDraw.DrawShadowCasters.AllSets", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0,
+                first.program->UsesBindlessTextureABI() ? 4u : 3u, descriptorSets.data(), 0, nullptr);
             struct PushData
             {
                 glm::mat4 model;
@@ -2364,8 +2382,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             } pushData;
             pushData.model = m_shadowDrawScratch[(*visibleIndices)[batchStart]].dc->worldMatrix;
             pushData.normalMat = glm::mat4(1.0f);
-            vkCmdPushConstants(cmdBuf, m_shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushData),
-                               &pushData);
+            if (!first.program->GetVertexReflection().GetPushConstants().empty())
+                vkCmdPushConstants(cmdBuf, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushData), &pushData);
             vkCmdDrawIndexed(cmdBuf, batchIdxCount, batchCount, batchIdxStart, batchVtxStart,
                              writeBase + static_cast<uint32_t>(batchStart));
             issuedDraws += batchCount;
@@ -2504,7 +2522,7 @@ void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResourceId resou
 
 bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resourceId)
 {
-    if (resourceId == 0 || m_shadowDescSetLayout == VK_NULL_HANDLE || m_shadowGlobalsDescSetLayout == VK_NULL_HANDLE)
+    if (resourceId == 0 || m_perViewDescSetLayout == VK_NULL_HANDLE || m_globalsDescSetLayout == VK_NULL_HANDLE)
         return false;
     auto found = m_shadowCameraResources.find(resourceId);
     if (found == m_shadowCameraResources.end())
@@ -2518,7 +2536,7 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
     resources.descriptorSets.resize(totalSets, VK_NULL_HANDLE);
     resources.descriptorLeases.reserve(totalSets);
     for (uint32_t index = 0; index < totalSets; ++index) {
-        auto lease = descriptorManager.Allocate(m_shadowDescSetLayout, vk::DescriptorArena::ViewPersistent);
+        auto lease = descriptorManager.Allocate(m_perViewDescSetLayout, vk::DescriptorArena::ViewPersistent);
         if (!lease.IsValid()) {
             INXLOG_ERROR("Failed to allocate camera-local shadow descriptor set ", index);
             DestroyShadowCameraResources(resources);
@@ -2528,7 +2546,7 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
         resources.descriptorLeases.push_back(lease);
     }
 
-    const VkDeviceSize uboSize = sizeof(ShadowPassUniformData);
+    const VkDeviceSize uboSize = m_shadowUniformParametersOffset + sizeof(ShadowPassParameters);
     resources.uniformBuffers.resize(totalSets, VK_NULL_HANDLE);
     resources.allocations.resize(totalSets, VK_NULL_HANDLE);
     resources.mappedPointers.resize(totalSets, nullptr);
@@ -2551,21 +2569,25 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
             return false;
         }
         resources.mappedPointers[index] = allocation.pMappedData;
-        VkDescriptorBufferInfo descriptorInfo{resources.uniformBuffers[index], 0, uboSize};
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = resources.descriptorSets[index];
-        write.dstBinding = 0;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        write.descriptorCount = 1;
-        write.pBufferInfo = &descriptorInfo;
-        vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
+        const std::array<VkDescriptorBufferInfo, 2> infos{
+            {{resources.uniformBuffers[index], 0, sizeof(UniformBufferObject)},
+             {resources.uniformBuffers[index], m_shadowUniformParametersOffset, sizeof(ShadowPassParameters)}}};
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        for (uint32_t slot = 0; slot < writes.size(); ++slot) {
+            writes[slot].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[slot].dstSet = resources.descriptorSets[index];
+            writes[slot].dstBinding = slot == 0 ? 5u : 7u;
+            writes[slot].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[slot].descriptorCount = 1;
+            writes[slot].pBufferInfo = &infos[slot];
+        }
+        vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
 
     std::vector<VkDescriptorSet> streamDescriptorSets(m_maxFramesInFlight, VK_NULL_HANDLE);
     resources.streamDescriptorLeases.reserve(m_maxFramesInFlight);
     for (uint32_t index = 0; index < m_maxFramesInFlight; ++index) {
-        auto lease = descriptorManager.Allocate(m_shadowGlobalsDescSetLayout, vk::DescriptorArena::ViewPersistent);
+        auto lease = descriptorManager.Allocate(m_globalsDescSetLayout, vk::DescriptorArena::ViewPersistent);
         if (!lease.IsValid()) {
             INXLOG_ERROR("Failed to allocate camera-local shadow stream descriptor set ", index);
             DestroyShadowCameraResources(resources);
@@ -2594,13 +2616,14 @@ void InxVkCoreModular::UpdateShadowCameraStreamDescriptor(ShadowCameraResources:
         !frame.skinInstanceBuffer || !frame.skinPaletteBuffer)
         return;
 
-    std::array<VkDescriptorBufferInfo, 4> infos{};
+    std::array<VkDescriptorBufferInfo, 5> infos{};
     infos[0] = {frame.globalsBuffer, 0, sizeof(EngineGlobalsUBO)};
     infos[1] = {frame.instanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     infos[2] = {frame.skinInstanceBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
     infos[3] = {frame.skinPaletteBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
+    infos[4] = {frame.auxiliaryBuffer->GetBuffer(), 0, VK_WHOLE_SIZE};
 
-    std::array<VkWriteDescriptorSet, 4> writes{};
+    std::array<VkWriteDescriptorSet, 5> writes{};
     for (uint32_t binding = 0; binding < writes.size(); ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[binding].dstSet = frame.descriptorSet;
@@ -2637,13 +2660,15 @@ bool InxVkCoreModular::EnsureShadowCameraStreamCapacity(ShadowCameraResources &r
     auto newSkinInstances =
         m_resourceManager.CreateStorageBuffer(newInstanceCapacity * sizeof(GPUSkinInstanceData), false);
     auto newSkinPalette = m_resourceManager.CreateStorageBuffer(newPaletteCapacity * sizeof(glm::mat4), false);
-    if (!newInstances || !newSkinInstances || !newSkinPalette)
+    auto newAuxiliary = m_resourceManager.CreateStorageBuffer(newInstanceCapacity * sizeof(GPUInstanceAuxData), false);
+    if (!newInstances || !newSkinInstances || !newSkinPalette || !newAuxiliary)
         return false;
 
     void *newInstanceMapped = newInstances->Map();
     void *newSkinInstanceMapped = newSkinInstances->Map();
     void *newSkinPaletteMapped = newSkinPalette->Map();
-    if (!newInstanceMapped || !newSkinInstanceMapped || !newSkinPaletteMapped)
+    void *newAuxiliaryMapped = newAuxiliary->Map();
+    if (!newInstanceMapped || !newSkinInstanceMapped || !newSkinPaletteMapped || !newAuxiliaryMapped)
         return false;
 
     if (frame.instanceBuffer && frame.instanceMapped && frame.instanceWriteOffset > 0) {
@@ -2659,6 +2684,11 @@ bool InxVkCoreModular::EnsureShadowCameraStreamCapacity(ShadowCameraResources &r
                     static_cast<size_t>(frame.skinPaletteWriteOffset) * sizeof(glm::mat4));
     }
 
+    if (frame.auxiliaryBuffer && frame.instanceWriteOffset > 0)
+        std::memcpy(newAuxiliaryMapped, frame.auxiliaryMapped,
+                    static_cast<size_t>(frame.instanceWriteOffset) * sizeof(GPUInstanceAuxData));
+    frame.auxiliaryBuffer = std::move(newAuxiliary);
+    frame.auxiliaryMapped = newAuxiliaryMapped;
     frame.instanceBuffer = std::move(newInstances);
     frame.skinInstanceBuffer = std::move(newSkinInstances);
     frame.skinPaletteBuffer = std::move(newSkinPalette);
@@ -2680,109 +2710,10 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkFormat depthFormat)
     if (device == VK_NULL_HANDLE || depthFormat == VK_FORMAT_UNDEFINED)
         return false;
 
-    // --- Create descriptor set layout (binding 0 = UBO) ---
-    if (m_shadowDescSetLayout == VK_NULL_HANDLE) {
-        VkDescriptorSetLayoutBinding uboBinding{};
-        uboBinding.binding = 0;
-        uboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        uboBinding.descriptorCount = 1;
-        uboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &uboBinding;
-
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_shadowDescSetLayout) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to create shadow descriptor set layout");
-            return false;
-        }
-    }
-
-    // Camera-local shadow stream layout. Shadow draws deliberately do not use
-    // the ordinary set-2 instance descriptor: each camera owns the matrices
-    // and skinning data recorded for its shadow views.
-    if (m_shadowGlobalsDescSetLayout == VK_NULL_HANDLE) {
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
-        bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-        bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-        bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-        bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data();
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_shadowGlobalsDescSetLayout) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to create camera-local shadow stream descriptor layout");
-            return false;
-        }
-    }
-
-    // --- Create shadow material descriptor set layout (set 2) ---
-    //
-    // This set serves two purposes:
-    //   (a) Vertex-stage MaterialProperties UBO at binding 14 (all shadow materials)
-    //   (b) Fragment-stage texture samplers (bindings 0..N-1) and fragment
-    //       MaterialProperties UBO (binding N) for alpha-clip shadow materials.
-    //
-    // We declare a fixed set of sampler slots so the layout is
-    // compatible with any alpha-clip shader.  Non-alpha-clip materials simply
-    // leave those bindings unused.
-    if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE) {
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-
-        // Texture samplers for alpha-clip and vertex deformation.
-        for (uint32_t i = 0; i < kMaxShadowMaterialTextures; ++i) {
-            VkDescriptorSetLayoutBinding texBinding{};
-            texBinding.binding = i;
-            texBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            texBinding.descriptorCount = 1;
-            texBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings.push_back(texBinding);
-        }
-
-        // Fragment MaterialProperties UBO follows the sampler range.
-        {
-            VkDescriptorSetLayoutBinding fragMatBinding{};
-            fragMatBinding.binding = kMaxShadowMaterialTextures;
-            fragMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            fragMatBinding.descriptorCount = 1;
-            fragMatBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings.push_back(fragMatBinding);
-        }
-
-        // Vertex MaterialProperties UBO at binding 14
-        {
-            VkDescriptorSetLayoutBinding vtxMatBinding{};
-            vtxMatBinding.binding = 14;
-            vtxMatBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            vtxMatBinding.descriptorCount = 1;
-            vtxMatBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-            bindings.push_back(vtxMatBinding);
-        }
-
-        // Bindless texture indices used by alpha-clipped shadow variants.
-        if (m_backend.Device().GetRhiDevice().GetBindlessTextureTableBinding().IsValid()) {
-            VkDescriptorSetLayoutBinding textureIndexBinding{};
-            textureIndexBinding.binding = ShaderProgram::MaterialTextureIndexBinding;
-            textureIndexBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            textureIndexBinding.descriptorCount = 1;
-            textureIndexBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            bindings.push_back(textureIndexBinding);
-        }
-
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data();
-
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_shadowMaterialDescSetLayout) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to create shadow material descriptor set layout");
-            return false;
-        }
-    }
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(m_backend.Device().GetPhysicalDevice(), &properties);
+    const VkDeviceSize alignment = properties.limits.minUniformBufferOffsetAlignment;
+    m_shadowUniformParametersOffset = (sizeof(UniformBufferObject) + alignment - 1) & ~(alignment - 1);
 
     // --- Create shadow depth sampler ---
     if (m_shadowDepthSampler == VK_NULL_HANDLE) {
@@ -2791,41 +2722,6 @@ bool InxVkCoreModular::EnsureShadowPipeline(VkFormat depthFormat)
         }
     }
 
-    // --- Create shadow pipeline layout (shared by all per-material shadow pipelines) ---
-    // Set 0 = shadow UBO (per-cascade), set 1 = camera-local globals and shadow streams,
-    // set 2 = material resources, set 3 = global bindless textures when available.
-    if (m_shadowGlobalsDescSetLayout == VK_NULL_HANDLE) {
-        INXLOG_ERROR("EnsureShadowPipeline: camera-local shadow stream layout is null");
-        return false;
-    }
-    if (m_shadowPipelineLayout == VK_NULL_HANDLE) {
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        pushRange.offset = 0;
-        pushRange.size = sizeof(glm::mat4) * 2; // model + normalMat
-
-        auto &rhiDevice = m_backend.Device().GetRhiDevice();
-        const auto bindlessBinding = rhiDevice.GetBindlessTextureTableBinding();
-        const VkDescriptorSetLayout bindlessLayout = rhiDevice.Resolve(bindlessBinding.layout);
-        const bool useBindlessTextureTable = bindlessBinding.IsValid() && bindlessLayout != VK_NULL_HANDLE;
-        const std::array<VkDescriptorSetLayout, 4> setLayouts = {
-            m_shadowDescSetLayout, m_shadowGlobalsDescSetLayout, m_shadowMaterialDescSetLayout,
-            useBindlessTextureTable ? bindlessLayout : VK_NULL_HANDLE};
-
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = useBindlessTextureTable ? 4u : 3u;
-        pipelineLayoutInfo.pSetLayouts = setLayouts.data();
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushRange;
-
-        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m_shadowPipelineLayout) != VK_SUCCESS) {
-            INXLOG_ERROR("Failed to create shadow pipeline layout");
-            return false;
-        }
-        m_shadowUsesBindlessTextureTable = useBindlessTextureTable;
-    }
-    (void)EnsureShadowMaterialDummyDescriptorSet();
     m_shadowPipelineReady = true;
     // INXLOG_INFO("Shadow pipeline infrastructure created successfully");
     return true;
@@ -2862,54 +2758,21 @@ void InxVkCoreModular::CleanupShadowPipeline()
     if (device == VK_NULL_HANDLE)
         return;
 
-    const VkPipelineLayout retiredPipelineLayout = std::exchange(m_shadowPipelineLayout, VK_NULL_HANDLE);
-    m_shadowUsesBindlessTextureTable = false;
-    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
-    for (auto &[owner, entry] : m_shadowMaterialBindingCache) {
-        (void)owner;
-        descriptorManager.Retire(entry.descriptorLease);
-    }
-    m_shadowMaterialBindingCache.clear();
-    descriptorManager.Retire(m_shadowMaterialDummyLease);
-    m_shadowMaterialDummyLease = {};
-    m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
     for (auto &[resourceId, resources] : m_shadowCameraResources) {
         (void)resourceId;
         DestroyShadowCameraResources(resources);
     }
     m_shadowCameraResources.clear();
-    const VkDescriptorSetLayout retiredViewLayout = std::exchange(m_shadowDescSetLayout, VK_NULL_HANDLE);
-    const VkDescriptorSetLayout retiredGlobalsLayout = std::exchange(m_shadowGlobalsDescSetLayout, VK_NULL_HANDLE);
-    const VkDescriptorSetLayout retiredMaterialLayout = std::exchange(m_shadowMaterialDescSetLayout, VK_NULL_HANDLE);
     const VkSampler retiredDepthSampler = std::exchange(m_shadowDepthSampler, VK_NULL_HANDLE);
 
-    std::vector<VkPipeline> retiredPipelines;
-    retiredPipelines.reserve(m_shadowPipelineCache.size());
-    for (auto &[key, pipeline] : m_shadowPipelineCache) {
-        (void)key;
-        if (pipeline != VK_NULL_HANDLE)
-            retiredPipelines.push_back(pipeline);
-    }
+    auto retiredPipelines = std::move(m_shadowPipelineCache);
     m_shadowPipelineCache.clear();
-
-    // Shadow infrastructure can be rebuilt while older frames are still in
-    // flight. Descriptor leases are retired above; keep every object they and
-    // their command buffers reference alive through the same GPU epoch.
-    m_deletionQueue.Retire([device, retiredPipelineLayout, retiredViewLayout, retiredGlobalsLayout,
-                            retiredMaterialLayout, retiredDepthSampler,
-                            retiredPipelines = std::move(retiredPipelines)]() mutable {
-        for (const VkPipeline pipeline : retiredPipelines) {
-            if (pipeline != VK_NULL_HANDLE)
-                vkDestroyPipeline(device, pipeline, nullptr);
+    m_deletionQueue.Retire([device, retiredDepthSampler, retiredPipelines = std::move(retiredPipelines)]() mutable {
+        for (const auto &[key, pipeline] : retiredPipelines) {
+            (void)key;
+            vkDestroyPipeline(device, pipeline, nullptr);
         }
-        if (retiredPipelineLayout != VK_NULL_HANDLE)
-            vkDestroyPipelineLayout(device, retiredPipelineLayout, nullptr);
-        if (retiredViewLayout != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(device, retiredViewLayout, nullptr);
-        if (retiredGlobalsLayout != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(device, retiredGlobalsLayout, nullptr);
-        if (retiredMaterialLayout != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(device, retiredMaterialLayout, nullptr);
+        retiredPipelines.clear();
         if (retiredDepthSampler != VK_NULL_HANDLE)
             vkDestroySampler(device, retiredDepthSampler, nullptr);
     });
@@ -3740,7 +3603,7 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     // Canonical per-view ABI. Geometry uses binding 0 plus the tiled buffers;
     // particles also consume binding 4 because their set 0 remains dedicated
     // to simulation instances and material resources.
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[0].descriptorCount = 1;
@@ -3763,6 +3626,7 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[7] = {7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

@@ -1,41 +1,41 @@
 // ============================================================================
 // shadow_vertex_builtins.glsl — Shadow pass vertex shader declarations
 //
-// Uses the shadow UBO (set 0 binding 0) with light view/proj instead of
-// the camera UBO + InfGlobals.  Push constants and vertex attributes
-// are identical to the forward pass so vertex() functions work unchanged.
-// ============================================================================
-
-layout(std140, binding = 0) uniform ShadowUBO {
+// Shadow uses the canonical per-view camera buffer and instance stream.
+// Only light parameters are specific to shadow projection.
+layout(std140, set = 1, binding = 5) uniform ShadowCamera {
     mat4 _unused_model;
     mat4 view;
     mat4 proj;
-    vec4 light_vector; // xyz = toward-light direction or local-light position, w = position flag
-    vec4 bias;         // xy = depth/normal bias in texels, z = world texel size, w = far plane
+    mat4 previousViewProj;
+    mat4 inverseViewProj;
+    vec4 projectionParams;
+    vec4 zBufferParams;
 } shadowUBO;
+
+layout(std140, set = 1, binding = 7) uniform ShadowParameters {
+    vec4 light_vector;
+    vec4 bias;
+} shadowParams;
 
 layout(push_constant) uniform PushConstants {
     mat4 model;
     mat4 normalMat;
 } pc;
 
-// Instance buffer — per-object model matrices for GPU instancing (set 1, binding 1)
-layout(std430, set = 1, binding = 1) readonly buffer InstanceBuffer {
+layout(std430, set = 2, binding = 1) readonly buffer InstanceBuffer {
     mat4 instanceModels[];
 };
-
 struct SkinInstanceData {
     uint boneOffset;
     uint boneCount;
     uint flags;
     uint previousBoneOffset;
 };
-
-layout(std430, set = 1, binding = 2) readonly buffer SkinInstanceBuffer {
+layout(std430, set = 2, binding = 2) readonly buffer SkinInstanceBuffer {
     SkinInstanceData skinInstances[];
 };
-
-layout(std430, set = 1, binding = 3) readonly buffer SkinBonePaletteBuffer {
+layout(std430, set = 2, binding = 3) readonly buffer SkinBonePaletteBuffer {
     mat4 skinBones[];
 };
 

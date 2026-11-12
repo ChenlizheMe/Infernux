@@ -293,10 +293,13 @@ ShaderProgramPublication VkShaderCache::MaterializeProgramVariant(const ShaderSt
         return nullptr;
 
     const ShaderProgramVariantKey key{artifact->second->key, target};
-    ShaderProgramPublication program = m_programCache.GetOrCreateProgram(
-        key, variant->vertexSpirv, variant->fragmentSpirv,
-        {artifact->second->domain, variant->vertexEntryPoint, variant->fragmentEntryPoint, variant->vertexTarget.get(),
-         variant->fragmentTarget.get(), &artifact->second->properties});
+    ShaderProgramMetadata metadata{artifact->second->domain,      variant->vertexEntryPoint,
+                                   variant->fragmentEntryPoint,   variant->vertexTarget.get(),
+                                   variant->fragmentTarget.get(), &artifact->second->properties};
+    if (target != ShaderCompileTarget::Forward && artifact->second->domain == ShaderProgramDomain::Mesh)
+        metadata.materialLayoutOwner = MaterializeProgramVariant(stages, ShaderCompileTarget::Forward);
+    ShaderProgramPublication program =
+        m_programCache.GetOrCreateProgram(key, variant->vertexSpirv, variant->fragmentSpirv, metadata);
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to lazily materialize shader program variant '", key.ToString(), "'");
         return nullptr;

@@ -55,7 +55,7 @@ def main() -> int:
                 try:
                     frame += 1
                     if frame == 2:
-                        initial_descriptors = engine.gpu_residency_snapshot["shadow_material_descriptor_set_count"]
+                        initial_descriptors = engine.gpu_residency_snapshot["material_descriptor_set_count"]
                         fragment = assets / "FirstShadow.frag"
                         fragment.write_text('''#version 450
 ShaderInfo {
@@ -94,7 +94,7 @@ void surface(out SurfaceData s) {
                         frame_snapshot = engine.renderer_frame_snapshot
                         assert frame_snapshot["game_render_graph_current_executed"], frame_snapshot
                         assert frame_snapshot["game_draw_call_count"] > 0, frame_snapshot
-                        descriptors = engine.gpu_residency_snapshot["shadow_material_descriptor_set_count"]
+                        descriptors = engine.gpu_residency_snapshot["material_descriptor_set_count"]
                         assert descriptors > initial_descriptors, (initial_descriptors, descriptors)
                         completed = True
                         print("First material draw: linked shadow resources published without a missing-binding frame")

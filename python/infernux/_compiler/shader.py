@@ -241,6 +241,24 @@ InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstance
 
 
 _SURFACE_PASSES = """
+[[vk::binding(7, 1)]] ConstantBuffer<InxShadowParameters> inx_shadow_parameters;
+[shader("vertex")]
+InxMeshInput vertex_shadow(InxVertexInput input, uint instance : SV_VulkanInstanceID)
+{
+    InxMeshInput result = inx_mesh_vertex(input, instance);
+    if (input.bone_indices.w == 0x4C494E45u && input.bone_weights.z > 0.0)
+    {
+        float4 light = inx_shadow_parameters.light_vector;
+        float3 toward_light = light.w < 0.5 ? light.xyz : light.xyz - result.position_ws;
+        result.position_ws -= normalize(toward_light) * (2.0 * abs(input.bone_weights.x) * input.bone_weights.z);
+        result.position = mul(inx_view.projection, mul(inx_view.view, float4(result.position_ws, 1.0)));
+        result.position.y = -result.position.y;
+    }
+    if (inx_shadow_parameters.light_vector.w < 0.5)
+        result.position.z = min(result.position.z, result.position.w);
+    result.view_depth = 0.0;
+    return result;
+}
 [shader("vertex")]
 InxMeshInput vertex_motion(InxVertexInput input, uint instance : SV_VulkanInstanceID)
 {

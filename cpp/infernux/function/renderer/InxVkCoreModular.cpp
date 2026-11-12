@@ -1187,7 +1187,6 @@ void InxVkCoreModular::CollectRetiredGpuResources()
         if (m_materialPipelineManagerInitialized) {
             (void)m_materialPipelineManager.GetDescriptorManager().CollectExpiredRendererDescriptorSets();
         }
-        CollectUnusedShadowMaterialBindings();
         CollectUnusedMaterialTextureOwners();
     }
     if (m_materialPipelineManagerInitialized)

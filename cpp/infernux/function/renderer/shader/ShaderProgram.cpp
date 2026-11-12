@@ -79,7 +79,9 @@ ShaderProgram::ShaderProgram(ShaderProgram &&other) noexcept
       m_fragmentEntryPoint(std::move(other.m_fragmentEntryPoint)), m_domain(other.m_domain),
       m_vertReflection(std::move(other.m_vertReflection)), m_fragReflection(std::move(other.m_fragReflection)),
       m_descriptorBindings(std::move(other.m_descriptorBindings)),
-      m_descriptorSetLayouts(std::move(other.m_descriptorSetLayouts)), m_pipelineLayout(other.m_pipelineLayout),
+      m_descriptorSetLayouts(std::move(other.m_descriptorSetLayouts)),
+      m_materialLayoutOwner(std::move(other.m_materialLayoutOwner)),
+      m_borrowedMaterialLayout(other.m_borrowedMaterialLayout), m_pipelineLayout(other.m_pipelineLayout),
       m_materialUBOLayout(std::move(other.m_materialUBOLayout)), m_hasMaterialUBO(other.m_hasMaterialUBO),
       m_vertexMaterialUBOLayout(std::move(other.m_vertexMaterialUBOLayout)),
       m_hasVertexMaterialUBO(other.m_hasVertexMaterialUBO),
@@ -91,6 +93,7 @@ ShaderProgram::ShaderProgram(ShaderProgram &&other) noexcept
     other.m_vertModule = VK_NULL_HANDLE;
     other.m_fragModule = VK_NULL_HANDLE;
     other.m_pipelineLayout = VK_NULL_HANDLE;
+    other.m_borrowedMaterialLayout = VK_NULL_HANDLE;
     other.m_hasMaterialUBO = false;
     other.m_hasVertexMaterialUBO = false;
     other.m_hasBindlessTextureIndexLayout = false;
@@ -115,6 +118,8 @@ ShaderProgram &ShaderProgram::operator=(ShaderProgram &&other) noexcept
         m_fragReflection = std::move(other.m_fragReflection);
         m_descriptorBindings = std::move(other.m_descriptorBindings);
         m_descriptorSetLayouts = std::move(other.m_descriptorSetLayouts);
+        m_materialLayoutOwner = std::move(other.m_materialLayoutOwner);
+        m_borrowedMaterialLayout = other.m_borrowedMaterialLayout;
         m_pipelineLayout = other.m_pipelineLayout;
         m_materialUBOLayout = std::move(other.m_materialUBOLayout);
         m_hasMaterialUBO = other.m_hasMaterialUBO;
@@ -128,6 +133,7 @@ ShaderProgram &ShaderProgram::operator=(ShaderProgram &&other) noexcept
         other.m_vertModule = VK_NULL_HANDLE;
         other.m_fragModule = VK_NULL_HANDLE;
         other.m_pipelineLayout = VK_NULL_HANDLE;
+        other.m_borrowedMaterialLayout = VK_NULL_HANDLE;
         other.m_hasMaterialUBO = false;
         other.m_hasVertexMaterialUBO = false;
         other.m_hasBindlessTextureIndexLayout = false;
@@ -146,6 +152,7 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     m_vertexEntryPoint = metadata.vertexEntryPoint;
     m_fragmentEntryPoint = metadata.fragmentEntryPoint;
     m_domain = metadata.domain;
+    m_materialLayoutOwner = metadata.materialLayoutOwner;
 
     // Create shader modules
     m_vertModule = CreateShaderModule(vertSpirv);
@@ -251,11 +258,13 @@ void ShaderProgram::Destroy()
         // Skip the shared globals layout — it is owned by VkCore and
         // destroyed in DestroyGlobalsDescriptorResources().
         if (layout != VK_NULL_HANDLE && layout != s_globalsDescSetLayout && layout != s_perViewDescSetLayout &&
-            layout != s_bindlessTextureDescSetLayout) {
+            layout != s_bindlessTextureDescSetLayout && layout != m_borrowedMaterialLayout) {
             vkDestroyDescriptorSetLayout(m_device, layout, nullptr);
         }
     }
     m_descriptorSetLayouts.clear();
+    m_materialLayoutOwner.reset();
+    m_borrowedMaterialLayout = VK_NULL_HANDLE;
 
     if (m_fragModule != VK_NULL_HANDLE) {
         vkDestroyShaderModule(m_device, m_fragModule, nullptr);
@@ -443,10 +452,7 @@ void ShaderProgram::ExtractMaterialUBOLayout()
     m_hasVertexMaterialUBO = false;
     m_hasBindlessTextureIndexLayout = false;
 
-    const uint32_t materialSet =
-        m_domain == ShaderProgramDomain::ParticleSprite || m_variantKey.target == ShaderCompileTarget::Shadow
-            ? 2u
-            : MaterialDescriptorSet;
+    const uint32_t materialSet = m_domain == ShaderProgramDomain::ParticleSprite ? 2u : MaterialDescriptorSet;
 
     const auto extract = [](const UniformBufferInfo &ubo) {
         return MaterialUBOLayout{ubo.binding, ubo.size, ubo.members};
@@ -494,6 +500,10 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 {
     // Group bindings by descriptor set
     std::unordered_map<uint32_t, std::vector<VkDescriptorSetLayoutBinding>> setBindings;
+    if (m_materialLayoutOwner) {
+        m_borrowedMaterialLayout = m_materialLayoutOwner->GetDescriptorSetLayout(MaterialDescriptorSet);
+        m_descriptorSetLayouts[MaterialDescriptorSet] = m_borrowedMaterialLayout;
+    }
 
     for (const auto &merged : m_descriptorBindings) {
         VkDescriptorSetLayoutBinding binding{};
@@ -545,6 +555,8 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
     // per frame on the CPU before any submission and have no live-update concern.
     const bool enableUpdateAfterBind = IsUpdateAfterBindEnabled();
     for (auto &[setIndex, bindings] : setBindings) {
+        if (setIndex == MaterialDescriptorSet && m_materialLayoutOwner)
+            continue;
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -591,7 +603,7 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 
 bool ShaderProgram::CreatePipelineLayout()
 {
-    if (m_variantKey.target != ShaderCompileTarget::Shadow && s_perViewDescSetLayout != VK_NULL_HANDLE) {
+    if (s_perViewDescSetLayout != VK_NULL_HANDLE) {
         auto it = m_descriptorSetLayouts.find(ViewDescriptorSet);
         if (it != m_descriptorSetLayouts.end() && it->second != s_perViewDescSetLayout)
             vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
@@ -601,7 +613,7 @@ bool ShaderProgram::CreatePipelineLayout()
     // If a globals descriptor set layout was registered, ensure set 2 exists
     // in the layout map. Replace any reflection-created set 2 with the
     // canonical engine layout so descriptor set compatibility is guaranteed.
-    if (m_variantKey.target != ShaderCompileTarget::Shadow && s_globalsDescSetLayout != VK_NULL_HANDLE) {
+    if (s_globalsDescSetLayout != VK_NULL_HANDLE) {
         // If reflection already created a set 2, destroy it — we use the shared one
         auto it = m_descriptorSetLayouts.find(EngineDescriptorSet);
         if (it != m_descriptorSetLayouts.end() && it->second != s_globalsDescSetLayout) {

@@ -79,6 +79,11 @@ public struct InxCameraData
     public float4 projection_params;
     public float4 depth_params;
 };
+public struct InxShadowParameters
+{
+    public float4 light_vector;
+    public float4 bias;
+};
 public struct InxModelMatrix { public column_major float4x4 value; };
 public struct InxInstanceData
 {

@@ -494,7 +494,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
             // allocating here makes every transient/runtime material consume a
             // descriptor even when it never reaches a shadow pass, and repeated
             // 2D animation material refreshes should not touch shadow resources.
-            // The next real shadow draw resolves the shared pipeline and binding cache.
+            // The next shadow draw resolves its pipeline and shares the material publication.
             material->SetPassPipeline(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
             material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
         }
@@ -713,319 +713,11 @@ VkShaderModule InxVkCoreModular::GetShaderModule(const std::string &name, const 
 // Shared shadow material bindings and pipeline creation
 // ============================================================================
 
-InxVkCoreModular::ShadowDescriptorAllocation InxVkCoreModular::AllocateShadowMaterialDescriptorSet()
-{
-    if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE)
-        return {};
-    ShadowDescriptorAllocation allocation{};
-    allocation.descriptorLease = m_backend.Device().GetRhiDevice().GetDescriptorManager().Allocate(
-        m_shadowMaterialDescSetLayout, vk::DescriptorArena::Persistent);
-    allocation.descriptorSet = allocation.descriptorLease.set;
-    return allocation;
-}
-
-bool InxVkCoreModular::EnsureShadowMaterialDummyDescriptorSet()
-{
-    if (m_shadowMaterialDummyDescSet != VK_NULL_HANDLE)
-        return true;
-    if (m_shadowMaterialDescSetLayout == VK_NULL_HANDLE)
-        return false;
-    auto defaultSlot = m_textureCache.Find("white", m_ensureFrameCounter);
-    auto defaultTex = defaultSlot ? defaultSlot->Acquire() : nullptr;
-    if (!defaultTex)
-        return false;
-    auto &rhiDevice = m_backend.Device().GetRhiDevice();
-    const VkImageView defaultView = rhiDevice.Resolve(defaultTex->GetView());
-    const VkSampler defaultSampler = rhiDevice.Resolve(defaultTex->GetSampler());
-    if (defaultView == VK_NULL_HANDLE || defaultSampler == VK_NULL_HANDLE)
-        return false;
-    if (!m_materialUbo)
-        return false;
-    const ShadowDescriptorAllocation allocation = AllocateShadowMaterialDescriptorSet();
-    if (allocation.descriptorSet == VK_NULL_HANDLE)
-        return false;
-    const VkDescriptorSet set = allocation.descriptorSet;
-    std::vector<VkDescriptorImageInfo> imageInfos(kMaxShadowMaterialTextures);
-    std::vector<VkWriteDescriptorSet> writes;
-    writes.reserve(kMaxShadowMaterialTextures + 2);
-    for (uint32_t i = 0; i < kMaxShadowMaterialTextures; ++i) {
-        imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfos[i].imageView = defaultView;
-        imageInfos[i].sampler = defaultSampler;
-        VkWriteDescriptorSet w{};
-        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        w.dstSet = set;
-        w.dstBinding = i;
-        w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.pImageInfo = &imageInfos[i];
-        writes.push_back(w);
-    }
-    VkDescriptorBufferInfo fragBi{};
-    fragBi.buffer = m_materialUbo->GetBuffer();
-    fragBi.offset = 0;
-    fragBi.range = 16;
-    VkWriteDescriptorSet wf{};
-    wf.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wf.dstSet = set;
-    wf.dstBinding = kMaxShadowMaterialTextures;
-    wf.descriptorCount = 1;
-    wf.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    wf.pBufferInfo = &fragBi;
-    VkDescriptorBufferInfo vtxBi{};
-    vtxBi.buffer = m_materialUbo->GetBuffer();
-    vtxBi.offset = 0;
-    vtxBi.range = 16;
-    VkWriteDescriptorSet wv{};
-    wv.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wv.dstSet = set;
-    wv.dstBinding = 14;
-    wv.descriptorCount = 1;
-    wv.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    wv.pBufferInfo = &vtxBi;
-    writes.push_back(wf);
-    writes.push_back(wv);
-    vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-    m_shadowMaterialDummyDescSet = set;
-    m_shadowMaterialDummyLease = allocation.descriptorLease;
-    return true;
-}
-
-void InxVkCoreModular::RetireShadowMaterialBinding(ShadowMaterialBindingEntry entry)
-{
-    if (entry.descriptorSet == VK_NULL_HANDLE || entry.descriptorSet == m_shadowMaterialDummyDescSet ||
-        !entry.descriptorLease.IsValid()) {
-        return;
-    }
-
-    m_backend.Device().GetRhiDevice().GetDescriptorManager().Retire(entry.descriptorLease);
-    ++m_shadowMaterialBindingRetirements;
-    m_deletionQueue.Retire([keepAlive = std::move(entry.textureKeepAlive)]() mutable { keepAlive.clear(); });
-}
-
-void InxVkCoreModular::CollectUnusedShadowMaterialBindings()
-{
-    for (auto it = m_shadowMaterialBindingCache.begin(); it != m_shadowMaterialBindingCache.end();) {
-        if (!it->second.owner.expired()) {
-            ++it;
-            continue;
-        }
-        ShadowMaterialBindingEntry retired = std::move(it->second);
-        it = m_shadowMaterialBindingCache.erase(it);
-        RetireShadowMaterialBinding(std::move(retired));
-    }
-}
-
-VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_ptr<InxMaterial> &material,
-                                                              const MaterialDescriptorSet *forwardMaterialDesc,
-                                                              const ShaderProgram *forwardProgram,
-                                                              const ShaderProgram *shadowProgram)
-{
-    if (!material)
-        return VK_NULL_HANDLE;
-
-    const bool hasVertexMaterialUBO = shadowProgram ? shadowProgram->HasVertexMaterialUBO()
-                                                    : (forwardProgram && forwardProgram->HasVertexMaterialUBO());
-    const bool hasVertexMaterialTextures =
-        shadowProgram &&
-        std::any_of(shadowProgram->GetDescriptorBindings().begin(), shadowProgram->GetDescriptorBindings().end(),
-                    [](const MergedDescriptorBinding &binding) {
-                        return binding.set == 2 && binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER &&
-                               (binding.stageFlags & VK_SHADER_STAGE_VERTEX_BIT) != 0;
-                    });
-    // Even an opaque material must bind the reflected threshold uniform:
-    // the same compiled surface can enable alpha clipping at runtime.
-    const bool hasFragmentMaterialUBO = shadowProgram && shadowProgram->HasMaterialUBO();
-    const bool usesBindlessTextures = shadowProgram && shadowProgram->UsesBindlessTextureABI();
-    const bool needsDescriptor =
-        hasVertexMaterialUBO || hasVertexMaterialTextures || hasFragmentMaterialUBO || usesBindlessTextures;
-    const InxMaterial *identity = material.get();
-
-    const auto markBindlessShadowResourcesUsed = [&]() {
-        if (usesBindlessTextures) {
-            m_backend.Device().GetRhiDevice().MarkBindlessTexturesUsed(
-                forwardMaterialDesc->bindlessTextureIndices.data(), forwardMaterialDesc->bindlessTextureIndices.size());
-        }
-    };
-    auto existing = m_shadowMaterialBindingCache.find(identity);
-    // Forward resource replacements publish a new, never-reused descriptor lease.
-    // Numeric edits and texture residency changes use this same publication path.
-    if (existing != m_shadowMaterialBindingCache.end() && forwardMaterialDesc &&
-        existing->second.forwardDescriptorId == forwardMaterialDesc->descriptorLease.id &&
-        existing->second.program.get() == shadowProgram) {
-        ++m_shadowMaterialBindingCacheHits;
-        markBindlessShadowResourcesUsed();
-        return existing->second.descriptorSet;
-    }
-
-    if (!needsDescriptor) {
-        if (existing != m_shadowMaterialBindingCache.end()) {
-            ShadowMaterialBindingEntry retired = std::move(existing->second);
-            m_shadowMaterialBindingCache.erase(existing);
-            RetireShadowMaterialBinding(std::move(retired));
-        }
-        return EnsureShadowMaterialDummyDescriptorSet() ? m_shadowMaterialDummyDescSet : VK_NULL_HANDLE;
-    }
-
-    if (!forwardMaterialDesc || !forwardMaterialDesc->isValid) {
-        INXLOG_WARN("EnsureShadowMaterialBinding: forward material resources are unavailable for '",
-                    material->GetName(), "'");
-        return VK_NULL_HANDLE;
-    }
-    // Forward merges an identical vertex/fragment MaterialProperties layout
-    // into its canonical material UBO. Shadow remaps those stages to separate
-    // bindings, but both bindings still consume that same authored buffer.
-    const MaterialUBO *vertexUbo = hasVertexMaterialUBO ? (forwardProgram && forwardProgram->HasVertexMaterialUBO()
-                                                               ? forwardMaterialDesc->vertexMaterialUBO.get()
-                                                               : forwardMaterialDesc->materialUBO.get())
-                                                        : nullptr;
-    if (hasVertexMaterialUBO && (!vertexUbo || !vertexUbo->IsValid())) {
-        INXLOG_WARN("EnsureShadowMaterialBinding: missing vertex material UBO for '", material->GetName(), "'");
-        return VK_NULL_HANDLE;
-    }
-    if (hasFragmentMaterialUBO && (!forwardMaterialDesc->materialUBO || !forwardMaterialDesc->materialUBO->IsValid())) {
-        INXLOG_WARN("EnsureShadowMaterialBinding: missing alpha-clip material UBO for '", material->GetName(), "'");
-        return VK_NULL_HANDLE;
-    }
-    if (usesBindlessTextures &&
-        (!forwardMaterialDesc->usesBindlessTextureABI || !forwardMaterialDesc->textureIndexUBO ||
-         !forwardMaterialDesc->textureIndexUBO->IsValid())) {
-        INXLOG_WARN("EnsureShadowMaterialBinding: missing bindless texture indices for '", material->GetName(), "'");
-        return VK_NULL_HANDLE;
-    }
-
-    auto defaultSlot = m_textureCache.Find("white", m_ensureFrameCounter);
-    auto defaultTex = defaultSlot ? defaultSlot->Acquire() : nullptr;
-    if (!defaultTex || !m_materialUbo) {
-        return VK_NULL_HANDLE;
-    }
-    auto &rhiDevice = m_backend.Device().GetRhiDevice();
-    const VkImageView defaultView = rhiDevice.Resolve(defaultTex->GetView());
-    const VkSampler defaultSampler = rhiDevice.Resolve(defaultTex->GetSampler());
-    if (defaultView == VK_NULL_HANDLE || defaultSampler == VK_NULL_HANDLE)
-        return VK_NULL_HANDLE;
-
-    std::vector<std::pair<uint32_t, MaterialDescriptorSet::TextureBinding>> sortedTextures;
-    if (hasFragmentMaterialUBO || hasVertexMaterialTextures) {
-        sortedTextures.assign(forwardMaterialDesc->textureBindings.begin(), forwardMaterialDesc->textureBindings.end());
-        std::sort(sortedTextures.begin(), sortedTextures.end(),
-                  [](const auto &left, const auto &right) { return left.first < right.first; });
-        if (sortedTextures.size() > kMaxShadowMaterialTextures) {
-            INXLOG_ERROR("EnsureShadowMaterialBinding: material '", material->GetName(), "' requires ",
-                         sortedTextures.size(), " shadow texture slots, maximum is ", kMaxShadowMaterialTextures);
-            return VK_NULL_HANDLE;
-        }
-    }
-
-    ++m_shadowMaterialBindingCacheMisses;
-    const ShadowDescriptorAllocation allocation = AllocateShadowMaterialDescriptorSet();
-    if (allocation.descriptorSet == VK_NULL_HANDLE) {
-        INXLOG_WARN("EnsureShadowMaterialBinding: descriptor allocation failed for '", material->GetName(), "'");
-        return VK_NULL_HANDLE;
-    }
-
-    std::vector<VkDescriptorImageInfo> imageInfos(kMaxShadowMaterialTextures);
-    for (auto &imageInfo : imageInfos) {
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfo.imageView = defaultView;
-        imageInfo.sampler = defaultSampler;
-    }
-    for (size_t index = 0; index < sortedTextures.size(); ++index) {
-        const auto &texture = sortedTextures[index].second;
-        if (texture.imageView != VK_NULL_HANDLE && texture.sampler != VK_NULL_HANDLE) {
-            imageInfos[index].imageView = texture.imageView;
-            imageInfos[index].sampler = texture.sampler;
-        }
-    }
-
-    const MaterialUBO *fragmentUbo = hasFragmentMaterialUBO ? forwardMaterialDesc->materialUBO.get() : nullptr;
-    VkDescriptorBufferInfo fragmentBuffer{};
-    fragmentBuffer.buffer =
-        fragmentUbo ? fragmentUbo->GetBuffer() : (vertexUbo ? vertexUbo->GetBuffer() : m_materialUbo->GetBuffer());
-    fragmentBuffer.offset = 0;
-    fragmentBuffer.range = fragmentUbo ? fragmentUbo->GetSize() : (vertexUbo ? vertexUbo->GetSize() : 16);
-    VkDescriptorBufferInfo vertexBuffer{};
-    vertexBuffer.buffer = vertexUbo ? vertexUbo->GetBuffer() : fragmentBuffer.buffer;
-    vertexBuffer.offset = 0;
-    vertexBuffer.range = vertexUbo ? vertexUbo->GetSize() : fragmentBuffer.range;
-
-    std::vector<VkWriteDescriptorSet> writes;
-    writes.reserve(kMaxShadowMaterialTextures + 3);
-    for (uint32_t index = 0; index < kMaxShadowMaterialTextures; ++index) {
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = allocation.descriptorSet;
-        write.dstBinding = index;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imageInfos[index];
-        writes.push_back(write);
-    }
-    VkWriteDescriptorSet fragmentWrite{};
-    fragmentWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    fragmentWrite.dstSet = allocation.descriptorSet;
-    fragmentWrite.dstBinding = kMaxShadowMaterialTextures;
-    fragmentWrite.descriptorCount = 1;
-    fragmentWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    fragmentWrite.pBufferInfo = &fragmentBuffer;
-    writes.push_back(fragmentWrite);
-    VkWriteDescriptorSet vertexWrite{};
-    vertexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    vertexWrite.dstSet = allocation.descriptorSet;
-    vertexWrite.dstBinding = 14;
-    vertexWrite.descriptorCount = 1;
-    vertexWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    vertexWrite.pBufferInfo = &vertexBuffer;
-    writes.push_back(vertexWrite);
-    VkDescriptorBufferInfo textureIndexBuffer{};
-    VkWriteDescriptorSet textureIndexWrite{};
-    if (usesBindlessTextures) {
-        textureIndexBuffer.buffer = forwardMaterialDesc->textureIndexUBO->GetBuffer();
-        textureIndexBuffer.offset = 0;
-        textureIndexBuffer.range = forwardMaterialDesc->textureIndexUBO->GetSize();
-        textureIndexWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        textureIndexWrite.dstSet = allocation.descriptorSet;
-        textureIndexWrite.dstBinding = ShaderProgram::MaterialTextureIndexBinding;
-        textureIndexWrite.descriptorCount = 1;
-        textureIndexWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        textureIndexWrite.pBufferInfo = &textureIndexBuffer;
-        writes.push_back(textureIndexWrite);
-    }
-    vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-
-    auto uploadSources = forwardMaterialDesc->GetTextureUploadSources();
-    uploadSources.Add(defaultTex->GetUploadSubmission());
-    rhiDevice.GetDescriptorManager().SetUploadSources(allocation.descriptorLease, uploadSources);
-    markBindlessShadowResourcesUsed();
-
-    ShadowMaterialBindingEntry replacement{};
-    replacement.owner = material;
-    replacement.program = material->GetPassShaderProgramPublication(ShaderCompileTarget::Shadow);
-    replacement.forwardDescriptorId = forwardMaterialDesc->descriptorLease.id;
-    replacement.descriptorSet = allocation.descriptorSet;
-    replacement.descriptorLease = allocation.descriptorLease;
-    replacement.textureKeepAlive.push_back(defaultTex);
-    for (const auto &[binding, texture] : sortedTextures) {
-        (void)binding;
-        if (texture.gpuView)
-            replacement.textureKeepAlive.push_back(texture.gpuView);
-    }
-
-    if (existing != m_shadowMaterialBindingCache.end()) {
-        ShadowMaterialBindingEntry retired = std::move(existing->second);
-        existing->second = std::move(replacement);
-        RetireShadowMaterialBinding(std::move(retired));
-    } else {
-        m_shadowMaterialBindingCache.emplace(identity, std::move(replacement));
-    }
-    return allocation.descriptorSet;
-}
-
 VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
                                                                VkFormat depthFormat)
 {
     // Shared shadow resources must be ready
-    if (m_shadowPipelineLayout == VK_NULL_HANDLE || depthFormat == VK_FORMAT_UNDEFINED)
+    if (!m_shadowPipelineReady || depthFormat == VK_FORMAT_UNDEFINED)
         return VK_NULL_HANDLE;
 
     if (!material)
@@ -1050,10 +742,13 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
         material->SetPassShaderProgram(ShaderCompileTarget::Shadow, std::move(publication));
     }
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData->materialDescSet;
-    const ShaderProgram *forwardProgram = forwardRenderData->shaderProgram.get();
     const auto &linkedShadowPublication = material->GetPassShaderProgramPublication(ShaderCompileTarget::Shadow);
     const ShaderProgram *linkedShadowProgram = linkedShadowPublication.get();
-    material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
+    const VkPipelineLayout pipelineLayout = linkedShadowProgram->GetPipelineLayout();
+    material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, forwardMaterialDesc->descriptorSet);
+    if (linkedShadowProgram->UsesBindlessTextureABI())
+        m_backend.Device().GetRhiDevice().MarkBindlessTexturesUsed(forwardMaterialDesc->bindlessTextureIndices.data(),
+                                                                   forwardMaterialDesc->bindlessTextureIndices.size());
 
     const VkShaderModule vertModule = linkedShadowProgram->GetVertexModule();
     const VkShaderModule fragModule = linkedShadowProgram->GetFragmentModule();
@@ -1068,12 +763,14 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
-        material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
-        return EnsureShadowMaterialBinding(material, forwardMaterialDesc, forwardProgram, linkedShadowProgram);
+        material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, pipelineLayout);
+        return forwardMaterialDesc->descriptorSet;
     }
 
     // Shader stages
-    auto shaderStages = vkrender::MakeVertFragStages(vertModule, fragModule);
+    auto shaderStages =
+        vkrender::MakeVertFragStages(vertModule, fragModule, linkedShadowProgram->GetVertexEntryPoint().c_str(),
+                                     linkedShadowProgram->GetFragmentEntryPoint().c_str());
 
     // Vertex input — only attributes consumed by the shadow vertex shader (full mesh buffer still bound).
     auto bindingDesc = vk::GetVertexBindingDescription();
@@ -1137,7 +834,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlend;
     pipelineInfo.pDynamicState = &dynVpScissor.dynamicState;
-    pipelineInfo.layout = m_shadowPipelineLayout;
+    pipelineInfo.layout = pipelineLayout;
     std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
     VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
     rhi::GraphicsRenderingSignature signature;
@@ -1163,8 +860,8 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
 
     m_shadowPipelineCache[shadowShaderKey] = shadowPipeline;
     material->SetPassPipeline(ShaderCompileTarget::Shadow, shadowPipeline);
-    material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
-    return EnsureShadowMaterialBinding(material, forwardMaterialDesc, forwardProgram, linkedShadowProgram);
+    material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, pipelineLayout);
+    return forwardMaterialDesc->descriptorSet;
 }
 
 // ============================================================================

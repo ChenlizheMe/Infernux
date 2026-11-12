@@ -420,10 +420,10 @@ void surface(out SurfaceData s)
     assert(shadowCompilation->generatedVertexSource.find("layout(location = 8) smooth out vec2 _inx_v_waveUV;") !=
            std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find(
-               "layout(set = 2, binding = 0) uniform sampler2D displacement;") != std::string::npos);
-    assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 1") != std::string::npos);
-    assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 2") != std::string::npos);
-    assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 3") != std::string::npos);
+               "layout(set = 0, binding = 2) uniform sampler2D displacement;") != std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("set = 2, binding = 1") != std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("set = 2, binding = 2") != std::string::npos);
+    assert(shadowCompilation->generatedVertexSource.find("set = 2, binding = 3") != std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find("InstanceAuxBuffer") == std::string::npos);
     assert(shadowCompilation->generatedVertexSource.find("set = 1, binding = 4") == std::string::npos);
     assert(shadowCompilation->generatedFragmentSource.find("layout(location = 8) smooth in vec2 _inx_v_waveUV;") !=
@@ -905,7 +905,7 @@ void surface(out SurfaceData surface) {
                      [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::Shadow; });
     assert(boundedCutoutShadow != boundedCutoutCompilation.compiledVariants.end());
     assert(!boundedCutoutShadow->usesBindlessTextureABI);
-    assert(boundedCutoutShadow->generatedFragmentSource.find("set = 2, binding = 0") != std::string::npos);
+    assert(boundedCutoutShadow->generatedFragmentSource.find("set = 0, binding = 2") != std::string::npos);
     assert(boundedCutoutShadow->generatedFragmentSource.find("set = 3, binding = 0") == std::string::npos);
 
     // Material-side clipping must work without a shader AlphaClip annotation,
@@ -954,14 +954,14 @@ void surface(out SurfaceData s) {
                 assert(reflection.Reflect(variant->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
                 assert(std::any_of(reflection.GetUniformBuffers().begin(), reflection.GetUniformBuffers().end(),
                                    [](const auto &buffer) {
-                                       return buffer.name == "MaterialProperties" && buffer.set == 2 &&
-                                              buffer.binding == 8;
+                                       return buffer.name == "MaterialProperties" && buffer.set == 0 &&
+                                              buffer.binding == 14;
                                    }));
                 if (!bindless)
                     assert(std::any_of(reflection.GetSampledImages().begin(), reflection.GetSampledImages().end(),
                                        [](const auto &texture) {
-                                           return texture.name == "opacityTexture" && texture.set == 2 &&
-                                                  texture.binding == 1;
+                                           return texture.name == "opacityTexture" && texture.set == 0 &&
+                                                  texture.binding == 3;
                                        }));
             }
         }
@@ -1063,7 +1063,7 @@ void surface(out SurfaceData s) {
     assert(bindlessCutoutShadow != bindlessCutoutCompilation.compiledVariants.end());
     assert(bindlessCutoutShadow->usesBindlessTextureABI);
     assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 3, binding = 0") != std::string::npos);
-    assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 2, binding = 15") != std::string::npos);
+    assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 0, binding = 15") != std::string::npos);
     assert(bindlessCutoutShadow->generatedFragmentSource.find("surface(s);") != std::string::npos);
     // Authored surface discard still runs when the optional uniform alpha test
     // is disabled. An early return here would restore the Shadow/Depth mismatch.
@@ -1076,7 +1076,7 @@ void surface(out SurfaceData s) {
                        [](const auto &image) { return image.set == 3 && image.binding == 0; }));
     assert(std::any_of(bindlessShadowReflection.GetUniformBuffers().begin(),
                        bindlessShadowReflection.GetUniformBuffers().end(),
-                       [](const auto &buffer) { return buffer.set == 2 && buffer.binding == 15; }));
+                       [](const auto &buffer) { return buffer.set == 0 && buffer.binding == 15; }));
     infernux::InxShaderLoader::SetBindlessTextureABIEnabled(false);
 
     const auto builtinToonCompilation =

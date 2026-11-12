@@ -66,9 +66,9 @@ ${VERTEX_CALL}
         }
         worldPos = vec4(centerWorld.xyz + side * inBoneWeights.x, 1.0);
         if (inBoneWeights.z > 0.0) {
-            vec3 towardLightCandidate = shadowUBO.light_vector.w < 0.5
-                ? shadowUBO.light_vector.xyz
-                : shadowUBO.light_vector.xyz - worldPos.xyz;
+            vec3 towardLightCandidate = shadowParams.light_vector.w < 0.5
+                ? shadowParams.light_vector.xyz
+                : shadowParams.light_vector.xyz - worldPos.xyz;
             if (dot(towardLightCandidate, towardLightCandidate) > 1.0e-10) {
                 // Unity defines LineRenderer.shadowBias as a proportion of
                 // line width. Move only line casters away from the light;
@@ -113,7 +113,7 @@ ${VERTEX_CALL}
     v_ViewDepth = 0.0;
     v_LineColor = inxLineVertex ? vec4(v.color, inBoneWeights.y) : vec4(1.0);
     gl_Position = shadowUBO.proj * shadowUBO.view * worldPos;
-    if (shadowUBO.light_vector.w < 0.5) {
+    if (shadowParams.light_vector.w < 0.5) {
         // Directional shadow pancaking preserves casters that cross the light
         // near plane while maximizing the usable depth range of each cascade.
         gl_Position.z = min(gl_Position.z, gl_Position.w);

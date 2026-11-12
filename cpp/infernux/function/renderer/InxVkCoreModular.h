@@ -576,15 +576,8 @@ class InxVkCoreModular
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetGpuResidency() const;
     [[nodiscard]] MaterialGpuResidencySnapshot GetMaterialGpuResidency() const
     {
-        MaterialGpuResidencySnapshot snapshot = m_materialPipelineManagerInitialized
-                                                    ? m_materialPipelineManager.GetResidencySnapshot()
+        return m_materialPipelineManagerInitialized ? m_materialPipelineManager.GetResidencySnapshot()
                                                     : MaterialGpuResidencySnapshot{};
-        snapshot.shadowDescriptorSetCount = m_shadowMaterialBindingCache.size();
-        snapshot.shadowDescriptorPoolCount = 0; // Shadow no longer owns private pool pages.
-        snapshot.shadowBindingCacheHits = m_shadowMaterialBindingCacheHits;
-        snapshot.shadowBindingCacheMisses = m_shadowMaterialBindingCacheMisses;
-        snapshot.shadowBindingRetirements = m_shadowMaterialBindingRetirements;
-        return snapshot;
     }
     [[nodiscard]] size_t GetRuntimeMeshGpuEntryCount() const;
     [[nodiscard]] uint64_t GetRuntimeMeshGpuResidentBytes() const;
@@ -899,13 +892,9 @@ class InxVkCoreModular
     /// @brief Release GPU preview resources while the ImGui Vulkan backend is still alive.
     void ReleaseGpuPreviews();
 
-    /// @brief Resolve the shared shadow pipeline and cached material binding.
-    /// @return The material descriptor set used at set 2, or VK_NULL_HANDLE on failure.
+    /// @brief Resolve the shadow pipeline and the published Material set 0.
+    /// @return The shared material descriptor, or VK_NULL_HANDLE while unavailable.
     VkDescriptorSet EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material, VkFormat depthFormat);
-
-    /// Shadow pipeline layout always includes set 2; bind this when a material
-    /// has no per-material shadow descriptors (e.g. alpha clip off, no vtx UBO).
-    bool EnsureShadowMaterialDummyDescriptorSet();
 
     /// @brief Initialize material system (default material, pipelines)
     void InitializeMaterialSystem();
@@ -1705,6 +1694,7 @@ class InxVkCoreModular
         VkBuffer vertexBuf = VK_NULL_HANDLE;
         VkBuffer indexBuf = VK_NULL_HANDLE;
         VkPipeline shadowPipeline;
+        const ShaderProgram *program = nullptr;
         VkDescriptorSet shadowMaterialDescSet = VK_NULL_HANDLE;
         AABB worldBounds; // Cached for per-cascade frustum culling
         MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
@@ -1735,6 +1725,7 @@ class InxVkCoreModular
 
     struct ResolvedShadowMaterial
     {
+        const ShaderProgram *program = nullptr;
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
     };
@@ -1743,17 +1734,14 @@ class InxVkCoreModular
     // ========================================================================
     // Shadow Pipeline (lazy-initialized by DrawShadowCasters)
     // ========================================================================
-    VkPipelineLayout m_shadowPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_shadowDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_shadowGlobalsDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_shadowMaterialDescSetLayout = VK_NULL_HANDLE;
-    bool m_shadowUsesBindlessTextureTable = false;
+    VkDeviceSize m_shadowUniformParametersOffset = 0;
     struct ShadowCameraResources
     {
         struct StaticShadowDrawState
         {
             uint64_t objectId = 0;
             uint32_t layerMask = 0;
+            bool receivesShadows = true;
             glm::mat4 worldMatrix{1.0f};
             AABB worldBounds;
             VkBuffer vertexBuffer = VK_NULL_HANDLE;
@@ -1802,9 +1790,11 @@ class InxVkCoreModular
             std::unique_ptr<vk::VkBufferHandle> instanceBuffer;
             std::unique_ptr<vk::VkBufferHandle> skinInstanceBuffer;
             std::unique_ptr<vk::VkBufferHandle> skinPaletteBuffer;
+            std::unique_ptr<vk::VkBufferHandle> auxiliaryBuffer;
             void *instanceMapped = nullptr;
             void *skinInstanceMapped = nullptr;
             void *skinPaletteMapped = nullptr;
+            void *auxiliaryMapped = nullptr;
             size_t instanceCapacity = 0;
             size_t skinPaletteCapacity = 0;
             uint32_t instanceWriteOffset = 0;
@@ -1850,29 +1840,6 @@ class InxVkCoreModular
     std::unordered_map<ShadowPipelineKey, VkPipeline, ShadowPipelineKeyHash> m_shadowPipelineCache;
     uint64_t m_shaderHotReloadRetirementCount = 0;
 
-    static constexpr uint32_t kMaxShadowMaterialTextures = 8;
-    struct ShadowMaterialBindingEntry
-    {
-        std::weak_ptr<InxMaterial> owner;
-        ShaderProgramPublication program;
-        uint64_t forwardDescriptorId = 0;
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        vk::DescriptorLease descriptorLease;
-        std::vector<std::shared_ptr<const rhi::TextureGpuView>> textureKeepAlive;
-    };
-
-    struct ShadowDescriptorAllocation
-    {
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        vk::DescriptorLease descriptorLease;
-    };
-
-    vk::DescriptorLease m_shadowMaterialDummyLease;
-    std::unordered_map<const InxMaterial *, ShadowMaterialBindingEntry> m_shadowMaterialBindingCache;
-    uint64_t m_shadowMaterialBindingCacheHits = 0;
-    uint64_t m_shadowMaterialBindingCacheMisses = 0;
-    uint64_t m_shadowMaterialBindingRetirements = 0;
-
     /// @brief Lazily create/recreate shadow pipeline resources.
     bool EnsureShadowPipeline(VkFormat depthFormat);
     bool EnsureShadowCameraResources(ShadowCameraResourceId resourceId);
@@ -1880,13 +1847,6 @@ class InxVkCoreModular
                                           size_t skinPaletteCount);
     void UpdateShadowCameraStreamDescriptor(ShadowCameraResources::StreamFrame &frame);
     void DestroyShadowCameraResources(ShadowCameraResources &resources) noexcept;
-    [[nodiscard]] ShadowDescriptorAllocation AllocateShadowMaterialDescriptorSet();
-    [[nodiscard]] VkDescriptorSet EnsureShadowMaterialBinding(const std::shared_ptr<InxMaterial> &material,
-                                                              const MaterialDescriptorSet *forwardMaterialDesc,
-                                                              const ShaderProgram *forwardProgram,
-                                                              const ShaderProgram *shadowProgram);
-    void RetireShadowMaterialBinding(ShadowMaterialBindingEntry entry);
-    void CollectUnusedShadowMaterialBindings();
     /// @brief Create shadow depth sampler for shadow map sampling.
     bool CreateShadowDepthSampler();
     /// @brief Cleanup shadow pipeline resources.
@@ -1896,8 +1856,6 @@ class InxVkCoreModular
     // Per-View Descriptor Set (set 1) — multi-camera shadow isolation
     // ========================================================================
     VkDescriptorSetLayout m_perViewDescSetLayout = VK_NULL_HANDLE;
-    /// Valid dummy bindings for layout set 2 (never freed per material).
-    VkDescriptorSet m_shadowMaterialDummyDescSet = VK_NULL_HANDLE;
 
     /// @brief Create per-view descriptor set layout and pool.
     bool CreatePerViewDescriptorResources();

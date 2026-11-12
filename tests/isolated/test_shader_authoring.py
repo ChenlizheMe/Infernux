@@ -97,6 +97,8 @@ class Painted(shader.surface):
     for target in definition.compile()["targets"]:
         entries = {entry["name"]: {tuple(binding) for binding in entry["bindings"]} for entry in target["entries"]}
         assert (2, 4) in entries["vertex_main"]  # Identity, layer and receive-shadow flags.
+        assert {(1, 5), (1, 7), (2, 4)} <= entries["vertex_shadow"]
+        assert (1, 7) not in entries["vertex_main"]
         assert {(1, 0), (1, 4), (1, 6)} <= entries["fragment_main"]
         assert not {(1, 1), (1, 2), (1, 3)} & entries["fragment_main"]
         assert {(1, 1), (1, 2), (1, 3)} <= entries["fragment_forward_plus"]
