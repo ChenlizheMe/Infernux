@@ -8,11 +8,6 @@
  * class with Raycast/RaycastAll methods.
  */
 
-// Jolt types are no longer exposed in collider headers — no Jolt include needed here
-// Except for gravity API which accesses PhysicsSystem directly.
-#include <Jolt/Jolt.h>
-#include <Jolt/Physics/PhysicsSystem.h>
-
 #include "BindingRegistration.h"
 #include "function/renderer/rhi/RhiComputeBuffer.h"
 #include "function/renderer/rhi/RhiComputeKernel.h"
@@ -36,9 +31,8 @@
 #include "function/scene/SwingTwistJoint.h"
 #include "function/scene/TagLayerManager.h"
 #include "function/scene/physics/HingeJointBatch.h"
-#include "function/scene/physics/PhysicsContactListener.h"
+#include "function/scene/physics/PhysicsContactTypes.h"
 #include "function/scene/physics/PhysicsWorld.h"
-#include <core/config/EngineConfig.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -1824,26 +1818,10 @@ void RegisterPhysicsBindings(py::module_ &m)
             "query_triggers"_a = true, "Cast a capsule and return closest RaycastHit or None.")
         // ---- Gravity ----
         .def_static(
-            "get_gravity",
-            []() -> glm::vec3 {
-                auto *sys = PhysicsWorld::Instance().GetJoltSystem();
-                if (!sys)
-                    return EngineConfig::Get().physicsGravity;
-                JPH::Vec3 g = sys->GetGravity();
-                return glm::vec3(g.GetX(), g.GetY(), g.GetZ());
-            },
-            "Get the global gravity vector.")
+            "get_gravity", [] { return PhysicsWorld::Instance().GetGravity(); }, "Get the global gravity vector.")
         .def_static(
-            "set_gravity",
-            [](const glm::vec3 &g) {
-                if (!std::isfinite(g.x) || !std::isfinite(g.y) || !std::isfinite(g.z))
-                    throw std::invalid_argument("gravity components must be finite");
-                EngineConfig::Get().physicsGravity = g;
-                auto *sys = PhysicsWorld::Instance().GetJoltSystem();
-                if (sys)
-                    sys->SetGravity(JPH::Vec3(g.x, g.y, g.z));
-            },
-            "gravity"_a, "Set the global gravity vector.")
+            "set_gravity", [](const glm::vec3 &gravity) { PhysicsWorld::Instance().SetGravity(gravity); }, "gravity"_a,
+            "Set the global gravity vector.")
         // ---- Ignore layer collision ----
         .def_static(
             "ignore_layer_collision",

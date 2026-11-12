@@ -257,6 +257,10 @@ class PhysicsWorld
         return m_initialized;
     }
 
+    /// Global gravity; authored configuration is available before initialization.
+    [[nodiscard]] glm::vec3 GetGravity() const;
+    void SetGravity(const glm::vec3 &gravity);
+
     /// Advance the simulation by one fixed step.
     void Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
 
@@ -685,12 +689,6 @@ class PhysicsWorld
     /// @brief Dispatch buffered contact events to Component callbacks.
     ///        Call once per fixed step, immediately after Step().
     [[nodiscard]] size_t DispatchContactEvents();
-
-    /// Get the Jolt PhysicsSystem (for advanced usage). May be nullptr.
-    JPH::PhysicsSystem *GetJoltSystem() const
-    {
-        return m_physicsSystem.get();
-    }
 
   private:
     friend class HingeJointBatch;

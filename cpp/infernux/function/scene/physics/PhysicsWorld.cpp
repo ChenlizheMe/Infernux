@@ -608,6 +608,23 @@ PhysicsWorld::~PhysicsWorld()
     Shutdown();
 }
 
+glm::vec3 PhysicsWorld::GetGravity() const
+{
+    if (!m_physicsSystem)
+        return EngineConfig::Get().physicsGravity;
+    const auto gravity = m_physicsSystem->GetGravity();
+    return glm::vec3(gravity.GetX(), gravity.GetY(), gravity.GetZ());
+}
+
+void PhysicsWorld::SetGravity(const glm::vec3 &gravity)
+{
+    if (!IsFinite(gravity))
+        throw std::invalid_argument("gravity components must be finite");
+    EngineConfig::Get().physicsGravity = gravity;
+    if (m_physicsSystem)
+        m_physicsSystem->SetGravity(JPH::Vec3(gravity.x, gravity.y, gravity.z));
+}
+
 // ============================================================================
 // Init / Shutdown
 // ============================================================================

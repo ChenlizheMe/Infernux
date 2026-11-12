@@ -1,7 +1,7 @@
 #include "PyComponentProxy.h"
 #include "Collider.h"
 #include "GameObject.h"
-#include "physics/PhysicsContactListener.h"
+#include "physics/PhysicsContactTypes.h"
 #include <algorithm>
 #include <bindings/python/JsonPyBridge.h>
 #include <core/log/InxLog.h>
