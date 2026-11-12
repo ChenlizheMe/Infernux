@@ -3740,9 +3740,9 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     // Canonical per-view ABI. Geometry uses binding 0 plus the tiled buffers;
     // particles also consume binding 4 because their set 0 remains dedicated
     // to simulation instances and material resources.
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
     bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     for (uint32_t binding = 1; binding <= 3; ++binding) {
@@ -3759,6 +3759,10 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[5].descriptorCount = 1;
     bindings[5].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[6].binding = 6;
+    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    bindings[6].descriptorCount = 1;
+    bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -3819,16 +3823,17 @@ void InxVkCoreModular::UpdatePerViewShadowMap(VkDescriptorSet perViewDescSet, Vk
     imageInfo.imageView = shadowView;
     imageInfo.sampler = shadowSampler;
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = perViewDescSet;
-    write.dstBinding = 0;
-    write.dstArrayElement = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &imageInfo;
-
-    vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    for (uint32_t index = 0; index < writes.size(); ++index) {
+        auto &write = writes[index];
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = perViewDescSet;
+        write.dstBinding = index == 0 ? 0 : 6;
+        write.descriptorCount = 1;
+        write.descriptorType = index == 0 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
+        write.pImageInfo = &imageInfo;
+    }
+    vkUpdateDescriptorSets(GetDevice(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 }
 
 void InxVkCoreModular::ClearPerViewShadowMap(VkDescriptorSet perViewDescSet)

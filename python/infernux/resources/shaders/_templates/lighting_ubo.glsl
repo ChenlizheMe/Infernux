@@ -71,4 +71,6 @@ layout(std140, set = 1, binding = 4) uniform LightingUBO {
 } lighting;
 
 // Shadow map sampler (per-view descriptor set 1)
-layout(set = 1, binding = 0) uniform sampler2D shadowMap;
+layout(set = 1, binding = 0) uniform texture2D inx_shadow_image;
+layout(set = 1, binding = 6) uniform sampler inx_shadow_sampler;
+#define shadowMap sampler2D(inx_shadow_image, inx_shadow_sampler)
