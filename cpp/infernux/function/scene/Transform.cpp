@@ -112,8 +112,8 @@ void Transform::EnsureCpuPhysicsPose() const
 bool Transform::HasSimulatedLocalPose() const
 {
     const auto *body = m_gameObject ? m_gameObject->GetComponent<Rigidbody>() : nullptr;
-    return SceneManager::Instance().IsPlaying() && body && body->IsEnabled() && !body->IsKinematic() &&
-           body->GetBodyId() != UINT32_MAX;
+    return body && body->IsEnabled() && !body->IsKinematic() && body->GetBodyId() != UINT32_MAX &&
+           SceneManager::Instance().IsPlaying();
 }
 
 void PhysicsWorld::EnsureCpuPhysicsPose(Transform &requested)
@@ -129,8 +129,7 @@ void PhysicsWorld::MaterializeCpuPoseForRelease(Transform &requested)
 void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
 {
     auto &transforms = TransformECSStore::Instance();
-    if (!world.IsInitialized() || !SceneManager::Instance().IsPlaying() ||
-        (!release && transforms.IsPhysicsPoseReadSuppressed()))
+    if (!world.IsInitialized() || (!release && transforms.IsPhysicsPoseReadSuppressed()))
         return;
 
     auto &physics = PhysicsECSStore::Instance();
@@ -145,6 +144,11 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
     auto *body = physics.GetActor(actorHandle).rigidbody;
     if (!body || object->IsDestroying() || physics.GetActor(actorHandle).bodyId == UINT32_MAX ||
         (!release && (!body->IsEnabled() || body->IsKinematic() || physics.GetActor(actorHandle).sceneSuspended)))
+        return;
+    // Ordinary and editor-only transforms have no simulated pose. Resolve that
+    // dependency before consulting lifecycle state: the editor camera itself is
+    // initialized while SceneManager's singleton is still being constructed.
+    if (!SceneManager::Instance().IsPlaying())
         return;
     const auto bodyHandle = body->GetECSHandle();
     const auto bodyId = physics.GetActor(actorHandle).bodyId;
