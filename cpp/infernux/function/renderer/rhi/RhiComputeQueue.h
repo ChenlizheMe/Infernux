@@ -81,6 +81,9 @@ class ComputeQueue
                                                                     const Admission &admit = {}) = 0;
     /// These accept this queue's tickets, including tickets from reused slots.
     virtual void Wait(SubmissionTicket ticket) = 0;
+    /// A bounded device wait. Timeout retains the submission and its owners;
+    /// the consumer accounts host wait time in its existing frame-work scope.
+    [[nodiscard]] virtual bool WaitFor(SubmissionTicket ticket, uint64_t timeoutNanoseconds) = 0;
     [[nodiscard]] virtual bool IsComplete(SubmissionTicket ticket) = 0;
     virtual void Collect() = 0;
     /// Explicit diagnostic boundary: drains this queue before changing query

@@ -100,6 +100,9 @@ class Infernux
     {
         return m_frameWork;
     }
+    /// Service a required pre-render consumer through this host's device and
+    /// opportunity. The source retains its queues, cursor and completion state.
+    [[nodiscard]] bool AdvanceRequiredWork(FrameWorkOwner::SourceId source);
     [[nodiscard]] uint64_t GetSubmittedRenderFrameCount() const noexcept
     {
         return m_submittedRenderFrames;

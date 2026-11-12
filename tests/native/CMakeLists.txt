@@ -52,6 +52,10 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_text_segments_tests PRIVATE InfernuxFoundation)
     add_test(NAME infernux.text_segments COMMAND infernux_text_segments_tests)
 
+    infernux_add_native_test(infernux_frame_work_owner_tests tests/native/FrameWorkOwnerTests.cpp)
+    target_link_libraries(infernux_frame_work_owner_tests PRIVATE InfernuxFoundation)
+    add_test(NAME infernux.frame_work_owner COMMAND infernux_frame_work_owner_tests)
+
     infernux_add_native_test(infernux_world_ui_occlusion_plan_tests
         tests/native/WorldUIOcclusionPlanTests.cpp
     )

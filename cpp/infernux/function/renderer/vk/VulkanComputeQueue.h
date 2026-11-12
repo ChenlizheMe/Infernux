@@ -30,6 +30,8 @@ class VulkanComputeQueue final : public rhi::ComputeQueue
     TrySubmit(const Recorder &record, const rhi::ComputeSubmissionResources &resources = {},
               const Admission &admit = {}) override;
     INFERNUX_VULKAN_BACKEND_API void Wait(rhi::SubmissionTicket ticket) override;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool WaitFor(rhi::SubmissionTicket ticket,
+                                                           uint64_t timeoutNanoseconds) override;
     INFERNUX_VULKAN_BACKEND_API bool IsComplete(rhi::SubmissionTicket ticket) override;
     INFERNUX_VULKAN_BACKEND_API void Collect() override;
     INFERNUX_VULKAN_BACKEND_API bool SetProfilingEnabled(bool enabled) override;

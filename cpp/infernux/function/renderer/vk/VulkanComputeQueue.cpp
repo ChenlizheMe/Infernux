@@ -165,16 +165,26 @@ uint32_t VulkanComputeQueue::Find(rhi::SubmissionTicket ticket) const
 
 void VulkanComputeQueue::Wait(rhi::SubmissionTicket ticket)
 {
+    if (!WaitFor(ticket, UINT64_MAX))
+        throw std::runtime_error("Compute submission wait timed out");
+}
+
+bool VulkanComputeQueue::WaitFor(rhi::SubmissionTicket ticket, uint64_t timeoutNanoseconds)
+{
     const auto index = Find(ticket);
     if (index == UINT32_MAX)
-        return;
+        return true;
     const auto begin = std::chrono::steady_clock::now();
-    if (vkWaitForFences(m_context->GetDevice(), 1, &m_slots[index].fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
-        throw std::runtime_error("Compute submission wait failed");
+    const auto status = vkWaitForFences(m_context->GetDevice(), 1, &m_slots[index].fence, VK_TRUE, timeoutNanoseconds);
     const auto end = std::chrono::steady_clock::now();
     RecordWait(std::chrono::duration<double, std::milli>(end - begin).count());
+    if (status == VK_TIMEOUT)
+        return false;
+    if (status != VK_SUCCESS)
+        throw std::runtime_error("Compute submission wait failed");
     Complete(index);
     Collect();
+    return true;
 }
 
 bool VulkanComputeQueue::IsComplete(rhi::SubmissionTicket ticket)

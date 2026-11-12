@@ -1100,6 +1100,14 @@ void Infernux::BeginRuntimeFrame(float deltaTime)
         callback();
 }
 
+bool Infernux::AdvanceRequiredWork(FrameWorkOwner::SourceId source)
+{
+    const bool pending = m_frameWork.AdvanceRequired(source, [this] { return BackgroundGpuAvailability(true); });
+    if (pending && m_renderer)
+        m_renderer->RequestFullSpeedFrame();
+    return pending;
+}
+
 FrameGpuAvailability Infernux::BackgroundGpuAvailability(bool foregroundReady)
 {
     if (m_exitRequested.load(std::memory_order_acquire))

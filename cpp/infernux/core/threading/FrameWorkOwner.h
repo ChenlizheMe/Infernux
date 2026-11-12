@@ -214,6 +214,10 @@ class FrameWorkOwner
     [[nodiscard]] std::shared_ptr<FrameCpuStorageClaim> SplitCpuStorage(FrameCpuStorageClaim &reserved, uint64_t bytes);
     INFERNUX_FOUNDATION_API uint64_t BeginOpportunity();
     INFERNUX_FOUNDATION_API bool AdvanceEarly();
+    /// Advance only the source required by a pre-render consumer. Repeat calls
+    /// share this opportunity's allowances; true means work remains pending.
+    INFERNUX_FOUNDATION_API bool AdvanceRequired(SourceId id,
+                                                 const std::function<FrameGpuAvailability()> &gpuAvailability);
     INFERNUX_FOUNDATION_API bool AdvanceLate(const std::function<FrameGpuAvailability()> &gpuAvailability);
     INFERNUX_FOUNDATION_API void EndOpportunity() noexcept;
     void Stop() noexcept
@@ -319,11 +323,14 @@ class FrameWorkOwner
     };
 
     void ObserveSources();
+    void ObserveSource(const std::shared_ptr<Source> &source);
     void RefreshSources();
     bool Drive(const std::function<FrameGpuAvailability()> &gpuAvailability = {});
     std::vector<Choice> DescribeSources();
-    std::optional<FrameWorkFacts> DescribeSource(const std::shared_ptr<Source> &source);
+    std::optional<FrameWorkFacts> DescribeSource(const std::shared_ptr<Source> &source, bool interactive);
+    bool AdvanceChoice(Choice &choice, bool gpu, bool interactive);
     bool Select(std::vector<Choice> &choices, bool gpu, bool interactive = false);
+    static bool HasPending(const FrameWorkFacts &facts);
     bool HasPending(const std::vector<Choice> &choices) const;
     bool FitCpuStorage(uint64_t bytes, bool reclaim) const;
     uint64_t RunningNanoseconds() const;

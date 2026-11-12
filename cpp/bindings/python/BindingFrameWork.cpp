@@ -135,6 +135,12 @@ void infernux::RegisterFrameWorkBindings(py::module_ &module)
         .def("begin_opportunity", &FrameWorkOwner::BeginOpportunity)
         .def("advance_early", &FrameWorkOwner::AdvanceEarly)
         .def(
+            "advance_required",
+            [](FrameWorkOwner &owner, FrameWorkOwner::SourceId source, FrameGpuAvailability availability) {
+                return owner.AdvanceRequired(source, [availability] { return availability; });
+            },
+            py::arg("source"), py::arg("gpu_availability") = FrameGpuAvailability::Ready)
+        .def(
             "advance_late",
             [](FrameWorkOwner &owner, FrameGpuAvailability availability) {
                 return owner.AdvanceLate([availability] { return availability; });

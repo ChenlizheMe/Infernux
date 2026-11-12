@@ -3,9 +3,9 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
-#include <cassert>
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -21,7 +21,10 @@ namespace
 class TestDevice final : public Device
 {
   public:
-    DeviceId GetDeviceId() const noexcept override { return 1; }
+    DeviceId GetDeviceId() const noexcept override
+    {
+        return 1;
+    }
     DeviceCaps caps;
     std::shared_ptr<DeviceLifetime> lifetime = std::make_shared<DeviceLifetime>();
     std::set<uint32_t> live;
@@ -156,13 +159,16 @@ class TestRecordingContext final : public ComputeRecordingContext
     TransferCommandEncoder Transfer() override
     {
         static const TransferCommandEncoder::DispatchTable table{
-            [](void *, BufferHandle, BufferHandle, const BufferCopyRegion &) {},
-            nullptr, nullptr, nullptr,
+            [](void *, BufferHandle, BufferHandle, const BufferCopyRegion &) {},         nullptr, nullptr, nullptr,
             [](void *, BufferHandle, uint64_t, const void *, uint64_t) { return true; }, nullptr};
         return {this, &table};
     }
-    void PipelineBarrier(PipelineStage, Access, PipelineStage, Access) override {}
-    void Require(SubmissionTicket) override {}
+    void PipelineBarrier(PipelineStage, Access, PipelineStage, Access) override
+    {
+    }
+    void Require(SubmissionTicket) override
+    {
+    }
 };
 
 class TestQueue final : public ComputeQueue
@@ -200,6 +206,10 @@ class TestQueue final : public ComputeQueue
         ++waits;
         CompleteThrough(ticket.serial);
     }
+    bool WaitFor(SubmissionTicket ticket, uint64_t) override
+    {
+        return IsComplete(ticket);
+    }
     bool IsComplete(SubmissionTicket ticket) override
     {
         assert(ticket.IsValid());
@@ -225,7 +235,10 @@ class TestQueue final : public ComputeQueue
     {
         return retained.size();
     }
-    uint64_t GetRetainedUploadBytes() const noexcept override { return 0; }
+    uint64_t GetRetainedUploadBytes() const noexcept override
+    {
+        return 0;
+    }
 
   private:
     void CompleteThrough(uint64_t serial)
@@ -241,7 +254,7 @@ class TestQueue final : public ComputeQueue
 };
 
 std::shared_ptr<ComputeReadback> SubmitReadback(const std::shared_ptr<ComputeBuffer> &source, uint64_t offset,
-                                               uint64_t byteSize)
+                                                uint64_t byteSize)
 {
     auto batch = PrepareComputeBatch(source->GetHost(), {}, {}, {{source, offset, byteSize}});
     auto result = batch->Readback(0);
@@ -257,10 +270,17 @@ bool VerifyDispatchLimits()
         bool valid;
     };
     const std::array<Scenario, 11> scenarios{{
-        {{1, 1, 1}, true}, {{4, 3, 2}, true},
-        {{0, 1, 1}, false}, {{1, 0, 1}, false}, {{1, 1, 0}, false},
-        {{5, 1, 1}, false}, {{1, 4, 1}, false}, {{1, 1, 3}, false},
-        {{UINT32_MAX, 1, 1}, false}, {{1, UINT32_MAX, 1}, false}, {{1, 1, UINT32_MAX}, false},
+        {{1, 1, 1}, true},
+        {{4, 3, 2}, true},
+        {{0, 1, 1}, false},
+        {{1, 0, 1}, false},
+        {{1, 1, 0}, false},
+        {{5, 1, 1}, false},
+        {{1, 4, 1}, false},
+        {{1, 1, 3}, false},
+        {{UINT32_MAX, 1, 1}, false},
+        {{1, UINT32_MAX, 1}, false},
+        {{1, 1, UINT32_MAX}, false},
     }};
     unsigned passed = 0, failed = 0;
     for (int path = 0; path < 3; ++path) {
@@ -275,7 +295,8 @@ bool VerifyDispatchLimits()
                 auto kernel = std::make_shared<ComputeKernel>(host, spirv, 5, 1, 0);
                 try {
                     if (path == 0) {
-                        kernel->Dispatch({buffer}, nullptr, 0, scenario.groups[0], scenario.groups[1], scenario.groups[2]);
+                        kernel->Dispatch({buffer}, nullptr, 0, scenario.groups[0], scenario.groups[1],
+                                         scenario.groups[2]);
                     } else {
                         ComputeDispatchDesc invalid;
                         invalid.kernel = kernel;
@@ -297,8 +318,8 @@ bool VerifyDispatchLimits()
                 }
             }
             queue.Collect();
-            const bool correct = rejected == !scenario.valid && queue.submissions == (scenario.valid ? 1u : 0u) &&
-                                 device.live.empty();
+            const bool correct =
+                rejected == !scenario.valid && queue.submissions == (scenario.valid ? 1u : 0u) && device.live.empty();
             if (correct)
                 ++passed;
             else {

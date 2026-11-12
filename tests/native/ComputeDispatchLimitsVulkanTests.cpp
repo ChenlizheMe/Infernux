@@ -46,6 +46,10 @@ class PreparationQueue final : public ComputeQueue
     void Wait(SubmissionTicket) override
     {
     }
+    bool WaitFor(SubmissionTicket, uint64_t) override
+    {
+        return true;
+    }
     bool IsComplete(SubmissionTicket) override
     {
         return true;
@@ -65,7 +69,10 @@ class PreparationQueue final : public ComputeQueue
     {
         return 0;
     }
-    uint64_t GetRetainedUploadBytes() const noexcept override { return 0; }
+    uint64_t GetRetainedUploadBytes() const noexcept override
+    {
+        return 0;
+    }
 };
 
 static void Dispatch(ComputeHost &host, const std::shared_ptr<ComputeKernel> &kernel,

@@ -272,14 +272,18 @@ int64_t FrameWorkOwner::Remaining(bool background) const
 void FrameWorkOwner::ObserveSources()
 {
     const auto sources = m_sources;
-    for (const auto &source : sources) {
-        if (!source->awake || source->observedOpportunity == m_opportunity)
-            continue;
-        source->observedOpportunity = m_opportunity;
-        if (source->callbacks.observe) {
-            Scope scope(*this);
-            source->callbacks.observe();
-        }
+    for (const auto &source : sources)
+        ObserveSource(source);
+}
+
+void FrameWorkOwner::ObserveSource(const std::shared_ptr<Source> &source)
+{
+    if (!source->awake || source->observedOpportunity == m_opportunity)
+        return;
+    source->observedOpportunity = m_opportunity;
+    if (source->callbacks.observe) {
+        Scope scope(*this);
+        source->callbacks.observe();
     }
 }
 
@@ -288,23 +292,22 @@ std::vector<FrameWorkOwner::Choice> FrameWorkOwner::DescribeSources()
     std::vector<Choice> choices;
     const auto sources = m_sources;
     for (const auto &source : sources) {
-        auto description = DescribeSource(source);
+        auto description = DescribeSource(source, source->callbacks.interactive);
         if (!description)
             continue;
         const auto &facts = *description;
-        source->awake =
-            facts.observe || facts.pending || facts.host.ready || facts.gpu.ready || facts.gpuBusy || facts.workerBusy;
+        source->awake = facts.observe || HasPending(facts);
         choices.push_back({source, facts});
     }
     return choices;
 }
 
-std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_ptr<Source> &source)
+std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_ptr<Source> &source, bool interactive)
 {
     if (!source->awake || !source->observedOpportunity || source->observedOpportunity != m_opportunity)
         return std::nullopt;
     Scope scope(*this);
-    ServiceScope service(*this, source->callbacks.interactive);
+    ServiceScope service(*this, interactive);
     auto facts = source->callbacks.describe();
     if (!source->awake)
         return std::nullopt; // Removed during the callback.
@@ -331,7 +334,7 @@ FrameWorkPeers FrameWorkOwner::PeerWork(SourceId id)
         if (source->id == id)
             continue;
         peers.ioServiceSerial = std::max(peers.ioServiceSerial, source->lastIoService);
-        const auto facts = DescribeSource(source);
+        const auto facts = DescribeSource(source, source->callbacks.interactive);
         if (!facts)
             continue;
         peers.otherReady |= facts->gpu.ready || (facts->host.ready && !facts->ioReady);
@@ -342,12 +345,31 @@ FrameWorkPeers FrameWorkOwner::PeerWork(SourceId id)
     return peers;
 }
 
+bool FrameWorkOwner::HasPending(const FrameWorkFacts &facts)
+{
+    return facts.pending || facts.host.ready || facts.gpu.ready || facts.gpuBusy || facts.workerBusy;
+}
+
 bool FrameWorkOwner::HasPending(const std::vector<Choice> &choices) const
 {
-    return std::any_of(choices.begin(), choices.end(), [](const auto &choice) {
-        return choice.facts.pending || choice.facts.host.ready || choice.facts.gpu.ready || choice.facts.gpuBusy ||
-               choice.facts.workerBusy;
-    });
+    return std::any_of(choices.begin(), choices.end(), [](const auto &choice) { return HasPending(choice.facts); });
+}
+
+bool FrameWorkOwner::AdvanceChoice(Choice &choice, bool gpu, bool interactive)
+{
+    if (!choice.source->awake || !IsAccepting())
+        return false;
+    Scope scope(*this);
+    ServiceScope service(*this, interactive);
+    const auto progressSerial = m_progressSerial;
+    const auto &candidate = gpu ? choice.facts.gpu : choice.facts.host;
+    const bool ownProgress = choice.source->callbacks.advance(gpu, candidate.token);
+    const bool progressed = ownProgress || progressSerial != m_progressSerial;
+    m_serviced |= progressed;
+    m_preferGpu = !gpu;
+    if (progressed && !gpu && choice.facts.ioReady)
+        choice.source->lastIoService = ++m_progressSerial;
+    return progressed;
 }
 
 bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu, bool interactive)
@@ -392,21 +414,11 @@ bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu, bool interac
         if (!fits(candidate) || (!interactive && !candidate.reserved && (gpu ? gpuReserved : gpuClaimsHostCredit())))
             continue;
         next = choice.source->id + 1;
-        Scope scope(*this);
-        ServiceScope service(*this, interactive);
-        const auto progressSerial = m_progressSerial;
-        const bool ownProgress = choice.source->callbacks.advance(gpu, candidate.token);
-        const bool progressed = ownProgress || progressSerial != m_progressSerial;
-        m_serviced |= progressed;
         // An unsuccessful GPU attempt can still spend the host allowance.
         // Yield the next turn to its CPU/IO prerequisites rather than deferring
         // them again merely because this attempt retained no new state.
-        m_preferGpu = !gpu;
-        if (progressed) {
-            if (!gpu && choice.facts.ioReady)
-                choice.source->lastIoService = ++m_progressSerial;
+        if (AdvanceChoice(choice, gpu, interactive))
             return true;
-        }
         candidate.ready = false;
     }
     if (gpu)
@@ -489,6 +501,48 @@ bool FrameWorkOwner::AdvanceEarly()
         throw std::logic_error("Early work requires the current early frame opportunity");
     m_earlyAdvanced = true;
     return Drive();
+}
+
+bool FrameWorkOwner::AdvanceRequired(SourceId id, const std::function<FrameGpuAvailability()> &gpuAvailability)
+{
+    if (!m_active || m_late)
+        throw std::logic_error("Required work must run in the current pre-render opportunity");
+    const auto found =
+        std::find_if(m_sources.begin(), m_sources.end(), [id](const auto &source) { return source->id == id; });
+    if (found == m_sources.end())
+        throw std::invalid_argument("Required work source is not registered");
+    const auto source = *found;
+    Scope scope(*this);
+    ServiceScope service(*this, false);
+    source->awake = true;
+    ObserveSource(source);
+    for (;;) {
+        const auto roundProgress = m_progressSerial;
+        m_gpuAvailability = gpuAvailability();
+        if (source->awake && source->callbacks.refresh)
+            source->callbacks.refresh();
+        const auto description = DescribeSource(source, false);
+        if (!description)
+            return false;
+        Choice choice{source, *description};
+        const bool pending = HasPending(choice.facts);
+        source->awake = pending || choice.facts.observe;
+        if (!IsAccepting() || Remaining() <= 0)
+            return pending;
+        const auto fits = [this](const FrameWorkCandidate &candidate) {
+            return candidate.ready &&
+                   candidate.hostNanoseconds <= static_cast<uint64_t>((std::max)(int64_t{0}, Remaining()));
+        };
+        if (m_gpuAvailability == FrameGpuAvailability::Ready && choice.facts.gpuBusy)
+            m_gpuAvailability = FrameGpuAvailability::BackgroundPending;
+        if (m_gpuAvailability == FrameGpuAvailability::Ready && fits(choice.facts.gpu) &&
+            AdvanceChoice(choice, true, false))
+            continue;
+        if (fits(choice.facts.host) && AdvanceChoice(choice, false, false))
+            continue;
+        if (roundProgress == m_progressSerial)
+            return source->awake && pending;
+    }
 }
 
 bool FrameWorkOwner::AdvanceLate(const std::function<FrameGpuAvailability()> &gpuAvailability)

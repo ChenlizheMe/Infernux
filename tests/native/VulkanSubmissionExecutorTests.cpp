@@ -3,6 +3,7 @@
 #include <function/renderer/vk/GpuTimestampQueries.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkTypes.h>
+#include <function/renderer/vk/VulkanComputeQueue.h>
 #include <function/renderer/vk/VulkanQueueManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/renderer/vk/VulkanSubmissionExecutor.h>
@@ -23,6 +24,55 @@
 using namespace infernux;
 
 #include "VulkanCommandUploadsTests.h"
+
+static void VerifyBoundedComputeWait(vk::VkDeviceContext &context, vk::VulkanQueueManager &queues)
+{
+    vk::VulkanComputeQueue compute;
+    assert(compute.Initialize(context, queues, 1));
+    VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+    type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+    VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    semaphoreInfo.pNext = &type;
+    VkSemaphore gate = VK_NULL_HANDLE;
+    assert(vkCreateSemaphore(context.GetDevice(), &semaphoreInfo, nullptr, &gate) == VK_SUCCESS);
+    const uint64_t gateValue = 1;
+    const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    VkTimelineSemaphoreSubmitInfo timeline{VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
+    timeline.waitSemaphoreValueCount = 1;
+    timeline.pWaitSemaphoreValues = &gateValue;
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.pNext = &timeline;
+    submit.waitSemaphoreCount = 1;
+    submit.pWaitSemaphores = &gate;
+    submit.pWaitDstStageMask = &stage;
+    // Hold the real compute lane behind a host-signalled dependency. This
+    // makes timeout deterministic without a long-running shader or CPU polling.
+    const auto blocked = queues.Reserve(rhi::QueueRole::Compute);
+    assert(queues.SubmitReserved(blocked, &submit, 1, VK_NULL_HANDLE) == VK_SUCCESS);
+    auto payload = std::make_shared<int>(42);
+    const std::weak_ptr<int> retained = payload;
+    auto receipt = std::make_shared<rhi::ComputeExecutionReceipt>();
+    rhi::ComputeSubmissionResources resources{std::move(payload), receipt};
+    const auto ticket = compute.Submit([](rhi::ComputeRecordingContext &) { return true; }, std::move(resources));
+    const bool timedOut = !compute.WaitFor(ticket, 0);
+    const bool pendingRetained = !receipt->complete && !retained.expired() && compute.GetPendingSubmissionCount() == 1;
+    VkSemaphoreSignalInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
+    signal.semaphore = gate;
+    signal.value = gateValue;
+    assert(vkSignalSemaphore(context.GetDevice(), &signal) == VK_SUCCESS);
+    assert(timedOut && pendingRetained);
+    assert(compute.WaitFor(ticket, 5'000'000'000ULL));
+    assert(receipt->complete && retained.expired() && compute.GetPendingSubmissionCount() == 0);
+    assert(compute.GetStatistics().waitCount == 2);
+    auto nextReceipt = std::make_shared<rhi::ComputeExecutionReceipt>();
+    const auto next = compute.Submit([](rhi::ComputeRecordingContext &) { return true; }, {{}, nextReceipt});
+    assert(compute.WaitFor(ticket, 0)); // Reused slot cannot change an older ticket's completion.
+    assert(!nextReceipt->complete && compute.GetPendingSubmissionCount() == 1);
+    compute.Wait(next);
+    assert(nextReceipt->complete && compute.GetStatistics().waitCount == 3);
+    vkDestroySemaphore(context.GetDevice(), gate, nullptr);
+    compute.Destroy();
+}
 
 int main()
 {
@@ -562,6 +612,7 @@ int main()
     }
     timestamps.Destroy();
     VerifyExecutorCommandUploads(context, queues, executor);
+    VerifyBoundedComputeWait(context, queues);
     vkDestroyFence(context.GetDevice(), completionFence, nullptr);
     executor.Destroy();
     queues.Destroy();

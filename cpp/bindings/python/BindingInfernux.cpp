@@ -1710,6 +1710,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             py::arg("callback"),
             "Set a Python callback invoked before scene Update in graphical and headless modes.")
         .def_property_readonly("frame_work", &Infernux::GetFrameWorkOwner, py::return_value_policy::reference_internal)
+        .def("_advance_required_work", &Infernux::AdvanceRequiredWork)
         .def("_set_runtime_frame_callbacks", [](Infernux &self, py::object before, py::object after) {
             std::function<void(float)> beforeWork;
             std::function<void()> afterWork;
