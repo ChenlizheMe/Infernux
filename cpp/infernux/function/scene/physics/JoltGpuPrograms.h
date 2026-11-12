@@ -53,8 +53,8 @@ class JoltGpuStorage
     /// BodyForces port directly; the normal compute dependency orders its use.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareForces(const std::vector<JPH::GPU::BodyForces> &forces);
-    // All Prepare methods return HasWork()==false for an empty model. The
-    // caller completes that empty phase without attempting a GPU submission.
+    // All Prepare methods return nullptr for an empty model. The caller
+    // completes that phase without constructing or submitting a GPU packet.
 
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Get(JPH::GPU::Resource resource) const;
     [[nodiscard]] uint32_t GetBodyCount() const noexcept
@@ -86,6 +86,20 @@ class JoltGpuStorage
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_contactCount = 0, m_maxBodiesPerWorld = 0;
 };
 
+/// The five read-only input values of one logical tick. Capture each port
+/// immediately after its final producer is accepted, without waiting for GPU
+/// completion. Every stage prefix binds these leases, never the live endpoints.
+class JoltGpuStepInputs
+{
+  public:
+    /// Empty models need no input leases. Writable solver ports are not inputs.
+    void Capture(const JoltGpuStorage &storage, JPH::GPU::Resource resource);
+
+  private:
+    friend class JoltGpuPrograms;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
+};
+
 /// A consumer of the common compiler's typed target artifact. This class does
 /// not load sources, own a compiler/cache/device, or submit a second GPU queue.
 class JoltGpuPrograms
@@ -97,8 +111,9 @@ class JoltGpuPrograms
     /// iterations. The caller owns its stage cursor and selects a bounded prefix.
     /// Preparation does not submit; accepting the resulting batch does not
     /// publish a physics tick. A single stage is {stage}; an empty list/model
-    /// returns a batch with no work.
+    /// returns nullptr, without constructing a GPU packet.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareStages(const JoltGpuStorage &storage,
+                                                                           const JoltGpuStepInputs &inputs,
                                                                            const std::vector<JPH::GPU::Stage> &stages);
 
   private:
@@ -115,7 +130,8 @@ class JoltGpuPrograms
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<Binding> bindings;
     };
-    [[nodiscard]] rhi::ComputeDispatchDesc BuildDispatch(const Entry &entry, const JoltGpuStorage &storage) const;
+    [[nodiscard]] rhi::ComputeDispatchDesc BuildDispatch(const Entry &entry, const JoltGpuStorage &storage,
+                                                         const JoltGpuStepInputs &inputs) const;
     static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
     std::array<Entry, StageCount> m_entries;

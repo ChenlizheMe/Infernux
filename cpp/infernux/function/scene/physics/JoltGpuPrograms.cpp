@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace infernux
@@ -273,7 +274,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
             throw std::invalid_argument("Jolt GPU initial pose, velocity or force is invalid");
     }
     if (m_bodyCount == 0)
-        return rhi::PrepareComputeBatch(m_host, {}, {});
+        return {};
     std::vector<rhi::ComputeBufferUpdate> updates{
         {Get(Resource::BodyModels), 0, Bytes(m_model.bodies.data(), m_model.bodies.size())},
         {Get(Resource::ShapeModels), 0, Bytes(m_model.shapes.data(), m_model.shapes.size())},
@@ -287,7 +288,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareParameters(const JoltGpuStepParameters &prepared)
 {
     if (m_bodyCount == 0)
-        return rhi::PrepareComputeBatch(m_host, {}, {});
+        return {};
     auto parameters = prepared.Get();
     parameters.counts.x = m_bodyCount;
     parameters.counts.y = m_worldCount;
@@ -304,8 +305,17 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareForces(const s
         if (!Finite3(force.force) || !Finite3(force.torque))
             throw std::invalid_argument("Jolt GPU force and torque must be finite");
     if (m_bodyCount == 0)
-        return rhi::PrepareComputeBatch(m_host, {}, {});
+        return {};
     return rhi::PrepareComputeBatch(m_host, {{Get(Resource::BodyForces), 0, Bytes(forces.data(), forces.size())}}, {});
+}
+
+void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource)
+{
+    const auto slot = PortIndex(resource);
+    if (slot >= m_buffers.size())
+        throw std::invalid_argument("Jolt GPU tick inputs accept only parameters, models, worlds and forces");
+    if (storage.GetBodyCount() != 0)
+        m_buffers[slot] = storage.Get(resource)->Freeze();
 }
 
 JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
@@ -362,7 +372,8 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
     }
 }
 
-rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage) const
+rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage,
+                                                        const JoltGpuStepInputs &inputs) const
 {
     rhi::ComputeDispatchDesc dispatch;
     dispatch.kernel = entry.kernel;
@@ -373,7 +384,11 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
     proof.writes.reserve(entry.bindings.size());
     for (size_t index = 0; index < entry.bindings.size(); ++index) {
         const auto &binding = entry.bindings[index];
-        const auto &buffer = storage.m_buffers[binding.slot];
+        const auto &buffer =
+            binding.slot < inputs.m_buffers.size() ? inputs.m_buffers[binding.slot] : storage.m_buffers[binding.slot];
+        if (!buffer)
+            throw std::invalid_argument("Jolt GPU stage requires captured input: " +
+                                        std::string(Ports[binding.slot].name));
         dispatch.buffers.push_back(buffer);
         dispatch.bufferAccesses.push_back(binding.access);
         if (binding.read)
@@ -403,18 +418,20 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,
+                                                                          const JoltGpuStepInputs &inputs,
                                                                           const std::vector<Stage> &stages)
 {
     if (!m_host.SharesServicesWith(storage.GetHost()))
         throw std::invalid_argument("Jolt GPU programs and state belong to different compute owners");
+    if (storage.GetBodyCount() == 0 || stages.empty())
+        return {};
     std::vector<rhi::ComputeDispatchDesc> dispatches;
-    dispatches.reserve(storage.GetBodyCount() == 0 ? 0 : stages.size());
+    dispatches.reserve(stages.size());
     for (const auto stage : stages) {
         const auto index = static_cast<size_t>(stage);
         if (index >= m_entries.size())
             throw std::invalid_argument("Unknown Jolt GPU stage");
-        if (storage.GetBodyCount() != 0)
-            dispatches.push_back(BuildDispatch(m_entries[index], storage));
+        dispatches.push_back(BuildDispatch(m_entries[index], storage, inputs));
     }
     return rhi::PrepareComputeBatch(m_host, {}, std::move(dispatches));
 }
