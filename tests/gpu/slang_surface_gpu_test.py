@@ -75,7 +75,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pipeline", choices=("forward", "forward_plus", "deferred"), required=True)
     parser.add_argument("--skinned", action="store_true")
-    parser.add_argument("--model", choices=("pbr", "unlit", "band"), default="pbr")
+    parser.add_argument("--model", choices=("pbr", "unlit", "band", "toon"), default="pbr")
     parser.add_argument("--vertex", action="store_true")
     options = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="infernux-slang-surface-") as directory:
@@ -96,6 +96,14 @@ def main():
             (root / "Assets/baseline.shadingmodel").write_text(REFERENCE_MODEL, encoding="utf-8")
             author_source = SOURCE.replace("(shader.surface):", '(shader.surface):\n    shading_model = shader.ref("./band.shadingmodel.py")')
             reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel BaselineBand")
+        elif options.model == "toon":
+            from infernux._compiler.shading_model import default_shading_model
+            model_path = default_shading_model().with_name("toon.shadingmodel.py")
+            author_source = SOURCE.replace("(shader.surface):", f"(shader.surface):\n    shading_model = shader.ref({model_path.as_posix()!r})")
+            author_source = author_source.replace("metallic=self.metallic, smoothness=self.smoothness,",
+                                                  "shading_param0=0.45, shading_param1=0.04, metallic=self.metallic, smoothness=self.smoothness,")
+            reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel Toon").replace(
+                "s.metallic=material.metallic;", "s.shadingParam0=0.45; s.shadingParam1=0.04; s.metallic=material.metallic;")
         if options.vertex:
             (root / "Assets/translate.vert.py").write_text('''import infernux.shader as shader
 class Translate(shader.vert):

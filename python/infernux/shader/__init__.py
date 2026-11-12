@@ -245,6 +245,8 @@ class _Lighting:
     pbr_indirect = staticmethod(_gpu_intrinsic("lighting.pbr_indirect"))
     main_light = staticmethod(_gpu_intrinsic("lighting.main_light"))
     view_direction = staticmethod(_gpu_intrinsic("lighting.view_direction"))
+    direct = staticmethod(_gpu_intrinsic("lighting.direct"))
+    ambient = staticmethod(_gpu_intrinsic("lighting.ambient"))
 
 
 lighting = _Lighting()

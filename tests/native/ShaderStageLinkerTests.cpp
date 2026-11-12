@@ -1095,26 +1095,6 @@ void surface(out SurfaceData s) {
                        [](const auto &buffer) { return buffer.set == 0 && buffer.binding == 15; }));
     infernux::InxShaderLoader::SetBindlessTextureABIEnabled(false);
 
-    const auto builtinToonCompilation =
-        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
-                                              ReadText(shaderRoot + "/toon.frag"), shaderRoot + "/toon.frag");
-    if (!builtinToonCompilation.IsValid()) {
-        for (const auto &error : builtinToonCompilation.errors)
-            std::cerr << error << '\n';
-    }
-    assert(builtinToonCompilation.IsValid());
-    const auto builtinToonArtifact = builtinToonCompilation.CreateRuntimeArtifact();
-    assert(builtinToonArtifact.IsValid());
-    assert(builtinToonArtifact.FindVariant(infernux::ShaderCompileTarget::Forward) != nullptr);
-    assert(builtinToonArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
-    assert(builtinToonArtifact.FindVariant(infernux::ShaderCompileTarget::GBuffer) != nullptr);
-    const auto toonGBuffer =
-        std::find_if(builtinToonCompilation.compiledVariants.begin(), builtinToonCompilation.compiledVariants.end(),
-                     [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::GBuffer; });
-    assert(toonGBuffer != builtinToonCompilation.compiledVariants.end());
-    assert(toonGBuffer->generatedFragmentSource.find("s.shadingParam0") != std::string::npos);
-    assert(toonGBuffer->generatedFragmentSource.find("s.shadingParam1") != std::string::npos);
-
     const auto spriteLitCompilation = compiler.CompileLinkedProgramArtifact(
         ReadText(shaderRoot + "/standard.vert"), shaderRoot + "/standard.vert",
         ReadText(shaderRoot + "/sprite_lit.frag"), shaderRoot + "/sprite_lit.frag");

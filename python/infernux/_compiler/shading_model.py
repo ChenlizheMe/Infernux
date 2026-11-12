@@ -20,7 +20,30 @@ _LIGHTING = {
     "lighting.pbr_indirect": ("inx_pbr_indirect", "float3", ("InxSurfaceData", "InxShadingContext")),
     "lighting.main_light": ("inx_main_light<tiled_lighting>", "InxLight", ("InxShadingContext", "float3")),
     "lighting.view_direction": ("inx_view_direction", "float3", ("InxShadingContext",)),
+    "lighting.direct": ("inx_author_direct<tiled_lighting>", "float3", ("InxSurfaceData", "InxShadingContext")),
+    "lighting.ambient": ("inx_ambient_irradiance", "float3", ("InxShadingContext", "float3")),
 }
+
+
+_DIRECT_RESPONSE = """
+public struct InxAuthorLightResponse<let tiled_lighting : bool> : IInxLightResponse
+{
+    InxSurfaceData surface;
+    InxShadingContext context;
+    public float3 evaluate(InxLight light)
+    {
+        return inx_shading_model::shade_light<tiled_lighting>(surface, context, light);
+    }
+};
+float3 inx_author_direct<let tiled_lighting : bool>(InxSurfaceData surface, InxShadingContext context)
+{
+    InxAuthorLightResponse<tiled_lighting> response;
+    response.surface = surface;
+    response.context = context;
+    return inx_direct_lighting<tiled_lighting, InxAuthorLightResponse<tiled_lighting>>(
+        context, normalize(surface.normal_ws), response);
+}
+"""
 
 
 class _ModelEmitter(ShaderEmitter):
@@ -107,6 +130,14 @@ def read_shading_model(path, graph, owner, location, *, source=None):
     if entry is None or entry.arguments != ("InxSurfaceData", "InxShadingContext") or entry.result != "float3":
         author.error(declaration, "shade(self, surface: shader.SurfaceData, ctx: shader.ShadingContext) returns shader.vec3",
                      code="author.type")
+    direct_calls = [node for method in methods for node in ast.walk(method)
+                    if isinstance(node, ast.Call) and qualified(node.func) == alias + ".lighting.direct"]
+    if direct_calls:
+        response = functions.get("self.shade_light")
+        if (response is None or response.arguments != ("InxSurfaceData", "InxShadingContext", "InxLight")
+                or response.result != "float3"):
+            author.error(direct_calls[0], "lighting.direct requires shade_light(self, surface: shader.SurfaceData, "
+                         "ctx: shader.ShadingContext, light: shader.LightData) -> shader.vec3", code="author.type")
     code = ["import inx_geometry;", *("import " + name + ";" for name in dependencies)]
     if contract != "unlit":
         code.append("import inx_lighting;")
@@ -117,8 +148,10 @@ def read_shading_model(path, graph, owner, location, *, source=None):
         code.extend(emitter.emit_function(method, functions["self." + method.name], method=True, public=True))
         ranges.extend(emitter.source_ranges)
     code.append("}")
+    if direct_calls:
+        code.append(_DIRECT_RESPONSE)
     builtin_models = {_builtin_root().joinpath(name + ".shadingmodel.py").resolve(): model
-                      for name, model in (("pbr", "PBR"), ("unlit", "Unlit"))}
+                      for name, model in (("pbr", "PBR"), ("unlit", "Unlit"), ("toon", "Toon"))}
     return ShadingModel(declaration.name, str(path), contract, "\n".join(code), dependencies, tuple(ranges),
                         builtin_models.get(path), read_shader_info(source, str(path)))
 

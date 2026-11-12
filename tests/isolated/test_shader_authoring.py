@@ -178,11 +178,13 @@ class Band(shader.shadingmodel):
     lighting_contract = "custom_response"
     def response(self, value: float, threshold: float) -> float:
         return band(value, threshold)
-    def shade(self, surface: shader.SurfaceData, ctx: shader.ShadingContext) -> shader.vec3:
-        light = shader.lighting.main_light(ctx, surface.normal_ws)
+    def shade_light(self, surface: shader.SurfaceData, ctx: shader.ShadingContext, light: shader.LightData) -> shader.vec3:
         weight = self.response(shader.max(0.0, shader.dot(surface.normal_ws, light.direction)), surface.shading_param0)
         direct = surface.albedo * light.color * light.attenuation * light.shadow * weight
-        return direct + shader.lighting.pbr_indirect(surface, ctx) + surface.emission
+        return direct
+    def shade(self, surface: shader.SurfaceData, ctx: shader.ShadingContext) -> shader.vec3:
+        ambient = shader.lighting.ambient(ctx, surface.normal_ws) * surface.albedo * surface.occlusion
+        return shader.lighting.direct(surface, ctx) + ambient + surface.emission
 ''', encoding="utf-8")
     source = '''import infernux.shader as shader
 class Painted(shader.surface):
@@ -200,9 +202,31 @@ class Painted(shader.surface):
     _, libraries, schema, _ = _prepare_source(model.read_text(encoding="utf-8"), str(model), "band", None)
     assert json.loads(schema)["lighting_contract"] == "custom_response"
     assert str(tmp_path / "bands.shaderlib.py") in {path for _, path, _ in libraries}
+    original = model.read_text(encoding="utf-8")
+    model.write_text(original.replace("def shade_light(", "def other_light("), encoding="utf-8")
+    with pytest.raises(SyntaxError, match="lighting.direct requires shade_light"):
+        parse_shader(source, str(tmp_path / "painted.frag.py"), "missing_response")
+    model.write_text(original, encoding="utf-8")
     model.write_text(model.read_text(encoding="utf-8").replace("ctx, surface.normal_ws", "ctx.uv0, surface.normal_ws"), encoding="utf-8")
     with pytest.raises(SyntaxError, match="Unknown shader stage input: uv0"):
         parse_shader(source, str(tmp_path / "painted.frag.py"), "invalid_band")
+
+
+def test_builtin_toon_uses_shared_light_response_and_surface_passes():
+    from infernux._compiler.shading_model import default_shading_model
+
+    model = default_shading_model().with_name("toon.shadingmodel.py")
+    path = model.with_name("toon.frag.py")
+    source = path.read_text(encoding="utf8").replace('shader.ref("infernux/shading/toon")',
+                                                    f'shader.ref({str(model)!r})')
+    definition = parse_shader(source, str(path), "builtin_toon")
+    assert definition.shading_model == definition.deferred_model == "Toon"
+    assert definition.info["shader_id"] == "infernux/toon"
+    fields = {parameter.name for parameter in definition.parameters}
+    assert {"diffuse_threshold", "band_softness", "normal_map"} <= fields
+    for target in definition.compile()["targets"]:
+        entries = {entry["name"] for entry in target["entries"]}
+        assert {"fragment_main", "fragment_forward_plus", "fragment_gbuffer", "fragment_depth", "vertex_shadow"} <= entries
 
 
 def test_surface_specializes_light_resources_and_preserves_context():

@@ -4,9 +4,8 @@ namespace infernux
 {
 inline const ShaderSourceModule &GetSlangLightingModule()
 {
-    static const ShaderSourceModule module{
-        "inx_lighting", "<infernux/shader/lighting>",
-        R"slang(import inx_geometry;
+    static const ShaderSourceModule module{"inx_lighting", "<infernux/shader/lighting>",
+                                           R"slang(import inx_geometry;
 static const float PI = 3.14159265358979323846;
 static const float INV_PI = 0.31830988618379067154;
 static const float FLT_MIN = 1.175494351e-38;
@@ -191,6 +190,39 @@ float3 evaluate_pbr_light(float3 N, float3 V, float3 L, float3 light_radiance,
     float3  diffuse = albedo * (1.0 - metallic) * diffuse_term;
     return (diffuse + specular) * light_radiance * (ndot_l * PI);
 }
+public interface IInxLightResponse
+{
+    float3 evaluate(InxLight light);
+};
+InxLight inx_light_sample(float3 direction, float3 color, float attenuation, float shadow)
+{
+    InxLight light;
+    light.direction = direction;
+    light.color = color;
+    light.attenuation = attenuation;
+    light.shadow = shadow;
+    return light;
+}
+public struct InxPbrLightResponse : IInxLightResponse
+{
+    float3 normal;
+    float3 view;
+    float3 albedo;
+    float metallic;
+    float roughness;
+    float perceptual_roughness;
+    float3 f0;
+    float f90;
+    float3 energy_compensation;
+    float specular_highlights;
+    public float3 evaluate(InxLight light)
+    {
+        return evaluate_pbr_light(normal, view, light.direction,
+                                  light.color * light.attenuation * light.shadow,
+                                  albedo, metallic, roughness, perceptual_roughness,
+                                  f0, f90, energy_compensation, specular_highlights);
+    }
+};
 struct InxLighting<let tiled_lighting : bool>
 {
     uint layer_mask;
@@ -199,8 +231,7 @@ struct InxLighting<let tiled_lighting : bool>
     uint4 inx_forward_plus_tile_header()
     {
         uint4 grid = forward_plus_tile_headers[0];
-)slang"
-        R"slang(        uint2 tile = min(uint2(pixel_position) / grid.z, grid.xy - 1u);
+        uint2 tile = min(uint2(pixel_position) / grid.z, grid.xy - 1u);
         return forward_plus_tile_headers[1u + tile.y * grid.x + tile.x];
     }
 
@@ -261,7 +292,8 @@ float shadow_tent_weight(int index) {
 }
 float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 normal, float3 to_light,
                                  float4 shadow_params, bool soft_filter) {
-    if (view_index >= lighting.shadow_view_header.x) return 1.0;
+)slang"
+                                           R"slang(    if (view_index >= lighting.shadow_view_header.x) return 1.0;
     InxShadowView shadow_view = lighting.shadow_views[view_index];
     float3 N = normalize(normal);
     float3 L = normalize(to_light);
@@ -349,8 +381,7 @@ float sample_directional_views(uint first_view, uint view_count, float4 shadow_p
 uint point_shadow_face(float3 direction_from_light) {
     float3 a = abs(direction_from_light);
     if (a.x >= a.y && a.x >= a.z) return direction_from_light.x >= 0.0 ? 0u : 1u;
-)slang"
-        R"slang(    if (a.y >= a.z) return direction_from_light.y >= 0.0 ? 2u : 3u;
+    if (a.y >= a.z) return direction_from_light.y >= 0.0 ? 2u : 3u;
     return direction_from_light.z >= 0.0 ? 4u : 5u;
 }
 float sample_local_shadow(uint first_view, uint view_count, uint light_type, float4 shadow_params,
@@ -438,12 +469,10 @@ if (tiled_lighting) {
 }
     return l;
 }
-float3 evaluate_rectangle_area_light(float3 light_position, float3 ray_direction, float4 right_width, float4 up_height,
+float3 evaluate_rectangle_area_light<T : IInxLightResponse>(float3 light_position, float3 ray_direction, float4 right_width, float4 up_height,
                                 float3 light_color, float intensity, float range, bool two_sided,
                                 uint first_shadow_view, uint shadow_view_count, float4 shadow_params,
-                                float3 world_pos, float3 N, float3 V, float3 albedo, float metallic,
-                                float roughness, float perceptual_roughness, float3 F0, float f90,
-                                float3 energy_compensation, float specular_highlights) {
+                                float3 world_pos, float3 N, T response) {
     float3 from_light = world_pos - light_position;
     float emitter_facing = dot(normalize(ray_direction), normalize(from_light));
     emitter_facing = two_sided ? abs(emitter_facing) : max(emitter_facing, 0.0);
@@ -462,18 +491,12 @@ float3 evaluate_rectangle_area_light(float3 light_position, float3 ray_direction
         if (distance_to_light <= 0.00001 || distance_to_light >= range) continue;
         float3 L = light_vector / distance_to_light;
         float attenuation = calculate_attenuation(float3(range, 0.0, 0.0), distance_to_light);
-        float3 radiance = light_color * intensity * attenuation * emitter_facing * shadow * 0.25;
-        result += evaluate_pbr_light(N, V, L, radiance, albedo, metallic, roughness,
-                                   perceptual_roughness, F0, f90, energy_compensation,
-                                   specular_highlights);
+        float3 radiance = light_color * intensity * 0.25;
+        result += response.evaluate(inx_light_sample(L, radiance, attenuation * emitter_facing, shadow));
     }
     return result;
 }
-float3 calculate_all_lighting(float3 world_pos, float3 N, float3 V,
-                          float3 albedo, float metallic,
-                          float roughness, float perceptual_roughness,
-                          float3 F0, float f90, float3 energy_compensation,
-                          float specular_highlights, float view_depth, float shadow) {
+float3 calculate_all_lighting<T : IInxLightResponse>(float3 world_pos, float3 N, float view_depth, float shadow, T response) {
     float3 lo = float3(0.0);
     const uint current_light_domain = 1u;
 if (tiled_lighting) {
@@ -482,18 +505,15 @@ if (tiled_lighting) {
         InxCanonicalLight light = load_light(i);
         if ((light.metadata.w & current_light_domain) == 0u) continue;
         if ((light.metadata.y & layer_mask) == 0u) continue;
-        float3 L = normalize(-light.direction_outer_cos.xyz);
+)slang"
+                                           R"slang(        float3 L = normalize(-light.direction_outer_cos.xyz);
         float3 radiance = light.color_intensity.rgb * light.color_intensity.w;
         float light_shadow =
             i == 0u ? shadow
                     : sample_directional_views(
                           light.identity_and_shadow.z, light.identity_and_shadow.w,
                           float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z)), world_pos, N, L, view_depth);
-        lo += evaluate_pbr_light(N, V, L, radiance, albedo, metallic,
-                               roughness, perceptual_roughness,
-)slang"
-        R"slang(                               F0, f90, energy_compensation,
-                               specular_highlights) * light_shadow;
+        lo += response.evaluate(inx_light_sample(L, radiance, 1.0, light_shadow));
     }
     uint4 tile_header = inx_forward_plus_tile_header();
     for (uint word_entry = 0u; word_entry < tile_header.y; ++word_entry) {
@@ -512,8 +532,7 @@ if (tiled_lighting) {
                     light.area_up_height, light.color_intensity.rgb, light.color_intensity.w,
                     light.position_range.w, light.direction_outer_cos.w > 0.5, light.identity_and_shadow.z,
                     light.identity_and_shadow.w, float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z)),
-                    world_pos, N, V, albedo, metallic, roughness, perceptual_roughness, F0, f90,
-                    energy_compensation, specular_highlights);
+                    world_pos, N, response);
                 continue;
             }
             float3 light_vec = light.position_range.xyz - world_pos;
@@ -531,11 +550,8 @@ if (tiled_lighting) {
                 light.identity_and_shadow.z, light.identity_and_shadow.w, light.metadata.x,
                 float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z)), light.position_range.xyz,
                 world_pos, N, L);
-            float3 radiance = light.color_intensity.rgb * light.color_intensity.w * attenuation * local_shadow;
-            lo += evaluate_pbr_light(N, V, L, radiance, albedo, metallic,
-                                   roughness, perceptual_roughness,
-                                   F0, f90, energy_compensation,
-                                   specular_highlights);
+            float3 radiance = light.color_intensity.rgb * light.color_intensity.w;
+            lo += response.evaluate(inx_light_sample(L, radiance, attenuation, local_shadow));
         }
     }
 } else {
@@ -549,10 +565,7 @@ if (tiled_lighting) {
             i == 0 ? shadow
                    : sample_directional_views(light.metadata.z, light.metadata.w, light.shadow_params, world_pos, N, L,
                                             view_depth);
-        lo += evaluate_pbr_light(N, V, L, radiance, albedo, metallic,
-                               roughness, perceptual_roughness,
-                               F0, f90, energy_compensation,
-                               specular_highlights) * light_shadow;
+        lo += response.evaluate(inx_light_sample(L, radiance, 1.0, light_shadow));
     }
     for (int i = 0; i < lighting.light_counts.y && i < MAX_POINT_LIGHTS; ++i) {
         InxPointLight light = lighting.point_lights[i];
@@ -566,11 +579,8 @@ if (tiled_lighting) {
             if (attenuation > 0.001) {
                 float local_shadow = sample_local_shadow(light.metadata.z, light.metadata.w, 1u, light.shadow_params,
                                                       light.position.xyz, world_pos, N, L);
-                float3 radiance = light.color.rgb * light.color.w * attenuation * local_shadow;
-                lo += evaluate_pbr_light(N, V, L, radiance, albedo, metallic,
-                                       roughness, perceptual_roughness,
-                                       F0, f90, energy_compensation,
-                                       specular_highlights);
+                float3 radiance = light.color.rgb * light.color.w;
+                lo += response.evaluate(inx_light_sample(L, radiance, attenuation, local_shadow));
             }
         }
     }
@@ -589,11 +599,8 @@ if (tiled_lighting) {
                 if (attenuation > 0.001) {
                     float local_shadow = sample_local_shadow(light.metadata.z, light.metadata.w, 2u, light.shadow_params,
                                                           light.position.xyz, world_pos, N, L);
-                    float3 radiance = light.color.rgb * light.color.w * attenuation * spot_falloff * local_shadow;
-                    lo += evaluate_pbr_light(N, V, L, radiance, albedo, metallic,
-                                           roughness, perceptual_roughness,
-                                           F0, f90, energy_compensation,
-                                           specular_highlights);
+                    float3 radiance = light.color.rgb * light.color.w;
+                    lo += response.evaluate(inx_light_sample(L, radiance, attenuation * spot_falloff, local_shadow));
                 }
             }
         }
@@ -605,9 +612,7 @@ if (tiled_lighting) {
         lo += evaluate_rectangle_area_light(
             light.position_range.xyz, light.direction.xyz, light.right_width, light.up_height,
             light.color.rgb, light.color.w, light.position_range.w, light.direction.w > 0.5,
-            light.metadata.z, light.metadata.w, light.shadow_params, world_pos, N, V, albedo,
-            metallic, roughness, perceptual_roughness, F0, f90, energy_compensation,
-            specular_highlights);
+            light.metadata.z, light.metadata.w, light.shadow_params, world_pos, N, response);
     }
 }
     return lo;
@@ -625,19 +630,24 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx) 
     float3  F0    = lerp(float3(0.04), albedo, metallic);
     float f90   = compute_f90(F0);
     float ndot_v = max(dot(N, V), 0.0);
-)slang"
-        R"slang(    float2  env_brdf      = env_brdf_approx(perceptual_roughness, ndot_v);
+    float2  env_brdf      = env_brdf_approx(perceptual_roughness, ndot_v);
     float reflectivity = env_brdf.x + env_brdf.y;
     float3  energy_compensation = 1.0 + F0 * (1.0 / max(reflectivity, 0.001) - 1.0);
     float3 lo = float3(0.0);
     if (!indirect_only) {
         InxLight main_light = get_main_light(ctx.position_ws, N, ctx.view_depth);
-        lo = calculate_all_lighting(ctx.position_ws, N, V,
-                                   albedo, metallic,
-                                   roughness, perceptual_roughness,
-                                   F0, f90, energy_compensation,
-                                   s.specular_highlights,
-                                   ctx.view_depth, main_light.shadow);
+        InxPbrLightResponse response;
+        response.normal = N;
+        response.view = V;
+        response.albedo = albedo;
+        response.metallic = metallic;
+        response.roughness = roughness;
+        response.perceptual_roughness = perceptual_roughness;
+        response.f0 = F0;
+        response.f90 = f90;
+        response.energy_compensation = energy_compensation;
+        response.specular_highlights = s.specular_highlights;
+        lo = calculate_all_lighting(ctx.position_ws, N, ctx.view_depth, main_light.shadow, response);
     }
     float3 diffuse_irradiance = sample_ambient_irradiance(N);
     float3 refl_dir = get_specular_ambient_direction(N, V, perceptual_roughness);
@@ -684,6 +694,18 @@ public InxLight inx_main_light<let tiled_lighting : bool>(InxShadingContext inpu
 public float3 inx_view_direction(InxShadingContext input)
 {
     return normalize(lighting.camera_pos.xyz - input.position_ws);
+}
+
+public float3 inx_direct_lighting<let tiled_lighting : bool, T : IInxLightResponse>(
+    InxShadingContext input, float3 normal_ws, T response)
+{
+    InxLighting<tiled_lighting> context = inx_lighting_context<tiled_lighting>(input);
+    InxLight main_light = context.get_main_light(input.position_ws, normal_ws, input.view_depth);
+    return context.calculate_all_lighting(input.position_ws, normal_ws, input.view_depth, main_light.shadow, response);
+}
+public float3 inx_ambient_irradiance(InxShadingContext input, float3 normal_ws)
+{
+    return inx_lighting_context<false>(input).sample_ambient_irradiance(normal_ws);
 }
 )slang"};
     return module;

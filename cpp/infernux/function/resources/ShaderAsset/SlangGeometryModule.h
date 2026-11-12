@@ -265,6 +265,8 @@ public static const uint INX_PBR_MODEL_ID = )slang" +
                                                std::to_string(ShadingModelId("PBR")) + R"slang(u;
 public static const uint INX_UNLIT_MODEL_ID = )slang" +
                                                std::to_string(ShadingModelId("Unlit")) + R"slang(u;
+public static const uint INX_TOON_MODEL_ID = )slang" +
+                                               std::to_string(ShadingModelId("Toon")) + R"slang(u;
 public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput input, uint model_id, bool receives_shadows)
 {
     InxGBufferOutput result;

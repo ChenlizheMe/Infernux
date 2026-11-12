@@ -32,6 +32,12 @@ def main():
         conflict_path = root / "Assets/conflict.vert.py"
         surface_path = root / "Assets/cutout.frag.py"
         consumer_path = root / "Assets/compare.frag.py"
+        (root / "Assets/not_mesh.frag.py").write_text('''import infernux.shader as shader
+class NotMesh(shader.fullscreen):
+    shader_id = "tests/not_mesh"
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(1.0)
+''', encoding="utf8")
         surface_source = SURFACE
         vertex_path.write_text(VERTEX, encoding="utf8")
         other_path.write_text(VERTEX.replace('tests/vertex/translate', 'tests/vertex/other').replace('ctx.time * self.rate', '0.4 + ctx.time * self.rate'), encoding="utf8")
@@ -80,7 +86,7 @@ def main():
             baseline_center = None
             labels = ("baseline", "parameter_offset", "parameter_restore", "time_motion", "motion_restore",
                       "vertex_hot_edit", "vertex_restore", "vertex_switch", "switch_restore",
-                      "legacy_pair_rejected", "pair_recovered", "field_conflict_rejected", "field_conflict_recovered",
+                      "domain_pair_rejected", "pair_recovered", "field_conflict_rejected", "field_conflict_recovered",
                       "first_invalid_suspended", "first_invalid_recovered")
             rejected = None
 
@@ -106,7 +112,7 @@ def main():
                         if phase < 9:
                             assert not errors, errors
                         elif phase == 9:
-                            assert any("requires a Python mesh fragment" in row["message"] for row in errors), errors
+                            assert any("domain mismatch" in row["message"] for row in errors), errors
                         elif phase == 11:
                             assert any("disagree on material field" in row["message"] for row in errors), errors
                         center = float(np.nonzero(covered)[1].mean()) if covered.any() else 0.0
@@ -137,7 +143,7 @@ def main():
                             material.vert_shader_name = "tests/vertex/other" if phase == 7 else "tests/vertex/translate"
                         elif phase in (9, 10):
                             if phase == 9:
-                                material.frag_shader_name = "Toon"
+                                material.frag_shader_name = "tests/not_mesh"
                             else:
                                 material.native.frag_shader_reference = fragment_reference
                                 material.alpha_clip_enabled, material.alpha_clip_threshold = True, 0.5
@@ -150,7 +156,7 @@ def main():
                         elif phase == 13:
                             rejected = inx.Material.from_shader(str(surface_path))
                             rejected.vert_shader_name = "tests/vertex/translate"
-                            rejected.frag_shader_name = "Toon"
+                            rejected.frag_shader_name = "tests/not_mesh"
                             renderer.set_material(rejected)
                         elif phase == 14:
                             rejected.native.frag_shader_reference = fragment_reference

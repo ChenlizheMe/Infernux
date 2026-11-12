@@ -120,11 +120,23 @@ color = shader.lighting.pbr(surface, ctx)
 ambient = shader.lighting.pbr_indirect(surface, ctx)
 light = shader.lighting.main_light(ctx, surface.normal_ws)
 direction = shader.lighting.view_direction(ctx)
+irradiance = shader.lighting.ambient(ctx, surface.normal_ws)
+direct = shader.lighting.direct(surface, ctx)
 ```
 
 `pbr` includes direct light, the current environment response, and emission. `pbr_indirect` returns the material-weighted environment term only; do not multiply its albedo/BSDF again or add another copy of the same environment. It is not yet the future ray-traced incident-light input. A light's color, attenuation, and shadow are separate fields; main-light access respects the object's layer and light domain.
 
-Models may call typed methods and static ShaderLib functions. Surface/model/library dependencies are prepared together and republished on accepted source updates. Built-in PBR and Unlit participate in Deferred's model dispatch. Custom model assets currently use Forward/Forward+ color evaluation, including the existing Forward route inside a Deferred pipeline; a custom GBuffer/deferred dispatcher is still being implemented.
+`ambient` returns environment irradiance before a material response. `direct` traverses the engine's directional, point, spot and rectangle lights and invokes the model's `shade_light` method for each light sample. It preserves separate color, attenuation and visibility values and applies the same light layers, shadow views and Forward+ lists as PBR. It requires this typed method:
+
+```python
+def shade_light(self, surface: shader.SurfaceData, ctx: shader.ShadingContext, light: shader.LightData) -> shader.vec3:
+    diffuse = shader.max(shader.dot(surface.normal_ws, light.direction), 0.0)
+    return surface.albedo * light.color * light.attenuation * light.shadow * diffuse
+```
+
+The interface is specialized by Slang at compilation; authors do not copy light loops or add runtime model switches. Call `direct` once from `shade`, then add the desired environment and emission terms. `infernux/toon` uses this path and can be paired with a separately selected vertex asset.
+
+Models may call typed methods and static ShaderLib functions. Surface/model/library dependencies are prepared together and republished on accepted source updates. Built-in PBR, Unlit and Toon participate in Deferred's model dispatch. Custom model assets currently use Forward/Forward+ color evaluation, including the existing Forward route inside a Deferred pipeline; a custom GBuffer/deferred dispatcher is still being implemented.
 
 ## Shader libraries and raw fragments {#libraries}
 
@@ -260,11 +272,23 @@ color = shader.lighting.pbr(surface, ctx)
 ambient = shader.lighting.pbr_indirect(surface, ctx)
 light = shader.lighting.main_light(ctx, surface.normal_ws)
 direction = shader.lighting.view_direction(ctx)
+irradiance = shader.lighting.ambient(ctx, surface.normal_ws)
+direct = shader.lighting.direct(surface, ctx)
 ```
 
 `pbr` 包含直接光、当前环境响应和自发光。`pbr_indirect` 仅返回已经乘过材质响应的环境项，不要再次乘 albedo／BSDF 或重复叠加相同环境。它还不是未来光追的入射光输入。LightData 分开保存光色、衰减与 shadow；主光读取遵守对象 layer 和光源作用域。
 
-模型可调用 typed 方法和静态 ShaderLib。Surface／模型／库的依赖一起准备，并在源码成功更新后发布。内置 PBR／Unlit 参与 Deferred 的模型分发。自定义模型资产目前在 Forward／Forward+ 求颜色，包括 Deferred 管线已有的 Forward 绘制通道；自定义 GBuffer／延迟分发仍在实现。
+`ambient` 返回尚未乘材质响应的环境辐照度。`direct` 遍历引擎的方向光、点光、聚光和矩形面光，并为每次光采样调用模型的 `shade_light`。光色、衰减和可见性保持分离；光源层、阴影视图和 Forward+ 灯光列表与 PBR 共用。需要定义以下签名：
+
+```python
+def shade_light(self, surface: shader.SurfaceData, ctx: shader.ShadingContext, light: shader.LightData) -> shader.vec3:
+    diffuse = shader.max(shader.dot(surface.normal_ws, light.direction), 0.0)
+    return surface.albedo * light.color * light.attenuation * light.shadow * diffuse
+```
+
+Slang 在编译时专门化这个接口；作者无需复制灯光循环，也不增加运行时模型判断。在 `shade` 中调用一次 `direct`，再添加所需环境响应和自发光。内置 `infernux/toon` 使用同一路径，可以独立搭配材质所选的顶点资产。
+
+模型可调用 typed 方法和静态 ShaderLib。Surface／模型／库的依赖一起准备，并在源码成功更新后发布。内置 PBR／Unlit／Toon 参与 Deferred 的模型分发。自定义模型资产目前在 Forward／Forward+ 求颜色，包括 Deferred 管线已有的 Forward 绘制通道；自定义 GBuffer／延迟分发仍在实现。
 
 ## ShaderLib 与原始片元 {#libraries_1}
 
