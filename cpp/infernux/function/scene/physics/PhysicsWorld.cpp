@@ -63,6 +63,7 @@
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
 #include <core/threading/JobSystem.h>
+#include <function/renderer/rhi/RhiComputeHost.h>
 
 #include <algorithm>
 #include <array>
@@ -745,9 +746,17 @@ void PhysicsWorld::Initialize()
     m_initialized = true;
 }
 
+void PhysicsWorld::BindGpuServices(std::unique_ptr<rhi::ComputeHost> host, FrameWorkOwner *work)
+{
+    m_gpuHost = std::move(host);
+    m_gpuWork = work;
+}
+
 void PhysicsWorld::Shutdown()
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
+    m_gpuHost.reset();
+    m_gpuWork = nullptr;
     if (!m_initialized)
         return;
 

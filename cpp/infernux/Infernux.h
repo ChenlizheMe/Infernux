@@ -715,6 +715,7 @@ class Infernux
     void StartRuntimeServices();
     void ReleaseRuntimeServices() noexcept;
     void CreateRenderer();
+    void InitializePhysics();
     void FinishFrame(const RenderFrameResult &result);
     void BeginRuntimeFrame(float deltaTime);
     [[nodiscard]] FrameGpuAvailability BackgroundGpuAvailability(bool foregroundReady);

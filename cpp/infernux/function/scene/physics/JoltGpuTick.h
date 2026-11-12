@@ -43,6 +43,12 @@ class JoltGpuTick final
     /// must be retired or reinitialized by the outer owner, never resumed here.
     void Cancel() noexcept;
 
+    /// The owning world controls when this source may prepare, submit or wait.
+    /// Closing admission retains its cursor and packets; already accepted
+    /// receipts can still retire. Reopening wakes the same source.
+    void SetAdmissionEnabled(bool enabled) noexcept;
+    [[nodiscard]] bool IsAdmissionEnabled() const noexcept;
+
     [[nodiscard]] FrameWorkOwner::SourceId GetSourceId() const noexcept;
     [[nodiscard]] Status GetStatus() const noexcept;
     [[nodiscard]] bool IsPending() const noexcept;

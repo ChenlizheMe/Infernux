@@ -124,6 +124,7 @@ class JoltGpuTick::Impl
     rhi::ComputeHost host;
     FrameWorkOwner::SourceId sourceId = 0;
     Status status = Status::Idle;
+    bool admissionEnabled = true;
     float fixedDeltaTime = 0;
     size_t cursor = 0;
     std::shared_ptr<rhi::ComputeBuffer> completedStates;
@@ -246,6 +247,10 @@ class JoltGpuTick::Impl
     FrameWorkFacts Describe() const
     {
         FrameWorkFacts facts;
+        if (!admissionEnabled) {
+            facts.pending = facts.gpuBusy = !receipts.empty();
+            return facts;
+        }
         facts.pending = status == Status::Running || !receipts.empty();
         if (status != Status::Running)
             return facts;
@@ -408,7 +413,7 @@ class JoltGpuTick::Impl
 
     bool Advance(bool gpu, uint64_t token)
     {
-        if (status != Status::Running)
+        if (!admissionEnabled || status != Status::Running)
             return false;
         try {
             if (gpu)
@@ -466,6 +471,18 @@ void JoltGpuTick::Begin(float deltaTime, const JoltGpuStepParameters &parameters
 void JoltGpuTick::Cancel() noexcept
 {
     m_impl->Cancel();
+}
+void JoltGpuTick::SetAdmissionEnabled(bool enabled) noexcept
+{
+    if (m_impl->admissionEnabled == enabled)
+        return;
+    m_impl->admissionEnabled = enabled;
+    if (enabled)
+        m_impl->work.Wake(m_impl->sourceId);
+}
+bool JoltGpuTick::IsAdmissionEnabled() const noexcept
+{
+    return m_impl->admissionEnabled;
 }
 FrameWorkOwner::SourceId JoltGpuTick::GetSourceId() const noexcept
 {

@@ -3550,7 +3550,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 
     // Initialize physics world (Jolt)
     phaseBegin = StartupClock::now();
-    PhysicsWorld::Instance().Initialize();
+    InitializePhysics();
     startupPhase("physics", phaseBegin);
 
     // Initialize audio engine (SDL3 audio)
@@ -3562,6 +3562,18 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     startupPhase("total", startupBegin);
     m_frameWork.Reopen();
     m_isInitialized = true;
+}
+
+void Infernux::InitializePhysics()
+{
+    auto &world = PhysicsWorld::Instance();
+    world.Initialize();
+    if (m_gpuServices) {
+        // Initialization precedes m_isInitialized. Borrow the already created
+        // engine services without retaining an external compute-host lease.
+        auto lease = m_gpuServices->AcquireComputeHost();
+        world.BindGpuServices(std::make_unique<rhi::ComputeHost>(*lease), &m_frameWork);
+    }
 }
 
 void Infernux::InitHeadless(const std::string &projectPath, const std::string &builtinResourcePath,
@@ -3645,7 +3657,7 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
 
     RegisterAssetCallbacks();
 
-    PhysicsWorld::Instance().Initialize();
+    InitializePhysics();
     if (SceneManager::Instance().GetActiveScene() == nullptr) {
         SceneManager::Instance().CreateScene("Headless Scene");
     }

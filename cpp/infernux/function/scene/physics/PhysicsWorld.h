@@ -27,8 +27,14 @@
 // Forward declaration
 namespace infernux
 {
+class FrameWorkOwner;
+class Infernux;
 class InxContactListener;
 struct ContactEvent;
+namespace rhi
+{
+class ComputeHost;
+}
 } // namespace infernux
 
 // Forward-declare Jolt types to avoid Jolt.h leak into every TU
@@ -691,6 +697,9 @@ class PhysicsWorld
     [[nodiscard]] size_t DispatchContactEvents();
 
   private:
+    friend class Infernux;
+    /// Engine-owned services, borrowed until Shutdown; no external host lease.
+    void BindGpuServices(std::unique_ptr<rhi::ComputeHost> host, FrameWorkOwner *work);
     friend class HingeJointBatch;
     void ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const;
     void SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets);
@@ -752,6 +761,9 @@ class PhysicsWorld
     void SettleKinematicMoves();
 
     bool m_initialized = false;
+
+    std::unique_ptr<rhi::ComputeHost> m_gpuHost;
+    FrameWorkOwner *m_gpuWork = nullptr;
 
     std::unique_ptr<JPH::TempAllocatorImpl> m_tempAllocator;
     std::unique_ptr<InfernuxJoltJobSystemAdapter> m_jobSystem;
