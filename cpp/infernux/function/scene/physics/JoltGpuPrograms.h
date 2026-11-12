@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace infernux
@@ -19,6 +20,20 @@ struct JoltGpuModel
     std::vector<JPH::GPU::ShapeModel> shapes;
     std::vector<JPH::GPU::WorldRange> worlds;
 };
+
+struct JoltGpuBodyModelUpdate
+{
+    uint32_t index;
+    JPH::GPU::BodyModel model;
+};
+
+struct JoltGpuShapeModelUpdate
+{
+    uint32_t index;
+    JPH::GPU::ShapeModel model;
+};
+
+class JoltGpuModelUpdate;
 
 /// One validated step description, reusing the shared device record. Contact
 /// settings and iteration counts are prepared once; only gravity/dt change in
@@ -43,6 +58,8 @@ class JoltGpuStorage
 {
   public:
     JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel model);
+    JoltGpuStorage(const JoltGpuStorage &) = delete;
+    JoltGpuStorage &operator=(const JoltGpuStorage &) = delete;
 
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareInitialization(const std::vector<JPH::GPU::BodyState> &states,
@@ -58,10 +75,26 @@ class JoltGpuStorage
     /// BodyForces port directly; the normal compute dependency orders its use.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareForces(const std::vector<JPH::GPU::BodyForces> &forces);
-    // All Prepare methods return nullptr for an empty model. The caller
-    // completes that phase without constructing or submitting a GPU packet.
+    /// Fixed-capacity author-model transaction; existing GPU state is retained.
+    /// Additional uploads/dispatches share its acceptance boundary, for example
+    /// a new slot's initial state or an explicit device-side COM mutation.
+    /// Mutations may update runtime state only; author-model ports remain owned
+    /// by the typed deltas, including when dispatches share this packet.
+    /// Only one unaccepted model transaction may exist. Storage must outlive it.
+    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
+    PrepareModelUpdate(std::vector<JoltGpuBodyModelUpdate> bodyChanges,
+                       std::vector<JoltGpuShapeModelUpdate> shapeChanges,
+                       std::vector<rhi::ComputeBufferUpdate> additionalUpdates = {},
+                       std::vector<rhi::ComputeDispatchDesc> mutations = {});
+    // Initialization/step-input preparation returns nullptr for an empty model;
+    // the caller completes that phase without preparing or submitting a packet.
 
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Get(JPH::GPU::Resource resource) const;
+    /// Accepted author metadata only; never a CPU mirror of dynamic body state.
+    [[nodiscard]] const JoltGpuModel &GetModel() const noexcept
+    {
+        return m_model;
+    }
     [[nodiscard]] uint32_t GetBodyCount() const noexcept
     {
         return m_bodyCount;
@@ -85,10 +118,45 @@ class JoltGpuStorage
 
   private:
     friend class JoltGpuPrograms;
+    friend class JoltGpuModelUpdate;
     rhi::ComputeHost m_host;
-    const JoltGpuModel m_model;
+    // Accepted author metadata; dynamic state remains exclusively on the GPU.
+    JoltGpuModel m_model;
+    bool m_modelUpdatePending = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 8> m_buffers;
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_contactCount = 0, m_maxBodiesPerWorld = 0;
+};
+
+/// One model delta and its exact RHI packet. GPU acceptance commits the author
+/// metadata, not GPU completion. Destruction revokes an unaccepted packet even
+/// when another observer retains GetBatch(). Storage must outlive this owner.
+class JoltGpuModelUpdate final
+{
+  public:
+    ~JoltGpuModelUpdate();
+    JoltGpuModelUpdate(const JoltGpuModelUpdate &) = delete;
+    JoltGpuModelUpdate &operator=(const JoltGpuModelUpdate &) = delete;
+
+    /// Preparation/observation only, including budgets and preservation copies.
+    /// Submit the original packet exclusively through this owner's TrySubmit().
+    [[nodiscard]] const std::shared_ptr<rhi::PreparedComputeBatch> &GetBatch() const noexcept
+    {
+        return m_batch;
+    }
+    [[nodiscard]] std::optional<rhi::SubmissionTicket> TrySubmit();
+    void Cancel() noexcept;
+
+  private:
+    friend class JoltGpuStorage;
+    JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
+                       std::vector<JoltGpuBodyModelUpdate> bodyChanges,
+                       std::vector<JoltGpuShapeModelUpdate> shapeChanges);
+    void Commit() noexcept;
+
+    JoltGpuStorage *m_storage;
+    std::shared_ptr<rhi::PreparedComputeBatch> m_batch;
+    std::vector<JoltGpuBodyModelUpdate> m_bodyChanges;
+    std::vector<JoltGpuShapeModelUpdate> m_shapeChanges;
 };
 
 /// The five read-only input values of one logical tick. Capture each port

@@ -1,0 +1,36 @@
+#pragma once
+
+#include "JoltGpuPrograms.h"
+
+namespace infernux
+{
+
+/// Sparse state changes using the common compute service. Author model uploads
+/// and these dispatches form one accepted transaction. The owner must complete
+/// its current logical tick before preparing a mutation; no CPU state is read.
+class JoltGpuBodyMutations
+{
+  public:
+    JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderTargetCode &target);
+
+    /// Initialization is explicit, for newly owned or deliberately reset slots
+    /// within the existing capacity. Other bodies keep their resident state.
+    /// COM changes preserve origin using the device's actual current rotation.
+    /// Repeated slots, including across the two lists, are not allowed.
+    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
+    Prepare(JoltGpuStorage &storage, std::vector<JoltGpuBodyModelUpdate> bodies,
+            std::vector<JoltGpuShapeModelUpdate> shapes,
+            const std::vector<JPH::GPU::BodyInitialization> &initializations = {},
+            const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {});
+
+  private:
+    struct Entry
+    {
+        std::shared_ptr<rhi::ComputeKernel> kernel;
+        std::vector<uint8_t> ports;
+    };
+    rhi::ComputeHost m_host;
+    Entry m_initialize, m_centerOfMass;
+};
+
+} // namespace infernux

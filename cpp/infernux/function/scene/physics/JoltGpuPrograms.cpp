@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace infernux
 {
@@ -129,6 +130,83 @@ bool Zero3(const Float4 &value)
     return value.x == 0.0f && value.y == 0.0f && value.z == 0.0f;
 }
 
+struct ModelCounts
+{
+    uint32_t bodies, worlds, contacts, maxBodiesPerWorld;
+};
+
+template <class Change, class Record>
+const Record &ModelRecord(const std::vector<Record> &records, const std::vector<Change> &changes, uint32_t index)
+{
+    const auto change = std::lower_bound(changes.begin(), changes.end(), index,
+                                         [](const auto &value, uint32_t key) { return value.index < key; });
+    return change != changes.end() && change->index == index ? change->model : records[index];
+}
+
+ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBodyModelUpdate> &bodyChanges = {},
+                          const std::vector<JoltGpuShapeModelUpdate> &shapeChanges = {})
+{
+    if (model.bodies.size() > std::numeric_limits<uint32_t>::max() ||
+        model.worlds.size() > std::numeric_limits<uint32_t>::max())
+        throw std::invalid_argument("Jolt GPU model exceeds the device index range");
+    ModelCounts counts{static_cast<uint32_t>(model.bodies.size()), static_cast<uint32_t>(model.worlds.size()), 0, 0};
+    uint64_t bodyEnd = 0, contactEnd = 0;
+    for (size_t world = 0; world < model.worlds.size(); ++world) {
+        const auto range = model.worlds[world].range;
+        if (range.x != bodyEnd || range.z != contactEnd || range.y > MaxBodiesPerWorld ||
+            range.w != range.y * range.y || bodyEnd + range.y > counts.bodies)
+            throw std::invalid_argument("Jolt GPU bootstrap requires contiguous bounded world ranges");
+        for (uint32_t body = range.x; body < range.x + range.y; ++body) {
+            const auto &record = ModelRecord(model.bodies, bodyChanges, body);
+            if (record.meta.w != world || record.meta.x >= model.shapes.size() ||
+                (record.meta.y != ShapeSphere && record.meta.y != ShapeBox && record.meta.y != ShapeEmpty) ||
+                (record.meta.z != MotionStatic && record.meta.z != MotionDynamic) ||
+                (record.meta.y == ShapeBox && record.meta.z != MotionStatic))
+                throw std::invalid_argument("Unsupported body in the Jolt GPU bootstrap model");
+            const auto &shape = ModelRecord(model.shapes, shapeChanges, record.meta.x);
+            if (record.surface.x >= 32 || record.surface.z > MaterialCombineMaximum ||
+                record.surface.w > MaterialCombineMaximum)
+                throw std::invalid_argument("Jolt GPU body layer or material combine mode is invalid");
+            const auto geometry = shape.geometry;
+            if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 || !Normalized(shape.localRotation))
+                throw std::invalid_argument("Jolt GPU shape local position or rotation is invalid");
+            const bool dynamic = record.meta.z == MotionDynamic;
+            if (!Finite4(record.mass) || record.mass.y < 0 || record.mass.z < 0 || record.mass.z > 1 ||
+                (dynamic ? record.mass.x <= 0 : record.mass.x != 0) || !Finite4(record.damping) ||
+                record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
+                (dynamic && (!Finite3(record.invInertiaDiagonal) || record.invInertiaDiagonal.x <= 0 ||
+                             record.invInertiaDiagonal.y <= 0 || record.invInertiaDiagonal.z <= 0 ||
+                             !Normalized(record.inertiaRotation))))
+                throw std::invalid_argument("Jolt GPU body has invalid mass, inertia, material or damping");
+            if (record.meta.y == ShapeSphere) {
+                if (!std::isfinite(geometry.w) || geometry.w <= 0)
+                    throw std::invalid_argument("Jolt GPU sphere radius must be positive and finite");
+            } else if (record.meta.y == ShapeBox &&
+                       (!Finite4(geometry) || geometry.x <= 0 || geometry.y <= 0 || geometry.z <= 0 || geometry.w < 0 ||
+                        geometry.w > std::min({geometry.x, geometry.y, geometry.z}))) {
+                throw std::invalid_argument("Jolt GPU box dimensions or convex radius are invalid");
+            }
+        }
+        bodyEnd += range.y;
+        contactEnd += range.w;
+        counts.maxBodiesPerWorld = std::max(counts.maxBodiesPerWorld, range.y);
+    }
+    if (bodyEnd != counts.bodies || contactEnd > std::numeric_limits<uint32_t>::max())
+        throw std::invalid_argument("Jolt GPU ranges do not cover the model");
+    counts.contacts = static_cast<uint32_t>(contactEnd);
+    return counts;
+}
+
+template <class Change> void ValidateModelChangeIndices(std::vector<Change> &changes, size_t capacity)
+{
+    std::sort(changes.begin(), changes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
+    for (size_t index = 0; index < changes.size(); ++index) {
+        const auto &change = changes[index];
+        if (change.index >= capacity || (index && changes[index - 1].index == change.index))
+            throw std::invalid_argument("Jolt GPU model update requires unique indices within existing capacity");
+    }
+}
+
 void ValidateForces(const std::vector<BodyForces> &forces, uint32_t bodyCount)
 {
     if (forces.size() != bodyCount)
@@ -163,6 +241,22 @@ template <class T> std::vector<uint8_t> Bytes(const T *values, size_t count)
     return bytes;
 }
 
+template <class Change, class Record>
+void AppendModelUpload(std::vector<rhi::ComputeBufferUpdate> &updates,
+                       const std::shared_ptr<rhi::ComputeBuffer> &buffer, const std::vector<Change> &changes,
+                       const std::vector<Record> &records)
+{
+    if (changes.empty())
+        return;
+    const auto first = changes.front().index;
+    const size_t count = size_t(changes.back().index) - first + 1;
+    auto bytes = Bytes(records.data() + first, count);
+    // Allocate only the upload envelope; its holes retain accepted author data.
+    for (const auto &change : changes)
+        std::memcpy(bytes.data() + size_t(change.index - first) * sizeof(Record), &change.model, sizeof(Record));
+    updates.push_back({buffer, uint64_t(first) * sizeof(Record), std::move(bytes)});
+}
+
 uint32_t Groups(uint32_t count, uint32_t width)
 {
     return count / width + static_cast<uint32_t>(count % width != 0);
@@ -189,55 +283,11 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
     : m_host(host), m_model(std::move(modelData))
 {
     const auto &model = m_model;
-    if (model.bodies.size() > std::numeric_limits<uint32_t>::max() ||
-        model.worlds.size() > std::numeric_limits<uint32_t>::max())
-        throw std::invalid_argument("Jolt GPU model exceeds the device index range");
-    m_bodyCount = static_cast<uint32_t>(model.bodies.size());
-    m_worldCount = static_cast<uint32_t>(model.worlds.size());
-    uint64_t bodyEnd = 0, contactEnd = 0;
-    for (size_t world = 0; world < model.worlds.size(); ++world) {
-        const auto range = model.worlds[world].range;
-        if (range.x != bodyEnd || range.z != contactEnd || range.y > MaxBodiesPerWorld ||
-            range.w != range.y * range.y || bodyEnd + range.y > m_bodyCount)
-            throw std::invalid_argument("Jolt GPU bootstrap requires contiguous bounded world ranges");
-        for (uint32_t body = range.x; body < range.x + range.y; ++body) {
-            const auto &record = model.bodies[body];
-            if (record.meta.w != world || record.meta.x >= model.shapes.size() ||
-                (record.meta.y != ShapeSphere && record.meta.y != ShapeBox && record.meta.y != ShapeEmpty) ||
-                (record.meta.z != MotionStatic && record.meta.z != MotionDynamic) ||
-                (record.meta.y == ShapeBox && record.meta.z != MotionStatic))
-                throw std::invalid_argument("Unsupported body in the Jolt GPU bootstrap model");
-            const auto &shape = model.shapes[record.meta.x];
-            if (record.surface.x >= 32 || record.surface.z > MaterialCombineMaximum ||
-                record.surface.w > MaterialCombineMaximum)
-                throw std::invalid_argument("Jolt GPU body layer or material combine mode is invalid");
-            const auto geometry = shape.geometry;
-            if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 || !Normalized(shape.localRotation))
-                throw std::invalid_argument("Jolt GPU shape local position or rotation is invalid");
-            const bool dynamic = record.meta.z == MotionDynamic;
-            if (!Finite4(record.mass) || record.mass.y < 0 || record.mass.z < 0 || record.mass.z > 1 ||
-                (dynamic ? record.mass.x <= 0 : record.mass.x != 0) || !Finite4(record.damping) ||
-                record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
-                (dynamic && (!Finite3(record.invInertiaDiagonal) || record.invInertiaDiagonal.x <= 0 ||
-                             record.invInertiaDiagonal.y <= 0 || record.invInertiaDiagonal.z <= 0 ||
-                             !Normalized(record.inertiaRotation))))
-                throw std::invalid_argument("Jolt GPU body has invalid mass, inertia, material or damping");
-            if (record.meta.y == ShapeSphere) {
-                if (!std::isfinite(geometry.w) || geometry.w <= 0)
-                    throw std::invalid_argument("Jolt GPU sphere radius must be positive and finite");
-            } else if (record.meta.y == ShapeBox &&
-                       (!Finite4(geometry) || geometry.x <= 0 || geometry.y <= 0 || geometry.z <= 0 || geometry.w < 0 ||
-                        geometry.w > std::min({geometry.x, geometry.y, geometry.z}))) {
-                throw std::invalid_argument("Jolt GPU box dimensions or convex radius are invalid");
-            }
-        }
-        bodyEnd += range.y;
-        contactEnd += range.w;
-        m_maxBodiesPerWorld = std::max(m_maxBodiesPerWorld, range.y);
-    }
-    if (bodyEnd != m_bodyCount || contactEnd > std::numeric_limits<uint32_t>::max())
-        throw std::invalid_argument("Jolt GPU ranges do not cover the model");
-    m_contactCount = static_cast<uint32_t>(contactEnd);
+    const auto counts = ValidateModel(model);
+    m_bodyCount = counts.bodies;
+    m_worldCount = counts.worlds;
+    m_contactCount = counts.contacts;
+    m_maxBodiesPerWorld = counts.maxBodiesPerWorld;
     if (m_bodyCount == 0)
         return;
 
@@ -323,6 +373,90 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareForces(const s
     if (m_bodyCount == 0)
         return {};
     return rhi::PrepareComputeBatch(m_host, {{Get(Resource::BodyForces), 0, Bytes(forces.data(), forces.size())}}, {});
+}
+
+std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
+    std::vector<JoltGpuBodyModelUpdate> bodyChanges, std::vector<JoltGpuShapeModelUpdate> shapeChanges,
+    std::vector<rhi::ComputeBufferUpdate> additionalUpdates, std::vector<rhi::ComputeDispatchDesc> mutations)
+{
+    if (bodyChanges.empty() && shapeChanges.empty() && additionalUpdates.empty() && mutations.empty())
+        return {};
+    if (m_modelUpdatePending)
+        throw std::logic_error("Jolt GPU storage already has an unaccepted model transaction");
+
+    const auto &bodyBuffer = Get(Resource::BodyModels);
+    const auto &shapeBuffer = Get(Resource::ShapeModels);
+    for (const auto &update : additionalUpdates) {
+        if (update.buffer &&
+            ((bodyBuffer && update.buffer->GetWriterStateIdentity() == bodyBuffer->GetWriterStateIdentity()) ||
+             (shapeBuffer && update.buffer->GetWriterStateIdentity() == shapeBuffer->GetWriterStateIdentity())))
+            throw std::invalid_argument("Jolt GPU model ports must be updated through their author-model delta");
+    }
+
+    ValidateModelChangeIndices(bodyChanges, m_model.bodies.size());
+    ValidateModelChangeIndices(shapeChanges, m_model.shapes.size());
+    if (!bodyChanges.empty() || !shapeChanges.empty())
+        (void)ValidateModel(m_model, bodyChanges, shapeChanges);
+    // Neither existing BodyStates nor BodyForces is read or uploaded here.
+    // Explicit caller mutations, when present, execute in this same RHI packet.
+    AppendModelUpload(additionalUpdates, bodyBuffer, bodyChanges, m_model.bodies);
+    AppendModelUpload(additionalUpdates, shapeBuffer, shapeChanges, m_model.shapes);
+    auto batch = rhi::PrepareComputeBatch(m_host, std::move(additionalUpdates), std::move(mutations));
+    auto transaction = std::unique_ptr<JoltGpuModelUpdate>(
+        new JoltGpuModelUpdate(*this, std::move(batch), std::move(bodyChanges), std::move(shapeChanges)));
+    m_modelUpdatePending = true;
+    return transaction;
+}
+
+JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
+                                       std::vector<JoltGpuBodyModelUpdate> bodyChanges,
+                                       std::vector<JoltGpuShapeModelUpdate> shapeChanges)
+    : m_storage(&storage), m_batch(std::move(batch)), m_bodyChanges(std::move(bodyChanges)),
+      m_shapeChanges(std::move(shapeChanges))
+{
+}
+
+JoltGpuModelUpdate::~JoltGpuModelUpdate()
+{
+    Cancel();
+}
+
+void JoltGpuModelUpdate::Commit() noexcept
+{
+    for (const auto &change : m_bodyChanges)
+        m_storage->m_model.bodies[change.index] = change.model;
+    for (const auto &change : m_shapeChanges)
+        m_storage->m_model.shapes[change.index] = change.model;
+    m_storage->m_modelUpdatePending = false;
+    m_storage = nullptr;
+}
+
+std::optional<rhi::SubmissionTicket> JoltGpuModelUpdate::TrySubmit()
+{
+    if (!m_storage)
+        throw std::logic_error("Jolt GPU model transaction is no longer pending");
+    std::optional<rhi::SubmissionTicket> ticket;
+    try {
+        ticket = m_batch->TrySubmit();
+    } catch (...) {
+        // Acceptance remains final if later RHI bookkeeping throws. No new
+        // allocations or validation are needed to install the prepared delta.
+        if (m_batch->GetSubmission().IsValid())
+            Commit();
+        throw;
+    }
+    if (ticket)
+        Commit();
+    return ticket;
+}
+
+void JoltGpuModelUpdate::Cancel() noexcept
+{
+    if (!m_storage)
+        return;
+    (void)m_batch->Cancel();
+    m_storage->m_modelUpdatePending = false;
+    m_storage = nullptr;
 }
 
 void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource)
