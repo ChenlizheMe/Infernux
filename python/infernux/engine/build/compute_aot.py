@@ -337,6 +337,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
     """
     from infernux._compiler import slang as frontend
     from infernux._compiler.gpu_artifact import ArtifactAbiMismatchError, _specialization_identity
+    from infernux._compiler.work_item import _parse_function_source
     from infernux.engine.candidate_import import CandidateImportTransaction
     from infernux.engine.project_context import using_project_root
 
@@ -401,7 +402,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                     qualified = name[len(module_name) + 1:]
                     if qualified not in sources:
                         raise ComputeAotBuildError(f"GPU AOT source is missing: {name}", missing=(name,))
-                    definition = ast.parse(sources[qualified]).body[0]
+                    definition = _parse_function_source(sources[qualified][0])
                     if definition.args.defaults or any(value is not None for value in definition.args.kw_defaults):
                         raise ComputeAotBuildError(f"GPU kernel requires parameters without defaults: {name}")
                     fields = receiver_field_names(definition) if implicit_receiver_name(definition, in_class=True) else None
@@ -436,14 +437,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                     missing.add(f"{declaration.function.__module__}.{declaration.function.__qualname__}")
         finally:
             broker.rollback()
-    if missing:
-        ordered = tuple(sorted(missing))
-        raise ComputeAotBuildError(
-            "GPU AOT is incomplete for the current source of the selected Player closure: "
-            + ", ".join(ordered) + ". Prepare these kernels in the Editor before building.",
-            missing=ordered,
-        )
-    return list(selected.values()), manifest
+    return list(selected.values()), manifest, tuple(sorted(missing))
 
 
 def stage_compute_artifacts(
@@ -454,11 +448,12 @@ def stage_compute_artifacts(
     target: str = "Player/AOT",
     source_snapshots: dict[str, str] | None = None,
 ) -> ComputeAotResult:
-    """Stage the exact selected kernel set plus engine compute primitives.
+    """Stage matching prewarmed kernels plus engine compute primitives.
 
     The editor compiler cache is a build input, never a Player runtime cache.
-    Artifact filenames already encode source and specialization identity; the
-    Player recomputes that identity and opens the matching immutable file.
+    The Player retains source metadata and its resident compiler. A new legal
+    signature prepares its own target program; only matching warmed programs
+    are copied from the editor cache.
     """
 
     root = Path(resolved_path(Path(project_root).expanduser()))
@@ -482,15 +477,7 @@ def stage_compute_artifacts(
         return ComputeAotResult(0, 0)
 
     engine_elapsed_ms = ensure_engine_compute_artifacts(root)
-    source = root / "Library" / "Artifacts" / "Compute"
-    if not source.is_dir():
-        raise ComputeAotBuildError(
-            "GPU AOT artifacts are missing. Run the selected scenes once in the "
-            "Editor so every @inx.compute.kernel specialization is prepared.",
-            missing=expected,
-        )
-
-    selected, manifest_records = _select_current_artifacts(root, snapshots, expected)
+    selected, manifest_records, runtime_kernels = _select_current_artifacts(root, snapshots, expected)
 
     _clear_staged_gpu_artifacts(destination)
     destination.mkdir(parents=True, exist_ok=True)
@@ -502,15 +489,10 @@ def stage_compute_artifacts(
         encoding="utf-8",
         newline="\n",
     )
-    (destination / "AotOnly").write_text(
-        "GPU kernels in this Player are immutable build artifacts.\n",
-        encoding="utf-8",
-        newline="\n",
-    )
     print(
         "INFERNUX_BUILD_GPU_AOT_READY "
         f"target={target} project_kernels={len(expected)} artifacts={len(selected)} "
-        f"engine_prewarm_ms={engine_elapsed_ms:.1f}"
+        f"runtime_kernels={len(runtime_kernels)} engine_prewarm_ms={engine_elapsed_ms:.1f}"
     )
     return ComputeAotResult(len(selected), len(expected))
 
@@ -521,10 +503,7 @@ def _clear_staged_gpu_artifacts(destination: Path) -> None:
         return
     for artifact in destination.glob("*.inxgpu"):
         artifact.unlink()
-    for name in ("AotManifest.json", "AotOnly"):
-        marker = destination / name
-        if marker.exists():
-            marker.unlink()
+    (destination / "AotManifest.json").unlink(missing_ok=True)
     if not any(destination.iterdir()):
         destination.rmdir()
 

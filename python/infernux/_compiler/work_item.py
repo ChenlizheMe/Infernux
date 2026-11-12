@@ -10,7 +10,6 @@ from dataclasses import dataclass, field, replace
 import inspect
 import os
 import symtable
-import textwrap
 
 import numpy as np
 
@@ -132,40 +131,61 @@ class _ReceiverLowering(ast.NodeTransformer):
         return node
 
 
-def _function_definition(value, *, kind: str) -> ast.FunctionDef:
-    if value.__closure__:
-        raise TypeError(f"{kind} cannot capture Python closure values")
-    source = _function_source(value)
-    tree = ast.parse(source)
-    definition = next(
-        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))),
-        None,
-    )
-    if not isinstance(definition, ast.FunctionDef):
-        raise TypeError(f"{kind} must be a synchronous Python function")
-    definition.decorator_list = []
+@dataclass(frozen=True, slots=True)
+class SourceOrigin:
+    path: str
+    source: str
+    line_offset: int
+
+
+def _parse_function_source(source):
+    """Parse an original indented block without changing its source columns."""
+    indented = source.startswith((' ', '\t'))
+    tree = ast.parse('if True:\n' + source if indented else source)
+    body = tree.body[0].body if indented else tree.body
+    definition = next((node for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+    if indented and definition is not None:
+        ast.increment_lineno(definition, -1)
     return definition
 
 
-def _function_source(value) -> str:
+def _function_definition(value, *, kind: str):
+    if value.__closure__:
+        raise TypeError(f"{kind} cannot capture Python closure values")
+    origin = _function_origin(value)
+    definition = _parse_function_source(origin.source)
+    if not isinstance(definition, ast.FunctionDef):
+        raise TypeError(f"{kind} must be a synchronous Python function")
+    definition.decorator_list = []
+    return definition, origin
+
+
+def _function_origin(value) -> SourceOrigin:
     records = value.__globals__.get("__infernux_compute_sources__", {})
     embedded = records.get(value.__qualname__) if isinstance(records, dict) else None
-    if embedded is not None:
-        if not isinstance(embedded, str) or not embedded.strip():
-            raise TypeError(f"compute source metadata is invalid for {value.__qualname__}")
-        return textwrap.dedent(embedded)
-    return textwrap.dedent(inspect.getsource(value))
+    if embedded is None:
+        from .source_metadata import function_source_spans
+
+        lines, _ = inspect.findsource(value)
+        span = next((row for row in function_source_spans(''.join(lines))
+                     if row[0] == value.__qualname__ and row[1] <= value.__code__.co_firstlineno <= row[2]), None)
+        if span is None:
+            raise OSError(f"Cannot locate compute source for {_kernel_qualified_name(value)}")
+        _, first, last, _ = span
+        source = ''.join(lines[first - 1:last])
+    else:
+        source, first = embedded
+    return SourceOrigin(str(value.__code__.co_filename), source, first - 1)
+
+
+def _function_source(value) -> str:
+    return _function_origin(value).source
 
 
 def receiver_fields(function) -> tuple[str, ...]:
     """Analyze a declaration once; no receiver or live values are cached."""
 
-    source = _function_source(function)
-    tree = ast.parse(source)
-    definition = next(
-        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))),
-        None,
-    )
+    definition = _parse_function_source(_function_source(function))
     if not isinstance(definition, ast.FunctionDef):
         raise TypeError("compute kernel must be a synchronous Python function")
     positional = (*definition.args.posonlyargs, *definition.args.args)
@@ -198,19 +218,12 @@ def receiver_bindings(function, receiver, fields: tuple[str, ...]) -> tuple[tupl
     return tuple(bindings)
 
 
-@dataclass(frozen=True, slots=True)
-class HelperOrigin:
-    path: str
-    source: str
-    line_offset: int
-
-
 def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict):
     """Freeze each declared helper in its own scope, then link unique symbols."""
     from infernux.compute import Function
 
     ordered: list[ast.FunctionDef] = []
-    origins: dict[str, HelperOrigin] = {}
+    origins: dict[str, SourceOrigin] = {}
     symbols = {}
     active = set()
     compile_values = {}
@@ -276,7 +289,7 @@ def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict):
             raise TypeError(f"compute helper recursion is not supported: {_kernel_qualified_name(function)}")
         if function in symbols:
             return symbols[function]
-        definition = _function_definition(function, kind="compute helper")
+        definition, origin = _function_definition(function, kind="compute helper")
         reserve_source(definition)
         symbol = reserve(f"_infernux_helper_{len(symbols)}_{definition.name}")
         symbols[function] = symbol
@@ -295,8 +308,7 @@ def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict):
         BindGlobals(calls, symbol).visit(definition)
         definition.name = symbol
         definition.decorator_list = [ast.copy_location(ast.Name(id="_infernux_gpu_function", ctx=ast.Load()), definition)]
-        origins[symbol] = HelperOrigin(str(function.__code__.co_filename), _function_source(function),
-                                       function.__code__.co_firstlineno - 1)
+        origins[symbol] = origin
         globals_map[symbol] = helper
         ordered.append(definition)
         active.remove(function)
@@ -321,7 +333,8 @@ class WorkItem:
     index_name: str
     domain_name: str
     domain_parameter: int
-    helper_origins: dict[str, HelperOrigin] = field(default_factory=dict)
+    origin: SourceOrigin
+    helper_origins: dict[str, SourceOrigin] = field(default_factory=dict)
 
     def loop_definition(self, definition=None, *, bounds: tuple[str, str] | None = None):
         """Wrap the one author body; backends never recover it independently."""
@@ -426,7 +439,7 @@ class WorkItem:
                               + (region.epilogue_reads if kind == "final" else 0) + (kind != "initial")),
                           write_elements_per_iteration=len(stores))
         item = WorkItem(definition, copy.deepcopy(self.helpers), dict(self.globals_map), dict(self.compile_values),
-                        self.index_name, self.domain_name, self.domain_parameter, dict(self.helper_origins))
+                        self.index_name, self.domain_name, self.domain_parameter, self.origin, dict(self.helper_origins))
         return LoweredWorkItem(item, derived, (*parameter_kinds, "array_f32", "array_f32", "int32", "int32"))
 
 
@@ -455,8 +468,8 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
         raise TypeError(_kernel_diagnostic(
             function, f"arbitrary Python closure capture is not part of the work-item ABI ({captured or 'unknown value'})",
             "pass buffers or numeric scalars as explicit parameters; do not close over Python locals", target=target))
-    definition = next((node for node in ast.parse(_function_source(function)).body
-                       if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+    origin = _function_origin(function)
+    definition = _parse_function_source(origin.source)
     if not isinstance(definition, ast.FunctionDef):
         raise TypeError("compute kernel must be a synchronous Python function")
     _validate_kernel_method(function, definition, target=target,
@@ -511,4 +524,4 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
         scopes.extend(scope.get_children())
     globals_map = {name: value for name, value in globals_map.items() if name in required}
     return WorkItem(definition, helpers, globals_map, compile_values, index_name, domain_name, domain_parameter,
-                    helper_origins)
+                    origin, helper_origins)

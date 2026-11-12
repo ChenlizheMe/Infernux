@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-import textwrap
+from functools import lru_cache
 
 from .kernel_contract import attribute_name as _attribute_name
 
@@ -44,14 +44,13 @@ def compute_decorator_names(
     return names
 
 
-def embed_compute_sources(source: str) -> str:
-    """Embed only decorated GPU functions for a source-less Player module."""
-
-    had_marker = _MARKER in source
-    base = source.split(_MARKER, 1)[0].rstrip() + "\n"
-    tree = ast.parse(base)
+@lru_cache(maxsize=32)
+def function_source_spans(source: str):
+    """Shared immutable source index for live declarations and cooked modules."""
+    tree = ast.parse(source)
     decorator_names = compute_decorator_names(tree, include_local=True)
-    records: dict[str, str] = {}
+    spans = []
+    lines = source.splitlines(keepends=True)
 
     class Collector(ast.NodeVisitor):
         def __init__(self) -> None:
@@ -63,15 +62,18 @@ def embed_compute_sources(source: str) -> str:
             self.scope.pop()
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if any(
+            gpu = any(
                 _attribute_name(item.func if isinstance(item, ast.Call) else item)
                 in decorator_names
                 for item in node.decorator_list
-            ):
-                segment = ast.get_source_segment(base, node)
-                if segment is None:
-                    raise ValueError(f"Cannot preserve GPU source for {node.name}")
-                records[".".join((*self.scope, node.name))] = textwrap.dedent(segment)
+            )
+            first = node.lineno
+            if node.decorator_list:
+                first = min(decorator.lineno for decorator in node.decorator_list)
+                # A parenthesized decorator may start before its expression.
+                while not lines[first - 1].lstrip().startswith('@'):
+                    first -= 1
+            spans.append((".".join((*self.scope, node.name)), first, node.end_lineno, gpu))
             self.scope.extend((node.name, "<locals>"))
             self.generic_visit(node)
             del self.scope[-2:]
@@ -79,6 +81,16 @@ def embed_compute_sources(source: str) -> str:
         visit_AsyncFunctionDef = visit_FunctionDef
 
     Collector().visit(tree)
+    return tuple(spans)
+
+
+def embed_compute_sources(source: str) -> str:
+    """Embed only decorated GPU functions for a source-less Player module."""
+    had_marker = _MARKER in source
+    base = source.split(_MARKER, 1)[0].rstrip() + "\n"
+    lines = base.splitlines(keepends=True)
+    records = {name: (''.join(lines[first - 1:last]), first)
+               for name, first, last, gpu in function_source_spans(base) if gpu}
     if not records:
         return base if had_marker else source
     ordered = {name: records[name] for name in sorted(records)}

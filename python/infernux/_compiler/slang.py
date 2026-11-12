@@ -13,7 +13,7 @@ import numpy as np
 
 from .slang_ast import SlangEmitter, common_type, floating_type, qualified
 from .value_types import SCALAR_STORAGE_TYPES
-from .work_item import WorkItem, normalize_work_item, _function_source
+from .work_item import WorkItem, normalize_work_item
 from .cache import compiler_cache_root, prune_cache_files
 from .kernel_contract import WORK_ITEM_FAST_MATH
 from .gpu_artifact import (_CACHE_ABI, CompilerArtifact, RangeContract, parameter_key, _specialization_identity,
@@ -367,7 +367,7 @@ def _reverse_source(plan, params, function, primal):
     outputs = [name for name in primal.names if primal.accesses.get(name, 0) & 2]
     if set(inputs) & set(outputs) or not outputs:
         raise TypeError("Local VJP requires separate input and output buffers")
-    local = _LocalEmitter(plan, params, primal.path, _function_source(function))
+    local = _LocalEmitter(plan, params, primal.path, plan.work_item.origin.source)
     local.line_offset = primal.line_offset
     local.declare_locals(plan.definition.body)
     local.local_declarations()
@@ -446,8 +446,9 @@ float inx_atomic_add(RWByteAddressBuffer buffer, uint address, float value) {
 
 
 def _source(plan, params, function):
-    emitter = _KernelEmitter(plan, params, str(function.__code__.co_filename), _function_source(function))
-    emitter.line_offset = function.__code__.co_firstlineno - 1
+    origin = plan.work_item.origin
+    emitter = _KernelEmitter(plan, params, origin.path, origin.source)
+    emitter.line_offset = origin.line_offset
     emitter.declare_locals(plan.definition.body)
     emitter.local_declarations()
     emitter.block(plan.definition.body)
@@ -502,8 +503,8 @@ def _artifact(compiled, emitter, plan, params, function):
     return CompilerArtifact(target=compiled["target"], tasks=(entry["code"],), task_metadata=(metadata,), domain_parameter=plan.domain_parameter,
         argument_layout={"size": arguments["byte_size"], "parameters": layouts},
         required_capabilities={"shader_int64": any(isinstance(value, Buffer) and value._dtype.scalar.name == "int64" for value in params)},
-        diagnostic_locations=({"entry_point": entry["name"], "path": str(function.__code__.co_filename),
-                               "line": function.__code__.co_firstlineno, "column": 0,
+        diagnostic_locations=({"entry_point": entry["name"], "path": plan.work_item.origin.path,
+                               "line": plan.work_item.origin.line_offset + 1, "column": 0,
                                "function": identity},),
         continuation=plan.continuation, fast_math=WORK_ITEM_FAST_MATH, autodiff_mode=plan.autodiff_mode,
         gradient_parameters=plan.gradient_parameters, identity=plan.artifact_key)
@@ -520,7 +521,7 @@ def compile_kernel(function, params, *, target="spirv", receiver_fields=None, au
     cached = _decode_artifact(path, specialization=specialization)
     if cached is not None:
         return cached
-    compiled = _Infernux._compile_shader_program(plan.generated_source, str(function.__code__.co_filename), "inx_kernel",
+    compiled = _Infernux._compile_shader_program(plan.generated_source, plan.work_item.origin.path, "inx_kernel",
                                                 targets=[target], precise=True, source_ranges=plan.lowering.source_ranges)
     artifact = _artifact(compiled["targets"][0], plan.lowering, plan, params, function)
     root.mkdir(parents=True, exist_ok=True)

@@ -10,7 +10,8 @@ import pytest
 from infernux import compute
 from infernux.application import Application
 from infernux._compiler.source_metadata import embed_compute_sources
-from infernux._compiler.taichi import frontend
+from infernux._compiler import slang as frontend
+from infernux.lib import _Infernux
 from infernux.engine.build.compute_aot import (
     ComputeAotBuildError, _gpu_buffer_descriptor, stage_compute_artifacts,
 )
@@ -65,11 +66,11 @@ def test_aot_selects_only_current_warmed_revision(tmp_path, kind):
     records = project_records(data)
     assert len(records) == 1
     artifact = frontend._decode_artifact(data / "Library/Artifacts/Compute" / records[0]["artifact"])
-    assert artifact.spirv_tasks == latest.spirv_tasks != old.spirv_tasks
+    assert artifact.tasks == latest.tasks != old.tasks
 
 
 @pytest.mark.parametrize("kind", ["body", "helper", "constant"])
-def test_unwarmed_source_edit_fails_before_replacing_previous_build(tmp_path, monkeypatch, kind):
+def test_unwarmed_source_edit_is_prepared_from_cooked_player_source(tmp_path, monkeypatch, kind):
     path = tmp_path / "Assets/Scripts/Work.py"
     old_module = load_source(path, source_text(1, kind))
     warm(tmp_path, old_module.solve)
@@ -77,21 +78,26 @@ def test_unwarmed_source_edit_fails_before_replacing_previous_build(tmp_path, mo
     monkeypatch.setitem(sys.modules, "Scripts.Work", old_module)
     data = tmp_path / "build/Data"
     stage_compute_artifacts(tmp_path, (path,), data)
-    before = {p.name: p.read_bytes() for p in (data / "Library/Artifacts/Compute").iterdir()}
     path.write_text(source_text(2, kind), encoding="utf-8")
-    with pytest.raises(ComputeAotBuildError) as error:
-        stage_compute_artifacts(tmp_path, (path,), data)
-    assert error.value.missing == ("Scripts.Work.solve",)
-    assert {p.name: p.read_bytes() for p in (data / "Library/Artifacts/Compute").iterdir()} == before
+    stage_compute_artifacts(tmp_path, (path,), data)
+    assert project_records(data) == []
+    current = load_source(path, source_text(2, kind))
+    path.unlink()
+    linecache.clearcache()
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    with using_project_root(data):
+        artifact = frontend.compile_kernel(current.solve.function, (_gpu_buffer_descriptor((4,), np.int32),))
+    assert artifact.target == 'spirv' and artifact.tasks
     assert sys.modules["Scripts.Work"] is old_module
 
 
-@pytest.mark.parametrize('import_line,receiver', [
-    ('from infernux import compute as gpu', False),
-    ('import infernux.compute as gpu', True),
-    ('import infernux as owner\ngpu = owner.compute', True),
+@pytest.mark.parametrize('import_line,receiver,parenthesized', [
+    ('from infernux import compute as gpu', False, False),
+    ('import infernux.compute as gpu', True, False),
+    ('import infernux as owner\ngpu = owner.compute', True, False),
+    ('from infernux import compute as gpu', False, True),
 ])
-def test_cooked_source_less_public_prepare_and_launch(tmp_path, engine, monkeypatch, import_line, receiver):
+def test_cooked_source_less_public_prepare_and_launch(tmp_path, engine, monkeypatch, import_line, receiver, parenthesized):
     # The last form keeps a supported explicit root decorator spelling.
     decorator = "owner.compute" if "gpu =" in import_line else "gpu"
     lines = f"import infernux as inx\n{import_line}\n"
@@ -102,8 +108,13 @@ def test_cooked_source_less_public_prepare_and_launch(tmp_path, engine, monkeypa
     else:
         lines += (f"@{decorator}.kernel\ndef solve(values):\n"
                   "    i = inx.compute.index(values)\n    values[i] += 2\n")
+    if parenthesized:
+        lines = lines.replace(f'@{decorator}.kernel', f'@(\n{decorator}.kernel\n)')
     path = tmp_path / "Assets/Scripts/Work.py"
     module = load_source(path, lines)
+    if parenthesized:
+        # Compare live inspect-source preparation with the cooked source map.
+        module.__dict__.pop('__infernux_compute_sources__')
     declaration = module.Controller().solve if receiver else module.solve
     warm(tmp_path, declaration, receiver=receiver)
     data = tmp_path / "build/Data"
@@ -113,12 +124,12 @@ def test_cooked_source_less_public_prepare_and_launch(tmp_path, engine, monkeypa
     builder.include_jit_runtime = False
     cooked = builder._cook_compute_source(lines)
     namespace = {"__name__": "Scripts.Work"}
-    exec(compile(cooked, "<source-less-player>", "exec"), namespace)
+    exec(compile(cooked, str(path), "exec"), namespace)
     path.unlink()
     linecache.clearcache()
     declaration = namespace["Controller"]().solve if receiver else namespace["solve"]
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
-    monkeypatch.setattr(frontend, "_load_vendor", lambda: pytest.fail("Player must not load a compiler"))
+    monkeypatch.setattr(_Infernux, "_compile_shader_program", lambda *args, **kwargs: pytest.fail("Prewarmed Player program should reuse its compiled target"))
     host = engine._acquire_compute_host()
     monkeypatch.setattr(compute, "_native_compute_host", lambda: host)
     values = compute.buffer(shape=4, dtype=np.int32, device="gpu", data=[10, 20, 30, 40])
@@ -147,21 +158,21 @@ def test_same_source_has_same_artifact_identity_across_clean_project_roots(tmp_p
         data = root / "build/Data"
         stage_compute_artifacts(root, (path,), data)
         records.append(project_records(data))
-        binaries.append(artifact.spirv_tasks)
-    assert records[0] == records[1]
+        binaries.append(artifact.tasks)
+    assert [row['specialization'] for row in records[0]] == [row['specialization'] for row in records[1]]
     assert binaries[0] == binaries[1]
 
 
-def test_player_rejects_manifest_from_another_source_revision(tmp_path, monkeypatch):
+def test_player_prepares_new_source_instead_of_reusing_an_old_program(tmp_path, monkeypatch):
     path = tmp_path / "Assets/Scripts/Work.py"
-    warm(tmp_path, load_source(path, source_text(1)).solve)
+    old = warm(tmp_path, load_source(path, source_text(1)).solve)
     data = tmp_path / "build/Data"
     stage_compute_artifacts(tmp_path, (path,), data)
     current = load_source(path, source_text(2))
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
-    monkeypatch.setattr(frontend, "_load_vendor", lambda: pytest.fail("Player must not compile"))
-    with using_project_root(data), pytest.raises(RuntimeError, match="missing or ambiguous"):
-        frontend.compile_kernel(current.solve.function, (_gpu_buffer_descriptor((4,), np.int32),))
+    with using_project_root(data):
+        prepared = frontend.compile_kernel(current.solve.function, (_gpu_buffer_descriptor((4,), np.int32),))
+    assert prepared.identity != old.identity and prepared.tasks != old.tasks
 
 
 def test_aot_uses_the_frozen_cooked_source_instead_of_a_later_disk_edit(tmp_path):
@@ -172,7 +183,7 @@ def test_aot_uses_the_frozen_cooked_source_instead_of_a_later_disk_edit(tmp_path
     data = tmp_path / "build/Data"
     stage_compute_artifacts(tmp_path, (path,), data, source_snapshots={str(path): cooked_source})
     row, = project_records(data)
-    assert frontend._decode_artifact(data / "Library/Artifacts/Compute" / row["artifact"]).spirv_tasks == compiled.spirv_tasks
+    assert frontend._decode_artifact(data / "Library/Artifacts/Compute" / row["artifact"]).tasks == compiled.tasks
     with pytest.raises(ComputeAotBuildError, match="snapshots disagree"):
         stage_compute_artifacts(tmp_path, (path,), data, source_snapshots={})
 
@@ -222,7 +233,7 @@ def test_imported_helper_edit_is_read_from_current_private_closure(tmp_path, mon
     stage_compute_artifacts(tmp_path, (path, helper), data)
     row, = project_records(data)
     selected = frontend._decode_artifact(data / "Library/Artifacts/Compute" / row["artifact"])
-    assert selected.spirv_tasks == compiled.spirv_tasks != original.spirv_tasks
+    assert selected.tasks == compiled.tasks != original.tasks
 
 
 def test_nested_closure_free_kernel_preserves_qualified_source_in_player(tmp_path, monkeypatch):
@@ -238,7 +249,7 @@ def test_nested_closure_free_kernel_preserves_qualified_source_in_player(tmp_pat
     row, = project_records(data)
     assert row["function"] == "Scripts.Work.factory.<locals>.solve"
     path.unlink()
-    monkeypatch.setattr(frontend, "_load_vendor", lambda: pytest.fail("Player must not compile"))
+    monkeypatch.setattr(_Infernux, "_compile_shader_program", lambda *args, **kwargs: pytest.fail("Prewarmed Player program should reuse its compiled target"))
     with using_project_root(data):
         loaded = frontend.compile_kernel(module.factory().function, (_gpu_buffer_descriptor((4,), np.int32),))
-    assert loaded.spirv_tasks == compiled.spirv_tasks
+    assert loaded.tasks == compiled.tasks

@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 
 from infernux import compute
-from infernux._compiler.taichi import frontend
-from infernux._compiler.taichi.compile_inputs import snapshot_compilation_values
+from infernux._compiler import slang as frontend
+from infernux._compiler.compile_inputs import snapshot_compilation_values
+from infernux.lib import _Infernux
 from infernux.engine.build.compute_aot import _gpu_buffer_descriptor
 from infernux.engine.project_context import using_project_root
 
@@ -46,8 +47,8 @@ def test_warm_and_cold_compilation_agree_after_constant_edit(tmp_path, engine, m
             artifacts.append(frontend.compile_kernel(latest, (descriptor,)))
     with using_project_root(tmp_path / 'cold'):
         cold = frontend.compile_kernel(latest, (descriptor,))
-    assert artifacts[0].spirv_tasks != cold.spirv_tasks
-    assert artifacts[-1].spirv_tasks == cold.spirv_tasks
+    assert artifacts[0].tasks != cold.tasks
+    assert artifacts[-1].tasks == cold.tasks
     assert len(list((tmp_path / 'warm/Library/Artifacts/Compute').glob('*.inxgpu'))) == 2
 
     # Public launch must select the latest warmed artifact without recompiling.
@@ -57,10 +58,10 @@ def test_warm_and_cold_compilation_agree_after_constant_edit(tmp_path, engine, m
     declaration = compute.Kernel(latest)
     try:
         with using_project_root(tmp_path / 'warm'), monkeypatch.context() as guard:
-            guard.setattr(frontend, '_load_vendor', lambda: pytest.fail('public launch must use the warmed current artifact'))
+            guard.setattr(_Infernux, '_compile_shader_program', lambda *args, **kwargs: pytest.fail('public launch must use the warmed current artifact'))
             compute.launch(declaration, (values,))
         used = next(iter(declaration._executables.values()))
-        assert used.artifact.spirv_tasks == artifacts[-1].spirv_tasks
+        assert used.artifact.tasks == artifacts[-1].tasks
         assert len(list((tmp_path / 'warm/Library/Artifacts/Compute').glob('*.inxgpu'))) == 2
         snapshot = values.get_data()
         try:
@@ -84,7 +85,7 @@ def test_unused_and_shadowed_globals_do_not_invalidate_compilation(tmp_path):
         function = load_kernel(path, source)
         with using_project_root(tmp_path):
             compiled.append(frontend.compile_kernel(function, (descriptor,)))
-    assert compiled[0].spirv_tasks == compiled[1].spirv_tasks
+    assert compiled[0].tasks == compiled[1].tasks
     assert len(list((tmp_path / 'Library/Artifacts/Compute').glob('*.inxgpu'))) == 1
 
 
