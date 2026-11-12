@@ -2285,7 +2285,7 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         if (!reflection.Reflect(forward->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT))
             throw std::runtime_error("UI material parameter layout could not be reflected");
         for (const auto &buffer : reflection.GetUniformBuffers())
-            if (buffer.set == 0 && buffer.binding == 0)
+            if (buffer.set == 1 && buffer.binding == 0)
                 layout.members = buffer.members;
         resource->buffer = std::make_unique<MaterialUBO>();
         if (!resource->buffer->Create(m_allocator, m_device, layout))
