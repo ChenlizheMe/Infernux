@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
+from types import ModuleType
 
 import numpy as np
 
@@ -125,7 +126,11 @@ def _constant(value):
 
 class _KernelEmitter(SlangEmitter):
     def __init__(self, plan, params, path, source):
-        super().__init__(source, path, aliases=("math", "shader", "inx.compute", "compute", "infernux.compute"))
+        module_aliases = tuple(name for name, value in plan.globals_map.items()
+                              if isinstance(value, ModuleType) and value.__name__ in
+                              {"math", "infernux.shader", "infernux.compute"})
+        super().__init__(source, path, aliases=("math", "shader", "inx.compute", "compute", "infernux.compute",
+                                               *module_aliases))
         from infernux.compute import Buffer
 
         self.plan = plan
@@ -254,31 +259,38 @@ class _KernelEmitter(SlangEmitter):
         caller = self if caller is None else caller
         function = self.helpers[qualified(call.func)]
         arguments = list(call.args)
-        parameters = function.args.args
+        parameters = [*function.args.posonlyargs, *function.args.args]
         defaults = dict(zip([arg.arg for arg in parameters[-len(function.args.defaults):]], function.args.defaults))
         keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+        keyword_names = {argument.arg for argument in function.args.args}
+        supplied_names = {argument.arg for argument in parameters[:len(arguments)]}
+        if keywords.keys() - keyword_names or keywords.keys() & supplied_names:
+            caller.error(call, "GPU helper keywords do not match its declaration")
         arguments.extend(keywords.get(arg.arg, defaults.get(arg.arg)) for arg in parameters[len(arguments):])
         if any(argument is None for argument in arguments) or len(arguments) != len(parameters):
-            self.error(call, "GPU helper arguments do not match its declaration")
+            caller.error(call, "GPU helper arguments do not match its declaration")
         types = tuple(caller.infer(argument) for argument in arguments)
         key = function.name, types
         if key not in self.helper_sources:
             emitter = _HelperEmitter(self, function)
-            signature = list(zip(function.args.args, types))
+            signature = list(zip(parameters, types))
             emitter.types.update({argument.arg: kind for argument, kind in signature})
             emitter.declare_locals(function.body)
             results = [emitter.infer(node.value) for node in ast.walk(function) if isinstance(node, ast.Return)]
+            emitter.local_declarations()
+            emitter.block(function.body)
+            if not results or any(kind is None for kind in results):
+                emitter.error(function, "GPU helpers return a numeric value")
             result = results[0]
             for kind in results[1:]:
                 result = common_type(result, kind)
-            emitter.local_declarations()
-            emitter.block(function.body)
             name = function.name + "_" + str(len(self.helper_sources))
             parameters = ", ".join(kind + " " + arg.arg for arg, kind in signature)
             self.helper_sources[key] = f"{result} {name}({parameters}) {{\n" + "\n".join(emitter.lines) + "\n}"
             if self.plan.autodiff_mode == "reverse":
                 self.helper_sources[key] = "[Differentiable]\n" + self.helper_sources[key]
             self.helper_return_types[key] = name, result
+            self.source_ranges.extend(emitter.source_ranges)
         return (*self.helper_return_types[key], arguments)
 
     def visit_Call(self, node):
@@ -314,7 +326,9 @@ class _KernelEmitter(SlangEmitter):
 
 class _HelperEmitter(SlangEmitter):
     def __init__(self, parent, function):
-        super().__init__(ast.unparse(function), parent.path, aliases=parent.aliases, types=parent.types)
+        origin = parent.plan.work_item.helper_origins[function.name]
+        super().__init__(origin.source, origin.path, aliases=parent.aliases, types=parent.types)
+        self.line_offset = origin.line_offset
         self.parent = parent
 
     def infer(self, node):

@@ -98,6 +98,57 @@ def _intrinsic_components(values, sine, root):
     root[i] = math.sqrt(values[i] * values[i] + 1.0)
 
 
+def _check_imported_helpers(project, domain, output):
+    def load(name, source, **bindings):
+        path = project / 'Assets' / (name + '.py')
+        path.write_text(source, encoding='utf8')
+        module = ModuleType(name)
+        module.__dict__.update(bindings)
+        exec(compile(source, str(path), 'exec'), module.__dict__)
+        return module
+
+    first = load('第一套数学', '''import infernux as inx
+import math as numeric
+GAIN = 2
+@inx.compute.function
+def apply(value, /, bias=GAIN):
+    return numeric.sqrt(value * value) * GAIN + bias
+''')
+    second = load('第二套数学', '''import infernux as inx
+GAIN = 5
+@inx.compute.function
+def apply(value):
+    return value * GAIN
+''')
+    middle = load('共享数学', '''import infernux as inx
+@inx.compute.function
+def combine(value):
+    return first.apply(value) + second.apply(value)
+''', first=first, second=second)
+    owner = load('跨文件入口', '''import infernux as inx
+GAIN = 100
+@inx.compute.kernel
+def run(domain, output):
+    i = inx.compute.index(domain)
+    output[i] = library.combine(domain[i]) + GAIN
+''', library=middle)
+    old, edited = owner.run, None
+    try:
+        inx.compute.launch(old, params=(domain, output))
+        np.testing.assert_array_equal(output.get_data().numpy(), np.arange(17) * 7 + 102)
+        first.GAIN = 3
+        edited = inx.compute.kernel(old.function)
+        inx.compute.launch(edited, params=(domain, output))
+        np.testing.assert_array_equal(output.get_data().numpy(), np.arange(17) * 8 + 102)
+        inx.compute.launch(old, params=(domain, output))
+        np.testing.assert_array_equal(output.get_data().numpy(), np.arange(17) * 7 + 102)
+        print('IMPORTED_HELPERS_GPU_OK own_scopes defaults aliases frozen_old_program', flush=True)
+    finally:
+        old._release_engine_resources()
+        if edited is not None:
+            edited._release_engine_resources()
+
+
 def main() -> int:
     # The embedded compiler must not claim or temporarily replace another
     # package's import namespace. GPU execution below still uses the real RHI.
@@ -489,6 +540,7 @@ def main() -> int:
                 local_loop_output.get_data().numpy(),
                 np.arange(17, dtype=np.int32) * 3 - 2,
             )
+            _check_imported_helpers(project, explicit_domain, local_loop_output)
             inx.compute.launch(_nested_helper_kernel, params=(explicit_domain, local_loop_output))
             np.testing.assert_array_equal(
                 local_loop_output.get_data().numpy(),

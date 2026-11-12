@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import inspect
 import os
 import symtable
@@ -16,7 +16,7 @@ import numpy as np
 
 from .kernel_contract import (execution_domain, implicit_receiver_attribute,
     implicit_receiver_name, receiver_field_names, receiver_issue, ARRAY_DTYPES)
-from .compile_inputs import snapshot_compilation_values
+from .compile_inputs import _snapshot, snapshot_compilation_values
 
 
 def _kernel_qualified_name(function) -> str:
@@ -198,41 +198,118 @@ def receiver_bindings(function, receiver, fields: tuple[str, ...]) -> tuple[tupl
     return tuple(bindings)
 
 
-def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict) -> list[ast.FunctionDef]:
-    """Collect explicitly declared helpers and reject recursive call graphs."""
+@dataclass(frozen=True, slots=True)
+class HelperOrigin:
+    path: str
+    source: str
+    line_offset: int
+
+
+def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict):
+    """Freeze each declared helper in its own scope, then link unique symbols."""
     from infernux.compute import Function
 
     ordered: list[ast.FunctionDef] = []
-    states: dict[str, str] = {}
+    origins: dict[str, HelperOrigin] = {}
+    symbols = {}
+    active = set()
+    compile_values = {}
+    reserved = set(globals_map)
 
-    def visit(definition: ast.FunctionDef) -> None:
-        for call in (node for node in ast.walk(definition) if isinstance(node, ast.Call)):
-            if not isinstance(call.func, ast.Name):
-                continue
-            name = call.func.id
-            helper = globals_map.get(name)
-            if not isinstance(helper, Function):
-                continue
-            state = states.get(name)
-            if state == "visiting":
-                raise TypeError(f"compute helper recursion is not supported: {name}")
-            if state == "done":
-                continue
-            states[name] = "visiting"
-            helper_definition = _function_definition(helper.function, kind="compute helper")
-            helper_definition.name = name
-            visit(helper_definition)
-            helper_definition.decorator_list = [ast.Name(id="_infernux_gpu_function", ctx=ast.Load())]
-            ordered.append(helper_definition)
-            states[name] = "done"
+    def reserve(base):
+        name, suffix = base, 0
+        while name in reserved:
+            suffix += 1
+            name = base + "_" + str(suffix)
+        reserved.add(name)
+        return name
+
+    def reserve_source(definition):
+        reserved.update(node.id if isinstance(node, ast.Name) else node.arg for node in ast.walk(definition)
+                        if isinstance(node, (ast.Name, ast.arg)))
+
+    reserve_source(kernel_definition)
+
+    class BindCalls(ast.NodeTransformer):
+        def __init__(self, definition, environment):
+            self.environment = environment
+            scope = symtable.symtable(ast.unparse(definition), "<infernux-helper>", "exec").get_children()[0]
+            self.locals = set(scope.get_locals())
+
+        def resolve(self, node):
+            if isinstance(node, ast.Name) and node.id not in self.locals:
+                return self.environment.get(node.id)
+            if isinstance(node, ast.Attribute):
+                owner = self.resolve(node.value)
+                return inspect.getattr_static(owner, node.attr, None) if owner is not None else None
+            return None
+
+        def visit_Call(self, node):
+            helper = self.resolve(node.func)
+            if isinstance(helper, Function):
+                symbol = visit(helper)
+                node.func = ast.copy_location(ast.Name(id=symbol, ctx=ast.Load()), node.func)
+                node.args = [self.visit(argument) for argument in node.args]
+                node.keywords = [self.visit(keyword) for keyword in node.keywords]
+                return node
+            return self.generic_visit(node)
+
+    class BindGlobals(ast.NodeTransformer):
+        def __init__(self, calls, symbol):
+            self.calls = calls
+            self.symbol = symbol
+            self.names = {}
+
+        def visit_Name(self, node):
+            name = node.id
+            if isinstance(node.ctx, ast.Load) and name not in self.calls.locals and name in self.calls.environment:
+                if name not in self.names:
+                    alias = reserve(self.symbol + "_global_" + str(len(self.names)))
+                    self.names[name] = alias
+                    globals_map[alias] = self.calls.environment[name]
+                return ast.copy_location(ast.Name(id=self.names[name], ctx=node.ctx), node)
+            return node
+
+    def visit(helper):
+        function = helper.function
+        if function in active:
+            raise TypeError(f"compute helper recursion is not supported: {_kernel_qualified_name(function)}")
+        if function in symbols:
+            return symbols[function]
+        definition = _function_definition(function, kind="compute helper")
+        reserve_source(definition)
+        symbol = reserve(f"_infernux_helper_{len(symbols)}_{definition.name}")
+        symbols[function] = symbol
+        active.add(function)
+        # Python evaluated these once when the function was declared. Source
+        # expressions may now refer to different globals or execute host code.
+        for index, value in enumerate(function.__defaults__ or ()):
+            name = reserve(symbol + "_default_" + str(index))
+            compile_values[name], globals_map[name] = _snapshot(value)
+            definition.args.defaults[index] = ast.copy_location(
+                ast.Name(id=name, ctx=ast.Load()), definition.args.defaults[index])
+        calls = BindCalls(definition, dict(function.__globals__))
+        calls.visit(definition)
+        captures = snapshot_compilation_values([definition], calls.environment)
+        compile_values.update((symbol + "." + name, value) for name, value in captures.items())
+        BindGlobals(calls, symbol).visit(definition)
+        definition.name = symbol
+        definition.decorator_list = [ast.copy_location(ast.Name(id="_infernux_gpu_function", ctx=ast.Load()), definition)]
+        origins[symbol] = HelperOrigin(str(function.__code__.co_filename), _function_source(function),
+                                       function.__code__.co_firstlineno - 1)
+        globals_map[symbol] = helper
+        ordered.append(definition)
+        active.remove(function)
+        return symbol
 
     try:
-        visit(kernel_definition)
-        return ordered
+        BindCalls(kernel_definition, dict(globals_map)).visit(kernel_definition)
+        return ordered, origins, compile_values
     finally:
-        # The recursive closure otherwise retains the unfiltered project
-        # globals until cyclic GC, including after a compilation failure.
+        # Recursive closures and temporary binder classes must release the
+        # unfiltered project namespace immediately, including on failure.
         visit = None
+        globals_map = None
 
 
 @dataclass(slots=True)
@@ -244,6 +321,7 @@ class WorkItem:
     index_name: str
     domain_name: str
     domain_parameter: int
+    helper_origins: dict[str, HelperOrigin] = field(default_factory=dict)
 
     def loop_definition(self, definition=None, *, bounds: tuple[str, str] | None = None):
         """Wrap the one author body; backends never recover it independently."""
@@ -348,7 +426,7 @@ class WorkItem:
                               + (region.epilogue_reads if kind == "final" else 0) + (kind != "initial")),
                           write_elements_per_iteration=len(stores))
         item = WorkItem(definition, copy.deepcopy(self.helpers), dict(self.globals_map), dict(self.compile_values),
-                        self.index_name, self.domain_name, self.domain_parameter)
+                        self.index_name, self.domain_name, self.domain_parameter, dict(self.helper_origins))
         return LoweredWorkItem(item, derived, (*parameter_kinds, "array_f32", "array_f32", "int32", "int32"))
 
 
@@ -419,8 +497,8 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
     body.pop(position)
     definition.body = body
     globals_map = dict(function.__globals__)
-    helpers = _helper_definitions(definition, globals_map)
-    compile_values = snapshot_compilation_values([*helpers, definition], globals_map)
+    helpers, helper_origins, compile_values = _helper_definitions(definition, globals_map)
+    compile_values.update(snapshot_compilation_values([definition], globals_map))
     # Retained source plans own only actual dependencies, never an old snapshot
     # of unrelated worlds, models or a previous generation of declarations.
     scopes = [symtable.symtable(ast.unparse(ast.Module(body=[*helpers, definition], type_ignores=[])),
@@ -432,4 +510,5 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
                         if symbol.is_global() and symbol.is_referenced())
         scopes.extend(scope.get_children())
     globals_map = {name: value for name, value in globals_map.items() if name in required}
-    return WorkItem(definition, helpers, globals_map, compile_values, index_name, domain_name, domain_parameter)
+    return WorkItem(definition, helpers, globals_map, compile_values, index_name, domain_name, domain_parameter,
+                    helper_origins)
