@@ -98,6 +98,23 @@ def _intrinsic_components(values, sine, root):
     root[i] = math.sqrt(values[i] * values[i] + 1.0)
 
 
+@inx.compute.function
+def _floor_row(value):
+    return math.floor(value)
+
+
+@inx.compute.kernel
+def _literal_math(values):
+    i = inx.compute.index(values)
+    sine = math.sin(1)
+    root = math.sqrt(2)
+    quotient = (i + 1) / 2
+    identity = math.floor(16777217)
+    correction = identity - 16777217
+    row = _floor_row(float(i) + 0.25)
+    values[row] = sine + root + quotient + correction
+
+
 def _check_imported_helpers(project, domain, output):
     def load(name, source, **bindings):
         path = project / 'Assets' / (name + '.py')
@@ -598,6 +615,10 @@ def main() -> int:
             wave_repeat = inx.buffer(shape=33, dtype=np.float32, device="gpu", data=wave_source)
             inx.compute.launch(_wave_kernel, params=(wave_repeat,))
             np.testing.assert_array_equal(wave_repeat.get_data().numpy(), wave_actual)
+            inx.compute.launch(_literal_math, params=(root_values,))
+            np.testing.assert_allclose(root_values.get_data().numpy(),
+                                       math.sin(1) + math.sqrt(2) + (np.arange(33) + 1) / 2,
+                                       rtol=0, atol=2.0 ** -11 + 2e-6)
             statistics = inx.compute.statistics()
             assert statistics.submission_count > 0
             assert statistics.dispatch_count >= 7

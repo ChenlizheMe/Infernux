@@ -11,7 +11,7 @@ from types import ModuleType
 
 import numpy as np
 
-from .slang_ast import SlangEmitter, common_type, floating_type, qualified
+from .slang_ast import SlangEmitter, common_type, qualified
 from .value_types import SCALAR_STORAGE_TYPES
 from .work_item import WorkItem, normalize_work_item
 from .cache import compiler_cache_root, prune_cache_files
@@ -125,13 +125,50 @@ def _constant(value):
     return json.dumps(value)
 
 
-class _KernelEmitter(SlangEmitter):
+class _NumericalEmitter(SlangEmitter):
+    """Keep Python math's integer results in kernels and imported helpers."""
+    def __init__(self, *args, math_aliases=(), math_symbols=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.math_aliases = math_aliases
+        self.math_symbols = dict(math_symbols or {})
+
+    def symbol(self, name):
+        return self.math_symbols.get(name, super().symbol(name))
+
+    def _integer_math_call(self, node):
+        name = qualified(node.func)
+        module, _, function = name.rpartition(".")
+        matched = (self.math_symbols.get(name) in {"ceil", "floor", "trunc"}
+                   or module in self.math_aliases and function in {"ceil", "floor", "trunc"})
+        if matched and (len(node.args) != 1 or node.keywords):
+            self.error(node, "Python math rounding takes one positional scalar", code="author.call")
+        return matched
+
+    def infer(self, node):
+        if isinstance(node, ast.Call) and self._integer_math_call(node):
+            kind = self.infer(node.args[0])
+            return kind if kind in {"int", "uint", "int64_t"} else "int"
+        return super().infer(node)
+
+    def visit_Call(self, node):
+        if self._integer_math_call(node):
+            if self.infer(node.args[0]) in {"int", "uint", "int64_t"}:
+                return self.visit(node.args[0])
+            return "int(" + super().visit_Call(node) + ")"
+        return super().visit_Call(node)
+
+
+class _KernelEmitter(_NumericalEmitter):
     def __init__(self, plan, params, path, source):
         module_aliases = tuple(name for name, value in plan.globals_map.items()
                               if isinstance(value, ModuleType) and value.__name__ in
                               {"math", "infernux.shader", "infernux.compute"})
         super().__init__(source, path, aliases=("math", "shader", "inx.compute", "compute", "infernux.compute",
-                                               *module_aliases))
+                                               *module_aliases),
+                         math_aliases=tuple(name for name, value in plan.globals_map.items()
+                                            if isinstance(value, ModuleType) and value.__name__ == "math"),
+                         math_symbols={name: value.__name__ for name, value in plan.globals_map.items()
+                                       if getattr(value, "__module__", None) == "math"})
         from infernux.compute import Buffer
 
         self.plan = plan
@@ -185,13 +222,8 @@ class _KernelEmitter(SlangEmitter):
                 return self.types[node.value.id]
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == "shape":
             return "int"
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            kind = common_type(self.infer(node.left), self.infer(node.right))
-            return floating_type(kind)
         if isinstance(node, ast.Call):
             name = qualified(node.func)
-            if name in {"math.ceil", "math.floor", "math.trunc"}:
-                return "int"
             if name == "len":
                 return "int"
             if name in self.helpers:
@@ -309,8 +341,6 @@ class _KernelEmitter(SlangEmitter):
         if name in self.helpers:
             symbol, _, arguments = self._helper(node)
             return symbol + "(" + ", ".join(self.visit(arg) for arg in arguments) + ")"
-        if name in {"math.ceil", "math.floor", "math.trunc"}:
-            return "int(" + super().visit_Call(node) + ")"
         return super().visit_Call(node)
 
     def declarations(self):
@@ -325,10 +355,11 @@ class _KernelEmitter(SlangEmitter):
         return result
 
 
-class _HelperEmitter(SlangEmitter):
+class _HelperEmitter(_NumericalEmitter):
     def __init__(self, parent, function):
         origin = parent.plan.work_item.helper_origins[function.name]
-        super().__init__(origin.source, origin.path, aliases=parent.aliases, types=parent.types)
+        super().__init__(origin.source, origin.path, aliases=parent.aliases, types=parent.types,
+                         math_aliases=parent.math_aliases, math_symbols=parent.math_symbols)
         self.line_offset = origin.line_offset
         self.parent = parent
 

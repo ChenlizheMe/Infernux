@@ -21,6 +21,12 @@ _BINARY = {
 _UNARY = {ast.UAdd: "+", ast.USub: "-", ast.Not: "!", ast.Invert: "~"}
 _COMPARE = {ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
 _FUNCTIONS = TYPES | INTRINSICS
+_FLOAT_INTRINSICS = frozenset({
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+    "exp", "exp2", "log", "log2", "sqrt", "rsqrt", "floor", "ceil", "round", "trunc",
+    "saturate", "step", "smoothstep", "normalize", "cross", "pow", "reflect", "refract",
+    "ddx", "ddy", "fwidth", "radians", "degrees", "lerp", "frac", "rcp",
+})
 
 
 def qualified(node):
@@ -191,7 +197,8 @@ class SlangEmitter(ast.NodeVisitor):
         if isinstance(node, ast.BinOp):
             if isinstance(node.op, ast.MatMult):
                 return product_type(self.infer(node.left), self.infer(node.right))
-            return common_type(self.infer(node.left), self.infer(node.right))
+            kind = common_type(self.infer(node.left), self.infer(node.right))
+            return floating_type(kind) if isinstance(node.op, (ast.Div, ast.Pow)) else kind
         if isinstance(node, ast.IfExp):
             return common_type(self.infer(node.body), self.infer(node.orelse))
         if isinstance(node, ast.Call):
@@ -200,8 +207,16 @@ class SlangEmitter(ast.NodeVisitor):
                 return TYPES[name]
             if name in INTRINSICS and not node.args:
                 self.error(node, "GPU intrinsics need explicit positional arguments", code="author.call")
-            if name in {"dot", "length", "distance", "determinant"}:
+            intrinsic = INTRINSICS.get(name)
+            if intrinsic in _FLOAT_INTRINSICS:
+                return floating_type(reduce(common_type, map(self.infer, node.args)))
+            if name in {"length", "distance", "determinant"}:
                 return "float"
+            if name == "dot":
+                kind = reduce(common_type, map(self.infer, node.args))
+                return kind.rstrip("0123456789") if kind and kind[-1:].isdigit() else "float"
+            if name == "sign":
+                return shaped_type(self.infer(node.args[0]), "int")
             if name in {"all", "any"}:
                 return "bool"
             if name in {"isnan", "isinf", "isfinite"}:
@@ -214,8 +229,15 @@ class SlangEmitter(ast.NodeVisitor):
                 return shaped_type(self.infer(node.args[0]), "uint")
             if name == "mul" and len(node.args) == 2:
                 return product_type(*(self.infer(argument) for argument in node.args))
+            if name == "transpose":
+                kind = self.infer(node.args[0])
+                if kind and "x" in kind:
+                    prefix = next(index for index, character in enumerate(kind) if character.isdigit())
+                    rows, columns = kind[prefix:].split("x")
+                    return kind[:prefix] + columns + "x" + rows
+                return kind
             if name in INTRINSICS:
-                if INTRINSICS[name] in {"min", "max", "clamp", "step", "smoothstep", "pow", "atan2", "lerp", "mad"}:
+                if intrinsic in {"min", "max", "clamp", "mad"}:
                     return reduce(common_type, map(self.infer, node.args))
                 return self.infer(node.args[0])
         if isinstance(node, ast.Subscript):
@@ -253,6 +275,12 @@ class SlangEmitter(ast.NodeVisitor):
             return "pow(" + self.visit(node.left) + ", " + self.visit(node.right) + ")"
         if isinstance(node.op, ast.MatMult):
             return "mul(" + self.visit(node.left) + ", " + self.visit(node.right) + ")"
+        if isinstance(node.op, ast.Div):
+            left, right = self.visit(node.left), self.visit(node.right)
+            kind = common_type(self.infer(node.left), self.infer(node.right))
+            if not kind.startswith("float"):
+                left = floating_type(self.infer(node.left)) + "(" + left + ")"
+            return "(" + left + " / " + right + ")"
         if type(node.op) not in _BINARY:
             self.error(node, "GPU operator is not supported: " + type(node.op).__name__)
         return "(" + self.visit(node.left) + " " + _BINARY[type(node.op)] + " " + self.visit(node.right) + ")"

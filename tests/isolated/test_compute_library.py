@@ -50,6 +50,28 @@ def run(domain, output):
 '''
 
 
+@pytest.mark.parametrize('declaration,expression', [
+    ('import math as number', 'number.floor(value)'),
+    ('from math import floor as rounded', 'rounded(value)'),
+])
+def test_python_math_integer_results_are_shared_by_imported_helpers(tmp_path, declaration, expression):
+    module = load_module(tmp_path, '取整索引', f'''import infernux as inx
+{declaration}
+@inx.compute.function
+def row(value):
+    return {expression}
+@inx.compute.kernel
+def run(domain, output):
+    i = inx.compute.index(domain)
+    output[i] = domain[row(float(i))]
+''')
+    params = tuple(_gpu_buffer_descriptor((8,), 'float32') for _ in range(2))
+    with using_project_root(str(tmp_path)):
+        for target in ('spirv', 'wgsl'):
+            artifact = compile_kernel(module.run.function, params, target=target)
+            assert artifact.target == target and artifact.tasks
+
+
 @pytest.mark.parametrize('qualified', [False, True])
 def test_same_names_in_separate_modules_keep_their_own_constants(tmp_path, qualified):
     first = load_module(tmp_path, '第一套数学', LIBRARY.format(gain=2))

@@ -23,6 +23,25 @@ class Tint(shader.fullscreen):
 '''
 
 
+@pytest.mark.parametrize("expression,kind", [
+    ("shader.sin(1) + shader.sqrt(2) + 1 / 2", "float"),
+    ("shader.sin(shader.ivec3(1, 2, 3))", "float3"),
+    ("shader.sign(shader.vec3(-1.0, 0.0, 1.0))", "int3"),
+    ("shader.dot(shader.ivec3(1, 2, 3), shader.ivec3(3, 2, 1))", "int"),
+])
+def test_intrinsic_results_keep_their_native_types(expression, kind):
+    result = "shader.vec4(value, 1.0)" if kind.endswith("3") else "shader.vec4(value, 0.0, 0.0, 1.0)"
+    source = f'''import infernux.shader as shader
+class Math(shader.fullscreen):
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        value = {expression}
+        return {result}
+'''
+    definition = parse_shader(source, "数学.frag.py", "intrinsic_math")
+    assert f"{kind} value;" in definition.generated_source
+    assert {target["target"] for target in definition.compile()["targets"]} == {"spirv", "wgsl"}
+
+
 def test_mesh_fragment_uses_native_geometry_and_material_domain():
     source = '''import infernux.shader as shader
 
