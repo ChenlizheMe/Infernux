@@ -91,8 +91,8 @@ class Fill(shader.fullscreen):
         gate = shader.step(0.0, rgb)
         rgb = shader.lerp(shader.vec3(0.0), rgb, gate)
         valid = shader.isfinite(rgb) and rgb >= shader.vec3(0.0)
-        bits = shader.asuint(rgb)
-        rgb = shader.asfloat(bits)
+        bits = shader.as_uint(rgb)
+        rgb = shader.as_float(bits)
         return tweak(shader.vec4(rgb, self.tint.a)) if self.enabled and shader.all(valid) and self.count == -3 and self.mask == 4045620583 else shader.vec4(0.0, 0.0, 0.0, 1.0)
 ''', encoding="utf-8")
     gray.write_text('''import infernux.shader as shader

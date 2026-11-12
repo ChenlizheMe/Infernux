@@ -206,11 +206,11 @@ class SlangEmitter(ast.NodeVisitor):
                 return "bool"
             if name in {"isnan", "isinf", "isfinite"}:
                 return shaped_type(self.infer(node.args[0]), "bool")
-            if name in {"asfloat", "f16tof32"}:
+            if name in {"as_float", "f16_to_f32"}:
                 return shaped_type(self.infer(node.args[0]), "float")
-            if name == "asint":
+            if name == "as_int":
                 return shaped_type(self.infer(node.args[0]), "int")
-            if name in {"asuint", "f32tof16", "countbits", "firstbithigh", "firstbitlow"}:
+            if name in {"as_uint", "f32_to_f16", "count_bits", "first_bit_high", "first_bit_low"}:
                 return shaped_type(self.infer(node.args[0]), "uint")
             if name == "mul" and len(node.args) == 2:
                 return product_type(*(self.infer(argument) for argument in node.args))
