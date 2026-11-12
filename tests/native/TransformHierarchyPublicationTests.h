@@ -41,10 +41,14 @@ inline void TestTransformHierarchyPublication(infernux::Scene &scene)
                 object->GetTransform()->SetLocalRotation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
             }
             store.BeginFrameCache();
+            std::array<glm::vec3, 3> authoredLocalPositions{};
             for (const int i : order) {
                 auto *transform = objects[i]->GetTransform();
                 if (authored) {
                     transform->SetWorldPosition(targets[i]);
+                    if (glm::length(transform->GetWorldPosition() - targets[i]) > 2e-5f)
+                        throw std::runtime_error("authored world position was not resolved against its parent");
+                    authoredLocalPositions[i] = transform->GetLocalPosition();
                     transform->SetWorldRotation(rotations[i]);
                     if (std::abs(glm::dot(transform->GetWorldRotation(), rotations[i])) < 1.0f - 2e-5f)
                         throw std::runtime_error("authored world rotation was not resolved against its parent");
@@ -53,18 +57,23 @@ inline void TestTransformHierarchyPublication(infernux::Scene &scene)
                                                         true);
                 }
             }
-            // Authored rotation resolves at the setter. Subsequent parent writes
-            // affect the child, while solver world rotations stay pinned.
+            // Authored poses resolve at each setter. A child follows subsequent
+            // parent writes, while solver world position/rotation stay pinned.
+            auto expectedPositions = targets;
             auto expectedRotations = rotations;
             if (authored) {
-                for (size_t i = 0; i < objects.size(); ++i)
+                for (size_t i = 0; i < objects.size(); ++i) {
+                    if (glm::length(objects[i]->GetTransform()->GetLocalPosition() - authoredLocalPositions[i]) > 2e-5f)
+                        throw std::runtime_error("later parent write reinterpreted an authored local position");
+                    expectedPositions[i] = objects[i]->GetTransform()->GetWorldPosition();
                     expectedRotations[i] = objects[i]->GetTransform()->GetWorldRotation();
+                }
             }
             if (store.EndFrameCache() == authored)
                 throw std::runtime_error("frame publication lost mutation origin");
             for (size_t i = 0; i < objects.size(); ++i) {
                 const auto *transform = objects[i]->GetTransform();
-                if (glm::length(transform->GetWorldPosition() - targets[i]) > 2e-5f ||
+                if (glm::length(transform->GetWorldPosition() - expectedPositions[i]) > 2e-5f ||
                     std::abs(glm::dot(transform->GetWorldRotation(), expectedRotations[i])) < 1.0f - 2e-5f)
                     throw std::runtime_error("world pose depends on frame-cache write order");
             }

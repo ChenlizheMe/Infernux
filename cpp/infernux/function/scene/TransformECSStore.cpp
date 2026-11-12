@@ -589,7 +589,7 @@ void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, cons
         }
 
         if (m_frameCacheActive) {
-            SetCachedWorldPosition(idx, wp);
+            SetCachedAuthoredWorldPosition(idx, wp);
             return;
         }
 
@@ -614,14 +614,9 @@ void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, cons
         }
         m_dirty[idx] = 1;
     };
-    if (m_frameCacheActive) {
-        // World overrides are already staged; EndFrameCache resolves their
-        // local poses against the final parents in hierarchy order.
-        for (size_t i = 0; i < count; ++i)
-            write(i);
-    } else {
-        ApplyWorldBatchInHierarchyOrder(transforms, count, write);
-    }
+    // A batch establishes its parents before converting child world targets
+    // to local poses. Ordinary setters retain their call-time parent semantics.
+    ApplyWorldBatchInHierarchyOrder(transforms, count, write);
     if (requiresMatrixSync)
         m_anyWorldMatrixDirty = true;
     if (count > 0 && !m_frameCacheActive)
@@ -733,7 +728,7 @@ bool TransformECSStore::EndFrameCache()
         const bool notifyOwner = (d & 0x40) != 0;
         bool changed = (d & 0x3C) != 0;
 
-        // World position dirty → compute local position from inverse parent.
+        // Physics world position dirty → resolve against the committed parent.
         if (d & 0x01) {
             const glm::vec3 local =
                 parent ? parent->InverseTransformPoint(m_fcWorldPositions[i]) : m_fcWorldPositions[i];
@@ -793,7 +788,7 @@ bool TransformECSStore::EndFrameCache()
         }
     };
 
-    // A world-space target must be converted against the committed parent,
+    // A physics world-space target must be converted against the committed parent,
     // including dirty ancestors above unchanged intermediary transforms.
     // Body allocation / write order is not hierarchy order. Keep independent
     // roots on the existing linear fast path; sort only nested dirty entries.
@@ -913,20 +908,27 @@ void TransformECSStore::RecordLocalPoseWrite(Handle h, bool position, bool rotat
     m_fcDirty[h.index] &= static_cast<uint8_t>(~((position ? 0x01 : 0) | (rotation ? 0x02 : 0)));
 }
 
-void TransformECSStore::SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v)
+void TransformECSStore::SetCachedAuthoredWorldPosition(uint32_t slotIndex, const glm::vec3 &v)
 {
     if (m_rectLayouts[slotIndex]) {
         m_owners[slotIndex]->SetWorldPosition(v);
         return;
     }
-    // The later local-space commit uses this parent's affine transform. Resolve
-    // only that physical dependency before recording the author's world target.
-    if (auto *parent = m_owners[slotIndex]->GetParentTransformSafe())
-        parent->EnsureCpuPhysicsPose();
+    // Authoring resolves against the parent at the call, just like the ordinary
+    // uncached setter. Only physics publication retains a world-space override.
+    auto *parent = m_owners[slotIndex]->GetParentTransformSafe();
+    const glm::vec3 local = parent ? parent->InverseTransformPoint(v) : v;
+    const bool changed = m_localPositions[slotIndex] != local;
+    const bool hadWorldOverride = (m_fcDirty[slotIndex] & 0x01) != 0;
     ++m_authoredPoseRevisions[slotIndex][0];
     EnsureFrameCacheSlot(slotIndex);
-    m_fcWorldPositions[slotIndex] = v;
-    MarkFrameCacheDirty(slotIndex, 0x41);
+    SetLocalPosition({slotIndex, m_generations[slotIndex]}, local);
+    MarkFrameCacheDirty(slotIndex, static_cast<uint8_t>(0x40 | (changed || hadWorldOverride ? 0x04 : 0)));
+    m_fcDirty[slotIndex] &= static_cast<uint8_t>(~0x01);
+    if (changed || hadWorldOverride) {
+        m_dirty[slotIndex] = 1;
+        MarkWorldMatrixDirty(slotIndex);
+    }
     InvalidateFrameCacheDescendants(m_owners[slotIndex], false);
 }
 

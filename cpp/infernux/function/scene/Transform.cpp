@@ -291,7 +291,8 @@ void Transform::SetWorldPosition(const glm::vec3 &worldPos)
         return;
     }
     if (store.IsFrameCacheActiveFor(m_ecsHandle)) {
-        store.SetCachedWorldPosition(m_ecsHandle.index, worldPos);
+        // Preserve the local pose resolved against the parent at this call.
+        store.SetCachedAuthoredWorldPosition(m_ecsHandle.index, worldPos);
         return;
     }
 

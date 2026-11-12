@@ -408,7 +408,7 @@ class TransformECSStore
         return m_fcWorldRotations[slotIndex];
     }
 
-    /// Physics or scripts wrote world position/rotation this frame. Children
+    /// Physics published world position/rotation this frame. Children
     /// must keep using parent*local so T/R/S stay a single hierarchy.
     [[nodiscard]] bool HasFrameCacheWorldPoseOverride(Handle h) const
     {
@@ -439,8 +439,9 @@ class TransformECSStore
         return m_authoredPoseRevisions[h.index];
     }
 
-    // Cached world-space write — marks slot dirty, defers flush to EndFrameCache.
-    void SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v);
+    // Authored world position resolves to local immediately; publication is deferred.
+    void SetCachedAuthoredWorldPosition(uint32_t slotIndex, const glm::vec3 &v);
+    // Physics world channels resolve against the final parent at EndFrameCache.
     void SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const glm::vec3 &position, const glm::quat &rotation,
                                        bool applyRotation);
 
