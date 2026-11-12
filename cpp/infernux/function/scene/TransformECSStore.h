@@ -414,8 +414,6 @@ class TransformECSStore
         return m_authoredPoseRevisions[h.index];
     }
 
-    const glm::mat4 &ComposeFrameCacheWorldMatrix(Handle h, const Transform *owner);
-
     // Cached world-space write — marks slot dirty, defers flush to EndFrameCache.
     void SetCachedWorldPosition(uint32_t slotIndex, const glm::vec3 &v);
     void SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const glm::vec3 &position, const glm::quat &rotation,

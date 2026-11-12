@@ -887,21 +887,6 @@ void TransformECSStore::MarkWorldMatrixDirty(uint32_t slotIndex)
         ++m_globalTransformSerial;
 }
 
-const glm::mat4 &TransformECSStore::ComposeFrameCacheWorldMatrix(Handle h, const Transform *owner)
-{
-    EnsureFrameCacheSlot(h.index);
-    const glm::vec3 scale = owner ? owner->GetWorldScale() : m_localScales[h.index];
-    glm::vec3 position = m_fcWorldPositions[h.index];
-    if (!HasFrameCacheWorldPositionOverride(h)) {
-        const Transform *parent = owner ? owner->GetParent() : nullptr;
-        position = parent ? parent->TransformPoint(m_localPositions[h.index]) : m_localPositions[h.index];
-    }
-    const glm::quat rotation = owner ? owner->GetWorldRotation() : m_localRotations[h.index];
-    m_cachedWorldMatrices[h.index] = glm::translate(glm::mat4(1.0f), position) *
-                                     glm::mat4_cast(glm::normalize(rotation)) * glm::scale(glm::mat4(1.0f), scale);
-    return m_cachedWorldMatrices[h.index];
-}
-
 void TransformECSStore::VisitAuthoredPoseWrites(void (*visitor)(Transform *)) const
 {
     if (!m_frameCacheActive)

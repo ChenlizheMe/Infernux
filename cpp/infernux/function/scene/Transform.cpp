@@ -221,10 +221,11 @@ void Transform::ApplyWorldPoseFromPhysics(const glm::vec3 &worldPos, const glm::
 const glm::mat4 &Transform::GetWorldMatrix() const
 {
     auto &store = TransformECSStore::Instance();
-    if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle)) {
-        return store.ComposeFrameCacheWorldMatrix(m_ecsHandle, this);
-    }
-    if (!store.GetWorldMatrixDirty(m_ecsHandle)) {
+    // Cached world channels resolve through the local getters, preserving
+    // the same parent affine transform before and after frame publication.
+    const bool worldOverride =
+        store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle);
+    if (!worldOverride && !store.GetWorldMatrixDirty(m_ecsHandle)) {
         return store.GetCachedWorldMatrix(m_ecsHandle);
     }
 
@@ -593,19 +594,14 @@ glm::vec3 Transform::InverseTransformVector(const glm::vec3 &vector) const
 
 glm::mat4 Transform::GetWorldToLocalMatrix() const
 {
-    const auto &store = TransformECSStore::Instance();
-    const bool worldOverride =
-        store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle);
-    // Physics world overrides are published as world TRS by GetWorldMatrix;
-    // authored poses retain the full hierarchy, including nonuniform scale.
-    const glm::vec3 position = worldOverride ? GetWorldPosition() : GetLocalPosition();
-    const glm::quat rotation = worldOverride ? glm::normalize(GetWorldRotation()) : GetLocalRotation();
-    const glm::vec3 scale = worldOverride ? GetWorldScale() : GetLocalScale();
+    const glm::vec3 position = GetLocalPosition();
+    const glm::quat rotation = GetLocalRotation();
+    const glm::vec3 scale = GetLocalScale();
     const auto inverse =
         transform_math::InverseTRS({position.x, position.y, position.z},
                                    {rotation.x, rotation.y, rotation.z, rotation.w}, {scale.x, scale.y, scale.z});
     const Transform *parent = GetParentTransformSafe();
-    if (!worldOverride && parent) {
+    if (parent) {
         const glm::mat4 parentInverse = parent->GetWorldToLocalMatrix();
         return ComposeAffineMatrices(inverse.data(), glm::value_ptr(parentInverse));
     }
