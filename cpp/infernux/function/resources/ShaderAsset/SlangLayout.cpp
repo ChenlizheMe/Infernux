@@ -256,9 +256,13 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
                     resource.elementStride = type->getElementTypeLayout()->getStride(SLANG_PARAMETER_CATEGORY_UNIFORM);
                 }
                 break;
+            case slang::BindingType::CombinedTextureSampler:
             case slang::BindingType::Texture:
             case slang::BindingType::MutableTexture:
-                resource.binding.type = type->getResourceAccess() == SLANG_RESOURCE_ACCESS_READ
+                resource.binding.type = layout->getDescriptorSetDescriptorRangeType(set, range) ==
+                                                slang::BindingType::CombinedTextureSampler
+                                            ? rhi::BindingType::CombinedTextureSampler
+                                        : type->getResourceAccess() == SLANG_RESOURCE_ACCESS_READ
                                             ? rhi::BindingType::SampledTexture
                                             : rhi::BindingType::StorageTexture;
                 resource.binding.viewDimension = TextureDimension(type->getResourceShape());
@@ -279,7 +283,8 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
                 break;
             case slang::BindingType::Sampler:
                 resource.binding.type = rhi::BindingType::Sampler;
-                if (std::string_view(type->getName()) == "SamplerComparisonState")
+                if (std::string_view(type->getName()) == "SamplerComparisonState" ||
+                    (type->getResourceShape() & SLANG_TEXTURE_SHADOW_FLAG) != 0)
                     resource.binding.samplerType = rhi::SamplerBindingType::Comparison;
                 break;
             default:

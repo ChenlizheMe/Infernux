@@ -31,7 +31,8 @@
 #include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
-#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
+#include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/WorldUIProjection.h>
 #include <glm/gtc/type_ptr.hpp>
@@ -49,138 +50,13 @@ namespace
 {
 constexpr float kTransformRotationEpsilon = 0.001f;
 constexpr float kPi = 3.14159265358979f;
-constexpr const char *kShaderEntryPoint = "main";
 constexpr uint32_t kFontTextureBinding = 0;
 constexpr uint32_t kUIMaterialTextureCapacity = 12;
 constexpr float kWorldUILogicalPixelsPerUnit = 100.0f;
 
-constexpr const char *kScreenVertexShader = R"glsl(
-#version 450
-layout(location = 0) in vec2 aPosition;
-layout(location = 1) in vec2 aUV;
-layout(location = 2) in vec4 aColor;
-layout(push_constant) uniform ScreenUIConstants {
-    vec2 scale;
-    vec2 translate;
-    float encodeSample;
-    float _materialPadding0;
-    float _materialPadding1;
-    float _materialPadding2;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 _tailPadding;
-} pc;
-layout(location = 0) out vec4 outColor;
-layout(location = 1) out vec2 outUV;
-void main() {
-    outColor = aColor;
-    outUV = aUV;
-    gl_Position = vec4(aPosition * pc.scale + pc.translate, 0, 1);
-}
-)glsl";
-
-constexpr const char *kScreenFragmentShader = R"glsl(
-#version 450
-layout(location = 0) in vec4 inColor;
-layout(location = 1) in vec2 inUV;
-layout(set = 0, binding = 0) uniform sampler2D uiTexture;
-layout(push_constant) uniform ScreenUIConstants {
-    vec2 scale;
-    vec2 translate;
-    float encodeSample;
-    float _materialPadding0;
-    float _materialPadding1;
-    float _materialPadding2;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 _tailPadding;
-} pc;
-layout(location = 0) out vec4 outColor;
-void main() {
-    vec4 sampleColor = texture(uiTexture, inUV);
-    if (pc.encodeSample > 0.5) {
-        vec3 rgb = max(sampleColor.rgb, vec3(0));
-        sampleColor.rgb = mix(1.055 * pow(rgb, vec3(1.0 / 2.4)) - 0.055,
-                             12.92 * rgb, lessThanEqual(rgb, vec3(0.0031308)));
-    }
-    outColor = inColor * sampleColor * pc.materialColor;
-    if (pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold)
-        discard;
-}
-)glsl";
-
 void WorldElementBoundaryCallback(const ImDrawList *, const ImDrawCmd *)
 {
 }
-
-constexpr const char *kWorldVertexShader = R"glsl(
-#version 450
-layout(location = 0) in vec3 aPosition;
-layout(location = 1) in vec2 aUV;
-layout(location = 2) in vec4 aColor;
-layout(location = 3) in vec2 aLocalPosition;
-layout(location = 4) in vec3 aAnchor;
-layout(location = 5) in vec3 aLocalOffset;
-layout(location = 6) in float aPolicy;
-layout(push_constant) uniform WorldUIConstants {
-    mat4 viewProjection;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 screenScale;
-    vec4 cameraRight;
-    vec4 cameraUp;
-} pc;
-layout(location = 0) out vec4 outColor;
-layout(location = 1) out vec2 outUV;
-layout(location = 2) out vec2 outLocalPosition;
-void main() {
-    outColor = aColor;
-    outUV = aUV;
-    outLocalPosition = aLocalPosition;
-    vec3 position = aPosition;
-    int policy = int(aPolicy + 0.5);
-    if (policy != 0) {
-        vec3 offset = aPosition - aAnchor;
-        if ((policy & 1) != 0)
-            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y +
-                     cross(pc.cameraRight.xyz, pc.cameraUp.xyz) * aLocalOffset.z;
-        if ((policy & 2) != 0) {
-            float clipW = (pc.viewProjection * vec4(aAnchor, 1.0)).w;
-            offset *= max(clipW, 0.0) * pc.screenScale.x * 100.0;
-        }
-        position = aAnchor + offset;
-    }
-    gl_Position = pc.viewProjection * vec4(position, 1.0);
-}
-)glsl";
-
-constexpr const char *kWorldFragmentShader = R"glsl(
-#version 450
-layout(location = 0) in vec4 inColor;
-layout(location = 1) in vec2 inUV;
-layout(set = 0, binding = 0) uniform sampler2D uiTexture;
-layout(push_constant) uniform WorldUIConstants {
-    mat4 viewProjection;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 screenScale;
-    vec4 cameraRight;
-    vec4 cameraUp;
-} pc;
-layout(location = 0) out vec4 outColor;
-void main() {
-    outColor = inColor * texture(uiTexture, inUV) * pc.materialColor;
-    // World UI participates in the scene depth buffer. Fully transparent
-    // glyph/image texels therefore must not publish depth for their quad.
-    // Keep partially covered antialiased pixels; only empty coverage is cut.
-    if ((pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold) || outColor.a <= 0.0)
-        discard;
-}
-)glsl";
 
 struct alignas(16) ScreenUIPushConstants
 {
@@ -1663,9 +1539,9 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 bool InxScreenUIRenderer::CreatePipeline()
 {
     // ---- Shader modules ----
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-    const auto vertex = compiler.CompileVertexGlsl(kScreenVertexShader, "Infernux/ScreenUI.vert");
-    const auto fragment = compiler.CompileFragmentGlsl(kScreenFragmentShader, "Infernux/ScreenUI.frag");
+    const auto compiled = CompileSlangNativeModule(GetSlangScreenUIModule(), ShaderCodeTarget::SpirV);
+    const auto &vertex = compiled.entries[0].code;
+    const auto &fragment = compiled.entries[1].code;
     if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(vertex.data()), vertex.size(), m_vertShader))
         return false;
     if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(fragment.data()), fragment.size(),
@@ -1703,8 +1579,9 @@ bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderMo
 {
     // ---- Graphics pipeline (replicates ImGui's pipeline for scene render target) ----
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex),
-        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment),
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex, vertex == m_vertShader ? "vertex_main" : "main"),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
+                            fragment == m_fragShader ? "fragment_main" : "main"),
     };
 
     VkVertexInputBindingDescription bindingDesc{};
@@ -1762,17 +1639,13 @@ bool InxScreenUIRenderer::CreateWorldPipeline()
     if (m_depthFormat == VK_FORMAT_UNDEFINED)
         return false;
 
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-    const std::vector<char> shaderBytes = compiler.CompileVertexGlsl(kWorldVertexShader, "Infernux/WorldUI.vert");
-    const std::vector<char> fragmentBytes = compiler.CompileFragmentGlsl(kWorldFragmentShader, "Infernux/WorldUI.frag");
-    if (shaderBytes.size() < sizeof(uint32_t) * 5 || shaderBytes.size() % sizeof(uint32_t) != 0)
-        return false;
-    if (fragmentBytes.size() < sizeof(uint32_t) * 5 || fragmentBytes.size() % sizeof(uint32_t) != 0)
-        return false;
-    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(shaderBytes.data()), shaderBytes.size(),
+    const auto compiled = CompileSlangNativeModule(GetSlangWorldUIModule(), ShaderCodeTarget::SpirV);
+    const auto &vertex = compiled.entries[0].code;
+    const auto &fragment = compiled.entries[1].code;
+    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(vertex.data()), vertex.size(),
                             m_worldVertShader))
         return false;
-    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(fragmentBytes.data()), fragmentBytes.size(),
+    if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(fragment.data()), fragment.size(),
                             m_worldFragShader))
         return false;
 
@@ -1800,8 +1673,9 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
         fragment = m_worldFragShader;
 
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex),
-        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment),
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex, vertex == m_worldVertShader ? "vertex_main" : "main"),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
+                            fragment == m_worldFragShader ? "fragment_main" : "main"),
     };
     VkVertexInputBindingDescription bindingDescription{};
     bindingDescription.stride = sizeof(WorldGPUVertex);

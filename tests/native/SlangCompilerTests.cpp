@@ -3,6 +3,7 @@
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangNativeModule.h>
+#include <function/resources/ShaderAsset/SlangUIModule.h>
 
 #include <algorithm>
 #include <chrono>
@@ -360,6 +361,50 @@ void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weigh
             std::memcpy(&second, values.data() + array.offset + array.stride, sizeof(second));
             Require(copy.GetSourceBytes() == sizeof(weights) && second == 7.0f,
                     "Root values must copy logical data into reflected storage");
+        }
+
+        for (const auto *source : {&GetSlangScreenUIModule(), &GetSlangWorldUIModule()}) {
+            for (const auto target : {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}) {
+                const auto ui = CompileSlangNativeModule(*source, target);
+                const auto world = source == &GetSlangWorldUIModule();
+                Require(ui.entries.size() == 2 && ui.entries[0].name == "vertex_main" &&
+                            ui.entries[1].name == "fragment_main",
+                        "Native UI entries must share the compiled module");
+                Require(ui.rootConstants && ui.rootConstants->byteSize == (world ? 128u : 64u),
+                        "Native UI root values must match the host's target layout");
+                Require(ui.rootConstants->fields[world ? 1 : 6].offset == (world ? 64u : 32u),
+                        "UI material color offset differs between targets");
+                const auto split = target == ShaderCodeTarget::Wgsl;
+                Require(ui.resources.size() == (split ? 2u : 1u) && ui.resources[0].binding.binding == 0 &&
+                            ui.resources[0].binding.type ==
+                                (split ? rhi::BindingType::SampledTexture : rhi::BindingType::CombinedTextureSampler),
+                        "UI combined sampling must reflect the target's actual descriptors");
+                if (split)
+                    Require(ui.resources[1].binding.binding == 1 &&
+                                ui.resources[1].binding.type == rhi::BindingType::Sampler,
+                            "Portable UI sampling needs a separate reflected sampler");
+                Require(ui.entries[0].bindings.empty() && ui.entries[1].bindings.size() == ui.resources.size(),
+                        "UI sampling belongs to the fragment entry");
+            }
+        }
+
+        const auto samplers = compiler.Compile({"samplers", "samplers.slang", R"(
+[[vk::binding(2, 3)]] Sampler2D<float4> single;
+[[vk::binding(8, 3)]] Sampler2D<float4> pair[2];
+[shader("fragment")]
+float4 main(float2 uv : TEXCOORD0) : SV_Target0 { return single.Sample(uv) + pair[1].Sample(uv); }
+)"},
+                                               {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : samplers.targets) {
+            const auto split = target.target == ShaderCodeTarget::Wgsl;
+            Require(target.resources.size() == (split ? 4u : 2u), "Combined sampler array ranges were lost");
+            for (size_t index = 0; index < target.resources.size(); ++index) {
+                const auto array = index >= (split ? 2u : 1u);
+                const auto &resource = target.resources[index];
+                Require(resource.set == 3 && resource.binding.count == (array ? 2u : 1u) &&
+                            resource.binding.binding == (array ? 8u : 2u) + (split ? index % 2u : 0u),
+                        "Combined sampler descriptors differ from the target's scalar/array bindings");
+            }
         }
 
         bool diagnosed = false;

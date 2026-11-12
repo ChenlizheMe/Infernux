@@ -82,6 +82,8 @@ DeviceShaderProgram::~DeviceShaderProgram() = default;
 void DeviceShaderProgram::Apply(rhi::GraphicsPipelineDesc &pipeline) const
 {
     for (const auto &entry : m_impl->entries) {
+        if (m_impl->rootConstantBytes != 0)
+            pipeline.pushConstantStages = pipeline.pushConstantStages | entry.stage;
         if (entry.stage == rhi::ShaderStage::Vertex) {
             pipeline.vertexShader = entry.module;
             pipeline.vertexEntryPoint = entry.name.c_str();
