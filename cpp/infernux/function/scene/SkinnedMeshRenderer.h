@@ -51,6 +51,10 @@ class SkinnedMeshRenderer : public MeshRenderer
     void InvalidateSkeletonPose();
     glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
     glm::mat4 ResolveBoundsWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
+    [[nodiscard]] bool RequiresCpuPoseForGeometry() const noexcept override
+    {
+        return true;
+    }
     glm::mat4 ResolveSubmeshWorldMatrix(const glm::mat4 &rendererWorldMatrix) const override;
 
     [[nodiscard]] const char *GetTypeName() const override

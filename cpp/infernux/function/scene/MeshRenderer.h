@@ -482,6 +482,13 @@ class MeshRenderer : public Component
         (void)objectWorldMatrix;
     }
 
+    /// CPU-authored geometry or bounds may still consume a transform when a
+    /// device pose drives rasterization. Ordinary object-space meshes do not.
+    [[nodiscard]] virtual bool RequiresCpuPoseForGeometry() const noexcept
+    {
+        return IsVertexBufferWorldSpace();
+    }
+
     /// @brief Recompute local bounds from inline vertex positions.
     void ComputeLocalBoundsFromInlineVertices();
 

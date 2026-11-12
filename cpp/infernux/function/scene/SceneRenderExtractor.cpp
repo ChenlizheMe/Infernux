@@ -19,6 +19,21 @@ struct InlineMeshSnapshot
     std::vector<uint32_t> indices;
 };
 
+struct CpuRenderPose
+{
+    glm::mat4 render;
+    glm::mat4 bounds;
+};
+
+std::optional<CpuRenderPose> ReadCpuRenderPose(MeshRenderer &renderer, Transform &transform, bool devicePose)
+{
+    if (devicePose && !renderer.RequiresCpuPoseForGeometry())
+        return std::nullopt;
+    const auto &world = transform.GetWorldMatrix();
+    renderer.RefreshProceduralGeometry(world);
+    return CpuRenderPose{renderer.ResolveRenderWorldMatrix(world), renderer.ResolveBoundsWorldMatrix(world)};
+}
+
 std::shared_ptr<const InlineMeshSnapshot> CaptureInlineMesh(const MeshRenderer &renderer)
 {
     auto owner = std::make_shared<InlineMeshSnapshot>();
@@ -283,7 +298,9 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
 
         uint32_t objectLayerBit = 1u << static_cast<uint32_t>(obj->GetLayer());
 
-        renderer->RefreshProceduralGeometry(obj->GetTransform()->GetWorldMatrix());
+        RenderProxy renderable;
+        renderable.frame.devicePose = CaptureDevicePose(*renderer);
+        const auto cpuPose = ReadCpuRenderPose(*renderer, *obj->GetTransform(), renderable.frame.devicePose.HasValue());
 
         // Check if renderer has inline mesh, asset mesh, or mesh reference
         if (!renderer->HasMeshAsset() && !renderer->HasInlineMesh() && !renderer->GetMesh().IsValid())
@@ -291,16 +308,15 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
 
         if (auto *skin = dynamic_cast<SkinnedMeshRenderer *>(renderer); skin && !skin->HasRuntimeSkinnedMesh())
             continue;
-        RenderProxy renderable;
         renderable.structural.objectId = obj->GetID();
         renderable.structural.layerMask = objectLayerBit;
         renderable.structural.isStatic =
             obj->IsStatic() && !renderer->GetPoseBuffer() && dynamic_cast<SkinnedMeshRenderer *>(renderer) == nullptr;
         renderable.structural.identity = RenderProxyHandle::FromScene(obj->GetHandle(), renderer->GetHandle());
-        const glm::mat4 objectWorldMatrix = obj->GetTransform()->GetWorldMatrix();
-        renderable.frame.worldMatrix = renderer->ResolveRenderWorldMatrix(objectWorldMatrix);
-        renderable.frame.boundsWorldMatrix = renderer->ResolveBoundsWorldMatrix(objectWorldMatrix);
-        renderable.frame.devicePose = CaptureDevicePose(*renderer);
+        if (cpuPose) {
+            renderable.frame.worldMatrix = cpuPose->render;
+            renderable.frame.boundsWorldMatrix = cpuPose->bounds;
+        }
         renderable.structural.renderMaterial = renderer->GetEffectiveMaterial();
         renderable.structural.renderQueue =
             renderable.structural.renderMaterial ? renderable.structural.renderMaterial->GetRenderQueue() : 2000;
@@ -317,9 +333,11 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         }
 
         // Get world-space bounding box for frustum culling — reuse the world matrix
-        glm::vec3 boundsMin, boundsMax;
-        renderer->ComputeWorldBounds(renderable.frame.boundsWorldMatrix, boundsMin, boundsMax);
-        renderable.frame.worldBounds = AABB(boundsMin, boundsMax);
+        if (cpuPose) {
+            glm::vec3 boundsMin, boundsMax;
+            renderer->ComputeWorldBounds(cpuPose->bounds, boundsMin, boundsMax);
+            renderable.frame.worldBounds = AABB(boundsMin, boundsMax);
+        }
         // RenderWorld is shared by every camera. Visibility is intentionally
         // not stored here; each camera derives and caches its own renderer list.
         renderable.frame.visible = true;
@@ -352,23 +370,25 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
         if (!transform)
             continue;
 
+        const bool hadDevicePose = frameData.devicePose.HasValue();
         frameData.devicePose = CaptureDevicePose(*mr);
+        const bool poseAuthorityChanged = hadDevicePose != frameData.devicePose.HasValue();
         renderable.structural.isStatic =
             mr->GetGameObject()->IsStatic() && !source.skinnedRenderer && !frameData.devicePose.HasValue();
         m_allRenderersStatic &= renderable.structural.isStatic;
 
-        mr->RefreshProceduralGeometry(transform->GetWorldMatrix());
-
-        const glm::mat4 objectWorldMatrix = transform->GetWorldMatrix();
-        const glm::mat4 worldMatrix = mr->ResolveRenderWorldMatrix(objectWorldMatrix);
-        const glm::mat4 boundsWorldMatrix = mr->ResolveBoundsWorldMatrix(objectWorldMatrix);
+        const auto cpuPose = ReadCpuRenderPose(*mr, *transform, frameData.devicePose.HasValue());
+        const glm::mat4 worldMatrix = cpuPose ? cpuPose->render : glm::mat4(1);
+        const glm::mat4 boundsWorldMatrix = cpuPose ? cpuPose->bounds : glm::mat4(1);
 
         // World-space resident vertices deliberately render with an identity
         // matrix, while their conservative bounds still follow the object's
         // Transform anchor. Track those two matrices independently so the
         // fast path cannot freeze culling, picking, or editor handles.
-        const bool renderTransformChanged = std::memcmp(&worldMatrix, &frameData.worldMatrix, sizeof(glm::mat4)) != 0;
+        const bool renderTransformChanged =
+            poseAuthorityChanged || std::memcmp(&worldMatrix, &frameData.worldMatrix, sizeof(glm::mat4)) != 0;
         const bool boundsTransformChanged =
+            poseAuthorityChanged ||
             std::memcmp(&boundsWorldMatrix, &frameData.boundsWorldMatrix, sizeof(glm::mat4)) != 0;
         const bool dynamicSkinBounds = source.skinnedRenderer && source.skinnedRenderer->HasRuntimeSkinnedMesh();
         const bool bufferDirty = mr->ConsumeMeshBufferDirty();
@@ -396,9 +416,14 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
         // remains unchanged (LineRenderer world-space trails are the common
         // case). Their cached bounds must follow the content publication or
         // per-camera frustum culling will keep testing the previous shape.
-        if (boundsTransformChanged || geometryPublicationChanged || dynamicSkinBounds) {
+        if (!cpuPose) {
+            // Device model/AABB are the authoritative publication. These CPU
+            // placeholders are never used to reject or sort its draw calls.
+            frameData.boundsWorldMatrix = boundsWorldMatrix;
+            frameData.worldBounds = {};
+        } else if (boundsTransformChanged || geometryPublicationChanged || dynamicSkinBounds) {
             const bool translationOnly =
-                boundsTransformChanged && !geometryPublicationChanged &&
+                boundsTransformChanged && !poseAuthorityChanged && !geometryPublicationChanged &&
                 std::memcmp(&boundsWorldMatrix[0], &frameData.boundsWorldMatrix[0], sizeof(glm::vec4) * 3) == 0;
             const glm::vec3 translationDelta = glm::vec3(boundsWorldMatrix[3] - frameData.boundsWorldMatrix[3]);
             frameData.boundsWorldMatrix = boundsWorldMatrix;

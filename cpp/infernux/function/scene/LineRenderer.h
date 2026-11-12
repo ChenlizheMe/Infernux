@@ -188,6 +188,10 @@ class LineRenderer : public MeshRenderer
     [[nodiscard]] std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const override;
     [[nodiscard]] glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
     void RefreshProceduralGeometry(const glm::mat4 &objectWorldMatrix) override;
+    [[nodiscard]] bool RequiresCpuPoseForGeometry() const noexcept override
+    {
+        return true;
+    }
     void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const override;
 
     [[nodiscard]] nlohmann::json SerializeDocument() const override;

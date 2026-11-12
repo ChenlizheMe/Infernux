@@ -30,6 +30,8 @@ struct RenderProxyStructuralData
 
 struct RenderProxyFrameData
 {
+    // CPU values serve CPU-authored poses and transform-dependent geometry.
+    // For a device-only pose they are neutral placeholders, not observations.
     glm::mat4 worldMatrix{1.0f};
     glm::mat4 boundsWorldMatrix{1.0f};
     AABB worldBounds;
