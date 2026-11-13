@@ -269,7 +269,6 @@ bool OutlineRenderer::EnsureGraphPipelines(const rhi::GraphicsRenderingSignature
     key.samples = compositeSignature.samples;
     key.alphaBlend = true;
     key.colorWriteMask = 0x07; // Selection color does not change scene coverage.
-    key.inputResourceCount = 1;
     key.useDynamicRendering = true;
     m_compositePipeline = m_compositeRenderer.EnsurePipeline(key);
     if (m_outlineMaskRenderingSignature == maskSignature && m_outlineMaskPipeline != VK_NULL_HANDLE)

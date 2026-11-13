@@ -35,7 +35,6 @@ std::shared_ptr<PreviewImage> PreviewDisplay::Prepare(VkImageView source, VkForm
     key.program = program;
     key.colorFormat = rhi::PixelFormat::RGBA8Srgb;
     key.useDynamicRendering = true;
-    key.inputResourceCount = 1;
     m_pipeline = m_renderer.EnsurePipeline(key);
     if (!m_pipeline.pipeline.IsValid())
         throw std::runtime_error("Preview display pipeline is unavailable");

@@ -91,9 +91,7 @@ bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const
            samples == other.samples && colorFormat == other.colorFormat && depthFormat == other.depthFormat &&
            depth.testEnabled == other.depth.testEnabled && depth.writeEnabled == other.depth.writeEnabled &&
            depth.compare == other.depth.compare && alphaBlend == other.alphaBlend &&
-           colorWriteMask == other.colorWriteMask && inputResourceCount == other.inputResourceCount &&
-           depthInputMask == other.depthInputMask && inputBufferMask == other.inputBufferMask &&
-           useDynamicRendering == other.useDynamicRendering &&
+           colorWriteMask == other.colorWriteMask && useDynamicRendering == other.useDynamicRendering &&
            (program ? program->code.get() : nullptr) == (other.program ? other.program->code.get() : nullptr);
 }
 
@@ -110,9 +108,6 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     combine(static_cast<size_t>(key.depth.compare));
     combine(key.alphaBlend);
     combine(key.colorWriteMask);
-    combine(key.inputResourceCount);
-    combine(key.inputBufferMask);
-    combine(key.depthInputMask);
     combine(key.useDynamicRendering ? 1U : 0U);
     combine(std::hash<const ShaderTargetCode *>{}(key.program ? key.program->code.get() : nullptr));
     return hash;
@@ -123,7 +118,6 @@ struct FullscreenPipelineCache::Impl
     struct PipelineEntry
     {
         FullscreenPipelineEntry rhi;
-        rhi::BindingLayoutHandle emptyGapLayout;
         uint64_t lastUse = 0;
     };
 
@@ -138,8 +132,6 @@ struct FullscreenPipelineCache::Impl
     {
         if (device) {
             device->Release(entry.rhi.pipeline);
-            device->Release(entry.rhi.inputLayout);
-            device->Release(entry.emptyGapLayout);
         }
         entry = {};
     }
@@ -147,8 +139,7 @@ struct FullscreenPipelineCache::Impl
     PipelineEntry CreatePipeline(const FullscreenPipelineKey &key)
     {
         PipelineEntry entry;
-        if (!host || !device || key.inputResourceCount > rhi::BindingLayoutDesc::MaxEntries ||
-            (!key.useDynamicRendering && !key.renderTargetLayout.IsValid()))
+        if (!host || !device || (!key.useDynamicRendering && !key.renderTargetLayout.IsValid()))
             return entry;
 
         rhi::GraphicsPipelineDesc desc;
@@ -171,87 +162,26 @@ struct FullscreenPipelineCache::Impl
             if (rhi::IsStencilFormat(key.depthFormat))
                 desc.renderingSignature.stencilFormat = key.depthFormat;
         }
-        if (key.program) {
-            std::vector<uint32_t> selected;
-            for (uint32_t index = 0; index < key.program->code->entries.size(); ++index)
-                if (key.program->code->entries[index].stage != rhi::ShaderStage::Compute)
-                    selected.push_back(index);
-            std::vector<rhi::BindingLayoutHandle> sharedLayouts;
-            entry.rhi.hasPerView = std::any_of(key.program->code->resources.begin(), key.program->code->resources.end(),
-                                               [](const auto &resource) { return resource.set == 1; });
-            if (entry.rhi.hasPerView) {
-                if (!host->GetPerViewLayout().IsValid())
-                    throw std::logic_error("Fullscreen scene lighting requires its owner's view layout");
-                sharedLayouts = {{}, host->GetPerViewLayout()};
-            }
-            entry.rhi.program =
-                std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected, sharedLayouts);
-            entry.rhi.program->Apply(desc);
-            PrepareInputs(entry.rhi, key.program->schema);
-            entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
-            if (!entry.rhi.pipeline.IsValid())
-                throw std::runtime_error("Fullscreen pipeline creation failed: " + key.shaderName);
-            return entry;
+        if (!key.program)
+            throw std::invalid_argument("Fullscreen pipeline requires a compiled author program: " + key.shaderName);
+        std::vector<uint32_t> selected;
+        for (uint32_t index = 0; index < key.program->code->entries.size(); ++index)
+            if (key.program->code->entries[index].stage != rhi::ShaderStage::Compute)
+                selected.push_back(index);
+        std::vector<rhi::BindingLayoutHandle> sharedLayouts;
+        entry.rhi.hasPerView = std::any_of(key.program->code->resources.begin(), key.program->code->resources.end(),
+                                           [](const auto &resource) { return resource.set == 1; });
+        if (entry.rhi.hasPerView) {
+            if (!host->GetPerViewLayout().IsValid())
+                throw std::logic_error("Fullscreen scene lighting requires its owner's view layout");
+            sharedLayouts = {{}, host->GetPerViewLayout()};
         }
-
-        rhi::BindingLayoutDesc inputLayoutDesc;
-        inputLayoutDesc.entryCount = key.inputResourceCount;
-        for (uint32_t index = 0; index < key.inputResourceCount; ++index) {
-            auto &binding = inputLayoutDesc.entries[index];
-            binding.binding = index;
-            binding.type = (key.inputBufferMask & (1u << index)) != 0 ? rhi::BindingType::StorageBuffer
-                                                                      : rhi::BindingType::CombinedTextureSampler;
-            binding.visibility = rhi::ShaderStage::Fragment;
-            binding.depthRead = (key.depthInputMask & (1u << index)) != 0;
-            binding.readOnlyStorage = binding.type == rhi::BindingType::StorageBuffer;
-        }
-        entry.rhi.inputLayout = device->CreateBindingLayout(inputLayoutDesc);
-        if (!entry.rhi.inputLayout.IsValid())
-            return entry;
-
-        desc.bindingLayouts[desc.bindingLayoutCount++] = entry.rhi.inputLayout;
-        desc.pushConstantStages = rhi::ShaderStage::Fragment;
-        desc.pushConstantBytes = sizeof(FullscreenPushConstants);
-
-        const auto perViewLayout = host->GetPerViewLayout();
-        const auto globalsLayout = host->GetGlobalsLayout();
-        if (perViewLayout.IsValid() || globalsLayout.IsValid()) {
-            if (perViewLayout.IsValid()) {
-                desc.bindingLayouts[desc.bindingLayoutCount++] = perViewLayout;
-            } else {
-                entry.emptyGapLayout = device->CreateBindingLayout({});
-                if (!entry.emptyGapLayout.IsValid()) {
-                    DestroyPipeline(entry);
-                    return {};
-                }
-                desc.bindingLayouts[desc.bindingLayoutCount++] = entry.emptyGapLayout;
-            }
-        }
-        if (globalsLayout.IsValid())
-            desc.bindingLayouts[desc.bindingLayoutCount++] = globalsLayout;
-
-        desc.vertexShader =
-            host->AcquireShaderModule("infernux/internal/fullscreen_triangle", rhi::ShaderStage::Vertex, 0, 0);
-        desc.fragmentShader = host->AcquireShaderModule(key.shaderName, rhi::ShaderStage::Fragment,
-                                                        key.inputResourceCount, key.inputBufferMask);
-        if (!desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid()) {
-            host->ReportError("FullscreenRenderer: missing shader modules for '" + key.shaderName + "'");
-            device->Release(desc.vertexShader);
-            device->Release(desc.fragmentShader);
-            DestroyPipeline(entry);
-            return {};
-        }
-
+        entry.rhi.program = std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected, sharedLayouts);
+        entry.rhi.program->Apply(desc);
+        PrepareInputs(entry.rhi, key.program->schema);
         entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
-        device->Release(desc.vertexShader);
-        device->Release(desc.fragmentShader);
-        if (!entry.rhi.pipeline.IsValid()) {
-            host->ReportError("FullscreenRenderer: failed to create pipeline for '" + key.shaderName + "'");
-            DestroyPipeline(entry);
-            return {};
-        }
-        entry.rhi.hasPerView = perViewLayout.IsValid();
-        entry.rhi.hasGlobals = globalsLayout.IsValid();
+        if (!entry.rhi.pipeline.IsValid())
+            throw std::runtime_error("Fullscreen pipeline creation failed: " + key.shaderName);
         return entry;
     }
 };
@@ -380,9 +310,8 @@ void FullscreenRenderer::Initialize(std::shared_ptr<FullscreenRendererHost> host
     m_impl->linearSampler = m_impl->device->CreateSampler(linear);
     m_impl->nearestSampler = m_impl->device->CreateSampler(nearest);
     if (!m_impl->linearSampler.IsValid() || !m_impl->nearestSampler.IsValid()) {
-        m_impl->host->ReportError("FullscreenRenderer: failed to create RHI samplers");
         Destroy();
-        return;
+        throw std::runtime_error("FullscreenRenderer: failed to create RHI samplers");
     }
 
     const uint32_t frames = std::max(1u, m_impl->host->GetFrameCount());
@@ -450,8 +379,7 @@ void FullscreenPipelineCache::InvalidateShader(const std::string &shaderName)
     size_t retired = 0;
     for (auto entry = m_impl->pipelines.begin(); entry != m_impl->pipelines.end();) {
         const bool authorAsset = entry->first.program && entry->first.program->assetGuid == shaderName;
-        if (!authorAsset && entry->first.shaderName != shaderName &&
-            shaderName != "infernux/internal/fullscreen_triangle") {
+        if (!authorAsset && entry->first.shaderName != shaderName && entry->first.program->shaderId != shaderName) {
             ++entry;
             continue;
         }
@@ -464,70 +392,6 @@ void FullscreenPipelineCache::InvalidateShader(const std::string &shaderName)
         m_impl->host->ReportInfo("FullscreenRenderer: retired " + std::to_string(retired) +
                                  " pipeline revision(s) for shader '" + shaderName + "'");
     }
-}
-
-rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHandle layout,
-                                                           const FullscreenResourceInput *inputs, uint32_t inputCount,
-                                                           rhi::SamplerHandle colorSampler)
-{
-    if (!m_impl || !m_impl->device || m_impl->frameBindGroups.empty())
-        return {};
-    const uint32_t frame = m_impl->CurrentFrame();
-
-    rhi::BindGroupDesc groupDesc;
-    groupDesc.layout = layout;
-    groupDesc.lifetime = rhi::BindGroupLifetime::FrameTransient;
-    if (!layout.IsValid() || !inputs || inputCount > rhi::BindingLayoutDesc::MaxEntries)
-        return {};
-    for (uint32_t i = 0; i < inputCount; ++i) {
-        const auto &input = inputs[i];
-        if (input.buffer.IsValid()) {
-            if (groupDesc.bufferCount >= groupDesc.buffers.size())
-                return {};
-            auto &buffer = groupDesc.buffers[groupDesc.bufferCount++];
-            buffer.binding = i;
-            buffer.type = rhi::BindingType::StorageBuffer;
-            buffer.buffer = input.buffer;
-            buffer.offset = input.byteOffset;
-            buffer.byteSize = input.byteSize;
-            continue;
-        }
-        if (groupDesc.textureCount >= groupDesc.textures.size())
-            return {};
-        const bool nearestSampling = input.depthRead || rhi::IsIntegerFormat(input.format);
-        auto &texture = groupDesc.textures[groupDesc.textureCount++];
-        texture.binding = i;
-        texture.type = rhi::BindingType::CombinedTextureSampler;
-        texture.texture = input.view;
-        texture.sampler =
-            input.sampler.IsValid() ? input.sampler : (nearestSampling ? m_impl->nearestSampler : colorSampler);
-        texture.depthRead = input.depthRead;
-        if (!texture.texture.IsValid() || !texture.sampler.IsValid())
-            return {};
-    }
-
-    const auto handle = m_impl->device->CreateBindGroup(groupDesc);
-    if (handle.IsValid())
-        m_impl->frameBindGroups[frame].push_back(handle);
-    return handle;
-}
-
-void FullscreenRenderer::Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
-                              rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,
-                              rhi::BindGroupHandle globalsGroup, const FullscreenPushConstants &pushConstants,
-                              uint32_t pushConstantSize)
-{
-    if (!m_impl || !entry.pipeline.IsValid())
-        return;
-    encoder.BindPipeline(entry.pipeline);
-    if (inputGroup.IsValid())
-        encoder.BindGroup(entry.pipeline, 0, inputGroup);
-    if (entry.hasPerView && perViewGroup.IsValid())
-        encoder.BindGroup(entry.pipeline, 1, perViewGroup);
-    if (entry.hasGlobals)
-        encoder.BindGroup(entry.pipeline, 2, globalsGroup);
-    encoder.PushConstants(entry.pipeline, rhi::ShaderStage::Fragment, pushConstantSize, pushConstants.values);
-    encoder.Draw(3);
 }
 
 void FullscreenRenderer::ResetPool()
@@ -695,11 +559,6 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
         encoder.BindGroup(entry.pipeline, index, group);
     }
     encoder.Draw(3);
-}
-
-rhi::SamplerHandle FullscreenRenderer::GetLinearSampler() const noexcept
-{
-    return m_impl ? m_impl->linearSampler : rhi::SamplerHandle{};
 }
 
 } // namespace infernux

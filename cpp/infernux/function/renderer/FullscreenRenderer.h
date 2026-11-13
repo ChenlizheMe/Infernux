@@ -80,31 +80,12 @@ class FullscreenRendererHost
     [[nodiscard]] virtual uint32_t GetFrameCount() const noexcept = 0;
     [[nodiscard]] virtual uint32_t GetCurrentFrame() const noexcept = 0;
 
-    /// Return a module registration owned by the caller. The renderer releases
-    /// it after pipeline creation; the concrete backend decides whether the
-    /// underlying shader object is shared or newly created.
-    [[nodiscard]] virtual rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name, rhi::ShaderStage stage,
-                                                                      uint32_t inputCount,
-                                                                      uint32_t inputBufferMask) = 0;
-    [[nodiscard]] virtual std::shared_ptr<const FullscreenProgram> AcquireProgram(const std::string &)
-    {
-        return {};
-    }
+    [[nodiscard]] virtual std::shared_ptr<const FullscreenProgram> AcquireProgram(const std::string &name) = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetPerViewLayout() const noexcept = 0;
-    [[nodiscard]] virtual rhi::BindingLayoutHandle GetGlobalsLayout() const noexcept = 0;
-    virtual void ReportError(const std::string &message)
-    {
-        (void)message;
-    }
     virtual void ReportInfo(const std::string &message)
     {
         (void)message;
     }
-};
-
-struct FullscreenPushConstants
-{
-    float values[32] = {};
 };
 
 struct FullscreenPipelineKey
@@ -117,9 +98,6 @@ struct FullscreenPipelineKey
     rhi::DepthState depth;
     bool alphaBlend = false;
     uint8_t colorWriteMask = 0x0f;
-    uint32_t inputResourceCount = 0;
-    uint32_t inputBufferMask = 0;
-    uint32_t depthInputMask = 0;
     bool useDynamicRendering = false;
     std::shared_ptr<const FullscreenProgram> program;
 
@@ -137,9 +115,7 @@ struct FullscreenPipelineEntry
     static constexpr int32_t Globals = -2;
 
     rhi::GraphicsPipelineHandle pipeline;
-    rhi::BindingLayoutHandle inputLayout;
     bool hasPerView = false;
-    bool hasGlobals = false;
     std::shared_ptr<DeviceShaderProgram> program;
     std::vector<std::string> inputNames;
     std::vector<uint32_t> resourceIndices;
@@ -219,19 +195,7 @@ class FullscreenRenderer
                 const FullscreenResourceInput *inputs, const FullscreenParameters &parameters,
                 const ShaderParameterValue *values = nullptr, const FullscreenViewResources &view = {});
 
-    INFERNUX_RENDER_CORE_API rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout,
-                                                                    const FullscreenResourceInput *inputs,
-                                                                    uint32_t inputCount,
-                                                                    rhi::SamplerHandle colorSampler);
-
-    INFERNUX_RENDER_CORE_API void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
-                                       rhi::BindGroupHandle inputGroup, rhi::BindGroupHandle perViewGroup,
-                                       rhi::BindGroupHandle globalsGroup, const FullscreenPushConstants &pushConstants,
-                                       uint32_t pushConstantSize);
-
     INFERNUX_RENDER_CORE_API void ResetPool();
-
-    [[nodiscard]] INFERNUX_RENDER_CORE_API rhi::SamplerHandle GetLinearSampler() const noexcept;
 
   private:
     struct Impl;

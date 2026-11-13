@@ -687,39 +687,11 @@ if(INFERNUX_BUILD_TESTS)
         COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
             "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderTextureSample.comp" -o "${_render_texture_sample}"
         DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderTextureSample.comp" VERBATIM)
-    set(_fullscreen_state_shaders)
-    foreach(_stage vert frag)
-        set(_state_shader "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/FullscreenRasterState.${_stage}.spv")
-        add_custom_command(OUTPUT "${_state_shader}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
-            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-                "${CMAKE_SOURCE_DIR}/tests/native/shaders/FullscreenRasterState.${_stage}" -o "${_state_shader}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/FullscreenRasterState.${_stage}" VERBATIM)
-        list(APPEND _fullscreen_state_shaders "${_state_shader}")
-    endforeach()
-    set(_fullscreen_sample_shaders)
-    foreach(_operation Write Read)
-        set(_sample_shader "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/FullscreenSample${_operation}.frag.spv")
-        add_custom_command(OUTPUT "${_sample_shader}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
-            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-                "${CMAKE_SOURCE_DIR}/tests/native/shaders/FullscreenSample${_operation}.frag" -o "${_sample_shader}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/FullscreenSample${_operation}.frag" VERBATIM)
-        list(APPEND _fullscreen_sample_shaders "${_sample_shader}")
-    endforeach()
-    set(_fullscreen_storage_shader "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/FullscreenStorageRead.frag.spv")
-    add_custom_command(OUTPUT "${_fullscreen_storage_shader}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
-        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-            "${CMAKE_SOURCE_DIR}/tests/native/shaders/FullscreenStorageRead.frag" -o "${_fullscreen_storage_shader}"
-        DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/FullscreenStorageRead.frag" VERBATIM)
     infernux_add_native_test(infernux_render_texture_vulkan_tests
-        tests/native/RenderTextureVulkanTests.cpp "${_render_texture_sample}" ${_fullscreen_state_shaders}
-        ${_fullscreen_sample_shaders} "${_fullscreen_storage_shader}")
+        tests/native/RenderTextureVulkanTests.cpp "${_render_texture_sample}")
     target_link_libraries(infernux_render_texture_vulkan_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.render_texture_vulkan COMMAND infernux_render_texture_vulkan_tests
-        "${_render_texture_sample}" ${_fullscreen_state_shaders} ${_fullscreen_sample_shaders}
-        "${_fullscreen_storage_shader}")
+        "${_render_texture_sample}")
     set_tests_properties(infernux.render_texture_vulkan PROPERTIES
         LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
 

@@ -103,8 +103,8 @@ class ShaderParameterValue
         throw std::invalid_argument("Shader parameter value does not match its declared type or shape");
     }
 
-    /// Temporary scalar interface for the remaining native push-constant
-    /// programs. Authored Slang programs consume Data() and reflected layouts.
+    /// Scalar numeric view for diagnostics. GPU uploads retain the original
+    /// type and consume Data() through the reflected copy plan.
     [[nodiscard]] float ScalarFloat() const
     {
         switch (m_kind) {

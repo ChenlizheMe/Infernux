@@ -23,7 +23,6 @@
 #include "particle/ParticleGpuSorter.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiComputeKernel.h"
-#include "shader/ShaderReflection.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -456,10 +455,6 @@ bool SceneRenderGraph::EnsureViewGpuResources()
 
     // Initialize fullscreen effect renderer for FullscreenQuad passes
     m_fullscreenRenderer.Initialize(vkCore);
-    if (!m_fullscreenRenderer.GetLinearSampler().IsValid()) {
-        INXLOG_ERROR("SceneRenderGraph: failed to prepare fullscreen view resources");
-        return false;
-    }
 
     const auto depthResolveSupport = vkCore->GetDeviceContext().GetCapabilities().CheckFormat(
         rhi::PixelFormat::R32SFloat, rhi::FormatFeature::Sampled | rhi::FormatFeature::Storage);
@@ -1654,11 +1649,6 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                     ValidateFullscreenHistories(*program, prepared, command, pass, normalizedDesc);
                     for (size_t index = 0; index < command.parameters.size(); ++index)
                         command.parameters[index].second = prepared.values[index];
-                } else {
-                    if (command.parameters.size() > 32)
-                        throw std::invalid_argument("Native fullscreen push constants exceed 128 bytes");
-                    for (auto &[name, value] : command.parameters)
-                        value = value.ScalarFloat();
                 }
             }
         }
@@ -1730,16 +1720,11 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 continue;
             RuntimeParameterBlock block;
             auto values = std::make_shared<std::vector<ShaderParameterValue>>();
-            const bool nativePushConstants = !m_vkCore->AcquireFullscreenProgram(command->shaderName);
-            if (nativePushConstants)
-                block.scalarPushConstants.emplace();
             block.names.reserve(command->parameters.size());
             values->reserve(command->parameters.size());
             for (size_t i = 0; i < command->parameters.size(); ++i) {
                 block.names.push_back(command->parameters[i].first);
                 values->push_back(command->parameters[i].second);
-                if (nativePushConstants)
-                    block.scalarPushConstants->values[i] = values->back().Read<float>();
             }
             block.values = std::move(values);
             blocks.emplace(command->parameterBlock, std::move(block));
@@ -1936,12 +1921,8 @@ void SceneRenderGraph::UpdateParameterBlocks(const std::vector<GraphParameterBlo
             if (update.values[i].first != block.names[i])
                 throw std::invalid_argument("Parameter block '" + update.id + "' has different compiled names");
             const auto &value = update.values[i].second;
-            values->push_back(block.scalarPushConstants ? ShaderParameterValue(value.ScalarFloat())
-                                                        : value.ConvertTo((*block.values)[i].Kind()));
+            values->push_back(value.ConvertTo((*block.values)[i].Kind()));
         }
-        if (block.scalarPushConstants)
-            for (size_t index = 0; index < values->size(); ++index)
-                block.scalarPushConstants->values[index] = (*values)[index].Read<float>();
         block.values = std::move(values);
         block.revision = update.revision;
         ++m_parameterBlockGeneration;
@@ -4869,21 +4850,20 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 // Reflect once when building this graph, never in the frame loop.
                 // Texture2DMS retains sample identity; Texture2D consumes resolved data.
                 const auto authorProgram = m_fullscreenRenderer.AcquireProgram(command->shaderName);
-                if (authorProgram)
-                    m_authorShaderGuids.insert(authorProgram->assetGuid);
+                if (!authorProgram)
+                    return;
+                m_authorShaderGuids.insert(authorProgram->assetGuid);
                 FullscreenParameters authorParameters;
-                if (authorProgram) {
-                    try {
-                        authorParameters = FullscreenRenderer::PrepareParameters(*authorProgram, command->parameters);
-                        ValidateFullscreenHistories(*authorProgram, authorParameters, *command, passDesc,
-                                                    m_pythonGraphDesc);
-                    } catch (const std::invalid_argument &error) {
-                        INXLOG_ERROR("SceneRenderGraph: fullscreen program rejected: ", error.what());
-                        m_rejectedFullscreenSourceRevision = m_pythonGraphSourceRevision;
-                        m_needsRebuild = false;
-                        m_needsCompile = false;
-                        return;
-                    }
+                try {
+                    authorParameters = FullscreenRenderer::PrepareParameters(*authorProgram, command->parameters);
+                    ValidateFullscreenHistories(*authorProgram, authorParameters, *command, passDesc,
+                                                m_pythonGraphDesc);
+                } catch (const std::invalid_argument &error) {
+                    INXLOG_ERROR("SceneRenderGraph: fullscreen program rejected: ", error.what());
+                    m_rejectedFullscreenSourceRevision = m_pythonGraphSourceRevision;
+                    m_needsRebuild = false;
+                    m_needsCompile = false;
+                    return;
                 }
                 struct FullscreenInput
                 {
@@ -4893,76 +4873,35 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     bool readOnly = true;
                     bool multisampled = false;
                     bool history = false;
-                    uint32_t arraySize = 1;
-                    ReflectedImageDimension dimension = ReflectedImageDimension::D2;
-                    VkFormat scalarArrayFormat = VK_FORMAT_UNDEFINED;
-                    uint32_t arrayMemberOffset = 0;
-                    uint32_t arrayStride = 0;
-                    uint32_t arrayElementCount = 0;
+                    rhi::TextureViewDimension dimension = rhi::TextureViewDimension::Texture2D;
                     rhi::ComputeBufferDesc element;
                 };
                 std::vector<FullscreenInput> declaredInputs;
-                if (authorProgram) {
-                    const auto schema = nlohmann::json::parse(authorProgram->schema);
-                    for (const auto &input : schema.at("inputs")) {
-                        const auto name = input.at("name").get<std::string>();
-                        const bool storage = input.at("kind") == "Buffer";
-                        const auto &resources = authorProgram->code->resources;
-                        const auto resource = std::find_if(resources.begin(), resources.end(), [&](const auto &item) {
-                            return item.name == "inx_" + name + (storage ? "" : ".texture");
-                        });
-                        if (resource == resources.end())
-                            throw std::logic_error("Fullscreen author input has no target resource: " + name);
-                        FullscreenInput item;
-                        item.name = name;
-                        item.storage = storage;
-                        item.readOnly = resource->binding.readOnlyStorage;
-                        if (storage)
-                            item.element = ShaderBufferElementLayout(input.at("element").get<std::string>());
-                        item.history = input.at("kind") == "History2D";
-                        item.binding = static_cast<uint32_t>(declaredInputs.size());
-                        item.multisampled = resource->binding.multisampled;
-                        item.dimension = resource->binding.viewDimension == rhi::TextureViewDimension::Texture3D
-                                             ? ReflectedImageDimension::D3
-                                             : ReflectedImageDimension::D2;
-                        declaredInputs.push_back(std::move(item));
-                    }
-                } else {
-                    if (!m_vkCore->EnsureShaderAvailable(command->shaderName, "fragment"))
-                        return;
-                    const auto *fragmentCode = m_vkCore->GetShaderCache().FindFragCode(command->shaderName);
-                    ShaderReflection reflection;
-                    if (!fragmentCode || !reflection.Reflect(*fragmentCode, VK_SHADER_STAGE_FRAGMENT_BIT))
-                        return;
-                    for (const auto &image : reflection.GetSampledImages()) {
-                        if (image.set == 0 && image.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
-                            FullscreenInput item;
-                            item.name = image.name;
-                            item.binding = image.binding;
-                            item.multisampled = image.multisampled;
-                            item.arraySize = image.arraySize;
-                            item.dimension = image.dimension;
-                            declaredInputs.push_back(std::move(item));
-                        }
-                    }
-                    for (const auto &buffer : reflection.GetStorageBuffers()) {
-                        if (buffer.set == 0) {
-                            FullscreenInput item;
-                            item.name = buffer.name;
-                            item.binding = buffer.binding;
-                            item.storage = true;
-                            item.readOnly = buffer.readOnly;
-                            item.arraySize = buffer.arraySize;
-                            item.scalarArrayFormat = buffer.scalarArrayFormat;
-                            item.arrayMemberOffset = buffer.arrayMemberOffset;
-                            item.arrayStride = buffer.arrayStride;
-                            item.arrayElementCount = buffer.arrayElementCount;
-                            declaredInputs.push_back(std::move(item));
-                        }
-                    }
+                const auto schema = nlohmann::json::parse(authorProgram->schema);
+                for (const auto &input : schema.at("inputs")) {
+                    const auto name = input.at("name").get<std::string>();
+                    const bool storage = input.at("kind") == "Buffer";
+                    const auto &resources = authorProgram->code->resources;
+                    const auto resource = std::find_if(resources.begin(), resources.end(), [&](const auto &item) {
+                        return item.name == "inx_" + name + (storage ? "" : ".texture");
+                    });
+                    if (resource == resources.end())
+                        throw std::logic_error("Fullscreen author input has no target resource: " + name);
+                    FullscreenInput item;
+                    item.name = name;
+                    item.storage = storage;
+                    item.readOnly = resource->binding.readOnlyStorage;
+                    if (storage)
+                        item.element = ShaderBufferElementLayout(input.at("element").get<std::string>());
+                    item.history = input.at("kind") == "History2D";
+                    item.binding = static_cast<uint32_t>(declaredInputs.size());
+                    item.multisampled = resource->binding.multisampled;
+                    item.dimension = resource->binding.viewDimension;
+                    declaredInputs.push_back(std::move(item));
                 }
+
                 std::unordered_set<uint32_t> multisampledBindings;
-                std::unordered_map<uint32_t, ReflectedImageDimension> sampledDimensions;
+                std::unordered_map<uint32_t, rhi::TextureViewDimension> sampledDimensions;
                 for (const auto &image : declaredInputs) {
                     if (image.storage)
                         continue;
@@ -4981,7 +4920,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     std::optional<uint32_t> binding;
                     const bool bufferSource = bufferHandles.find(sourceName) != bufferHandles.end();
                     for (const auto &input : declaredInputs)
-                        if (bufferSource == input.storage && input.name == resourceName && input.arraySize == 1)
+                        if (bufferSource == input.storage && input.name == resourceName)
                             binding = input.binding;
                     if (!binding) {
                         INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' has no matching scalar shader input '",
@@ -5020,7 +4959,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             std::find_if(declaredInputs.begin(), declaredInputs.end(), [binding](const auto &item) {
                                 return item.storage && item.binding == binding;
                             });
-                        if (reflected == declaredInputs.end() || !reflected->readOnly || reflected->arraySize != 1) {
+                        if (reflected == declaredInputs.end() || !reflected->readOnly) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' input '", name,
                                          "' requires one read-only storage-buffer descriptor at binding ", binding);
                             return;
@@ -5034,9 +4973,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             description->viewLightList ? viewLightListByteSize : description->byteSize;
                         const auto &capabilities = m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilities();
                         const auto alignment = capabilities.limits.minStorageBufferOffsetAlignment;
-                        const uint64_t bindingOffset =
-                            authorProgram ? description->byteOffset - description->byteOffset % alignment
-                                          : description->byteOffset;
+                        const uint64_t bindingOffset = description->byteOffset - description->byteOffset % alignment;
                         const auto dataOffset = description->byteOffset - bindingOffset;
                         const auto bindingBytes = dataOffset + inputByteSize;
                         if (!capabilities.IsStorageBufferRangeValid(bindingOffset, bindingBytes)) {
@@ -5045,32 +4982,16 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             return;
                         }
                         if (const auto *type = ResolveGraphComputeBufferDesc(m_pythonGraphDesc, *description)) {
-                            if (authorProgram) {
-                                if (type->scalarType != reflected->element.scalarType ||
-                                    type->lanes != reflected->element.lanes) {
-                                    INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
-                                                 "' does not match its declared Buffer element type");
-                                    return;
-                                }
-                            } else {
-                                const auto scalar = type->scalarType;
-                                const auto format = scalar == rhi::ComputeScalarType::Float32 ? VK_FORMAT_R32_SFLOAT
-                                                                                              : VK_FORMAT_R32_UINT;
-                                if (type->lanes != 1 ||
-                                    (scalar != rhi::ComputeScalarType::Float32 &&
-                                     scalar != rhi::ComputeScalarType::UInt32) ||
-                                    reflected->scalarArrayFormat != format || reflected->arrayMemberOffset != 0 ||
-                                    reflected->arrayStride != sizeof(uint32_t) ||
-                                    reflected->arrayElementCount > inputByteSize / sizeof(uint32_t)) {
-                                    INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
-                                                 "' requires a matching flat scalar array with offset 0 and stride 4");
-                                    return;
-                                }
+                            if (type->scalarType != reflected->element.scalarType ||
+                                type->lanes != reflected->element.lanes) {
+                                INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
+                                             "' does not match its declared Buffer element type");
+                                return;
                             }
                         }
-                        if (authorProgram && (description->byteOffset % sizeof(uint32_t) != 0 ||
-                                              inputByteSize % reflected->element.GetElementStride() != 0 ||
-                                              bindingBytes > std::numeric_limits<uint32_t>::max())) {
+                        if (description->byteOffset % sizeof(uint32_t) != 0 ||
+                            inputByteSize % reflected->element.GetElementStride() != 0 ||
+                            bindingBytes > std::numeric_limits<uint32_t>::max()) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
                                          "' requires a complete packed 32-bit element span");
                             return;
@@ -5089,15 +5010,15 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         continue;
                     }
                     const auto &texture = *texDescMap.at(name);
-                    const bool historyInput = authorProgram && declaredInputs[binding].history;
+                    const bool historyInput = declaredInputs[binding].history;
                     const uint32_t samples = texture.EffectiveSamples(static_cast<uint32_t>(msaaSamples));
                     auto source = texture.IsViewColor() ? m_importedColorTarget : customRTHandles.at(name);
                     auto format = texture.EffectiveFormat(m_renderView);
                     rhi::SamplerHandle sampler;
                     if (texture.role == GraphTextureRole::Asset) {
                         const auto dimension = sampledDimensions.find(binding);
-                        const auto expected =
-                            texture.isVolume ? ReflectedImageDimension::D3 : ReflectedImageDimension::D2;
+                        const auto expected = texture.isVolume ? rhi::TextureViewDimension::Texture3D
+                                                               : rhi::TextureViewDimension::Texture2D;
                         if (dimension == sampledDimensions.end() || dimension->second != expected) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' binds Texture asset '", name,
                                          "' to an incompatible shader resource dimension at binding ", binding);
@@ -5198,15 +5119,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const rhi::DepthState fsDepthState{command->depthTest, command->depthWrite,
                                                    rhi::ReverseDepthCompare(command->depthCompare)};
                 const bool fsAlphaBlend = command->alphaBlend;
-                FullscreenPushConstants packedPushConstants{};
-                uint32_t packedPushConstantSize = 0;
-                if (!authorProgram) {
-                    for (const auto &[name, value] : command->parameters) {
-                        packedPushConstants.values[packedPushConstantSize / sizeof(float)] = value.Read<float>();
-                        packedPushConstantSize += sizeof(float);
-                    }
-                }
-
                 // Determine output target (primary color)
                 vk::ResourceHandle fsOutputTarget = primaryColorTarget;
                 vk::ResourceHandle fsWrittenVersion;
@@ -5255,118 +5167,111 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 fullscreenPipelineKey.shaderName = shaderName;
                 fullscreenPipelineKey.samples = fsSamples;
                 fullscreenPipelineKey.colorFormat = fsColorFormat;
-                fullscreenPipelineKey.inputResourceCount = static_cast<uint32_t>(fsReadInputs.size());
                 fullscreenPipelineKey.useDynamicRendering = true;
                 fullscreenPipelineKey.program = authorProgram;
-                for (uint32_t index = 0; index < fsReadInputs.size() && index < 32; ++index) {
-                    if (fsReadInputs[index].storageBuffer)
-                        fullscreenPipelineKey.inputBufferMask |= 1u << index;
-                    if (fsReadInputs[index].depthRead)
-                        fullscreenPipelineKey.depthInputMask |= 1u << index;
-                }
-                const auto pass = m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion, &fsResolvedVersion,
-                                                                         &fsWrittenDepthVersion](
-                                                                            vk::PassBuilder &builder) {
-                    builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
-                    // Declare read dependencies for DAG edges + barriers
-                    for (const auto &input : fsReadInputs) {
-                        if (input.storageBuffer) {
-                            if (input.frameLocal) {
-                                for (const auto handle : input.frameHandles) {
-                                    if (handle.IsValid())
-                                        builder.ReadStorageBuffer(handle, rhi::PipelineStage::FragmentShader);
-                                }
-                            } else {
-                                builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
-                            }
-                        } else if (input.depthRead) {
-                            builder.ReadSampledDepth(input.handle);
-                        } else {
-                            builder.Read(input.handle);
-                        }
-                    }
-                    if (fullscreenShadowInput.IsValid() &&
-                        std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
-                                     [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
-                        builder.ReadSampledDepth(fullscreenShadowInput);
-                    }
-                    if (authorProgram && (authorProgram->UsesViewBinding(2) || authorProgram->UsesViewBinding(3))) {
-                        for (const auto &resources : forwardPlusResources) {
-                            if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
-                                !resources.lightMasks.IsValid()) {
-                                continue;
-                            }
-                            builder.ReadStorageBuffer(resources.canonicalLights, rhi::PipelineStage::FragmentShader);
-                            builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
-                            builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
-                        }
-                    }
-                    // Declare color output
-                    fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
-                    if (resolveTarget.IsValid())
-                        fsResolvedVersion = builder.WriteResolve(resolveTarget);
-                    if (fsDepthTarget.IsValid())
-                        fsWrittenDepthVersion = builder.WriteDepth(fsDepthTarget);
-                    builder.SetDepthTest(fsDepthState.testEnabled);
-                    // Replacement passes fully define color. Partial coverage
-                    // and blending load the preceding graph version unless the
-                    // author explicitly clears it; never load a new transient.
-                    if (clearColor)
-                        builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
-                    else if (!fsAlphaBlend && !fsDepthState.testEnabled)
-                        builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
-                    if (clearDepth && fsDepthTarget.IsValid())
-                        builder.SetClearDepth(clearDepthVal, 0);
-                    builder.SetRenderArea(fsPassWidth, fsPassHeight);
-                    return [=](vk::RenderContext &ctx) {
-                        // Resolve input texture views using a stack path for the common case.
-                        FullscreenResourceInput inputsStack[8] = {};
-                        std::vector<FullscreenResourceInput> inputsHeap;
-                        FullscreenResourceInput *inputs = inputsStack;
-                        if (fsReadInputs.size() > 8) {
-                            inputsHeap.resize(fsReadInputs.size());
-                            inputs = inputsHeap.data();
-                        }
-                        const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
-                        for (uint32_t i = 0; i < inputCount; ++i) {
-                            const auto &input = fsReadInputs[i];
+                const auto pass =
+                    m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion, &fsResolvedVersion,
+                                                           &fsWrittenDepthVersion](vk::PassBuilder &builder) {
+                        builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
+                        // Declare read dependencies for DAG edges + barriers
+                        for (const auto &input : fsReadInputs) {
                             if (input.storageBuffer) {
-                                auto resource = input.handle;
-                                auto byteSize = input.byteSize;
                                 if (input.frameLocal) {
-                                    const auto slot =
-                                        m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
-                                    resource = input.frameHandles[slot];
-                                    byteSize = m_cameraCanonicalLights.Frame(slot).capacityBytes;
+                                    for (const auto handle : input.frameHandles) {
+                                        if (handle.IsValid())
+                                            builder.ReadStorageBuffer(handle, rhi::PipelineStage::FragmentShader);
+                                    }
+                                } else {
+                                    builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
                                 }
-                                inputs[i].buffer = ctx.GetBufferHandle(resource);
-                                inputs[i].byteOffset = input.byteOffset;
-                                inputs[i].byteSize = byteSize;
-                                inputs[i].dataByteOffset = input.dataByteOffset;
-                                if (!inputs[i].buffer.IsValid()) {
+                            } else if (input.depthRead) {
+                                builder.ReadSampledDepth(input.handle);
+                            } else {
+                                builder.Read(input.handle);
+                            }
+                        }
+                        if (fullscreenShadowInput.IsValid() &&
+                            std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
+                                         [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
+                            builder.ReadSampledDepth(fullscreenShadowInput);
+                        }
+                        if (authorProgram->UsesViewBinding(2) || authorProgram->UsesViewBinding(3)) {
+                            for (const auto &resources : forwardPlusResources) {
+                                if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
+                                    !resources.lightMasks.IsValid()) {
+                                    continue;
+                                }
+                                builder.ReadStorageBuffer(resources.canonicalLights,
+                                                          rhi::PipelineStage::FragmentShader);
+                                builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
+                                builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
+                            }
+                        }
+                        // Declare color output
+                        fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
+                        if (resolveTarget.IsValid())
+                            fsResolvedVersion = builder.WriteResolve(resolveTarget);
+                        if (fsDepthTarget.IsValid())
+                            fsWrittenDepthVersion = builder.WriteDepth(fsDepthTarget);
+                        builder.SetDepthTest(fsDepthState.testEnabled);
+                        // Replacement passes fully define color. Partial coverage
+                        // and blending load the preceding graph version unless the
+                        // author explicitly clears it; never load a new transient.
+                        if (clearColor)
+                            builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
+                        else if (!fsAlphaBlend && !fsDepthState.testEnabled)
+                            builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
+                        if (clearDepth && fsDepthTarget.IsValid())
+                            builder.SetClearDepth(clearDepthVal, 0);
+                        builder.SetRenderArea(fsPassWidth, fsPassHeight);
+                        return [=](vk::RenderContext &ctx) {
+                            // Resolve input texture views using a stack path for the common case.
+                            FullscreenResourceInput inputsStack[8] = {};
+                            std::vector<FullscreenResourceInput> inputsHeap;
+                            FullscreenResourceInput *inputs = inputsStack;
+                            if (fsReadInputs.size() > 8) {
+                                inputsHeap.resize(fsReadInputs.size());
+                                inputs = inputsHeap.data();
+                            }
+                            const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
+                            for (uint32_t i = 0; i < inputCount; ++i) {
+                                const auto &input = fsReadInputs[i];
+                                if (input.storageBuffer) {
+                                    auto resource = input.handle;
+                                    auto byteSize = input.byteSize;
+                                    if (input.frameLocal) {
+                                        const auto slot =
+                                            m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
+                                        resource = input.frameHandles[slot];
+                                        byteSize = m_cameraCanonicalLights.Frame(slot).capacityBytes;
+                                    }
+                                    inputs[i].buffer = ctx.GetBufferHandle(resource);
+                                    inputs[i].byteOffset = input.byteOffset;
+                                    inputs[i].byteSize = byteSize;
+                                    inputs[i].dataByteOffset = input.dataByteOffset;
+                                    if (!inputs[i].buffer.IsValid()) {
+                                        INXLOG_ERROR("FullscreenQuad '", shaderName,
+                                                     "': input buffer is unavailable at binding ", i);
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                inputs[i].view = ctx.GetTextureView(input.handle);
+                                inputs[i].sampler = input.sampler;
+                                inputs[i].format = input.format;
+                                inputs[i].depthRead = input.depthRead;
+                                inputs[i].historyValid = input.historyValidity && *input.historyValidity;
+                                if (!inputs[i].view.IsValid()) {
                                     INXLOG_ERROR("FullscreenQuad '", shaderName,
-                                                 "': input buffer is unavailable at binding ", i);
+                                                 "': input texture view is unavailable at binding ", i);
                                     return;
                                 }
-                                continue;
                             }
-                            inputs[i].view = ctx.GetTextureView(input.handle);
-                            inputs[i].sampler = input.sampler;
-                            inputs[i].format = input.format;
-                            inputs[i].depthRead = input.depthRead;
-                            inputs[i].historyValid = input.historyValidity && *input.historyValidity;
-                            if (!inputs[i].view.IsValid()) {
-                                INXLOG_ERROR("FullscreenQuad '", shaderName,
-                                             "': input texture view is unavailable at binding ", i);
+
+                            const auto &entry = fsRenderer->EnsurePipeline(fullscreenPipelineKey);
+                            if (!entry.pipeline.IsValid())
                                 return;
-                            }
-                        }
 
-                        const auto &entry = fsRenderer->EnsurePipeline(fullscreenPipelineKey);
-                        if (!entry.pipeline.IsValid())
-                            return;
-
-                        if (authorProgram) {
                             const auto *values = parameterBlock.empty()
                                                      ? nullptr
                                                      : m_submittedParameterBlocks.at(parameterBlock).values->data();
@@ -5377,31 +5282,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             };
                             fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
                                                     values, viewResources);
-                            return;
-                        }
-
-                        // Allocate descriptor set for input textures
-                        const auto bindGroup = fsRenderer->AllocateBindGroup(entry.inputLayout, inputs, inputCount,
-                                                                             fsRenderer->GetLinearSampler());
-                        if (!bindGroup.IsValid()) {
-                            INXLOG_ERROR("FullscreenQuad '", shaderName, "': descriptor pool exhausted, skipping pass");
-                            return;
-                        }
-
-                        // Dynamic blocks replace only values. Shader, parameter
-                        // order, and byte size remain part of compiled topology.
-                        FullscreenPushConstants drawPushConstants = packedPushConstants;
-                        uint32_t drawPushConstantSize = packedPushConstantSize;
-                        if (!parameterBlock.empty()) {
-                            const auto &block = m_submittedParameterBlocks.at(parameterBlock);
-                            drawPushConstants = *block.scalarPushConstants;
-                            drawPushConstantSize = static_cast<uint32_t>(block.values->size() * sizeof(float));
-                        }
-                        fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),
-                                         vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()), drawPushConstants,
-                                         drawPushConstantSize);
-                    };
-                });
+                        };
+                    });
                 trackAuthorPass(pass);
                 if (fullscreenShadowInput.IsValid()) {
                     m_shadowMapInputHandle = fullscreenShadowInput;
