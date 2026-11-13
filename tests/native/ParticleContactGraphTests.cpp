@@ -1,8 +1,9 @@
 // CPU regression of production graph declarations and emitted buffer barriers.
-// No Vulkan instance, VkDevice, allocation, shader compilation, or GPU submission.
+// No Vulkan instance, VkDevice, allocation, or GPU submission.
 #include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/renderer/vk/RenderGraph.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cassert>
@@ -41,6 +42,9 @@ template<class T> T Sentinel(uintptr_t n) {
 // Same recording-device boundary as ParticleGpuRuntimeTests, with buffers
 // additionally registered in the real VulkanRhiDevice CPU handle registry.
 struct RecordingDevice final : rhi::Device {
+    rhi::ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override {
+        return rhi::ShaderSourceLanguage::SpirV;
+    }
     rhi::DeviceCaps capabilities;
     vk::VulkanRhiDevice registry;
     uint32_t next = 1, buffersCreated = 0, buffersReleased = 0;
@@ -137,6 +141,10 @@ int main() {
             graph.SetQueueTopology(topology);
             std::array<uint32_t, 5> words{0x07230203u, 0, 0, 0, 0};
             particle::ShaderBytecode shader{words.data(), words.size()};
+            const auto compile = [](std::string_view source) {
+                return std::make_shared<const ShaderTargetCode>(CompileSlangNativeModule(
+                    {"particle_contact", "<test/particle_contact>", std::string(source)}, ShaderCodeTarget::SpirV));
+            };
             particle::GpuEmitterDesc desc;
             desc.capacity = 32; desc.stateStride = 32; desc.collisionEnabled = true;
             desc.collisionSceneHeader = {0xffd0u, 1}; desc.collisionSceneColliders = {0xffd1u, 1};
@@ -149,9 +157,15 @@ int main() {
             particle::GpuParticleBoundsDesc bd;
             bd.capacity = desc.capacity; bd.visibility = runtime.VisibilityBuffer();
             bd.sourceIndices = runtime.RenderIndexBuffer(); bd.sourceIndirectArguments = runtime.IndirectBuffer();
-            bd.simulationControl = runtime.SimulationControlBuffer(); bd.program = {shader, shader, shader};
+            bd.simulationControl = runtime.SimulationControlBuffer();
+            bd.program = {compile(particle::GpuParticleBoundsShaderSources::Prepare()),
+                          compile(particle::GpuParticleBoundsShaderSources::Reset()),
+                          compile(particle::GpuParticleBoundsShaderSources::Reduce())};
+            const particle::GpuParticleSpawnProgram spawnProgram{
+                compile(particle::GpuParticleSpawnShaderSources::Advance()),
+                compile(particle::GpuParticleSpawnShaderSources::Prepare())};
             particle::ParticleGpuGraphSpawnDomain::GraphResources spawnResources;
-            if (!bounds.Create(device, bd) || !spawn.Create(device, 1, 1, {shader, shader}, {}) ||
+            if (!bounds.Create(device, bd) || !spawn.Create(device, 1, 1, spawnProgram, {}) ||
                 !spawn.RegisterEmitter(0, runtime) || !spawn.Attach(graph, "ContactSpawn", spawnResources) ||
                 !scheduler.Attach(graph, runtime, bounds, spawn, spawnResources, 0, "ContactParticle"))
                 throw std::runtime_error("production graph Attach");

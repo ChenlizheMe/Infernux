@@ -13,6 +13,10 @@ using json = nlohmann::json;
 
 struct RecordingDevice final : rhi::Device
 {
+    rhi::ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override
+    {
+        return rhi::ShaderSourceLanguage::SpirV;
+    }
     uint32_t next = 1, created = 0, released = 0;
     std::unordered_map<uint32_t, rhi::BindGroupDesc> groups;
 #define MAKE_OBJECT(handle, desc, name)                                                                                \
