@@ -13,6 +13,7 @@ sample, including the previous sample used to calculate motion vectors.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 from ._language import INTRINSICS, TYPES
 
@@ -215,6 +216,18 @@ class UInt2D:
     """An unsigned integer attachment loaded as uvec4 at pixel coordinates."""
 
 
+_Element = TypeVar("_Element")
+
+
+class Buffer(Generic[_Element]):
+    """A read-only graph buffer of tightly packed 32-bit scalar or vector elements.
+
+    Indexing reads an element; ``len`` reports the logical view's element count.
+    Compute owns writes, allocation, and the producer dependency. Shader authors
+    do not declare descriptor slots, offsets, or backend alignment.
+    """
+
+
 @dataclass(frozen=True)
 class _Input:
     semantic: str
@@ -325,4 +338,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]

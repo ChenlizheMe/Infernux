@@ -3,11 +3,24 @@
 #include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace infernux
 {
+
+inline rhi::ComputeBufferDesc ShaderBufferElementLayout(std::string_view element)
+{
+    static const std::unordered_map<std::string_view, rhi::ComputeScalarType> scalars = {
+        {"float", rhi::ComputeScalarType::Float32},
+        {"int", rhi::ComputeScalarType::Int32},
+        {"uint", rhi::ComputeScalarType::UInt32},
+    };
+    const uint8_t lanes = element.back() >= '2' && element.back() <= '4' ? element.back() - '0' : 1;
+    return {1, scalars.at(element.substr(0, element.size() - (lanes > 1))), lanes};
+}
 
 // Logical image contracts complement target reflection. Raw depth is sampled
 // without filtering so the same program accepts depth planes and R32 resolves.

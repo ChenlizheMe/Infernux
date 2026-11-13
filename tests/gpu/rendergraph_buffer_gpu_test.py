@@ -11,19 +11,28 @@ from infernux.lib import ConsolePanel, SceneManager, Vector3
 from infernux.renderstack import RenderPipeline, RenderStack
 from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
 
-SHADER = '''#version 450
-ShaderInfo {
-    Name "Graph Buffer Color"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources { BufferUInt _Values }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    outColor = vec4(vec3(_Values.data[0], _Values.data[1], _Values.data[2]) / 255.0,
-                    float(_Values.data[3]) / 255.0);
-}
+SHADER = '''import infernux.shader as shader
+
+class BufferColor(shader.fullscreen):
+    shader_id = "test/graph/buffer_color"
+    hidden = True
+    values = shader.input("Values", shader.Buffer[shader.uint])
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        color = shader.vec4(float(self.values[0]), float(self.values[1]),
+                            float(self.values[2]), float(self.values[3]))
+        return color / 255.0 if len(self.values) == 4 else shader.vec4(0.0)
+'''
+
+VECTOR_SHADER = '''import infernux.shader as shader
+
+class BufferColor(shader.fullscreen):
+    shader_id = "test/graph/buffer_color"
+    hidden = True
+    values = shader.input("Values", shader.Buffer[shader.vec3])
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(self.values[0], self.values[1].x) / 255.0 if len(self.values) == 2 else shader.vec4(0.0)
 '''
 
 class GraphBufferAudit(RenderPipeline):
@@ -41,9 +50,9 @@ class GraphBufferAudit(RenderPipeline):
         result = self.publish_result("values", {"values": output})
         color = graph.create_texture("color", camera_target=True)
         with graph.add_pass("BufferColor") as render_pass:
-            render_pass.set_buffer("_Values", result.sample("values"))
+            render_pass.set_buffer("values", result.sample("values"))
             render_pass.write_color(color)
-            render_pass.fullscreen_quad("Graph Buffer Color")
+            render_pass.fullscreen_quad("test/graph/buffer_color")
         with graph.add_present_pass("Present") as render_pass:
             render_pass.present(color)
 
@@ -55,17 +64,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check', choices=('copy', 'direct'), required=True)
     parser.add_argument('--completion', choices=('pending', 'completed'), required=True)
+    parser.add_argument('--layout', choices=('scalar', 'vec3'), default='scalar')
+    parser.add_argument('--view', action='store_true')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="infernux-graph-buffer-") as root:
         project = Path(root)
         for directory in ("Assets", "Packages", "ProjectSettings"):
             (project / directory).mkdir()
-        shader = project / 'Assets/BufferColor.frag'
-        shader.write_text(SHADER, encoding='ascii')
+        shader = project / 'Assets/buffer_color.frag.py'
+        shader.write_text(SHADER if args.layout == 'scalar' else VECTOR_SHADER, encoding='ascii')
         frontend = Engine()
         engine = frontend.get_native_engine()
         console = ConsolePanel()
         values = None
+        allocation = None
         stack = None
         failures = []
         completed = False
@@ -85,9 +97,18 @@ def main():
             engine.set_game_camera_enabled(True)
             initial = np.array([51,102,153,255], dtype=np.uint32)
             changed = np.array([153,51,102,255], dtype=np.uint32)
-            values = inx.buffer(shape=4, dtype=np.uint32, device='gpu', data=initial)
+            def storage(color):
+                return (color if args.layout == 'scalar' else
+                        np.array([color[:3], [color[3], 0, 0]], dtype=np.float32))
+            payload = storage(initial)
+            count = len(payload)
+            if args.view:
+                payload = np.concatenate((np.zeros_like(payload[:1]), payload))
+            allocation = inx.buffer(shape=len(payload), dtype=np.uint32 if args.layout == 'scalar' else inx.compute.vec3,
+                                    device='gpu', data=payload)
+            values = allocation.view(offset=int(args.view), count=count)
             if args.completion == 'completed':
-                np.testing.assert_array_equal(values.get_data().numpy(), initial)
+                np.testing.assert_array_equal(values.get_data().numpy(), storage(initial))
             stack = RenderStack()
             scene.create_game_object('Buffer RenderStack').add_py_component(stack)
             stack.set_pipeline('Graph Buffer Audit')
@@ -116,11 +137,11 @@ def main():
                             assert pipeline.build_count == builds, 'Buffer update rebuilt graph topology'
                         if phase < 5:
                             next_values = changed if phase % 2 == 0 else initial
-                            values.set_data(next_values)
+                            values.set_data(storage(next_values))
                             if args.completion == 'completed':
                                 # A collected upload still needs GPU visibility
                                 # when another queue later consumes the buffer.
-                                np.testing.assert_array_equal(values.get_data().numpy(), next_values)
+                                np.testing.assert_array_equal(values.get_data().numpy(), storage(next_values))
                             ticket, update_frame, phase = None, frame, phase + 1
                         else:
                             completed = True
@@ -141,6 +162,8 @@ def main():
             frontend.set_render_pipeline(None)
             if values is not None:
                 values.close()
+            if allocation is not None:
+                allocation.close()
             inx.compute._release_engine_resources()
             engine.cleanup()
 

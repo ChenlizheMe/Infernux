@@ -48,11 +48,19 @@ struct FullscreenParameters
         uint32_t input;
         uint32_t offset;
     };
+    struct Buffer
+    {
+        uint32_t input;
+        uint32_t offset;
+        uint32_t count;
+        uint32_t stride;
+    };
 
     std::vector<char> defaults;
     std::vector<ShaderValueCopy> copies;
     std::vector<ShaderParameterValue> values;
     std::vector<History> histories;
+    std::vector<Buffer> buffers;
 };
 
 // Borrowed view resources. Their owner stages and retires the allocations;
@@ -147,6 +155,7 @@ struct FullscreenResourceInput
     rhi::BufferHandle buffer;
     uint64_t byteOffset = 0;
     uint64_t byteSize = 0;
+    uint32_t dataByteOffset = 0;
     rhi::SamplerHandle sampler;
 };
 

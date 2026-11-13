@@ -3,6 +3,7 @@
 #include "rhi/RhiDevice.h"
 #include "shader/DeviceShaderProgram.h"
 #include "shader/ShaderValueCopy.h"
+#include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -62,7 +63,8 @@ void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText
             continue;
         entry.resourceIndices.push_back(index);
         if (resource.binding.type == rhi::BindingType::SampledTexture ||
-            resource.binding.type == rhi::BindingType::Sampler) {
+            resource.binding.type == rhi::BindingType::Sampler ||
+            resource.binding.type == rhi::BindingType::StorageBuffer) {
             const auto end = resource.name.find('.');
             const auto name = resource.name.substr(4, end - 4); // Generated inx_<logical port>.
             const auto input = std::find(entry.inputNames.begin(), entry.inputNames.end(), name);
@@ -585,6 +587,15 @@ FullscreenRenderer::PrepareParameters(const FullscreenProgram &program,
             result.histories.push_back(
                 {index, static_cast<uint32_t>(
                             fieldByName("_inx_history_valid_" + input.at("name").get<std::string>()).offset)});
+        if (input.at("kind") == "Buffer") {
+            const auto name = input.at("name").get<std::string>();
+            result.buffers.push_back({
+                index,
+                static_cast<uint32_t>(fieldByName("_inx_buffer_offset_" + name).offset),
+                static_cast<uint32_t>(fieldByName("_inx_buffer_count_" + name).offset),
+                ShaderBufferElementLayout(input.at("element").get<std::string>()).GetElementStride(),
+            });
+        }
     }
     for (const auto &parameter : declarations) {
         const auto &field = fieldByName(parameter.at("name").get<std::string>());
@@ -631,6 +642,12 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
         const uint32_t valid = inputs[history.input].historyValid ? 1u : 0u;
         std::memcpy(bytes.data() + history.offset, &valid, sizeof(valid));
     }
+    for (const auto &span : parameters.buffers) {
+        const auto &input = inputs[span.input];
+        const auto count = static_cast<uint32_t>((input.byteSize - input.dataByteOffset) / span.stride);
+        std::memcpy(bytes.data() + span.offset, &input.dataByteOffset, sizeof(input.dataByteOffset));
+        std::memcpy(bytes.data() + span.count, &count, sizeof(count));
+    }
     const auto uniform =
         bytes.empty() ? rhi::BufferHandle{} : m_impl->UploadParameters(frame, bytes.data(), bytes.size());
     const std::array<rhi::BufferBinding, 2> uniforms = {{
@@ -652,6 +669,10 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
             auto source = uniforms[static_cast<size_t>(-1 - entry.resourceInputs[index])];
             source.binding = binding.binding;
             group.buffers[group.bufferCount++] = source;
+        } else if (binding.type == rhi::BindingType::StorageBuffer) {
+            const auto &input = inputs[entry.resourceInputs[index]];
+            group.buffers[group.bufferCount++] = {binding.binding, binding.type, input.buffer, input.byteOffset,
+                                                  input.byteSize};
         } else {
             const auto &input = inputs[entry.resourceInputs[index]];
             const auto sampler = binding.samplerType == rhi::SamplerBindingType::NonFiltering ? m_impl->nearestSampler

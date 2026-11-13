@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 
 from .shader_library import ShaderEmitter
-from .shader_types import RESOURCE_TYPES
+from .shader_types import BUFFER_ELEMENTS, RESOURCE_TYPES
 
 @dataclass(frozen=True)
 class ShaderParameter:
@@ -27,6 +27,7 @@ class ShaderInput:
     semantic: str
     kind: str
     domain: str | None = None
+    element: str | None = None
 
 
 _PARAMETER_TYPES = {"float": "float", "int": "int", "uint": "uint", "bool": "uint", "color": "float4",
@@ -89,6 +90,13 @@ class ParameterAuthor(ShaderEmitter):
         if declaration == self.alias + ".input":
             if len(call.args) != 2:
                 self.error(call, "shader.input names a semantic and a typed GPU resource")
+            if isinstance(call.args[1], ast.Subscript):
+                value_type = self.annotation(call.args[1])
+                if call.keywords:
+                    self.error(call, "Buffer inputs declare a semantic and element type", code="author.parameter")
+                self.fields[name] = ShaderInput(name, self.literal(call.args[0]), "Buffer", element=BUFFER_ELEMENTS[value_type])
+                self.types["self." + name] = value_type
+                return
             kind = self.qualified(call.args[1]).removeprefix(self.alias + ".")
             if kind not in RESOURCE_TYPES:
                 self.error(call.args[1], "Unknown GPU input resource type")
@@ -156,6 +164,9 @@ class ParameterAuthor(ShaderEmitter):
             field = self.fields.get(node.attr)
             if isinstance(field, ShaderInput) and field.kind == "History2D":
                 return f"inx_history(inx_{node.attr}, inx_parameters._inx_history_valid_{node.attr} != 0u)"
+            if isinstance(field, ShaderInput) and field.kind == "Buffer":
+                return (f"inx_buffer_{field.element}(inx_{node.attr}, "
+                        f"inx_parameters._inx_buffer_offset_{node.attr}, inx_parameters._inx_buffer_count_{node.attr})")
             if isinstance(field, ShaderInput) or (isinstance(field, ShaderParameter) and field.kind == "texture_2d"):
                 return "inx_" + node.attr
             if field is None:
@@ -172,12 +183,16 @@ class ParameterAuthor(ShaderEmitter):
                          f"[[vk::binding({1 + 2 * index}, 0)]] InxColor2D inx_{field.name};"])
         uniforms = tuple(field for field in parameters if field.kind != "texture_2d")
         histories = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "History2D")
-        if uniforms or histories:
+        buffers = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "Buffer")
+        if uniforms or histories or buffers:
             code.append("struct ShaderParameters {")
             for field in uniforms:
                 owner, node = self.field_sources[field.name]
                 code.extend([owner.source_directive(node), "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
             code.extend("    uint _inx_history_valid_" + field.name + ";" for field in histories)
+            for field in buffers:
+                code.extend(["    uint _inx_buffer_offset_" + field.name + ";",
+                             "    uint _inx_buffer_count_" + field.name + ";"])
             binding = "[[vk::binding(0, 0)]] " if self.domain == "mesh" else ""
             code.extend(["};", binding + "ConstantBuffer<ShaderParameters> inx_parameters;"])
         return code

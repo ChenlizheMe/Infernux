@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
-from .shader_types import RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS
+from .shader_types import BUFFER_ELEMENTS, BUFFER_TYPES, RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS
 from .diagnostics import parse_gpu_module
 
 
@@ -73,6 +73,13 @@ class ShaderEmitter(SlangEmitter):
         return super().visit_Attribute(node)
 
     def infer(self, node):
+        if isinstance(node, ast.Subscript):
+            element = BUFFER_ELEMENTS.get(self.infer(node.value))
+            if element is not None:
+                return element
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "len"
+                and len(node.args) == 1 and self.infer(node.args[0]) in BUFFER_ELEMENTS):
+            return "uint"
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) == "lighting.shade"):
             return "float3"
@@ -104,6 +111,10 @@ class ShaderEmitter(SlangEmitter):
         return super().infer(node)
 
     def visit_Call(self, node):
+        if isinstance(node.func, ast.Name) and node.func.id == "len" and len(node.args) == 1:
+            if node.keywords or self.infer(node.args[0]) not in BUFFER_ELEMENTS:
+                self.error(node, "len receives a typed GPU Buffer", code="author.type")
+            return "inx_buffer_length(" + self.visit(node.args[0]) + ")"
         operation = self.symbol(qualified(node.func))
         intrinsic = operation != qualified(node.func)
         if intrinsic and operation == "lighting.shade":
@@ -165,6 +176,13 @@ class ShaderEmitter(SlangEmitter):
         return function.symbol + specialization + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
 
     def annotation(self, node):
+        if isinstance(node, ast.Subscript):
+            if qualified(node.value) not in {alias + ".Buffer" for alias in self.aliases}:
+                self.error(node, "GPU buffer types use shader.Buffer[element]", code="author.type")
+            element = self.annotation(node.slice)
+            if element not in BUFFER_TYPES:
+                self.error(node, "Buffer elements use 32-bit float, int, uint or their vectors", code="author.type")
+            return BUFFER_TYPES[element]
         spelling = qualified(node)
         name = spelling.rsplit(".", 1)[-1]
         if spelling not in {"float", "int", "bool"} and not any(spelling.startswith(alias + ".") for alias in self.aliases):
@@ -172,6 +190,15 @@ class ShaderEmitter(SlangEmitter):
         if name in STRUCT_TYPES:
             return STRUCT_TYPES[name]
         return RESOURCE_TYPES[name] if name in RESOURCE_TYPES else super().annotation(node)
+
+    def visit_Subscript(self, node):
+        if self.infer(node.value) in BUFFER_ELEMENTS:
+            if isinstance(node.ctx, ast.Store):
+                self.error(node, "Shader Buffer inputs are read-only; update them in Compute", code="author.resource")
+            if self.infer(node.slice) not in {"int", "uint"}:
+                self.error(node.slice, "Buffer indices use int or uint", code="author.type")
+            return "inx_buffer_load(" + self.visit(node.value) + ", uint(" + self.visit(node.slice) + "))"
+        return super().visit_Subscript(node)
 
     def signature(self, definition, symbol, *, method=False):
         arguments = definition.args

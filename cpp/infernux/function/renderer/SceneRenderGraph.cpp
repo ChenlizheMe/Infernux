@@ -40,6 +40,7 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxTexture/InxTexture.h>
+#include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
 #include <function/scene/Camera.h>
 #include <function/scene/LightingData.h>
 #include <iterator>
@@ -4898,20 +4899,26 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     uint32_t arrayMemberOffset = 0;
                     uint32_t arrayStride = 0;
                     uint32_t arrayElementCount = 0;
+                    rhi::ComputeBufferDesc element;
                 };
                 std::vector<FullscreenInput> declaredInputs;
                 if (authorProgram) {
                     const auto schema = nlohmann::json::parse(authorProgram->schema);
                     for (const auto &input : schema.at("inputs")) {
                         const auto name = input.at("name").get<std::string>();
+                        const bool storage = input.at("kind") == "Buffer";
                         const auto &resources = authorProgram->code->resources;
                         const auto resource = std::find_if(resources.begin(), resources.end(), [&](const auto &item) {
-                            return item.name == "inx_" + name + ".texture";
+                            return item.name == "inx_" + name + (storage ? "" : ".texture");
                         });
                         if (resource == resources.end())
                             throw std::logic_error("Fullscreen author input has no target resource: " + name);
                         FullscreenInput item;
                         item.name = name;
+                        item.storage = storage;
+                        item.readOnly = resource->binding.readOnlyStorage;
+                        if (storage)
+                            item.element = ShaderBufferElementLayout(input.at("element").get<std::string>());
                         item.history = input.at("kind") == "History2D";
                         item.binding = static_cast<uint32_t>(declaredInputs.size());
                         item.multisampled = resource->binding.multisampled;
@@ -4999,6 +5006,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     const bool *historyValidity = nullptr;
                     uint64_t byteOffset = 0;
                     uint64_t byteSize = 0;
+                    uint32_t dataByteOffset = 0;
                     rhi::SamplerHandle sampler;
                 };
                 std::vector<FullscreenReadResource> fsReadInputs;
@@ -5022,32 +5030,55 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         const uint64_t inputByteSize =
                             description->viewLightList ? viewLightListByteSize : description->byteSize;
                         const auto &capabilities = m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilities();
-                        if (!capabilities.IsStorageBufferRangeValid(description->byteOffset, inputByteSize)) {
+                        const auto alignment = capabilities.limits.minStorageBufferOffsetAlignment;
+                        const uint64_t bindingOffset =
+                            authorProgram ? description->byteOffset - description->byteOffset % alignment
+                                          : description->byteOffset;
+                        const auto dataOffset = description->byteOffset - bindingOffset;
+                        const auto bindingBytes = dataOffset + inputByteSize;
+                        if (!capabilities.IsStorageBufferRangeValid(bindingOffset, bindingBytes)) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
                                          "' has an unsupported storage-buffer offset or range");
                             return;
                         }
                         if (const auto *type = ResolveGraphComputeBufferDesc(m_pythonGraphDesc, *description)) {
-                            const auto scalar = type->scalarType;
-                            const auto format =
-                                scalar == rhi::ComputeScalarType::Float32 ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_R32_UINT;
-                            if (type->lanes != 1 ||
-                                (scalar != rhi::ComputeScalarType::Float32 &&
-                                 scalar != rhi::ComputeScalarType::UInt32) ||
-                                reflected->scalarArrayFormat != format || reflected->arrayMemberOffset != 0 ||
-                                reflected->arrayStride != sizeof(uint32_t) ||
-                                reflected->arrayElementCount > inputByteSize / sizeof(uint32_t)) {
-                                INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
-                                             "' requires a matching flat scalar array with offset 0 and stride 4");
-                                return;
+                            if (authorProgram) {
+                                if (type->scalarType != reflected->element.scalarType ||
+                                    type->lanes != reflected->element.lanes) {
+                                    INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
+                                                 "' does not match its declared Buffer element type");
+                                    return;
+                                }
+                            } else {
+                                const auto scalar = type->scalarType;
+                                const auto format = scalar == rhi::ComputeScalarType::Float32 ? VK_FORMAT_R32_SFLOAT
+                                                                                              : VK_FORMAT_R32_UINT;
+                                if (type->lanes != 1 ||
+                                    (scalar != rhi::ComputeScalarType::Float32 &&
+                                     scalar != rhi::ComputeScalarType::UInt32) ||
+                                    reflected->scalarArrayFormat != format || reflected->arrayMemberOffset != 0 ||
+                                    reflected->arrayStride != sizeof(uint32_t) ||
+                                    reflected->arrayElementCount > inputByteSize / sizeof(uint32_t)) {
+                                    INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
+                                                 "' requires a matching flat scalar array with offset 0 and stride 4");
+                                    return;
+                                }
                             }
+                        }
+                        if (authorProgram && (description->byteOffset % sizeof(uint32_t) != 0 ||
+                                              inputByteSize % reflected->element.GetElementStride() != 0 ||
+                                              bindingBytes > std::numeric_limits<uint32_t>::max())) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
+                                         "' requires a complete packed 32-bit element span");
+                            return;
                         }
                         FullscreenReadResource input{};
                         input.handle = buffer->second;
                         input.format = rhi::PixelFormat::Undefined;
                         input.storageBuffer = true;
-                        input.byteOffset = description->byteOffset;
-                        input.byteSize = inputByteSize;
+                        input.byteOffset = bindingOffset;
+                        input.byteSize = bindingBytes;
+                        input.dataByteOffset = static_cast<uint32_t>(dataOffset);
                         input.frameLocal = description->viewLightList;
                         if (input.frameLocal)
                             input.frameHandles = viewLightListHandles;
@@ -5308,6 +5339,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 inputs[i].buffer = ctx.GetBufferHandle(resource);
                                 inputs[i].byteOffset = input.byteOffset;
                                 inputs[i].byteSize = byteSize;
+                                inputs[i].dataByteOffset = input.dataByteOffset;
                                 if (!inputs[i].buffer.IsValid()) {
                                     INXLOG_ERROR("FullscreenQuad '", shaderName,
                                                  "': input buffer is unavailable at binding ", i);

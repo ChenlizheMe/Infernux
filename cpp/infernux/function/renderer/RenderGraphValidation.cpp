@@ -573,8 +573,9 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             const auto capacity = owner.GetByteSize();
             const auto &type = owner.GetDesc();
             const auto producer = owner.GetLastWriteSubmission();
-            if (!owner.GetBuffer().IsValid() || type.lanes != 1 ||
+            if (!owner.GetBuffer().IsValid() || type.lanes < 1 || type.lanes > 4 ||
                 (type.scalarType != rhi::ComputeScalarType::Float32 &&
+                 type.scalarType != rhi::ComputeScalarType::Int32 &&
                  type.scalarType != rhi::ComputeScalarType::UInt32) ||
                 buffer.byteOffset % 4 != 0 || buffer.byteSize % 4 != 0 || buffer.byteOffset > capacity ||
                 buffer.byteSize > capacity - buffer.byteOffset || !producer.IsValid() ||
@@ -582,7 +583,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                 !owner.HasInitializedRange(buffer.byteOffset, buffer.byteSize)) {
                 INXLOG_ERROR(
                     "SceneRenderGraph::ApplyPythonGraph: imported buffer '", buffer.name,
-                    "' requires a live scalar f32/u32 view with an accepted producer for its entire initialized range");
+                    "' requires a live 32-bit scalar/vector view with an accepted producer for its initialized range");
                 return false;
             }
         } else if (buffer.byteOffset != 0) {

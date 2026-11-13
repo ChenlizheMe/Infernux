@@ -389,7 +389,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.insert(0, "import inx_surface_model;")
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),
-                     RESOURCE_BINDINGS[field.kind] + " inx_" + field.name + ";"])
+                     ("ByteAddressBuffer" if field.kind == "Buffer" else RESOURCE_BINDINGS[field.kind]) + " inx_" + field.name + ";"])
     code.extend(author.parameter_declarations(parameters))
     vertex_ranges = ()
     if vertex:

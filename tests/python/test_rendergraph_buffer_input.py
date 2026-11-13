@@ -46,10 +46,19 @@ def _gpu_buffer(*, device="gpu", scalar="uint32", lanes=1, offset=0, size=64):
 
 def test_import_buffer_rejects_non_gpu_or_wrong_scalar_type():
     graph = RenderGraph("Import")
-    with pytest.raises(ValueError, match="scalar float32 or uint32 GPU"):
+    with pytest.raises(ValueError, match="32-bit scalar or vector GPU"):
         graph.import_buffer("values", _gpu_buffer(device="cpu"))
-    with pytest.raises(ValueError, match="scalar float32 or uint32 GPU"):
-        graph.import_buffer("values", _gpu_buffer(scalar="int32"))
+    with pytest.raises(ValueError, match="32-bit scalar or vector GPU"):
+        graph.import_buffer("values", _gpu_buffer(scalar="int64"))
+
+
+@pytest.mark.parametrize("scalar,lanes", [("int32", 1), ("float32", 3), ("uint32", 4)])
+def test_import_buffer_keeps_packed_vector_views(scalar, lanes):
+    graph = RenderGraph("PackedView")
+    owner = _gpu_buffer(scalar=scalar, lanes=lanes, offset=12, size=24)
+    handle = graph.import_buffer("values", owner)
+    assert (handle.byte_offset, handle.byte_size) == (12, 24)
+    assert handle.compute_buffer is owner._native
 
 
 def test_import_buffer_requires_full_allocation():

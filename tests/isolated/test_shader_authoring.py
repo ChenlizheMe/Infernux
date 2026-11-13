@@ -731,6 +731,54 @@ class Grayscale(shader.fullscreen):
         assert (strength["name"], strength["offset"]) == ("strength", 8)
 
 
+@pytest.mark.parametrize("element", ["float", "vec2", "vec3", "vec4", "int", "ivec2", "ivec3", "ivec4",
+                                     "uint", "uvec2", "uvec3", "uvec4"])
+def test_typed_buffer_views_compile_without_padding_or_author_binding_slots(tmp_path, element):
+    (tmp_path / "read.shaderlib.py").write_text(f'''import infernux.shader as shader
+
+def first(values: shader.Buffer[shader.{element}]) -> shader.{element}:
+    return values[0]
+''', encoding="utf-8")
+    source = f'''import infernux.shader as shader
+from .read import first
+
+class BufferView(shader.fullscreen):
+    values = shader.input("Values", shader.Buffer[shader.{element}])
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        value = first(self.values)
+        size = len(self.values)
+        return shader.vec4(float(value{'.x' if element.endswith(('2', '3', '4')) else ''}),
+                            float(size), 0.0, 1.0)
+'''
+    definition = parse_shader(source, str(tmp_path / "buffer.frag.py"), "buffer_view")
+    port, = definition.inputs
+    assert port.kind == "Buffer" and not definition.parameters
+    assert port.element in definition.generated_source
+    for target in definition.compile()["targets"]:
+        resources = {resource["name"]: resource for resource in target["resources"]}
+        assert resources["inx_values"]["read_only"]
+        fields = resources["inx_parameters"]["value"]["fields"]
+        assert [(field["name"], field["offset"]) for field in fields] == [
+            ("_inx_buffer_offset_values", 0), ("_inx_buffer_count_values", 4),
+        ]
+
+
+def test_buffer_inputs_reject_writes_and_non_storage_element_types_at_the_author_line():
+    source = '''import infernux.shader as shader
+class BufferView(shader.fullscreen):
+    values = shader.input("Values", shader.Buffer[shader.vec3])
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        self.values[0] = shader.vec3(1.0)
+        return shader.vec4(1.0)
+'''
+    with pytest.raises(SyntaxError, match="read-only") as failure:
+        parse_shader(source, "只读缓冲.frag.py", "buffer_write")
+    assert (failure.value.filename, failure.value.lineno) == ("只读缓冲.frag.py", 5)
+    with pytest.raises(SyntaxError, match="32-bit"):
+        parse_shader(source.replace("shader.vec3]", "shader.mat3]"), "错误元素.frag.py", "buffer_matrix")
+
+
 def test_builtin_lit_sliders_do_not_change_gpu_program_source():
     from pathlib import Path
     import re

@@ -316,7 +316,7 @@ class RenderGraph:
         """Bind a common recipe without executing it or publishing ready data."""
         ...
     def import_buffer(self, name: str, buffer: Buffer | BufferInput) -> BufferHandle:
-        """Import an accepted scalar f32/u32 GPU Buffer view; device alignment applies."""
+        """Import an accepted 32-bit scalar/vector GPU Buffer view without a hidden copy."""
         ...
     def get_buffer(self, name: str) -> Optional[BufferHandle]:
         """Get a buffer handle by name, or None if not found."""

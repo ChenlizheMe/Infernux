@@ -167,11 +167,11 @@ def _describe_imported_buffer(buffer):
     description = getattr(buffer, "description", None)
     if (getattr(buffer, "device", None) != "gpu"
             or description is None
-            or description.scalar_dtype not in {"float32", "uint32"}
-            or description.lanes != 1
+            or description.scalar_dtype not in {"float32", "int32", "uint32"}
+            or description.lanes not in (1, 2, 3, 4)
             or getattr(buffer, "closed", True)
             or getattr(buffer, "_native", None) is None):
-        raise ValueError("import_buffer requires an open scalar float32 or uint32 GPU compute.Buffer")
+        raise ValueError("import_buffer requires an open 32-bit scalar or vector GPU compute.Buffer")
     return description
 
 
@@ -1636,11 +1636,12 @@ class RenderGraph:
         return binding
 
     def import_buffer(self, name: str, buffer) -> BufferHandle:
-        """Import a scalar f32/u32 GPU Buffer, view or BufferInput.
+        """Import a 32-bit scalar/vector GPU Buffer, view or BufferInput.
 
         The entire logical range must have accepted initialization. This does not flush pending
-        compute work or wait for GPU completion. Descriptor offsets must meet
-        the actual device's storage-buffer alignment; no hidden copy is made.
+        compute work or wait for GPU completion. Shader Buffer inputs carry
+        the logical offset and length alongside an aligned device binding;
+        tightly packed views, including vec3, require no hidden copy.
         Ordinary buffers share live storage. BufferInput captures a published
         immutable value for each execution.
         """

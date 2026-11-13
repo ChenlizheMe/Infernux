@@ -3,6 +3,9 @@
 RESOURCE_TYPES = {"Color2D": "InxColor2D", "Depth2D": "InxDepth2D", "UInt2D": "InxUInt2D", "History2D": "InxHistory2D"}
 RESOURCE_BINDINGS = RESOURCE_TYPES | {"History2D": "InxColor2D"}
 RESOURCE_ELEMENTS = {"InxColor2D": "float4", "InxDepth2D": "float", "InxUInt2D": "uint4", "InxHistory2D": "float4"}
+BUFFER_TYPES = {kind + (str(width) if width > 1 else ""): "InxBuffer_" + kind + str(width)
+                for kind in ("float", "int", "uint") for width in range(1, 5)}
+BUFFER_ELEMENTS = {value: key for key, value in BUFFER_TYPES.items()}
 SURFACE_FIELDS = {
     "albedo": ("float3", "float3(1.0)"), "normal_ws": ("float3", "float3(0.0)"),
     "metallic": ("float", "0.0"), "smoothness": ("float", "0.5"), "occlusion": ("float", "1.0"),
@@ -81,4 +84,27 @@ public uint2 inx_image_dimensions(TYPE image, uint mip)
     image.texture.GetDimensions(mip, width, height, levels);
     return uint2(width, height);
 }
-""".replace("TYPE", kind) for kind in RESOURCE_TYPES.values()))
+""".replace("TYPE", kind) for kind in RESOURCE_TYPES.values()) + "\n".join(
+    """
+public struct WRAPPER
+{
+    public ByteAddressBuffer data;
+    public uint byte_offset;
+    public uint count;
+};
+public WRAPPER inx_buffer_ELEMENT(ByteAddressBuffer data, uint byte_offset, uint count)
+{
+    WRAPPER result;
+    result.data = data;
+    result.byte_offset = byte_offset;
+    result.count = count;
+    return result;
+}
+public ELEMENT inx_buffer_load(WRAPPER source, uint index)
+{
+    return source.data.Load<ELEMENT>(source.byte_offset + index * STRIDE);
+}
+public uint inx_buffer_length(WRAPPER source) { return source.count; }
+""".replace("WRAPPER", wrapper).replace("ELEMENT", element)
+    .replace("STRIDE", str(4 * (int(element[-1]) if element[-1].isdigit() else 1)) + "u")
+    for element, wrapper in BUFFER_TYPES.items()))
