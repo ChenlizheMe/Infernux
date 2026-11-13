@@ -2,6 +2,7 @@
 #include "CommandBuffer.h"
 #include "EditorGizmos.h"
 #include "EditorTools.h"
+#include "FullscreenRenderer.h"
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
 #include "SceneRenderGraph.h"
@@ -174,7 +175,7 @@ bool ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
     if (m_recordedPlan) {
         m_recordedPlan->graph = CaptureRenderGraphDescription(
             desc, [this](const auto &material) { m_vkCore->PrepareMaterialAuthoring(material); },
-            [this](const auto &name) { return m_vkCore->AcquireFullscreenProgram(name); });
+            [this](const auto &name) { return m_vkCore->GetFullscreenPipelineCache()->AcquireProgram(name); });
         return true;
     }
 #if INFERNUX_FRAME_PROFILE

@@ -30,6 +30,7 @@ namespace infernux
 // Forward declarations
 class MeshRenderer;
 class InxVkCoreModular;
+class OwnedDiagnostic;
 class AssetDependencyGraph;
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 class ShaderProgram;
@@ -319,6 +320,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     }
     void MarkAsDeleted()
     {
+        m_shaderDomainDiagnostic.reset();
         m_isDeleted = true;
     }
 
@@ -843,6 +845,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void InvalidateShaderSelection() noexcept
     {
         m_selectedShaderArtifact.reset();
+        m_shaderDomainDiagnostic.reset();
     }
 
     std::string m_name;
@@ -884,6 +887,8 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
     bool m_isRenderPublication = false;
     std::shared_ptr<const ShaderProgramArtifact> m_selectedShaderArtifact;
+    // Source ownership only; copies/publications do not inherit diagnostics.
+    std::shared_ptr<OwnedDiagnostic> m_shaderDomainDiagnostic;
     mutable std::weak_ptr<InxMaterial> m_cachedRenderPublication;
     mutable uint64_t m_cachedRenderPublicationVersion = 0;
     std::unordered_map<std::string, std::shared_ptr<const rhi::RenderTextureGeneration>> m_renderTextureGenerations;

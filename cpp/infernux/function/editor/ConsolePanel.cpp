@@ -32,10 +32,17 @@ ConsolePanel::ConsolePanel(const std::string &projectRoot)
         [this](LogLevel level, const char *file, int line, const std::string &message, bool internalOnly) {
             OnLogMessage(level, file, line, message, internalOnly);
         });
+    m_diagnosticSubscription = InxLog::GetInstance().SubscribeDiagnostics([this](const OwnedDiagnosticEvent &event) {
+        if (event.resolved)
+            ResolveDiagnostic(event.owner, event.key);
+        else
+            SetDiagnostic(event.owner, event.key, event.level, event.message, "", event.sourceFile, event.sourceLine);
+    });
 }
 
 ConsolePanel::~ConsolePanel()
 {
+    m_diagnosticSubscription.Reset();
     InxLog::GetInstance().RemoveSink(m_sinkId);
 }
 

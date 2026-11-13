@@ -317,6 +317,19 @@ void InxVkCoreModular::PrepareMaterialAuthoring(const std::shared_ptr<InxMateria
         // Publish the selected immutable program only after its author values
         // and resource bindings are ready. Failure cannot leave it marked ready.
         material->m_selectedShaderArtifact = std::move(selected);
+        material->m_shaderDomainDiagnostic.reset();
+    } catch (const ShaderProgramDomainMismatch &error) {
+        // Preserve the source token across identical retry failures. Clearing it
+        // here would resolve/recreate a Console row on every Host opportunity.
+        material->m_selectedShaderArtifact.reset();
+        if (!material->m_shaderDomainDiagnostic)
+            material->m_shaderDomainDiagnostic = std::make_shared<OwnedDiagnostic>(
+                InxLog::GetInstance().CreateOwnedDiagnostic("material.shader-domain", material->m_runtimeKey));
+        const auto &fragment = material->GetFragShaderReference();
+        const auto &source = fragment.pathHint.empty() ? material->GetFilePath() : fragment.pathHint;
+        material->m_shaderDomainDiagnostic->Set(LOG_ERROR, "Material '" + material->GetName() + "': " + error.what(),
+                                                source);
+        throw;
     } catch (...) {
         material->InvalidateShaderSelection();
         throw;

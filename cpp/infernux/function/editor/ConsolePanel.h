@@ -159,6 +159,7 @@ class ConsolePanel : public EditorPanel
 
     // ── INXLOG sink ──
     size_t m_sinkId = 0;
+    DiagnosticSubscription m_diagnosticSubscription;
     const std::string m_projectRoot;
     void OnLogMessage(LogLevel level, const char *file, int line, const std::string &message, bool internalOnly);
     void CacheDisplayFields(LogEntry &entry) const;

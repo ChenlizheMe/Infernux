@@ -1,13 +1,15 @@
-"""Change shader domains through reimport while retaining GUIDs and Names."""
+"""Change shader domains through reimport while retaining GUIDs and shader IDs."""
 
 import argparse
 import json
 from pathlib import Path
 import tempfile
+import time
 
 import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
+from infernux.debug import DebugConsole
 from infernux.lib import AssetRegistry, ConsolePanel, InxMaterial, LightShadows, SceneManager, Vector3
 
 
@@ -22,16 +24,28 @@ def main():
         project = Path(folder)
         for name in ('Assets', 'Packages', 'ProjectSettings'):
             (project / name).mkdir()
-        resources = Path(inx.__file__).parent / 'resources/shaders'
-        full_vertex = (resources / 'fullscreen_triangle.vert').read_text(encoding='utf-8').replace('Fullscreen Triangle', 'Domain Transition Vertex')
-        full_fragment = '''#version 450
-ShaderInfo { Name "Domain Transition Fragment" Hidden On Capabilities [Fullscreen]
-    Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() { outColor = texture(source_tex, inUV); }
-'''
-        mesh_vertex = '#version 450\nShaderInfo { Name "Domain Transition Vertex" }\nvoid vertex(inout VertexInput v) {}\n'
-        mesh_fragment = '#version 450\nShaderInfo { Name "Domain Transition Fragment" ShadingModel Unlit }\nvoid surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(1.0,0.1,0.05); }\n'
-        paths = (project / 'Assets/Transition.vert', project / 'Assets/Transition.frag')
+        mesh_vertex = """import infernux.shader as shader
+class TransitionVertex(shader.vert):
+    shader_id = "test/domain/vertex"
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        return vertex
+"""
+        full_vertex = mesh_vertex
+        full_fragment = """import infernux.shader as shader
+class TransitionFragment(shader.fullscreen):
+    shader_id = "test/domain/fragment"
+    hidden = True
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        return shader.vec4(0.0, 0.0, 1.0, 1.0)
+"""
+        mesh_fragment = """import infernux.shader as shader
+class TransitionFragment(shader.surface):
+    shader_id = "test/domain/fragment"
+    shading_model = shader.ref("infernux/shading/unlit")
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(1.0, 0.1, 0.05))
+"""
+        paths = (project / 'Assets/transition.vert.py', project / 'Assets/transition.frag.py')
         initial = (mesh_vertex, mesh_fragment) if args.start_mesh else (full_vertex, full_fragment)
         for path, text in zip(paths, initial):
             path.write_text(text, encoding='utf-8')
@@ -40,6 +54,7 @@ void main() { outColor = texture(source_tex, inUV); }
         console = ConsolePanel()
         try:
             frontend.init_renderer(160, 120, str(project))
+            DebugConsole.instance().set_native_console(console)
             frontend.resize_game_render_target(160, 120)
             native.set_scene_view_visible(False)
             native.set_editor_fps_cap(240.)
@@ -52,8 +67,8 @@ void main() { outColor = texture(source_tex, inUV); }
                 guids.append(result.guid)
             document = InxMaterial.create_default_unlit().serialize_document()
             document.update({'name': 'Domain Transition', 'shaders': {
-                'vertex': {'guid': guids[0], 'shader_id': 'Domain Transition Vertex'},
-                'fragment': {'guid': guids[1], 'shader_id': 'Domain Transition Fragment'}}})
+                'vertex': {'guid': guids[0], 'shader_id': 'test/domain/vertex'},
+                'fragment': {'guid': guids[1], 'shader_id': 'test/domain/fragment'}}})
             material_path = project / 'Assets/Transition.mat'
             material_path.write_text(json.dumps(document), encoding='utf-8')
             result = AssetManager.import_asset(str(material_path), database=database)
@@ -82,48 +97,57 @@ void main() { outColor = texture(source_tex, inUV); }
             native.set_game_camera_enabled(True)
             phase = frames = changed = 0
             ticket = None
+            deadline = time.monotonic() + 30
             def after_draw():
                 nonlocal phase, frames, changed, ticket
                 try:
                     frames += 1
+                    assert time.monotonic() < deadline, proof['phases']
+                    if AssetManager.refresh_pending():
+                        return
                     if ticket is None and frames >= changed + 10:
                         ticket = frontend.request_render_target_readback(True)
                     elif ticket is not None and ticket.done:
                         assert material.guid == proof['material_guid']
                         assert material.vert_shader_reference['guid'] == guids[0]
                         assert material.frag_shader_reference['guid'] == guids[1]
-                        assert material.vert_shader_name == 'Domain Transition Vertex'
-                        assert material.frag_shader_name == 'Domain Transition Fragment'
+                        assert material.vert_shader_name == 'test/domain/vertex'
+                        assert material.frag_shader_name == 'test/domain/fragment'
                         pixels = ticket.result_numpy().astype(np.float32)
                         red = (pixels[...,0]>.8) & (pixels[...,1]<.4) & (pixels[...,2]<.4)
                         diagnostics = [e for e in console._get_visible_log_snapshot(2000) if e['level'] in ('ERROR','FATAL','WARN','WARNING')]
+                        rejected = phase == 0 and not args.start_mesh or phase == 1 and args.start_mesh
+                        owned = [entry for entry in diagnostics if entry.get('diagnostic_owner')]
+                        if (rejected and not owned) or (not rejected and (red.sum() <= 100 or diagnostics)):
+                            ticket = None
+                            return
                         proof['phases'].append({'phase': phase, 'red_pixels': int(red.sum()), 'diagnostics': diagnostics[:8]})
                         assert not [e for e in diagnostics if 'Vulkan Validation Error:' in e['message']]
                         if phase == 0 or (args.start_mesh and phase == 1):
                             if args.start_mesh and phase == 0:
                                 assert red.sum() > 100 and not diagnostics, proof['phases'][-1]
                             else:
-                                assert not red.any() and any("uses domain 'Fullscreen'" in e['message'] for e in diagnostics), proof['phases'][-1]
+                                assert (red.sum() > 100 if args.start_mesh else not red.any()) and len(owned) == 1
+                                assert 'mesh' in owned[0]['message'].lower()
+                                assert Path(owned[0]['source_file']).name in {'Transition.mat', 'transition.frag.py'}, proof['phases'][-1]
                             # Publish both source files before reimporting either;
-                            # keep GUIDs, ShaderInfo Names and material selection fixed.
+                            # keep GUIDs, shader IDs and material selection fixed.
                             next_sources = (full_vertex, full_fragment) if args.start_mesh and phase == 0 else (mesh_vertex, mesh_fragment)
-                            for path, text in zip(paths, next_sources):
-                                path.write_text(text, encoding='utf-8')
-                            for path, guid in zip(paths, guids):
-                                imported = database.reimport_asset(str(path))
-                                assert imported and imported.guid == guid, imported.error
-                                error = native.reload_shader_runtime(str(path), 'Domain Transition Vertex' if path.suffix=='.vert' else 'Domain Transition Fragment')
-                                assert not error, error
+                            paths[1].write_text(next_sources[1], encoding='utf-8')
+                            imported = AssetManager.reimport_asset(str(paths[1]), database=database)
+                            assert imported.guid == guids[1] and imported.database_committed, imported.error
+                            if args.start_mesh and phase == 0:
+                                assert not imported and 'mesh shader' in imported.error.lower(), imported.error
+                            else:
+                                assert imported, imported.error
                             phase += 1
                             changed = frames
                             ticket = None
                         else:
-                            assert red.sum()>100, proof['phases'][-1]
+                            assert red.sum()>100 and not diagnostics, proof['phases'][-1]
                             proof['passed'] = True
-                            print('PASS rejected shader source becomes Mesh without changing its GUID or Name', flush=True)
+                            print('PASS rejected shader source becomes Mesh without changing its GUID or shader ID', flush=True)
                             native.exit()
-                    if frames>200:
-                        raise AssertionError('Domain source transition timed out')
                 except BaseException as error:
                     failures.append(error)
                     native.exit()
@@ -133,6 +157,7 @@ void main() { outColor = texture(source_tex, inUV); }
                 raise failures[0]
             assert proof['passed']
         finally:
+            DebugConsole.instance().set_native_console(None)
             native.cleanup()
             proof['failures'] = [str(error)[:3000] for error in failures]
             if args.proof:

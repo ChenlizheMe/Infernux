@@ -1897,13 +1897,14 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                                   m_drawView, TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
     };
 
-    // Store description for BuildRenderGraph()'s topology traversal. Exact
-    // repeats return before validation/callback construction above.
+    // Rebuilt callbacks borrow commands from normalizedDesc. Retain that
+    // storage even when only the target signature changed, so those commands
+    // cannot expire when this call returns.
     if (topologyChanged) {
         m_liveBufferInputs.clear();
         m_importedTextureBindings.clear();
-        m_pythonGraphDesc = std::move(normalizedDesc);
     }
+    m_pythonGraphDesc = std::move(normalizedDesc);
     m_hasPythonGraph = true;
     m_pythonGraphValid = true;
     m_pythonGraphSourceRevision = desc.sourceRevision;
