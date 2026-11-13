@@ -364,18 +364,25 @@ void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weigh
                     "Root values must copy logical data into reflected storage");
         }
 
-        for (const auto *source : {&GetSlangScreenUIModule(), &GetSlangWorldUIModule()}) {
+        for (const auto *source : {&GetSlangScreenUIModule(), &GetSlangWorldUIModule(), &GetSlangEditorUIModule()}) {
             for (const auto target : {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}) {
                 const auto ui = CompileSlangNativeModule(*source, target);
                 const auto world = source == &GetSlangWorldUIModule();
+                const auto editor = source == &GetSlangEditorUIModule();
+                const auto split = target == ShaderCodeTarget::Wgsl;
                 Require(ui.entries.size() == 2 && ui.entries[0].name == "vertex_main" &&
                             ui.entries[1].name == "fragment_main",
                         "Native UI entries must share the compiled module");
-                Require(ui.rootConstants && ui.rootConstants->byteSize == (world ? 128u : 64u),
+                const auto rootBytes = editor ? (split ? 32u : 24u) : (world ? 128u : 64u);
+                Require(ui.rootConstants && ui.rootConstants->byteSize == rootBytes,
                         "Native UI root values must match the host's target layout");
-                Require(ui.rootConstants->fields[world ? 1 : 6].offset == (world ? 64u : 32u),
-                        "UI material color offset differs between targets");
-                const auto split = target == ShaderCodeTarget::Wgsl;
+                if (editor)
+                    Require(ui.rootConstants->fields[0].offset == 0 && ui.rootConstants->fields[1].offset == 8 &&
+                                ui.rootConstants->fields[2].offset == 16,
+                            "Editor UI must retain the backend's vertex and fragment root ranges");
+                else
+                    Require(ui.rootConstants->fields[world ? 1 : 6].offset == (world ? 64u : 32u),
+                            "UI material color offset differs between targets");
                 Require(ui.resources.size() == (split ? 2u : 1u) && ui.resources[0].binding.binding == 0 &&
                             ui.resources[0].binding.type ==
                                 (split ? rhi::BindingType::SampledTexture : rhi::BindingType::CombinedTextureSampler),

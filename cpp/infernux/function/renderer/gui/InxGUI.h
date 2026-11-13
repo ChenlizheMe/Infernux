@@ -11,6 +11,7 @@
 #include "gui/InxResourcePreviewer.h"
 
 #include <SDL3/SDL.h>
+#include <array>
 #include <backends/imgui_impl_sdl3.h>
 #include <backends/imgui_impl_vulkan.h>
 #include <functional>
@@ -259,6 +260,7 @@ class InxGUI
     };
 
     InxVkCoreModular *m_vkCore_ptr = nullptr;
+    std::array<std::vector<uint32_t>, 2> m_shaderBytecode;
     SDL_Window *m_window_ptr = nullptr;
     ImGuiContext *m_imguiContext_ptr = nullptr;
     std::unique_ptr<InxGUIContext> m_guiContext;

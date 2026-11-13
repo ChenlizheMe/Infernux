@@ -305,26 +305,9 @@ set(IMGUI_CORE_SRCS
     ${IMGUI_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 
-set(INFERNUX_IMGUI_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/imgui")
-# The Vulkan backend is maintained in the Infernux ImGui fork.  Keep the
-# generated directory only for the project-owned fragment shader header; the
-# backend itself must not be rewritten by a configure-time string patch.
+# The engine supplies Slang-compiled UI modules to the maintained Vulkan
+# backend at initialization; no host shader executable or generated header.
 set(INFERNUX_IMGUI_VULKAN_BACKEND "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp")
-set(INFERNUX_IMGUI_FRAGMENT_SOURCE
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend/infernux_imgui_frag.frag")
-set(INFERNUX_IMGUI_FRAGMENT_HEADER
-    "${INFERNUX_IMGUI_GENERATED_DIR}/infernux_imgui_frag.u32")
-add_custom_command(
-    OUTPUT "${INFERNUX_IMGUI_FRAGMENT_HEADER}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${INFERNUX_IMGUI_GENERATED_DIR}"
-    COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}"
-        -V -x
-        -o "${INFERNUX_IMGUI_FRAGMENT_HEADER}"
-        "${INFERNUX_IMGUI_FRAGMENT_SOURCE}"
-    DEPENDS "${INFERNUX_IMGUI_FRAGMENT_SOURCE}" "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}"
-    COMMENT "Compile the Infernux ImGui fragment shader"
-    VERBATIM
-)
 
 set(IMGUI_BACKEND_SRCS
     ${INFERNUX_IMGUI_VULKAN_BACKEND}
@@ -334,7 +317,6 @@ set(IMGUI_BACKEND_SRCS
 set(IMGUI_ALL_SRCS
     ${IMGUI_CORE_SRCS}
     ${IMGUI_BACKEND_SRCS}
-    ${INFERNUX_IMGUI_FRAGMENT_HEADER}
 )
 
 add_library(imgui STATIC ${IMGUI_ALL_SRCS})
@@ -343,7 +325,6 @@ target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}/backends
 )
 target_include_directories(imgui PRIVATE
-    ${INFERNUX_IMGUI_GENERATED_DIR}
     ${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend
 )
 

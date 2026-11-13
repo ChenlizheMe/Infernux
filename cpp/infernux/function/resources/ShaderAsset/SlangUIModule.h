@@ -1,9 +1,33 @@
 #pragma once
 
 #include "SlangCompiler.h"
+#include <string_view>
 
 namespace infernux
 {
+
+inline constexpr std::string_view SlangUIVertexSource = R"slang(struct VertexInput {
+    [[vk::location(0)]] float2 position : TEXCOORD0;
+    [[vk::location(1)]] float2 uv : TEXCOORD1;
+    [[vk::location(2)]] float4 color : TEXCOORD2;
+};
+struct VertexOutput {
+    float4 position : SV_Position;
+    [[vk::location(0)]] float4 color : TEXCOORD0;
+    [[vk::location(1)]] float2 uv : TEXCOORD1;
+};
+
+[shader("vertex")]
+VertexOutput vertex_main(VertexInput input) {
+    VertexOutput output;
+    float2 position = input.position * pc.scale + pc.translate;
+    output.position = float4(position.x, -position.y, 0.0, 1.0);
+    output.uv = input.uv;
+    output.color = input.color;
+    return output;
+}
+
+)slang";
 
 /// UI geometry and camera matrices use the engine's top-left viewport
 /// convention. Each vertex entry converts it to the compiler's Y-up clip
@@ -26,27 +50,7 @@ struct ScreenConstants {
 INX_ROOT_CONSTANTS ConstantBuffer<ScreenConstants> pc;
 [[vk::binding(0, 0)]] Sampler2D<float4> ui_texture;
 
-struct VertexInput {
-    [[vk::location(0)]] float2 position : TEXCOORD0;
-    [[vk::location(1)]] float2 uv : TEXCOORD1;
-    [[vk::location(2)]] float4 color : TEXCOORD2;
-};
-struct VertexOutput {
-    float4 position : SV_Position;
-    [[vk::location(0)]] float4 color : TEXCOORD0;
-    [[vk::location(1)]] float2 uv : TEXCOORD1;
-};
-
-[shader("vertex")]
-VertexOutput vertex_main(VertexInput input) {
-    VertexOutput output;
-    float2 position = input.position * pc.scale + pc.translate;
-    output.position = float4(position.x, -position.y, 0.0, 1.0);
-    output.uv = input.uv;
-    output.color = input.color;
-    return output;
-}
-
+)slang" + std::string(SlangUIVertexSource) + R"slang(
 [shader("fragment")]
 float4 fragment_main(VertexOutput input) : SV_Target0 {
     float4 sampled = ui_texture.Sample(input.uv);
@@ -59,6 +63,33 @@ float4 fragment_main(VertexOutput input) : SV_Target0 {
     if (pc.alpha_clip_enabled > 0.5 && color.a < pc.alpha_clip_threshold)
         discard;
     return color;
+}
+)slang"};
+    return module;
+}
+
+/// Editor draw data retains the Vulkan backend's 16-byte vertex and
+/// four-byte fragment root ranges; source and bytecode live with the GUI.
+inline const ShaderSourceModule &GetSlangEditorUIModule()
+{
+    static const ShaderSourceModule module{"inx_editor_ui", "<infernux/renderer/editor_ui>",
+                                           R"slang(struct EditorConstants {
+    float2 scale;
+    float2 translate;
+    int encode_sample;
+};
+INX_ROOT_CONSTANTS ConstantBuffer<EditorConstants> pc;
+[[vk::binding(0, 0)]] Sampler2D<float4> ui_texture;
+)slang" + std::string(SlangUIVertexSource) + R"slang(
+[shader("fragment")]
+float4 fragment_main(VertexOutput input) : SV_Target0 {
+    float4 sampled = ui_texture.Sample(input.uv);
+    if (pc.encode_sample != 0) {
+        float3 value = sampled.rgb;
+        sampled.rgb = select(value <= float3(.0031308), value * 12.92,
+            1.055 * pow(max(value, float3(0.0)), float3(1.0 / 2.4)) - .055);
+    }
+    return input.color * sampled;
 }
 )slang"};
     return module;

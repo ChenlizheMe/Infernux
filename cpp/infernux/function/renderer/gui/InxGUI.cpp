@@ -16,6 +16,8 @@
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
+#include <function/resources/ShaderAsset/SlangUIModule.h>
 
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -25,6 +27,7 @@
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <core/threading/FrameWorkOwner.h>
+#include <cstring>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <limits>
@@ -207,6 +210,18 @@ void InxGUI::Init(SDL_Window *window)
     initInfo.ImageCount = m_vkCore_ptr->GetSwapchainImageCount();
     initInfo.Allocator = nullptr;
     initInfo.CheckVkResultFn = nullptr;
+
+    const auto ui = CompileSlangNativeModule(GetSlangEditorUIModule(), ShaderCodeTarget::SpirV);
+    for (const auto &entry : ui.entries) {
+        const auto vertex = entry.stage == rhi::ShaderStage::Vertex;
+        auto &words = m_shaderBytecode[vertex ? 0 : 1];
+        words.resize(entry.code.size() / sizeof(uint32_t));
+        std::memcpy(words.data(), entry.code.data(), entry.code.size());
+        auto &module = vertex ? initInfo.CustomShaderVertCreateInfo : initInfo.CustomShaderFragCreateInfo;
+        module.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        module.codeSize = entry.code.size();
+        module.pCode = words.data();
+    }
 
     initInfo.PipelineInfoMain.Subpass = 0;
     initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
