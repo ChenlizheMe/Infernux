@@ -44,7 +44,7 @@ class JoltGpuScene final
         /// Accepted author motion type, without the independent residency bit.
         uint32_t acceptedMotionType = JPH::GPU::MotionStatic;
         PhysicsActorHandle actor;
-        /// Component generation contributing the dynamic author model.
+        /// Component generation contributing the nonstatic author model.
         PhysicsECSStore::RigidbodyHandle rigidbody;
         OwnerIdentity owner;
         PhysicsTargetReference surfaceTarget;
@@ -88,12 +88,15 @@ class JoltGpuScene final
     /// from the previously accepted metadata using actual device rotation.
     void StageActor(uint32_t bodyId, PreparedGpuActor actor);
     /// Removes participation without discarding authored mass/shape or pose.
-    /// Ordinary removal clears velocities through ordered GPU commands;
-    /// suspension preserves them. Neither path resets the authored pose.
+    /// A leaving boundary cancels target ownership. Ordinary removal clears
+    /// velocities; suspension preserves manual velocities and stops a drive.
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     /// Owns a value copy immediately. The slot and pose-command root COM are
-    /// supplied by this owner, matching preceding queued model changes.
-    void QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command);
+    /// supplied by this owner, matching preceding queued model changes. An
+    /// authored Move returns the exact batch/index source to install as the
+    /// corresponding channel guard only after this call succeeds.
+    PhysicsTargetSource QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command,
+                                     const PhysicsTargetAuthor *author = nullptr);
     /// Invalidates body lookup immediately. Its slot becomes reusable only
     /// after the ordered retirement transaction has been accepted.
     void StageRetire(uint32_t bodyId);

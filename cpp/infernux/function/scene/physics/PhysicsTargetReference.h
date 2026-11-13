@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 namespace infernux
 {
@@ -33,5 +35,53 @@ class PhysicsTargetReference
     // registry identity lets the owner remain resolvable after collider removal.
     uint64_t m_ownerTransformId = 0;
     uint64_t m_ownerTransformGeneration = 0;
+};
+
+enum class PhysicsTargetChannels : uint8_t
+{
+    Position = 1,
+    Rotation = 2
+};
+
+/// Immutable author identity for one ordered command. This contains no live
+/// numerical physics state; both component references retain their generations.
+struct PhysicsTargetAuthor
+{
+    PhysicsTargetReference rigidbody;
+    PhysicsTargetReference ownerTransform;
+    uint32_t bodyId = UINT32_MAX;
+    uint64_t positionRevision = 0;
+    uint64_t rotationRevision = 0;
+    uint8_t channels = 0;
+};
+
+/// A control prefix appends records, then retains this same owner through its
+/// candidate and any channel guards. Existing records are never modified.
+struct PhysicsTargetBatch
+{
+    std::vector<PhysicsTargetAuthor> records;
+};
+
+struct PhysicsTargetSource
+{
+    std::shared_ptr<const PhysicsTargetBatch> batch;
+    uint32_t index = UINT32_MAX;
+
+    [[nodiscard]] const PhysicsTargetAuthor *Get() const noexcept
+    {
+        return batch && index < batch->records.size() ? &batch->records[index] : nullptr;
+    }
+    explicit operator bool() const noexcept
+    {
+        return Get() != nullptr;
+    }
+    friend bool operator==(const PhysicsTargetSource &left, const PhysicsTargetSource &right) noexcept
+    {
+        return left.batch == right.batch && left.index == right.index;
+    }
+    friend bool operator!=(const PhysicsTargetSource &left, const PhysicsTargetSource &right) noexcept
+    {
+        return !(left == right);
+    }
 };
 } // namespace infernux

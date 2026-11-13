@@ -12,6 +12,7 @@
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsTargetReference.h"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -330,7 +331,7 @@ class PhysicsWorld
     void DestroyConstraintsForBody(uint32_t bodyId);
 
     /// Inform the physics world that a body has moved (kinematic / editor move).
-    void SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot, bool cancelKinematicMove = false);
+    void SetBodyPosition(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot, bool cancelKinematicMove = true);
 
     void SetBodyPositionOnly(uint32_t bodyId, const glm::vec3 &position);
     void SetBodyRotationOnly(uint32_t bodyId, const glm::quat &rotation);
@@ -507,14 +508,18 @@ class PhysicsWorld
     void MoveBodyKinematicPosition(uint32_t bodyId, const glm::vec3 &targetPos, float deltaTime);
     void MoveBodyKinematicRotation(uint32_t bodyId, const glm::quat &targetRot, float deltaTime);
 
+    /// Internal Transform authoring path. The returned source protects only
+    /// the authored channels until their numerical publication is complete.
+    PhysicsTargetSource MoveBodyKinematicAuthored(uint32_t bodyId, const glm::vec3 &targetPos,
+                                                  const glm::quat &targetRot, uint32_t channels, float deltaTime,
+                                                  float maxSpeed, const std::array<uint64_t, 2> &authoredRevision);
+
     /// Move a collider-only (static) body to a new pose with real velocity so
     /// overlapping dynamic bodies receive momentum (Unity-like drag push).
     ///
-    /// Teleporting a static body only produces positional depenetration in
-    /// Jolt: dynamic bodies are squeezed out with zero exit velocity and stop
-    /// dead. This call temporarily switches the body to Kinematic and drives
-    /// it with MoveKinematic; once move commands stop arriving the body is
-    /// stopped and restored to Static (see SettleKinematicMoves).
+    /// The device gives this static author model temporary kinematic velocity
+    /// for one logical tick. Its authored motion type stays Static; without a
+    /// new target the following tick clears only the movement-owned velocity.
     void MoveStaticBodyWithVelocity(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
                                     float deltaTime);
 

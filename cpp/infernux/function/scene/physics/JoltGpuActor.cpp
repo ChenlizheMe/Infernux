@@ -42,8 +42,6 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
 
     const auto *rigidbody = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
     if (rigidbody) {
-        if (rigidbody->IsKinematic())
-            throw std::invalid_argument("Jolt GPU actor preparation does not yet support kinematic motion");
         if (rigidbody->GetConstraints() != 0)
             throw std::invalid_argument("Jolt GPU actor preparation does not yet support locked degrees of freedom");
         if (rigidbody->GetCollisionDetectionMode() != static_cast<int>(CollisionDetectionMode::Discrete))
@@ -63,8 +61,9 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
     const auto positionCOM = position + rotation * glm::vec3(center.GetX(), center.GetY(), center.GetZ());
     prepared.initialState.positionCOM = {positionCOM.x, positionCOM.y, positionCOM.z, 0.0f};
     prepared.initialState.rotation = {rotation.x, rotation.y, rotation.z, rotation.w};
-    prepared.body.meta = {shapeSlot, prepared.geometry.type,
-                          rigidbody ? JPH::GPU::MotionDynamic : JPH::GPU::MotionStatic, worldIndex};
+    const auto motion = rigidbody ? (rigidbody->IsKinematic() ? JPH::GPU::MotionKinematic : JPH::GPU::MotionDynamic)
+                                  : JPH::GPU::MotionStatic;
+    prepared.body.meta = {shapeSlot, prepared.geometry.type, motion, worldIndex};
     prepared.body.inertiaRotation = {0.0f, 0.0f, 0.0f, 1.0f};
     if (rigidbody) {
         const auto &properties = rigidbody->GetAuthoredMassProperties();

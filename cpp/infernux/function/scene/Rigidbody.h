@@ -284,6 +284,12 @@ class Rigidbody : public Component
     void CacheCpuPhysicsPose(const glm::vec3 &position, const glm::quat &rotation, bool positionApplied = true,
                              bool rotationApplied = true);
 
+    /// Whether a queued authored target still owns either requested CPU pose channel.
+    [[nodiscard]] bool HasPendingPhysicsTarget(uint8_t channels) const;
+    /// Complete only the matching source after its numerical publication.
+    /// This releases metadata; it does not materialize or apply a CPU pose.
+    void CompletePhysicsTarget(const PhysicsTargetSource &source, uint8_t channels);
+
     /// @brief Apply render interpolation between previous and current physics poses.
     void ApplyInterpolatedTransform(float alpha);
 

@@ -14,8 +14,9 @@ class JoltGpuBodyMutations
     JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderTargetCode &target);
 
     /// Initialization is explicit, for newly owned or deliberately reset slots
-    /// within the existing capacity. Other bodies keep their resident state.
-    /// COM changes preserve origin using the device's actual current rotation.
+    /// within the existing capacity, clearing those slots' complete targets.
+    /// Other bodies keep their resident state. COM changes preserve origin
+    /// using the actual device rotation and rebase any live target's root COM.
     /// Repeated slots, including across the two lists, are not allowed.
     [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
     Prepare(JoltGpuStorage &storage, std::vector<JoltGpuBodyModelUpdate> bodies,

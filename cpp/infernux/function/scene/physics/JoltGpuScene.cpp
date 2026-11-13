@@ -61,19 +61,42 @@ bool FiniteVector(const Float4 &value)
 class JoltGpuScene::Impl
 {
   public:
+    struct TargetState
+    {
+        bool pending = false;
+        bool temporaryStatic = false;
+        PhysicsTargetSource position;
+        PhysicsTargetSource rotation;
+    };
+
+    struct TargetCompletion
+    {
+        PhysicsTargetSource source;
+        uint8_t channels = 0;
+    };
+
+    struct PrefixTarget
+    {
+        uint32_t bodyId = InvalidBodyId;
+        TargetState target;
+    };
+
     struct Slot
     {
         uint32_t bodyId = InvalidBodyId;
         PhysicsActorHandle actor;
         OwnerIdentity owner;
         bool desiredResident = false;
-        // Initial author inputs are claimed by the first dynamic group for a
+        // Initial author inputs are claimed by the first nonstatic group for a
         // component generation. Static groups must not release that claim.
         PhysicsECSStore::RigidbodyHandle initialRigidbody;
         std::shared_ptr<const PublishedActor> accepted;
         // Shares the actual pending transaction record. After acceptance these
         // pointers normally name the same object; no second model is cached.
         std::shared_ptr<const PublishedActor> authored;
+        // Ordered command provenance, without a numerical pose/velocity copy.
+        // A candidate captures its own prefix before future author calls.
+        TargetState queuedTarget;
     };
 
     struct ActorChange
@@ -91,6 +114,57 @@ class JoltGpuScene::Impl
         bool creation = false;
         bool initializesRigidbody = false;
     };
+
+    static uint8_t PositionChannel() noexcept
+    {
+        return static_cast<uint8_t>(PhysicsTargetChannels::Position);
+    }
+
+    static uint8_t RotationChannel() noexcept
+    {
+        return static_cast<uint8_t>(PhysicsTargetChannels::Rotation);
+    }
+
+    static bool HasAuthor(const PhysicsTargetSource &source, uint8_t channel) noexcept
+    {
+        const auto *author = source.Get();
+        return author && (author->channels & channel);
+    }
+
+    static void AddCompletion(std::vector<TargetCompletion> &completions, const PhysicsTargetSource &source,
+                              uint8_t channel)
+    {
+        if (HasAuthor(source, channel))
+            completions.push_back({source, channel});
+    }
+
+    static void CancelTarget(TargetState &target, std::vector<TargetCompletion> &completions)
+    {
+        AddCompletion(completions, target.position, PositionChannel());
+        AddCompletion(completions, target.rotation, RotationChannel());
+        target = {};
+    }
+
+    PhysicsTargetSource AppendSource(const PhysicsTargetAuthor &author)
+    {
+        if (!pendingSources) {
+            pendingSources = std::make_shared<PhysicsTargetBatch>();
+            pendingSources->records.reserve(slots.size() * 2);
+        }
+        if (pendingSources->records.size() == UINT32_MAX)
+            throw std::length_error("Jolt GPU author command source batch exceeds its index range");
+        const auto index = static_cast<uint32_t>(pendingSources->records.size());
+        pendingSources->records.push_back(author);
+        return {pendingSources, index};
+    }
+
+    /// Model groups are prepared lazily, so carry flags must come from this
+    /// already ordered source shadow, never from the later Rigidbody guard.
+    static uint32_t CarryFlags(const TargetState &target) noexcept
+    {
+        return (HasAuthor(target.position, PositionChannel()) ? MotionBoundaryCarryAuthoredPosition : 0) |
+               (HasAuthor(target.rotation, RotationChannel()) ? MotionBoundaryCarryAuthoredRotation : 0);
+    }
 
     Impl(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
          const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget)
@@ -234,7 +308,13 @@ class JoltGpuScene::Impl
         change->hasInitialAngularVelocity = actor.hasInitialAngularVelocity;
         change->colliderCenters = std::move(actor.colliderCenters);
         change->identity = std::move(identity);
-        change->initializesRigidbody = firstOwnership || slot.initialRigidbody != change->initialRigidbody;
+        const auto motion = change->identity->acceptedMotionType;
+        const bool motionChanged = !firstOwnership && slot.authored->acceptedMotionType != motion;
+        change->initializesRigidbody =
+            motion != MotionStatic && (firstOwnership || slot.initialRigidbody != change->initialRigidbody);
+        // Reserve before transferring the command group, so subsequent source
+        // cancellation cannot fail after this group has acquired ownership.
+        pendingCompletions.reserve(pendingCompletions.size() + 2);
 
         JoltGpuControlGroup group;
         group.prepareModel = [this, change] {
@@ -256,13 +336,12 @@ class JoltGpuScene::Impl
                                      rebases);
         };
         group.modelAccepted = [this, change]() noexcept { CommitActor(change); };
-        if ((change->model.meta.z & ~MotionNotResident) == MotionStatic) {
-            // Static authoring discards motion and accumulated force so a
-            // later dynamic transition cannot revive the previous motion.
-            BodyCommand reset{};
-            reset.meta = {index, CommandResetMotion, 0, 0};
-            group.commands.push_back(reset);
-        } else if ((change->model.meta.z & ~MotionNotResident) == MotionDynamic) {
+        if (motionChanged) {
+            BodyCommand boundary{};
+            boundary.meta = {index, CommandMotionBoundary, MotionBoundaryTypeChange | CarryFlags(slot.queuedTarget), 0};
+            group.commands.push_back(boundary);
+        }
+        if (motion != MotionStatic) {
             // A new slot clamps its initial values. A new Rigidbody attached
             // to an existing actor applies only that component's captured
             // pending inputs, preserving the resident numerical pose/state.
@@ -280,7 +359,11 @@ class JoltGpuScene::Impl
             }
         }
         pending.push_back(std::move(group));
-        if ((change->model.meta.z & ~MotionNotResident) == MotionDynamic)
+        if (motionChanged || (motion != MotionStatic && (firstOwnership || (change->initializesRigidbody &&
+                                                                            (change->hasInitialLinearVelocity ||
+                                                                             change->hasInitialAngularVelocity)))))
+            CancelTarget(slot.queuedTarget, pendingCompletions);
+        if (motion != MotionStatic)
             slot.initialRigidbody = change->initialRigidbody;
         slot.authored = change->identity;
     }
@@ -298,26 +381,48 @@ class JoltGpuScene::Impl
             model.meta.z = (model.meta.z & ~MotionNotResident) | (resident ? 0 : MotionNotResident);
             return storage.PrepareModelUpdate({{index, model}}, {});
         };
-        if (!resident && !preserveVelocity) {
-            BodyCommand linear{};
-            linear.meta = {index, CommandSetLinearVelocity, 0, 0};
-            BodyCommand angular{};
-            angular.meta = {index, CommandSetAngularVelocity, 0, 0};
-            group.commands = {linear, angular};
+        if (!resident) {
+            pendingCompletions.reserve(pendingCompletions.size() + 2);
+            BodyCommand boundary{};
+            boundary.meta = {index, CommandMotionBoundary,
+                             preserveVelocity ? MotionBoundarySuspendPreserve : MotionBoundarySuspendReset, 0};
+            group.commands.push_back(boundary);
         }
         pending.push_back(std::move(group));
+        if (!resident)
+            CancelTarget(slot.queuedTarget, pendingCompletions);
         slot.desiredResident = resident;
     }
 
-    void QueueCommand(uint32_t id, BodyCommand command)
+    PhysicsTargetSource QueueCommand(uint32_t id, BodyCommand command, const PhysicsTargetAuthor *author)
     {
         const uint32_t index = RequireSlot(id);
-        const auto &slot = slots[index];
+        auto &slot = slots[index];
         if (!slot.authored)
             throw std::logic_error("Jolt GPU actor must be staged before authoring a body command");
         command.meta.x = index;
-        if (command.meta.y <= CommandSetPose)
+        const auto kind = command.meta.y;
+        const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
+        const uint8_t channels = (kind == CommandMovePosition   ? PositionChannel()
+                                  : kind == CommandMoveRotation ? RotationChannel()
+                                  : kind == CommandMovePose     ? PositionChannel() | RotationChannel()
+                                                                : 0);
+        const auto motion = slot.authored->acceptedMotionType;
+        const bool acceptsMove = move && (motion == MotionKinematic ||
+                                          (motion == MotionStatic && (command.meta.z & CommandTemporaryStatic)));
+        if (author && (!acceptsMove || author->bodyId != id || author->channels != channels ||
+                       !actors.IsValid(slot.authored->rigidbody) ||
+                       author->rigidbody.GetComponent() != actors.GetRigidbody(slot.authored->rigidbody).owner ||
+                       author->ownerTransform.GetComponent() != slot.owner.target.GetComponent()))
+            throw std::invalid_argument("Jolt GPU author target does not match its body or command channels");
+        if (kind <= CommandSetPose || move) {
+            const float speed = command.rootCOM.w;
             command.rootCOM = slot.authored->rootCenterOfMass;
+            if (move)
+                command.rootCOM.w = speed;
+        }
+        pendingCompletions.reserve(pendingCompletions.size() + 2);
+        const auto source = author ? AppendSource(*author) : PhysicsTargetSource{};
         if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted) {
             pending.back().commands.push_back(command);
         } else {
@@ -325,6 +430,30 @@ class JoltGpuScene::Impl
             group.commands.push_back(command);
             pending.push_back(std::move(group));
         }
+        auto &target = slot.queuedTarget;
+        if (acceptsMove) {
+            if (!target.pending) {
+                // The device samples the other channel from its current pose
+                // for the first Pending command, rather than an old drive.
+                CancelTarget(target, pendingCompletions);
+            }
+            if (channels & PositionChannel()) {
+                AddCompletion(pendingCompletions, target.position, PositionChannel());
+                target.position = source;
+            }
+            if (channels & RotationChannel()) {
+                AddCompletion(pendingCompletions, target.rotation, RotationChannel());
+                target.rotation = source;
+            }
+            target.pending = true;
+            target.temporaryStatic = motion == MotionStatic;
+        } else if ((kind <= CommandSetPose && !(command.meta.z & CommandPreserveKinematicMove)) ||
+                   kind == CommandResetMotion || kind == CommandMotionBoundary ||
+                   ((kind == CommandSetLinearVelocity || kind == CommandSetAngularVelocity) &&
+                    motion != MotionStatic)) {
+            CancelTarget(target, pendingCompletions);
+        }
+        return source;
     }
 
     void StageRetire(uint32_t id)
@@ -342,7 +471,9 @@ class JoltGpuScene::Impl
             // construction reserves the complete fixed capacity up front.
             freeSlots.push_back(index);
         };
+        pendingCompletions.reserve(pendingCompletions.size() + 2);
         pending.push_back(std::move(group));
+        CancelTarget(slots[index].queuedTarget, pendingCompletions);
         byId.erase(id);
     }
 
@@ -358,8 +489,15 @@ class JoltGpuScene::Impl
         publication->simulationEpoch = epoch;
         publication->fixedStepIndex = step;
         publication->actors.resize(slots.size());
+        auto prefix = std::make_shared<std::vector<PrefixTarget>>();
+        prefix->reserve(slots.size());
+        for (const auto &slot : slots)
+            prefix->push_back({slot.bodyId, slot.queuedTarget});
+        auto completions = std::make_shared<std::vector<TargetCompletion>>(pendingCompletions);
+        completions->reserve(completions->size() + slots.size() * 2);
         JoltGpuControlGroup capture;
-        capture.prepareModel = [this, publication, controlOnly]() -> std::unique_ptr<JoltGpuModelUpdate> {
+        capture.prepareModel = [this, publication, prefix, completions,
+                                controlOnly]() -> std::unique_ptr<JoltGpuModelUpdate> {
             if (storage.GetBodyCount()) {
                 publication->bodyModels = storage.Get(Resource::BodyModels)->Freeze();
                 publication->shapeModels = storage.Get(Resource::ShapeModels)->Freeze();
@@ -367,8 +505,23 @@ class JoltGpuScene::Impl
                 if (controlOnly)
                     publication->bodyStates = storage.Get(Resource::BodyStates)->Freeze();
             }
-            for (size_t index = 0; index < slots.size(); ++index)
+            for (size_t index = 0; index < slots.size(); ++index) {
                 publication->actors[index] = slots[index].accepted;
+                auto &slot = slots[index];
+                const auto &input = (*prefix)[index];
+                if (input.bodyId == InvalidBodyId || input.bodyId != slot.bodyId || !slot.accepted)
+                    continue;
+                // Every preceding model/command packet is now accepted. Only
+                // this captured prefix contributes target provenance; author
+                // calls made while it was pending belong to the next prefix.
+                const auto motion = storage.GetModel().bodies[index].meta.z;
+                const bool drives = (motion & ~MotionNotResident) == MotionKinematic ||
+                                    ((motion & ~MotionNotResident) == MotionStatic && input.target.temporaryStatic);
+                if (!controlOnly && !(motion & MotionNotResident) && drives && input.target.pending) {
+                    AddCompletion(*completions, input.target.position, PositionChannel());
+                    AddCompletion(*completions, input.target.rotation, RotationChannel());
+                }
+            }
             return {};
         };
         if (consumer)
@@ -387,8 +540,27 @@ class JoltGpuScene::Impl
         control.initialization = std::move(initialization);
         control.commandProgram = &commands;
         control.groups = std::move(pending);
+        pendingSources.reset();
+        pendingCompletions.clear();
+        candidateCompletions = std::move(completions);
         candidate = std::move(publication);
         candidateControlOnly = controlOnly;
+        if (!controlOnly) {
+            for (auto &slot : slots) {
+                const bool drives =
+                    slot.authored &&
+                    (slot.authored->acceptedMotionType == MotionKinematic ||
+                     (slot.authored->acceptedMotionType == MotionStatic && slot.queuedTarget.temporaryStatic));
+                if (!slot.desiredResident || !drives || !slot.queuedTarget.pending)
+                    continue;
+                // Hand ownership to this logical tick, without releasing the
+                // Rigidbody guard. Later type changes must not carry/snap an
+                // endpoint already consumed by this tick's requested duration.
+                slot.queuedTarget.pending = false;
+                slot.queuedTarget.position = {};
+                slot.queuedTarget.rotation = {};
+            }
+        }
         return control;
     }
 
@@ -424,6 +596,15 @@ class JoltGpuScene::Impl
             return false;
         candidate->bodyStates = tick.GetCompletedBodyStates();
         published = std::move(candidate);
+        if (candidateCompletions) {
+            for (const auto &completion : *candidateCompletions) {
+                const auto *author = completion.source.Get();
+                auto *body = author ? dynamic_cast<Rigidbody *>(author->rigidbody.GetComponent()) : nullptr;
+                if (body)
+                    body->CompletePhysicsTarget(completion.source, completion.channels);
+            }
+        }
+        candidateCompletions.reset();
         return true;
     }
 
@@ -435,6 +616,12 @@ class JoltGpuScene::Impl
             (void)initialization->Cancel();
         initialization.reset();
         pending.clear();
+        pendingSources.reset();
+        pendingCompletions.clear();
+        candidateCompletions.reset();
+        for (auto &slot : slots) {
+            slot.queuedTarget = {};
+        }
         candidate.reset();
         byId.clear();
     }
@@ -451,6 +638,9 @@ class JoltGpuScene::Impl
     bool cancelled = false;
     bool candidateControlOnly = false;
     std::vector<JoltGpuControlGroup> pending;
+    std::shared_ptr<PhysicsTargetBatch> pendingSources;
+    std::vector<TargetCompletion> pendingCompletions;
+    std::shared_ptr<std::vector<TargetCompletion>> candidateCompletions;
     std::shared_ptr<rhi::PreparedComputeBatch> initialization;
     std::shared_ptr<Publication> candidate;
     std::shared_ptr<const Publication> published;
@@ -483,9 +673,9 @@ void JoltGpuScene::SetResident(uint32_t id, bool resident, bool preserveVelocity
     m_impl->SetResident(id, resident, preserveVelocity);
 }
 
-void JoltGpuScene::QueueCommand(uint32_t id, BodyCommand command)
+PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand command, const PhysicsTargetAuthor *author)
 {
-    m_impl->QueueCommand(id, command);
+    return m_impl->QueueCommand(id, command, author);
 }
 
 void JoltGpuScene::StageRetire(uint32_t id)

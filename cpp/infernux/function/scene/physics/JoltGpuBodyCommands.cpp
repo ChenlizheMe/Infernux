@@ -22,6 +22,7 @@ enum Port : uint8_t
     Models,
     States,
     Forces,
+    Targets,
     PortCount
 };
 struct PortLayout
@@ -34,7 +35,8 @@ constexpr PortLayout Ports[] = {{"command_params", sizeof(BodyCommandParams)},
                                 {"command_spans", sizeof(BodyCommandSpan)},
                                 {"body_models", sizeof(BodyModel)},
                                 {"body_states", sizeof(BodyState)},
-                                {"body_forces", sizeof(BodyForces)}};
+                                {"body_forces", sizeof(BodyForces)},
+                                {"kinematic_targets", sizeof(KinematicTarget)}};
 
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
@@ -44,30 +46,77 @@ template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
     return bytes;
 }
 
+bool Finite3(const Float4 &value)
+{
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
 bool FiniteVector(const Float4 &value)
 {
-    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) && value.w == 0;
+    return Finite3(value) && value.w == 0;
+}
+
+bool NormalizedRotation(const Float4 &value)
+{
+    return Finite3(value) && std::isfinite(value.w) &&
+           std::abs(value.x * value.x + value.y * value.y + value.z * value.z + value.w * value.w - 1.0f) <= 1e-4f;
+}
+
+void ValidateTargetLayout(const ShaderValueLayout &value)
+{
+    constexpr std::array<std::string_view, 4> fields{"positionSpeed", "rotation", "rootCOMDt", "state"};
+    if (value.fields.size() != fields.size())
+        throw std::invalid_argument("Jolt GPU command target fields differ from KinematicTarget");
+    for (size_t index = 0; index < fields.size(); ++index) {
+        const auto &field = value.fields[index];
+        if (field.name != fields[index] || field.offset != index * 16 || field.byteSize != 16 ||
+            field.kind != ShaderValueKind::Vector || field.rows != 1 || field.columns != 4 ||
+            field.scalar != (index == 3 ? ShaderScalarKind::UInt32 : ShaderScalarKind::Float32))
+            throw std::invalid_argument("Jolt GPU command target fields differ from KinematicTarget");
+    }
 }
 
 void Validate(const BodyCommand &command, uint32_t bodyCount)
 {
     const auto kind = command.meta.y;
-    if (command.meta.x >= bodyCount || kind > CommandResetMotion || command.meta.w ||
-        command.meta.z > CommandVelocityChange ||
-        ((kind < CommandAddForce || kind == CommandResetMotion) && command.meta.z != 0))
-        throw std::invalid_argument("Jolt GPU command has an invalid body slot, kind or ForceMode");
-    if (kind != CommandSetRotation && kind != CommandResetMotion && !FiniteVector(command.value))
+    if (command.meta.x >= bodyCount || kind > CommandMotionBoundary || command.meta.w)
+        throw std::invalid_argument("Jolt GPU command has an invalid body slot, kind or padding");
+    const auto mode = command.meta.z;
+    if (kind <= CommandSetPose) {
+        if ((mode & ~CommandPreserveKinematicMove) != 0 || !FiniteVector(command.rootCOM))
+            throw std::invalid_argument("Jolt GPU pose command has invalid control flags or root COM");
+        if (kind != CommandSetRotation && !FiniteVector(command.value))
+            throw std::invalid_argument("Jolt GPU pose position must be finite with zero padding");
+        if (kind != CommandSetPosition && !NormalizedRotation(command.auxiliary))
+            throw std::invalid_argument("Jolt GPU command rotation must be normalized and finite");
+        return;
+    }
+    if (kind >= CommandMovePosition && kind <= CommandMovePose) {
+        if ((mode & ~CommandTemporaryStatic) != 0 || !std::isfinite(command.value.w) || command.value.w <= 0 ||
+            !Finite3(command.rootCOM) || !std::isfinite(command.rootCOM.w) || command.rootCOM.w < 0)
+            throw std::invalid_argument("Jolt GPU move command has invalid flags, duration, root COM or speed");
+        if (kind != CommandMoveRotation && !Finite3(command.value))
+            throw std::invalid_argument("Jolt GPU move target position must be finite");
+        if (kind != CommandMovePosition && !NormalizedRotation(command.auxiliary))
+            throw std::invalid_argument("Jolt GPU move target rotation must be normalized and finite");
+        return;
+    }
+    if (kind == CommandMotionBoundary) {
+        constexpr uint32_t flags = MotionBoundaryActionMask | MotionBoundaryCarryAuthoredPosition |
+                                   MotionBoundaryCarryAuthoredRotation;
+        if ((mode & ~flags) != 0 || (mode & MotionBoundaryActionMask) > MotionBoundarySuspendReset)
+            throw std::invalid_argument("Jolt GPU motion boundary has invalid action or carry flags");
+        // Boundary pose channels come from the live device target. No command
+        // payload lane is consumed, and none is a CPU copy of that device pose.
+        return;
+    }
+    const bool force = kind >= CommandAddForce && kind <= CommandAddForceAtPosition;
+    if (force ? mode > CommandVelocityChange : mode != 0)
+        throw std::invalid_argument("Jolt GPU command has an invalid ForceMode");
+    if (kind != CommandResetMotion && !FiniteVector(command.value))
         throw std::invalid_argument("Jolt GPU command value must be finite with zero padding");
     if (kind == CommandAddForceAtPosition && !FiniteVector(command.auxiliary))
         throw std::invalid_argument("Jolt GPU command point must be finite with zero padding");
-    if (kind <= CommandSetPose && !FiniteVector(command.rootCOM))
-        throw std::invalid_argument("Jolt GPU pose command requires a finite local root COM");
-    if (kind == CommandSetRotation || kind == CommandSetPose) {
-        const auto &q = command.auxiliary;
-        if (!std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) || !std::isfinite(q.w) ||
-            std::abs(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w - 1.0f) > 1e-4f)
-            throw std::invalid_argument("Jolt GPU command rotation must be normalized and finite");
-    }
 }
 } // namespace
 
@@ -90,12 +139,14 @@ JoltGpuBodyCommands::JoltGpuBodyCommands(rhi::ComputeHost &host, const ShaderTar
             throw std::invalid_argument("Jolt GPU command target has an unknown resource");
         const auto index = static_cast<uint8_t>(port - std::begin(Ports));
         const bool uniform = index == Parameters;
-        const bool writer = index == States || index == Forces;
+        const bool writer = index == States || index == Forces || index == Targets;
         if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
             resource.value.kind != ShaderValueKind::Struct ||
             (uniform ? resource.value.byteSize : resource.elementStride) != port->stride ||
             (!uniform && resource.binding.readOnlyStorage == writer))
             throw std::invalid_argument("Jolt GPU command target differs from its shared records");
+        if (index == Targets)
+            ValidateTargetLayout(resource.value);
         bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
         m_ports.push_back(index);
         actual |= 1u << index;
@@ -184,7 +235,8 @@ JoltGpuCommandCursor::JoltGpuCommandCursor(const rhi::ComputeHost &host, std::sh
                                            std::vector<uint8_t> ports, const JoltGpuStorage &storage)
     : m_host(host), m_kernel(std::move(kernel)), m_ports(std::move(ports)),
       m_models(storage.GetBodyCount() ? storage.Get(Resource::BodyModels)->Freeze() : nullptr),
-      m_states(storage.Get(Resource::BodyStates)), m_forces(storage.Get(Resource::BodyForces))
+      m_states(storage.Get(Resource::BodyStates)), m_forces(storage.Get(Resource::BodyForces)),
+      m_targets(storage.Get(Resource::KinematicTargets))
 {
 }
 
@@ -239,6 +291,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi
     buffers[Models] = m_models;
     buffers[States] = m_states;
     buffers[Forces] = m_forces;
+    buffers[Targets] = m_targets;
     std::vector<rhi::ComputeDispatchDesc> dispatches;
     dispatches.reserve(end - m_next);
     for (size_t index = m_next; index < end; ++index) {
@@ -252,7 +305,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi
         for (const auto port : m_ports) {
             const uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffers[port]);
-            const bool writer = port == States || port == Forces;
+            const bool writer = port == States || port == Forces || port == Targets;
             dispatch.bufferAccesses.push_back(writer ? rhi::ComputeBufferAccess::ReadWrite
                                                      : rhi::ComputeBufferAccess::Read);
             uint64_t offset = 0, byteSize = buffers[port]->GetByteSize();

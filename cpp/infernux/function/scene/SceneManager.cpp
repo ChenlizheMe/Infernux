@@ -1699,8 +1699,7 @@ void SceneManager::InvalidatePhysicsSkeletonPoses()
             if (!physics.IsValid(handle))
                 continue;
             const auto &actor = physics.GetActor(handle);
-            if (actor.rigidbody && actor.rigidbody->IsEnabled() && !actor.rigidbody->IsKinematic() &&
-                !actor.sceneSuspended && actor.bodyId != UINT32_MAX)
+            if (actor.rigidbody && actor.rigidbody->IsEnabled() && !actor.sceneSuspended && actor.bodyId != UINT32_MAX)
                 return actor.bodyId;
         }
         return UINT32_MAX;

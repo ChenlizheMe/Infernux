@@ -112,8 +112,7 @@ void Transform::EnsureCpuPhysicsPose() const
 bool Transform::HasSimulatedLocalPose() const
 {
     const auto *body = m_gameObject ? m_gameObject->GetComponent<Rigidbody>() : nullptr;
-    return body && body->IsEnabled() && !body->IsKinematic() && body->GetBodyId() != UINT32_MAX &&
-           SceneManager::Instance().IsPlaying();
+    return body && body->IsEnabled() && body->GetBodyId() != UINT32_MAX && SceneManager::Instance().IsPlaying();
 }
 
 void PhysicsWorld::EnsureCpuPhysicsPose(Transform &requested)
@@ -143,7 +142,7 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
         return;
     auto *body = physics.GetActor(actorHandle).rigidbody;
     if (!body || object->IsDestroying() || physics.GetActor(actorHandle).bodyId == UINT32_MAX ||
-        (!release && (!body->IsEnabled() || body->IsKinematic() || physics.GetActor(actorHandle).sceneSuspended)))
+        (!release && (!body->IsEnabled() || physics.GetActor(actorHandle).sceneSuspended)))
         return;
     // Ordinary and editor-only transforms have no simulated pose. Resolve that
     // dependency before consulting lifecycle state: the editor camera itself is
@@ -153,7 +152,7 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
     const auto bodyHandle = body->GetECSHandle();
     const auto bodyId = physics.GetActor(actorHandle).bodyId;
     auto *target = object->GetTransform();
-    // Independent dynamic children retain their world pose. Resolve only
+    // Independent physical children retain their world pose. Resolve only
     // their physical ancestors needed for world-to-local conversion.
     if (auto *parent = target->GetParentTransformSafe()) {
         if (release)
@@ -202,13 +201,18 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
     const auto authoredAfter = transforms.GetAuthoredPoseRevision(transformHandle);
     const auto &after = physics.GetRigidbody(bodyHandle);
     const auto &currentActor = physics.GetActor(actorHandle);
+    // The query can complete an old target or accept a newer one. Read live
+    // guards only after the query and the second parent-pose resolution.
+    const bool pendingPosition = body->HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Position));
+    const bool pendingRotation = body->HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Rotation));
     const bool hierarchyPending =
         hierarchyAuthored && (currentActor.centerTransformDirty || currentActor.shapeTransformDirty);
-    const bool applyPosition = !hierarchyPending && authoredAfter[0] == authoredBefore[0] &&
+    const bool applyPosition = !pendingPosition && !hierarchyPending && authoredAfter[0] == authoredBefore[0] &&
                                (!positionAuthored || after.lastAuthoredPoseRevision[0] == authoredAfter[0]);
     const bool rotationFrozen = (after.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
                                 static_cast<int>(RigidbodyConstraints::FreezeRotation);
-    const bool applyRotation = !hierarchyPending && !rotationFrozen && authoredAfter[1] == authoredBefore[1] &&
+    const bool applyRotation = !pendingRotation && !hierarchyPending && !rotationFrozen &&
+                               authoredAfter[1] == authoredBefore[1] &&
                                (!rotationAuthored || after.lastAuthoredPoseRevision[1] == authoredAfter[1]);
     const auto position = applyPosition ? sample.position : target->GetWorldPosition();
     const auto rotation = applyRotation ? sample.rotation : target->GetWorldRotation();
@@ -216,14 +220,15 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
         target->ApplyWorldPoseFromPhysics(position, rotation, applyRotation);
         body->CacheCpuPhysicsPose(target->GetWorldPosition(), target->GetWorldRotation(), applyPosition, applyRotation);
     }
-    if (release && (hierarchyPending || (positionAuthored && !applyPosition) || (rotationAuthored && !applyRotation))) {
+    if (release && (hierarchyPending || pendingPosition || pendingRotation || (positionAuthored && !applyPosition) ||
+                    (rotationAuthored && !applyRotation))) {
         // A disabled body can leave a collider-only actor behind. Preserve its
         // unconsumed CPU author channels, but compare their next static update
         // against actual device state rather than the older CPU sample.
         auto &handoff = physics.GetActor(actorHandle);
-        if (hierarchyPending || (positionAuthored && !applyPosition))
+        if (hierarchyPending || pendingPosition || (positionAuthored && !applyPosition))
             handoff.lastSyncedPos = sample.position;
-        if (hierarchyPending || (rotationAuthored && !applyRotation))
+        if (hierarchyPending || pendingRotation || (rotationAuthored && !applyRotation))
             handoff.lastSyncedRot = sample.rotation;
         physics.MarkAuthoredHierarchyDirty(object);
     }

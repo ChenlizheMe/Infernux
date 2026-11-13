@@ -398,43 +398,17 @@ void Rigidbody::SetIsKinematic(bool kinematic)
     auto &d = DataMut();
     if (d.isKinematic == kinematic)
         return;
-    bool wasKinematic = d.isKinematic;
     if (!kinematic && m_massProperties)
         PhysicsWorld::Instance().ValidateBodyMassProperties(*this, d.mass, &*m_massProperties);
     d.isKinematic = kinematic;
     NotifyCollidersBodyTypeChanged();
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
-    // When switching kinematic → dynamic, synchronise interpolation caches
-    // from the current Jolt body position.  During kinematic mode neither
-    // SyncPhysicsToTransform nor ApplyInterpolatedTransform update
-    // previousPhysicsPosition / currentPhysicsPosition, so they remain at
-    // the pre-drag value.  Without this reset, the first
-    // ApplyInterpolatedRigidbodies call after the switch overwrites the
-    // Transform with the stale position, causing a one-frame flash-back.
-    if (wasKinematic && !kinematic) {
-        auto *go = GetGameObject();
-        if (go) {
-            uint32_t bid = GetBodyId();
-            if (bid != 0xFFFFFFFF) {
-                auto &pw = PhysicsWorld::Instance();
-                glm::vec3 bodyPos = pw.GetBodyPosition(bid);
-                glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bid));
-                d.previousPhysicsPosition = bodyPos;
-                d.previousPhysicsRotation = bodyRot;
-                d.currentPhysicsPosition = bodyPos;
-                d.currentPhysicsRotation = bodyRot;
-                d.hasPhysicsPose = true;
-            }
-            Transform *tf = go->GetTransform();
-            if (tf) {
-                d.lastSyncedPosition = tf->GetPosition();
-                d.lastSyncedRotation = tf->GetWorldRotation();
-                d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
-                d.hasSyncedOnce = true;
-            }
-        }
-    }
+    // The ordered device boundary preserves the actual pose and carries any
+    // protected author channels. Invalidate old CPU presentation history;
+    // configuration must not drain that boundary or acknowledge newer authors.
+    DataMut().hasPhysicsPose = false;
+    DataMut().wasSleeping = false;
 }
 
 void Rigidbody::SetConstraints(int constraints)
@@ -990,6 +964,37 @@ void Rigidbody::CacheCpuPhysicsPose(const glm::vec3 &position, const glm::quat &
     }
 }
 
+bool Rigidbody::HasPendingPhysicsTarget(uint8_t channels) const
+{
+    const auto *owner = GetGameObject();
+    const auto *transform = owner ? owner->GetTransform() : nullptr;
+    const auto bodyId = GetBodyId();
+    const auto &sources = Data().physicsTargetSources;
+    for (size_t channel = 0; channel < sources.size(); ++channel) {
+        if ((channels & (1u << channel)) == 0)
+            continue;
+        const auto *author = sources[channel].Get();
+        if (author && author->bodyId == bodyId && author->rigidbody.GetComponent() == this &&
+            author->ownerTransform.GetComponent() == transform)
+            return true;
+    }
+    return false;
+}
+
+void Rigidbody::CompletePhysicsTarget(const PhysicsTargetSource &source, uint8_t channels)
+{
+    const auto completed = source;
+    const auto *author = completed.Get();
+    auto *owner = GetGameObject();
+    if (!author || !owner || author->bodyId != GetBodyId() || author->rigidbody.GetComponent() != this ||
+        author->ownerTransform.GetComponent() != owner->GetTransform())
+        return;
+    auto &sources = DataMut().physicsTargetSources;
+    for (size_t channel = 0; channel < sources.size(); ++channel)
+        if ((channels & (1u << channel)) != 0 && sources[channel] == completed)
+            sources[channel] = {};
+}
+
 void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::quat &presentedRot)
 {
     auto &d = DataMut();
@@ -1005,16 +1010,24 @@ void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::qua
     const bool rotFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
                            static_cast<int>(RigidbodyConstraints::FreezeRotation);
 
-    tf->ApplyWorldPoseFromPhysics(presentedPos, presentedRot, !rotFrozen);
-
-    d.lastSyncedPosition = presentedPos;
-    // Read back reconstructed rotation so the cache matches what
-    // SyncExternalMovesToPhysics() will see via GetWorldRotation().
-    d.lastSyncedRotation = tf->GetWorldRotation();
-    d.lastAuthoredPoseRevision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
+    const bool applyPosition = !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Position));
+    const bool applyRotation =
+        !rotFrozen && !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Rotation));
+    if (!applyPosition && !applyRotation)
+        return;
+    tf->ApplyWorldPoseFromPhysics(applyPosition ? presentedPos : tf->GetWorldPosition(),
+                                  applyRotation ? presentedRot : tf->GetWorldRotation(), applyRotation);
+    const auto revision = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
+    if (applyPosition) {
+        d.lastSyncedPosition = tf->GetWorldPosition();
+        d.lastAuthoredPoseRevision[0] = revision[0];
+    }
+    if (applyRotation) {
+        d.lastSyncedRotation = tf->GetWorldRotation();
+        d.lastAuthoredPoseRevision[1] = revision[1];
+    }
     d.hasSyncedOnce = true;
-
-    CacheActorPose(presentedPos, d.lastSyncedRotation);
+    CacheActorPose(d.lastSyncedPosition, d.lastSyncedRotation);
 }
 
 void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
@@ -1069,7 +1082,13 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     if (d.isKinematic && fixedDeltaTime > 0.0f) {
         // A kinematic Transform animated into a fixed step should carry
         // contact velocity, matching Unity's script-driven kinematic bodies.
-        pw.MoveBodyKinematic(bodyId, currentPos, currentRot, fixedDeltaTime, PhysicsWorld::kMaxTransformDriveSpeed);
+        const uint32_t channels = (posDiff ? static_cast<uint32_t>(PhysicsTargetChannels::Position) : 0u) |
+                                  (rotDiff ? static_cast<uint32_t>(PhysicsTargetChannels::Rotation) : 0u);
+        const auto source = pw.MoveBodyKinematicAuthored(bodyId, currentPos, currentRot, channels, fixedDeltaTime,
+                                                         PhysicsWorld::kMaxTransformDriveSpeed, authoredRevision);
+        for (size_t channel = 0; channel < d.physicsTargetSources.size(); ++channel)
+            if ((channels & (1u << channel)) != 0)
+                d.physicsTargetSources[channel] = source;
         d.lastSyncedPosition = currentPos;
         d.lastSyncedRotation = currentRot;
         CacheActorPose(currentPos, currentRot);

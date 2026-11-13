@@ -73,6 +73,7 @@ class JoltGpuTick::Impl
             reuseParameters = acceptedParameters &&
                               std::memcmp(&*acceptedParameters, &actualParameters, sizeof(actualParameters)) == 0;
             tickParameters = actualParameters;
+            stages.push_back(JPH::GPU::Stage::PrepareKinematics);
             for (uint32_t substep = 0; substep < parameters->Get().solve.y; ++substep) {
                 stages.push_back(JPH::GPU::Stage::ApplyForces);
                 stages.push_back(JPH::GPU::Stage::BuildBounds);
@@ -84,9 +85,9 @@ class JoltGpuTick::Impl
                 for (uint32_t iteration = 0; iteration < parameters->Get().solve.x; ++iteration)
                     stages.push_back(JPH::GPU::Stage::SolvePosition);
             }
-            // All substeps consume the same frozen accumulator. Its live
-            // endpoint is cleared only by the final solver packet.
-            stages.push_back(JPH::GPU::Stage::ClearForces);
+            // Finish the logical tick once: clear its force accumulator and
+            // transfer active target drives to next-tick stopping ownership.
+            stages.push_back(JPH::GPU::Stage::FinishTick);
         }
         // This copy contains only the exact previously accepted parameter
         // lease. It never re-captures a possibly overwritten live endpoint.

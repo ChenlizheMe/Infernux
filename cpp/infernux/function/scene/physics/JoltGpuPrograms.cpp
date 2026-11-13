@@ -49,6 +49,11 @@ constexpr Port Ports[] = {
      sizeof(Contact),
      {"meta", "normalDepth", "localAnchorA", "localAnchorB", "impulse"},
      1},
+    {Resource::KinematicTargets,
+     "kinematic_targets",
+     sizeof(KinematicTarget),
+     {"positionSpeed", "rotation", "rootCOMDt", "state"},
+     1u << 3},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
@@ -73,6 +78,8 @@ constexpr size_t PortIndex(Resource resource)
         return 6;
     case Resource::Contacts:
         return 7;
+    case Resource::KinematicTargets:
+        return 8;
     }
     return PortCount;
 }
@@ -106,7 +113,7 @@ constexpr bool IndexedDefinitions()
     return true;
 }
 
-static_assert(PortCount == 8, "Jolt GPU storage slots must match the resource table");
+static_assert(PortCount == 9, "Jolt GPU storage slots must match the resource table");
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -161,7 +168,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             const auto motionType = record.meta.z & ~MotionNotResident;
             if (record.meta.w != world || record.meta.x >= model.shapes.size() ||
                 (record.meta.y != ShapeSphere && record.meta.y != ShapeBox && record.meta.y != ShapeEmpty) ||
-                (motionType != MotionStatic && motionType != MotionDynamic))
+                (motionType != MotionStatic && motionType != MotionKinematic && motionType != MotionDynamic))
                 throw std::invalid_argument("Unsupported body in the Jolt GPU bootstrap model");
             const auto &shape = ModelRecord(model.shapes, shapeChanges, record.meta.x);
             if (record.surface.x >= 32 || record.surface.z > MaterialCombineMaximum ||
@@ -170,11 +177,11 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             const auto geometry = shape.geometry;
             if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 || !Normalized(shape.localRotation))
                 throw std::invalid_argument("Jolt GPU shape local position or rotation is invalid");
-            const bool dynamic = motionType == MotionDynamic;
+            const bool nonstatic = motionType != MotionStatic;
             if (!Finite4(record.mass) || record.mass.y < 0 || record.mass.z < 0 || record.mass.z > 1 ||
-                (dynamic ? record.mass.x <= 0 : record.mass.x != 0) || !Finite4(record.damping) ||
+                (nonstatic ? record.mass.x <= 0 : record.mass.x != 0) || !Finite4(record.damping) ||
                 record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
-                (dynamic && (!Finite3(record.invInertiaDiagonal) || record.invInertiaDiagonal.x <= 0 ||
+                (nonstatic && (!Finite3(record.invInertiaDiagonal) || record.invInertiaDiagonal.x <= 0 ||
                              record.invInertiaDiagonal.y <= 0 || record.invInertiaDiagonal.z <= 0 ||
                              !Normalized(record.inertiaRotation))))
                 throw std::invalid_argument("Jolt GPU body has invalid mass, inertia, material or damping");
@@ -298,7 +305,8 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
                               uint64_t(m_bodyCount) * sizeof(BodyForces),
                               uint64_t(m_bodyCount) * sizeof(BodyState),
                               uint64_t(m_bodyCount) * sizeof(Aabb),
-                              uint64_t(m_contactCount) * sizeof(Contact)};
+                              uint64_t(m_contactCount) * sizeof(Contact),
+                              uint64_t(m_bodyCount) * sizeof(KinematicTarget)};
     for (size_t port = 0; port < m_buffers.size(); ++port) {
         const bool mixed = Ports[port].integerFields != 0;
         // Preserve the scalar type for homogeneous float ports so numerical
@@ -334,12 +342,14 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
     }
     if (m_bodyCount == 0)
         return {};
+    const std::vector<KinematicTarget> targets(m_bodyCount);
     std::vector<rhi::ComputeBufferUpdate> updates{
         {Get(Resource::BodyModels), 0, Bytes(m_model.bodies.data(), m_model.bodies.size())},
         {Get(Resource::ShapeModels), 0, Bytes(m_model.shapes.data(), m_model.shapes.size())},
         {Get(Resource::Worlds), 0, Bytes(m_model.worlds.data(), m_model.worlds.size())},
         {Get(Resource::BodyForces), 0, Bytes(forces.data(), forces.size())},
         {Get(Resource::BodyStates), 0, Bytes(states.data(), states.size())},
+        {Get(Resource::KinematicTargets), 0, Bytes(targets.data(), targets.size())},
     };
     return rhi::PrepareComputeBatch(m_host, std::move(updates), {});
 }
@@ -397,8 +407,8 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
     ValidateModelChangeIndices(shapeChanges, m_model.shapes.size());
     if (!bodyChanges.empty() || !shapeChanges.empty())
         (void)ValidateModel(m_model, bodyChanges, shapeChanges);
-    // Neither existing BodyStates nor BodyForces is read or uploaded here.
-    // Explicit caller mutations, when present, execute in this same RHI packet.
+    // Existing runtime state, force and target ports are retained unless an
+    // explicit caller mutation updates them in this same RHI packet.
     AppendModelUpload(additionalUpdates, bodyBuffer, bodyChanges, m_model.bodies);
     AppendModelUpload(additionalUpdates, shapeBuffer, shapeChanges, m_model.shapes);
     auto batch = rhi::PrepareComputeBatch(m_host, std::move(additionalUpdates), std::move(mutations));

@@ -20,6 +20,7 @@ enum Port : uint8_t
     CentersOfMass,
     States,
     Forces,
+    Targets,
     PortCount
 };
 struct PortLayout
@@ -31,7 +32,8 @@ constexpr PortLayout Ports[] = {{"mutation_params", sizeof(BodyMutationParams)},
                                 {"body_initializations", sizeof(BodyInitialization)},
                                 {"center_of_mass_updates", sizeof(CenterOfMassUpdate)},
                                 {"body_states", sizeof(BodyState)},
-                                {"body_forces", sizeof(BodyForces)}};
+                                {"body_forces", sizeof(BodyForces)},
+                                {"kinematic_targets", sizeof(KinematicTarget)}};
 
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
@@ -43,6 +45,20 @@ template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 bool Finite3(const Float4 &value)
 {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+void ValidateTargetLayout(const ShaderValueLayout &value)
+{
+    constexpr std::array<std::string_view, 4> fields{"positionSpeed", "rotation", "rootCOMDt", "state"};
+    if (value.fields.size() != fields.size())
+        throw std::invalid_argument("Jolt GPU mutation target fields differ from KinematicTarget");
+    for (size_t index = 0; index < fields.size(); ++index) {
+        const auto &field = value.fields[index];
+        if (field.name != fields[index] || field.offset != index * 16 || field.byteSize != 16 ||
+            field.kind != ShaderValueKind::Vector || field.rows != 1 || field.columns != 4 ||
+            field.scalar != (index == 3 ? ShaderScalarKind::UInt32 : ShaderScalarKind::Float32))
+            throw std::invalid_argument("Jolt GPU mutation target fields differ from KinematicTarget");
+    }
 }
 
 void ValidateInitial(const BodyInitialization &initial, const BodyModel &model)
@@ -85,8 +101,10 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
                     (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
                 resource.value.kind != ShaderValueKind::Struct ||
                 (uniform ? resource.value.byteSize : resource.elementStride) != port->stride ||
-                ((index == States || index == Forces) && resource.binding.readOnlyStorage))
+                ((index == States || index == Forces || index == Targets) && resource.binding.readOnlyStorage))
                 throw std::invalid_argument("Jolt GPU mutation target differs from its shared records");
+            if (index == Targets)
+                ValidateTargetLayout(resource.value);
             bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
             entry.ports.push_back(index);
             actual |= 1u << index;
@@ -109,8 +127,10 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
         return entry;
     };
     m_initialize =
-        build("initialize_bodies", (1u << Parameters) | (1u << Initializations) | (1u << States) | (1u << Forces));
-    m_centerOfMass = build("update_centers_of_mass", (1u << Parameters) | (1u << CentersOfMass) | (1u << States));
+        build("initialize_bodies", (1u << Parameters) | (1u << Initializations) | (1u << States) | (1u << Forces) |
+                                     (1u << Targets));
+    m_centerOfMass = build("update_centers_of_mass", (1u << Parameters) | (1u << CentersOfMass) | (1u << States) |
+                                                       (1u << Targets));
 }
 
 std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
@@ -172,6 +192,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
         input(CentersOfMass, Bytes(rebases.data(), rebases.size()));
     buffers[States] = storage.Get(Resource::BodyStates);
     buffers[Forces] = storage.Get(Resource::BodyForces);
+    buffers[Targets] = storage.Get(Resource::KinematicTargets);
 
     std::vector<rhi::ComputeDispatchDesc> dispatches;
     const auto dispatch = [&](const Entry &entry, uint32_t count, bool rebase, uint32_t firstSlot) {
@@ -185,17 +206,16 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
             if (port < States) {
                 desc.bufferAccesses.push_back(rhi::ComputeBufferAccess::Read);
                 proof.reads.push_back({slot, 0, buffers[port]->GetByteSize()});
-            } else if (port == States && rebase) {
+            } else if (rebase && (port == States || port == Targets)) {
                 desc.bufferAccesses.push_back(rhi::ComputeBufferAccess::ReadWrite);
-                const auto range =
-                    std::minmax_element(rebases.begin(), rebases.end(),
-                                        [](const auto &a, const auto &b) { return a.bodyIndex.x < b.bodyIndex.x; });
-                proof.reads.push_back(
-                    {slot, uint64_t(range.first->bodyIndex.x) * sizeof(BodyState),
-                     uint64_t(range.second->bodyIndex.x - range.first->bodyIndex.x + 1) * sizeof(BodyState)});
+                const auto stride = Ports[port].stride;
+                for (const auto &change : rebases)
+                    proof.reads.push_back({slot, uint64_t(change.bodyIndex.x) * stride, stride});
+                // Rebases retain their prior complete writer; a conditional
+                // live-target metadata change is not a full-resource store.
             } else {
                 desc.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
-                const auto stride = port == States ? sizeof(BodyState) : sizeof(BodyForces);
+                const auto stride = Ports[port].stride;
                 proof.writes.push_back({slot, uint64_t(firstSlot) * stride, uint64_t(count) * stride});
             }
         }

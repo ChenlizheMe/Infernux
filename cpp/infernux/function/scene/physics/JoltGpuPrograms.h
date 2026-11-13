@@ -123,7 +123,7 @@ class JoltGpuStorage
     // Accepted author metadata; dynamic state remains exclusively on the GPU.
     JoltGpuModel m_model;
     bool m_modelUpdatePending = false;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, 8> m_buffers;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 9> m_buffers;
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_contactCount = 0, m_maxBodiesPerWorld = 0;
 };
 

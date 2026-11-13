@@ -197,15 +197,20 @@ void PhysicsECSStore::DetachRigidbody(Rigidbody *body)
 {
     const auto bodyHandle = body->GetECSHandle();
     const auto handle = GetRigidbody(bodyHandle).actorHandle;
-    if (!IsValid(handle))
+    if (!IsValid(handle)) {
+        GetRigidbody(bodyHandle).physicsTargetSources = {};
         return;
+    }
     // A live owner keeps its current device pose when this component leaves.
     // Complete this demand before exposing a half-detached actor to authoring
     // collection. Whole-object retirement has no CPU pose consumer.
     if (!GetActor(handle).owner->IsDestroying() && GetActor(handle).bodyId != UINT32_MAX)
         PhysicsWorld::Instance().MaterializeCpuPoseForRelease(*GetActor(handle).owner->GetTransform());
     // Demand collection can grow either pool; retain identities, not references.
-    if (!IsValid(bodyHandle) || !IsValid(handle))
+    if (!IsValid(bodyHandle))
+        return;
+    GetRigidbody(bodyHandle).physicsTargetSources = {};
+    if (!IsValid(handle))
         return;
     GetRigidbody(bodyHandle).actorHandle = {};
     auto &actor = GetActor(handle);
@@ -500,7 +505,7 @@ void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *ph
         const auto *sourceOwner = physicsSource->GetGameObject();
         for (auto *current = owner; current && current != sourceOwner; current = current->GetParent()) {
             const auto *body = current->GetComponent<Rigidbody>();
-            if (body && body->IsEnabled() && !body->IsKinematic() && body->HasBody())
+            if (body && body->IsEnabled() && body->HasBody())
                 return;
         }
     }

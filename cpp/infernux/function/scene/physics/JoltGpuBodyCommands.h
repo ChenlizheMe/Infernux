@@ -71,7 +71,7 @@ class JoltGpuCommandCursor final
     rhi::ComputeHost m_host;
     std::shared_ptr<rhi::ComputeKernel> m_kernel;
     std::vector<uint8_t> m_ports;
-    std::shared_ptr<rhi::ComputeBuffer> m_models, m_states, m_forces;
+    std::shared_ptr<rhi::ComputeBuffer> m_models, m_states, m_forces, m_targets;
     // Immutable after Prepare returns; no CPU mirror of live state exists.
     std::vector<JPH::GPU::BodyCommand> m_commands;
     std::vector<JPH::GPU::BodyCommandSpan> m_spans;

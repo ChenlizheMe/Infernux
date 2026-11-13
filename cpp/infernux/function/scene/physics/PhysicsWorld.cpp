@@ -117,6 +117,28 @@ PhysicsActorData &ActorForBody(JoltGpuScene &scene, uint32_t bodyId)
         throw std::invalid_argument("Physics body identity is invalid or retired");
     return store.GetActor(handle);
 }
+Rigidbody &KinematicBody(JoltGpuScene &scene, uint32_t bodyId)
+{
+    auto *body = ActorForBody(scene, bodyId).rigidbody;
+    if (!body || !body->IsEnabled() || !body->IsKinematic())
+        throw std::logic_error("Kinematic movement requires an enabled kinematic Rigidbody");
+    return *body;
+}
+BodyCommand MoveCommand(uint32_t kind, const glm::vec3 &position, const glm::quat &rotation, float dt,
+                        float maxSpeed = 0.0f)
+{
+    if (!std::isfinite(dt) || dt <= 0 || !std::isfinite(maxSpeed) || maxSpeed < 0)
+        throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
+    BodyCommand command{};
+    command.meta.y = kind;
+    if (kind != CommandMoveRotation)
+        command.value = Vector(position);
+    command.value.w = dt;
+    if (kind != CommandMovePosition)
+        command.auxiliary = Rotation(rotation);
+    command.rootCOM.w = maxSpeed;
+    return command;
+}
 JoltGpuStepParameters StepParameters(float dt)
 {
     const auto &c = EngineConfig::Get();
@@ -682,6 +704,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
         m_gpuScene->Cancel();
         m_gpuCancelled = true;
     }
+    PhysicsECSStore::Instance().ForEachAliveRigidbody([](RigidbodyECSData &body) { body.physicsTargetSources = {}; });
     m_stepPending = m_stepCompleted = false;
     m_fixedGpuPhase = FixedGpuPhase::Idle;
     m_admittedParameters.reset();
@@ -809,11 +832,13 @@ void PhysicsWorld::UpdateBodyShape(PhysicsActorData &actor, const Collider *excl
     if (prepared)
         m_gpuScene->StageActor(actor.bodyId, std::move(*prepared));
 }
-void PhysicsWorld::SetBodyPosition(uint32_t id, const glm::vec3 &position, const glm::quat &rotation, bool)
+void PhysicsWorld::SetBodyPosition(uint32_t id, const glm::vec3 &position, const glm::quat &rotation,
+                                   bool cancelKinematicMove)
 {
     RequireGpu();
     BodyCommand c{};
     c.meta.y = CommandSetPose;
+    c.meta.z = cancelKinematicMove ? 0 : CommandPreserveKinematicMove;
     c.value = Vector(position);
     c.auxiliary = Rotation(rotation);
     m_gpuScene->QueueCommand(id, c);
@@ -879,8 +904,8 @@ bool PhysicsWorld::IsBodyInBroadphase(uint32_t id) const
 }
 void PhysicsWorld::SetBodyMotionType(uint32_t id, int type)
 {
-    if (type != 0 && type != 2)
-        Unsupported("kinematic body motion");
+    if (type < 0 || type > 2)
+        throw std::invalid_argument("Physics motion type must be static, kinematic or dynamic");
     RefreshGpuActor(id);
 }
 void PhysicsWorld::RefreshBodyLayers(uint32_t id)
@@ -1288,21 +1313,58 @@ void PhysicsWorld::RemoveIgnoredPairsForCollider(const Collider *)
 {
 } // No suppression resource can be created yet.
 
-void PhysicsWorld::MoveBodyKinematic(uint32_t, const glm::vec3 &, const glm::quat &, float, float)
+void PhysicsWorld::MoveBodyKinematic(uint32_t id, const glm::vec3 &position, const glm::quat &rotation, float dt,
+                                     float maxSpeed)
 {
-    Unsupported("kinematic target motion");
+    RequireGpu();
+    (void)KinematicBody(*m_gpuScene, id);
+    m_gpuScene->QueueCommand(id, MoveCommand(CommandMovePose, position, rotation, dt, maxSpeed));
 }
-void PhysicsWorld::MoveBodyKinematicPosition(uint32_t, const glm::vec3 &, float)
+void PhysicsWorld::MoveBodyKinematicPosition(uint32_t id, const glm::vec3 &position, float dt)
 {
-    Unsupported("kinematic position target");
+    RequireGpu();
+    (void)KinematicBody(*m_gpuScene, id);
+    m_gpuScene->QueueCommand(id, MoveCommand(CommandMovePosition, position, glm::quat(1, 0, 0, 0), dt));
 }
-void PhysicsWorld::MoveBodyKinematicRotation(uint32_t, const glm::quat &, float)
+void PhysicsWorld::MoveBodyKinematicRotation(uint32_t id, const glm::quat &rotation, float dt)
 {
-    Unsupported("kinematic rotation target");
+    RequireGpu();
+    (void)KinematicBody(*m_gpuScene, id);
+    m_gpuScene->QueueCommand(id, MoveCommand(CommandMoveRotation, glm::vec3(0), rotation, dt));
 }
-void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t, const glm::vec3 &, const glm::quat &, float)
+PhysicsTargetSource PhysicsWorld::MoveBodyKinematicAuthored(uint32_t id, const glm::vec3 &position,
+                                                            const glm::quat &rotation, uint32_t channels, float dt,
+                                                            float maxSpeed,
+                                                            const std::array<uint64_t, 2> &authoredRevision)
 {
-    Unsupported("velocity-driven static motion");
+    RequireGpu();
+    auto &body = KinematicBody(*m_gpuScene, id);
+    constexpr uint32_t positionChannel = static_cast<uint32_t>(PhysicsTargetChannels::Position);
+    constexpr uint32_t rotationChannel = static_cast<uint32_t>(PhysicsTargetChannels::Rotation);
+    if (channels == 0 || (channels & ~(positionChannel | rotationChannel)) != 0)
+        throw std::invalid_argument("Authored kinematic movement requires position or rotation channels");
+    const auto kind = channels == positionChannel   ? CommandMovePosition
+                      : channels == rotationChannel ? CommandMoveRotation
+                                                    : CommandMovePose;
+    PhysicsTargetAuthor author;
+    author.rigidbody = PhysicsTargetReference(&body);
+    author.ownerTransform = PhysicsTargetReference(body.GetGameObject()->GetTransform());
+    author.bodyId = id;
+    author.positionRevision = authoredRevision[0];
+    author.rotationRevision = authoredRevision[1];
+    author.channels = static_cast<uint8_t>(channels);
+    return m_gpuScene->QueueCommand(id, MoveCommand(kind, position, rotation, dt, maxSpeed), &author);
+}
+void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t id, const glm::vec3 &position, const glm::quat &rotation,
+                                              float dt)
+{
+    RequireGpu();
+    const auto &actor = ActorForBody(*m_gpuScene, id);
+    if (actor.rigidbody && actor.rigidbody->IsEnabled())
+        throw std::logic_error("Static movement requires a collider-only physics actor");
+    auto command = MoveCommand(CommandMovePose, position, rotation, dt, kMaxTransformDriveSpeed);
+    command.meta.z = CommandTemporaryStatic;
+    m_gpuScene->QueueCommand(id, command);
 }
 bool PhysicsWorld::IsBodySleeping(uint32_t) const
 {

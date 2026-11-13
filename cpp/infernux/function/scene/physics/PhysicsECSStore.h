@@ -9,6 +9,7 @@
  * access.
  */
 
+#include "PhysicsTargetReference.h"
 #include "core/types/InxContiguousPool.h"
 #include <array>
 #include <glm/glm.hpp>
@@ -100,6 +101,10 @@ struct RigidbodyECSData
     glm::quat lastSyncedRotation{1.0f, 0.0f, 0.0f, 0.0f};
     bool hasSyncedOnce = false;
     std::array<uint64_t, 2> lastAuthoredPoseRevision{0, 0};
+    // Sources of authored future targets, shared by their existing control batch.
+    // Acknowledging author revisions prevents replay; these guards persist until
+    // the numerical publication that actually consumes or supersedes the target.
+    std::array<PhysicsTargetSource, 2> physicsTargetSources;
 
     // ---- Physics interpolation cache ----
     glm::vec3 previousPhysicsPosition{0.0f};
