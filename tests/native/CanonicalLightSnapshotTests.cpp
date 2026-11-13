@@ -45,6 +45,10 @@ bool MatricesNear(const glm::mat4 &left, const glm::mat4 &right, float epsilon)
 
 struct FakeDevice final : infernux::rhi::Device
 {
+    infernux::rhi::ShaderSourceLanguage GetShaderSourceLanguage() const noexcept override
+    {
+        return infernux::rhi::ShaderSourceLanguage::SpirV;
+    }
     std::vector<infernux::rhi::BufferDesc> buffers;
     std::vector<infernux::rhi::BindingLayoutDesc> layouts;
     std::vector<infernux::rhi::BindGroupDesc> groups;

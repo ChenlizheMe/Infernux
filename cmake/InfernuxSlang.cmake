@@ -32,10 +32,12 @@ if(INFERNUX_SLANG_ROOT)
     endif()
     set(INFERNUX_SLANG_NOTICES_DIR "${INFERNUX_SLANG_ROOT}/third-party-notices")
 else()
-    # Slang caches its git-derived version. Refresh it when reconfiguring the
-    # pinned source so host generators and target modules keep one identity.
-    unset(SLANG_VERSION_FULL CACHE)
-    unset(SLANG_VERSION_NUMERIC CACHE)
+    # The engine pin owns this release identity. Shallow submodules and source
+    # archives have no upstream tags; git describe must not rename the compiler
+    # and its standard modules to 0.0.0 on those otherwise identical builds.
+    # The host generators and target compiler must embed the same version.
+    set(SLANG_VERSION_FULL "${INFERNUX_SLANG_VERSION}" CACHE STRING "Pinned Slang release" FORCE)
+    set(SLANG_VERSION_NUMERIC "${INFERNUX_SLANG_VERSION}" CACHE STRING "Pinned Slang numeric release" FORCE)
     unset(SLANG_STANDARD_MODULE_DIR_NAME CACHE)
     unset(SLANG_STANDARD_MODULE_INSTALL_DIR CACHE)
     # Slang owns its SPIR-V implementation and standard modules. The engine
@@ -82,7 +84,8 @@ else()
             SOURCE_DIR "${_infernux_slang_engine_root}/external/slang_for_infernux"
             BINARY_DIR "${_infernux_slang_host_root}/build"
             CMAKE_ARGS ${_infernux_slang_host_options}
-                "-USLANG_VERSION_*"
+                "-DSLANG_VERSION_FULL=${INFERNUX_SLANG_VERSION}"
+                "-DSLANG_VERSION_NUMERIC=${INFERNUX_SLANG_VERSION}"
                 -DCMAKE_BUILD_TYPE=Release -DSLANG_LIB_TYPE=SHARED
                 -DSLANG_SLANG_LLVM_FLAVOR=DISABLE
                 -DSLANG_EXCLUDE_DAWN=ON -DSLANG_EXCLUDE_TINT=ON
