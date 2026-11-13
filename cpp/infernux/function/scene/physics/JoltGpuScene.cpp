@@ -3,6 +3,7 @@
 #include "JoltGpuBodyGrowth.h"
 #include "JoltGpuBodyMutations.h"
 #include "JoltGpuBroadphase.h"
+#include "JoltGpuConstraints.h"
 #include "JoltGpuJoints.h"
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
@@ -181,10 +182,12 @@ class JoltGpuScene::Impl
 
     Impl(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
          const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
-         const ShaderTargetCode &broadphaseTarget, JoltGpuJoints &jointProgram)
+         const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
+         JoltGpuJoints &jointProgram)
         : actors(PhysicsECSStore::Instance()), storage(host, EmptyModel(capacity)), programs(host, stepTarget),
-          broadphase(host, broadphaseTarget), mutations(host, mutationTarget), commands(host, commandTarget),
-          joints(jointProgram), slots(capacity), tick(work, storage, programs, broadphase)
+          broadphase(host, broadphaseTarget), constraints(host, constraintTarget), mutations(host, mutationTarget),
+          commands(host, commandTarget), joints(jointProgram), slots(capacity),
+          tick(work, storage, programs, broadphase, constraints)
     {
         byId.reserve(capacity);
         freeSlots.reserve(capacity);
@@ -942,6 +945,7 @@ class JoltGpuScene::Impl
     JoltGpuStorage storage;
     JoltGpuPrograms programs;
     JoltGpuBroadphase broadphase;
+    JoltGpuConstraints constraints;
     JoltGpuBodyMutations mutations;
     JoltGpuBodyCommands commands;
     JoltGpuJoints &joints;
@@ -969,9 +973,9 @@ class JoltGpuScene::Impl
 JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity,
                            const ShaderTargetCode &stepTarget, const ShaderTargetCode &mutationTarget,
                            const ShaderTargetCode &commandTarget, const ShaderTargetCode &broadphaseTarget,
-                           JoltGpuJoints &joints)
+                           const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints)
     : m_impl(std::make_unique<Impl>(host, work, capacity, stepTarget, mutationTarget, commandTarget, broadphaseTarget,
-                                    joints))
+                                    constraintTarget, joints))
 {
 }
 

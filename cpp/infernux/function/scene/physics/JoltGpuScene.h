@@ -130,7 +130,8 @@ class JoltGpuScene final
     /// colliding bodies are never paged into separate worlds.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
                  const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
-                 const ShaderTargetCode &broadphaseTarget, JoltGpuJoints &joints);
+                 const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
+                 JoltGpuJoints &joints);
     ~JoltGpuScene();
     JoltGpuScene(const JoltGpuScene &) = delete;
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;

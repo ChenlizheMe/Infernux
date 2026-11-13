@@ -1,5 +1,6 @@
 #include "JoltGpuTick.h"
 #include "JoltGpuBroadphase.h"
+#include "JoltGpuConstraints.h"
 
 #include <algorithm>
 #include <chrono>
@@ -26,8 +27,10 @@ uint64_t NowNanoseconds()
 class JoltGpuTick::Impl
 {
   public:
-    Impl(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase)
-        : work(work), storage(storage), programs(programs), broadphase(broadphase), host(storage.GetHost())
+    Impl(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase,
+         JoltGpuConstraints &constraints)
+        : work(work), storage(storage), programs(programs), broadphase(broadphase), constraints(constraints),
+          host(storage.GetHost())
     {
         FrameWorkSource source;
         source.observe = [this] { Poll(); };
@@ -63,9 +66,6 @@ class JoltGpuTick::Impl
         parameters = settings ? std::make_optional(*settings) : std::nullopt;
         reuseParameters = false;
         stageCursor = {};
-        worldPatches.clear();
-        worldContacts.clear();
-        worldJoints.clear();
         if (parameters) {
             auto gravityDt = parameters->Get().gravityDt;
             gravityDt.w = deltaTime / static_cast<float>(parameters->Get().solve.y);
@@ -146,6 +146,7 @@ class JoltGpuTick::Impl
     JoltGpuStorage &storage;
     JoltGpuPrograms &programs;
     JoltGpuBroadphase &broadphase;
+    JoltGpuConstraints &constraints;
     rhi::ComputeHost host;
     FrameWorkOwner::SourceId sourceId = 0;
     Status status = Status::Idle;
@@ -181,6 +182,7 @@ class JoltGpuTick::Impl
         CollidePairs,
         SetupContacts,
         SetupJoints,
+        BuildConstraints,
         WarmJoints,
         SolveJointVelocity,
         SolveVelocity,
@@ -196,19 +198,15 @@ class JoltGpuTick::Impl
         Phase phase = Phase::Done;
         uint32_t substep = 0;
         uint32_t iteration = 0;
-        size_t world = 0;
-        uint32_t item = 0;
+        uint32_t islandBatchFirst = 0;
+        uint32_t localFirst = 0;
     };
     struct StageSpan
     {
         JPH::GPU::Stage stage;
         JPH::GPU::Domain domain;
     };
-    struct WorldSpan
-    {
-        uint32_t world;
-        uint32_t count;
-    };
+
     struct UnitEstimate
     {
         size_t count = 0;
@@ -246,7 +244,7 @@ class JoltGpuTick::Impl
     static CostKey Key(const rhi::PreparedComputeBatch &batch, const NumericalCostKey &numerical = {})
     {
         // Keep the physical loop counts separate from the RHI signature. In a
-        // world solver dispatch, item count does not appear in its group counts.
+        // island solver dispatch, local item count does not appear in its group counts.
         return {batch.GetExecutionSignature(), batch.GetTransferBytes(), numerical};
     }
 
@@ -357,41 +355,52 @@ class JoltGpuTick::Impl
         case Phase::SetupJoints:
             return {Stage::SetupJoints, Domain::Joints};
         case Phase::WarmJoints:
-            return {Stage::WarmJoints, Domain::WorldJoints};
+            return {Stage::WarmJoints, Domain::IslandJoints};
         case Phase::SolveJointVelocity:
-            return {Stage::SolveJointVelocity, Domain::WorldJoints};
+            return {Stage::SolveJointVelocity, Domain::IslandJoints};
         case Phase::SolveVelocity:
-            return {Stage::SolveVelocity, Domain::WorldPatches};
+            return {Stage::SolveVelocity, Domain::IslandPatches};
         case Phase::Integrate:
             return {Stage::Integrate, Domain::Bodies};
         case Phase::SolveJointPosition:
-            return {Stage::SolveJointPosition, Domain::WorldJoints};
+            return {Stage::SolveJointPosition, Domain::IslandJoints};
         case Phase::SolvePosition:
-            return {Stage::SolvePosition, Domain::WorldContacts};
+            return {Stage::SolvePosition, Domain::IslandContacts};
         case Phase::FinishJoints:
             return {Stage::FinishJoints, Domain::Joints};
         case Phase::FinishTick:
             return {Stage::FinishTick, Domain::Bodies};
         case Phase::Broadphase:
+        case Phase::BuildConstraints:
         case Phase::Done:
             break;
         }
         throw std::logic_error("A completed GPU tick has no stage span");
     }
 
-    const std::vector<WorldSpan> *WorldSpans(JPH::GPU::Domain domain) const
+    static bool IslandDomain(JPH::GPU::Domain domain)
     {
         using JPH::GPU::Domain;
-        switch (domain) {
-        case Domain::WorldPatches:
-            return &worldPatches;
-        case Domain::WorldContacts:
-            return &worldContacts;
-        case Domain::WorldJoints:
-            return &worldJoints;
-        default:
-            return nullptr;
-        }
+        return domain == Domain::IslandJoints || domain == Domain::IslandPatches || domain == Domain::IslandContacts;
+    }
+
+    uint32_t IslandCount(JPH::GPU::Domain domain) const
+    {
+        const auto &plan = inputs.GetConstraints();
+        if (!plan)
+            throw std::logic_error("Island phase requires its installed constraint plan");
+        return domain == JPH::GPU::Domain::IslandJoints ? plan->jointIslandCount : plan->contactIslandCount;
+    }
+
+    uint32_t IslandMaxItems(JPH::GPU::Domain domain) const
+    {
+        const auto &plan = inputs.GetConstraints();
+        if (!plan)
+            throw std::logic_error("Island phase requires its installed constraint plan");
+        if (domain == JPH::GPU::Domain::IslandJoints)
+            return plan->maxJointItems;
+        return domain == JPH::GPU::Domain::IslandContacts ? plan->maxPatchItems * JPH::GPU::MaxContactPointsPerPair
+                                                          : plan->maxPatchItems;
     }
 
     uint32_t ItemCount(JPH::GPU::Domain domain) const
@@ -409,16 +418,18 @@ class JoltGpuTick::Impl
         case Domain::Joints:
             return storage.GetJointCount();
         default:
-            throw std::logic_error("World-local GPU work requires its world span");
+            throw std::logic_error("Island-local GPU work requires its installed schedule");
         }
     }
 
     void NextSpan(StageCursor &next) const
     {
-        const bool velocity = tickParameters.counts.w && (!worldPatches.empty() || !worldJoints.empty());
-        const bool position = tickParameters.solve.x && (!worldContacts.empty() || !worldJoints.empty());
-        next.world = 0;
-        next.item = 0;
+        const auto &plan = inputs.GetConstraints();
+        const bool responding = plan && (plan->jointIslandCount || plan->contactIslandCount);
+        const bool velocity = tickParameters.counts.w && responding;
+        const bool position = tickParameters.solve.x && responding;
+        next.islandBatchFirst = 0;
+        next.localFirst = 0;
         switch (next.phase) {
         case Phase::PrepareKinematics:
             next.phase = Phase::ApplyForces;
@@ -439,6 +450,9 @@ class JoltGpuTick::Impl
             next.phase = Phase::SetupJoints;
             break;
         case Phase::SetupJoints:
+            next.phase = Phase::BuildConstraints;
+            break;
+        case Phase::BuildConstraints:
             next.iteration = 0;
             next.phase = velocity ? Phase::WarmJoints : Phase::Integrate;
             break;
@@ -475,13 +489,13 @@ class JoltGpuTick::Impl
     void Normalize(StageCursor &next) const
     {
         while (next.phase != Phase::Done) {
-            if (next.phase == Phase::Broadphase)
+            if (next.phase == Phase::Broadphase || next.phase == Phase::BuildConstraints)
                 return;
             const auto span = Span(next.phase);
-            if (const auto *worlds = WorldSpans(span.domain)) {
-                if (next.world < worlds->size())
+            if (IslandDomain(span.domain)) {
+                if (next.islandBatchFirst < IslandCount(span.domain) && IslandMaxItems(span.domain))
                     return;
-            } else if (next.item < ItemCount(span.domain)) {
+            } else if (next.localFirst < ItemCount(span.domain)) {
                 return;
             }
             NextSpan(next);
@@ -493,21 +507,20 @@ class JoltGpuTick::Impl
         const auto span = Span(next.phase);
         const auto quantum = JPH::GPU::WorkItemLimit(span.domain);
         JPH::GPU::StageWork parameters{};
-        if (const auto *worlds = WorldSpans(span.domain)) {
-            const auto &world = (*worlds)[next.world];
-            const auto count = std::min(quantum, world.count - next.item);
-            // One real world per unit avoids padding disparate world ranges.
-            // It is also within the common maximum of sixteen world lanes.
-            parameters.range = {next.item, count, world.world, 1};
-            next.item += count;
-            if (next.item == world.count) {
-                next.item = 0;
-                ++next.world;
+        if (IslandDomain(span.domain)) {
+            const auto lanes = std::min({uint32_t{64}, quantum, IslandCount(span.domain) - next.islandBatchFirst});
+            const auto maximum = IslandMaxItems(span.domain);
+            const auto count = std::min(quantum / lanes, maximum - next.localFirst);
+            parameters.range = {next.localFirst, count, next.islandBatchFirst, lanes};
+            next.localFirst += count;
+            if (next.localFirst == maximum) {
+                next.localFirst = 0;
+                next.islandBatchFirst += lanes;
             }
         } else {
-            const auto count = std::min(quantum, ItemCount(span.domain) - next.item);
-            parameters.range = {next.item, count, 0, 0};
-            next.item += count;
+            const auto count = std::min(quantum, ItemCount(span.domain) - next.localFirst);
+            parameters.range = {next.localFirst, count, 0, 0};
+            next.localFirst += count;
         }
         Normalize(next);
         return {span.stage, parameters};
@@ -515,12 +528,6 @@ class JoltGpuTick::Impl
 
     void CaptureStageSpans()
     {
-        const auto &worlds = storage.GetModel().worlds;
-        for (uint32_t index = 0; index < worlds.size(); ++index) {
-            const auto &world = worlds[index];
-            if (world.leaves.w)
-                worldJoints.push_back({index, world.leaves.w});
-        }
         stageCursor.phase = storage.GetBodyCount() ? Phase::PrepareKinematics : Phase::Done;
         Normalize(stageCursor);
     }
@@ -528,20 +535,19 @@ class JoltGpuTick::Impl
     void AcceptContactWorkset(std::shared_ptr<const JoltGpuContactWorkset> contacts)
     {
         inputs.SetContacts(std::move(contacts));
-        const auto maximum = inputs.GetContacts()->maxPatchesPerWorld;
-        worldPatches.clear();
-        worldContacts.clear();
-        if (maximum) {
-            for (uint32_t world = 0; world < storage.GetWorldCount(); ++world) {
-                // Per-world counts remain GPU data. Each finite unit uses the
-                // checked maximum; the runtime WorldRange clips ragged tails.
-                worldPatches.push_back({world, maximum});
-                worldContacts.push_back({world, maximum * JPH::GPU::MaxContactPointsPerPair});
-            }
-        }
         stageCursor.phase = Phase::CollidePairs;
-        stageCursor.item = 0;
-        stageCursor.world = 0;
+        stageCursor.localFirst = 0;
+        stageCursor.islandBatchFirst = 0;
+        Normalize(stageCursor);
+    }
+
+    void AcceptConstraintWorkset(std::shared_ptr<const JoltGpuConstraintWorkset> plan)
+    {
+        inputs.SetConstraints(std::move(plan));
+        // The producer calls back after GPU construction, required CC checks
+        // and summary installation. Setup/forces are not rerun when this
+        // source resumes a graph continuation.
+        NextSpan(stageCursor);
         Normalize(stageCursor);
     }
 
@@ -731,7 +737,8 @@ class JoltGpuTick::Impl
             ready.reserve(MaxPacketUnits);
             long double planned = 0;
             bool cold = false;
-            while (ready.size() < MaxPacketUnits && next.phase != Phase::Done && next.phase != Phase::Broadphase) {
+            while (ready.size() < MaxPacketUnits && next.phase != Phase::Done && next.phase != Phase::Broadphase &&
+                   next.phase != Phase::BuildConstraints) {
                 const auto found = stageEstimates.find(Span(next.phase).stage);
                 // A mixed packet's measured average is only a planning proxy,
                 // never a measurement attributed to an individual stage.
@@ -871,6 +878,13 @@ class JoltGpuTick::Impl
                     PacketKind::NumericalWork);
                 return true;
             }
+            if (stageCursor.phase == Phase::BuildConstraints) {
+                inputs.ClearConstraints();
+                SelectControlWork(constraints.Prepare(storage, inputs, tickParameters,
+                                                      [this](auto plan) { AcceptConstraintWorkset(std::move(plan)); }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
             return PreparePrefix();
         }
         // Resolving a full-overwrite COW allocation can require no transfer at
@@ -1004,7 +1018,6 @@ class JoltGpuTick::Impl
     JPH::GPU::StepParams tickParameters{};
     bool reuseParameters = false;
     StageCursor stageCursor, batchStageEnd;
-    std::vector<WorldSpan> worldPatches, worldContacts, worldJoints;
     std::map<JPH::GPU::Stage, UnitHistory> stageEstimates;
     UnitHistory mixedEstimates;
     bool inputAccepted = false;
@@ -1024,8 +1037,8 @@ class JoltGpuTick::Impl
 };
 
 JoltGpuTick::JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs,
-                         JoltGpuBroadphase &broadphase)
-    : m_impl(std::make_unique<Impl>(work, storage, programs, broadphase))
+                         JoltGpuBroadphase &broadphase, JoltGpuConstraints &constraints)
+    : m_impl(std::make_unique<Impl>(work, storage, programs, broadphase, constraints))
 {
 }
 JoltGpuTick::~JoltGpuTick() = default;

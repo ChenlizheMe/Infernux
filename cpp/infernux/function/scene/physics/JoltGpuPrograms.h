@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Jolt/GPU/ConstraintTypes.h>
 #include <Jolt/GPU/PhysicsStages.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
@@ -41,7 +42,7 @@ struct JoltGpuJointModelUpdate
 };
 
 /// One bounded unit of the shared stage recipe. Parallel items use global
-/// ordinals; world domains use local item ordinals and an explicit world span.
+/// ordinals; island domains use local ordinals and an explicit island-table span.
 struct JoltGpuStageWork
 {
     JPH::GPU::Stage stage;
@@ -54,6 +55,16 @@ struct JoltGpuContactWorkset
 {
     uint32_t patchCount = 0, maxPatchesPerWorld = 0;
     std::shared_ptr<rhi::ComputeBuffer> parameters, worlds, contacts, patches;
+};
+
+/// One substep plan built on the GPU with the required CC checks. Only the fixed
+/// structural summary is returned to the host for producer installation. Numerical
+/// dispatches bind schedule as one transient port and retain its accepted lease.
+struct JoltGpuConstraintWorkset
+{
+    uint32_t islandCount = 0, jointIslandCount = 0, contactIslandCount = 0;
+    uint32_t activeJoints = 0, activePatches = 0, maxJointItems = 0, maxPatchItems = 0;
+    std::shared_ptr<rhi::ComputeBuffer> schedule;
 };
 
 class JoltGpuModelUpdate;
@@ -246,6 +257,13 @@ class JoltGpuStepInputs
         return m_contacts;
     }
 
+    void SetConstraints(std::shared_ptr<const JoltGpuConstraintWorkset> constraints) noexcept;
+    void ClearConstraints() noexcept;
+    [[nodiscard]] const std::shared_ptr<const JoltGpuConstraintWorkset> &GetConstraints() const noexcept
+    {
+        return m_constraints;
+    }
+
   private:
     friend class JoltGpuPrograms;
     struct WorkUniform
@@ -255,6 +273,7 @@ class JoltGpuStepInputs
     };
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
+    std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
     mutable std::vector<WorkUniform> m_workUniforms;

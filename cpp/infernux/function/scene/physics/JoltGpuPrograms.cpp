@@ -62,6 +62,7 @@ constexpr Port Ports[] = {
     {Resource::ContactPatches, "contact_patches", sizeof(ContactPatch), {"leaves"}, 1},
     {Resource::Joints, "joint_stream", sizeof(QueryRecordWord), {"value"}, 1},
     {Resource::StageWork, "stage_work", sizeof(StageWork), {"range"}, 1},
+    {Resource::ConstraintSchedule, "constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
@@ -96,6 +97,8 @@ constexpr size_t PortIndex(Resource resource)
         return 10;
     case Resource::StageWork:
         return 11;
+    case Resource::ConstraintSchedule:
+        return 12;
     }
     return PortCount;
 }
@@ -159,7 +162,7 @@ constexpr bool IndexedDefinitions()
     return true;
 }
 
-static_assert(PortCount == StoragePortCount + 1, "Jolt GPU has eleven persistent ports and one work uniform");
+static_assert(PortCount == StoragePortCount + 2, "Jolt GPU has eleven persistent ports, work uniform and schedule");
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -364,9 +367,9 @@ uint32_t Groups(uint32_t count, uint32_t width)
     return count / width + static_cast<uint32_t>(count % width != 0);
 }
 
-bool WorldDomain(Domain domain)
+bool IslandDomain(Domain domain)
 {
-    return domain == Domain::WorldPatches || domain == Domain::WorldContacts || domain == Domain::WorldJoints;
+    return domain == Domain::IslandPatches || domain == Domain::IslandContacts || domain == Domain::IslandJoints;
 }
 
 const JoltGpuContactWorkset &RequireContacts(const JoltGpuStepInputs &inputs)
@@ -380,31 +383,28 @@ bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs
                   const StageWork &work)
 {
     const auto range = work.range;
-    const bool worldDomain = WorldDomain(definition.domain);
     const uint32_t quantum = WorkItemLimit(definition.domain);
     if (range.y > quantum)
         throw std::invalid_argument("Jolt GPU work exceeds its bounded item quantum");
-    if (worldDomain) {
-        if (range.w > 16u || range.z > storage.GetWorldCount() || range.w > storage.GetWorldCount() - range.z)
-            throw std::invalid_argument("Jolt GPU work addresses a world span outside its accepted model");
-        if (!range.w || !range.y)
-            return false;
-        uint64_t maximum = 0;
-        if (definition.domain == Domain::WorldJoints) {
-            const auto &worlds = storage.GetModel().worlds;
-            for (uint32_t local = 0; local < range.w; ++local)
-                maximum = std::max(maximum, uint64_t(worlds[range.z + local].leaves.w));
-        } else {
-            maximum = RequireContacts(inputs).maxPatchesPerWorld;
-            if (definition.domain == Domain::WorldContacts)
-                maximum *= MaxContactPointsPerPair;
-        }
+    if (IslandDomain(definition.domain)) {
+        const auto &constraints = inputs.GetConstraints();
+        if (!constraints)
+            throw std::invalid_argument("Jolt GPU island work requires its validated substep plan");
+        const bool joints = definition.domain == Domain::IslandJoints;
+        const uint32_t tableCount = joints ? constraints->jointIslandCount : constraints->contactIslandCount;
+        uint64_t maximum = joints ? constraints->maxJointItems : constraints->maxPatchItems;
+        if (definition.domain == Domain::IslandContacts)
+            maximum *= MaxContactPointsPerPair;
+        if (range.z > tableCount || range.w > tableCount - range.z)
+            throw std::invalid_argument("Jolt GPU island work addresses outside its installed island table");
+        if (uint64_t(range.w) * range.y > quantum)
+            throw std::invalid_argument("Jolt GPU island work exceeds its total rectangular item quantum");
         if (range.x > maximum || uint64_t(range.y) > maximum - range.x)
-            throw std::invalid_argument("Jolt GPU work addresses items outside its selected world domains");
-        return true;
+            throw std::invalid_argument("Jolt GPU island work addresses outside its accepted summary maximum");
+        return range.w != 0 && range.y != 0;
     }
     if (range.z || range.w)
-        throw std::invalid_argument("Jolt GPU global work must leave its unused world range zero");
+        throw std::invalid_argument("Jolt GPU global work must leave its unused island range zero");
     uint64_t count = 0;
     switch (definition.domain) {
     case Domain::Bodies:
@@ -906,12 +906,24 @@ void JoltGpuStepInputs::SetContacts(std::shared_ptr<const JoltGpuContactWorkset>
         contacts->patches->GetByteSize() < sizeof(ContactPatch) ||
         contacts->patches->GetByteSize() % sizeof(ContactPatch))
         throw std::invalid_argument("Jolt GPU contact workset differs from its logical resource layout");
+    ClearConstraints();
     m_contacts = std::move(contacts);
 }
 
 void JoltGpuStepInputs::ClearContacts() noexcept
 {
     m_contacts.reset();
+    ClearConstraints();
+}
+
+void JoltGpuStepInputs::SetConstraints(std::shared_ptr<const JoltGpuConstraintWorkset> constraints) noexcept
+{
+    m_constraints = std::move(constraints);
+}
+
+void JoltGpuStepInputs::ClearConstraints() noexcept
+{
+    m_constraints.reset();
 }
 
 JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
@@ -991,7 +1003,10 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
         const auto resource = Ports[binding.slot].resource;
         const auto input = InputIndex(resource);
         const auto &contacts = inputs.GetContacts();
-        const auto &buffer = resource == Resource::StageWork                    ? workUniform
+        const auto &constraints = inputs.GetConstraints();
+        const auto &buffer = resource == Resource::StageWork ? workUniform
+                             : resource == Resource::ConstraintSchedule
+                                 ? (constraints ? constraints->schedule : nullptr)
                              : contacts && resource == Resource::StepParams     ? contacts->parameters
                              : contacts && resource == Resource::Worlds         ? contacts->worlds
                              : contacts && resource == Resource::Contacts       ? contacts->contacts
@@ -1026,7 +1041,7 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
     dispatch.proof = std::move(proof);
     const auto &definition = entry.definition;
     dispatch.groupCountY = dispatch.groupCountZ = 1;
-    if (WorldDomain(definition.domain)) {
+    if (IslandDomain(definition.domain)) {
         dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
     } else {
         dispatch.groupCountX = Groups(range.y, definition.groupSizeX);

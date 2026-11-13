@@ -11,6 +11,7 @@
 namespace infernux
 {
 class JoltGpuBroadphase;
+class JoltGpuConstraints;
 
 /// One unaccepted packet and its optional successor.
 /// The existing tick source alone submits, accounts and observes every packet.
@@ -85,8 +86,8 @@ class JoltGpuTick final
         Failed
     };
 
-    JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs,
-                JoltGpuBroadphase &broadphase);
+    JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase,
+                JoltGpuConstraints &constraints);
     /// Explicit owner shutdown boundary: drains only this owner's accepted
     /// receipts before unregistering. Ordinary Stop first calls Cancel, retains
     /// this owner until CanRetire(), and only then destroys it without waiting.
@@ -142,7 +143,7 @@ class JoltGpuTick final
     [[nodiscard]] bool CanRetire() const noexcept;
     [[nodiscard]] float GetFixedDeltaTime() const noexcept;
     /// Number of accepted bounded stage dispatch units in this logical tick;
-    /// each phase may span several item/world units. Acceptance never replays one.
+    /// each phase may span several item/island units. Acceptance never replays one.
     [[nodiscard]] size_t GetAcceptedStageCount() const noexcept;
     /// Last fully completed tick, retained while a later tick runs. Null until
     /// the first nonempty tick completes. No partial solver value is exposed.
