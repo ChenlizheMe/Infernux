@@ -22,6 +22,7 @@
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <core/threading/FrameWorkOwner.h>
+#include <exception>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
@@ -819,11 +820,19 @@ void PhysicsWorld::RunControl(const JoltGpuScene::Consumer &consumer) const
 std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunQuery(const std::vector<QueryInput> &requests) const
 {
     JoltGpuPreparedQuery prepared;
-    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        prepared = m_gpuQueries->Prepare(publication, requests, {},
-                                         GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
-        return std::move(prepared.work);
+    std::exception_ptr requestError;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) -> JoltGpuControlWork {
+        try {
+            prepared = m_gpuQueries->Prepare(publication, requests, {},
+                                             GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
+            return std::move(prepared.work);
+        } catch (const JoltGpuQueryRequestError &) {
+            requestError = std::current_exception();
+            return {};
+        }
     });
+    if (requestError)
+        std::rethrow_exception(requestError);
     return std::move(prepared.result);
 }
 

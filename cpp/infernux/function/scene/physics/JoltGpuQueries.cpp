@@ -76,7 +76,7 @@ constexpr std::array<uint32_t, StageCount> StagePorts{
 uint64_t CheckedBytes(uint64_t count, uint64_t stride)
 {
     if (count > std::numeric_limits<uint64_t>::max() / stride || count > std::numeric_limits<size_t>::max() / stride)
-        throw std::length_error("Jolt GPU query byte count exceeds the host/device address range");
+        throw JoltGpuQueryRequestError("Jolt GPU query byte count exceeds the host/device address range");
     return count * stride;
 }
 
@@ -116,23 +116,23 @@ bool Finite(const Float4 &value)
 void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotation)
 {
     if (!Finite(geometry) || !Finite(rotation))
-        throw std::invalid_argument("Jolt GPU query geometry and rotation must be finite");
+        throw JoltGpuQueryRequestError("Jolt GPU query geometry and rotation must be finite");
     const double length = double(rotation.x) * rotation.x + double(rotation.y) * rotation.y +
                           double(rotation.z) * rotation.z + double(rotation.w) * rotation.w;
     if (std::abs(length - 1.0) > 1.0e-3)
-        throw std::invalid_argument("Jolt GPU query rotation must be a unit quaternion");
+        throw JoltGpuQueryRequestError("Jolt GPU query rotation must be a unit quaternion");
     if (type == ShapeSphere) {
         if (geometry.x != 0 || geometry.y != 0 || geometry.z != 0 || geometry.w <= 0)
-            throw std::invalid_argument("Jolt GPU query Sphere requires a positive radius");
+            throw JoltGpuQueryRequestError("Jolt GPU query Sphere requires a positive radius");
     } else if (type == ShapeBox) {
         if (geometry.x <= 0 || geometry.y <= 0 || geometry.z <= 0 || geometry.w < 0 ||
             geometry.w > std::min({geometry.x, geometry.y, geometry.z}))
-            throw std::invalid_argument("Jolt GPU query Box requires positive extents and a valid cooked radius");
+            throw JoltGpuQueryRequestError("Jolt GPU query Box requires positive extents and a valid cooked radius");
     } else if (type == ShapeCapsule) {
         if (geometry.x != 0 || geometry.y < 0 || geometry.z != 0 || geometry.w <= 0)
-            throw std::invalid_argument("Jolt GPU query Capsule requires a nonnegative segment and positive radius");
+            throw JoltGpuQueryRequestError("Jolt GPU query Capsule requires a nonnegative segment and positive radius");
     } else {
-        throw std::invalid_argument("Jolt GPU query primitive type is not supported");
+        throw JoltGpuQueryRequestError("Jolt GPU query primitive type is not supported");
     }
 }
 
@@ -142,29 +142,29 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
         (query.meta.w & ~(QueryTargetCollider | QueryExcludeBody)) || query.filter.y > 1 || query.source.z ||
         query.source.w || !Finite(query.positionMaximum) || !Finite(query.direction) || !Finite(query.rotation) ||
         !Finite(query.geometry) || query.direction.w != 0)
-        throw std::invalid_argument("Jolt GPU query contains an invalid operation, filter or finite input record");
+        throw JoltGpuQueryRequestError("Jolt GPU query contains an invalid operation, filter or finite input record");
     if ((query.meta.w & QueryExcludeBody) ? query.source.x >= bodyCount : query.source.x != InvalidQueryBodySlot)
-        throw std::invalid_argument("Jolt GPU query excluded body differs from its retained publication");
+        throw JoltGpuQueryRequestError("Jolt GPU query excluded body differs from its retained publication");
     if (query.meta.x == QueryPenetration) {
         if (query.source.y >= primitiveCount || query.meta.w || query.positionMaximum.w != 0)
-            throw std::invalid_argument(
+            throw JoltGpuQueryRequestError(
                 "Jolt GPU pair query requires an explicit second primitive and no world policy");
         ValidateGeometry(query.meta.z, query.geometry, query.rotation);
     } else {
         if (!hasPublication || query.source.y)
-            throw std::invalid_argument("Jolt GPU world query requires one retained publication");
+            throw JoltGpuQueryRequestError("Jolt GPU world query requires one retained publication");
         if (query.meta.x == QueryRay) {
             if (query.positionMaximum.w <= 0 ||
                 (query.direction.x == 0 && query.direction.y == 0 && query.direction.z == 0))
-                throw std::invalid_argument("Jolt GPU ray requires nonzero direction and positive maximum distance");
+                throw JoltGpuQueryRequestError("Jolt GPU ray requires nonzero direction and positive maximum distance");
         } else {
             if (query.positionMaximum.w != 0)
-                throw std::invalid_argument("Jolt GPU non-ray query maximum must be zero");
+                throw JoltGpuQueryRequestError("Jolt GPU non-ray query maximum must be zero");
             if (query.meta.x == QueryOverlap)
                 ValidateGeometry(query.meta.z, query.geometry, query.rotation);
             if (query.meta.x == QueryBodyBounds &&
                 (query.direction.x < 0 || query.direction.y < 0 || query.direction.z < 0))
-                throw std::invalid_argument("Jolt GPU bounds query requires nonnegative half extents");
+                throw JoltGpuQueryRequestError("Jolt GPU bounds query requires nonnegative half extents");
         }
     }
 }
@@ -243,7 +243,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
 {
     if (queries.size() > std::numeric_limits<uint32_t>::max() ||
         primitives.size() > std::numeric_limits<uint32_t>::max())
-        throw std::length_error("Jolt GPU query input count exceeds device indexing");
+        throw JoltGpuQueryRequestError("Jolt GPU query input count exceeds device indexing");
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
     uint32_t bodyCount = 0, leafCount = 0;
     if (publication) {
@@ -251,7 +251,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         buffers[Shapes] = publication->shapeModels;
         buffers[States] = publication->bodyStates;
         if (publication->leaves.size() > std::numeric_limits<uint32_t>::max())
-            throw std::length_error("Jolt GPU query publication exceeds leaf indexing");
+            throw JoltGpuQueryRequestError("Jolt GPU query publication exceeds leaf indexing");
         leafCount = static_cast<uint32_t>(publication->leaves.size());
         const bool empty = !buffers[Models] && !buffers[States];
         if (empty && (buffers[Shapes] || leafCount))
@@ -287,7 +287,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         std::all_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.y == QueryClosest; });
     const auto stride = knownCount ? 1u : std::max({1u, bodyCount, leafCount});
     if (queries.size() > std::numeric_limits<uint32_t>::max() / stride)
-        throw std::length_error("Jolt GPU query scratch capacity exceeds device indexing");
+        throw JoltGpuQueryRequestError("Jolt GPU query scratch capacity exceeds device indexing");
     const auto capacity = static_cast<uint32_t>(queries.size()) * stride;
     auto result = std::make_shared<JoltGpuQueryResult>();
     result->publication = std::move(publication);
@@ -302,7 +302,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     // Reject impossible dispatch dimensions before allocating request storage.
     const auto groups = [](uint32_t count) { return count / 64 + static_cast<uint32_t>(count % 64 != 0); };
     if (groups(capacity) > m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
-        throw std::length_error("Jolt GPU query capacity exceeds the device dispatch range");
+        throw JoltGpuQueryRequestError("Jolt GPU query capacity exceeds the device dispatch range");
     rhi::ComputeHost host = m_host;
     const auto allocate = [&](uint8_t port, uint64_t count) {
         const auto bytes = CheckedBytes(count, Ports[port].stride);
@@ -387,6 +387,11 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     }
     JoltGpuControlWork work{batch, [result, host]() mutable -> JoltGpuControlWork {
                                 result->ReadSummary();
+                                // A valid failure status ends this read-only computation.
+                                // Its result consumer reports the error, as for known-count
+                                // queries; the world's numerical source remains usable.
+                                if (result->summaryValue.counts.y != QuerySuccess)
+                                    return {};
                                 std::vector<rhi::ComputeBufferRead> prefixReads;
                                 const auto count = result->summaryValue.counts.x;
                                 if (count) {
@@ -410,7 +415,8 @@ void JoltGpuQueryResult::ReadSummary()
         throw std::logic_error("Jolt GPU query summary requires its completed receipt");
     summaryReadback->ReadInto(&summaryValue, sizeof(QuerySummary));
     const auto &counts = summaryValue.counts;
-    RequireSuccess(counts.y);
+    if (counts.y != QuerySuccess && counts.y != QueryUnsupported && counts.y != QueryNumericalFailure)
+        throw std::runtime_error("Jolt GPU query returned an invalid device status");
     if (counts.x > hitCapacity || counts.z != queryCount || counts.w || (knownCount && counts.x != queryCount))
         throw std::runtime_error("Jolt GPU query compact summary differs from its prepared output range");
     headerComplete = true;
@@ -421,13 +427,13 @@ void JoltGpuQueryResult::Materialize()
     if (materialized)
         return;
     ReadSummary();
+    RequireSuccess(summaryValue.counts.y);
     if (!tailBatch || !tailBatch->GetSubmission().IsValid())
         throw std::logic_error("Jolt GPU query output has not completed its prefix transfer");
     const auto count = summaryValue.counts.x;
     if ((count && !tailBatch->Readback(hitReadbackIndex)->IsComplete()) ||
         !tailBatch->Readback(spanReadbackIndex)->IsComplete())
         throw std::logic_error("Jolt GPU query output requires its completed prefix receipt");
-    RequireSuccess(summaryValue.counts.y);
     hostHits.resize(count);
     hostSpans.resize(queryCount);
     if (count)

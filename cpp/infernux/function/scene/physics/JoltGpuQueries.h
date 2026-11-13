@@ -1,6 +1,7 @@
 #pragma once
 
 #include "JoltGpuScene.h"
+#include <stdexcept>
 
 #include <array>
 #include <cstdint>
@@ -8,6 +9,14 @@
 
 namespace infernux
 {
+
+/// Invalid request data/capacity; no query packet has been submitted. This
+/// does not invalidate a completed world or its accepted authoring prefix.
+class JoltGpuQueryRequestError : public std::invalid_argument
+{
+  public:
+    using std::invalid_argument::invalid_argument;
+};
 
 /// One logical request's immutable scene identity and device outputs. Every
 /// continuation retains this exact publication; decoding must never substitute
