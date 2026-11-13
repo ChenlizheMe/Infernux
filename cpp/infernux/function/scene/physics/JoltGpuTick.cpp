@@ -654,6 +654,15 @@ class JoltGpuTick::Impl
         return preservation ? preservation.get() : batch.get();
     }
 
+    bool NeedsSmallerPrefix() const
+    {
+        if (!batch || preservation || (batchKind != PacketKind::Commands && batchKind != PacketKind::Stages) ||
+            batchEnd - batchBegin <= 1 || batch->RequiresPreparation() || batch->HasPreservationWork())
+            return false;
+        return Prediction(SubmissionKey(*batch)) > work.ResourceState(FrameWorkResource::Gpu).limit ||
+               batch->GetTransferBytes() > work.ResourceState(FrameWorkResource::Transfer).limit;
+    }
+
     bool CanSubmit() const
     {
         const auto *packet = Submission();
@@ -696,7 +705,8 @@ class JoltGpuTick::Impl
         }
         if ((!batch && (workContinuation || !controlAccepted || !inputAccepted || stageCursor.phase != Phase::Done ||
                         !finalPrepared)) ||
-            (batch && !preservation && (batch->RequiresPreparation() || batch->HasPreservationWork()))) {
+            (batch && !preservation &&
+             (batch->RequiresPreparation() || batch->HasPreservationWork() || NeedsSmallerPrefix()))) {
             facts.host = {static_cast<uint64_t>(HostAction::Prepare), 0, true, false};
         } else if (!submissionBusy && CanSubmit()) {
             facts.gpu = {0, 0, true, false};
@@ -710,7 +720,7 @@ class JoltGpuTick::Impl
         return facts;
     }
 
-    bool PreparePrefix(bool commands = false)
+    bool PreparePrefix(bool commands = false, bool minimum = false)
     {
         const size_t begin = commands ? commandCursor->GetAcceptedDispatchCount() : cursor;
         const auto available = work.ResourceRemaining(FrameWorkResource::Gpu);
@@ -722,7 +732,7 @@ class JoltGpuTick::Impl
         StageCursor next = stageCursor;
         std::vector<JoltGpuStageWork> ready;
         if (commands) {
-            if (lastCommandCount && lastCommandEstimate) {
+            if (!minimum && lastCommandCount && lastCommandEstimate) {
                 const long double width = static_cast<long double>(window) * lastCommandCount / lastCommandEstimate;
                 count = width >= MaxPacketUnits ? MaxPacketUnits : std::max(size_t{1}, static_cast<size_t>(width));
             }
@@ -754,6 +764,8 @@ class JoltGpuTick::Impl
                 ready.push_back(TakeUnit(next));
                 planned += cost;
                 cold |= unknown;
+                if (minimum)
+                    break;
             }
             count = ready.size();
         }
@@ -795,6 +807,17 @@ class JoltGpuTick::Impl
 
     bool Prepare()
     {
+        if (NeedsSmallerPrefix()) {
+            const bool commands = batchKind == PacketKind::Commands;
+            // Only the unaccepted prefix changes. The accepted stage/command
+            // cursor and all outstanding receipts retain their original work.
+            batch->Cancel();
+            batch.reset();
+            submissionBusy = false;
+            if (commands)
+                commandCursor->DiscardPreparedPrefix();
+            return PreparePrefix(commands, true);
+        }
         if (!batch) {
             if (workContinuation) {
                 if (!receipts.empty())
