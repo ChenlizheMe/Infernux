@@ -1381,35 +1381,42 @@ void main() { }
         }
     }
 
-    const auto ribbonVertex = compiler.CompileVertexGlsl(
-        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex()), "ParticleRibbon.vert");
-    const auto ribbonPicking = compiler.CompileFragmentGlsl(
-        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::PickingFragment()),
-        "ParticleRibbonPicking.frag");
-    const auto ribbonMotionVertex = compiler.CompileVertexGlsl(
-        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::MotionVertex()),
-        "ParticleRibbonMotion.vert");
-    const auto ribbonMotionFragment = compiler.CompileFragmentGlsl(
-        std::string(infernux::particle::GpuParticleRibbonRenderShaderSources::MotionFragment()),
-        "ParticleRibbonMotion.frag");
-    assert(ribbonVertex.size() >= 5 * sizeof(uint32_t));
-    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("visible_segments") !=
-           std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find(
-               "out_particle_local_uv = segment_local_uv") != std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find(
-               "layout(location = 6) out vec4 out_line_color") != std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("out_line_color = vec4(1.0)") !=
-           std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("view.alignment_reference.z") !=
-           std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("source_instance_count") !=
-           std::string_view::npos);
-    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("ribbon_join_offset") !=
-           std::string_view::npos);
-    assert(ribbonPicking.size() >= 5 * sizeof(uint32_t));
-    assert(ribbonMotionVertex.size() >= 5 * sizeof(uint32_t));
-    assert(ribbonMotionFragment.size() >= 5 * sizeof(uint32_t));
+    const std::array<std::string_view, 4> ribbonSources = {
+        infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex(),
+        infernux::particle::GpuParticleRibbonRenderShaderSources::PickingFragment(),
+        infernux::particle::GpuParticleRibbonRenderShaderSources::MotionVertex(),
+        infernux::particle::GpuParticleRibbonRenderShaderSources::MotionFragment(),
+    };
+    for (size_t index = 0; index < ribbonSources.size(); ++index) {
+        for (const auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
+            const auto compiled = infernux::CompileSlangNativeModule(
+                {"ribbon", "ParticleRibbon.slang", std::string(ribbonSources[index])}, target);
+            assert(compiled.entries.size() == 1 && compiled.entries[0].name == "main");
+            assert(index == 3 ? !compiled.rootConstants : compiled.rootConstants->byteSize == 240);
+            const auto &entry = compiled.entries[0];
+            if (index == 0 || index == 2) {
+                assert(entry.bindings.size() == 4);
+                assert(std::all_of(compiled.resources.begin(), compiled.resources.end(),
+                                   [](const auto &resource) { return resource.binding.readOnlyStorage; }));
+                assert(compiled.resources[0].elementStride == 112 && compiled.resources[3].elementStride == 16);
+            }
+            if (index == 0) {
+                const auto alpha = std::find_if(entry.outputs.begin(), entry.outputs.end(),
+                                                [](const auto &value) { return value.location == 14; });
+                assert(alpha != entry.outputs.end() && alpha->scalar == infernux::ShaderScalarKind::Float32 &&
+                       alpha->components == 1);
+                const auto id = std::find_if(entry.outputs.begin(), entry.outputs.end(),
+                                             [](const auto &value) { return value.location == 13; });
+                assert(id != entry.outputs.end() && id->scalar == infernux::ShaderScalarKind::UInt32);
+            } else if (index == 1) {
+                assert(entry.inputs.size() == 1 && entry.inputs[0].location == 14);
+                assert(entry.outputs.size() == 1 && entry.outputs[0].scalar == infernux::ShaderScalarKind::UInt32 &&
+                       entry.outputs[0].components == 2);
+            } else if (index == 3) {
+                assert(entry.outputs.size() == 1 && entry.outputs[0].components == 2);
+            }
+        }
+    }
 
     std::cout << "Shader stage linker tests passed\n";
     return 0;

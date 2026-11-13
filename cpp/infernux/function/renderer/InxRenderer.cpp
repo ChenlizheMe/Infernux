@@ -282,25 +282,19 @@ CompiledParticleRibbonTopologyProgram CompileParticleRibbonTopologyProgram()
 
 CompiledParticleRibbonRenderProgram CompileParticleRibbonRenderProgram()
 {
-    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const std::array<std::pair<std::string_view, const char *>, 4> sources = {{
+        {particle::GpuParticleRibbonRenderShaderSources::Vertex(), "Infernux/ParticleRibbon.slang"},
+        {particle::GpuParticleRibbonRenderShaderSources::PickingFragment(), "Infernux/ParticleRibbonPicking.slang"},
+        {particle::GpuParticleRibbonRenderShaderSources::MotionVertex(), "Infernux/ParticleRibbonMotionVertex.slang"},
+        {particle::GpuParticleRibbonRenderShaderSources::MotionFragment(),
+         "Infernux/ParticleRibbonMotionFragment.slang"},
+    }};
     CompiledParticleRibbonRenderProgram result;
-    const auto vertex = compiler.CompileVertexGlsl(
-        std::string(particle::GpuParticleRibbonRenderShaderSources::Vertex()), "Infernux/ParticleRibbon.vert");
-    const auto picking =
-        compiler.CompileFragmentGlsl(std::string(particle::GpuParticleRibbonRenderShaderSources::PickingFragment()),
-                                     "Infernux/ParticleRibbonPicking.frag");
-    const auto motionVertex =
-        compiler.CompileVertexGlsl(std::string(particle::GpuParticleRibbonRenderShaderSources::MotionVertex()),
-                                   "Infernux/ParticleRibbonMotion.vert");
-    const auto motionFragment =
-        compiler.CompileFragmentGlsl(std::string(particle::GpuParticleRibbonRenderShaderSources::MotionFragment()),
-                                     "Infernux/ParticleRibbonMotion.frag");
-    const std::array<const std::vector<char> *, 4> bytes = {&vertex, &picking, &motionVertex, &motionFragment};
-    for (size_t index = 0; index < bytes.size(); ++index) {
-        if (bytes[index]->size() < 5 * sizeof(uint32_t) || bytes[index]->size() % sizeof(uint32_t) != 0)
-            return {};
+    for (size_t index = 0; index < sources.size(); ++index) {
+        const auto compiled = CompileParticleShader(sources[index].first, sources[index].second);
+        const auto &bytes = compiled->entries.front().code;
         result.shaders[index].Assign(particle::ShaderBytecode::FromSpirV(
-            reinterpret_cast<const uint32_t *>(bytes[index]->data()), bytes[index]->size() / sizeof(uint32_t)));
+            reinterpret_cast<const uint32_t *>(bytes.data()), bytes.size() / sizeof(uint32_t)));
     }
     return result;
 }

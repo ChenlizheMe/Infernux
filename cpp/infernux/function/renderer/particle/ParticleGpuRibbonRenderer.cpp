@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace infernux::particle
 {
@@ -10,277 +11,206 @@ namespace infernux::particle
 namespace
 {
 
-constexpr std::string_view VertexSource = R"glsl(#version 450
-struct ParticleRenderInstance {
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
+constexpr std::string_view RibbonGeometrySource = R"slang(struct ParticleRenderInstance {
+    float4 position_size;
+    float4 color;
+    float4 rotation_custom;
+    float4 scale_custom;
+    uint4 ribbon_data;
+    float4 custom_data;
+    float4 previous_position_history;
 };
-layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
-layout(std430, set = 0, binding = 1) readonly buffer SortedIndices { uint sorted_indices[]; };
-layout(std430, set = 0, binding = 2) readonly buffer VisibleSegments { uint visible_segments[]; };
-layout(std430, set = 0, binding = 3) readonly buffer SourceIndirectArguments {
-    uint source_vertex_count;
-    uint source_instance_count;
-    uint source_first_vertex;
-    uint source_first_instance;
+struct DrawArguments {
+    uint vertex_count;
+    uint instance_count;
+    uint first_vertex;
+    uint first_instance;
 };
-layout(push_constant) uniform ViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    vec4 material_tint;
-    vec4 depth_reconstruct;
-    vec4 lighting_control;
-    vec4 rendering_control;
-    vec4 alignment_reference;
-} view;
-layout(location = 0) out vec3 out_world_position;
-layout(location = 1) out vec3 out_normal;
-layout(location = 2) out vec4 out_tangent;
-layout(location = 3) out vec3 out_color;
-layout(location = 4) out vec2 out_uv;
-layout(location = 5) out float out_view_depth;
-layout(location = 6) out vec4 out_line_color;
-layout(location = 9) out vec2 out_particle_local_uv;
-layout(location = 10) out vec2 out_particle_next_uv;
-layout(location = 11) out float out_particle_blend;
-layout(location = 12) out float out_particle_age;
-layout(location = 13) flat out uint out_particle_id;
-layout(location = 14) out float out_particle_alpha;
-layout(location = 15) flat out uint out_layer_mask;
-
-const uint endpoint_for_vertex[6] = uint[](0u, 0u, 1u, 0u, 1u, 1u);
-const float side_for_vertex[6] = float[](-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
-
-bool ribbon_points_connected(uvec4 first_data, uvec4 second_data) {
-    return first_data.x == second_data.x && (second_data.z & 1u) == 0u;
+[[vk::binding(0, 0)]] StructuredBuffer<ParticleRenderInstance> instances;
+[[vk::binding(1, 0)]] StructuredBuffer<uint> sorted_indices;
+[[vk::binding(2, 0)]] StructuredBuffer<uint> visible_segments;
+[[vk::binding(3, 0)]] StructuredBuffer<DrawArguments> source_arguments;
+struct ViewConstants {
+    column_major float4x4 view_projection;
+    column_major float4x4 previous_view_projection;
+    float4 camera_right;
+    float4 camera_up;
+    float4 material_tint;
+    float4 depth_reconstruct;
+    float4 lighting_control;
+    float4 rendering_control;
+    float4 alignment_reference;
+};
+INX_ROOT_CONSTANTS ConstantBuffer<ViewConstants> view;
+static const uint endpoint_for_vertex[6] = {0u, 0u, 1u, 0u, 1u, 1u};
+static const float side_for_vertex[6] = {-1.0, 1.0, 1.0, -1.0, 1.0, -1.0};
+bool ribbon_points_connected(uint4 first, uint4 second) {
+    return first.x == second.x && (second.z & 1u) == 0u;
 }
-
-vec3 ribbon_side(vec3 first_position, vec3 second_position, vec3 fallback_side) {
-    vec3 tangent = second_position - first_position;
+float3 ribbon_side(float3 first, float3 second, float3 fallback_side) {
+    float3 tangent = second - first;
     float tangent_length = length(tangent);
     tangent = tangent_length > 1e-7 ? tangent / tangent_length : normalize(view.camera_up.xyz);
-    vec3 camera_forward = cross(view.camera_right.xyz, view.camera_up.xyz);
-    vec3 side = cross(camera_forward, tangent);
+    float3 camera_forward = cross(view.camera_right.xyz, view.camera_up.xyz);
+    float3 side = cross(camera_forward, tangent);
     float side_length = length(side);
     return side_length > 1e-7 ? side / side_length : fallback_side;
 }
-
-vec3 ribbon_join_offset(vec3 first_side, vec3 second_side, float half_width) {
-    vec3 sum = first_side + second_side;
+float3 ribbon_join_offset(float3 first_side, float3 second_side, float half_width) {
+    float3 sum = first_side + second_side;
     float sum_length = length(sum);
     if (sum_length <= 1e-5) return second_side * half_width;
-    vec3 join = sum / sum_length;
-    float projection = max(abs(dot(join, second_side)), 1e-4);
-    float miter_scale = min(1.0 / projection, 2.0);
-    return join * (half_width * miter_scale);
-}
-
-void main() {
-    bool compacted_segments = view.alignment_reference.z > 0.5;
-    uint segment = compacted_segments ? visible_segments[uint(gl_InstanceIndex)] : uint(gl_VertexIndex) / 6u;
-    uint corner = uint(gl_VertexIndex) % 6u;
-    ParticleRenderInstance first = instances[sorted_indices[segment]];
-    ParticleRenderInstance second = instances[sorted_indices[segment + 1u]];
-    bool connected = ribbon_points_connected(first.ribbon_data, second.ribbon_data);
-
-    vec3 first_position = first.position_size.xyz;
-    vec3 second_position = connected ? second.position_size.xyz : first_position;
-    vec3 tangent = normalize(second_position - first_position + normalize(view.camera_up.xyz) * 1e-8);
-    vec3 side = ribbon_side(first_position, second_position, normalize(view.camera_right.xyz));
-
-    uint endpoint = endpoint_for_vertex[corner];
-    ParticleRenderInstance point = endpoint == 0u ? first : second;
-    vec3 center = endpoint == 0u ? first_position : second_position;
-    float half_width = max(abs(point.position_size.w), 0.0) * 0.5;
-    vec3 join_offset = side * half_width;
-    if (connected && endpoint == 0u && segment > 0u) {
-        ParticleRenderInstance previous = instances[sorted_indices[segment - 1u]];
-        if (ribbon_points_connected(previous.ribbon_data, first.ribbon_data)) {
-            vec3 previous_side = ribbon_side(previous.position_size.xyz, first_position, side);
-            join_offset = ribbon_join_offset(previous_side, side, half_width);
-        }
-    } else if (connected && endpoint == 1u && segment + 2u < source_instance_count) {
-        ParticleRenderInstance next = instances[sorted_indices[segment + 2u]];
-        if (ribbon_points_connected(second.ribbon_data, next.ribbon_data)) {
-            vec3 next_side = ribbon_side(second_position, next.position_size.xyz, side);
-            join_offset = ribbon_join_offset(side, next_side, half_width);
-        }
-    }
-    vec3 world_position = center + join_offset * side_for_vertex[corner];
-    gl_Position = view.view_projection * vec4(world_position, 1.0);
-
-    vec4 particle_color = point.color;
-    float order_coordinate = float(point.ribbon_data.y);
-    float uv_scale = max(view.alignment_reference.x, 1e-6);
-    bool repeat_uv = view.alignment_reference.y > 0.5;
-    vec2 ribbon_uv = vec2(repeat_uv ? order_coordinate * uv_scale
-                                    : order_coordinate / uv_scale,
-                           side_for_vertex[corner] > 0.0 ? 1.0 : 0.0);
-    vec2 segment_local_uv = vec2(float(endpoint), side_for_vertex[corner] > 0.0 ? 1.0 : 0.0);
-    vec3 surface_normal = normalize(cross(side, tangent));
-    out_world_position = world_position;
-    out_normal = surface_normal;
-    out_tangent = vec4(tangent, 1.0);
-    out_color = particle_color.rgb;
-    out_uv = ribbon_uv;
-    out_view_depth = gl_Position.w;
-    out_line_color = vec4(1.0);
-    out_particle_local_uv = segment_local_uv;
-    out_particle_next_uv = segment_local_uv;
-    out_particle_blend = 0.0;
-    out_particle_age = clamp(point.scale_custom.w, 0.0, 1.0);
-    out_particle_id = point.ribbon_data.w;
-    out_particle_alpha = connected ? particle_color.a : 0.0;
-    out_layer_mask = floatBitsToUint(view.lighting_control.w);
-}
-)glsl";
-
-constexpr std::string_view PickingFragmentSource = R"glsl(#version 450
-layout(location = 14) in float in_particle_alpha;
-layout(location = 0) out uvec2 out_object_id;
-
-layout(push_constant) uniform ViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    vec4 material_tint;
-    vec4 depth_reconstruct;
-    vec4 lighting_control;
-    vec4 rendering_control;
-    vec4 alignment_reference;
-} view;
-
-void main() {
-    if (!(in_particle_alpha > 0.0)) discard;
-    out_object_id = uvec2(floatBitsToUint(view.material_tint.x), floatBitsToUint(view.material_tint.y));
-}
-)glsl";
-
-constexpr std::string_view MotionVertexSource = R"glsl(#version 450
-struct ParticleRenderInstance {
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
-};
-layout(std430, set = 0, binding = 0) readonly buffer Instances { ParticleRenderInstance instances[]; };
-layout(std430, set = 0, binding = 1) readonly buffer SortedIndices { uint sorted_indices[]; };
-layout(std430, set = 0, binding = 2) readonly buffer VisibleSegments { uint visible_segments[]; };
-layout(std430, set = 0, binding = 3) readonly buffer SourceIndirectArguments {
-    uint source_vertex_count;
-    uint source_instance_count;
-    uint source_first_vertex;
-    uint source_first_instance;
-};
-layout(push_constant) uniform ViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    vec4 material_tint;
-    vec4 depth_reconstruct;
-    vec4 lighting_control;
-    vec4 rendering_control;
-    vec4 alignment_reference;
-} view;
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec2 out_motion;
-
-const uint endpoint_for_vertex[6] = uint[](0u, 0u, 1u, 0u, 1u, 1u);
-const float side_for_vertex[6] = float[](-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
-
-vec3 ribbon_side(vec3 first_position, vec3 second_position) {
-    vec3 tangent = second_position - first_position;
-    float tangent_length = length(tangent);
-    tangent = tangent_length > 1e-7 ? tangent / tangent_length : normalize(view.camera_up.xyz);
-    vec3 camera_forward = cross(view.camera_right.xyz, view.camera_up.xyz);
-    vec3 side = cross(camera_forward, tangent);
-    float side_length = length(side);
-    return side_length > 1e-7 ? side / side_length : normalize(view.camera_right.xyz);
-}
-
-bool ribbon_points_connected(uvec4 first_data, uvec4 second_data) {
-    return first_data.x == second_data.x && (second_data.z & 1u) == 0u;
-}
-
-vec3 ribbon_join_offset(vec3 first_side, vec3 second_side, float half_width) {
-    vec3 sum = first_side + second_side;
-    float sum_length = length(sum);
-    if (sum_length <= 1e-5) return second_side * half_width;
-    vec3 join = sum / sum_length;
+    float3 join = sum / sum_length;
     float projection = max(abs(dot(join, second_side)), 1e-4);
     return join * (half_width * min(1.0 / projection, 2.0));
 }
-
-void main() {
-    bool compacted_segments = view.alignment_reference.z > 0.5;
-    uint segment = compacted_segments ? visible_segments[uint(gl_InstanceIndex)] : uint(gl_VertexIndex) / 6u;
-    uint corner = uint(gl_VertexIndex) % 6u;
-    ParticleRenderInstance first = instances[sorted_indices[segment]];
-    ParticleRenderInstance second = instances[sorted_indices[segment + 1u]];
-    bool connected = ribbon_points_connected(first.ribbon_data, second.ribbon_data);
-
-    vec3 first_position = first.position_size.xyz;
-    vec3 second_position = connected ? second.position_size.xyz : first_position;
-    vec3 previous_first_position = first.previous_position_history.xyz;
-    vec3 previous_second_position = connected ? second.previous_position_history.xyz : previous_first_position;
-    vec3 side = ribbon_side(first_position, second_position);
-    vec3 previous_side = ribbon_side(previous_first_position, previous_second_position);
-
-    uint endpoint = endpoint_for_vertex[corner];
-    ParticleRenderInstance point = endpoint == 0u ? first : second;
-    vec3 center = endpoint == 0u ? first_position : second_position;
-    vec3 previous_center = endpoint == 0u ? previous_first_position : previous_second_position;
-    float half_width = max(abs(point.position_size.w), 0.0) * 0.5;
-    float vertex_side = side_for_vertex[corner];
-    vec3 join_offset = side * half_width;
-    vec3 previous_join_offset = previous_side * half_width;
-    if (connected && endpoint == 0u && segment > 0u) {
-        ParticleRenderInstance previous = instances[sorted_indices[segment - 1u]];
-        if (ribbon_points_connected(previous.ribbon_data, first.ribbon_data)) {
-            join_offset = ribbon_join_offset(ribbon_side(previous.position_size.xyz, first_position), side, half_width);
-            previous_join_offset = ribbon_join_offset(
-                ribbon_side(previous.previous_position_history.xyz, previous_first_position), previous_side, half_width);
-        }
-    } else if (connected && endpoint == 1u && segment + 2u < source_instance_count) {
-        ParticleRenderInstance next = instances[sorted_indices[segment + 2u]];
-        if (ribbon_points_connected(second.ribbon_data, next.ribbon_data)) {
-            join_offset = ribbon_join_offset(side, ribbon_side(second_position, next.position_size.xyz), half_width);
-            previous_join_offset = ribbon_join_offset(
-                previous_side, ribbon_side(previous_second_position, next.previous_position_history.xyz), half_width);
-        }
+struct RibbonSegment {
+    ParticleRenderInstance first;
+    ParticleRenderInstance second;
+    ParticleRenderInstance neighbor;
+    uint endpoint;
+    uint corner;
+    bool connected;
+    bool neighbor_connected;
+};
+RibbonSegment ribbon_segment(uint vertex, uint instance) {
+    bool compacted = view.alignment_reference.z > 0.5;
+    uint segment = compacted ? visible_segments[instance] : vertex / 6u;
+    RibbonSegment result;
+    result.corner = vertex % 6u;
+    result.endpoint = endpoint_for_vertex[result.corner];
+    result.first = instances[sorted_indices[segment]];
+    result.second = instances[sorted_indices[segment + 1u]];
+    result.connected = ribbon_points_connected(result.first.ribbon_data, result.second.ribbon_data);
+    result.neighbor = result.first;
+    result.neighbor_connected = false;
+    if (result.connected && result.endpoint == 0u && segment > 0u) {
+        result.neighbor = instances[sorted_indices[segment - 1u]];
+        result.neighbor_connected = ribbon_points_connected(result.neighbor.ribbon_data, result.first.ribbon_data);
+    } else if (result.connected && result.endpoint == 1u && segment + 2u < source_arguments[0].instance_count) {
+        result.neighbor = instances[sorted_indices[segment + 2u]];
+        result.neighbor_connected = ribbon_points_connected(result.second.ribbon_data, result.neighbor.ribbon_data);
     }
-    vec4 current_clip = view.view_projection * vec4(center + join_offset * vertex_side, 1.0);
-    vec4 previous_clip = view.previous_view_projection * vec4(previous_center + previous_join_offset * vertex_side, 1.0);
-    gl_Position = current_clip;
-    vec2 current_ndc = current_clip.xy / max(abs(current_clip.w), 1e-6);
-    vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
-    out_motion = (current_ndc - previous_ndc) * vec2(0.5, -0.5);
-    out_color = point.color * view.material_tint;
-    if (!connected) out_color.a = 0.0;
+    return result;
 }
-)glsl";
+float3 ribbon_point_position(ParticleRenderInstance point, bool previous) {
+    return previous ? point.previous_position_history.xyz : point.position_size.xyz;
+}
+struct RibbonFrame {
+    float3 position;
+    float3 tangent;
+    float3 side;
+};
+RibbonFrame ribbon_frame(RibbonSegment segment, bool previous) {
+    float3 first = ribbon_point_position(segment.first, previous);
+    float3 second = segment.connected ? ribbon_point_position(segment.second, previous) : first;
+    ParticleRenderInstance point = segment.endpoint == 0u ? segment.first : segment.second;
+    float3 center = segment.endpoint == 0u ? first : second;
+    float half_width = abs(point.position_size.w) * 0.5;
+    RibbonFrame result;
+    result.side = ribbon_side(first, second, normalize(view.camera_right.xyz));
+    result.tangent = normalize(second - first + normalize(view.camera_up.xyz) * 1e-8);
+    float3 offset = result.side * half_width;
+    if (segment.neighbor_connected) {
+        float3 neighbor = ribbon_point_position(segment.neighbor, previous);
+        if (segment.endpoint == 0u)
+            offset = ribbon_join_offset(ribbon_side(neighbor, first, result.side), result.side, half_width);
+        else
+            offset = ribbon_join_offset(result.side, ribbon_side(second, neighbor, result.side), half_width);
+    }
+    result.position = center + offset * side_for_vertex[segment.corner];
+    return result;
+}
+)slang";
 
-constexpr std::string_view MotionFragmentSource = R"glsl(#version 450
-layout(location = 0) in vec4 in_color;
-layout(location = 1) in vec2 in_motion;
-layout(location = 0) out vec2 out_motion;
-void main() {
-    if (in_color.a <= 0.0) discard;
-    out_motion = in_motion;
+const std::string VertexSource = std::string(RibbonGeometrySource) + R"slang(struct VertexOutput {
+    float4 position : SV_Position;
+    [[vk::location(0)]] float3 world_position : TEXCOORD0;
+    [[vk::location(1)]] float3 normal : TEXCOORD1;
+    [[vk::location(2)]] float4 tangent : TEXCOORD2;
+    [[vk::location(3)]] float3 color : TEXCOORD3;
+    [[vk::location(4)]] float2 uv : TEXCOORD4;
+    [[vk::location(5)]] float view_depth : TEXCOORD5;
+    [[vk::location(6)]] float4 line_color : TEXCOORD6;
+    [[vk::location(9)]] float2 particle_local_uv : TEXCOORD9;
+    [[vk::location(10)]] float2 particle_next_uv : TEXCOORD10;
+    [[vk::location(11)]] float particle_blend : TEXCOORD11;
+    [[vk::location(12)]] float particle_age : TEXCOORD12;
+    [[vk::location(13)]] nointerpolation uint particle_id : TEXCOORD13;
+    [[vk::location(14)]] float particle_alpha : TEXCOORD14;
+    [[vk::location(15)]] nointerpolation uint layer_mask : TEXCOORD15;
+};
+[shader("vertex")]
+VertexOutput main(uint vertex : SV_VulkanVertexID, uint instance : SV_VulkanInstanceID) {
+    RibbonSegment segment = ribbon_segment(vertex, instance);
+    RibbonFrame frame = ribbon_frame(segment, false);
+    ParticleRenderInstance point = segment.endpoint == 0u ? segment.first : segment.second;
+    VertexOutput output;
+    output.position = mul(view.view_projection, float4(frame.position, 1.0));
+    output.position.y = -output.position.y;
+    float order_coordinate = float(point.ribbon_data.y);
+    float uv_scale = max(view.alignment_reference.x, 1e-6);
+    output.uv = float2(view.alignment_reference.y > 0.5 ? order_coordinate * uv_scale : order_coordinate / uv_scale,
+                       side_for_vertex[segment.corner] > 0.0 ? 1.0 : 0.0);
+    output.world_position = frame.position;
+    output.normal = normalize(cross(frame.side, frame.tangent));
+    output.tangent = float4(frame.tangent, 1.0);
+    output.color = point.color.rgb;
+    output.view_depth = output.position.w;
+    output.line_color = float4(1.0);
+    output.particle_local_uv = float2(float(segment.endpoint), side_for_vertex[segment.corner] > 0.0 ? 1.0 : 0.0);
+    output.particle_next_uv = output.particle_local_uv;
+    output.particle_blend = 0.0;
+    output.particle_age = saturate(point.scale_custom.w);
+    output.particle_id = point.ribbon_data.w;
+    output.particle_alpha = segment.connected ? point.color.a : 0.0;
+    output.layer_mask = asuint(view.lighting_control.w);
+    return output;
 }
-)glsl";
+)slang";
+
+const std::string PickingFragmentSource = std::string(RibbonGeometrySource) + R"slang([shader("fragment")]
+uint2 main([[vk::location(14)]] float particle_alpha : TEXCOORD14) : SV_Target0 {
+    if (!(particle_alpha > 0.0)) discard;
+    return uint2(asuint(view.material_tint.x), asuint(view.material_tint.y));
+}
+)slang";
+
+const std::string MotionVertexSource = std::string(RibbonGeometrySource) + R"slang(struct MotionOutput {
+    float4 position : SV_Position;
+    [[vk::location(0)]] float4 color : TEXCOORD0;
+    [[vk::location(1)]] float2 motion : TEXCOORD1;
+};
+[shader("vertex")]
+MotionOutput main(uint vertex : SV_VulkanVertexID, uint instance : SV_VulkanInstanceID) {
+    RibbonSegment segment = ribbon_segment(vertex, instance);
+    RibbonFrame current = ribbon_frame(segment, false);
+    RibbonFrame previous = ribbon_frame(segment, true);
+    ParticleRenderInstance point = segment.endpoint == 0u ? segment.first : segment.second;
+    float4 current_clip = mul(view.view_projection, float4(current.position, 1.0));
+    float4 previous_clip = mul(view.previous_view_projection, float4(previous.position, 1.0));
+    MotionOutput output;
+    output.position = current_clip;
+    output.position.y = -output.position.y;
+    float2 current_ndc = current_clip.xy / max(abs(current_clip.w), 1e-6);
+    float2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
+    output.motion = (current_ndc - previous_ndc) * float2(0.5, -0.5);
+    output.color = point.color * view.material_tint;
+    if (!segment.connected) output.color.a = 0.0;
+    return output;
+}
+)slang";
+
+constexpr std::string_view MotionFragmentSource = R"slang(struct MotionInput {
+    [[vk::location(0)]] float4 color : TEXCOORD0;
+    [[vk::location(1)]] float2 motion : TEXCOORD1;
+};
+[shader("fragment")]
+float2 main(MotionInput input) : SV_Target0 {
+    if (input.color.a <= 0.0) discard;
+    return input.motion;
+}
+)slang";
 
 std::vector<uint32_t> CopySpirvWords(const std::vector<char> &bytes)
 {
@@ -408,6 +338,8 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
     layout.entries[layout.entryCount++] = {1, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     layout.entries[layout.entryCount++] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
     layout.entries[layout.entryCount++] = {3, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Vertex, 1};
+    for (uint32_t index = 0; index < layout.entryCount; ++index)
+        layout.entries[index].readOnlyStorage = true;
     m_geometryLayout = device.CreateBindingLayout(layout);
     m_emptyLayout = device.CreateBindingLayout({});
     rhi::BindGroupDesc emptyGroupDesc;
