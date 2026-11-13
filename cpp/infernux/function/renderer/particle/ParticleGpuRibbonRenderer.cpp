@@ -1,4 +1,5 @@
 #include "ParticleGpuRibbonRenderer.h"
+#include <function/resources/ShaderAsset/SlangParticleModule.h>
 
 #include <algorithm>
 #include <cmath>
@@ -11,16 +12,7 @@ namespace infernux::particle
 namespace
 {
 
-constexpr std::string_view RibbonGeometrySource = R"slang(struct ParticleRenderInstance {
-    float4 position_size;
-    float4 color;
-    float4 rotation_custom;
-    float4 scale_custom;
-    uint4 ribbon_data;
-    float4 custom_data;
-    float4 previous_position_history;
-};
-struct DrawArguments {
+const std::string RibbonGeometrySource = std::string(GetSlangParticleSharedSource()) + R"slang(struct DrawArguments {
     uint vertex_count;
     uint instance_count;
     uint first_vertex;
@@ -30,18 +22,6 @@ struct DrawArguments {
 [[vk::binding(1, 0)]] StructuredBuffer<uint> sorted_indices;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> visible_segments;
 [[vk::binding(3, 0)]] StructuredBuffer<DrawArguments> source_arguments;
-struct ViewConstants {
-    column_major float4x4 view_projection;
-    column_major float4x4 previous_view_projection;
-    float4 camera_right;
-    float4 camera_up;
-    float4 material_tint;
-    float4 depth_reconstruct;
-    float4 lighting_control;
-    float4 rendering_control;
-    float4 alignment_reference;
-};
-INX_ROOT_CONSTANTS ConstantBuffer<ViewConstants> view;
 static const uint endpoint_for_vertex[6] = {0u, 0u, 1u, 0u, 1u, 1u};
 static const float side_for_vertex[6] = {-1.0, 1.0, 1.0, -1.0, 1.0, -1.0};
 bool ribbon_points_connected(uint4 first, uint4 second) {
@@ -123,7 +103,7 @@ RibbonFrame ribbon_frame(RibbonSegment segment, bool previous) {
 }
 )slang";
 
-const std::string VertexSource = std::string(RibbonGeometrySource) + R"slang(struct VertexOutput {
+const std::string VertexSource = RibbonGeometrySource + R"slang(struct VertexOutput {
     float4 position : SV_Position;
     [[vk::location(0)]] float3 world_position : TEXCOORD0;
     [[vk::location(1)]] float3 normal : TEXCOORD1;
@@ -169,14 +149,14 @@ VertexOutput main(uint vertex : SV_VulkanVertexID, uint instance : SV_VulkanInst
 }
 )slang";
 
-const std::string PickingFragmentSource = std::string(RibbonGeometrySource) + R"slang([shader("fragment")]
+const std::string PickingFragmentSource = RibbonGeometrySource + R"slang([shader("fragment")]
 uint2 main([[vk::location(14)]] float particle_alpha : TEXCOORD14) : SV_Target0 {
     if (!(particle_alpha > 0.0)) discard;
     return uint2(asuint(view.material_tint.x), asuint(view.material_tint.y));
 }
 )slang";
 
-const std::string MotionVertexSource = std::string(RibbonGeometrySource) + R"slang(struct MotionOutput {
+const std::string MotionVertexSource = RibbonGeometrySource + R"slang(struct MotionOutput {
     float4 position : SV_Position;
     [[vk::location(0)]] float4 color : TEXCOORD0;
     [[vk::location(1)]] float2 motion : TEXCOORD1;

@@ -52,6 +52,32 @@ def _gpu_source():
     return GpuParticleGlslLowerer().lower(kernel)
 
 
+def test_gpu_particle_graphics_cook_uses_shared_slang_and_reuses_prepared_code(monkeypatch):
+    calls = []
+    compile_program = native._compile_shader_program
+
+    def compile_graphics(source, *args, **kwargs):
+        calls.append(source)
+        return compile_program(source, *args, **kwargs)
+
+    def reject_graphics_glsl(*args, **kwargs):
+        raise AssertionError("Particle graphics must use the common Slang compiler")
+
+    monkeypatch.setattr(native, "_compile_shader_program", compile_graphics)
+    monkeypatch.setattr(native, "_compile_graphics_glsl_batch", reject_graphics_glsl)
+    gpu_backend._SPIRV_DESCRIPTOR_CACHE.clear()
+    source = _gpu_source()
+    first = compile_gpu_particle_spirv(source)
+    assert validate_gpu_particle_spirv(first, source) is first
+    graphics = gpu_backend._particle_graphics_sources()
+    assert len(calls) == len({text for stages in graphics.values() for text in stages.values()})
+    assert set(first["billboard"]) == set(graphics["billboard"])
+    assert set(first["mesh"]) == set(graphics["mesh"])
+    calls.clear()
+    assert compile_gpu_particle_spirv(source) == first
+    assert calls == []
+
+
 def _assert_generated_values_are_declared(glsl: str) -> None:
     value_names = set(re.findall(r"\bv\d+\b", glsl))
     declarations = set(

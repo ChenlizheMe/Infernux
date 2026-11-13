@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from array import array
+from functools import cache
 import base64
 import hashlib
 import math
-from pathlib import Path
 import re
 import struct
 from typing import Any, Mapping
@@ -22,7 +22,6 @@ from infernux.graph.ramp import (
     AnimationCurve,
     Gradient,
 )
-from infernux.resources import get_package_resources_path
 
 from .data_interface import MeshResourceBinding, SdfVolume, VectorField
 from .hir import ParticleStage
@@ -43,7 +42,7 @@ class GpuParticleCompileError(ValueError):
     pass
 
 
-_SPIRV_DESCRIPTOR_CACHE: dict[str, dict[str, Any]] = {}
+_SPIRV_DESCRIPTOR_CACHE: dict[str | tuple[str, str], dict[str, Any]] = {}
 _CURVE_MIN_SPAN = array("f", (.0001,))[0]
 
 
@@ -52,329 +51,11 @@ def _update_render_fusion_capability(
 ) -> dict[str, Any]:
     return emitter.update_render_fusion_capability()
 
-_BILLBOARD_GEOMETRY_GLSL = (
-    Path(get_package_resources_path()) / "shaders" / "_templates" / "particle_billboard_geometry.glsl"
-).read_text(encoding="utf-8")
+@cache
+def _particle_graphics_sources() -> dict[str, dict[str, str]]:
+    from infernux.lib import _Infernux
 
-_BILLBOARD_VERTEX_GLSL = """#version 450
-
-struct ParticleInstance {
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
-};
-
-layout(set = 0, binding = 0, std430) readonly buffer Instances {
-    ParticleInstance instances[];
-};
-layout(set = 0, binding = 1, std430) readonly buffer RenderIndices {
-    uint render_indices[];
-};
-
-layout(push_constant) uniform ViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    vec4 material_tint;
-    vec4 depth_reconstruct;
-    vec4 lighting_control;
-    vec4 rendering_control;
-    vec4 alignment_reference;
-} view;
-
-layout(location = 0) out vec3 out_world_position;
-layout(location = 1) out vec3 out_world_normal;
-layout(location = 2) out vec4 out_tangent;
-layout(location = 3) out vec3 out_color;
-layout(location = 4) out vec2 out_uv;
-layout(location = 5) out float out_view_depth;
-layout(location = 6) out vec4 out_line_color;
-layout(location = 9) out vec2 out_particle_local_uv;
-layout(location = 10) out vec2 out_particle_next_uv;
-layout(location = 11) out float out_particle_blend;
-layout(location = 12) out float out_particle_age;
-layout(location = 13) flat out uint out_particle_id;
-layout(location = 14) out float out_particle_alpha;
-#ifdef INX_PARTICLE_MOTION_PASS
-layout(location = 15) out vec2 out_motion;
-#else
-layout(location = 15) flat out uint out_layer_mask;
-#endif
-
-const vec2 corners[6] = vec2[](
-    vec2(-1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, 1.0),
-    vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(1.0, -1.0)
-);
-
-const vec2 uvs[6] = vec2[](
-    vec2(0.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 0.0),
-    vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0)
-);
-
-${BILLBOARD_GEOMETRY}
-
-void main() {
-    uint particle_index = render_indices[gl_InstanceIndex];
-    ParticleInstance instance = instances[particle_index];
-    vec2 corner = corners[gl_VertexIndex % 6];
-    vec3 world_position, world_normal;
-    vec4 world_tangent;
-    inxParticleBillboardVertex(corner, instance.position_size, instance.rotation_custom.x, instance.scale_custom.xy,
-                              instance.custom_data.yzw, view.camera_right.xyz, view.camera_up.xyz,
-                              view.alignment_reference, world_position, world_normal, world_tangent);
-    gl_Position = view.view_projection * vec4(world_position, 1.0);
-    out_world_position = world_position;
-    out_world_normal = world_normal;
-    out_tangent = world_tangent;
-    out_color = instance.color.rgb;
-    vec2 flipbook_grid = max(view.rendering_control.zw, vec2(1.0));
-    float flipbook_count = flipbook_grid.x * flipbook_grid.y;
-    float frame_position = mod(max(instance.custom_data.x, 0.0), flipbook_count);
-    float flipbook_frame = floor(frame_position);
-    float next_frame = mod(flipbook_frame + 1.0, flipbook_count);
-    vec2 local_uv = uvs[gl_VertexIndex % 6];
-    vec2 flipbook_cell = vec2(mod(flipbook_frame, flipbook_grid.x), floor(flipbook_frame / flipbook_grid.x));
-    vec2 next_flipbook_cell = vec2(mod(next_frame, flipbook_grid.x), floor(next_frame / flipbook_grid.x));
-    out_uv = (local_uv + flipbook_cell) / flipbook_grid;
-    out_view_depth = gl_Position.w;
-    out_line_color = vec4(1.0);
-    out_particle_local_uv = local_uv;
-    out_particle_next_uv = (local_uv + next_flipbook_cell) / flipbook_grid;
-    out_particle_blend = fract(frame_position);
-    out_particle_age = clamp(instance.scale_custom.w, 0.0, 1.0);
-    out_particle_id = instance.ribbon_data.w;
-    out_particle_alpha = instance.color.a;
-#ifdef INX_PARTICLE_MOTION_PASS
-    vec3 previous_world_position = instance.previous_position_history.xyz +
-        (world_position - instance.position_size.xyz);
-    vec4 previous_clip = view.previous_view_projection * vec4(previous_world_position, 1.0);
-    vec2 current_ndc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
-    vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
-    out_motion = (current_ndc - previous_ndc) * vec2(0.5, -0.5);
-#else
-    out_layer_mask = floatBitsToUint(view.lighting_control.w);
-#endif
-}
-""".replace("${BILLBOARD_GEOMETRY}", _BILLBOARD_GEOMETRY_GLSL)
-
-
-def _motion_vertex_source(source: str) -> str:
-    return source.replace("#version 450\n", "#version 450\n#define INX_PARTICLE_MOTION_PASS 1\n", 1)
-
-
-_BILLBOARD_MOTION_FRAGMENT_GLSL = """#version 450
-layout(location = 3) in vec3 in_color;
-layout(location = 4) in vec2 in_uv;
-layout(location = 14) in float in_alpha;
-layout(location = 15) in vec2 in_motion;
-layout(location = 0) out vec2 out_motion;
-layout(set = 0, binding = 2) uniform sampler2D albedo_map;
-void main() {
-    if (texture(albedo_map, in_uv).a * in_alpha <= 0.0001) discard;
-    out_motion = in_motion;
-}
-"""
-
-
-
-
-_BILLBOARD_PICKING_FRAGMENT_GLSL = """#version 450
-
-layout(location = 5) in float in_view_depth;
-layout(location = 0) out uvec2 out_object_id;
-
-layout(push_constant) uniform ViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    uvec4 object_id;
-} view;
-
-void main() {
-    if (!(in_view_depth > 0.0)) discard;
-    out_object_id = view.object_id.xy;
-}
-"""
-
-_MESH_VERTEX_GLSL = """#version 450
-
-struct ParticleInstance {
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
-};
-
-struct ParticleMeshVertex {
-    vec4 position;
-    vec4 normal;
-    vec4 tangent;
-    vec4 color;
-    vec4 uv;
-};
-
-layout(set = 0, binding = 0, std430) readonly buffer Instances {
-    ParticleInstance instances[];
-};
-layout(set = 0, binding = 1, std430) readonly buffer RenderIndices {
-    uint render_indices[];
-};
-layout(set = 0, binding = 2, std430) readonly buffer MeshVertices {
-    ParticleMeshVertex mesh_vertices[];
-};
-layout(set = 0, binding = 3, std430) readonly buffer MeshIndices {
-    uint mesh_indices[];
-};
-
-layout(push_constant) uniform ViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    vec4 material_tint;
-    vec4 depth_reconstruct;
-    vec4 lighting_control;
-    vec4 rendering_control;
-    vec4 alignment_reference;
-} view;
-
-#ifndef INX_PARTICLE_MOTION_PASS
-layout(location = 0) out vec3 out_world_position;
-layout(location = 1) out vec3 out_normal;
-layout(location = 2) out vec4 out_tangent;
-layout(location = 3) out vec3 out_color;
-layout(location = 4) out vec2 out_uv;
-layout(location = 5) out float out_view_depth;
-layout(location = 6) out vec4 out_line_color;
-layout(location = 9) out vec2 out_particle_local_uv;
-layout(location = 10) out vec2 out_particle_next_uv;
-layout(location = 11) out float out_particle_blend;
-layout(location = 12) out float out_particle_age;
-layout(location = 13) flat out uint out_particle_id;
-layout(location = 14) out float out_particle_alpha;
-layout(location = 15) flat out uint out_layer_mask;
-#else
-layout(location = 15) out vec2 out_motion;
-#endif
-
-void main() {
-    uint particle_index = render_indices[gl_InstanceIndex];
-    ParticleInstance instance = instances[particle_index];
-    ParticleMeshVertex vertex = mesh_vertices[mesh_indices[gl_VertexIndex]];
-    vec3 angles = instance.rotation_custom.yzw;
-    vec3 cosine = cos(angles);
-    vec3 sine = sin(angles);
-    mat3 rotation_x = mat3(
-        1.0, 0.0, 0.0,
-        0.0, cosine.x, sine.x,
-        0.0, -sine.x, cosine.x
-    );
-    mat3 rotation_y = mat3(
-        cosine.y, 0.0, -sine.y,
-        0.0, 1.0, 0.0,
-        sine.y, 0.0, cosine.y
-    );
-    mat3 rotation_z = mat3(
-        cosine.z, sine.z, 0.0,
-        -sine.z, cosine.z, 0.0,
-        0.0, 0.0, 1.0
-    );
-    mat3 rotation = rotation_z * rotation_y * rotation_x;
-    vec3 particle_scale = instance.scale_custom.xyz * instance.position_size.w;
-    vec3 world_position = instance.position_size.xyz +
-        rotation * (vertex.position.xyz * particle_scale);
-    vec3 inverse_scale = sign(particle_scale) / max(abs(particle_scale), vec3(1e-6));
-    vec3 transformed_normal = rotation * (vertex.normal.xyz * inverse_scale);
-    float normal_length_squared = dot(transformed_normal, transformed_normal);
-    vec3 surface_normal = normal_length_squared > 1e-12
-        ? transformed_normal * inversesqrt(normal_length_squared)
-        : vec3(0.0, 1.0, 0.0);
-    vec4 unbiassed_clip = view.view_projection * vec4(world_position, 1.0);
-    if (view.rendering_control.y > 0.5) {
-        vec3 to_light = view.camera_right.w > 0.5
-            ? normalize(view.camera_right.xyz - world_position)
-            : normalize(view.camera_right.xyz);
-        float perspective_scale = view.camera_right.w > 0.5
-            ? clamp(abs(unbiassed_clip.w) / max(view.camera_up.w, 0.000001), 0.001, 1.0)
-            : 1.0;
-        float world_texel = max(view.camera_up.z * perspective_scale, 0.000001);
-        float normal_scale = 1.0 - clamp(dot(surface_normal, to_light), 0.0, 1.0);
-        world_position -= to_light * (view.camera_up.x * world_texel);
-        world_position -= surface_normal * (view.camera_up.y * world_texel * normal_scale);
-    }
-    gl_Position = view.view_projection * vec4(world_position, 1.0);
-    if (view.rendering_control.y > 0.5 && view.camera_right.w < 0.5) {
-        gl_Position.z = max(gl_Position.z, 0.0);
-    }
-    vec4 particle_color = instance.color * vertex.color;
-#ifndef INX_PARTICLE_MOTION_PASS
-    out_normal = surface_normal;
-    out_color = particle_color.rgb;
-    out_tangent = vec4(rotation * vertex.tangent.xyz, vertex.tangent.w);
-    out_uv = vertex.uv.xy;
-    out_world_position = world_position;
-    out_view_depth = gl_Position.w;
-    out_line_color = vec4(1.0);
-    out_particle_local_uv = vertex.uv.xy;
-    out_particle_next_uv = vertex.uv.xy;
-    out_particle_blend = 0.0;
-    out_particle_age = clamp(instance.scale_custom.w, 0.0, 1.0);
-    out_particle_id = instance.ribbon_data.w;
-    out_particle_alpha = particle_color.a;
-    out_layer_mask = floatBitsToUint(view.lighting_control.w);
-#endif
-#ifdef INX_PARTICLE_MOTION_PASS
-    vec3 previous_world_position = instance.previous_position_history.xyz +
-        (world_position - instance.position_size.xyz);
-    vec4 previous_clip = view.previous_view_projection * vec4(previous_world_position, 1.0);
-    vec2 current_ndc = gl_Position.xy / max(abs(gl_Position.w), 1e-6);
-    vec2 previous_ndc = previous_clip.xy / max(abs(previous_clip.w), 1e-6);
-    out_motion = (current_ndc - previous_ndc) * vec2(0.5, -0.5);
-#endif
-}
-"""
-
-_MESH_MOTION_FRAGMENT_GLSL = """#version 450
-layout(location = 15) in vec2 in_motion;
-layout(location = 0) out vec2 out_motion;
-void main() { out_motion = in_motion; }
-"""
-
-_MESH_FRAGMENT_GLSL = """#version 450
-void main() {}
-"""
-
-_MESH_PICKING_FRAGMENT_GLSL = """#version 450
-layout(location = 14) in float in_particle_alpha;
-layout(location = 0) out uvec2 out_object_id;
-
-layout(push_constant) uniform ViewConstants {
-    mat4 view_projection;
-    mat4 previous_view_projection;
-    vec4 camera_right;
-    vec4 camera_up;
-    vec4 material_tint;
-    vec4 depth_reconstruct;
-    vec4 lighting_control;
-    vec4 rendering_control;
-    vec4 alignment_reference;
-} view;
-
-void main() {
-    if (!(in_particle_alpha > 0.0)) discard;
-    out_object_id = uvec2(floatBitsToUint(view.material_tint.x), floatBitsToUint(view.material_tint.y));
-}
-"""
-
+    return _Infernux._particle_graphics_sources()
 
 
 @dataclass(frozen=True)
@@ -747,31 +428,15 @@ def _compile_cached_graphics(
     sources: Mapping[str, str],
     label: str,
 ) -> dict[str, dict[str, Any]]:
-    keys = {
-        stage: hashlib.sha256(
-            (f"vulkan1.2-spirv1.5\0{stage}\0" + source).encode("utf-8")
-        ).hexdigest()
-        for stage, source in sources.items()
-    }
-    missing = {
-        stage: sources[stage]
-        for stage, key in keys.items()
-        if key not in _SPIRV_DESCRIPTOR_CACHE
-    }
-    compiled = native._compile_graphics_glsl_batch(missing, label) if missing else {}
-    if set(compiled) != set(missing):
-        raise GpuParticleCompileError(
-            f"engine graphics compiler returned incomplete stages for {label}"
-        )
     result = {}
-    for stage, key in keys.items():
+    for stage, source in sources.items():
+        key = ("particle-graphics-slang", source)
         descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
         if descriptor is None:
-            binary = bytes(compiled[stage])
-            if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
-                raise GpuParticleCompileError(
-                    f"engine graphics compiler returned invalid SPIR-V for {label}:{stage}"
-                )
+            compiled = native._compile_shader_program(
+                source, f"<{label}:{stage}>", f"particle_{stage}", targets=["spirv"]
+            )
+            binary = bytes(compiled["targets"][0]["entries"][0]["code"])
             descriptor = {
                 "byte_size": len(binary),
                 "sha256": hashlib.sha256(binary).hexdigest(),
@@ -782,34 +447,20 @@ def _compile_cached_graphics(
     return result
 
 
+@cache
 def _particle_graphics_abi_hash() -> str:
-    sources = (
-        ("billboard.vertex", _BILLBOARD_VERTEX_GLSL),
-        ("billboard.picking_fragment", _BILLBOARD_PICKING_FRAGMENT_GLSL),
-        ("billboard.motion_vertex", _motion_vertex_source(_BILLBOARD_VERTEX_GLSL)),
-        ("billboard.motion_fragment", _BILLBOARD_MOTION_FRAGMENT_GLSL),
-        ("mesh.vertex", _MESH_VERTEX_GLSL),
-        ("mesh.shadow_fragment", _MESH_FRAGMENT_GLSL),
-        ("mesh.picking_fragment", _MESH_PICKING_FRAGMENT_GLSL),
-        ("mesh.motion_vertex", _motion_vertex_source(_MESH_VERTEX_GLSL)),
-        ("mesh.motion_fragment", _MESH_MOTION_FRAGMENT_GLSL),
-        ("curve.interpolation", _curve_interpolation_glsl()),
-        ("curve.parameters", _ramp_parameter_glsl({"curve": (0, TypeRef(ValueType.CURVE))})),
-    )
     digest = hashlib.sha256()
-    digest.update(b"infernux.particle.graphics-abi\0vulkan1.2-spirv1.5\0")
-    # Curve layout and helper code both participate in saved AOT compatibility.
-    digest.update(b"curve-parameter-abi:3;stride:2;prepared-inverse-span\0")
-    for name, source in sources:
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(source.encode("utf-8"))
-        digest.update(b"\0")
+    digest.update(b"infernux.particle.graphics-abi\0slang-spirv\0")
+    for renderer, sources in _particle_graphics_sources().items():
+        for stage, source in sources.items():
+            digest.update(f"{renderer}.{stage}\0{source}\0".encode("utf-8"))
+    digest.update(_curve_interpolation_glsl().encode("utf-8"))
+    digest.update(_ramp_parameter_glsl({"curve": (0, TypeRef(ValueType.CURVE))}).encode("utf-8"))
     return digest.hexdigest()
 
 
 def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, Any]:
-    """Compile and compress all generated stages using the engine glslang service."""
+    """Compile particle stages and shared Slang geometry using the resident compiler."""
     from infernux.lib import _Infernux as native
 
     emitters = []
@@ -883,157 +534,9 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
                 "continuation": continuation,
             }
         )
-    graphics_sources = {"vertex": _BILLBOARD_VERTEX_GLSL}
-    graphics_keys = {
-        stage: hashlib.sha256(
-            (f"vulkan1.2-spirv1.5\0{stage}\0" + source).encode("utf-8")
-        ).hexdigest()
-        for stage, source in graphics_sources.items()
-    }
-    missing_graphics = {
-        stage: graphics_sources[stage]
-        for stage, key in graphics_keys.items()
-        if key not in _SPIRV_DESCRIPTOR_CACHE
-    }
-    compiled_graphics = (
-        native._compile_graphics_glsl_batch(
-            missing_graphics, "particle:builtin-billboard"
-        )
-        if missing_graphics
-        else {}
-    )
-    if set(compiled_graphics) != set(missing_graphics):
-        raise GpuParticleCompileError(
-            "engine graphics compiler returned incomplete billboard stages"
-        )
-    billboard = {}
-    for stage, key in sorted(graphics_keys.items()):
-        descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
-        if descriptor is None:
-            binary = bytes(compiled_graphics[stage])
-            if (
-                len(binary) < 20
-                or int.from_bytes(binary[:4], "little") != 0x07230203
-            ):
-                raise GpuParticleCompileError(
-                    f"engine graphics compiler returned invalid SPIR-V for {stage}"
-                )
-            descriptor = {
-                "byte_size": len(binary),
-                "sha256": hashlib.sha256(binary).hexdigest(),
-                "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode(
-                    "ascii"
-                ),
-            }
-            _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
-        billboard[stage] = dict(descriptor)
-
-    picking_key = hashlib.sha256(
-        ("vulkan1.2-spirv1.5\0fragment\0" + _BILLBOARD_PICKING_FRAGMENT_GLSL).encode("utf-8")
-    ).hexdigest()
-    picking_descriptor = _SPIRV_DESCRIPTOR_CACHE.get(picking_key)
-    if picking_descriptor is None:
-        compiled_picking = native._compile_graphics_glsl_batch(
-            {"fragment": _BILLBOARD_PICKING_FRAGMENT_GLSL},
-            "particle:builtin-billboard-picking",
-        )
-        binary = bytes(compiled_picking.get("fragment", b""))
-        if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
-            raise GpuParticleCompileError(
-                "engine graphics compiler returned invalid particle picking SPIR-V"
-            )
-        picking_descriptor = {
-            "byte_size": len(binary),
-            "sha256": hashlib.sha256(binary).hexdigest(),
-            "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
-        }
-        _SPIRV_DESCRIPTOR_CACHE[picking_key] = picking_descriptor
-    billboard["picking_fragment"] = dict(picking_descriptor)
-
-    billboard_motion = _compile_cached_graphics(
-        native,
-        {
-            "vertex": _motion_vertex_source(_BILLBOARD_VERTEX_GLSL),
-            "fragment": _BILLBOARD_MOTION_FRAGMENT_GLSL,
-        },
-        "particle:builtin-billboard-motion",
-    )
-    billboard["motion_vertex"] = billboard_motion["vertex"]
-    billboard["motion_fragment"] = billboard_motion["fragment"]
-
-    mesh_sources = {
-        "vertex": _MESH_VERTEX_GLSL,
-        "fragment": _MESH_FRAGMENT_GLSL,
-    }
-    mesh_keys = {
-        stage: hashlib.sha256(
-            (f"vulkan1.2-spirv1.5\0{stage}\0" + source).encode("utf-8")
-        ).hexdigest()
-        for stage, source in mesh_sources.items()
-    }
-    missing_mesh = {
-        stage: mesh_sources[stage]
-        for stage, key in mesh_keys.items()
-        if key not in _SPIRV_DESCRIPTOR_CACHE
-    }
-    compiled_mesh = (
-        native._compile_graphics_glsl_batch(missing_mesh, "particle:builtin-mesh")
-        if missing_mesh
-        else {}
-    )
-    if set(compiled_mesh) != set(missing_mesh):
-        raise GpuParticleCompileError(
-            "engine graphics compiler returned incomplete particle mesh stages"
-        )
-    mesh = {}
-    for stage, key in sorted(mesh_keys.items()):
-        descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
-        if descriptor is None:
-            binary = bytes(compiled_mesh[stage])
-            if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
-                raise GpuParticleCompileError(
-                    f"engine graphics compiler returned invalid mesh SPIR-V for {stage}"
-                )
-            descriptor = {
-                "byte_size": len(binary),
-                "sha256": hashlib.sha256(binary).hexdigest(),
-                "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
-            }
-            _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
-        mesh[stage] = dict(descriptor)
-    mesh["shadow_fragment"] = mesh.pop("fragment")
-    mesh_picking_key = hashlib.sha256(
-        ("vulkan1.2-spirv1.5\0fragment\0" + _MESH_PICKING_FRAGMENT_GLSL).encode("utf-8")
-    ).hexdigest()
-    mesh_picking_descriptor = _SPIRV_DESCRIPTOR_CACHE.get(mesh_picking_key)
-    if mesh_picking_descriptor is None:
-        compiled_mesh_picking = native._compile_graphics_glsl_batch(
-            {"fragment": _MESH_PICKING_FRAGMENT_GLSL},
-            "particle:builtin-mesh-picking",
-        )
-        binary = bytes(compiled_mesh_picking.get("fragment", b""))
-        if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
-            raise GpuParticleCompileError(
-                "engine graphics compiler returned invalid particle mesh picking SPIR-V"
-            )
-        mesh_picking_descriptor = {
-            "byte_size": len(binary),
-            "sha256": hashlib.sha256(binary).hexdigest(),
-            "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
-        }
-        _SPIRV_DESCRIPTOR_CACHE[mesh_picking_key] = mesh_picking_descriptor
-    mesh["picking_fragment"] = dict(mesh_picking_descriptor)
-
-    mesh_motion = _compile_cached_graphics(
-        native,
-        {
-            "vertex": _motion_vertex_source(_MESH_VERTEX_GLSL),
-            "fragment": _MESH_MOTION_FRAGMENT_GLSL,
-        },
-        "particle:builtin-mesh-motion",
-    )
-    mesh["motion_vertex"] = mesh_motion["vertex"]
-    mesh["motion_fragment"] = mesh_motion["fragment"]
+    graphics = _particle_graphics_sources()
+    billboard = _compile_cached_graphics(native, graphics["billboard"], "particle:billboard")
+    mesh = _compile_cached_graphics(native, graphics["mesh"], "particle:mesh")
 
     return {
         "$schema": "infernux.particle_gpu_spirv",

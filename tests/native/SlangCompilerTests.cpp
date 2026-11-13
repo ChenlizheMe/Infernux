@@ -3,6 +3,7 @@
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangNativeModule.h>
+#include <function/resources/ShaderAsset/SlangParticleModule.h>
 #include <function/resources/ShaderAsset/SlangUIModule.h>
 
 #include <algorithm>
@@ -385,6 +386,30 @@ void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weigh
                             "Portable UI sampling needs a separate reflected sampler");
                 Require(ui.entries[0].bindings.empty() && ui.entries[1].bindings.size() == ui.resources.size(),
                         "UI sampling belongs to the fragment entry");
+            }
+        }
+
+        for (const auto &source : GetSlangParticleGraphicsModules()) {
+            for (const auto target : {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}) {
+                const auto particle = CompileSlangNativeModule(source.module, target);
+                const bool vertex = source.stage == "vertex" || source.stage == "motion_vertex";
+                const bool root = vertex || source.stage == "picking_fragment";
+                Require(particle.entries.size() == 1 && particle.entries[0].name == "main",
+                        "Particle module lost its graphics entry");
+                Require(bool(particle.rootConstants) == root && (!root || particle.rootConstants->byteSize == 240),
+                        "Particle view constants differ from the shared host layout");
+                if (vertex)
+                    Require(particle.entries[0].bindings.size() == (source.renderer == "mesh" ? 4u : 2u),
+                            "Particle geometry must use its actual immutable inputs");
+                for (const auto &resource : particle.resources) {
+                    if (resource.binding.type != rhi::BindingType::StorageBuffer)
+                        continue;
+                    Require(resource.binding.readOnlyStorage, "Particle geometry cannot write simulation data");
+                    if (resource.name == "instances")
+                        Require(resource.elementStride == 112, "Particle instance packing differs between targets");
+                    if (resource.name == "mesh_vertices")
+                        Require(resource.elementStride == 80, "Particle mesh packing differs between targets");
+                }
             }
         }
 
