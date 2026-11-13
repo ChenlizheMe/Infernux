@@ -1402,7 +1402,9 @@ void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(floa
         dispatch = fixed ? &m_fixedDispatch : update == &Component::LateUpdate ? &m_lateDispatch : &m_updateDispatch;
         const auto token = std::pair{manager.GetSimulationEpoch(),
                                      fixed ? manager.GetFixedStepIndex() : manager.GetFrameTime().frameCount};
-        if (!dispatch->snapshot || token != dispatch->token) {
+        // Calls outside an admitted WorldFrame start a fresh traversal.
+        if (manager.CurrentWorld().frame.phase == RuntimeWorld::FramePhase::Idle || !dispatch->snapshot ||
+            token != dispatch->token) {
             dispatch->token = token;
             dispatch->snapshot = components;
             dispatch->cursor = 0;

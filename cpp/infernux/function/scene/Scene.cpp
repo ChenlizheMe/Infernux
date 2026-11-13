@@ -1041,7 +1041,7 @@ void Scene::Update(float deltaTime)
         return;
     RebuildRuntimeLifecycleObjectCaches();
     const auto frame = std::pair{manager.GetSimulationEpoch(), manager.GetFrameTime().frameCount};
-    if (frame != m_updateDispatchFrame) {
+    if (manager.CurrentWorld().frame.phase == RuntimeWorld::FramePhase::Idle || frame != m_updateDispatchFrame) {
         m_updateDispatchFrame = frame;
         m_updateDispatchObjects = m_updateObjects;
         m_updateDispatchCursor = 0;
@@ -1072,7 +1072,7 @@ void Scene::FixedUpdate(float fixedDeltaTime)
     RebuildRuntimeLifecycleObjectCaches();
     auto &manager = SceneManager::Instance();
     const auto step = std::pair{manager.GetSimulationEpoch(), manager.GetFixedStepIndex()};
-    if (step != m_fixedDispatchStep) {
+    if (manager.CurrentWorld().frame.phase == RuntimeWorld::FramePhase::Idle || step != m_fixedDispatchStep) {
         m_fixedDispatchStep = step;
         m_fixedDispatchObjects = m_fixedUpdateObjects;
         m_fixedDispatchCursor = 0;
@@ -1157,7 +1157,7 @@ void Scene::LateUpdate(float deltaTime)
     PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
     RebuildRuntimeLifecycleObjectCaches();
     const auto frame = std::pair{manager.GetSimulationEpoch(), manager.GetFrameTime().frameCount};
-    if (frame != m_lateDispatchFrame) {
+    if (manager.CurrentWorld().frame.phase == RuntimeWorld::FramePhase::Idle || frame != m_lateDispatchFrame) {
         m_lateDispatchFrame = frame;
         m_lateDispatchObjects = m_lateUpdateObjects;
         m_lateDispatchCursor = 0;
