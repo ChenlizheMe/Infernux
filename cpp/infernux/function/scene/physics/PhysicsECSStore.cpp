@@ -20,6 +20,8 @@
 #include "../GameObject.h"
 #include "../Joint.h"
 #include "../Rigidbody.h"
+#include "../RuntimeWorld.h"
+#include "../Scene.h"
 #include "../SceneManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
@@ -40,6 +42,40 @@ uint64_t ActorHandleKey(PhysicsECSStore::ActorHandle handle)
     return (static_cast<uint64_t>(handle.generation) << 32U) | handle.index;
 }
 
+RuntimeWorld *PublishedWorld(const GameObject *owner) noexcept
+{
+    auto *scene = owner ? owner->GetScene() : nullptr;
+    auto *world = scene ? scene->GetRuntimeWorld() : nullptr;
+    if (!world || scene->IsPreview() || scene->ResolveGameObject(owner->GetHandle()) != owner)
+        return nullptr;
+    if (scene != world->scenes.persistent.get() && world->scenes.loadedSet.find(scene) == world->scenes.loadedSet.end())
+        return nullptr;
+    return world;
+}
+
+bool CanAuthor(const PhysicsActorData &actor) noexcept
+{
+    // Publication fixed the owner. Subsequent commands only test admission;
+    // they do not revalidate Scene membership or object lookup identities.
+    const auto *scene = actor.owner->GetScene();
+    return actor.runtimeWorld && scene && scene->GetRuntimeWorld() == actor.runtimeWorld && !actor.sceneSuspended &&
+           !actor.owner->IsDestroying();
+}
+
+std::vector<uint32_t> ConsumeBroadphase(std::vector<uint32_t> &requests, std::unordered_set<uint32_t> &accepted)
+{
+    std::vector<uint32_t> result;
+    result.reserve(requests.size());
+    // Claim each final request once; cancelled older entries cannot resurface.
+    for (auto it = requests.rbegin(); it != requests.rend(); ++it)
+        if (accepted.erase(*it))
+            result.push_back(*it);
+    std::reverse(result.begin(), result.end());
+    requests.clear();
+    accepted.clear();
+    return result;
+}
+
 } // namespace
 
 PhysicsECSStore &PhysicsECSStore::Instance()
@@ -50,6 +86,87 @@ PhysicsECSStore &PhysicsECSStore::Instance()
     return *instance;
 }
 
+void PhysicsECSStore::RegisterRuntimeWorld(RuntimeWorld &world)
+{
+    auto [it, inserted] = m_worldQueues.try_emplace(world.id);
+    if (!inserted && it->second.owner != &world)
+        throw std::logic_error("Physics author World identity is already registered");
+    it->second.owner = &world;
+}
+
+PhysicsECSStore::DomainAuthorQueues *PhysicsECSStore::FindQueues(const RuntimeWorld &world) noexcept
+{
+    const auto it = m_worldQueues.find(world.id);
+    return it != m_worldQueues.end() && it->second.owner == &world ? &it->second : nullptr;
+}
+
+const PhysicsECSStore::DomainAuthorQueues *PhysicsECSStore::FindQueues(const RuntimeWorld &world) const noexcept
+{
+    const auto it = m_worldQueues.find(world.id);
+    return it != m_worldQueues.end() && it->second.owner == &world ? &it->second : nullptr;
+}
+
+PhysicsECSStore::DomainAuthorQueues &PhysicsECSStore::RequireQueues(const RuntimeWorld &world)
+{
+    auto *queues = FindQueues(world);
+    if (!queues)
+        throw std::logic_error("Register the RuntimeWorld before publishing physics authors");
+    return *queues;
+}
+
+void PhysicsECSStore::RetireRuntimeWorld(RuntimeWorld &world)
+{
+    m_actorPool.ForEachAlive([&](const PhysicsActorData &actor) {
+        if (actor.runtimeWorld == &world)
+            throw std::logic_error("Destroy a RuntimeWorld's actors before retiring its author queues");
+    });
+    ClearWorldPendingQueues(world);
+    m_worldQueues.erase(world.id);
+}
+
+void PhysicsECSStore::BindActorWorld(ActorHandle handle)
+{
+    auto &actor = GetActor(handle);
+    if (actor.runtimeWorld)
+        return;
+    auto *world = PublishedWorld(actor.owner);
+    if (!world)
+        return; // Author-only staging and detached retirement never bind a default World.
+    auto &queues = RequireQueues(*world);
+    actor.runtimeWorld = world;
+    if (actor.rigidbody)
+        ++queues.aliveRigidbodyCount;
+    QueueBodyCreation(handle);
+    MarkActorDirty(handle);
+}
+
+void PhysicsECSStore::ValidateHierarchyWorld(const GameObject *root, const RuntimeWorld *destination) const
+{
+    if (!root)
+        return;
+    const auto handle = FindActor(root);
+    if (destination && IsValid(handle) && GetActor(handle).runtimeWorld && GetActor(handle).runtimeWorld != destination)
+        throw std::invalid_argument("Moving a live physics actor between RuntimeWorlds is not implemented");
+    for (const auto &child : root->GetChildren())
+        ValidateHierarchyWorld(child.get(), destination);
+}
+
+void PhysicsECSStore::PublishHierarchyOwnership(GameObject *root)
+{
+    if (!root)
+        return;
+    const auto handle = FindActor(root);
+    if (IsValid(handle))
+        BindActorWorld(handle);
+    // A staged Joint may already be waiting for an endpoint. Add/Attach root
+    // publication has no Awake pass, so restore only that existing request.
+    for (const auto &component : root->GetAllComponents())
+        if (auto *joint = dynamic_cast<Joint *>(component.get()); joint && joint->m_retryOnRetire)
+            QueuePendingJoint(*joint);
+    for (const auto &child : root->GetChildren())
+        PublishHierarchyOwnership(child.get());
+}
+
 PhysicsECSStore::ActorHandle PhysicsECSStore::AcquireActor(GameObject *owner)
 {
     if (!owner)
@@ -58,6 +175,7 @@ PhysicsECSStore::ActorHandle PhysicsECSStore::AcquireActor(GameObject *owner)
     if (existing != m_actorByOwner.end()) {
         if (!m_actorPool.IsAlive(existing->second))
             throw std::logic_error("Physics actor owner map contains a stale handle");
+        BindActorWorld(existing->second);
         return existing->second;
     }
 
@@ -66,6 +184,7 @@ PhysicsECSStore::ActorHandle PhysicsECSStore::AcquireActor(GameObject *owner)
     actor = PhysicsActorData{};
     actor.owner = owner;
     m_actorByOwner.emplace(owner, handle);
+    BindActorWorld(handle);
     return handle;
 }
 
@@ -96,10 +215,12 @@ void PhysicsECSStore::ReleaseActor(ActorHandle handle, Collider *collider)
 void PhysicsECSStore::RetireActor(ActorHandle handle)
 {
     auto &actor = m_actorPool.Get(handle);
-    m_pendingBodyCreationSet.erase(ActorHandleKey(handle));
+    const WorldExecutionScope worldScope(actor.runtimeWorld);
+    if (actor.runtimeWorld)
+        RequireQueues(*actor.runtimeWorld).pendingCreationSet.erase(ActorHandleKey(handle));
     if (actor.bodyId != 0xFFFFFFFF) {
-        const bool pendingAdd = CancelBroadphaseAdd(actor.bodyId);
-        const bool pendingRemove = CancelBroadphaseRemove(actor.bodyId);
+        const bool pendingAdd = CancelBroadphaseAdd(*actor.runtimeWorld, actor.bodyId);
+        const bool pendingRemove = CancelBroadphaseRemove(*actor.runtimeWorld, actor.bodyId);
         auto &world = PhysicsWorld::Instance();
         if (!pendingAdd && (actor.bodyInBroadphase || pendingRemove))
             world.RemoveBodyFromBroadphase(actor.bodyId);
@@ -127,7 +248,10 @@ PhysicsECSStore::ActorHandle PhysicsECSStore::BindRigidbodyActor(Rigidbody *body
     auto &data = GetRigidbody(body->GetECSHandle());
     if (!IsValid(data.actorHandle))
         data.actorHandle = AcquireActor(body->GetGameObject());
+    BindActorWorld(data.actorHandle);
     auto &actor = GetActor(data.actorHandle);
+    if (!actor.rigidbody && actor.runtimeWorld)
+        ++RequireQueues(*actor.runtimeWorld).aliveRigidbodyCount;
     actor.rigidbody = body;
     QueueBodyCreation(data.actorHandle);
     MarkActorDirty(data.actorHandle);
@@ -226,6 +350,8 @@ void PhysicsECSStore::DetachRigidbody(Rigidbody *body)
         return;
     GetRigidbody(bodyHandle).actorHandle = {};
     auto &actor = GetActor(handle);
+    if (actor.runtimeWorld)
+        --RequireQueues(*actor.runtimeWorld).aliveRigidbodyCount;
     actor.rigidbody = nullptr;
     if (actor.bodyId != 0xFFFFFFFF)
         PhysicsWorld::Instance().DestroyConstraintsForBody(actor.bodyId);
@@ -248,10 +374,13 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
 {
     if (!IsValid(handle))
         return;
+    BindActorWorld(handle);
     auto &actor = GetActor(handle);
+    if (!CanAuthor(actor))
+        return;
+    const WorldExecutionScope worldScope(actor.runtimeWorld);
     auto &world = PhysicsWorld::Instance();
-    if (!world.IsInitialized() || actor.sceneSuspended ||
-        !SceneManager::Instance().IsRuntimeScene(actor.owner->GetScene()))
+    if (!world.IsInitialized())
         return;
     actor.primaryCollider = nullptr;
     for (auto *collider : actor.colliders) {
@@ -287,16 +416,16 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
         world.UpdateBodyShape(actor);
     }
     if (active) {
-        if (CancelBroadphaseRemove(actor.bodyId))
+        if (CancelBroadphaseRemove(*actor.runtimeWorld, actor.bodyId))
             actor.bodyInBroadphase = true;
         if (!actor.bodyInBroadphase) {
-            QueueBroadphaseAdd(actor.bodyId);
+            QueueBroadphaseAdd(*actor.runtimeWorld, actor.bodyId);
             actor.bodyInBroadphase = true;
         }
     } else if (actor.bodyInBroadphase) {
         world.DestroyConstraintsForBody(actor.bodyId);
-        if (!CancelBroadphaseAdd(actor.bodyId))
-            QueueBroadphaseRemove(actor.bodyId);
+        if (!CancelBroadphaseAdd(*actor.runtimeWorld, actor.bodyId))
+            QueueBroadphaseRemove(*actor.runtimeWorld, actor.bodyId);
         actor.bodyInBroadphase = false;
     }
     UpdateJointEndpointReadiness(actor);
@@ -330,7 +459,7 @@ void PhysicsECSStore::RestoreActor(ActorHandle handle)
     actor.sceneSuspended = false;
     if (actor.bodyId != 0xFFFFFFFF && actor.owner->IsActiveInHierarchy() &&
         ((actor.rigidbody && actor.rigidbody->IsEnabled()) || actor.primaryCollider)) {
-        QueueBroadphaseAdd(actor.bodyId);
+        QueueBroadphaseAdd(*actor.runtimeWorld, actor.bodyId);
         actor.bodyInBroadphase = true;
     }
     UpdateJointEndpointReadiness(actor);
@@ -382,7 +511,7 @@ void PhysicsECSStore::SyncActorTransform(ActorHandle handle, float fixedDeltaTim
     actor.lastSyncedRot = rotation;
     ++actor.transformRevision;
     auto &world = PhysicsWorld::Instance();
-    const bool hasRigidbodies = GetAliveRigidbodyCount() > 0;
+    const bool hasRigidbodies = GetAliveRigidbodyCount(*actor.runtimeWorld) > 0;
     if (fixedDeltaTime > 0.0f && hasRigidbodies) {
         world.MoveStaticBodyWithVelocity(actor.bodyId, position, rotation, fixedDeltaTime);
     } else {
@@ -491,6 +620,12 @@ const RigidbodyECSData &PhysicsECSStore::GetRigidbody(RigidbodyHandle handle) co
     return m_rigidbodyPool.Get(handle);
 }
 
+size_t PhysicsECSStore::GetAliveRigidbodyCount(const RuntimeWorld &world) const noexcept
+{
+    const auto *queues = FindQueues(world);
+    return queues ? queues->aliveRigidbodyCount : 0;
+}
+
 // ============================================================================
 // Dirty collider tracking
 // ============================================================================
@@ -507,11 +642,11 @@ void PhysicsECSStore::MarkActorDirty(ActorHandle actorHandle)
 {
     if (!IsValid(actorHandle))
         return;
-    auto &actor = m_actorPool.Get(actorHandle);
-    if (actor.transformDirtyQueued)
+    auto &actor = GetActor(actorHandle);
+    if (!CanAuthor(actor) || actor.transformDirtyQueued)
         return;
+    RequireQueues(*actor.runtimeWorld).dirtyActors.push_back(actorHandle);
     actor.transformDirtyQueued = true;
-    m_dirtyActorList.push_back(actorHandle);
 }
 
 void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *physicsSource,
@@ -566,25 +701,30 @@ void PhysicsECSStore::MarkAuthoredHierarchyDirty(GameObject *root, bool rotation
     visit(visit, root);
 }
 
-const std::vector<PhysicsECSStore::ActorHandle> &PhysicsECSStore::ConsumeDirtyActors()
+const std::vector<PhysicsECSStore::ActorHandle> &PhysicsECSStore::ConsumeDirtyActors(const RuntimeWorld &world)
 {
-    m_dirtyActorScratch.clear();
-    m_dirtyActorScratch.reserve(m_dirtyActorList.size());
-    for (const ActorHandle actorHandle : m_dirtyActorList) {
-        if (!m_actorPool.IsAlive(actorHandle))
+    auto &queues = RequireQueues(world);
+    queues.dirtyScratch.clear();
+    queues.dirtyScratch.reserve(queues.dirtyActors.size());
+    for (const auto handle : queues.dirtyActors) {
+        if (!IsValid(handle) || GetActor(handle).runtimeWorld != &world)
             continue;
-        auto &actor = m_actorPool.Get(actorHandle);
-        actor.transformDirtyQueued = false;
-        m_dirtyActorScratch.push_back(actorHandle);
+        GetActor(handle).transformDirtyQueued = false;
+        queues.dirtyScratch.push_back(handle);
     }
-    m_dirtyActorList.clear();
-    return m_dirtyActorScratch;
+    queues.dirtyActors.clear();
+    return queues.dirtyScratch;
+}
+
+bool PhysicsECSStore::HasDirtyColliders(const RuntimeWorld &world) const noexcept
+{
+    const auto *queues = FindQueues(world);
+    return queues && !queues->dirtyActors.empty();
 }
 
 void PhysicsECSStore::NotifyCollisionSceneChanged() noexcept
 {
-    ++m_collisionSceneRevision;
-    if (m_collisionSceneRevision == 0)
+    if (++m_collisionSceneRevision == 0)
         ++m_collisionSceneRevision;
 }
 
@@ -593,105 +733,98 @@ uint64_t PhysicsECSStore::GetCollisionSceneRevision() const noexcept
     return m_collisionSceneRevision + PhysicMaterial::GetSurfaceRevision();
 }
 
-void PhysicsECSStore::MarkAllCollidersDirty()
+void PhysicsECSStore::MarkAllCollidersDirty(const RuntimeWorld &world)
 {
     NotifyCollisionSceneChanged();
-    for (const ActorHandle actorHandle : m_dirtyActorList) {
-        if (m_actorPool.IsAlive(actorHandle))
-            m_actorPool.Get(actorHandle).transformDirtyQueued = false;
-    }
-    m_dirtyActorList.clear();
-
-    const auto actors = m_actorPool.GetAliveHandles();
-    m_dirtyActorList.reserve(actors.size());
-    for (const ActorHandle actorHandle : actors) {
-        auto &actor = m_actorPool.Get(actorHandle);
-        actor.transformDirtyQueued = true;
-        m_dirtyActorList.push_back(actorHandle);
-    }
+    (void)RequireQueues(world);
+    for (const auto handle : m_actorPool.GetAliveHandles())
+        if (GetActor(handle).runtimeWorld == &world)
+            MarkActorDirty(handle);
 }
-
-// ============================================================================
-// Pending body creation queue
-// ============================================================================
 
 void PhysicsECSStore::QueueBodyCreation(ActorHandle handle)
 {
-    if (IsValid(handle)) {
-        if (m_pendingBodyCreationSet.insert(ActorHandleKey(handle)).second)
-            m_pendingBodyCreationList.push_back(handle);
-    }
+    if (!IsValid(handle))
+        return;
+    const auto &actor = GetActor(handle);
+    if (!CanAuthor(actor))
+        return;
+    auto &queues = RequireQueues(*actor.runtimeWorld);
+    if (queues.pendingCreationSet.insert(ActorHandleKey(handle)).second)
+        queues.pendingCreations.push_back(handle);
 }
 
-std::vector<PhysicsECSStore::ActorHandle> PhysicsECSStore::ConsumePendingBodyCreations()
+std::vector<PhysicsECSStore::ActorHandle> PhysicsECSStore::ConsumePendingBodyCreations(const RuntimeWorld &world)
 {
+    auto &queues = RequireQueues(world);
     std::vector<ActorHandle> pending;
-    pending.swap(m_pendingBodyCreationList);
-    m_pendingBodyCreationSet.clear();
+    pending.swap(queues.pendingCreations);
+    queues.pendingCreationSet.clear();
     pending.erase(
-        std::remove_if(pending.begin(), pending.end(), [this](ActorHandle handle) { return !IsValid(handle); }),
+        std::remove_if(pending.begin(), pending.end(),
+                       [&](ActorHandle handle) { return !IsValid(handle) || GetActor(handle).runtimeWorld != &world; }),
         pending.end());
     return pending;
 }
 
-// ============================================================================
-// Pending broadphase queue
-// ============================================================================
-
-void PhysicsECSStore::QueueBroadphaseAdd(uint32_t bodyId)
+bool PhysicsECSStore::HasPendingBodyCreations(const RuntimeWorld &world) const noexcept
 {
-    if (bodyId == 0xFFFFFFFF)
+    const auto *queues = FindQueues(world);
+    return queues && !queues->pendingCreationSet.empty();
+}
+
+void PhysicsECSStore::QueueBroadphaseAdd(RuntimeWorld &world, uint32_t bodyId)
+{
+    if (bodyId == UINT32_MAX)
         return;
-    if (m_pendingBroadphaseSet.insert(bodyId).second)
-        m_pendingBroadphaseAdds.push_back(bodyId);
+    auto &queues = RequireQueues(world);
+    if (queues.broadphaseAddSet.insert(bodyId).second)
+        queues.broadphaseAdds.push_back(bodyId);
 }
 
-std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseAdds()
+bool PhysicsECSStore::CancelBroadphaseAdd(const RuntimeWorld &world, uint32_t bodyId)
 {
-    std::vector<uint32_t> result;
-    result.reserve(m_pendingBroadphaseAdds.size());
-    // A later request must not revive an older canceled queue entry. Claim
-    // each body's latest request once, then restore final request order.
-    for (auto it = m_pendingBroadphaseAdds.rbegin(); it != m_pendingBroadphaseAdds.rend(); ++it) {
-        if (m_pendingBroadphaseSet.erase(*it) != 0)
-            result.push_back(*it);
-    }
-    std::reverse(result.begin(), result.end());
-    m_pendingBroadphaseAdds.clear();
-    m_pendingBroadphaseSet.clear();
-    return result;
+    auto *queues = FindQueues(world);
+    return bodyId != UINT32_MAX && queues && queues->broadphaseAddSet.erase(bodyId);
 }
 
-bool PhysicsECSStore::CancelBroadphaseAdd(uint32_t bodyId)
+std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseAdds(const RuntimeWorld &world)
 {
-    return bodyId != 0xFFFFFFFF && m_pendingBroadphaseSet.erase(bodyId) != 0;
+    auto &queues = RequireQueues(world);
+    return ConsumeBroadphase(queues.broadphaseAdds, queues.broadphaseAddSet);
 }
 
-void PhysicsECSStore::QueueBroadphaseRemove(uint32_t bodyId)
+bool PhysicsECSStore::HasPendingBroadphaseAdds(const RuntimeWorld &world) const noexcept
 {
-    if (bodyId == 0xFFFFFFFF)
+    const auto *queues = FindQueues(world);
+    return queues && !queues->broadphaseAdds.empty();
+}
+
+void PhysicsECSStore::QueueBroadphaseRemove(RuntimeWorld &world, uint32_t bodyId)
+{
+    if (bodyId == UINT32_MAX)
         return;
-    if (m_pendingBroadphaseRemoveSet.insert(bodyId).second)
-        m_pendingBroadphaseRemoves.push_back(bodyId);
+    auto &queues = RequireQueues(world);
+    if (queues.broadphaseRemoveSet.insert(bodyId).second)
+        queues.broadphaseRemoves.push_back(bodyId);
 }
 
-bool PhysicsECSStore::CancelBroadphaseRemove(uint32_t bodyId)
+bool PhysicsECSStore::CancelBroadphaseRemove(const RuntimeWorld &world, uint32_t bodyId)
 {
-    return bodyId != 0xFFFFFFFF && m_pendingBroadphaseRemoveSet.erase(bodyId) != 0;
+    auto *queues = FindQueues(world);
+    return bodyId != UINT32_MAX && queues && queues->broadphaseRemoveSet.erase(bodyId);
 }
 
-std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseRemoves()
+std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseRemoves(const RuntimeWorld &world)
 {
-    std::vector<uint32_t> result;
-    result.reserve(m_pendingBroadphaseRemoves.size());
-    for (auto it = m_pendingBroadphaseRemoves.rbegin(); it != m_pendingBroadphaseRemoves.rend(); ++it) {
-        if (m_pendingBroadphaseRemoveSet.erase(*it) != 0)
-            result.push_back(*it);
-    }
-    std::reverse(result.begin(), result.end());
-    m_pendingBroadphaseRemoves.clear();
-    m_pendingBroadphaseRemoveSet.clear();
-    return result;
+    auto &queues = RequireQueues(world);
+    return ConsumeBroadphase(queues.broadphaseRemoves, queues.broadphaseRemoveSet);
+}
+
+bool PhysicsECSStore::HasPendingBroadphaseRemoves(const RuntimeWorld &world) const noexcept
+{
+    const auto *queues = FindQueues(world);
+    return queues && !queues->broadphaseRemoves.empty();
 }
 
 void PhysicsECSStore::UpdateJointEndpointReadiness(PhysicsActorData &actor) noexcept
@@ -702,55 +835,66 @@ void PhysicsECSStore::UpdateJointEndpointReadiness(PhysicsActorData &actor) noex
                                   : UINT32_MAX;
     if (endpoint != actor.jointEndpointBodyId) {
         actor.jointEndpointBodyId = endpoint;
-        m_pendingJointsDirty = true;
+        if (actor.runtimeWorld)
+            if (auto *queues = FindQueues(*actor.runtimeWorld))
+                queues->pendingJointsDirty = true;
     }
 }
 
 void PhysicsECSStore::QueuePendingJoint(Joint &joint) noexcept
 {
-    joint.m_pendingEpoch = SceneManager::Instance().GetSimulationEpoch();
+    const auto actor = FindActor(joint.GetGameObject());
+    auto *world = IsValid(actor) && CanAuthor(GetActor(actor)) ? GetActor(actor).runtimeWorld : nullptr;
+    auto *queues = world ? FindQueues(*world) : nullptr;
+    if (!queues)
+        return; // Staging is author-only, with no default-world epoch or node.
+    if (joint.m_pendingConstraint && joint.m_pendingWorld != world)
+        return; // A live cross-World transfer must be rejected before mutation.
+    joint.m_pendingEpoch = world->simulation.simulationEpoch;
     if (joint.m_pendingConstraint)
         return;
+    joint.m_pendingWorld = world;
     joint.m_pendingConstraint = true;
-    joint.m_pendingPrevious = m_pendingJointTail;
+    joint.m_pendingPrevious = queues->pendingJointTail;
     joint.m_pendingNext = nullptr;
-    if (m_pendingJointTail)
-        m_pendingJointTail->m_pendingNext = &joint;
+    if (queues->pendingJointTail)
+        queues->pendingJointTail->m_pendingNext = &joint;
     else
-        m_pendingJointHead = &joint;
-    m_pendingJointTail = &joint;
-    m_pendingJointsDirty = true;
+        queues->pendingJointHead = &joint;
+    queues->pendingJointTail = &joint;
+    queues->pendingJointsDirty = true;
 }
 
 void PhysicsECSStore::CancelPendingJoint(Joint &joint) noexcept
 {
     if (!joint.m_pendingConstraint)
         return;
+    auto *queues = joint.m_pendingWorld ? FindQueues(*joint.m_pendingWorld) : nullptr;
     if (joint.m_pendingPrevious)
         joint.m_pendingPrevious->m_pendingNext = joint.m_pendingNext;
-    else
-        m_pendingJointHead = joint.m_pendingNext;
+    else if (queues)
+        queues->pendingJointHead = joint.m_pendingNext;
     if (joint.m_pendingNext)
         joint.m_pendingNext->m_pendingPrevious = joint.m_pendingPrevious;
-    else
-        m_pendingJointTail = joint.m_pendingPrevious;
+    else if (queues)
+        queues->pendingJointTail = joint.m_pendingPrevious;
     joint.m_pendingPrevious = joint.m_pendingNext = nullptr;
+    joint.m_pendingWorld = nullptr;
     joint.m_pendingConstraint = false;
 }
 
-void PhysicsECSStore::DrainPendingJoints()
+void PhysicsECSStore::DrainPendingJoints(RuntimeWorld &world)
 {
-    if (!m_pendingJointsDirty || m_drainingPendingJoints)
+    auto &queues = RequireQueues(world);
+    if (!queues.pendingJointsDirty || queues.drainingPendingJoints)
         return;
-    m_pendingJointsDirty = false;
-    m_drainingPendingJoints = true;
+    const WorldExecutionScope worldScope(&world);
+    queues.pendingJointsDirty = false;
+    queues.drainingPendingJoints = true;
     try {
-        auto &manager = SceneManager::Instance();
-        // Rebuild/OnConstraintCreated only append physics author commands; they
-        // do not dispatch gameplay callbacks or destroy other component nodes.
-        for (auto *joint = m_pendingJointHead; joint;) {
+        for (auto *joint = queues.pendingJointHead; joint;) {
             auto *next = joint->m_pendingNext;
-            if (joint->m_pendingEpoch != manager.GetSimulationEpoch()) {
+            if (joint->m_pendingEpoch != world.simulation.simulationEpoch) {
                 joint->m_retryOnRetire = false;
                 CancelPendingJoint(*joint);
             } else {
@@ -759,36 +903,56 @@ void PhysicsECSStore::DrainPendingJoints()
             joint = next;
         }
     } catch (...) {
-        m_drainingPendingJoints = false;
-        m_pendingJointsDirty = true;
+        queues.drainingPendingJoints = false;
+        queues.pendingJointsDirty = true;
         throw;
     }
-    m_drainingPendingJoints = false;
+    queues.drainingPendingJoints = false;
 }
 
-void PhysicsECSStore::ClearPendingJoints() noexcept
+void PhysicsECSStore::ClearPendingJoints(const RuntimeWorld &world) noexcept
 {
-    while (m_pendingJointHead) {
-        m_pendingJointHead->m_retryOnRetire = false;
-        CancelPendingJoint(*m_pendingJointHead);
+    auto *queues = FindQueues(world);
+    if (!queues)
+        return;
+    while (queues->pendingJointHead) {
+        queues->pendingJointHead->m_retryOnRetire = false;
+        CancelPendingJoint(*queues->pendingJointHead);
     }
-    m_pendingJointsDirty = false;
+    queues->pendingJointsDirty = false;
+}
+
+bool PhysicsECSStore::HasPendingJointDependencies(const RuntimeWorld &world) const noexcept
+{
+    const auto *queues = FindQueues(world);
+    return queues && queues->pendingJointsDirty && queues->pendingJointHead;
+}
+
+void PhysicsECSStore::ClearWorldPendingQueues(const RuntimeWorld &world)
+{
+    auto *queues = FindQueues(world);
+    if (!queues)
+        return;
+    ClearPendingJoints(world);
+    queues->pendingCreations.clear();
+    queues->pendingCreationSet.clear();
+    queues->broadphaseAdds.clear();
+    queues->broadphaseAddSet.clear();
+    queues->broadphaseRemoves.clear();
+    queues->broadphaseRemoveSet.clear();
+    for (const auto handle : queues->dirtyActors)
+        if (IsValid(handle) && GetActor(handle).runtimeWorld == &world)
+            GetActor(handle).transformDirtyQueued = false;
+    queues->dirtyActors.clear();
+    queues->dirtyScratch.clear();
 }
 
 void PhysicsECSStore::ClearPendingQueues()
 {
-    ClearPendingJoints();
-    m_pendingBodyCreationList.clear();
-    m_pendingBodyCreationSet.clear();
-    m_pendingBroadphaseAdds.clear();
-    m_pendingBroadphaseSet.clear();
-    m_pendingBroadphaseRemoves.clear();
-    m_pendingBroadphaseRemoveSet.clear();
-    for (const ActorHandle actorHandle : m_dirtyActorList) {
-        if (m_actorPool.IsAlive(actorHandle))
-            m_actorPool.Get(actorHandle).transformDirtyQueued = false;
+    for (const auto &[id, queues] : m_worldQueues) {
+        (void)id;
+        ClearWorldPendingQueues(*queues.owner);
     }
-    m_dirtyActorList.clear();
 }
 
 } // namespace infernux

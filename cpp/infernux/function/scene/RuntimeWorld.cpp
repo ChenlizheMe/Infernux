@@ -1,5 +1,6 @@
 #include "RuntimeWorld.h"
 #include "Scene.h"
+#include "physics/PhysicsECSStore.h"
 #include <atomic>
 
 namespace infernux
@@ -32,10 +33,13 @@ RuntimeWorld::RuntimeWorld() : id(s_nextRuntimeWorldId.fetch_add(1, std::memory_
 {
     // Input must outlive every World, including the SceneManager default World.
     (void)InputManager::Instance();
+    PhysicsECSStore::Instance().RegisterRuntimeWorld(*this);
 }
 RuntimeWorld::~RuntimeWorld()
 {
+    const WorldExecutionScope worldScope(this);
     scenes.Clear();
+    PhysicsECSStore::Instance().RetireRuntimeWorld(*this);
     InputManager::Instance().RetireWorldInput(id);
 }
 

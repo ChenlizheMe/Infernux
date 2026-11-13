@@ -1186,7 +1186,7 @@ void SceneManager::Stop()
     }
     // CancelPendingStep retires bound constraints before the Play epoch ends.
     // Drop those callbacks' pending nodes before editor/runtime graph restore.
-    PhysicsECSStore::Instance().ClearPendingJoints();
+    PhysicsECSStore::Instance().ClearPendingJoints(world);
     world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
     world.simulation.pausedStepPending = false;
     world.simulation.stepFrameOpen = false;
@@ -1592,6 +1592,7 @@ void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
 
 void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
 {
+    auto &world = CurrentWorld();
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     // FixedUpdate may have authored cached poses. They must reach physics
     // before the solver, rather than waiting for the end-of-frame commit.
@@ -1599,7 +1600,7 @@ void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
         PhysicsECSStore::Instance().MarkAuthoredHierarchyDirty(transform->GetGameObject(), rotationAuthored);
     });
     auto &store = PhysicsECSStore::Instance();
-    const auto &dirtyColliders = store.ConsumeDirtyActors();
+    const auto &dirtyColliders = store.ConsumeDirtyActors(world);
     m_lastFrameProfile.colliderSyncCandidates += static_cast<double>(dirtyColliders.size());
     static thread_local std::vector<PhysicsBodyPoseUpdate> staticPoseBatch;
     staticPoseBatch.clear();
@@ -1641,7 +1642,7 @@ void SceneManager::PublishAuthoredTransformsToPhysics()
     // synchronizing on every property setter. This preserves high-FPS editor
     // performance while preventing Rigidbody interpolation from restoring an
     // older pose on the following frame.
-    if (store.HasDirtyColliders()) {
+    if (store.HasDirtyColliders(world)) {
         FlushPendingBroadphase();
         SyncCollidersToPhysics(0.0f);
     }
@@ -1735,7 +1736,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     }
     if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Integration) {
         if (PhysicsWorld::Instance().HasPendingStep() || PhysicsWorld::Instance().HasPendingControl() ||
-            PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
+            PhysicsECSStore::Instance().GetAliveRigidbodyCount(world) > 0) {
             world.simulation.fixedHasPhysics = true;
             const auto phaseStart = ProfileClock::now();
             PhysicsStepProfile profile;
@@ -1804,6 +1805,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
 
 void SceneManager::FlushPendingBroadphase()
 {
+    auto &world = CurrentWorld();
     MeshCollider::FlushCompletedCooking();
     auto &store = PhysicsECSStore::Instance();
     auto &pw = PhysicsWorld::Instance();
@@ -1811,9 +1813,9 @@ void SceneManager::FlushPendingBroadphase()
         return;
 
     // ── Create deferred Jolt bodies ──
-    auto pendingBodies = store.ConsumePendingBodyCreations();
-    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds() && !store.HasPendingBroadphaseRemoves()) {
-        store.DrainPendingJoints();
+    auto pendingBodies = store.ConsumePendingBodyCreations(world);
+    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds(world) && !store.HasPendingBroadphaseRemoves(world)) {
+        store.DrainPendingJoints(world);
         return;
     }
 
@@ -1831,15 +1833,15 @@ void SceneManager::FlushPendingBroadphase()
     // Gameplay Update/FixedUpdate may toggle Collider.enabled. Submit those
     // mutations only at this fixed-step boundary so Jolt never observes a
     // broadphase change from inside a component callback.
-    for (const uint32_t bodyId : store.ConsumePendingBroadphaseRemoves()) {
+    for (const uint32_t bodyId : store.ConsumePendingBroadphaseRemoves(world)) {
         pw.RemoveBodyFromBroadphase(bodyId);
     }
 
     // ── Batch add to broadphase ──
     auto t1 = ProfileClock::now();
-    auto pending = store.ConsumePendingBroadphaseAdds();
+    auto pending = store.ConsumePendingBroadphaseAdds(world);
     if (pending.empty()) {
-        store.DrainPendingJoints();
+        store.DrainPendingJoints(world);
         return;
     }
 
@@ -1848,7 +1850,7 @@ void SceneManager::FlushPendingBroadphase()
     pw.AddBodiesBatch(pending);
     // Both endpoints' actor initialization and residency now precede the
     // Joint topology group in the same ordered author command source.
-    store.DrainPendingJoints();
+    store.DrainPendingJoints(world);
 
     double addBodiesMs = ProfileMsSince(t1);
 
@@ -1879,7 +1881,7 @@ void SceneManager::SyncTransforms(float motionDeltaTime)
     // a barrier: wait for those immutable CPU jobs, commit them on this main
     // thread, then create/rebuild bodies before returning.
     FlushPendingBroadphase();
-    PhysicsECSStore::Instance().MarkAllCollidersDirty();
+    PhysicsECSStore::Instance().MarkAllCollidersDirty(CurrentWorld());
     // The ordinary barrier publishes immediately. Editor drag explicitly
     // supplies a step when its movement must impart contact velocity.
     SyncCollidersToPhysics(motionDeltaTime);

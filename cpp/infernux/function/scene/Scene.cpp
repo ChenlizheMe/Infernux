@@ -475,6 +475,7 @@ void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
     if (!gameObject)
         return;
 
+    PhysicsECSStore::Instance().ValidateHierarchyWorld(gameObject.get(), m_runtimeWorld);
     gameObject->SetScene(this);
     RegisterObjectSubtree(gameObject.get());
 
@@ -544,6 +545,7 @@ void Scene::AttachRootObject(std::unique_ptr<GameObject> gameObject)
     RequireWritableWorld();
     if (!gameObject)
         return;
+    PhysicsECSStore::Instance().ValidateHierarchyWorld(gameObject.get(), m_runtimeWorld);
     gameObject->SetScene(this); // Ensure scene is set
     RegisterObjectSubtree(gameObject.get());
     m_rootObjects.push_back(std::move(gameObject));
@@ -562,6 +564,9 @@ bool Scene::TransferObjectTo(GameObject *gameObject, Scene &destination, GameObj
     destination.RequireWritableWorld();
     if (!gameObject || gameObject->GetScene() != this || &destination == this || IsPreview() || destination.IsPreview())
         return false;
+    if (m_runtimeWorld && destination.m_runtimeWorld && m_runtimeWorld != destination.m_runtimeWorld)
+        return false;
+    PhysicsECSStore::Instance().ValidateHierarchyWorld(gameObject, destination.m_runtimeWorld);
     if (destinationParent &&
         (destinationParent->GetScene() != &destination || destination.IsPendingDestroy(destinationParent)))
         return false;
@@ -1447,11 +1452,16 @@ std::unique_ptr<GameObject> Scene::BuildGameObjectFromJson(const std::string &js
 
 void Scene::RegisterObjectSubtree(GameObject *root)
 {
-    if (!root)
-        return;
-    RegisterGameObject(root);
-    for (const auto &child : root->GetChildren())
-        RegisterObjectSubtree(child.get());
+    const auto registerSubtree = [&](const auto &self, GameObject *object) -> void {
+        if (!object)
+            return;
+        RegisterGameObject(object);
+        for (const auto &child : object->GetChildren())
+            self(self, child.get());
+    };
+    registerSubtree(registerSubtree, root);
+    // Publish ownership once the entire hierarchy has lookup identities.
+    PhysicsECSStore::Instance().PublishHierarchyOwnership(root);
 }
 
 void Scene::ProcessPendingDestroys()
@@ -1648,15 +1658,7 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, InstantiationIds &i
 
     // Register all cloned objects in scene lookup
     GameObject *ptr = clone.get();
-    auto registerAll = [&](auto &&self, GameObject *go) -> void {
-        if (!go)
-            return;
-        RegisterGameObject(go);
-        for (const auto &child : go->GetChildren()) {
-            self(self, child.get());
-        }
-    };
-    registerAll(registerAll, ptr);
+    RegisterObjectSubtree(ptr);
     publication.Track(*ptr);
 
     // Attach to scene hierarchy
@@ -2272,6 +2274,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             root->SetScene(this);
             m_rootObjects.push_back(std::move(root));
         }
+        for (const auto &root : m_rootObjects)
+            PhysicsECSStore::Instance().PublishHierarchyOwnership(root.get());
 
         // Documents preserve GameObject IDs. Advance the process-wide allocator
         // before Awake can create more objects, otherwise a fresh object after

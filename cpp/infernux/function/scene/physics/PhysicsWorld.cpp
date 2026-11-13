@@ -681,17 +681,18 @@ bool PhysicsWorld::AdvanceFixedStep(bool synchronous)
 }
 void PhysicsWorld::RetryCapacityBodyCreations()
 {
+    auto &world = SceneManager::Instance().CurrentWorld();
     m_waitingForSlot = false;
     auto &store = PhysicsECSStore::Instance();
     // Revisit only the existing actor factory/residency queues. No scripts,
     // clocks, fixed callbacks or unrelated world work are replayed here.
-    for (const auto handle : store.ConsumePendingBodyCreations())
+    for (const auto handle : store.ConsumePendingBodyCreations(world))
         if (store.IsValid(handle) && store.GetActor(handle).bodyId == UINT32_MAX)
             store.RegisterActor(handle);
-    for (const auto id : store.ConsumePendingBroadphaseRemoves())
+    for (const auto id : store.ConsumePendingBroadphaseRemoves(world))
         RemoveBodyFromBroadphase(id);
-    AddBodiesBatch(store.ConsumePendingBroadphaseAdds());
-    store.DrainPendingJoints();
+    AddBodiesBatch(store.ConsumePendingBroadphaseAdds(world));
+    store.DrainPendingJoints(world);
 }
 bool PhysicsWorld::HasPendingStep() const noexcept
 {
@@ -699,10 +700,11 @@ bool PhysicsWorld::HasPendingStep() const noexcept
 }
 bool PhysicsWorld::HasPendingControl() const noexcept
 {
+    const auto &world = SceneManager::Instance().CurrentWorld();
     const auto &store = PhysicsECSStore::Instance();
-    return m_controlPending || (m_gpuScene && m_gpuScene->HasPendingControl()) || store.HasDirtyColliders() ||
-           store.HasPendingBodyCreations() || store.HasPendingBroadphaseAdds() || store.HasPendingBroadphaseRemoves() ||
-           store.HasPendingJointDependencies() ||
+    return m_controlPending || (m_gpuScene && m_gpuScene->HasPendingControl()) || store.HasDirtyColliders(world) ||
+           store.HasPendingBodyCreations(world) || store.HasPendingBroadphaseAdds(world) ||
+           store.HasPendingBroadphaseRemoves(world) || store.HasPendingJointDependencies(world) ||
            (m_gpuScene && !m_gpuCancelled && PhysicMaterial::GetSurfaceRevision() != m_surfaceRevision);
 }
 void PhysicsWorld::DrainGpuSource() const
@@ -825,6 +827,7 @@ void PhysicsWorld::RefreshRenderPoses()
 }
 void PhysicsWorld::CancelPendingStep() noexcept
 {
+    auto &world = SceneManager::Instance().CurrentWorld();
     if (m_gpuRenderState) {
         m_gpuRenderState->bindings.Clear();
         m_gpuRenderState->pending.reset();
@@ -836,13 +839,13 @@ void PhysicsWorld::CancelPendingStep() noexcept
             m_recreateActors.clear();
             auto &store = PhysicsECSStore::Instance();
             store.ForEachAliveActor([&](PhysicsActorData &actor) {
-                if (actor.bodyId == UINT32_MAX)
+                if (actor.runtimeWorld != &world || actor.bodyId == UINT32_MAX)
                     return;
                 const auto handle = m_gpuScene->FindActor(actor.bodyId);
                 if (!store.IsValid(handle) || &store.GetActor(handle) != &actor)
                     return;
-                store.CancelBroadphaseAdd(actor.bodyId);
-                store.CancelBroadphaseRemove(actor.bodyId);
+                store.CancelBroadphaseAdd(world, actor.bodyId);
+                store.CancelBroadphaseRemove(world, actor.bodyId);
                 actor.bodyId = UINT32_MAX;
                 actor.bodyInBroadphase = false;
                 actor.jointEndpointBodyId = UINT32_MAX;
@@ -854,7 +857,11 @@ void PhysicsWorld::CancelPendingStep() noexcept
         m_gpuScene->Cancel();
         m_gpuCancelled = true;
     }
-    PhysicsECSStore::Instance().ForEachAliveRigidbody([](RigidbodyECSData &body) { body.physicsTargetSources = {}; });
+    auto &store = PhysicsECSStore::Instance();
+    store.ForEachAliveRigidbody([&](RigidbodyECSData &body) {
+        if (store.IsValid(body.actorHandle) && store.GetActor(body.actorHandle).runtimeWorld == &world)
+            body.physicsTargetSources = {};
+    });
     m_stepPending = m_stepCompleted = false;
     m_fixedGpuPhase = FixedGpuPhase::Idle;
     m_admittedParameters.reset();

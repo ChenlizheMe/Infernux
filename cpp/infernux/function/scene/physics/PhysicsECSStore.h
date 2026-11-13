@@ -25,11 +25,15 @@ class Collider;
 class GameObject;
 class Joint;
 class Rigidbody;
+class RuntimeWorld;
 class Transform;
 
 struct PhysicsActorData
 {
     GameObject *owner = nullptr;
+    // Bound only after the author hierarchy is published. Retained through
+    // Scene detachment until this actor is destroyed; never a default World.
+    RuntimeWorld *runtimeWorld = nullptr;
     Collider *primaryCollider = nullptr;
     Rigidbody *rigidbody = nullptr;
     uint32_t bodyId = 0xFFFFFFFF;
@@ -132,6 +136,12 @@ class PhysicsECSStore
 
     static PhysicsECSStore &Instance();
 
+    // Register before publishing Scenes; retire only after their actors die.
+    void RegisterRuntimeWorld(RuntimeWorld &world);
+    void RetireRuntimeWorld(RuntimeWorld &world);
+    void ValidateHierarchyWorld(const GameObject *root, const RuntimeWorld *destination) const;
+    void PublishHierarchyOwnership(GameObject *root);
+
     // A Rigidbody owns its actor even when it has no collision shapes.
     // Collider-only objects own static actors.
     ActorHandle AcquireActor(GameObject *owner);
@@ -200,99 +210,45 @@ class PhysicsECSStore
                              const Transform *authoredSource = nullptr, bool rotationAuthored = false);
     void MarkAuthoredHierarchyDirty(GameObject *root, bool rotationAuthored);
 
-    /// Consume changed actors once, including actors without collision shapes.
-    /// The returned reference remains valid until the next call.
-    const std::vector<ActorHandle> &ConsumeDirtyActors();
+    /// Consume only this World's dirty prefix; other World scratch stays valid.
+    const std::vector<ActorHandle> &ConsumeDirtyActors(const RuntimeWorld &world);
+    [[nodiscard]] bool HasDirtyColliders(const RuntimeWorld &world) const noexcept;
+    void MarkAllCollidersDirty(const RuntimeWorld &world);
 
-    /// True if any collider has been marked dirty since last consume.
-    [[nodiscard]] bool HasDirtyColliders() const
-    {
-        return !m_dirtyActorList.empty();
-    }
-
-    /// Mark all alive colliders dirty (used for force-sync scenarios).
-    void MarkAllCollidersDirty();
-
-    /// Monotonic source revision for renderer-owned collision mirrors. This is
-    /// independent of ConsumeDirtyActors(), which remains owned by PhysX/Jolt
-    /// synchronization and may only be consumed once.
+    /// Shared author revision, independent of per-World queue consumption.
     void NotifyCollisionSceneChanged() noexcept;
     [[nodiscard]] uint64_t GetCollisionSceneRevision() const noexcept;
 
-    // Unbound Joint nodes are owned by their live components. Only a new
-    // request or changed endpoint participation wakes this pending-only list.
+    // Pending intrusive Joint membership belongs to its actual published owner.
     void QueuePendingJoint(Joint &joint) noexcept;
     void CancelPendingJoint(Joint &joint) noexcept;
-    void DrainPendingJoints();
-    void ClearPendingJoints() noexcept;
-    [[nodiscard]] bool HasPendingJointDependencies() const noexcept
-    {
-        return m_pendingJointsDirty && m_pendingJointHead;
-    }
+    void DrainPendingJoints(RuntimeWorld &world);
+    void ClearPendingJoints(const RuntimeWorld &world) noexcept;
+    [[nodiscard]] bool HasPendingJointDependencies(const RuntimeWorld &world) const noexcept;
 
-    // ---- Pending body creation queue (deferred from Collider::Awake) ----
-
-    /// Queue one actor for deferred Jolt body creation at the physics boundary.
     void QueueBodyCreation(ActorHandle handle);
+    std::vector<ActorHandle> ConsumePendingBodyCreations(const RuntimeWorld &world);
+    [[nodiscard]] bool HasPendingBodyCreations(const RuntimeWorld &world) const noexcept;
 
-    /// Consume pending body creation queue.  Returns handles (dead entries filtered).
-    std::vector<ActorHandle> ConsumePendingBodyCreations();
+    // Explicit owner survives Scene=null retirement. No ambient-world fallback.
+    void QueueBroadphaseAdd(RuntimeWorld &world, uint32_t bodyId);
+    bool CancelBroadphaseAdd(const RuntimeWorld &world, uint32_t bodyId);
+    std::vector<uint32_t> ConsumePendingBroadphaseAdds(const RuntimeWorld &world);
+    [[nodiscard]] bool HasPendingBroadphaseAdds(const RuntimeWorld &world) const noexcept;
+    void QueueBroadphaseRemove(RuntimeWorld &world, uint32_t bodyId);
+    bool CancelBroadphaseRemove(const RuntimeWorld &world, uint32_t bodyId);
+    std::vector<uint32_t> ConsumePendingBroadphaseRemoves(const RuntimeWorld &world);
+    [[nodiscard]] bool HasPendingBroadphaseRemoves(const RuntimeWorld &world) const noexcept;
 
-    /// True if any colliders are waiting for body creation.
-    [[nodiscard]] bool HasPendingBodyCreations() const
-    {
-        return !m_pendingBodyCreationSet.empty();
-    }
-
-    // ---- Pending broadphase queue (deferred body activation) ----
-
-    /// Queue a body ID for batch broadphase addition at next flush.
-    void QueueBroadphaseAdd(uint32_t bodyId);
-
-    /// Consume each final add request once, in request order. Motion type is
-    /// read from the body at publication, after all authored changes.
-    std::vector<uint32_t> ConsumePendingBroadphaseAdds();
-
-    /// Cancel an add that has not reached Jolt yet.
-    bool CancelBroadphaseAdd(uint32_t bodyId);
-
-    /// True if any bodies are waiting to be added to the broadphase.
-    [[nodiscard]] bool HasPendingBroadphaseAdds() const
-    {
-        return !m_pendingBroadphaseAdds.empty();
-    }
-
-    /// Queue a body for removal at the next pre-physics flush. Gameplay
-    /// callbacks must not mutate Jolt's broadphase directly.
-    void QueueBroadphaseRemove(uint32_t bodyId);
-
-    /// Cancel a removal when the Collider is re-enabled before the flush.
-    bool CancelBroadphaseRemove(uint32_t bodyId);
-
-    /// Consume pending broadphase removals.
-    std::vector<uint32_t> ConsumePendingBroadphaseRemoves();
-
-    [[nodiscard]] bool HasPendingBroadphaseRemoves() const
-    {
-        return !m_pendingBroadphaseRemoves.empty();
-    }
-
-    /// Pre-allocate internal pools and queues for @p count new colliders.
+    /// Reserve author pools. Domain queues grow only for their real owner.
     void ReserveForBulkCreation(size_t count)
     {
         m_colliderPool.Reserve(m_colliderPool.Capacity() + count);
         m_actorPool.Reserve(m_actorPool.Capacity() + count);
-        m_pendingBodyCreationList.reserve(m_pendingBodyCreationList.size() + count);
-        m_pendingBodyCreationSet.reserve(m_pendingBodyCreationSet.size() + count);
-        m_pendingBroadphaseAdds.reserve(m_pendingBroadphaseAdds.size() + count);
-        m_pendingBroadphaseSet.reserve(m_pendingBroadphaseSet.size() + count);
-        m_pendingBroadphaseRemoves.reserve(m_pendingBroadphaseRemoves.size() + count);
-        m_pendingBroadphaseRemoveSet.reserve(m_pendingBroadphaseRemoveSet.size() + count);
     }
 
-    /// Clear all pending work after all Worlds have retired at engine shutdown.
-    /// Scene replacement must preserve live Worlds' commands. Generation-aware
-    /// handles already distinguish newly allocated slots from retired owners.
+    void ClearWorldPendingQueues(const RuntimeWorld &world);
+    /// Entire engine shutdown only, after all actors and callbacks retire.
     void ClearPendingQueues();
 
     // ---- Rigidbody pool ----
@@ -305,10 +261,7 @@ class PhysicsECSStore
     {
         return m_rigidbodyPool.GetAliveHandles();
     }
-    [[nodiscard]] size_t GetAliveRigidbodyCount() const
-    {
-        return m_rigidbodyPool.AliveCount();
-    }
+    [[nodiscard]] size_t GetAliveRigidbodyCount(const RuntimeWorld &world) const noexcept;
 
     /// Zero-allocation iteration over all alive rigidbodies.
     template <typename Func> void ForEachAliveRigidbody(Func &&func)
@@ -324,6 +277,7 @@ class PhysicsECSStore
   private:
     PhysicsECSStore() = default;
     void RetireActor(ActorHandle handle);
+    void BindActorWorld(ActorHandle handle);
     void UpdateJointEndpointReadiness(PhysicsActorData &actor) noexcept;
     void MarkActorDirty(ActorHandle handle);
     ActorHandle BindRigidbodyActor(Rigidbody *body);
@@ -335,28 +289,28 @@ class PhysicsECSStore
     InxContiguousPool<RigidbodyECSData> m_rigidbodyPool;
     std::unordered_map<GameObject *, ActorHandle> m_actorByOwner;
 
-    // Dirty collider tracking — colliders whose Transform changed and need physics sync.
-    std::vector<ActorHandle> m_dirtyActorList;
-    std::vector<ActorHandle> m_dirtyActorScratch;
+    struct DomainAuthorQueues
+    {
+        RuntimeWorld *owner = nullptr;
+        size_t aliveRigidbodyCount = 0;
+        std::vector<ActorHandle> dirtyActors;
+        std::vector<ActorHandle> dirtyScratch;
+        std::vector<ActorHandle> pendingCreations;
+        std::unordered_set<uint64_t> pendingCreationSet;
+        std::vector<uint32_t> broadphaseAdds;
+        std::unordered_set<uint32_t> broadphaseAddSet;
+        std::vector<uint32_t> broadphaseRemoves;
+        std::unordered_set<uint32_t> broadphaseRemoveSet;
+        Joint *pendingJointHead = nullptr;
+        Joint *pendingJointTail = nullptr;
+        bool pendingJointsDirty = false;
+        bool drainingPendingJoints = false;
+    };
+    DomainAuthorQueues &RequireQueues(const RuntimeWorld &world);
+    DomainAuthorQueues *FindQueues(const RuntimeWorld &world) noexcept;
+    const DomainAuthorQueues *FindQueues(const RuntimeWorld &world) const noexcept;
+    std::unordered_map<uint64_t, DomainAuthorQueues> m_worldQueues;
     uint64_t m_collisionSceneRevision = 1;
-
-    Joint *m_pendingJointHead = nullptr;
-    Joint *m_pendingJointTail = nullptr;
-    bool m_pendingJointsDirty = false;
-    bool m_drainingPendingJoints = false;
-
-    // Pending actor creation, deduplicated by generation-aware handle.
-    std::vector<ActorHandle> m_pendingBodyCreationList;
-    std::unordered_set<uint64_t> m_pendingBodyCreationSet; // generation-aware handle dedup
-
-    // Pending broadphase add queue — body IDs in authored request order.
-    std::vector<uint32_t> m_pendingBroadphaseAdds;
-    std::unordered_set<uint32_t> m_pendingBroadphaseSet; // deduplicate
-
-    // Pending broadphase removals. Entries remain in the vector after a
-    // cancellation and are filtered through the set during consume.
-    std::vector<uint32_t> m_pendingBroadphaseRemoves;
-    std::unordered_set<uint32_t> m_pendingBroadphaseRemoveSet;
 };
 
 } // namespace infernux

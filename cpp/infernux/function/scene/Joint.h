@@ -10,6 +10,7 @@ namespace infernux
 class PhysicsECSStore;
 class PhysicsWorld;
 class Rigidbody;
+class RuntimeWorld;
 struct SemanticTypeDescriptor;
 
 /// Shared body participation and lifetime for Jolt two-body constraints.
@@ -85,6 +86,7 @@ class Joint : public Component, protected PhysicsConstraintOwner
     // Retirement callbacks may enqueue without allocating or invoking scripts.
     Joint *m_pendingPrevious = nullptr;
     Joint *m_pendingNext = nullptr;
+    RuntimeWorld *m_pendingWorld = nullptr;
     uint64_t m_pendingEpoch = 0;
     bool m_pendingConstraint = false;
     bool m_retryOnRetire = false;
