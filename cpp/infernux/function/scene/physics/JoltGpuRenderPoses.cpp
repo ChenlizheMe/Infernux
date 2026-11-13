@@ -154,27 +154,83 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::Co
 {
     if (bindings.empty())
         return {};
-    if (nodes.empty() || nodes.size() > MaxBodiesPerWorld || bindings.size() > std::numeric_limits<uint32_t>::max() / 4)
-        throw std::invalid_argument("GPU render-pose inputs exceed their bounded node or mesh index range");
+    if (nodes.empty() || nodes.size() > std::numeric_limits<uint32_t>::max() / 8 ||
+        bindings.size() > std::numeric_limits<uint32_t>::max() / 4)
+        throw std::invalid_argument("GPU render-pose inputs exceed their node or mesh device index range");
     if (!frozenBodyStates || !frozenBodyStates->IsFrozen() || !m_host.SharesServicesWith(frozenBodyStates->GetHost()) ||
         frozenBodyStates->GetByteSize() % sizeof(BodyState))
         throw std::invalid_argument("GPU render poses require a frozen final state from the same compute owner");
     const auto bodyCount = frozenBodyStates->GetByteSize() / sizeof(BodyState);
+    const auto &caps = m_host.device.GetCapabilities();
+    const auto checkedBytes = [&](uint64_t count, uint64_t stride) {
+        if (count > std::numeric_limits<size_t>::max() / stride ||
+            count > std::numeric_limits<uint64_t>::max() / stride)
+            throw std::invalid_argument("GPU render-pose storage exceeds the host/device byte range");
+        const auto bytes = count * stride;
+        if (caps.portable.maxStorageBufferBinding && bytes > caps.portable.maxStorageBufferBinding)
+            throw std::invalid_argument("GPU render-pose storage exceeds the device binding range");
+        return static_cast<size_t>(bytes);
+    };
+    const auto nodeInputBytes = checkedBytes(nodes.size(), sizeof(PoseNode));
+    const auto bindingInputBytes = checkedBytes(bindings.size(), sizeof(PoseBinding));
+    (void)checkedBytes(nodes.size(), 8 * sizeof(Float4));
+    (void)checkedBytes(bindings.size(), 4 * sizeof(Float4));
+    (void)checkedBytes(bindings.size(), 2 * sizeof(Float4));
+    (void)checkedBytes(bodyCount, sizeof(BodyState));
+
+    // Every node has at most one physical parent. Stable breadth-first Kahn
+    // ordering visits each edge once and makes each level a contiguous range.
+    std::vector<uint32_t> children(nodes.size(), PoseNoParent), next(nodes.size(), PoseNoParent), order;
+    order.reserve(nodes.size());
     for (const auto &node : nodes)
         if (node.bodyParent.x >= bodyCount || (node.bodyParent.y != PoseNoParent && node.bodyParent.y >= nodes.size()))
             throw std::invalid_argument("GPU render-pose node addresses an absent body or parent");
-    for (size_t node = 0; node < nodes.size(); ++node) {
-        auto parent = static_cast<uint32_t>(node);
-        size_t depth = 0;
-        while (parent != PoseNoParent) {
-            if (++depth > nodes.size())
-                throw std::invalid_argument("GPU render-pose parent graph contains a cycle");
-            parent = nodes[parent].bodyParent.y;
+    for (uint32_t index = 0; index < nodes.size(); ++index)
+        if (nodes[index].bodyParent.y == PoseNoParent)
+            order.push_back(index);
+    for (size_t index = nodes.size(); index-- > 0;) {
+        const auto parent = nodes[index].bodyParent.y;
+        if (parent != PoseNoParent) {
+            next[index] = children[parent];
+            children[parent] = static_cast<uint32_t>(index);
         }
     }
+    std::vector<std::array<uint32_t, 2>> levels;
+    uint32_t maxLevelCount = 0;
+    for (size_t first = 0; first < order.size();) {
+        const auto end = order.size();
+        const auto count = static_cast<uint32_t>(end - first);
+        levels.push_back({static_cast<uint32_t>(first), count});
+        maxLevelCount = std::max(maxLevelCount, count);
+        for (size_t index = first; index < end; ++index)
+            for (auto child = children[order[index]]; child != PoseNoParent; child = next[child])
+                order.push_back(child);
+        first = end;
+    }
+    if (order.size() != nodes.size())
+        throw std::invalid_argument("GPU render-pose parent graph contains a cycle");
+    const auto groups = [](uint32_t count) { return count / 64 + static_cast<uint32_t>(count % 64 != 0); };
+    if (groups(maxLevelCount) > caps.limits.maxComputeWorkgroupCount[0] ||
+        groups(static_cast<uint32_t>(bindings.size())) > caps.limits.maxComputeWorkgroupCount[0])
+        throw std::invalid_argument("GPU render-pose dispatch exceeds the device workgroup range");
     for (const auto &binding : bindings)
         if (binding.nodeIndex.x >= nodes.size())
             throw std::invalid_argument("GPU render-pose binding addresses an absent node");
+
+    std::vector<uint32_t> remap(nodes.size());
+    for (uint32_t row = 0; row < order.size(); ++row)
+        remap[order[row]] = row;
+    std::vector<PoseNode> orderedNodes;
+    orderedNodes.reserve(nodes.size());
+    for (const auto old : order) {
+        auto node = nodes[old];
+        if (node.bodyParent.y != PoseNoParent)
+            node.bodyParent.y = remap[node.bodyParent.y];
+        orderedNodes.push_back(node);
+    }
+    auto orderedBindings = bindings;
+    for (auto &binding : orderedBindings)
+        binding.nodeIndex.x = remap[binding.nodeIndex.x];
 
     rhi::ComputeHost host = m_host;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
@@ -195,10 +251,8 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::Co
     };
     const auto nodeCount = static_cast<uint32_t>(nodes.size());
     const auto count = static_cast<uint32_t>(bindings.size());
-    const PoseParams parameters{{nodeCount, count, 0, 0}};
-    input(Parameters, m_parameters, &parameters, sizeof(parameters));
-    input(Nodes, m_nodeInputs, nodes.data(), nodes.size() * sizeof(PoseNode));
-    input(Bindings, m_bindingInputs, bindings.data(), bindings.size() * sizeof(PoseBinding));
+    input(Nodes, m_nodeInputs, orderedNodes.data(), nodeInputBytes);
+    input(Bindings, m_bindingInputs, orderedBindings.data(), bindingInputBytes);
     buffers[States] = frozenBodyStates;
     const auto previous = m_outputProducer.lock();
     const bool reusableOutputs = !previous || previous->GetSubmission().IsValid();
@@ -208,29 +262,48 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::Co
                 host, rhi::ComputeBufferDesc{records, rhi::ComputeScalarType::Float32, 4});
         return cache;
     };
-    buffers[NodeModels] = output(m_nodeModels, uint64_t(nodeCount) * 4);
+    buffers[NodeModels] = output(m_nodeModels, uint64_t(nodeCount) * 8);
     buffers[NodeModelsRead] = buffers[NodeModels];
     buffers[Models] = output(m_models, uint64_t(count) * 4);
     buffers[Bounds] = output(m_bounds, uint64_t(count) * 2);
 
-    const auto dispatch = [&](const Entry &entry, uint32_t count) {
+    const auto dispatch = [&](const Entry &entry, uint32_t workCount, uint32_t first, bool nodeLevel) {
         rhi::ComputeDispatchDesc result;
         result.kernel = entry.kernel;
-        result.groupCountX = count / 64 + static_cast<uint32_t>(count % 64 != 0);
+        result.groupCountX = groups(workCount);
         rhi::ComputeDispatchProof proof;
         for (const auto port : entry.ports) {
             const auto binding = static_cast<uint32_t>(result.buffers.size());
             result.buffers.push_back(buffers[port]);
-            result.bufferAccesses.push_back(Writer(port) ? rhi::ComputeBufferAccess::Write
-                                                         : rhi::ComputeBufferAccess::Read);
-            auto &ranges = Writer(port) ? proof.writes : proof.reads;
-            ranges.push_back({binding, 0, buffers[port]->GetByteSize()});
+            if (nodeLevel && port == NodeModels) {
+                result.bufferAccesses.push_back(rhi::ComputeBufferAccess::ReadWrite);
+                const uint64_t prefix = uint64_t(first) * 8 * sizeof(Float4);
+                if (prefix)
+                    proof.reads.push_back({binding, 0, prefix});
+                proof.writes.push_back({binding, prefix, uint64_t(workCount) * 8 * sizeof(Float4)});
+            } else {
+                result.bufferAccesses.push_back(Writer(port) ? rhi::ComputeBufferAccess::Write
+                                                             : rhi::ComputeBufferAccess::Read);
+                auto &ranges = Writer(port) ? proof.writes : proof.reads;
+                ranges.push_back({binding, 0, buffers[port]->GetByteSize()});
+            }
         }
         result.proof = std::move(proof);
         return result;
     };
-    auto batch =
-        rhi::PrepareComputeBatch(host, std::move(uploads), {dispatch(m_nodes, nodeCount), dispatch(m_meshes, count)});
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    dispatches.reserve(levels.size() + 1);
+    m_levelParameters.resize(levels.size());
+    for (size_t level = 0; level < levels.size(); ++level) {
+        const auto [first, levelCount] = levels[level];
+        const PoseParams parameters{{nodeCount, count, first, levelCount}};
+        input(Parameters, m_levelParameters[level], &parameters, sizeof(parameters));
+        dispatches.push_back(dispatch(m_nodes, levelCount, first, true));
+    }
+    const PoseParams parameters{{nodeCount, count, 0, 0}};
+    input(Parameters, m_parameters, &parameters, sizeof(parameters));
+    dispatches.push_back(dispatch(m_meshes, count, 0, false));
+    auto batch = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches));
     m_outputProducer = batch;
     return {std::move(batch), buffers[Models], buffers[Bounds], count};
 }

@@ -19,7 +19,7 @@ struct JoltGpuRenderPoseBatch
     uint32_t count = 0;
 };
 
-/// Two ordered GPU dispatches from one immutable final physics state. The
+/// Topological node levels and a final mesh dispatch share one immutable state. The
 /// caller supplies generated author bindings and publishes RenderPoseBuffer
 /// only after its owning scene reaches the corresponding complete boundary.
 /// Compilation, submission, budgets and retirement remain shared engine work.
@@ -51,6 +51,7 @@ class JoltGpuRenderPoses final
     rhi::ComputeHost m_host;
     Entry m_nodes, m_meshes;
     mutable InputCache m_parameters, m_nodeInputs, m_bindingInputs;
+    mutable std::vector<InputCache> m_levelParameters;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_nodeModels, m_models, m_bounds;
     mutable std::weak_ptr<rhi::PreparedComputeBatch> m_outputProducer;
 };
