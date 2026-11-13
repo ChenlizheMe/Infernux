@@ -3473,26 +3473,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
 
-        // Builtin author materials prepare their linked programs through the
-        // same material owner as project assets; no independent stage prewarm.
-        if (!playerMode) {
-            // Editor overlays are present from the first Scene frame. Keep the
-            // rest of the shader catalog lazy, but publish this small mandatory
-            // set before their built-in materials can create fallback pipelines.
-            // A late publication cannot repair a cached fallback descriptor
-            // generation without an explicit material invalidation.
-            static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> editorOverlayShaderStages{{
-                {"Outline Mask", "vertex"},
-                {"Outline Mask", "fragment"},
-                {"Outline Composite", "vertex"},
-                {"Outline Composite", "fragment"},
-            }};
-            for (const auto &[shaderId, shaderType] : editorOverlayShaderStages) {
-                if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
-                    INXLOG_ERROR("Editor overlay shader is unavailable: '", shaderId, "' (", shaderType, ")");
-                }
-            }
-        }
+        // Linked material and fullscreen programs prepare through their shared owners.
         startupPhase("startup_shaders", phaseBegin);
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");

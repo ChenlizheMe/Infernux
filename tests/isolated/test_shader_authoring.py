@@ -537,7 +537,7 @@ def test_editor_shader_authors_use_standard_libraries_and_explicit_vertex_select
 
     root = default_shading_model().parent
     vertex = root / "grid.vert.py"
-    for name in ("grid", "gizmo", "gizmo_icon"):
+    for name in ("grid", "gizmo", "gizmo_icon", "outline_composite"):
         path = root / (name + ".frag.py")
         definition = parse_shader(path.read_text(encoding="utf-8"), str(path), "builtin_" + name,
                                   vertex_path=vertex if name == "grid" else None)

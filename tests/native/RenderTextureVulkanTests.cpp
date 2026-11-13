@@ -62,7 +62,15 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     material->SetTextureGuid("albedo_map", "white");
     assert(!material->GetRenderTexture("albedo_map"));
     material->SetRenderTexture("albedo_map", target);
-    material->SetFloat("albedo_map", 1.0f);
+    bool rejected = false;
+    try {
+        material->SetFloat("albedo_map", 1.0f);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    assert(rejected && material->GetRenderTexture("albedo_map") == target);
+    assert(material->Serialize() == authored);
+    material->ClearTexture("albedo_map");
     assert(!material->GetRenderTexture("albedo_map"));
     const auto generation = target->Acquire();
     RenderGraphDescription description;
@@ -368,11 +376,13 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
                         {rhi::TextureAspect::Depth, 0, 0, 0, 0, desc.width, desc.height, 1});
                 };
             });
-            const std::array<std::array<float, 5>, 4> values{{
-                {1, 0, 0, .5f, .4f}, // Red over blue, depth becomes .4.
-                {0, 1, 0, 1, .7f},   // Behind .4: reject, including alpha.
-                {0, 1, 1, .5f, .2f}, // Cyan blends but must NOT write depth.
-                {1, 1, 0, .5f, .3f}, // Passes .4; would fail if .2 were written.
+            const std::array<std::array<float, 5>, 6> values{{
+                {1, 0, 0, .5f, .4f},            // Red over blue, depth becomes .4.
+                {0, 1, 0, 1, .7f},              // Behind .4: reject, including alpha.
+                {0, 1, 1, .5f, .2f},            // Cyan blends but must NOT write depth.
+                {1, 1, 0, .5f, .3f},            // Passes .4; would fail if .2 were written.
+                {0, 0, 0, .125f, .2f},          // Alpha-only write leaves RGB intact.
+                {.625f, .75f, .375f, .5f, .1f}, // RGB-only blend preserves fractional coverage.
             }};
             for (size_t i = 0; i < values.size(); ++i) {
                 FullscreenPipelineKey key;
@@ -380,7 +390,8 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
                 key.useDynamicRendering = true;
                 key.depthFormat = depthFormat;
                 key.samples = samples;
-                key.alphaBlend = true;
+                key.alphaBlend = i != 4;
+                key.colorWriteMask = i == 4 ? 0x08 : i == 5 ? 0x07 : 0x0f;
                 key.depth = {true, i != 2, i == 0 ? rhi::CompareFunction::Always : rhi::CompareFunction::Less};
                 const auto pipeline = renderer.EnsurePipeline(key);
                 assert(pipeline.pipeline.IsValid());
@@ -441,7 +452,7 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
             assert(vkWaitForFences(context.GetDevice(), 1, &fence, VK_TRUE, 5'000'000'000ull) == VK_SUCCESS);
             std::vector<uint8_t> result(buffer.byteSize);
             assert(device.ReadBuffer(output, 0, result.data(), result.size()));
-            const std::array<float, 4> expected{.625f, .75f, .375f, 1};
+            const std::array<float, 4> expected{.625f, .75f, .375f, .125f};
             for (size_t i = 0; i < result.size(); ++i)
                 assert(std::abs(result[i] / 255.f - expected[i % 4]) < .008f);
             graph.Destroy();

@@ -108,6 +108,7 @@ struct FullscreenPipelineKey
     rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
     rhi::DepthState depth;
     bool alphaBlend = false;
+    uint8_t colorWriteMask = 0x0f;
     uint32_t inputResourceCount = 0;
     uint32_t inputBufferMask = 0;
     uint32_t depthInputMask = 0;

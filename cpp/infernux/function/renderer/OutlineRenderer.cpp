@@ -17,8 +17,10 @@
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
+#include "vk/VulkanRhiDevice.h"
 #include <core/types/ColorSpace.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 
 #include <core/error/InxError.h>
 #include <glm/gtc/matrix_inverse.hpp>
@@ -46,13 +48,6 @@ struct MeshVertexInputState
     VkVertexInputBindingDescription bindingDesc{};
     std::vector<VkVertexInputAttributeDescription> attrDescs;
     VkPipelineVertexInputStateCreateInfo createInfo{};
-
-    MeshVertexInputState()
-        : bindingDesc(vk::GetVertexBindingDescription()),
-          attrDescs(FilterVertexAttributesForReflection(ShaderReflection{}))
-    {
-        initCreateInfo();
-    }
 
     explicit MeshVertexInputState(const ShaderReflection &vertexReflection)
         : bindingDesc(vk::GetVertexBindingDescription()),
@@ -101,19 +96,6 @@ VkPipelineColorBlendAttachmentState MakeOpaqueColorBlendAttachment()
     return colorBlendAttach;
 }
 
-VkPipelineColorBlendAttachmentState MakeAlphaBlendAttachment()
-{
-    VkPipelineColorBlendAttachmentState colorBlendAttach = MakeOpaqueColorBlendAttachment();
-    colorBlendAttach.blendEnable = VK_TRUE;
-    colorBlendAttach.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    colorBlendAttach.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    colorBlendAttach.colorBlendOp = VK_BLEND_OP_ADD;
-    colorBlendAttach.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    colorBlendAttach.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    colorBlendAttach.alphaBlendOp = VK_BLEND_OP_ADD;
-    return colorBlendAttach;
-}
-
 VkPipelineColorBlendStateCreateInfo MakeColorBlendState(const VkPipelineColorBlendAttachmentState &attachment)
 {
     VkPipelineColorBlendStateCreateInfo colorBlend{};
@@ -121,6 +103,29 @@ VkPipelineColorBlendStateCreateInfo MakeColorBlendState(const VkPipelineColorBle
     colorBlend.attachmentCount = 1;
     colorBlend.pAttachments = &attachment;
     return colorBlend;
+}
+
+const ShaderTargetCode &OutlineMaskCode()
+{
+    static const auto code = CompileSlangNativeModule({"inx_outline_mask", "<infernux/editor/outline_mask>", R"slang(
+import inx_camera;
+struct ObjectTransform { column_major float4x4 model; };
+INX_ROOT_CONSTANTS ConstantBuffer<ObjectTransform> object_transform;
+[shader("vertex")]
+float4 vertex_main(float3 position : POSITION0) : SV_Position
+{
+    float4 projected = mul(inx_view.projection, mul(inx_view.view, mul(object_transform.model, float4(position, 1.0))));
+    projected.y = -projected.y;
+    return projected;
+}
+[shader("fragment")]
+float4 fragment_main() : SV_Target0
+{
+    return float4(1.0);
+}
+)slang"},
+                                                      ShaderCodeTarget::SpirV);
+    return code;
 }
 
 } // namespace
@@ -151,23 +156,25 @@ bool OutlineRenderer::Initialize(InxVkCoreModular *core, SceneRenderTarget *scen
     m_core = core;
     m_sceneRenderTarget = sceneTarget;
 
-    // Editor support shaders are lazy assets. Resolve them through the same
-    // catalog path as materials/fullscreen effects instead of polling the raw
-    // module cache forever when startup has deliberately skipped eager scans.
-    if (!m_core->EnsureShaderAvailable("Outline Mask", "vertex") ||
-        !m_core->EnsureShaderAvailable("Outline Mask", "fragment") ||
-        !m_core->EnsureShaderAvailable("Outline Composite", "vertex") ||
-        !m_core->EnsureShaderAvailable("Outline Composite", "fragment")) {
-        if (!m_missingShadersReported) {
-            INXLOG_WARN("OutlineRenderer::Initialize: outline shaders are unavailable");
-            m_missingShadersReported = true;
-        }
+    m_compositeRenderer.Initialize(m_core);
+    const auto program = m_compositeRenderer.AcquireProgram("infernux/editor/outline_composite");
+    if (!program) {
+        if (!m_missingShadersReported)
+            INXLOG_WARN("OutlineRenderer: outline composite program is unavailable");
+        m_missingShadersReported = true;
         return false;
     }
     m_missingShadersReported = false;
-
-    CreateOutlineDescriptorResources();
-    CreateOutlinePipelineLayouts();
+    m_compositeProgram = program;
+    m_compositeParameters = FullscreenRenderer::PrepareParameters(
+        *program,
+        {{"outline_color", std::array<float, 4>{}}, {"texel_size", std::array<float, 2>{}}, {"outline_width", 3.0f}});
+    auto &device = m_core->GetDeviceContext().GetRhiDevice();
+    m_outlineMaskInput.view = device.RegisterTextureView(m_sceneRenderTarget->GetOutlineMaskImageView());
+    m_outlineMaskInput.format = rhi::PixelFormat::RGBA8UNorm;
+    m_outlineMaskInput.sampler = device.RegisterSampler(m_sceneRenderTarget->GetOutlineMaskSampler());
+    CreateOutlineMaskProgram();
+    CreateOutlinePipelineLayout();
     CreateOutlineMaterialResources();
 
     m_resourcesReady = true;
@@ -176,15 +183,7 @@ bool OutlineRenderer::Initialize(InxVkCoreModular *core, SceneRenderTarget *scen
 
 void OutlineRenderer::Cleanup(bool waitForIdle)
 {
-    const bool hasOwnedResources =
-        m_resourcesReady || m_outlineMaskPipeline != VK_NULL_HANDLE || m_outlineMaskPipelineLayout != VK_NULL_HANDLE ||
-        m_outlineMaskDescSetLayout != VK_NULL_HANDLE || m_outlineCompositePipeline != VK_NULL_HANDLE ||
-        m_outlineCompositePipelineLayout != VK_NULL_HANDLE || m_outlineCompositeDescSetLayout != VK_NULL_HANDLE ||
-        m_outlineCompositeDescSet != VK_NULL_HANDLE || m_outlineCompositeDescLease.IsValid() ||
-        !m_outlineInstanceBufs.empty() || !m_outlineSkinInstanceBufs.empty() || !m_outlineSkinPaletteBufs.empty() ||
-        !m_outlineInstanceAuxBufs.empty() || !m_outlineGlobalsDescSets.empty() || !m_outlineGlobalsDescLeases.empty() ||
-        !m_perMtlOutlinePipelines.empty();
-    if (!hasOwnedResources)
+    if (!m_core)
         return;
 
     VkDevice device = m_core ? m_core->GetDevice() : VK_NULL_HANDLE;
@@ -196,17 +195,13 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
     }
 
     auto &descriptorManager = m_core->GetDeviceContext().GetRhiDevice().GetDescriptorManager();
-    descriptorManager.Retire(m_outlineCompositeDescLease);
     for (const auto &lease : m_outlineGlobalsDescLeases)
         descriptorManager.Retire(lease);
-    m_outlineCompositeDescLease = {};
     m_outlineGlobalsDescLeases.clear();
 
     DestroyOutlinePipelines();
     vkrender::SafeDestroy(device, m_outlineMaskPipelineLayout);
-    vkrender::SafeDestroy(device, m_outlineCompositePipelineLayout);
     vkrender::SafeDestroy(device, m_outlineMaskDescSetLayout);
-    vkrender::SafeDestroy(device, m_outlineCompositeDescSetLayout);
 
     m_outlineGlobalsDescSets.clear();
 
@@ -232,10 +227,21 @@ void OutlineRenderer::Cleanup(bool waitForIdle)
     }
     m_outlineInstanceAuxBufs.clear();
 
-    m_outlineCompositeDescSet = VK_NULL_HANDLE;
+    m_compositeRenderer.Destroy();
+    auto &rhiDevice = m_core->GetDeviceContext().GetRhiDevice();
+    rhiDevice.Release(m_outlineMaskVertex);
+    rhiDevice.Release(m_outlineMaskFragment);
+    rhiDevice.Release(m_outlineMaskInput.view);
+    rhiDevice.Release(m_outlineMaskInput.sampler);
+    m_outlineMaskVertex = {};
+    m_outlineMaskFragment = {};
+    m_outlineMaskInput = {};
+    m_compositePipeline = {};
+    m_compositeProgram.reset();
     m_outlineMaskRenderingSignature = {};
-    m_outlineCompositeRenderingSignature = {};
     m_resourcesReady = false;
+    m_core = nullptr;
+    m_sceneRenderTarget = nullptr;
 }
 
 // ============================================================================
@@ -247,15 +253,29 @@ bool OutlineRenderer::EnsureGraphPipelines(const rhi::GraphicsRenderingSignature
 {
     if (!m_resourcesReady || !maskSignature.IsValid() || !compositeSignature.IsValid())
         return false;
-    if (m_outlineMaskRenderingSignature == maskSignature &&
-        m_outlineCompositeRenderingSignature == compositeSignature && m_outlineMaskPipeline != VK_NULL_HANDLE &&
-        m_outlineCompositePipeline != VK_NULL_HANDLE) {
-        return true;
+    const auto program = m_compositeRenderer.AcquireProgram("infernux/editor/outline_composite");
+    if (program->code != m_compositeProgram->code) {
+        m_compositeParameters =
+            FullscreenRenderer::PrepareParameters(*program, {{"outline_color", std::array<float, 4>{}},
+                                                             {"texel_size", std::array<float, 2>{}},
+                                                             {"outline_width", 3.0f}});
+        m_compositeProgram = program;
     }
-
+    FullscreenPipelineKey key;
+    key.shaderName = program->shaderId;
+    key.program = program;
+    key.colorFormat = compositeSignature.colorFormats[0];
+    key.depthFormat = compositeSignature.depthFormat;
+    key.samples = compositeSignature.samples;
+    key.alphaBlend = true;
+    key.colorWriteMask = 0x07; // Selection color does not change scene coverage.
+    key.inputResourceCount = 1;
+    key.useDynamicRendering = true;
+    m_compositePipeline = m_compositeRenderer.EnsurePipeline(key);
+    if (m_outlineMaskRenderingSignature == maskSignature && m_outlineMaskPipeline != VK_NULL_HANDLE)
+        return true;
     DestroyOutlinePipelines();
     m_outlineMaskRenderingSignature = maskSignature;
-    m_outlineCompositeRenderingSignature = compositeSignature;
     return CreateOutlinePipelines();
 }
 
@@ -263,149 +283,43 @@ bool OutlineRenderer::EnsureGraphPipelines(const rhi::GraphicsRenderingSignature
 // Internal: Vulkan Resource Creation
 // ============================================================================
 
-void OutlineRenderer::CreateOutlineDescriptorResources()
+void OutlineRenderer::CreateOutlineMaskProgram()
 {
-    VkDevice device = m_core->GetDevice();
-    auto &descriptorManager = m_core->GetDeviceContext().GetRhiDevice().GetDescriptorManager();
-
-    // --- Empty material set 0. Camera state lives in canonical set 1. ---
-    {
-        vkrender::CreateDescriptorSetLayout(device, nullptr, 0, m_outlineMaskDescSetLayout);
-    }
-
-    // --- Composite descriptor set layout: binding 0 = sampler (mask texture) ---
-    {
-        const VkDescriptorSetLayoutBinding samplerBinding = vkrender::MakeDescriptorSetLayoutBinding(
-            0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
-
-        vkrender::CreateDescriptorSetLayout(device, &samplerBinding, 1, m_outlineCompositeDescSetLayout);
-        m_outlineCompositeDescLease =
-            descriptorManager.Allocate(m_outlineCompositeDescSetLayout, vk::DescriptorArena::ViewPersistent);
-        m_outlineCompositeDescSet = m_outlineCompositeDescLease.set;
-        if (!m_outlineCompositeDescLease.IsValid()) {
-            INXLOG_ERROR("OutlineRenderer: Failed to allocate outline composite descriptor set");
-            return;
-        }
-
-        // Write mask texture to binding 0
-        VkDescriptorImageInfo imageInfo{};
-        imageInfo.sampler = m_sceneRenderTarget->GetOutlineMaskSampler();
-        imageInfo.imageView = m_sceneRenderTarget->GetOutlineMaskImageView();
-        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        vkrender::UpdateDescriptorSetWithImage(device, m_outlineCompositeDescSet, 0, imageInfo);
+    auto &device = m_core->GetDeviceContext().GetRhiDevice();
+    vkrender::CreateDescriptorSetLayout(m_core->GetDevice(), nullptr, 0, m_outlineMaskDescSetLayout);
+    for (const auto &entry : OutlineMaskCode().entries) {
+        const auto module =
+            device.CreateShaderModule({rhi::ShaderSourceLanguage::SpirV, entry.code.data(), entry.code.size()});
+        if (entry.stage == rhi::ShaderStage::Vertex)
+            m_outlineMaskVertex = module;
+        else
+            m_outlineMaskFragment = module;
     }
 }
 
-void OutlineRenderer::CreateOutlinePipelineLayouts()
+void OutlineRenderer::CreateOutlinePipelineLayout()
 {
-    VkDevice device = m_core->GetDevice();
-
-    {
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        pushRange.offset = 0;
-        pushRange.size = 128; // 2 x mat4
-
-        VkPipelineLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        VkDescriptorSetLayout setLayouts[3] = {m_outlineMaskDescSetLayout, m_core->GetPerViewDescSetLayout(),
-                                               m_core->GetGlobalsDescSetLayout()};
-        layoutInfo.setLayoutCount = 3;
-        layoutInfo.pSetLayouts = setLayouts;
-        layoutInfo.pushConstantRangeCount = 1;
-        layoutInfo.pPushConstantRanges = &pushRange;
-
-        vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_outlineMaskPipelineLayout);
-    }
-
-    {
-        VkPushConstantRange pushRange{};
-        pushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        pushRange.offset = 0;
-        pushRange.size = 32; // vec4 color + vec2 texelSize + float width + float padding
-
-        VkPipelineLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &m_outlineCompositeDescSetLayout;
-        layoutInfo.pushConstantRangeCount = 1;
-        layoutInfo.pPushConstantRanges = &pushRange;
-
-        vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_outlineCompositePipelineLayout);
-    }
+    const VkPushConstantRange pushRange{VK_SHADER_STAGE_VERTEX_BIT, 0, 128};
+    const VkDescriptorSetLayout sets[] = {m_outlineMaskDescSetLayout, m_core->GetPerViewDescSetLayout()};
+    VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout.setLayoutCount = 2;
+    layout.pSetLayouts = sets;
+    layout.pushConstantRangeCount = 1;
+    layout.pPushConstantRanges = &pushRange;
+    vkCreatePipelineLayout(m_core->GetDevice(), &layout, nullptr, &m_outlineMaskPipelineLayout);
 }
 
 bool OutlineRenderer::CreateOutlinePipelines()
 {
-    if (!m_core || !m_outlineMaskRenderingSignature.IsValid() || !m_outlineCompositeRenderingSignature.IsValid() ||
-        m_outlineMaskPipelineLayout == VK_NULL_HANDLE || m_outlineCompositePipelineLayout == VK_NULL_HANDLE) {
-        return false;
-    }
-
-    VkDevice device = m_core->GetDevice();
-    {
-        std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-            MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_core->GetShaderModule("Outline Mask", "vertex")),
-            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_core->GetShaderModule("Outline Mask", "fragment")),
-        };
-
-        ShaderReflection outlineMaskVertRefl;
-        const auto *outlineMaskVertSpv = m_core->GetShaderCache().FindVertCode("Outline Mask");
-        if (!outlineMaskVertSpv || !outlineMaskVertRefl.Reflect(*outlineMaskVertSpv, VK_SHADER_STAGE_VERTEX_BIT))
-            outlineMaskVertRefl.Clear();
-
-        m_outlineMaskPipeline = CreateMaskPipeline(stages.data(), m_outlineMaskPipelineLayout, outlineMaskVertRefl);
-        if (m_outlineMaskPipeline == VK_NULL_HANDLE)
-            INXLOG_ERROR("OutlineRenderer: Failed to create graph-compatible outline mask pipeline");
-    }
-
-    {
-        std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-            MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, m_core->GetShaderModule("Outline Composite", "vertex")),
-            MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, m_core->GetShaderModule("Outline Composite", "fragment")),
-        };
-
-        // No vertex input (fullscreen triangle is procedural)
-        VkPipelineVertexInputStateCreateInfo vertexInput{};
-        vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly = MakeTriangleListInputAssembly();
-        DynamicViewportState viewportState;
-        VkPipelineRasterizationStateCreateInfo raster = MakeRasterizationState(VK_CULL_MODE_NONE);
-        VkPipelineDepthStencilStateCreateInfo depthStencil = MakeDepthStencilState(VK_FALSE, VK_FALSE);
-        VkPipelineMultisampleStateCreateInfo multisampling =
-            MakeMultisampleState(rhi::ToVkSampleCount(m_outlineCompositeRenderingSignature.samples));
-        VkPipelineColorBlendAttachmentState colorBlendAttach = MakeAlphaBlendAttachment();
-        VkPipelineColorBlendStateCreateInfo colorBlend = MakeColorBlendState(colorBlendAttach);
-
-        VkGraphicsPipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipelineInfo.stageCount = static_cast<uint32_t>(stages.size());
-        pipelineInfo.pStages = stages.data();
-        pipelineInfo.pVertexInputState = &vertexInput;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &viewportState.viewportState;
-        pipelineInfo.pRasterizationState = &raster;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = &depthStencil;
-        pipelineInfo.pColorBlendState = &colorBlend;
-        pipelineInfo.pDynamicState = &viewportState.dynamicState;
-        pipelineInfo.layout = m_outlineCompositePipelineLayout;
-        std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> colorFormats{};
-        VkPipelineRenderingCreateInfo renderingInfo{};
-        if (!rhi::BuildVkPipelineRenderingInfo(m_outlineCompositeRenderingSignature, colorFormats, renderingInfo))
-            return false;
-        pipelineInfo.pNext = &renderingInfo;
-        pipelineInfo.renderPass = VK_NULL_HANDLE;
-        pipelineInfo.subpass = 0;
-
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_outlineCompositePipeline) !=
-            VK_SUCCESS) {
-            INXLOG_ERROR("OutlineRenderer: Failed to create graph-compatible outline composite pipeline");
-        }
-    }
-
-    return m_outlineMaskPipeline != VK_NULL_HANDLE && m_outlineCompositePipeline != VK_NULL_HANDLE;
+    auto &device = m_core->GetDeviceContext().GetRhiDevice();
+    const std::array stages = {
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, device.Resolve(m_outlineMaskVertex), "vertex_main"),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, device.Resolve(m_outlineMaskFragment), "fragment_main"),
+    };
+    ShaderReflection vertexReflection;
+    vertexReflection.LoadTargetLayout(OutlineMaskCode(), "vertex_main");
+    m_outlineMaskPipeline = CreateMaskPipeline(stages.data(), m_outlineMaskPipelineLayout, vertexReflection);
+    return m_outlineMaskPipeline != VK_NULL_HANDLE;
 }
 
 void OutlineRenderer::DestroyOutlinePipelines()
@@ -416,17 +330,12 @@ void OutlineRenderer::DestroyOutlinePipelines()
     std::vector<VkPipeline> pipelines;
     if (m_outlineMaskPipeline != VK_NULL_HANDLE)
         pipelines.push_back(m_outlineMaskPipeline);
-    if (m_outlineCompositePipeline != VK_NULL_HANDLE)
-        pipelines.push_back(m_outlineCompositePipeline);
-    for (const auto &[key, pipeline] : m_perMtlOutlinePipelines) {
+    for (const auto &[key, entry] : m_perMtlOutlinePipelines) {
         (void)key;
-        if (pipeline != VK_NULL_HANDLE)
-            pipelines.push_back(pipeline);
+        pipelines.push_back(entry.pipeline);
     }
     m_outlineMaskPipeline = VK_NULL_HANDLE;
-    m_outlineCompositePipeline = VK_NULL_HANDLE;
     m_perMtlOutlinePipelines.clear();
-    m_perMtlOutlineProgramIds.clear();
 
     if (pipelines.empty())
         return;
@@ -646,17 +555,16 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
 
     auto it = m_perMtlOutlinePipelines.find(key);
     if (it != m_perMtlOutlinePipelines.end()) {
-        if (m_perMtlOutlineProgramIds.at(key) == programId)
-            return it->second;
+        if (it->second.programId == programId)
+            return it->second.pipeline;
         const VkDevice device = m_core->GetDevice();
-        const VkPipeline retired = it->second;
+        const VkPipeline retired = it->second.pipeline;
         m_core->RetireGpuResource([device, retired] { vkDestroyPipeline(device, retired, nullptr); });
         m_perMtlOutlinePipelines.erase(it);
-        m_perMtlOutlineProgramIds.erase(key);
     }
 
     VkShaderModule vertModule = program->GetVertexModule();
-    VkShaderModule fragModule = m_core->GetShaderModule("Outline Mask", "fragment");
+    VkShaderModule fragModule = m_core->GetDeviceContext().GetRhiDevice().Resolve(m_outlineMaskFragment);
     if (vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE)
         return VK_NULL_HANDLE;
 
@@ -664,7 +572,7 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
 
     std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
         MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertModule, program->GetVertexEntryPoint().c_str()),
-        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule, "fragment_main"),
     };
 
     VkPipeline pipeline =
@@ -674,8 +582,7 @@ VkPipeline OutlineRenderer::GetOrCreateMtlOutlinePipeline(InxMaterial *material)
         return VK_NULL_HANDLE;
     }
 
-    m_perMtlOutlinePipelines[key] = pipeline;
-    m_perMtlOutlineProgramIds[key] = programId;
+    m_perMtlOutlinePipelines[key] = {programId, pipeline};
     return pipeline;
 }
 
@@ -847,44 +754,19 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
 
 void OutlineRenderer::RecordCompositeDraw(VkCommandBuffer cmdBuf)
 {
-    if (!m_resourcesReady || !HasActiveOutline() || cmdBuf == VK_NULL_HANDLE ||
-        m_outlineCompositePipeline == VK_NULL_HANDLE || m_outlineCompositeDescSet == VK_NULL_HANDLE) {
+    if (!m_resourcesReady || !HasActiveOutline() || cmdBuf == VK_NULL_HANDLE)
         return;
-    }
-
-    uint32_t w = m_sceneRenderTarget->GetWidth();
-    uint32_t h = m_sceneRenderTarget->GetHeight();
-
-    // Bind composite pipeline
-    vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineCompositePipeline);
-
-    // Bind composite descriptor set (mask texture sampler)
-    vkdebug::CmdBindDescriptorSetsTracked("OutlineRenderer.RenderOutlineComposite.Set0", cmdBuf,
-                                          VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlineCompositePipelineLayout, 0, 1,
-                                          &m_outlineCompositeDescSet, 0, nullptr);
-
-    // Push constants: outline color, texel size, outline width
-    struct CompositePushConstants
-    {
-        glm::vec4 outlineColor;
-        glm::vec2 texelSize;
-        float outlineWidth;
-        float _padding;
+    const auto color = inx::color::SrgbToLinear(m_outlineColor);
+    const ShaderParameterValue values[] = {
+        std::array<float, 4>{color.r, color.g, color.b, color.a},
+        std::array<float, 2>{1.0f / m_sceneRenderTarget->GetWidth(), 1.0f / m_sceneRenderTarget->GetHeight()},
+        m_outlinePixelWidth,
     };
-
-    CompositePushConstants pushData;
-    // Authored sRGB -> linear: the composite writes into the linear scene
-    // buffer, which is sRGB-encoded later by the display encode pass.
-    pushData.outlineColor = inx::color::SrgbToLinear(m_outlineColor);
-    pushData.texelSize = glm::vec2(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
-    pushData.outlineWidth = m_outlinePixelWidth;
-    pushData._padding = 0.0f;
-
-    vkCmdPushConstants(cmdBuf, m_outlineCompositePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(CompositePushConstants), &pushData);
-
-    // Draw fullscreen triangle (3 vertices, no vertex buffer)
-    vkCmdDraw(cmdBuf, 3, 1, 0, 0);
+    m_compositeRenderer.ResetPool();
+    auto &device = m_core->GetDeviceContext().GetRhiDevice();
+    vk::VulkanGraphicsCommandContext context;
+    auto encoder = device.MakeGraphicsCommandEncoder(context, cmdBuf);
+    m_compositeRenderer.DrawProgram(encoder, m_compositePipeline, &m_outlineMaskInput, m_compositeParameters, values);
 }
 
 } // namespace infernux

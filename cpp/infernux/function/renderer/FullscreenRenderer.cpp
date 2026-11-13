@@ -89,8 +89,9 @@ bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const
            samples == other.samples && colorFormat == other.colorFormat && depthFormat == other.depthFormat &&
            depth.testEnabled == other.depth.testEnabled && depth.writeEnabled == other.depth.writeEnabled &&
            depth.compare == other.depth.compare && alphaBlend == other.alphaBlend &&
-           inputResourceCount == other.inputResourceCount && depthInputMask == other.depthInputMask &&
-           inputBufferMask == other.inputBufferMask && useDynamicRendering == other.useDynamicRendering &&
+           colorWriteMask == other.colorWriteMask && inputResourceCount == other.inputResourceCount &&
+           depthInputMask == other.depthInputMask && inputBufferMask == other.inputBufferMask &&
+           useDynamicRendering == other.useDynamicRendering &&
            (program ? program->code.get() : nullptr) == (other.program ? other.program->code.get() : nullptr);
 }
 
@@ -106,6 +107,7 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     combine(key.depth.writeEnabled);
     combine(static_cast<size_t>(key.depth.compare));
     combine(key.alphaBlend);
+    combine(key.colorWriteMask);
     combine(key.inputResourceCount);
     combine(key.inputBufferMask);
     combine(key.depthInputMask);
@@ -157,6 +159,7 @@ struct FullscreenPipelineCache::Impl
         desc.colorTargetCount = 1;
         desc.colorTargets[0].format = key.colorFormat;
         desc.colorTargets[0].blendEnabled = key.alphaBlend;
+        desc.colorTargets[0].writeMask = key.colorWriteMask;
         desc.depth = key.depth;
         if (key.useDynamicRendering) {
             desc.renderingSignature.colorFormatCount = 1;

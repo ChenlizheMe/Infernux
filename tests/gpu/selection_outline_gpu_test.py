@@ -18,29 +18,31 @@ from infernux.renderstack import RenderPipeline
 
 class NoSkyPipeline(RenderPipeline):
     name = "No Sky Outline Probe"
+    samples = 1
 
     def define(self, pipeline):
-        pipeline.frame(hdr=False, msaa=1)
+        pipeline.frame(hdr=False, msaa=self.samples)
         with pipeline.opaque() as opaque:
             opaque.otherwise().forward()
         pipeline.screen_ui()
 
 
-VERTEX = '''#version 450
-ShaderInfo { Name "Outline Shift Probe" }
-void vertex(inout VertexInput v) {
-    v.position.xy += vec2(1.4, 0.6);
-}
+VERTEX = '''import infernux.shader as shader
+class OutlineShift(shader.vert):
+    shader_id = "tests/outline/shift"
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os.xy += shader.vec2(1.4, 0.6)
+        return vertex
 '''
 
-VERTEX_PROPERTIES = '''#version 450
-ShaderInfo {
-    Name "Outline Shift Probe"
-    Properties { Float xShift = 0.0 Float yShift = 0.0 }
-}
-void vertex(inout VertexInput v) {
-    v.position.xy += vec2(material.xShift, material.yShift);
-}
+VERTEX_PROPERTIES = '''import infernux.shader as shader
+class OutlineShift(shader.vert):
+    shader_id = "tests/outline/shift"
+    x_shift = shader.material.float()
+    y_shift = shader.material.float()
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os.xy += shader.vec2(self.x_shift, self.y_shift)
+        return vertex
 '''
 
 
@@ -53,6 +55,7 @@ class BackgroundGizmoProbe(inx.InxComponent):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", choices=("background", "deformation", "multiple", "reload", "game-alpha", "gizmo", "properties"), required=True)
+    parser.add_argument("--samples", type=int, choices=(1, 4), default=1)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="infernux-outline-gpu-") as root:
         project = Path(root)
@@ -67,7 +70,7 @@ def main():
             "f 1//1 2//1 3//1\nf 1//1 3//1 4//1\n"
             "f 3//2 2//2 1//2\nf 4//2 3//2 1//2\n", encoding="ascii",
         )
-        vertex = assets / "Shift.vert"
+        vertex = assets / "shift.vert.py"
         vertex.write_text(VERTEX_PROPERTIES if args.check == "properties" else VERTEX, encoding="ascii")
         frontend = Engine()
         engine = frontend.get_native_engine()
@@ -97,10 +100,10 @@ def main():
             renderer.set_mesh_asset_guid(imported.guid)
             material = InxMaterial.create_default_unlit()
             material.set_color("base_color", 0.0, 0.0, 1.0, 1.0)
-            material.vert_shader_name = "Outline Shift Probe"
+            material.vert_shader_name = "tests/outline/shift"
             if args.check == "properties":
-                material.set_float("xShift", 1.4)
-                material.set_float("yShift", .6)
+                material.set_float("x_shift", 1.4)
+                material.set_float("y_shift", .6)
             renderer.set_material(0, material)
             selected_ids = [probe.id]
             if args.check == "multiple":
@@ -116,7 +119,9 @@ def main():
                 camera.add_component("Camera")
                 frontend.resize_game_render_target(160, 120)
                 engine.set_game_camera_enabled(True)
-            frontend.set_render_pipeline(NoSkyPipeline())
+            pipeline = NoSkyPipeline()
+            pipeline.samples = args.samples
+            frontend.set_render_pipeline(pipeline)
             frame, changed = 0, 0
             stage, ticket, baseline = "baseline", None, None
 
@@ -187,7 +192,7 @@ def main():
                                         assert (outline & (np.indices(outline.shape)[1] * sign > (80 * sign))).sum() > 20
                                 if args.check == "reload" and stage == "selected_readback":
                                     vertex.write_text(VERTEX.replace("vec2(1.4, 0.6)", "vec2(-1.4, -0.6)"), encoding="ascii")
-                                    error = engine.reload_shader_runtime(str(vertex), "Outline Shift Probe")
+                                    error = engine.reload_shader_runtime(str(vertex), "tests/outline/shift")
                                     assert not error, error
                                     engine.set_selection_outlines([])
                                     stage = "baseline"

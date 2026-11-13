@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "FullscreenRenderer.h"
 #include "InxRenderStruct.h"
 #include "rhi/RhiDescriptors.h"
 #include "rhi/RhiHandles.h"
@@ -151,8 +152,8 @@ class OutlineRenderer
     // Internal Vulkan Resource Creation
     // ========================================================================
 
-    void CreateOutlineDescriptorResources();
-    void CreateOutlinePipelineLayouts();
+    void CreateOutlineMaskProgram();
+    void CreateOutlinePipelineLayout();
     bool CreateOutlinePipelines();
     void DestroyOutlinePipelines();
 
@@ -182,19 +183,21 @@ class OutlineRenderer
     // ========================================================================
 
     rhi::GraphicsRenderingSignature m_outlineMaskRenderingSignature;
-    rhi::GraphicsRenderingSignature m_outlineCompositeRenderingSignature;
 
     // Mask pipeline (renders selected object as white silhouette)
     VkPipeline m_outlineMaskPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_outlineMaskPipelineLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_outlineMaskDescSetLayout = VK_NULL_HANDLE;
 
-    // Composite pipeline (fullscreen edge detection + blend)
-    VkPipeline m_outlineCompositePipeline = VK_NULL_HANDLE;
-    VkPipelineLayout m_outlineCompositePipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_outlineCompositeDescSetLayout = VK_NULL_HANDLE;
-    VkDescriptorSet m_outlineCompositeDescSet = VK_NULL_HANDLE;
-    vk::DescriptorLease m_outlineCompositeDescLease;
+    rhi::ShaderModuleHandle m_outlineMaskVertex;
+    rhi::ShaderModuleHandle m_outlineMaskFragment;
+
+    // Edge composition shares the engine's typed program and pipeline cache.
+    FullscreenRenderer m_compositeRenderer;
+    std::shared_ptr<const FullscreenProgram> m_compositeProgram;
+    FullscreenPipelineEntry m_compositePipeline;
+    FullscreenParameters m_compositeParameters;
+    FullscreenResourceInput m_outlineMaskInput;
 
     // ========================================================================
     // Per-material outline mask pipeline resources
@@ -219,8 +222,12 @@ class OutlineRenderer
     std::vector<vk::DescriptorLease> m_outlineGlobalsDescLeases;
 
     // Cached per-material outline mask pipelines (key = stable material identity)
-    std::unordered_map<std::string, VkPipeline> m_perMtlOutlinePipelines;
-    std::unordered_map<std::string, std::string> m_perMtlOutlineProgramIds;
+    struct MaterialOutlinePipeline
+    {
+        std::string programId;
+        VkPipeline pipeline;
+    };
+    std::unordered_map<std::string, MaterialOutlinePipeline> m_perMtlOutlinePipelines;
 
     // ========================================================================
     // Outline Parameters
