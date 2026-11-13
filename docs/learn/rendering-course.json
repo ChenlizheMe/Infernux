@@ -33,12 +33,12 @@
     "labels_zh": ["基础", "Shader", "编辑器"]
   },
   {
-    "slug": "shading-models-glsl",
+    "slug": "shading-models",
     "number": 4,
-    "title_en": "Shading models and GLSL libraries",
-    "title_zh": "ShadingModel 与 GLSL 函数库",
-    "summary_en": "Write one lighting model for Forward, Forward+, and Deferred, and move reusable math into imported GLSL libraries.",
-    "summary_zh": "用一个光照函数服务 Forward、Forward+ 与 Deferred，并把可复用数学逻辑放入 GLSL 函数库。",
+    "title_en": "Shading models and static shader libraries",
+    "title_zh": "ShadingModel 与静态 ShaderLib",
+    "summary_en": "Separate surfaces from lighting, share typed GPU functions, and understand the current Deferred registration boundary.",
+    "summary_zh": "分离表面与光照、复用类型化 GPU 函数，并理解当前的 Deferred 模型登记边界。",
     "tags": ["rendering", "shader", "advanced"],
     "labels_en": ["Rendering", "Shader", "Advanced"],
     "labels_zh": ["渲染", "Shader", "进阶"]

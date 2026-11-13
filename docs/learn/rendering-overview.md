@@ -19,13 +19,13 @@ This course follows the **authored rendering path**: the files and settings you 
 
 ## Get one material on screen first {#first-result}
 
-**Prerequisites.** Open an Infernux project with a writable `Assets` folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, `Standard` vertex stage, and `Lit` fragment stage; it needs no imported asset, custom shader, or RenderStack. Keep project shader names distinct from those built-in stage identifiers, because linked programs currently use stage names for their program namespace. A newly created scene already contains **Main Camera** and **Directional Light**. The camera/light steps below also cover a scene whose Hierarchy was cleared.
+**Prerequisites.** Open an Infernux project with a writable `Assets` folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, `infernux/standard` vertex stage, and `infernux/lit` fragment stage; it needs no imported asset, custom shader, or RenderStack. A newly created scene already contains **Main Camera** and **Directional Light**. The camera/light steps below also cover a scene whose Hierarchy was cleared.
 
 Reproduce the complete baseline from an otherwise empty scene:
 
 1. Right-click empty space in **Hierarchy**, choose **Create 3D Object > Cube**, and leave the Cube Transform at position `(0, 0, 0)`. Its MeshRenderer should show one mesh and one material slot.
 2. If no enabled Camera exists, right-click Hierarchy and choose **Camera**. Set its position to `(0, 1, -10)` and rotation to `(0, 0, 0)` so the Cube is inside the Game view. If no enabled light exists, choose **Light > Directional Light**; the creation command supplies a useful initial rotation.
-3. In **Project**, open `Assets` or a child folder, right-click empty space, and choose **Material (.mat)**. Name it `FirstCube`. The current template creates a Material whose **Vertex** selector is `Standard` and **Fragment** selector is `Lit`; keep those built-in stages for this lighting baseline.
+3. In **Project**, open `Assets` or a child folder, right-click empty space, and choose **Material (.mat)**. Name it `FirstCube`. The current template creates a Material whose **Vertex** selector is `infernux/standard` and **Fragment** selector is `infernux/lit`; keep those built-in stages for this lighting baseline.
 4. Select the Cube. Under **MeshRenderer > Materials**, drag `FirstCube.mat` onto **Element 0**, or use that slot's asset picker.
 5. Keep the scene free of a RenderStack for this first check. The renderer uses **Default Forward** when no RenderStack is present.
 6. Open **Scene** and **Game**. Select `FirstCube.mat` and change **Base Color** to a saturated color that is easy to distinguish from white.
@@ -34,7 +34,7 @@ The baseline passes when the same Cube is visible in both views, its lit faces s
 
 For a second, explicit pipeline check, create **Post Processing > RenderStack** from the Hierarchy context menu and select **Default Forward** in its Inspector. With an empty effect list, the Cube should remain visually unchanged. This comparison checks that the explicit baseline is usable; pixels alone do not prove which route produced them.
 
-<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Material template (Standard vertex + Lit fragment), the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
+<div class="learn-note"><strong>Current API boundary and evidence.</strong><p>The workflow above follows <code>hierarchy_creation_service.py</code> and <code>core_context_menus.py</code> for scene/asset creation, <code>project_file_ops.py</code> for the Material template (infernux/standard vertex + infernux/lit fragment), the current MeshRenderer and Material Inspectors for assignment, and <code>render_stack_pipeline.py</code> for the no-RenderStack fallback. Later chapters link the public authoring entry points for custom stages, effects, pipelines, and RenderGraph work.</p></div>
 
 ### Verify the asset, not just its preview
 
@@ -48,8 +48,8 @@ If the preview changes but the mesh stays white, do not compensate by editing th
 
 Start with one object in a scene:
 
-1. Its **Material** binds one vertex stage and one fragment stage, then stores the property values declared by those stages. Project `.vert` and `.frag` assets are referenced by GUID and display their current, case-sensitive `ShaderInfo Name`; built-in stages use symbolic identifiers such as `Standard` and `Lit`.
-2. The **vertex stage** decides where the mesh vertices end up. If it contains no `vertex()` hook, Infernux uses the standard object-to-clip transform.
+1. Its **Material** binds one vertex stage and one fragment stage, then stores their declared property values. Project `.vert.py` and `.frag.py` GPU assets are referenced by GUID. Their `shader_id` is the case-sensitive logical name used in lookup and menus, for example `infernux/standard` and `infernux/lit`.
+2. The **vertex stage** deforms local mesh attributes. The engine applies the geometry path's skinning, object and camera transforms; the standard stage preserves the input mesh.
 3. The **fragment stage** samples textures and turns the material inputs into `SurfaceData`: albedo, normal, metallic, smoothness, emission, alpha, and related surface facts.
 4. The **ShadingModel** decides how that surface interacts with the current camera's lights. PBR, unlit, toon, and project-specific lighting belong here.
 5. The **RenderPipeline** chooses when and how the material is rendered. It can route different Material Render Queue ranges through Forward, Forward+, or Deferred.
@@ -71,9 +71,9 @@ Use the lowest level that solves the problem:
 
 | You want to change | Authoring level | Typical file |
 | --- | --- | --- |
-| Mesh position or varyings | Vertex stage | `.vert` |
-| Material inputs and surface appearance | Fragment stage | `.frag` + `.mat` |
-| How surfaces react to light | Shading model and function libraries | `.shadingmodel` + `.glsl` |
+| Mesh position or varyings | Vertex stage | `.vert.py` |
+| Material inputs and surface appearance | Fragment stage | `.frag.py` + `.mat` |
+| How surfaces react to light | Shading model and function libraries | `.shadingmodel.py` + `.shaderlib.py` |
 | When objects and effects are rendered | Pipeline and effect topology | Python `RenderPipeline`, `.effect`, `.effectgroup` |
 
 Start at the lowest level that actually owns the change. Water may need only vertex deformation and surface construction. A stylized project may add a shading model. A scene with two art directions may route queue ranges differently. Raw RenderGraph work handles the gaps beyond the public pipeline API.
@@ -88,7 +88,7 @@ Infernux ships with three ordinary pipeline choices:
 - **Default Forward+** uses camera-local clustered light selection for scenes with more local lights.
 - **Default Deferred** writes a real GBuffer for compatible opaque materials, performs fullscreen lighting, sends explicitly unsupported shading models through a Forward+ fallback, and always renders transparent objects with Forward+.
 
-Using `Standard` + `Lit` in a Deferred pipeline is expected. The material still describes the same surface; the render-path adapter generates the GBuffer side of the contract. A shading model declares `Unsupported [Deferred]` only when its result falls outside that contract.
+Using `infernux/standard` + `infernux/lit` in a Deferred pipeline is expected. The material describes the same surface, and the engine prepares its GBuffer entry. The current Deferred evaluator registers the built-in PBR, Unlit, and Toon responses. Project shading models use Forward or Forward+ until they have a corresponding Deferred registration and compatible GBuffer representation.
 
 <div class="learn-note"><strong>What “default” means here.</strong><p>A scene without a RenderStack and a scene with an empty Default Forward stack use the same baseline route. Selecting another pipeline changes routing and topology while Material property meanings stay fixed.</p></div>
 
@@ -98,7 +98,7 @@ The remaining chapters build the system in dependency order:
 
 1. [Vertex stages and reusable deformation](vertex-stage.html) starts from the visible Cube and its Material.
 2. [Fragment stages, `SurfaceData`, and Material properties](fragment-materials.html) pairs a fragment stage with the vertex-stage contract.
-3. [Pipeline-independent ShadingModels and imported GLSL libraries](shading-models-glsl.html) builds on the fragment chapter's `SurfaceData` output.
+3. [ShadingModels and static ShaderLib functions](shading-models.html) builds on the fragment chapter's `SurfaceData` output.
 4. [Reusable RenderEffect assets and fullscreen implementations](render-effects.html) starts a separate post-processing branch and requires a visible baseline scene.
 5. [RenderStack stages, route scope, and UI boundaries](renderstack-mount-points.html) mounts the effect assets from the previous chapter.
 6. [Declarative Python pipelines that mix Forward, Forward+, and Deferred](custom-render-pipelines.html) assumes the queue and mount-point vocabulary from Chapters 4-6.
@@ -127,13 +127,13 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 ## 先让一个材质正确出现在画面里 {#first-result_1}
 
-**准备条件。** 打开一个 `Assets` 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、`Standard` 顶点阶段和 `Lit` 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。项目 Shader 名称应与这些内置阶段标识符保持区别，因为当前链接程序仍以阶段名作为程序命名空间。新建场景已经带有 **Main Camera** 与 **Directional Light**；下面也包含 Hierarchy 被清空后的补建步骤。
+**准备条件。** 打开一个 `Assets` 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、`infernux/standard` 顶点阶段和 `infernux/lit` 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。新建场景已经带有 **Main Camera** 与 **Directional Light**；下面也包含 Hierarchy 被清空后的补建步骤。
 
 从其余内容为空的场景复现完整基线：
 
 1. 在 **Hierarchy** 空白处右键，选择 **Create 3D Object > Cube**，保持 Cube 的 Transform 位置为 `(0, 0, 0)`。它的 MeshRenderer 应显示一个 Mesh 和一个 Material Slot。
 2. 场景里没有启用的 Camera 时，在 Hierarchy 空白处右键选择 **Camera**，把位置设为 `(0, 1, -10)`、旋转设为 `(0, 0, 0)`，让 Cube 进入 Game 画面。没有启用的灯光时，选择 **Light > Directional Light**；该创建命令会提供可用的初始旋转。
-3. 在 **Project** 中打开 `Assets` 或其子目录，在空白处右键选择 **Material (.mat)**，命名为 `FirstCube`。当前模板会创建 **Vertex** 为 `Standard`、**Fragment** 为 `Lit` 的 Material；本章的光照基线保持这两个内置阶段即可。
+3. 在 **Project** 中打开 `Assets` 或其子目录，在空白处右键选择 **Material (.mat)**，命名为 `FirstCube`。当前模板会创建 **Vertex** 为 `infernux/standard`、**Fragment** 为 `infernux/lit` 的 Material；本章的光照基线保持这两个内置阶段即可。
 4. 选中 Cube，在 **MeshRenderer > Materials** 中把 `FirstCube.mat` 拖到 **Element 0**，也可以使用该 Slot 的资产选择器。
 5. 第一次检查先不创建 RenderStack。场景缺少 RenderStack 时，渲染器使用 **Default Forward**。
 6. 打开 **Scene** 与 **Game**。选中 `FirstCube.mat`，把 **Base Color** 改成容易与白色区分的高饱和颜色。
@@ -142,7 +142,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 再做一次显式 Pipeline 检查：从 Hierarchy 右键菜单创建 **Post Processing > RenderStack**，在 Inspector 中选择 **Default Forward**。Effect 列表为空时，Cube 画面应保持一致。这个对照可以确认显式基线可用；仅凭像素无法证明背后的实际路由。
 
-<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Material 模板（Standard 顶点 + Lit 片元）、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
+<div class="learn-note"><strong>当前 API 边界与证据。</strong><p>以上流程依据 <code>hierarchy_creation_service.py</code> 与 <code>core_context_menus.py</code> 的场景/资产创建入口、<code>project_file_ops.py</code> 的 Material 模板（infernux/standard 顶点 + infernux/lit 片元）、当前 MeshRenderer 与 Material Inspector 的赋值入口，以及 <code>render_stack_pipeline.py</code> 的无 RenderStack 回退。后续章节会链接自定义阶段、Effect、Pipeline 与 RenderGraph 的公共编写入口。</p></div>
 
 ### 检查资产同步，而不只是预览图
 
@@ -156,8 +156,8 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 从场景里的一个物体开始：
 
-1. **Material** 绑定一个顶点阶段和一个片元阶段，并保存这些阶段声明的材质参数。项目 `.vert`、`.frag` 资产通过 GUID 引用，显示其当前且区分大小写的 `ShaderInfo Name`；内置阶段使用 `Standard`、`Lit` 等符号化标识符。
-2. **顶点阶段**决定网格顶点最终在哪里。没有提供 `vertex()` Hook 时，Infernux 使用标准的物体空间到裁剪空间变换。
+1. **Material** 分别绑定顶点阶段与片段阶段，并保存它们声明的材质参数。项目 `.vert.py`、`.frag.py` GPU 资产通过 GUID 引用；`shader_id` 是查询和菜单使用的逻辑名称，区分大小写，例如 `infernux/standard` 和 `infernux/lit`。
+2. **顶点阶段**修改局部网格属性。引擎再完成对应几何路径的蒙皮、物体与相机变换；标准顶点阶段保留输入网格。
 3. **片元阶段**采样贴图，把材质输入整理成 `SurfaceData`：基础色、法线、金属度、平滑度、自发光、透明度等表面事实。
 4. **ShadingModel** 决定表面怎样和当前相机的光源交互。PBR、无光照、卡通渲染和项目独有的光照风格都属于这一层。
 5. **RenderPipeline** 决定材质何时、以哪条路径被绘制。它可以把不同的 Material Render Queue 区间分别交给 Forward、Forward+ 或 Deferred。
@@ -179,9 +179,9 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 | 想改变什么 | 编写层级 | 常见文件 |
 | --- | --- | --- |
-| 网格位置或跨阶段数据 | 顶点阶段 | `.vert` |
-| 材质输入和表面外观 | 片元阶段 | `.frag` + `.mat` |
-| 表面如何与光照交互 | ShadingModel 与函数库 | `.shadingmodel` + `.glsl` |
+| 网格位置或跨阶段数据 | 顶点阶段 | `.vert.py` |
+| 材质输入和表面外观 | 片元阶段 | `.frag.py` + `.mat` |
+| 表面如何与光照交互 | ShadingModel 与函数库 | `.shadingmodel.py` + `.shaderlib.py` |
 | 物体和效果何时被渲染 | 管线与效果拓扑 | Python `RenderPipeline`、`.effect`、`.effectgroup` |
 
 从真正拥有这个变化的最低层开始。水面通常只改顶点形变和表面数据；统一画风可以增加 ShadingModel；一景多种画风则可能需要重排 Queue。只有公共 Pipeline API 表达不了的需求，才值得下到原始 RenderGraph。
@@ -196,7 +196,7 @@ Infernux 提供三条常规管线：
 - **Default Forward+** 使用每相机的聚簇光源选择，适合包含更多局部光源的场景。
 - **Default Deferred** 为兼容的不透明材质写入真正的 GBuffer，再做全屏光照；显式不支持 Deferred 的 ShadingModel 会走 Forward+ 回退；透明物体始终使用 Forward+。
 
-因此，在 Deferred 管线中继续使用 `Standard` + `Lit` 完全正常。材质描述的仍然是同一个表面，渲染路径适配器负责生成 GBuffer 契约。只有某种光照结果确实无法装入这份契约时，ShadingModel 才需要声明 `Unsupported [Deferred]`。
+在 Deferred 管线中使用 `infernux/standard` + `infernux/lit` 完全正常。材质描述同一个表面，引擎准备其 GBuffer 入口。目前 Deferred 求值器登记了内置 PBR、Unlit 和 Toon 响应；项目模型在补齐对应登记与兼容 GBuffer 表达之前，应走 Forward 或 Forward+。
 
 <div class="learn-note"><strong>这里的“默认”是什么意思。</strong><p>不挂 RenderStack，与挂一个空的 Default Forward Stack，都会走同一条基线路径。换 Pipeline 会改变路由与拓扑，但不会改变 Material 参数本身的含义。</p></div>
 
@@ -206,7 +206,7 @@ Infernux 提供三条常规管线：
 
 1. [顶点阶段与可复用形变](vertex-stage.html)从已经可见的 Cube 与 Material 起步。
 2. [片元阶段、`SurfaceData` 与 Material 参数](fragment-materials.html)把片元阶段接到上一章的顶点契约。
-3. [与管线无关的 ShadingModel 和可导入 GLSL 函数库](shading-models-glsl.html)使用片元章节输出的 `SurfaceData`。
+3. [ShadingModel 与静态 ShaderLib 函数](shading-models.html)使用片元章节输出的 `SurfaceData`。
 4. [可复用 RenderEffect 资源与全屏实现](render-effects.html)开启独立的后处理分支，前提是场景基线已经可见。
 5. [RenderStack 阶段、路由作用域与 UI 边界](renderstack-mount-points.html)挂载上一章创建的 Effect 资产。
 6. [用声明式 Python Pipeline 混合 Forward、Forward+ 和 Deferred](custom-render-pipelines.html)沿用第 4 至第 6 章的 Queue 与挂载点术语。

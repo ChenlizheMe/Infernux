@@ -335,10 +335,12 @@ class in <b>infernux.core</b>
 </div>
 
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
-<p>Query published shaders and reimport edited ShaderInfo authoring assets.</p>
+<p>Query, check, and reimport GPU shader assets.</p>
 <!-- USER CONTENT START -->
 <p>description</p>
-<p>The signatures below describe the 0.4.0 API. Use ShaderInfo assets for shader authoring and the operations below to query publication or reimport edited assets.</p>
+<p>This page describes the current Slang rendering development branch. <code>infernux.core.Shader</code> is a host tooling API; <code>infernux.shader</code> supplies declarations and mathematics for static GPU author files.</p>
+<p>Author programs in separate <code>.frag.py</code>, <code>.vert.py</code>, <code>.shadingmodel.py</code>, and <code>.shaderlib.py</code> assets. The engine analyzes these files statically and uses Slang to produce target programs. They are not imported as component modules, and their functions execute on the GPU.</p>
+<p>An asset declares a logical <code>shader_id</code>, such as <code>infernux/lit</code>. Materials select vertex and fragment assets independently. Selectors use <code>/</code> in IDs to build hierarchical menus; a fragment does not choose a vertex asset. Asset GUIDs retain reference identity, while logical IDs support lookup and display.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="static-methods">Static Methods<a class="headerlink" href="#static-methods" title="Permanent link">&para;</a></h2>
@@ -351,34 +353,77 @@ class in <b>infernux.core</b>
 </thead>
 <tbody>
 <tr>
-<td><code>Shader.is_loaded(name: str, shader_type: str = ...) → bool</code></td>
-<td>Query GPU publication of a standalone stage or linked material program.</td>
+<td><code>Shader.check(asset: str, *, source: str \| None = None) → dict</code></td>
+<td>Check an asset or unsaved draft and return its schema and diagnostics for both GPU targets.</td>
 </tr>
 <tr>
-<td><code>Shader.reload(shader_id: str, shader_type: str | None = ...) → bool</code></td>
-<td>Reimport by ShaderInfo Name or asset path; failures raise an exception.</td>
+<td><code>Shader.get_schema(asset: str) → dict</code></td>
+<td>Query logical fields, graph inputs, and the program domain without creating a device pipeline.</td>
+</tr>
+<tr>
+<td><code>Shader.property_to_id(name: str) → int</code></td>
+<td>Obtain a reusable process-local material property ID.</td>
+</tr>
+<tr>
+<td><code>Shader.is_loaded(name: str, shader_type: str = "vertex") → bool</code></td>
+<td>Query renderer publication of a stage or linked material program.</td>
+</tr>
+<tr>
+<td><code>Shader.reload(shader_id: str, shader_type: str \| None = None) → bool</code></td>
+<td>Reimport an Editor shader asset through the asset system.</td>
 </tr>
 </tbody>
 </table>
 <!-- USER CONTENT START -->
 <p>static_methods</p>
-<h3 id="040-migration">0.4.0 migration<a class="headerlink" href="#040-migration" title="Permanent link">&para;</a></h3>
-<p>The supported operations are <code>Shader.is_loaded(name, shader_type="vertex")</code> and <code>Shader.reload(shader_id, shader_type=None)</code>. Querying includes both published standalone modules and linked material programs, performs no loading, and returns false without a live resource host or renderer. Reload accepts a registered ShaderInfo Name or an absolute/project-relative asset path and uses the canonical AssetManager reimport pipeline.</p>
-<p><code>reload</code> is an Editor/headless authoring operation; frozen Player content is read-only. Only <code>vertex</code> and <code>fragment</code> stages are supported. A Name shared across stages reloads both in vertex/fragment order unless a stage is specified. Duplicate Names within one stage require an explicit path. Reimports are sequential, not a multi-file atomic transaction. A successful metadata-only/headless reimport does not imply GPU publication; query <code>is_loaded</code> separately. A published last-known-good program can remain loaded after a failed edit, so <code>is_loaded</code> is not a last-compilation-success flag.</p>
-<p>The obsolete, never-connected <code>invalidate</code>, <code>refresh_materials</code>, and <code>load_spirv</code> wrappers have been removed in 0.4.0. Edit/import a <code>.vert</code> or <code>.frag</code> with a <code>ShaderInfo</code> declaration and use <code>reload</code> (the Editor watcher already does this for external edits). Raw SPIR-V bytes are not an alternate public asset/publication route.</p>
+<h3 id="checking-and-publication">Checking and publication<a class="headerlink" href="#checking-and-publication" title="Permanent link">&para;</a></h3>
+<p><code>check</code> accepts an asset path, GUID, or registered unique Shader ID. Its optional <code>source</code> argument checks an unsaved draft. The result contains <code>valid</code>, <code>schema</code>, and <code>diagnostics</code>, including source locations. Checking does not write the asset, publish changes, or create a graphics pipeline.</p>
+<p><code>get_schema</code> returns the logical schema of the current revision, including <code>domain</code>, <code>info</code>, <code>parameters</code>, and <code>inputs</code>. Parameters can declare <code>range</code>, <code>label</code>, and <code>hdr</code> metadata. Inspector uses these declarations directly; a float with <code>range=(0.0, 1.0)</code> receives a slider.</p>
+<p><code>reload</code> runs in an Editor or headless authoring host. It resolves a path or logical name through the asset reimport flow and raises on failure. For vertex/fragment name lookup, specify <code>shader_type="vertex"</code> or <code>"fragment"</code> to select a stage. Use a path for an ID ambiguous within one stage. Multiple reimports run sequentially.</p>
+<p><code>is_loaded</code> queries publication without loading anything. It returns <code>False</code> before startup, after shutdown, or without a renderer. A previously published usable program can remain available after an invalid edit, so this is not a last-edit success flag. Use <code>check</code> for drafts; Console tracks actual import errors and resolves them after successful publication.</p>
+<p>Player keeps a compiler available to prepare required program combinations or compute signatures. Frozen author assets cannot be modified in place with <code>reload</code>. <code>property_to_id</code> returns an ID for repeated material updates within one process; persist property names rather than these integers.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>example</p>
-<blockquote>
-<p><strong>Example status:</strong> No curated example has been verified for this symbol in 0.4.8. Use the signatures above; do not infer behavior from similarly named APIs in other engines.</p>
-</blockquote>
+<p>Create <code>Assets/Shaders/warm_surface.frag.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">WarmSurface</span><span class="p">(</span><span class="n">shader</span><span class="o">.</span><span class="n">surface</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">shader_id</span> <span class="o">=</span> <span class="s2">"my_game/warm_surface"</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">base_color</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">color</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">0.45</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">smoothness</span> <span class="o">=</span> <span class="n">shader</span><span class="o">.</span><span class="n">material</span><span class="o">.</span><span class="n">float</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">surface</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceData</span><span class="p">:</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="k">return</span> <span class="n">shader</span><span class="o">.</span><span class="n">SurfaceData</span><span class="p">(</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            <span class="n">albedo</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">base_color</span><span class="o">.</span><span class="n">rgb</span><span class="p">,</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            <span class="n">smoothness</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">smoothness</span><span class="p">,</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>            <span class="n">normal_ws</span><span class="o">=</span><span class="n">ctx</span><span class="o">.</span><span class="n">normal_ws</span><span class="p">,</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>            <span class="n">alpha</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">base_color</span><span class="o">.</span><span class="n">a</span><span class="p">,</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        <span class="p">)</span>
+</code></pre></div>
+<p>This is static GPU source. Use engine GPU declarations and supported ShaderLib imports. Keep NumPy, component lifecycle code, and host IO in ordinary Python scripts.</p>
+<p>After importing the asset, create a material from an ordinary tool or component:</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">infernux.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">Material</span><span class="p">,</span> <span class="n">Shader</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">path</span> <span class="o">=</span> <span class="s2">"Assets/Shaders/warm_surface.frag.py"</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">report</span> <span class="o">=</span> <span class="n">Shader</span><span class="o">.</span><span class="n">check</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">report</span><span class="p">[</span><span class="s2">"valid"</span><span class="p">],</span> <span class="n">report</span><span class="p">[</span><span class="s2">"diagnostics"</span><span class="p">])</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">material</span> <span class="o">=</span> <span class="n">Material</span><span class="o">.</span><span class="n">from_shader</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">"Warm material"</span><span class="p">)</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">smoothness_id</span> <span class="o">=</span> <span class="n">Shader</span><span class="o">.</span><span class="n">property_to_id</span><span class="p">(</span><span class="s2">"smoothness"</span><span class="p">)</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">material</span><span class="o">.</span><span class="n">set_float</span><span class="p">(</span><span class="n">smoothness_id</span><span class="p">,</span> <span class="mf">0.7</span><span class="p">)</span>
+</code></pre></div>
+<p>The material starts with <code>infernux/standard</code>. Inspector can select another compatible vertex asset independently. The engine prepares the surface entries needed for forward rendering, depth, shadows, motion, and related passes.</p>
+<p>Set <code>hidden = True</code> on an author class to hide it from ordinary selection menus. Its ID and existing references remain usable.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>see_also</p>
+<p><a href="Material.html">Material</a> · <a href="../../../../learn/vertex-stage.html">Vertex stages</a> · <a href="../../../../learn/fragment-materials.html">Fragments and materials</a></p>
 <!-- USER CONTENT END -->
             
     <nav class="doc-trail" data-doc-trail aria-label="Document navigation and feedback">

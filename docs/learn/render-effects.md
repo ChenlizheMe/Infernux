@@ -24,39 +24,26 @@ Keep the four records separate: the shader does GPU work, the Python feature bui
 
 ## Start with a fullscreen shader {#fullscreen-shader}
 
-```glsl
-#version 450
+```python
+import infernux.shader as shader
 
-ShaderInfo {
-    Name "Edge Fade"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources {
-        Texture2D _SourceTex
-    }
-    PushConstants pc {
-        Float intensity
-    }
-    Inputs {
-        Float2 inUV
-    }
-    Outputs {
-        Float4 outColor
-    }
-}
 
-void main() {
-    vec4 source = texture(_SourceTex, inUV);
-    vec2 centered = inUV * 2.0 - 1.0;
-    float edge = smoothstep(0.25, 1.0, dot(centered, centered));
-    source.rgb *= 1.0 - edge * pc.intensity;
-    outColor = source;
-}
+class EdgeFade(shader.fullscreen):
+    shader_id = "my_game/post/edge_fade"
+    hidden = True
+    source_tex = shader.input("color", shader.Color2D)
+    intensity = shader.parameter.float(default=0.35, range=(0.0, 1.0))
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        source = shader.sample(self.source_tex, uv)
+        centered = uv * 2.0 - 1.0
+        edge = shader.smoothstep(0.25, 1.0, shader.dot(centered, centered))
+        return shader.vec4(source.rgb * (1.0 - edge * self.intensity), source.a)
 ```
 
-`Capabilities [Fullscreen]` selects the fullscreen geometry contract. `Resources` and `PushConstants` describe bindings without hand-written Vulkan layouts. `Hidden On` keeps this implementation shader out of ordinary Material selection.
+Save this as `Assets/Shaders/edge_fade.frag.py`. `shader.fullscreen` supplies the fullscreen geometry contract. `shader.input` declares a typed graph resource and `shader.parameter` declares logical values. Slang reflection supplies the actual bindings and parameter layout; the author writes neither descriptor slots nor push constants. `hidden = True` keeps this implementation out of ordinary Material selection.
 
-`fullscreen_quad("Edge Fade")` records one fragment-shader ID. At runtime, `FullscreenRenderer` always pairs it with the engine-owned vertex shader whose `ShaderInfo Name` is `Fullscreen Triangle`. Keep that built-in ID in `get_shader_list()` as shown below, but do not add a path for it to the asset: there is no project `Fullscreen Triangle` file to reference. List only the project fragment shader in the `.effect` asset's `dependencies`. Such a shader may have no Material owner available to preload it before graph compilation.
+`fullscreen_quad("my_game/post/edge_fade")` selects the fragment's logical ID. The compiled program includes its engine-owned fullscreen vertex entry. `get_shader_list()` lists only the effect program; it does not list a separate triangle asset. Store the imported fragment's GUID in the `.effect` dependencies so that the effect remains usable without any Material preloading the shader.
 
 ## Register the effect feature {#effect-class}
 
@@ -80,11 +67,11 @@ class EdgeFadeEffect(inx.renderstack.FullScreenEffect):
     intensity: float = inx.serialized_field(
         default=0.35,
         range=(0.0, 1.0),
-        slider=False,
+        slider=True,
     )
 
     def get_shader_list(self):
-        return ["Fullscreen Triangle", "Edge Fade"]
+        return ["my_game/post/edge_fade"]
 
     def setup_passes(self, graph, bus):
         self.apply_single_source_effect(
@@ -92,7 +79,7 @@ class EdgeFadeEffect(inx.renderstack.FullScreenEffect):
             bus,
             output_name="_edge_fade_out",
             pass_name="EdgeFade_Apply",
-            shader_name="Edge Fade",
+            shader_name="my_game/post/edge_fade",
             format=inx.rendergraph.Format.RGBA16_SFLOAT,
             params={"intensity": float(self.intensity)},
         )
@@ -112,13 +99,13 @@ Assets/
     edge_fade_effect.py
     Edge Fade.effect
   Shaders/
-    edge_fade.frag
+    edge_fade.frag.py
 ```
 
 Then complete the path in this order:
 
-1. Save `Assets/Rendering/edge_fade_effect.py` with the registered class above and save `Assets/Shaders/edge_fade.frag` with the fullscreen shader. The scan root is the current project's `Assets` directory. Hidden directories and `__pycache__`, `build`, `dist`, `.venv`, `venv`, and `.runtime` are skipped; Python source candidates must mention `render_effect_feature` or `register_render_effect_feature`.
-2. After the shader is imported, read `metadata.guid.value` from `Assets/Shaders/edge_fade.frag.meta`. Replace `EDGE_FADE_SHADER_GUID` in the strict JSON below with that actual GUID, then save `Assets/Rendering/Edge Fade.effect`. An empty GUID is an unassigned reference; a path does not resolve it. Querying its `feature_type` triggers the candidate import and registry lookup. The Project panel's **Create > Render Effect** submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing `Edge Fade.effect` path instead of replacing it.
+1. Save `Assets/Rendering/edge_fade_effect.py` with the registered class above and save `Assets/Shaders/edge_fade.frag.py` with the fullscreen shader. The scan root is the current project's `Assets` directory. Hidden directories and `__pycache__`, `build`, `dist`, `.venv`, `venv`, and `.runtime` are skipped; Python source candidates must mention `render_effect_feature` or `register_render_effect_feature`.
+2. After the shader is imported, read `metadata.guid.value` from `Assets/Shaders/edge_fade.frag.py.meta`. Replace `EDGE_FADE_SHADER_GUID` in the strict JSON below with that actual GUID, then save `Assets/Rendering/Edge Fade.effect`. An empty GUID is an unassigned reference; a path does not resolve it. Querying its `feature_type` triggers the candidate import and registry lookup. The Project panel's **Create > Render Effect** submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing `Edge Fade.effect` path instead of replacing it.
 3. Import validates the portable declaration before publication: it checks the four-key schema, resolves the registered feature, rejects unknown parameters and unresolved dependency GUIDs, records resource requirements and topology parameters, and writes the successful product under `Library/Artifacts/RenderEffect/<guid>.inxeffect`. Import does not execute `setup_passes()`, because no mount stage or View resources exist yet. Dependency and feature checks also run before reusing a cached product. Shader preparation and `setup_passes()` run when the renderer compiles the actual mounted graph. The source receives a `.meta` GUID; references store only that GUID. Paths select files while authoring and are not serialized reference identities.
 4. Add a RenderStack component, select its GameObject, and drag `Edge Fade.effect` into `final`. RenderStack resolves the enabled slot, instantiates a feature for that mount, and invokes `setup_passes()` when the graph reaches `final`.
 5. Verify the result in Game view: set `intensity` to `0` and then `1`. The center remains unchanged while the corners darken at `1`. Confirm that **Effect Compile Errors** is empty in the RenderStack Inspector. An unresolved dependency GUID reports `effect dependency GUID is unavailable` during import. A Shader that fails renderer preparation reports `failed to prepare effect shader dependency` when the mounted graph is compiled. An unimportable feature ends as `unknown render effect feature` for the mounted stage and slot, while the original Python import exception is retained by discovery and logged during the failed import/reload path.
@@ -264,39 +251,26 @@ The next chapter covers the stage and slot that decide which image a feature rec
 
 ## 从全屏 Shader 开始 {#fullscreen-shader_1}
 
-```glsl
-#version 450
+```python
+import infernux.shader as shader
 
-ShaderInfo {
-    Name "Edge Fade"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources {
-        Texture2D _SourceTex
-    }
-    PushConstants pc {
-        Float intensity
-    }
-    Inputs {
-        Float2 inUV
-    }
-    Outputs {
-        Float4 outColor
-    }
-}
 
-void main() {
-    vec4 source = texture(_SourceTex, inUV);
-    vec2 centered = inUV * 2.0 - 1.0;
-    float edge = smoothstep(0.25, 1.0, dot(centered, centered));
-    source.rgb *= 1.0 - edge * pc.intensity;
-    outColor = source;
-}
+class EdgeFade(shader.fullscreen):
+    shader_id = "my_game/post/edge_fade"
+    hidden = True
+    source_tex = shader.input("color", shader.Color2D)
+    intensity = shader.parameter.float(default=0.35, range=(0.0, 1.0))
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        source = shader.sample(self.source_tex, uv)
+        centered = uv * 2.0 - 1.0
+        edge = shader.smoothstep(0.25, 1.0, shader.dot(centered, centered))
+        return shader.vec4(source.rgb * (1.0 - edge * self.intensity), source.a)
 ```
 
-`Capabilities [Fullscreen]` 选择全屏几何契约。`Resources` 与 `PushConstants` 描述绑定，无需手写 Vulkan layout。`Hidden On` 会让这份实现 Shader 避开普通 Material 选择列表。
+把文件保存为 `Assets/Shaders/edge_fade.frag.py`。`shader.fullscreen` 提供全屏几何入口，`shader.input` 声明图输入，`shader.parameter` 声明逻辑参数。Slang 反射负责目标绑定与参数布局，作者不写描述符位置或 push constant。`hidden = True` 隐藏普通材质选择菜单中的实现资源。
 
-`fullscreen_quad("Edge Fade")` 记录一个 Fragment Shader ID。运行时的 `FullscreenRenderer` 始终把它与引擎内置 Vertex Shader `Fullscreen Triangle` 配对；这个名称来自它的 `ShaderInfo Name`。请像下面的示例一样把内置 ID 留在 `get_shader_list()` 中，但不要给它添加资产路径，因为项目中没有可引用的 `Fullscreen Triangle` 文件。`.effect` 的 `dependencies` 只需列出项目自定义 Fragment Shader。它通常没有 Material 作为所有者，材质系统也就无法保证在图编译前完成预加载。
+`fullscreen_quad("my_game/post/edge_fade")` 选择片段的逻辑 ID。编译程序自带引擎维护的全屏顶点入口，`get_shader_list()` 只列效果程序，不再额外列一个三角形资源。`.effect` 的依赖保存已导入片段的 GUID，因此不需要由某个 Material 先加载它。
 
 ## 注册 Effect Feature {#effect-class_1}
 
@@ -320,11 +294,11 @@ class EdgeFadeEffect(inx.renderstack.FullScreenEffect):
     intensity: float = inx.serialized_field(
         default=0.35,
         range=(0.0, 1.0),
-        slider=False,
+        slider=True,
     )
 
     def get_shader_list(self):
-        return ["Fullscreen Triangle", "Edge Fade"]
+        return ["my_game/post/edge_fade"]
 
     def setup_passes(self, graph, bus):
         self.apply_single_source_effect(
@@ -332,7 +306,7 @@ class EdgeFadeEffect(inx.renderstack.FullScreenEffect):
             bus,
             output_name="_edge_fade_out",
             pass_name="EdgeFade_Apply",
-            shader_name="Edge Fade",
+            shader_name="my_game/post/edge_fade",
             format=inx.rendergraph.Format.RGBA16_SFLOAT,
             params={"intensity": float(self.intensity)},
         )
@@ -352,13 +326,13 @@ Assets/
     edge_fade_effect.py
     Edge Fade.effect
   Shaders/
-    edge_fade.frag
+    edge_fade.frag.py
 ```
 
 然后按以下顺序完成接入：
 
-1. 把上面的注册类保存到 `Assets/Rendering/edge_fade_effect.py`，把全屏 Shader 保存到 `Assets/Shaders/edge_fade.frag`。扫描根目录是当前项目的 `Assets`。隐藏目录以及 `__pycache__`、`build`、`dist`、`.venv`、`venv`、`.runtime` 会被跳过；Python 源码候选文件必须出现 `render_effect_feature` 或 `register_render_effect_feature`。
-2. Shader 导入后，从 `Assets/Shaders/edge_fade.frag.meta` 读取 `metadata.guid.value`，用这个实际 GUID 替换下方严格 JSON 中的 `EDGE_FADE_SHADER_GUID`，再保存 `Assets/Rendering/Edge Fade.effect`。空 GUID 表示未赋值的引用，路径不会代替它解析资产。系统查询其中的 `feature_type` 时，会导入候选模块并查找注册项。Project 面板的 **Create > Render Effect** 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 `Edge Fade.effect` 已存在时会拒绝覆盖。
+1. 把上面的注册类保存到 `Assets/Rendering/edge_fade_effect.py`，把全屏 Shader 保存到 `Assets/Shaders/edge_fade.frag.py`。扫描根目录是当前项目的 `Assets`。隐藏目录以及 `__pycache__`、`build`、`dist`、`.venv`、`venv`、`.runtime` 会被跳过；Python 源码候选文件必须出现 `render_effect_feature` 或 `register_render_effect_feature`。
+2. Shader 导入后，从 `Assets/Shaders/edge_fade.frag.py.meta` 读取 `metadata.guid.value`，用这个实际 GUID 替换下方严格 JSON 中的 `EDGE_FADE_SHADER_GUID`，再保存 `Assets/Rendering/Edge Fade.effect`。空 GUID 表示未赋值的引用，路径不会代替它解析资产。系统查询其中的 `feature_type` 时，会导入候选模块并查找注册项。Project 面板的 **Create > Render Effect** 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 `Edge Fade.effect` 已存在时会拒绝覆盖。
 3. 导入过程先验证可独立于阶段使用的声明，再发布结果：检查四键 Schema、解析注册 Feature、拒绝未知参数和无法解析的依赖 GUID、记录资源需求与拓扑参数，最后把成功产物写到 `Library/Artifacts/RenderEffect/<guid>.inxeffect`。导入时尚无挂载阶段或 View 资源，因此不执行 `setup_passes()`。命中缓存产物时也会检查依赖与 Feature。Shader 的渲染准备和 `setup_passes()` 在编译实际挂载后的渲染图时进行。源码通过 `.meta` 获得 GUID；引用只保存 GUID。路径用于创作时选择文件，不是序列化引用的身份。
 4. 加入 RenderStack 组件并选中其 GameObject，把 `Edge Fade.effect` 拖入 `final`。RenderStack 解析启用的 Slot，为这次挂载实例化 Feature，并在图到达 `final` 时调用 `setup_passes()`。
 5. 在 Game 视图验收：先把 `intensity` 设为 `0`，再设为 `1`。中心应保持原样，四角在 `1` 时变暗。确认 RenderStack Inspector 的 **Effect Compile Errors** 为空。依赖 GUID 无法解析时，导入阶段报告 `effect dependency GUID is unavailable`。Shader 的渲染准备失败时，编译挂载后的渲染图会报告 `failed to prepare effect shader dependency`。Feature 无法导入时，挂载位置最终显示 `unknown render effect feature`，其中带 Stage 与 Slot，原始 Python 导入异常则由发现系统保留，并在失败的导入或重载路径中记录。
