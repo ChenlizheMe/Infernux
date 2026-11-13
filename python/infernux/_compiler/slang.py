@@ -157,6 +157,12 @@ class _NumericalEmitter(SlangEmitter):
             return "int(" + super().visit_Call(node) + ")"
         return super().visit_Call(node)
 
+    def visit_BinOp(self, node):
+        if isinstance(node.op, (ast.FloorDiv, ast.Mod)):
+            function = "inx_floor_div" if isinstance(node.op, ast.FloorDiv) else "inx_mod"
+            return f"{function}({self.visit(node.left)}, {self.visit(node.right)})"
+        return super().visit_BinOp(node)
+
 
 class _KernelEmitter(_NumericalEmitter):
     def __init__(self, plan, params, path, source):
@@ -269,18 +275,6 @@ class _KernelEmitter(_NumericalEmitter):
             axis = ast.literal_eval(node.slice)
             return f"inx_args.{name}_shape_{axis}"
         return super().visit_Subscript(node)
-
-    def visit_BinOp(self, node):
-        left, right = self.visit(node.left), self.visit(node.right)
-        if isinstance(node.op, ast.FloorDiv):
-            return f"inx_floor_div({left}, {right})"
-        if isinstance(node.op, ast.Mod):
-            return f"inx_mod({left}, {right})"
-        if isinstance(node.op, ast.Div):
-            if self.infer(node.left).startswith("float") or self.infer(node.right).startswith("float"):
-                return f"(({left}) / ({right}))"
-            return f"(float({left}) / float({right}))"
-        return super().visit_BinOp(node)
 
     def assign(self, target, value):
         if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Subscript):
@@ -479,10 +473,10 @@ def _reverse_source(plan, params, function, primal):
 
 
 _ARITHMETIC = """
-int inx_floor_div(int a, int b) { int q = a / b; int r = a % b; return q - int(r != 0 && (r < 0) != (b < 0)); }
+int inx_floor_div(int a, int b) { int q = a / b; int r = a - q * b; return q - int(r != 0 && (r < 0) != (b < 0)); }
 uint inx_floor_div(uint a, uint b) { return a / b; }
 float inx_floor_div(float a, float b) { return floor(a / b); }
-int inx_mod(int a, int b) { int r = a % b; return r != 0 && (r < 0) != (b < 0) ? r + b : r; }
+int inx_mod(int a, int b) { int r = a - (a / b) * b; return r != 0 && (r < 0) != (b < 0) ? r + b : r; }
 uint inx_mod(uint a, uint b) { return a % b; }
 float inx_mod(float a, float b) { return a - floor(a / b) * b; }
 int inx_atomic_load_int(RWStructuredBuffer<Atomic<uint>> buffer, uint address) {

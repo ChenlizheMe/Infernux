@@ -15,11 +15,17 @@ from types import ModuleType
 import numpy as np
 
 import infernux as inx
+from infernux import shader
 
 
 @inx.compute.function
 def _affine_term(value, scale, bias):
     return value * scale + bias
+
+
+@inx.compute.function
+def _integer_period(value, divisor):
+    return (value // divisor) * 10 + value % divisor
 
 
 @inx.compute.kernel
@@ -574,6 +580,28 @@ def main() -> int:
                     tickets.close()
                     total_view.close()
                     backing.close()
+
+            @inx.compute.kernel
+            def vector_division(domain_values, output_values):
+                i = inx.compute.index(domain_values)
+                value = shader.ivec3(domain_values[i] - 5, domain_values[i] + 1, -domain_values[i]) / 2
+                output_values[i * 5] = value.x
+                output_values[i * 5 + 1] = value.y
+                output_values[i * 5 + 2] = value.z
+                output_values[i * 5 + 3] = _integer_period(domain_values[i] - 5, 2)
+                output_values[i * 5 + 4] = _integer_period(domain_values[i] - 5, -2)
+
+            ratios = inx.buffer(shape=85, dtype=np.float32, device="gpu")
+            try:
+                inx.compute.launch(vector_division, params=(explicit_domain, ratios))
+                division_values = np.arange(17, dtype=np.int32)
+                expected_ratios = np.stack((division_values - 5, division_values + 1, -division_values), axis=1).astype(np.float32) / 2
+                periods = ((division_values - 5) // 2) * 10 + (division_values - 5) % 2
+                negative_periods = ((division_values - 5) // -2) * 10 + (division_values - 5) % -2
+                np.testing.assert_array_equal(ratios.get_data().numpy().reshape(17, 5),
+                                              np.column_stack((expected_ratios, periods, negative_periods)))
+            finally:
+                ratios.close()
 
             inx.compute.launch(_helper_kernel, params=(explicit_domain, local_loop_output, 3, -2))
             np.testing.assert_array_equal(
