@@ -7,6 +7,7 @@
 
 namespace infernux
 {
+class PhysicsECSStore;
 class PhysicsWorld;
 class Rigidbody;
 struct SemanticTypeDescriptor;
@@ -27,15 +28,11 @@ class Joint : public Component, protected PhysicsConstraintOwner
     }
     ~Joint() override;
     void Awake() override;
-    void FixedUpdate(float) override;
+    void OnHierarchyPublished() override;
     void OnEnable() override;
     void OnDisable() override;
     void OnGameObjectDeactivated() override;
     void OnDestroy() override;
-    bool WantsRuntimeFixedUpdate() const override
-    {
-        return true;
-    }
 
     glm::vec3 GetAnchor() const
     {
@@ -83,6 +80,14 @@ class Joint : public Component, protected PhysicsConstraintOwner
     uint64_t m_constraintId = 0;
 
   private:
+    friend class PhysicsECSStore;
+    // Intrusive membership is removed before this Joint leaves its live lifetime.
+    // Retirement callbacks may enqueue without allocating or invoking scripts.
+    Joint *m_pendingPrevious = nullptr;
+    Joint *m_pendingNext = nullptr;
+    uint64_t m_pendingEpoch = 0;
+    bool m_pendingConstraint = false;
+    bool m_retryOnRetire = false;
     void OnPhysicsConstraintDestroyed() noexcept final;
     static uint32_t ResolveBodyId(const Rigidbody *body);
     uint32_t m_boundBodyId = 0xFFFFFFFF;

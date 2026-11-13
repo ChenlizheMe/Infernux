@@ -688,6 +688,7 @@ void PhysicsWorld::RetryCapacityBodyCreations()
     for (const auto id : store.ConsumePendingBroadphaseRemoves())
         RemoveBodyFromBroadphase(id);
     AddBodiesBatch(store.ConsumePendingBroadphaseAdds());
+    store.DrainPendingJoints();
 }
 bool PhysicsWorld::HasPendingStep() const noexcept
 {
@@ -698,6 +699,7 @@ bool PhysicsWorld::HasPendingControl() const noexcept
     const auto &store = PhysicsECSStore::Instance();
     return m_controlPending || (m_gpuScene && m_gpuScene->HasPendingControl()) || store.HasDirtyColliders() ||
            store.HasPendingBodyCreations() || store.HasPendingBroadphaseAdds() || store.HasPendingBroadphaseRemoves() ||
+           store.HasPendingJointDependencies() ||
            (m_gpuScene && !m_gpuCancelled && PhysicMaterial::GetSurfaceRevision() != m_surfaceRevision);
 }
 void PhysicsWorld::DrainGpuSource() const
@@ -840,6 +842,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
                 store.CancelBroadphaseRemove(actor.bodyId);
                 actor.bodyId = UINT32_MAX;
                 actor.bodyInBroadphase = false;
+                actor.jointEndpointBodyId = UINT32_MAX;
                 // Capacity was reserved before the GPU owner was constructed.
                 m_recreateActors.push_back(handle);
             });

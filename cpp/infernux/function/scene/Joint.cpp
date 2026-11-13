@@ -3,6 +3,7 @@
 #include "ComponentFactory.h"
 #include "GameObject.h"
 #include "Rigidbody.h"
+#include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <cmath>
 #include <stdexcept>
@@ -69,6 +70,10 @@ void Joint::Awake()
 {
     RebuildConstraint();
 }
+void Joint::OnHierarchyPublished()
+{
+    RebuildConstraint();
+}
 void Joint::OnEnable()
 {
     RebuildConstraint();
@@ -85,12 +90,6 @@ void Joint::OnDestroy()
 {
     ReleaseConstraint();
 }
-void Joint::FixedUpdate(float)
-{
-    if (!m_constraintId)
-        RebuildConstraint();
-}
-
 uint32_t Joint::ResolveBodyId(const Rigidbody *body)
 {
     return body && body->IsEnabled() && body->GetGameObject() ? body->GetParticipatingBodyId() : 0xFFFFFFFF;
@@ -107,19 +106,29 @@ void Joint::RebuildConstraint()
 {
     auto &world = PhysicsWorld::Instance();
     auto *object = GetGameObject();
-    if (!IsEnabled() || !object || !object->IsActiveInHierarchy() || !world.IsInitialized()) {
+    if (!IsEnabled() || IsBeingDestroyed() || IsDestroyed() || !object || !object->IsActiveInHierarchy() ||
+        !world.IsInitialized()) {
         ReleaseConstraint();
         return;
     }
     const auto bodyId = ResolveBodyId(object->GetComponent<Rigidbody>());
     const auto connectedBodyId = ResolveBodyId(GetConnectedBody());
+    auto &store = PhysicsECSStore::Instance();
     if (bodyId == 0xFFFFFFFF || (m_connectedBodyComponentId && connectedBodyId == 0xFFFFFFFF)) {
-        ReleaseConstraint();
+        // Leave an existing pending node in place: a failed attempt must not
+        // schedule itself again in the absence of another readiness event.
+        if (m_constraintId)
+            ReleaseConstraint();
+        m_retryOnRetire = true;
+        store.QueuePendingJoint(*this);
         return;
     }
-    if (m_constraintId && bodyId == m_boundBodyId && connectedBodyId == m_boundConnectedBodyId)
+    if (m_constraintId && bodyId == m_boundBodyId && connectedBodyId == m_boundConnectedBodyId) {
+        store.CancelPendingJoint(*this);
         return;
+    }
     ReleaseConstraint();
+    m_retryOnRetire = true;
     m_constraintId = CreateConstraint(world, bodyId, connectedBodyId);
     m_boundBodyId = bodyId;
     m_boundConnectedBodyId = connectedBodyId;
@@ -128,6 +137,8 @@ void Joint::RebuildConstraint()
 
 void Joint::ReleaseConstraint()
 {
+    m_retryOnRetire = false;
+    PhysicsECSStore::Instance().CancelPendingJoint(*this);
     if (m_constraintId && PhysicsWorld::Instance().IsInitialized())
         PhysicsWorld::Instance().DestroyConstraint(m_constraintId);
     OnPhysicsConstraintDestroyed();
@@ -137,6 +148,8 @@ void Joint::OnPhysicsConstraintDestroyed() noexcept
 {
     m_constraintId = 0;
     m_boundBodyId = m_boundConnectedBodyId = 0xFFFFFFFF;
+    if (m_retryOnRetire)
+        PhysicsECSStore::Instance().QueuePendingJoint(*this);
 }
 
 void Joint::SetAnchor(const glm::vec3 &anchor)

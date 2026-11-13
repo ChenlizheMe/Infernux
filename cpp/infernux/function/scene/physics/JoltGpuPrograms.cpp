@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -60,9 +61,12 @@ constexpr Port Ports[] = {
      1u << 3},
     {Resource::ContactPatches, "contact_patches", sizeof(ContactPatch), {"leaves"}, 1},
     {Resource::Joints, "joint_stream", sizeof(QueryRecordWord), {"value"}, 1},
+    {Resource::StageWork, "stage_work", sizeof(StageWork), {"range"}, 1},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
+constexpr size_t StoragePortCount = 11;
+constexpr size_t WorkUniformCacheCapacity = 64;
 constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 
 constexpr size_t PortIndex(Resource resource)
@@ -90,6 +94,8 @@ constexpr size_t PortIndex(Resource resource)
         return 9;
     case Resource::Joints:
         return 10;
+    case Resource::StageWork:
+        return 11;
     }
     return PortCount;
 }
@@ -146,13 +152,14 @@ constexpr bool IndexedDefinitions()
         const auto &stage = Stages[slot];
         if (static_cast<size_t>(stage.stage) != slot || stage.groupSizeX == 0 || stage.groupSizeY == 0 ||
             stage.groupSizeZ == 0 || (CompleteWrites(stage.stage) & ~stage.writes) != 0 ||
-            (CompleteWrites(stage.stage) & stage.reads) != 0)
+            (CompleteWrites(stage.stage) & stage.reads) != 0 || !(stage.reads & Mask(Resource::StageWork)) ||
+            (stage.writes & Mask(Resource::StageWork)))
             return false;
     }
     return true;
 }
 
-static_assert(PortCount == 11, "Jolt GPU storage slots must match the resource table");
+static_assert(PortCount == StoragePortCount + 1, "Jolt GPU has eleven persistent ports and one work uniform");
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -320,7 +327,7 @@ void ValidateForces(const std::vector<BodyForces> &forces, uint32_t bodyCount)
 
 void ValidateLayout(const Port &port, const ShaderResourceLayout &resource)
 {
-    const bool uniform = port.resource == Resource::StepParams;
+    const bool uniform = port.resource == Resource::StepParams || port.resource == Resource::StageWork;
     const auto &value = resource.value;
     if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
         (uniform ? value.byteSize : resource.elementStride) != port.stride || value.kind != ShaderValueKind::Struct ||
@@ -362,6 +369,72 @@ void AppendModelUpload(std::vector<rhi::ComputeBufferUpdate> &updates,
 uint32_t Groups(uint32_t count, uint32_t width)
 {
     return count / width + static_cast<uint32_t>(count % width != 0);
+}
+
+bool WorldDomain(Domain domain)
+{
+    return domain == Domain::WorldPairs || domain == Domain::WorldPatches || domain == Domain::WorldContacts ||
+           domain == Domain::WorldJoints;
+}
+
+uint64_t WorldItems(Domain domain, const WorldRange &world)
+{
+    switch (domain) {
+    case Domain::WorldPairs:
+        return uint64_t(world.leaves.y) * world.leaves.y;
+    case Domain::WorldPatches:
+        return world.bodies.w;
+    case Domain::WorldContacts:
+        return uint64_t(world.bodies.w) * MaxContactPointsPerPair;
+    case Domain::WorldJoints:
+        return world.leaves.w;
+    default:
+        throw std::invalid_argument("Jolt GPU work requires a world-local domain");
+    }
+}
+
+bool ValidateWork(const JoltGpuStorage &storage, const StageDefinition &definition, const StageWork &work)
+{
+    const auto range = work.range;
+    const bool worldDomain = WorldDomain(definition.domain);
+    const uint32_t quantum = WorkItemLimit(definition.domain);
+    if (range.y > quantum)
+        throw std::invalid_argument("Jolt GPU work exceeds its bounded item quantum");
+    if (worldDomain) {
+        if (range.w > 16u || range.z > storage.GetWorldCount() || range.w > storage.GetWorldCount() - range.z)
+            throw std::invalid_argument("Jolt GPU work addresses a world span outside its accepted model");
+        if (!range.w || !range.y)
+            return false;
+        uint64_t maximum = 0;
+        const auto &worlds = storage.GetModel().worlds;
+        for (uint32_t local = 0; local < range.w; ++local)
+            maximum = std::max(maximum, WorldItems(definition.domain, worlds[range.z + local]));
+        if (range.x > maximum || uint64_t(range.y) > maximum - range.x)
+            throw std::invalid_argument("Jolt GPU work addresses items outside its selected world domains");
+        return true;
+    }
+    if (range.z || range.w)
+        throw std::invalid_argument("Jolt GPU global work must leave its unused world range zero");
+    uint32_t count = 0;
+    switch (definition.domain) {
+    case Domain::Bodies:
+        count = storage.GetBodyCount();
+        break;
+    case Domain::Shapes:
+        count = storage.GetShapeCount();
+        break;
+    case Domain::Contacts:
+        count = storage.GetContactCount();
+        break;
+    case Domain::Joints:
+        count = storage.GetJointCount();
+        break;
+    default:
+        throw std::invalid_argument("Jolt GPU work has an unknown global domain");
+    }
+    if (range.x > count || range.y > count - range.x)
+        throw std::invalid_argument("Jolt GPU work addresses global items outside its accepted model");
+    return range.y != 0;
 }
 } // namespace
 
@@ -420,8 +493,8 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
 const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStorage::Get(Resource resource) const
 {
     const auto slot = PortIndex(resource);
-    if (slot == PortCount)
-        throw std::invalid_argument("Unknown Jolt GPU resource");
+    if (slot >= StoragePortCount)
+        throw std::invalid_argument("Jolt GPU storage requires a persistent resource, not a per-work uniform");
     return m_buffers[slot];
 }
 
@@ -774,6 +847,8 @@ void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource
         throw std::invalid_argument("Jolt GPU tick inputs accept only parameters, models, worlds and forces");
     const auto &buffer = storage.Get(resource);
     m_buffers[slot] = buffer ? buffer->Freeze() : nullptr;
+    m_workUniforms.clear();
+    m_nextWorkUniform = 0;
 }
 
 JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
@@ -789,6 +864,7 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
         Entry entry{definition, {}, {}};
         std::vector<rhi::ComputeBufferBinding> bindings;
         uint32_t actualResources = 0;
+        uint32_t storageBindings = 0, uniformBindings = 0;
         for (const auto &resource : target.resources) {
             const std::array<uint32_t, 2> key{resource.set, resource.binding.binding};
             if (std::find(code->bindings.begin(), code->bindings.end(), key) == code->bindings.end())
@@ -798,6 +874,10 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
             if (port == std::end(Ports) || resource.set != 0)
                 throw std::invalid_argument("Jolt GPU stage contains an unknown resource port");
             ValidateLayout(*port, resource);
+            if (resource.binding.type == rhi::BindingType::UniformBuffer)
+                ++uniformBindings;
+            else
+                ++storageBindings;
             if ((definition.writes & Mask(port->resource)) && resource.binding.readOnlyStorage)
                 throw std::invalid_argument("Jolt GPU writer cannot bind a read-only target port");
             bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
@@ -810,7 +890,7 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
                                       (CompleteWrites(definition.stage) & Mask(port->resource)) != 0});
             actualResources |= Mask(port->resource);
         }
-        if (actualResources != (definition.reads | definition.writes))
+        if (actualResources != (definition.reads | definition.writes) || storageBindings > 8 || uniformBindings > 2)
             throw std::invalid_argument("Jolt GPU entry resources differ from the stage recipe");
 
         if (target.target == ShaderCodeTarget::SpirV) {
@@ -831,7 +911,8 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
 }
 
 rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage,
-                                                        const JoltGpuStepInputs &inputs) const
+                                                        const JoltGpuStepInputs &inputs, const JoltGpuStageWork &work,
+                                                        const std::shared_ptr<rhi::ComputeBuffer> &workUniform) const
 {
     rhi::ComputeDispatchDesc dispatch;
     dispatch.kernel = entry.kernel;
@@ -840,74 +921,121 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
     rhi::ComputeDispatchProof proof;
     proof.reads.reserve(entry.bindings.size());
     proof.writes.reserve(entry.bindings.size());
+    const auto range = work.parameters.range;
     for (size_t index = 0; index < entry.bindings.size(); ++index) {
         const auto &binding = entry.bindings[index];
         const bool writer = binding.access != rhi::ComputeBufferAccess::Read;
-        const auto input = InputIndex(Ports[binding.slot].resource);
-        const auto &buffer =
-            !writer && input < inputs.m_buffers.size() ? inputs.m_buffers[input] : storage.m_buffers[binding.slot];
-        if (!buffer)
+        const auto resource = Ports[binding.slot].resource;
+        const auto input = InputIndex(resource);
+        const auto &buffer = resource == Resource::StageWork              ? workUniform
+                             : !writer && input < inputs.m_buffers.size() ? inputs.m_buffers[input]
+                                                                          : storage.m_buffers[binding.slot];
+        if (!buffer || !m_host.SharesServicesWith(buffer->GetHost()))
             throw std::invalid_argument("Jolt GPU stage requires captured input: " +
                                         std::string(Ports[binding.slot].name));
         dispatch.buffers.push_back(buffer);
         dispatch.bufferAccesses.push_back(binding.access);
         if (binding.read)
             proof.reads.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
-        if (binding.completeWrite)
-            proof.writes.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
+        if (binding.completeWrite) {
+            const auto complete = [&](uint64_t first, uint64_t count, uint64_t stride) {
+                const uint64_t offset = first * stride, bytes = count * stride;
+                if (offset > buffer->GetByteSize() || bytes > buffer->GetByteSize() - offset)
+                    throw std::invalid_argument("Jolt GPU work complete-write range exceeds its typed resource");
+                if (bytes)
+                    proof.writes.push_back({static_cast<uint32_t>(index), offset, bytes});
+            };
+            if (resource == Resource::Bounds) {
+                complete(range.x, range.y, sizeof(Aabb));
+            } else if (resource == Resource::Contacts || resource == Resource::ContactPatches) {
+                for (uint32_t local = 0; local < range.w; ++local) {
+                    const auto &world = storage.GetModel().worlds[range.z + local];
+                    const uint64_t count = WorldItems(Domain::WorldPairs, world);
+                    const uint64_t first = std::min(uint64_t(range.x), count);
+                    const uint64_t end = std::min(uint64_t(range.x) + range.y, count);
+                    const uint64_t patch = uint64_t(world.bodies.z) + first;
+                    if (resource == Resource::ContactPatches)
+                        complete(patch, end - first, sizeof(ContactPatch));
+                    else
+                        complete(patch * MaxContactPointsPerPair, (end - first) * MaxContactPointsPerPair,
+                                 sizeof(Contact));
+                }
+            } else {
+                throw std::invalid_argument("Jolt GPU stage lacks a typed bounded complete-write domain");
+            }
+        }
     }
     dispatch.proof = std::move(proof);
     const auto &definition = entry.definition;
-    switch (definition.domain) {
-    case Domain::Bodies:
-        dispatch.groupCountX = Groups(storage.GetBodyCount(), definition.groupSizeX);
-        break;
-    case Domain::Shapes:
-        dispatch.groupCountX = Groups(storage.GetShapeCount(), definition.groupSizeX);
-        break;
-    case Domain::WorldPairs:
-        dispatch.groupCountX = Groups(storage.GetMaxLeavesPerWorld(), definition.groupSizeX);
-        dispatch.groupCountY = Groups(storage.GetMaxLeavesPerWorld(), definition.groupSizeY);
-        dispatch.groupCountZ = storage.GetWorldCount();
-        break;
-    case Domain::Contacts:
-        dispatch.groupCountX = Groups(storage.GetContactCount(), definition.groupSizeX);
-        break;
-    case Domain::Worlds:
-        dispatch.groupCountX = Groups(storage.GetWorldCount(), definition.groupSizeX);
-        break;
+    dispatch.groupCountY = dispatch.groupCountZ = 1;
+    if (definition.domain == Domain::WorldPairs) {
+        dispatch.groupCountX = Groups(range.y, definition.groupSizeX);
+        dispatch.groupCountY = Groups(range.w, definition.groupSizeY);
+    } else if (WorldDomain(definition.domain)) {
+        dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
+    } else {
+        dispatch.groupCountX = Groups(range.y, definition.groupSizeX);
     }
+    const auto &maximum = m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount;
+    if (!dispatch.groupCountX || !dispatch.groupCountY || !dispatch.groupCountZ || dispatch.groupCountX > maximum[0] ||
+        dispatch.groupCountY > maximum[1] || dispatch.groupCountZ > maximum[2])
+        throw std::invalid_argument("Jolt GPU bounded work exceeds the device dispatch range");
     return dispatch;
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,
                                                                           const JoltGpuStepInputs &inputs,
-                                                                          const std::vector<Stage> &stages)
+                                                                          const std::vector<JoltGpuStageWork> &work)
 {
     if (!m_host.SharesServicesWith(storage.GetHost()))
         throw std::invalid_argument("Jolt GPU programs and state belong to different compute owners");
-    if (storage.GetBodyCount() == 0 || stages.empty())
+    if (storage.GetBodyCount() == 0 || work.empty())
         return {};
     std::vector<rhi::ComputeDispatchDesc> dispatches;
-    dispatches.reserve(stages.size());
-    for (const auto stage : stages) {
-        const auto index = static_cast<size_t>(stage);
+    dispatches.reserve(work.size());
+    std::vector<rhi::ComputeBufferUpdate> uploads;
+    std::map<std::array<uint32_t, 4>, std::shared_ptr<rhi::ComputeBuffer>> uniforms;
+    for (const auto &unit : work) {
+        const auto index = static_cast<size_t>(unit.stage);
         if (index >= m_entries.size())
             throw std::invalid_argument("Unknown Jolt GPU stage");
         const auto &entry = m_entries[index];
-        if ((entry.definition.domain == Domain::Shapes && !storage.GetShapeCount()) ||
-            (entry.definition.domain == Domain::WorldPairs && !storage.GetMaxLeavesPerWorld()) ||
-            (entry.definition.domain == Domain::Contacts && !storage.GetContactCount()) ||
-            (entry.definition.domain == Domain::Worlds &&
-             (!storage.GetWorldCount() || ((stage == Stage::SolveVelocity || stage == Stage::SolvePosition) &&
-                                           !storage.GetPatchCount() && !storage.GetJointCount()))) ||
-            ((stage == Stage::SetupJoints || stage == Stage::FinishJoints) && !storage.GetJointCount()))
+        if (!ValidateWork(storage, entry.definition, unit.parameters))
             continue;
-        dispatches.push_back(BuildDispatch(entry, storage, inputs));
+        const auto range = unit.parameters.range;
+        const std::array<uint32_t, 4> key{range.x, range.y, range.z, range.w};
+        auto uniform = uniforms.find(key);
+        if (uniform == uniforms.end()) {
+            auto cached =
+                std::find_if(inputs.m_workUniforms.begin(), inputs.m_workUniforms.end(), [&](const auto &value) {
+                    const auto a = value.parameters.range;
+                    return a.x == range.x && a.y == range.y && a.z == range.z && a.w == range.w;
+                });
+            std::shared_ptr<rhi::ComputeBuffer> buffer;
+            if (cached != inputs.m_workUniforms.end() && cached->buffer &&
+                m_host.SharesServicesWith(cached->buffer->GetHost()) &&
+                cached->buffer->HasInitializedRange(0, sizeof(StageWork))) {
+                buffer = cached->buffer;
+            } else {
+                buffer = Allocate(m_host, PortIndex(Resource::StageWork), sizeof(StageWork));
+                uploads.push_back({buffer, 0, Bytes(&unit.parameters, 1)});
+                const JoltGpuStepInputs::WorkUniform value{unit.parameters, buffer};
+                if (cached != inputs.m_workUniforms.end())
+                    *cached = value;
+                else if (inputs.m_workUniforms.size() < WorkUniformCacheCapacity)
+                    inputs.m_workUniforms.push_back(value);
+                else {
+                    inputs.m_workUniforms[inputs.m_nextWorkUniform] = value;
+                    inputs.m_nextWorkUniform = (inputs.m_nextWorkUniform + 1) % WorkUniformCacheCapacity;
+                }
+            }
+            uniform = uniforms.emplace(key, std::move(buffer)).first;
+        }
+        dispatches.push_back(BuildDispatch(entry, storage, inputs, unit, uniform->second));
     }
     if (dispatches.empty())
         return {};
-    return rhi::PrepareComputeBatch(m_host, {}, std::move(dispatches));
+    return rhi::PrepareComputeBatch(m_host, std::move(uploads), std::move(dispatches));
 }
 
 } // namespace infernux

@@ -844,6 +844,9 @@ void SceneManager::Stop()
         m_completedFixedStepIndex = 0;
         m_publishedFixedStepIndex = 0;
     }
+    // CancelPendingStep retires bound constraints before the Play epoch ends.
+    // Drop those callbacks' pending nodes before editor/runtime graph restore.
+    PhysicsECSStore::Instance().ClearPendingJoints();
     m_fixedPhase = FixedPhase::Idle;
     m_pausedStepPending = false;
     m_stepFrameOpen = false;
@@ -1499,8 +1502,10 @@ void SceneManager::FlushPendingBroadphase()
 
     // ── Create deferred Jolt bodies ──
     auto pendingBodies = store.ConsumePendingBodyCreations();
-    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds() && !store.HasPendingBroadphaseRemoves())
+    if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds() && !store.HasPendingBroadphaseRemoves()) {
+        store.DrainPendingJoints();
         return;
+    }
 
     auto t0 = ProfileClock::now();
     const size_t bodyCount = pendingBodies.size();
@@ -1523,12 +1528,17 @@ void SceneManager::FlushPendingBroadphase()
     // ── Batch add to broadphase ──
     auto t1 = ProfileClock::now();
     auto pending = store.ConsumePendingBroadphaseAdds();
-    if (pending.empty())
+    if (pending.empty()) {
+        store.DrainPendingJoints();
         return;
+    }
 
     // Use Jolt batch API (AddBodiesPrepare/Finalize) for large batches,
     // which is significantly faster than individual AddBody calls.
     pw.AddBodiesBatch(pending);
+    // Both endpoints' actor initialization and residency now precede the
+    // Joint topology group in the same ordered author command source.
+    store.DrainPendingJoints();
 
     double addBodiesMs = ProfileMsSince(t1);
 

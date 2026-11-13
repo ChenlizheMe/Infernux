@@ -150,6 +150,107 @@ float DecodeFloat(uint32_t bits)
     std::memcpy(&value, &bits, sizeof(value));
     return value;
 }
+
+// The final publication gate scans finite packets through the same source as
+// the solve. Only the final 16-byte reduction reaches the host.
+struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
+{
+    static uint32_t OutputCount(uint32_t input)
+    {
+        return input / 64 + static_cast<uint32_t>(input % 64 != 0);
+    }
+
+    static uint64_t ScratchBytes(uint32_t input)
+    {
+        uint64_t words = 0;
+        do {
+            input = OutputCount(input);
+            words += input;
+        } while (input > 1);
+        return words * sizeof(QueryRecordWord);
+    }
+
+    JointStatusExecution(rhi::ComputeHost source, std::shared_ptr<rhi::ComputeKernel> program,
+                         std::vector<uint8_t> bindings, std::shared_ptr<const JoltGpuScene::Publication> value)
+        : host(std::move(source)), kernel(std::move(program)), ports(std::move(bindings)),
+          publication(std::move(value)), count(static_cast<uint32_t>(publication->joints.size())), inputCount(count),
+          motion(Allocate(host, ScratchBytes(count)))
+    {
+    }
+
+    JoltGpuControlWork Next()
+    {
+        constexpr uint32_t ItemsPerDispatch = 2048, DispatchesPerPacket = 8;
+        const uint32_t end = cursor + std::min(inputCount - cursor, ItemsPerDispatch * DispatchesPerPacket);
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
+        for (uint32_t first = cursor; first < end;) {
+            const auto size = std::min(end - first, ItemsPerDispatch);
+            const JointParams parameters{{inputFirst + first, size, outputFirst + first / 64, level}};
+            auto uniform = Allocate(host, sizeof(parameters));
+            uploads.push_back({uniform, 0, Bytes(&parameters, 1)});
+            rhi::ComputeDispatchDesc dispatch;
+            dispatch.kernel = kernel;
+            dispatch.groupCountX = Groups(host, size);
+            rhi::ComputeDispatchProof proof;
+            for (const auto port : ports) {
+                const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
+                const auto &buffer = port == Parameters ? uniform : port == Stream ? publication->jointStream : motion;
+                dispatch.buffers.push_back(buffer);
+                dispatch.bufferAccesses.push_back(port == Motion ? rhi::ComputeBufferAccess::ReadWrite
+                                                                 : rhi::ComputeBufferAccess::Read);
+                if (port == Motion) {
+                    if (level)
+                        proof.reads.push_back({binding, uint64_t(inputFirst + first) * sizeof(QueryRecordWord),
+                                               uint64_t(size) * sizeof(QueryRecordWord)});
+                    proof.writes.push_back({binding, uint64_t(outputFirst + first / 64) * sizeof(QueryRecordWord),
+                                            uint64_t(dispatch.groupCountX) * sizeof(QueryRecordWord)});
+                } else
+                    proof.reads.push_back({binding, 0, buffer->GetByteSize()});
+            }
+            dispatch.proof = std::move(proof);
+            dispatches.push_back(std::move(dispatch));
+            first += size;
+        }
+        const bool final = end == inputCount && OutputCount(inputCount) == 1;
+        std::vector<rhi::ComputeBufferRead> reads;
+        if (final)
+            reads.push_back({motion, uint64_t(outputFirst) * sizeof(QueryRecordWord), sizeof(QueryRecordWord)});
+        auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches), std::move(reads));
+        if (end == inputCount && !final) {
+            inputFirst = outputFirst;
+            inputCount = OutputCount(inputCount);
+            outputFirst += inputCount;
+            ++level;
+            cursor = 0;
+        } else
+            cursor = end;
+        return {packet, [self = shared_from_this(), packet, final]() -> JoltGpuControlWork {
+                    if (!final)
+                        return self->Next();
+                    const auto readback = packet->Readback(0);
+                    if (!readback || !readback->IsComplete())
+                        throw std::logic_error("Jolt GPU joint status requires its completed source receipt");
+                    UInt4 value{};
+                    readback->ReadInto(&value, sizeof(value));
+                    if (value.z || value.w || value.x > JointStatusNumericalFailure ||
+                        (value.x == JointStatusSuccess ? value.y != InvalidQueryBodySlot : value.y >= self->count))
+                        throw std::runtime_error("Jolt GPU joint publication returned a malformed numerical status");
+                    if (value.x != JointStatusSuccess)
+                        throw std::runtime_error("Jolt GPU joint numerical failure blocks publication at joint " +
+                                                 std::to_string(self->publication->joints[value.y].id) + " (status " +
+                                                 std::to_string(value.x) + ")");
+                    return {};
+                }};
+    }
+
+    rhi::ComputeHost host;
+    std::shared_ptr<rhi::ComputeKernel> kernel;
+    std::vector<uint8_t> ports;
+    std::shared_ptr<const JoltGpuScene::Publication> publication;
+    uint32_t count, inputCount, inputFirst = 0, outputFirst = 0, level = 0, cursor = 0;
+    std::shared_ptr<rhi::ComputeBuffer> motion;
+};
 } // namespace
 
 JoltGpuJoints::JoltGpuJoints(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
@@ -452,56 +553,9 @@ JoltGpuControlWork JoltGpuJoints::PrepareStatus(std::shared_ptr<const JoltGpuSce
     if (!stream || !stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
         stream->GetByteSize() != streamBytes)
         throw std::runtime_error("Jolt GPU joint status requires its frozen final numerical stream");
-    const auto count = static_cast<uint32_t>(publication->joints.size());
-    rhi::ComputeHost host = m_host;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers{};
-    buffers[Stream] = stream;
-    buffers[Parameters] = Allocate(host, sizeof(JointParams));
-    buffers[Motion] = Allocate(host, sizeof(QueryRecordWord));
-    const JointParams parameters{{count, 0, 0, 0}};
     const auto &program = m_programs[ReadStatus];
-    rhi::ComputeDispatchDesc dispatch;
-    dispatch.kernel = program.kernel;
-    dispatch.groupCountX = 1;
-    rhi::ComputeDispatchProof proof;
-    for (const auto port : program.ports) {
-        const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
-        dispatch.buffers.push_back(buffers[port]);
-        dispatch.bufferAccesses.push_back(port == Motion ? rhi::ComputeBufferAccess::Write
-                                                         : rhi::ComputeBufferAccess::Read);
-        const rhi::ComputeBindingRange range{binding, 0, buffers[port]->GetByteSize()};
-        if (port == Motion)
-            proof.writes.push_back(range);
-        else
-            proof.reads.push_back(range);
-    }
-    dispatch.proof = std::move(proof);
-    auto packet = rhi::PrepareComputeBatch(host, {{buffers[Parameters], 0, Bytes(&parameters, 1)}},
-                                           {std::move(dispatch)}, {{buffers[Motion], 0, sizeof(QueryRecordWord)}});
-    struct StatusResult
-    {
-        UInt4 value{};
-        bool materialized = false;
-    };
-    auto result = std::make_shared<StatusResult>();
-    return {packet, [packet, publication = std::move(publication), result, count]() -> JoltGpuControlWork {
-                if (!result->materialized) {
-                    const auto readback = packet->Readback(0);
-                    if (!readback || !readback->IsComplete())
-                        throw std::logic_error("Jolt GPU joint status requires its completed source receipt");
-                    readback->ReadInto(&result->value, sizeof(result->value));
-                    result->materialized = true;
-                }
-                const auto &value = result->value;
-                if (value.z || value.w || value.x > JointStatusNumericalFailure ||
-                    (value.x == JointStatusSuccess ? value.y != InvalidQueryBodySlot : value.y >= count))
-                    throw std::runtime_error("Jolt GPU joint publication returned a malformed numerical status");
-                if (value.x != JointStatusSuccess)
-                    throw std::runtime_error("Jolt GPU joint numerical failure blocks publication at joint " +
-                                             std::to_string(publication->joints[value.y].id) + " (status " +
-                                             std::to_string(value.x) + ")");
-                return {};
-            }};
+    return std::make_shared<JointStatusExecution>(m_host, program.kernel, program.ports, std::move(publication))
+        ->Next();
 }
 
 void JoltGpuJointMotionResult::CopyMotion(float *output, size_t valueCount)

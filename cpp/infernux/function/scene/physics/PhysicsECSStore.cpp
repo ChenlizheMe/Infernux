@@ -18,6 +18,7 @@
 #include "PhysicsECSStore.h"
 #include "../Collider.h"
 #include "../GameObject.h"
+#include "../Joint.h"
 #include "../Rigidbody.h"
 #include "../SceneManager.h"
 #include "../Transform.h"
@@ -287,6 +288,7 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
             QueueBroadphaseRemove(actor.bodyId);
         actor.bodyInBroadphase = false;
     }
+    UpdateJointEndpointReadiness(actor);
     NotifyCollisionSceneChanged();
 }
 
@@ -308,6 +310,7 @@ void PhysicsECSStore::SuspendActor(ActorHandle handle)
         PhysicsWorld::Instance().RemoveBodyFromBroadphase(actor.bodyId, true);
         actor.bodyInBroadphase = false;
     }
+    UpdateJointEndpointReadiness(actor);
 }
 
 void PhysicsECSStore::RestoreActor(ActorHandle handle)
@@ -319,6 +322,7 @@ void PhysicsECSStore::RestoreActor(ActorHandle handle)
         QueueBroadphaseAdd(actor.bodyId);
         actor.bodyInBroadphase = true;
     }
+    UpdateJointEndpointReadiness(actor);
 }
 
 void PhysicsECSStore::SyncActorTransform(ActorHandle handle, float fixedDeltaTime,
@@ -679,8 +683,90 @@ std::vector<uint32_t> PhysicsECSStore::ConsumePendingBroadphaseRemoves()
     return result;
 }
 
+void PhysicsECSStore::UpdateJointEndpointReadiness(PhysicsActorData &actor) noexcept
+{
+    const uint32_t endpoint = actor.bodyInBroadphase && !actor.sceneSuspended && actor.rigidbody &&
+                                      actor.rigidbody->IsEnabled() && actor.owner->IsActiveInHierarchy()
+                                  ? actor.bodyId
+                                  : UINT32_MAX;
+    if (endpoint != actor.jointEndpointBodyId) {
+        actor.jointEndpointBodyId = endpoint;
+        m_pendingJointsDirty = true;
+    }
+}
+
+void PhysicsECSStore::QueuePendingJoint(Joint &joint) noexcept
+{
+    joint.m_pendingEpoch = SceneManager::Instance().GetSimulationEpoch();
+    if (joint.m_pendingConstraint)
+        return;
+    joint.m_pendingConstraint = true;
+    joint.m_pendingPrevious = m_pendingJointTail;
+    joint.m_pendingNext = nullptr;
+    if (m_pendingJointTail)
+        m_pendingJointTail->m_pendingNext = &joint;
+    else
+        m_pendingJointHead = &joint;
+    m_pendingJointTail = &joint;
+    m_pendingJointsDirty = true;
+}
+
+void PhysicsECSStore::CancelPendingJoint(Joint &joint) noexcept
+{
+    if (!joint.m_pendingConstraint)
+        return;
+    if (joint.m_pendingPrevious)
+        joint.m_pendingPrevious->m_pendingNext = joint.m_pendingNext;
+    else
+        m_pendingJointHead = joint.m_pendingNext;
+    if (joint.m_pendingNext)
+        joint.m_pendingNext->m_pendingPrevious = joint.m_pendingPrevious;
+    else
+        m_pendingJointTail = joint.m_pendingPrevious;
+    joint.m_pendingPrevious = joint.m_pendingNext = nullptr;
+    joint.m_pendingConstraint = false;
+}
+
+void PhysicsECSStore::DrainPendingJoints()
+{
+    if (!m_pendingJointsDirty || m_drainingPendingJoints)
+        return;
+    m_pendingJointsDirty = false;
+    m_drainingPendingJoints = true;
+    try {
+        auto &manager = SceneManager::Instance();
+        // Rebuild/OnConstraintCreated only append physics author commands; they
+        // do not dispatch gameplay callbacks or destroy other component nodes.
+        for (auto *joint = m_pendingJointHead; joint;) {
+            auto *next = joint->m_pendingNext;
+            if (joint->m_pendingEpoch != manager.GetSimulationEpoch()) {
+                joint->m_retryOnRetire = false;
+                CancelPendingJoint(*joint);
+            } else {
+                joint->RebuildConstraint();
+            }
+            joint = next;
+        }
+    } catch (...) {
+        m_drainingPendingJoints = false;
+        m_pendingJointsDirty = true;
+        throw;
+    }
+    m_drainingPendingJoints = false;
+}
+
+void PhysicsECSStore::ClearPendingJoints() noexcept
+{
+    while (m_pendingJointHead) {
+        m_pendingJointHead->m_retryOnRetire = false;
+        CancelPendingJoint(*m_pendingJointHead);
+    }
+    m_pendingJointsDirty = false;
+}
+
 void PhysicsECSStore::ClearPendingQueues()
 {
+    ClearPendingJoints();
     m_pendingBodyCreationList.clear();
     m_pendingBodyCreationSet.clear();
     m_pendingBroadphaseAdds.clear();

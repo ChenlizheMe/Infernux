@@ -23,6 +23,7 @@ namespace infernux
 
 class Collider;
 class GameObject;
+class Joint;
 class Rigidbody;
 class Transform;
 
@@ -32,6 +33,8 @@ struct PhysicsActorData
     Collider *primaryCollider = nullptr;
     Rigidbody *rigidbody = nullptr;
     uint32_t bodyId = 0xFFFFFFFF;
+    // Last authored Joint endpoint readiness; no numerical body state is cached.
+    uint32_t jointEndpointBodyId = 0xFFFFFFFF;
     std::vector<Collider *> colliders;
     bool bodyInBroadphase = false;
     bool sceneSuspended = false;
@@ -214,6 +217,17 @@ class PhysicsECSStore
     void NotifyCollisionSceneChanged() noexcept;
     [[nodiscard]] uint64_t GetCollisionSceneRevision() const noexcept;
 
+    // Unbound Joint nodes are owned by their live components. Only a new
+    // request or changed endpoint participation wakes this pending-only list.
+    void QueuePendingJoint(Joint &joint) noexcept;
+    void CancelPendingJoint(Joint &joint) noexcept;
+    void DrainPendingJoints();
+    void ClearPendingJoints() noexcept;
+    [[nodiscard]] bool HasPendingJointDependencies() const noexcept
+    {
+        return m_pendingJointsDirty && m_pendingJointHead;
+    }
+
     // ---- Pending body creation queue (deferred from Collider::Awake) ----
 
     /// Queue one actor for deferred Jolt body creation at the physics boundary.
@@ -308,6 +322,7 @@ class PhysicsECSStore
   private:
     PhysicsECSStore() = default;
     void RetireActor(ActorHandle handle);
+    void UpdateJointEndpointReadiness(PhysicsActorData &actor) noexcept;
     void MarkActorDirty(ActorHandle handle);
     ActorHandle BindRigidbodyActor(Rigidbody *body);
     void MigrateCollider(Collider *collider, const Rigidbody *excludedBody, std::vector<ActorHandle> &changed);
@@ -322,6 +337,11 @@ class PhysicsECSStore
     std::vector<ActorHandle> m_dirtyActorList;
     std::vector<ActorHandle> m_dirtyActorScratch;
     uint64_t m_collisionSceneRevision = 1;
+
+    Joint *m_pendingJointHead = nullptr;
+    Joint *m_pendingJointTail = nullptr;
+    bool m_pendingJointsDirty = false;
+    bool m_drainingPendingJoints = false;
 
     // Pending actor creation, deduplicated by generation-aware handle.
     std::vector<ActorHandle> m_pendingBodyCreationList;

@@ -69,7 +69,7 @@ struct JoltGpuTickControl
     std::function<JoltGpuControlWork(const std::shared_ptr<rhi::ComputeBuffer> &)> prepareFinalWork;
 };
 
-/// One PhysicsWorld-owned stage cursor using the engine's existing work source,
+/// One PhysicsWorld-owned bounded stage cursor using the engine's existing work source,
 /// compute queue and receipts. Storage/programs/work must outlive this owner.
 class JoltGpuTick final
 {
@@ -138,6 +138,8 @@ class JoltGpuTick final
     [[nodiscard]] bool HasReceipts() const noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;
     [[nodiscard]] float GetFixedDeltaTime() const noexcept;
+    /// Number of accepted bounded stage dispatch units in this logical tick;
+    /// each phase may span several item/world units. Acceptance never replays one.
     [[nodiscard]] size_t GetAcceptedStageCount() const noexcept;
     /// Last fully completed tick, retained while a later tick runs. Null until
     /// the first nonempty tick completes. No partial solver value is exposed.

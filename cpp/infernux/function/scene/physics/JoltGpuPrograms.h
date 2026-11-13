@@ -40,6 +40,14 @@ struct JoltGpuJointModelUpdate
     JPH::GPU::JointAuthor author;
 };
 
+/// One bounded unit of the shared stage recipe. Parallel items use global
+/// ordinals; world domains use local item ordinals and an explicit world span.
+struct JoltGpuStageWork
+{
+    JPH::GPU::Stage stage;
+    JPH::GPU::StageWork parameters;
+};
+
 class JoltGpuModelUpdate;
 
 /// One validated step description, reusing the shared device record. Contact
@@ -214,7 +222,16 @@ class JoltGpuStepInputs
 
   private:
     friend class JoltGpuPrograms;
+    struct WorkUniform
+    {
+        JPH::GPU::StageWork parameters{};
+        std::shared_ptr<rhi::ComputeBuffer> buffer;
+    };
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
+    // Immutable range values, not additional frozen model/input ports. Capture
+    // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
+    mutable std::vector<WorkUniform> m_workUniforms;
+    mutable size_t m_nextWorkUniform = 0;
 };
 
 /// A consumer of the common compiler's typed target artifact. This class does
@@ -227,11 +244,12 @@ class JoltGpuPrograms
     /// Prepare one dependency-ordered ready prefix, including repeated solver
     /// iterations. The caller owns its stage cursor and selects a bounded prefix.
     /// Preparation does not submit; accepting the resulting batch does not
-    /// publish a physics tick. A single stage is {stage}; an empty list/model
+    /// publish a physics tick. Every work item carries its exact bounded range;
+    /// an empty list/model
     /// returns nullptr, without constructing a GPU packet.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareStages(const JoltGpuStorage &storage,
                                                                            const JoltGpuStepInputs &inputs,
-                                                                           const std::vector<JPH::GPU::Stage> &stages);
+                                                                           const std::vector<JoltGpuStageWork> &work);
 
   private:
     struct Binding
@@ -248,7 +266,8 @@ class JoltGpuPrograms
         std::vector<Binding> bindings;
     };
     [[nodiscard]] rhi::ComputeDispatchDesc BuildDispatch(const Entry &entry, const JoltGpuStorage &storage,
-                                                         const JoltGpuStepInputs &inputs) const;
+                                                         const JoltGpuStepInputs &inputs, const JoltGpuStageWork &work,
+                                                         const std::shared_ptr<rhi::ComputeBuffer> &workUniform) const;
     static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
     std::array<Entry, StageCount> m_entries;

@@ -7,6 +7,7 @@
 #include <deque>
 #include <map>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace infernux
@@ -60,7 +61,11 @@ class JoltGpuTick::Impl
         ValidateControlPacket(pendingControl.initialization);
         parameters = settings ? std::make_optional(*settings) : std::nullopt;
         reuseParameters = false;
-        stages.clear();
+        stageCursor = {};
+        worldPairs.clear();
+        worldPatches.clear();
+        worldContacts.clear();
+        worldJoints.clear();
         if (parameters) {
             auto gravityDt = parameters->Get().gravityDt;
             gravityDt.w = deltaTime / static_cast<float>(parameters->Get().solve.y);
@@ -82,7 +87,6 @@ class JoltGpuTick::Impl
         finalStates.reset();
         cursor = 0;
         inputAccepted = controlOnly;
-        planLength = 0;
         submissionBusy = false;
         status = Status::Running;
         try {
@@ -166,13 +170,60 @@ class JoltGpuTick::Impl
         Prepare = 1,
         Wait
     };
-    using CostKey = std::pair<std::vector<uint64_t>, uint64_t>;
+    enum class Phase
+    {
+        PrepareKinematics,
+        ApplyForces,
+        BuildBounds,
+        CollidePairs,
+        SetupContacts,
+        SetupJoints,
+        WarmJoints,
+        SolveJointVelocity,
+        SolveVelocity,
+        Integrate,
+        SolveJointPosition,
+        SolvePosition,
+        FinishJoints,
+        FinishTick,
+        Done
+    };
+    struct StageCursor
+    {
+        Phase phase = Phase::Done;
+        uint32_t substep = 0;
+        uint32_t iteration = 0;
+        size_t world = 0;
+        uint32_t item = 0;
+    };
+    struct StageSpan
+    {
+        JPH::GPU::Stage stage;
+        JPH::GPU::Domain domain;
+    };
+    struct WorldSpan
+    {
+        uint32_t world;
+        uint32_t count;
+    };
+    struct UnitEstimate
+    {
+        size_t count = 0;
+        uint64_t nanoseconds = 0;
+    };
+    static constexpr size_t ColdPacketUnits = 8;
+    static constexpr size_t MaxPacketUnits = 16;
+    using UnitHistory = std::deque<UnitEstimate>;
+    using UnitCostKey = std::tuple<JPH::GPU::Stage, uint32_t, uint32_t>;
+    using NumericalCostKey = std::vector<UnitCostKey>;
+    using CostKey = std::tuple<std::vector<uint64_t>, uint64_t, NumericalCostKey>;
     struct Receipt
     {
         rhi::ComputeCompletion completion;
         CostKey key;
         PacketKind kind;
         size_t stageCount;
+        std::optional<JPH::GPU::Stage> homogeneousStage;
         uint64_t submittedOpportunity;
         uint64_t gpuGrant;
         uint64_t transferGrant;
@@ -180,9 +231,44 @@ class JoltGpuTick::Impl
         uint64_t submitStarted;
     };
 
-    static CostKey Key(const rhi::PreparedComputeBatch &batch)
+    static NumericalCostKey NumericalKey(const std::vector<JoltGpuStageWork> &ready)
     {
-        return {batch.GetExecutionSignature(), batch.GetTransferBytes()};
+        NumericalCostKey key;
+        key.reserve(ready.size());
+        for (const auto &unit : ready)
+            key.emplace_back(unit.stage, unit.parameters.range.y, unit.parameters.range.w);
+        return key;
+    }
+
+    static CostKey Key(const rhi::PreparedComputeBatch &batch, const NumericalCostKey &numerical = {})
+    {
+        // Keep the physical loop counts separate from the RHI signature. In a
+        // world solver dispatch, item count does not appear in its group counts.
+        return {batch.GetExecutionSignature(), batch.GetTransferBytes(), numerical};
+    }
+
+    CostKey SubmissionKey(const rhi::PreparedComputeBatch &packet) const
+    {
+        if (!preservation && batchKind == PacketKind::Stages)
+            return Key(packet, batchNumericalKey);
+        return Key(packet);
+    }
+
+    static void ObserveUnitCost(UnitHistory &history, size_t count, uint64_t nanoseconds)
+    {
+        if (!count || !nanoseconds)
+            return;
+        if (history.size() == 8)
+            history.pop_front();
+        history.push_back({count, nanoseconds});
+    }
+
+    static long double PlanningCost(const UnitHistory &history)
+    {
+        long double cost = 0;
+        for (const auto &sample : history)
+            cost = std::max(cost, static_cast<long double>(sample.nanoseconds) / sample.count);
+        return cost;
     }
 
     uint64_t Prediction(const CostKey &key) const
@@ -225,8 +311,10 @@ class JoltGpuTick::Impl
                 work.ObserveResource(FrameWorkResource::Transfer, receipt.transferBytes, receipt.submittedOpportunity,
                                      receipt.transferGrant);
             if (receipt.kind == PacketKind::Stages) {
-                lastStageCount = receipt.stageCount;
-                lastStageEstimate = estimate;
+                if (receipt.homogeneousStage)
+                    ObserveUnitCost(stageEstimates[*receipt.homogeneousStage], receipt.stageCount, estimate);
+                else
+                    ObserveUnitCost(mixedEstimates, receipt.stageCount, estimate);
             } else if (receipt.kind == PacketKind::Commands) {
                 lastCommandCount = receipt.stageCount;
                 lastCommandEstimate = estimate;
@@ -240,12 +328,198 @@ class JoltGpuTick::Impl
 
     void CancelPackets() noexcept
     {
-        for (auto *packet : {&batch, &preservation, &probeBatch}) {
+        for (auto *packet : {&batch, &preservation}) {
             if (*packet)
                 (*packet)->Cancel();
             packet->reset();
         }
-        planLength = 0;
+        batchNumericalKey.clear();
+    }
+
+    StageSpan Span(Phase phase) const
+    {
+        using JPH::GPU::Domain;
+        using JPH::GPU::Stage;
+        switch (phase) {
+        case Phase::PrepareKinematics:
+            return {Stage::PrepareKinematics, Domain::Bodies};
+        case Phase::ApplyForces:
+            return {Stage::ApplyForces, Domain::Bodies};
+        case Phase::BuildBounds:
+            return {Stage::BuildBounds, Domain::Shapes};
+        case Phase::CollidePairs:
+            return {Stage::CollidePairs, Domain::WorldPairs};
+        case Phase::SetupContacts:
+            return {Stage::SetupContacts, Domain::Contacts};
+        case Phase::SetupJoints:
+            return {Stage::SetupJoints, Domain::Joints};
+        case Phase::WarmJoints:
+            return {Stage::WarmJoints, Domain::WorldJoints};
+        case Phase::SolveJointVelocity:
+            return {Stage::SolveJointVelocity, Domain::WorldJoints};
+        case Phase::SolveVelocity:
+            return {Stage::SolveVelocity, Domain::WorldPatches};
+        case Phase::Integrate:
+            return {Stage::Integrate, Domain::Bodies};
+        case Phase::SolveJointPosition:
+            return {Stage::SolveJointPosition, Domain::WorldJoints};
+        case Phase::SolvePosition:
+            return {Stage::SolvePosition, Domain::WorldContacts};
+        case Phase::FinishJoints:
+            return {Stage::FinishJoints, Domain::Joints};
+        case Phase::FinishTick:
+            return {Stage::FinishTick, Domain::Bodies};
+        case Phase::Done:
+            break;
+        }
+        throw std::logic_error("A completed GPU tick has no stage span");
+    }
+
+    const std::vector<WorldSpan> *WorldSpans(JPH::GPU::Domain domain) const
+    {
+        using JPH::GPU::Domain;
+        switch (domain) {
+        case Domain::WorldPairs:
+            return &worldPairs;
+        case Domain::WorldPatches:
+            return &worldPatches;
+        case Domain::WorldContacts:
+            return &worldContacts;
+        case Domain::WorldJoints:
+            return &worldJoints;
+        default:
+            return nullptr;
+        }
+    }
+
+    uint32_t ItemCount(JPH::GPU::Domain domain) const
+    {
+        using JPH::GPU::Domain;
+        switch (domain) {
+        case Domain::Bodies:
+            return storage.GetBodyCount();
+        case Domain::Shapes:
+            return storage.GetShapeCount();
+        case Domain::Contacts:
+            return storage.GetContactCount();
+        case Domain::Joints:
+            return storage.GetJointCount();
+        default:
+            throw std::logic_error("World-local GPU work requires its world span");
+        }
+    }
+
+    void NextSpan(StageCursor &next) const
+    {
+        const bool velocity = tickParameters.counts.w && (!worldPatches.empty() || !worldJoints.empty());
+        const bool position = tickParameters.solve.x && (!worldContacts.empty() || !worldJoints.empty());
+        next.world = 0;
+        next.item = 0;
+        switch (next.phase) {
+        case Phase::PrepareKinematics:
+            next.phase = Phase::ApplyForces;
+            break;
+        case Phase::ApplyForces:
+            next.phase = Phase::BuildBounds;
+            break;
+        case Phase::BuildBounds:
+            next.phase = Phase::CollidePairs;
+            break;
+        case Phase::CollidePairs:
+            next.phase = Phase::SetupContacts;
+            break;
+        case Phase::SetupContacts:
+            next.phase = Phase::SetupJoints;
+            break;
+        case Phase::SetupJoints:
+            next.iteration = 0;
+            next.phase = velocity ? Phase::WarmJoints : Phase::Integrate;
+            break;
+        case Phase::WarmJoints:
+            next.phase = Phase::SolveJointVelocity;
+            break;
+        case Phase::SolveJointVelocity:
+            next.phase = Phase::SolveVelocity;
+            break;
+        case Phase::SolveVelocity:
+            next.phase = ++next.iteration < tickParameters.counts.w ? Phase::SolveJointVelocity : Phase::Integrate;
+            break;
+        case Phase::Integrate:
+            next.iteration = 0;
+            next.phase = position ? Phase::SolveJointPosition : Phase::FinishJoints;
+            break;
+        case Phase::SolveJointPosition:
+            next.phase = Phase::SolvePosition;
+            break;
+        case Phase::SolvePosition:
+            next.phase = ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
+            break;
+        case Phase::FinishJoints:
+            next.phase = ++next.substep < tickParameters.solve.y ? Phase::ApplyForces : Phase::FinishTick;
+            break;
+        case Phase::FinishTick:
+            next.phase = Phase::Done;
+            break;
+        case Phase::Done:
+            break;
+        }
+    }
+
+    void Normalize(StageCursor &next) const
+    {
+        while (next.phase != Phase::Done) {
+            const auto span = Span(next.phase);
+            if (const auto *worlds = WorldSpans(span.domain)) {
+                if (next.world < worlds->size())
+                    return;
+            } else if (next.item < ItemCount(span.domain)) {
+                return;
+            }
+            NextSpan(next);
+        }
+    }
+
+    JoltGpuStageWork TakeUnit(StageCursor &next) const
+    {
+        const auto span = Span(next.phase);
+        const auto quantum = JPH::GPU::WorkItemLimit(span.domain);
+        JPH::GPU::StageWork parameters{};
+        if (const auto *worlds = WorldSpans(span.domain)) {
+            const auto &world = (*worlds)[next.world];
+            const auto count = std::min(quantum, world.count - next.item);
+            // One real world per unit avoids padding disparate world ranges.
+            // It is also within the common maximum of sixteen world lanes.
+            parameters.range = {next.item, count, world.world, 1};
+            next.item += count;
+            if (next.item == world.count) {
+                next.item = 0;
+                ++next.world;
+            }
+        } else {
+            const auto count = std::min(quantum, ItemCount(span.domain) - next.item);
+            parameters.range = {next.item, count, 0, 0};
+            next.item += count;
+        }
+        Normalize(next);
+        return {span.stage, parameters};
+    }
+
+    void CaptureStageSpans()
+    {
+        const auto &worlds = storage.GetModel().worlds;
+        for (uint32_t index = 0; index < worlds.size(); ++index) {
+            const auto &world = worlds[index];
+            if (world.leaves.y)
+                worldPairs.push_back({index, static_cast<uint32_t>(uint64_t(world.leaves.y) * world.leaves.y)});
+            if (world.bodies.w) {
+                worldPatches.push_back({index, world.bodies.w});
+                worldContacts.push_back({index, world.bodies.w * JPH::GPU::MaxContactPointsPerPair});
+            }
+            if (world.leaves.w)
+                worldJoints.push_back({index, world.leaves.w});
+        }
+        stageCursor.phase = storage.GetBodyCount() ? Phase::PrepareKinematics : Phase::Done;
+        Normalize(stageCursor);
     }
 
     void CaptureControlInputs()
@@ -263,30 +537,7 @@ class JoltGpuTick::Impl
             reuseParameters = acceptedParameters && std::memcmp(&*acceptedParameters, &actual, sizeof(actual)) == 0;
             inputs = reuseParameters ? parameterInput : JoltGpuStepInputs{};
             inputAccepted = (reuseParameters && !cpuForces) || !storage.GetBodyCount();
-            if (storage.GetBodyCount()) {
-                stages.push_back(JPH::GPU::Stage::PrepareKinematics);
-                for (uint32_t substep = 0; substep < actual.solve.y; ++substep) {
-                    stages.push_back(JPH::GPU::Stage::ApplyForces);
-                    if (storage.GetShapeCount()) {
-                        stages.push_back(JPH::GPU::Stage::BuildBounds);
-                        stages.push_back(JPH::GPU::Stage::CollidePairs);
-                        stages.push_back(JPH::GPU::Stage::SetupContacts);
-                    }
-                    if (storage.GetJointCount())
-                        stages.push_back(JPH::GPU::Stage::SetupJoints);
-                    if (storage.GetPatchCount() || storage.GetJointCount()) {
-                        for (uint32_t iteration = 0; iteration < actual.counts.w; ++iteration)
-                            stages.push_back(JPH::GPU::Stage::SolveVelocity);
-                    }
-                    stages.push_back(JPH::GPU::Stage::Integrate);
-                    if (storage.GetPatchCount() || storage.GetJointCount())
-                        for (uint32_t iteration = 0; iteration < actual.solve.x; ++iteration)
-                            stages.push_back(JPH::GPU::Stage::SolvePosition);
-                    if (storage.GetJointCount())
-                        stages.push_back(JPH::GPU::Stage::FinishJoints);
-                }
-                stages.push_back(JPH::GPU::Stage::FinishTick);
-            }
+            CaptureStageSpans();
             for (const auto resource :
                  {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels, JPH::GPU::Resource::Worlds})
                 inputs.Capture(storage, resource);
@@ -310,7 +561,7 @@ class JoltGpuTick::Impl
 
     bool NumericalInputsAccepted() const noexcept
     {
-        return controlAccepted && (controlOnly || storage.GetBodyCount() == 0 || cursor == stages.size());
+        return controlAccepted && (controlOnly || stageCursor.phase == Phase::Done);
     }
 
     void FinishCompleted()
@@ -380,7 +631,7 @@ class JoltGpuTick::Impl
                                  : batchKind == PacketKind::Commands || batchKind == PacketKind::Stages
                                      ? batchEnd - batchBegin == 1
                                      : true;
-        return work.CanAdmitResource(FrameWorkResource::Gpu, Prediction(Key(*packet)), indivisible) &&
+        return work.CanAdmitResource(FrameWorkResource::Gpu, Prediction(SubmissionKey(*packet)), indivisible) &&
                (!packet->GetTransferBytes() ||
                 work.CanAdmitResource(FrameWorkResource::Transfer, packet->GetTransferBytes(), indivisible));
     }
@@ -409,8 +660,8 @@ class JoltGpuTick::Impl
             facts.gpuBusy = !receipts.empty();
             return facts;
         }
-        if ((!batch &&
-             (workContinuation || !controlAccepted || !inputAccepted || cursor < stages.size() || !finalPrepared)) ||
+        if ((!batch && (workContinuation || !controlAccepted || !inputAccepted || stageCursor.phase != Phase::Done ||
+                        !finalPrepared)) ||
             (batch && !preservation && (batch->RequiresPreparation() || batch->HasPreservationWork()))) {
             facts.host = {static_cast<uint64_t>(HostAction::Prepare), 0, true, false};
         } else if (!submissionBusy && CanSubmit()) {
@@ -425,89 +676,86 @@ class JoltGpuTick::Impl
         return facts;
     }
 
-    void Select(std::shared_ptr<rhi::PreparedComputeBatch> selected, size_t end)
-    {
-        if (probeBatch && probeBatch != selected)
-            probeBatch->Cancel();
-        probeBatch.reset();
-        batch = std::move(selected);
-        batchEnd = end;
-        planLength = 0;
-    }
-
     bool PreparePrefix(bool commands = false)
     {
         const size_t begin = commands ? commandCursor->GetAcceptedDispatchCount() : cursor;
-        const size_t remaining = commands ? commandCursor->GetDispatchCount() - begin : stages.size() - begin;
-        if (!planLength) {
-            planLength = remaining;
-            probeLimit = remaining;
-            // An unknown predecessor temporarily books the whole remaining
-            // allowance. Plan its successor for the configured window instead
-            // of sealing a one-stage packet merely because that grant has not
-            // retired yet. Actual submission still uses ResourceRemaining.
-            const auto available = work.ResourceRemaining(FrameWorkResource::Gpu);
-            planWindow = available ? available : work.ResourceState(FrameWorkResource::Gpu).limit;
-            if (commands) {
-                const auto transfer = work.ResourceRemaining(FrameWorkResource::Transfer);
-                planTransferWindow = transfer ? transfer : work.ResourceState(FrameWorkResource::Transfer).limit;
-                // Every command dispatch uploads at least one command/span
-                // and one parameter record. Larger counts cannot fit even
-                // before preparing their exact payloads.
-                constexpr uint64_t minimumBytes = sizeof(JPH::GPU::BodyCommand) + sizeof(JPH::GPU::BodyCommandSpan) +
-                                                  sizeof(JPH::GPU::BodyCommandParams);
-                planLength =
-                    std::min(planLength, std::max(size_t{1}, static_cast<size_t>(planTransferWindow / minimumBytes)));
+        const auto available = work.ResourceRemaining(FrameWorkResource::Gpu);
+        const auto window = available ? available : work.ResourceState(FrameWorkResource::Gpu).limit;
+        const auto transferAvailable = work.ResourceRemaining(FrameWorkResource::Transfer);
+        const auto transferWindow =
+            transferAvailable ? transferAvailable : work.ResourceState(FrameWorkResource::Transfer).limit;
+        size_t count = 1;
+        StageCursor next = stageCursor;
+        std::vector<JoltGpuStageWork> ready;
+        if (commands) {
+            if (lastCommandCount && lastCommandEstimate) {
+                const long double width = static_cast<long double>(window) * lastCommandCount / lastCommandEstimate;
+                count = width >= MaxPacketUnits ? MaxPacketUnits : std::max(size_t{1}, static_cast<size_t>(width));
             }
-            // Only sizes an unknown calibration; it does not pretend a packet
-            // receipt measured individual stages. Exact signature costs below
-            // still decide whether a known prefix fits.
-            const auto count = commands ? lastCommandCount : lastStageCount;
-            const auto estimate = commands ? lastCommandEstimate : lastStageEstimate;
-            if (estimate && count) {
-                const long double width = static_cast<long double>(planWindow) * count / estimate;
-                probeLimit = width >= remaining ? remaining : std::max(size_t{1}, static_cast<size_t>(width));
+            constexpr uint64_t minimumBytes =
+                sizeof(JPH::GPU::BodyCommand) + sizeof(JPH::GPU::BodyCommandSpan) + sizeof(JPH::GPU::BodyCommandParams);
+            count = std::min(count, std::max(size_t{1}, static_cast<size_t>(transferWindow / minimumBytes)));
+            count = std::min(count, commandCursor->GetDispatchCount() - begin);
+        } else {
+            // The current ready numerical phases may share a bounded packet,
+            // including across iterations and substeps. TakeUnit preserves all
+            // setup/warm and joint/contact ordering; control/final work stays outside.
+            ready.reserve(MaxPacketUnits);
+            long double planned = 0;
+            bool cold = false;
+            while (ready.size() < MaxPacketUnits && next.phase != Phase::Done) {
+                const auto found = stageEstimates.find(Span(next.phase).stage);
+                // A mixed packet's measured average is only a planning proxy,
+                // never a measurement attributed to an individual stage.
+                const auto &history = found == stageEstimates.end() ? mixedEstimates : found->second;
+                const auto cost = PlanningCost(history);
+                const bool unknown = cost == 0;
+                if (ready.size() >= (cold || unknown ? ColdPacketUnits : MaxPacketUnits))
+                    break;
+                // Always retain the minimum unit, even if its estimate exceeds
+                // this window. The existing indivisible admission rule decides it.
+                if (!ready.empty() && planned + cost > window)
+                    break;
+                ready.push_back(TakeUnit(next));
+                planned += cost;
+                cold |= unknown;
             }
+            count = ready.size();
         }
-        const size_t count = planLength--;
         auto candidate = commands ? commandCursor->PrepareNext(host, static_cast<uint32_t>(count))
-                                  : programs.PrepareStages(storage, inputs,
-                                                           std::vector<JPH::GPU::Stage>(
-                                                               stages.begin() + begin, stages.begin() + begin + count));
-        const auto prediction = Prediction(Key(*candidate));
-        const bool transferFits = !commands || candidate->GetTransferBytes() <= planTransferWindow;
-        if (transferFits &&
-            ((prediction && prediction <= planWindow) || (commands && !prediction && count <= probeLimit))) {
-            Select(std::move(candidate), begin + count);
-        } else if (!commands && !prediction && count <= probeLimit && !probeBatch) {
-            probeBatch = std::move(candidate);
-            probeEnd = begin + count;
-            // The first finite small-world tick can calibrate its whole ready
-            // suffix instead of artificially requiring one host per stage.
-            if (count == remaining)
-                Select(probeBatch, probeEnd);
-        }
-        if (candidate) {
+                                  : programs.PrepareStages(storage, inputs, ready);
+        if (!candidate)
+            throw std::logic_error("A ready GPU work unit did not produce its dispatch packet");
+        // Admission still uses the exact packet key. An unseen composition
+        // remains Prediction == 0 and uses the owner's real calibration gate.
+        auto numericalKey = commands ? NumericalCostKey{} : NumericalKey(ready);
+        const auto prediction = Prediction(Key(*candidate, numericalKey));
+        // A known oversized packet or excessive transfer gets one minimum
+        // replacement, not another search over the remaining logical tick.
+        if (count > 1 && ((prediction && prediction > window) || candidate->GetTransferBytes() > transferWindow)) {
             candidate->Cancel();
-            if (commands)
+            count = 1;
+            if (commands) {
                 commandCursor->DiscardPreparedPrefix();
-        }
-        if (!batch && !planLength) {
-            if (probeBatch)
-                Select(probeBatch, probeEnd);
-            else {
-                // No shorter known prefix fits. Retain the minimum legal
-                // stage; ordinary indivisible admission can make progress.
-                batch = commands ? commandCursor->PrepareNext(host, 1)
-                                 : programs.PrepareStages(storage, inputs, {stages[cursor]});
-                batchEnd = begin + 1;
+                candidate = commandCursor->PrepareNext(host, 1);
+            } else {
+                next = stageCursor;
+                ready = {TakeUnit(next)};
+                candidate = programs.PrepareStages(storage, inputs, ready);
+                numericalKey = NumericalKey(ready);
             }
         }
-        if (batch) {
-            batchBegin = begin;
-            batchKind = commands ? PacketKind::Commands : PacketKind::Stages;
-        }
-        return true; // A selected packet or the retained descending plan advanced.
+        batch = std::move(candidate);
+        batchBegin = begin;
+        batchEnd = begin + count;
+        batchStageEnd = next;
+        batchNumericalKey = std::move(numericalKey);
+        batchHomogeneousStage.reset();
+        if (!commands && std::all_of(ready.begin(), ready.end(),
+                                     [&](const auto &unit) { return unit.stage == ready.front().stage; }))
+            batchHomogeneousStage = ready.front().stage;
+        batchKind = commands ? PacketKind::Commands : PacketKind::Stages;
+        return true;
     }
 
     bool Prepare()
@@ -605,14 +853,16 @@ class JoltGpuTick::Impl
         const auto kind = preservation ? PacketKind::Preservation : batchKind;
         const auto bytes = packet->GetTransferBytes();
         const bool prefix = kind == PacketKind::Stages || kind == PacketKind::Commands;
+        const auto homogeneousStage = kind == PacketKind::Stages ? batchHomogeneousStage : std::nullopt;
         receipts.emplace_back(
-            Receipt{packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0,
+            Receipt{packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0, homogeneousStage,
                     work.Opportunity(), work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
                     bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes, started});
         if (kind == PacketKind::Preservation) {
             preservation.reset();
         } else {
             batch.reset();
+            batchNumericalKey.clear();
             if (kind == PacketKind::Initialization) {
                 control.initialization.reset();
             } else if (kind == PacketKind::Model) {
@@ -630,6 +880,7 @@ class JoltGpuTick::Impl
                 inputAccepted = true;
             } else if (kind == PacketKind::Stages) {
                 cursor = batchEnd;
+                stageCursor = batchStageEnd;
             } else if (kind == PacketKind::FinalWork && !workContinuation) {
                 finalAccepted = true;
             }
@@ -643,7 +894,7 @@ class JoltGpuTick::Impl
         if (!CanSubmit())
             return false;
         const auto packet = preservation ? preservation : batch;
-        auto key = Key(*packet);
+        auto key = SubmissionKey(*packet);
         const auto prediction = Prediction(key);
         const auto started = NowNanoseconds();
         try {
@@ -716,18 +967,20 @@ class JoltGpuTick::Impl
     std::optional<JPH::GPU::StepParams> acceptedParameters;
     JPH::GPU::StepParams tickParameters{};
     bool reuseParameters = false;
-    std::vector<JPH::GPU::Stage> stages;
+    StageCursor stageCursor, batchStageEnd;
+    std::vector<WorldSpan> worldPairs, worldPatches, worldContacts, worldJoints;
+    std::map<JPH::GPU::Stage, UnitHistory> stageEstimates;
+    UnitHistory mixedEstimates;
     bool inputAccepted = false;
-    std::shared_ptr<rhi::PreparedComputeBatch> batch, preservation, probeBatch;
+    std::shared_ptr<rhi::PreparedComputeBatch> batch, preservation;
     PacketKind batchKind = PacketKind::Inputs;
-    size_t batchBegin = 0, batchEnd = 0, planLength = 0, probeLimit = 0, probeEnd = 0;
-    uint64_t planWindow = 0, planTransferWindow = 0;
+    std::optional<JPH::GPU::Stage> batchHomogeneousStage;
+    NumericalCostKey batchNumericalKey;
+    size_t batchBegin = 0, batchEnd = 0;
     bool submissionBusy = false;
     uint64_t busyOpportunity = 0, busyProgress = 0, busySubmissions = 0;
     std::deque<Receipt> receipts;
     std::map<CostKey, std::deque<uint64_t>> costs;
-    size_t lastStageCount = 0;
-    uint64_t lastStageEstimate = 0;
     size_t lastCommandCount = 0;
     uint64_t lastCommandEstimate = 0;
 
