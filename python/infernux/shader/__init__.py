@@ -169,6 +169,17 @@ class fragment_input:
     uv: vec2
 
 
+class multisample_input(fragment_input):
+    """Per-sample raster input for a fullscreen fragment.
+
+    Reading ``sample_index`` selects per-sample invocation; ordinary fragments
+    retain pixel-rate shading. The pipeline's actual sample count defines the
+    valid indices. Devices must support per-sample fragment inputs.
+    """
+
+    sample_index: uint
+
+
 class ViewContext:
     """Camera-local values read from the shared frame constant buffer."""
 
@@ -200,6 +211,22 @@ class SurfaceData:
 
 class Color2D:
     """A typed sampled RGBA image and the sampler supplied by its graph port."""
+
+
+class Color3D:
+    """A sampled RGBA volume, addressed with three-dimensional coordinates."""
+
+
+class Color2DMS:
+    """Multisampled RGBA values loaded with pixel coordinates and a sample index."""
+
+
+class Depth2DMS:
+    """Unresolved depth samples loaded with pixel coordinates and a sample index."""
+
+
+class UInt2DMS:
+    """Unsigned integer samples; identities are never filtered or averaged."""
 
 
 class History2D:
@@ -316,7 +343,7 @@ for _name in TYPES:
     globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
-for _name in ("sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "clip", "frame_time", "frame_delta_time", "view", "camera"):
+for _name in ("sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera"):
     globals()[_name] = _gpu_intrinsic(_name)
 
 
@@ -338,4 +365,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "multisample_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]

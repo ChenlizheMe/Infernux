@@ -43,6 +43,8 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTarget
     m_impl->rootConstantBytes = code.rootConstants ? static_cast<uint32_t>(code.rootConstants->byteSize) : 0;
     for (const auto index : entries) {
         const auto &entry = code.entries.at(index);
+        if (entry.sampleRateShading && !device.GetCapabilities().features.sampleRateShading)
+            throw std::runtime_error("Device does not support per-sample fragment inputs: " + entry.name);
         const auto language =
             code.target == ShaderCodeTarget::SpirV ? rhi::ShaderSourceLanguage::SpirV : rhi::ShaderSourceLanguage::Wgsl;
         const auto module = device.CreateShaderModule({language, entry.code.data(), entry.code.size()});

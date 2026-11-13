@@ -168,6 +168,7 @@ struct DeviceFeatures
     bool independentComputeQueue = false;
     bool dedicatedTransferQueue = false;
     bool multisampleTextureCopies = false;
+    bool sampleRateShading = false;
 };
 
 /// Backend-neutral limits and feature declarations. Shared compute, particle,

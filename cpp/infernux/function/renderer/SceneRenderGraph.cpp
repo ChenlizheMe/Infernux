@@ -4922,6 +4922,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         item.history = input.at("kind") == "History2D";
                         item.binding = static_cast<uint32_t>(declaredInputs.size());
                         item.multisampled = resource->binding.multisampled;
+                        item.dimension = resource->binding.viewDimension == rhi::TextureViewDimension::Texture3D
+                                             ? ReflectedImageDimension::D3
+                                             : ReflectedImageDimension::D2;
                         declaredInputs.push_back(std::move(item));
                     }
                 } else {

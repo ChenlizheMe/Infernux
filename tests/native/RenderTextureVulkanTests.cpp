@@ -8,6 +8,7 @@
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -225,6 +226,14 @@ class FullscreenTestHost final : public FullscreenRendererHost
         : device(device), vertex(vertex), fragment(fragment)
     {
     }
+    FullscreenTestHost(rhi::Device &device, std::shared_ptr<const FullscreenProgram> program)
+        : device(device), program(std::move(program))
+    {
+    }
+    std::shared_ptr<const FullscreenProgram> AcquireProgram(const std::string &) override
+    {
+        return program;
+    }
     rhi::Device &GetRhiDevice() noexcept override
     {
         return device;
@@ -265,8 +274,9 @@ class FullscreenTestHost final : public FullscreenRendererHost
         assert(false);
     }
     rhi::Device &device;
-    const char *vertex;
-    const char *fragment;
+    const char *vertex = nullptr;
+    const char *fragment = nullptr;
+    std::shared_ptr<const FullscreenProgram> program;
     uint32_t shaderAcquisitions = 0;
 };
 
@@ -301,7 +311,7 @@ static void CheckSharedFullscreenPipelines(vk::VkDeviceContext &context, const c
     cache->InvalidateShader(first.shaderName);
     assert(cache->EnsurePipeline(first).pipeline != initial);
     assert(host->shaderAcquisitions == 10);
-    cache->InvalidateShader("Fullscreen Triangle");
+    cache->InvalidateShader("infernux/internal/fullscreen_triangle");
     assert(cache->EnsurePipeline(first).pipeline.IsValid());
     assert(host->shaderAcquisitions == 12);
 }
@@ -716,7 +726,7 @@ static void CheckFullscreenStorageRead(vk::VkDeviceContext &context, VkCommandBu
 }
 
 static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuffer command, VkFence fence,
-                                      const char *vertex, const char *fragment, rhi::SubmissionSerial &epoch)
+                                      rhi::SubmissionSerial &epoch)
 {
     auto &device = context.GetRhiDevice();
     constexpr uint32_t width = 2;
@@ -802,10 +812,31 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     samplerDesc.addressU = samplerDesc.addressV = samplerDesc.addressW = rhi::AddressMode::ClampToEdge;
     const auto sampler = device.CreateSampler(samplerDesc);
     assert(sampler.IsValid());
+    auto compiled = SlangCompiler::Get().Compile({"fullscreen_volume", "<test/fullscreen_volume>", R"slang(
+struct Image { Texture3D<float4> texture; SamplerState sampler; };
+Image inx_volume;
+struct Vertex { float4 position : SV_Position; };
+[shader("vertex")]
+Vertex vertex_main(uint id : SV_VulkanVertexID) {
+    Vertex output;
+    output.position = float4(float2((id << 1) & 2, id & 2) * 2.0 - 1.0, 0.0, 1.0);
+    return output;
+}
+[shader("fragment")]
+float4 fragment_main(Vertex input) : SV_Target0 {
+    float z = input.position.x < 1.0 ? 0.25 : 0.75;
+    return inx_volume.texture.Sample(inx_volume.sampler, float3(0.25, 0.25, z));
+}
+)slang"},
+                                                 {}, {ShaderCodeTarget::SpirV});
+    auto program = std::make_shared<FullscreenProgram>();
+    program->code = std::make_shared<ShaderTargetCode>(std::move(compiled.targets.front()));
+    program->schema = R"({"domain":"fullscreen","inputs":[{"name":"volume","kind":"Color3D"}],"parameters":[]})";
     FullscreenRenderer renderer;
-    renderer.Initialize(std::make_shared<FullscreenTestHost>(device, vertex, fragment));
+    renderer.Initialize(std::make_shared<FullscreenTestHost>(device, program));
     FullscreenPipelineKey key;
     key.shaderName = "volume-read";
+    key.program = renderer.AcquireProgram(key.shaderName);
     key.useDynamicRendering = true;
     key.colorFormat = targetDesc.colorFormat;
     key.inputResourceCount = 1;
@@ -830,10 +861,7 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
             resource.view = render.GetTextureView(input);
             resource.format = rhi::PixelFormat::RGBA8UNorm;
             resource.sampler = sampler;
-            const auto group =
-                renderer.AllocateBindGroup(pipeline.inputLayout, &resource, 1, renderer.GetLinearSampler());
-            assert(group.IsValid());
-            renderer.Draw(render.GetGraphicsCommandEncoder(), pipeline, group, {}, {}, {}, 0);
+            renderer.DrawProgram(render.GetGraphicsCommandEncoder(), pipeline, &resource, {});
         };
     });
     graph.AddTransferPass("volume-readback", [&](vk::PassBuilder &builder) {
@@ -889,12 +917,12 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     device.Release(volume);
     device.CollectDescriptorRetirements(epoch);
     device.CollectResourceRetirements(epoch++);
-    std::cout << "PASS imported Texture3D -> fullscreen sampler3D -> two depth slices -> GPU readback\n";
+    std::cout << "PASS imported Texture3D -> Slang fullscreen program -> two depth slices -> GPU readback\n";
 }
 
 static int RunTests(int argc, char **argv)
 {
-    assert(argc == 8);
+    assert(argc == 7);
     std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
     assert(input);
     const auto bytes = static_cast<size_t>(input.tellg());
@@ -949,7 +977,7 @@ static int RunTests(int argc, char **argv)
     CheckFullscreenRasterState(context, command, fence, argv[2], argv[3], epoch);
     CheckFullscreenSamples(context, command, fence, argv[2], argv[4], argv[5], epoch);
     CheckFullscreenStorageRead(context, command, fence, argv[2], argv[6], epoch);
-    CheckFullscreenVolumeRead(context, command, fence, argv[2], argv[7], epoch);
+    CheckFullscreenVolumeRead(context, command, fence, epoch);
 
     // Alternate independent targets and formats. Each recorded generation must
     // remain usable after resize and after both the target and graph are gone.

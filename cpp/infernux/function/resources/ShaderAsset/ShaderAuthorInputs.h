@@ -28,7 +28,7 @@ inline void ApplyShaderAuthorInputs(ShaderCompilation &compilation,
                                     const std::vector<std::pair<std::string, std::string>> &inputs)
 {
     for (const auto &[name, kind] : inputs) {
-        if (kind != "Depth2D")
+        if (kind != "Depth2D" && kind != "Depth2DMS" && kind != "Color2DMS")
             continue;
         const auto image = "inx_" + name + ".texture";
         const auto sampler = "inx_" + name + ".sampler";

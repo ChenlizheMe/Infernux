@@ -7,7 +7,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
-from .shader_types import BUFFER_ELEMENTS, BUFFER_TYPES, RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS
+from .shader_types import (
+    BUFFER_ELEMENTS, BUFFER_TYPES, MULTISAMPLED_TYPES, RESOURCE_DIMENSIONS,
+    RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS,
+)
 from .diagnostics import parse_gpu_module
 
 
@@ -105,7 +108,12 @@ class ShaderEmitter(SlangEmitter):
             return RESOURCE_ELEMENTS.get(self.infer(node.args[0]))
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) == "dimensions"):
-            return "uint2"
+            if not node.args or (kind := self.infer(node.args[0])) not in RESOURCE_DIMENSIONS:
+                self.error(node, "dimensions receives a declared GPU image", code="author.type")
+            return "uint" + str(RESOURCE_DIMENSIONS[kind])
+        if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) == "sample_count"
+                and self.symbol(qualified(node.func)) != qualified(node.func)):
+            return "uint"
         if isinstance(node, ast.Call) and (function := self.functions.get(qualified(node.func))):
             return function.result
         return super().infer(node)
@@ -150,21 +158,33 @@ class ShaderEmitter(SlangEmitter):
             fields = (self.visit(values[name]) if name in values else default
                       for name, (_, default) in SURFACE_FIELDS.items())
             return "inx_surface_data(" + ", ".join(fields) + ")"
+        if intrinsic and operation == "sample_count":
+            if node.keywords or len(node.args) != 1 or self.infer(node.args[0]) not in MULTISAMPLED_TYPES:
+                self.error(node, "sample_count receives a multisampled image", code="author.type")
+            return "inx_image_samples(" + self.visit(node.args[0]) + ")"
         image_operations = {"sample": (2, "Sample"), "sample_level": (3, "SampleLevel"), "sample_bias": (3, "SampleBias"),
                             "sample_grad": (4, "SampleGrad"), "load": (3, "Load"), "dimensions": (2, "GetDimensions")}
         if operation in image_operations and operation != qualified(node.func):
             arity, intrinsic = image_operations[operation]
+            kind = self.infer(node.args[0]) if node.args else None
+            if operation == "dimensions" and kind in MULTISAMPLED_TYPES:
+                arity = 1
             if node.keywords or len(node.args) != arity:
                 self.error(node, f"shader.{operation} takes {arity} typed positional arguments")
-            kind = self.infer(node.args[0])
             if kind not in RESOURCE_ELEMENTS:
                 self.error(node, "Texture operations receive a declared GPU image")
-            if kind == "InxUInt2D" and operation not in {"load", "dimensions"}:
-                self.error(node, "Integer images use shader.load with pixel coordinates", code="author.type")
+            if (kind == "InxUInt2D" or kind in MULTISAMPLED_TYPES) and operation not in {"load", "dimensions"}:
+                self.error(node, "Integer and multisampled images use shader.load with pixel coordinates", code="author.type")
             image, *arguments = (self.visit(argument) for argument in node.args)
             if operation == "dimensions":
+                if kind in MULTISAMPLED_TYPES:
+                    return f"inx_image_dimensions({image})"
                 return f"inx_image_dimensions({image}, uint({arguments[0]}))"
             if operation == "load":
+                if kind in MULTISAMPLED_TYPES:
+                    return f"{image}.texture.Load(int2({arguments[0]}), int({arguments[1]}))"
+                if RESOURCE_DIMENSIONS[kind] == 3:
+                    return f"{image}.texture.Load(int4({arguments[0]}, {arguments[1]}))"
                 return f"{image}.texture.Load(int3({arguments[0]}, {arguments[1]}))"
             return image + ".texture." + intrinsic + "(" + ", ".join([image + ".sampler", *arguments]) + ")"
         function = self.functions.get(qualified(node.func))

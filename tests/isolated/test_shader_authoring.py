@@ -764,6 +764,45 @@ class BufferView(shader.fullscreen):
         ]
 
 
+def test_volume_ports_keep_three_dimensional_sampling_loads_and_dimensions():
+    source = '''import infernux.shader as shader
+class Volume(shader.fullscreen):
+    image = shader.input("volume", shader.Color3D)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        size = shader.dimensions(self.image, 0)
+        color = shader.sample_level(self.image, shader.vec3(uv, 0.25), 0.0)
+        return color + shader.load(self.image, shader.ivec3(0), 0) / float(size.z)
+'''
+    definition = parse_shader(source, "volume.frag.py", "volume")
+    assert "uint3 size;" in definition.generated_source
+    for target in definition.compile()["targets"]:
+        image = next(item for item in target["resources"] if item["name"] == "inx_image.texture")
+        assert image["dimension"] == 4  # Shared RHI Texture3D view dimension.
+        assert not image["multisampled"]
+        assert all(not entry["sample_rate_shading"] for entry in target["entries"])
+
+
+@pytest.mark.parametrize("kind", ["Color2DMS", "Depth2DMS", "UInt2DMS"])
+def test_multisample_ports_keep_individual_samples_and_reflect_sample_rate_inputs(kind):
+    component = "value" if kind == "Depth2DMS" else "value.x"
+    source = f'''import infernux.shader as shader
+class Samples(shader.fullscreen):
+    image = shader.input("samples", shader.{kind})
+    def main(self, ctx: shader.multisample_input) -> shader.vec4:
+        value = shader.load(self.image, shader.ivec2(ctx.position.xy), ctx.sample_index)
+        size = shader.dimensions(self.image)
+        return shader.vec4(float({component}), float(size.x), float(shader.sample_count(self.image)), 1.0)
+'''
+    for target in parse_shader(source, "samples.frag.py", "samples").compile()["targets"]:
+        image, = target["resources"]
+        assert image["multisampled"] and image["name"] == "inx_image.texture"
+        assert image["sample_type"] == (3 if kind == "UInt2DMS" else 1)
+        assert next(entry for entry in target["entries"] if entry["name"] == "fragment_main")["sample_rate_shading"]
+    with pytest.raises(SyntaxError, match="pixel coordinates"):
+        parse_shader(source.replace("shader.load(self.image, shader.ivec2(ctx.position.xy), ctx.sample_index)",
+                                    "shader.sample(self.image, ctx.uv)"), "invalid_sample.frag.py", "invalid_sample")
+
+
 def test_buffer_inputs_reject_writes_and_non_storage_element_types_at_the_author_line():
     source = '''import infernux.shader as shader
 class BufferView(shader.fullscreen):

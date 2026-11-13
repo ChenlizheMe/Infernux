@@ -56,10 +56,10 @@ class _Author(ParameterAuthor):
         if len(arguments) == 2:
             uv = arguments[1]
             kind = self.annotation(uv.annotation) if uv.annotation is not None else None
-            expected = {"InxMeshInput"} if self.domain == "mesh" else {"float2", "InxFragmentInput"}
+            expected = {"InxMeshInput"} if self.domain == "mesh" else {"float2", "InxFragmentInput", "InxMultisampleInput"}
             if kind not in expected:
                 self.error(uv, "Mesh input is shader.mesh_input" if self.domain == "mesh" else
-                           "Fullscreen input is shader.vec2 or shader.fragment_input")
+                           "Fullscreen input is shader.vec2, shader.fragment_input or shader.multisample_input")
             signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
         result = self.annotation(main.returns) if main.returns is not None else None

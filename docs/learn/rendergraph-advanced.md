@@ -182,7 +182,7 @@ A Provider receives a `GeometryBufferProviderContext`. It may read `context.grap
 
 A derived class can replace a built-in provider by declaring the same semantic and phase. Two providers for the same key in one class are ambiguous and rejected. Missing dependencies and dependency cycles also fail topology construction with the source and dependency chain in the error. Provider methods run during each topology build when their semantic is requested; the API defines no cross-graph Provider instance cache. Keep build-local handles in the context and keep persistent CPU policy on the pipeline instance.
 
-The Picking pass requires an `RG32_UINT` color output and a writable depth attachment. This Provider clears the ID target to zero and rebuilds the supplied opaque depth with the same renderer queue. Merely declaring `read(depth)` is rejected. A consumer must read IDs as integers: use `Texture2DUInt` at one sample, or `Texture2DMSUInt` with `texelFetch()` for a multisampled result. The ordinary `Fullscreen Blit` samples floating-point color and is not an integer-ID consumer.
+The Picking pass requires an `RG32_UINT` color output and a writable depth attachment. This Provider clears the ID target to zero and rebuilds the supplied opaque depth with the same renderer queue. Merely declaring `read(depth)` is rejected. A consumer must read IDs as integers: declare `shader.UInt2D` at one sample, or `shader.UInt2DMS` for a multisampled result, and use `shader.load` with integer pixel coordinates and the mip or sample index. The ordinary `Fullscreen Blit` samples floating-point color and is not an integer-ID consumer.
 
 Pass the effective count returned by `graph.set_msaa_samples()` into `geometry_stage(msaa_samples=...)`; this value becomes `context.msaa_samples` in each Provider. An integer multisampled result such as `object_index` remains multisampled unless its Provider declares a suitable resolve, so its consumer must use a matching multisample shader input.
 
@@ -207,7 +207,7 @@ object_index = self.sample_buffer(result, requested)
 
 A `PassResult` is a source-scoped map from semantic names such as `color`, `depth`, `normal`, and `motion` to texture handles. `source` must be unique within one graph build. The graph assigns an increasing `revision` each time it publishes or derives a result.
 
-In the built-in Forward and Forward+ pipelines, an effect requiring `normal` or `motion` causes a raster pass after opaque depth is complete. The pass tests against that View's opaque depth without changing it. `normal` is encoded world-space XYZ in `[0,1]` with alpha `1` on covered samples and `0` on the cleared background; `motion` is current minus previous screen UV, so previous UV is `uv - motion`. `color`, `depth`, `normal`, and `motion` use the View render resolution. With MSAA, normal and motion raster targets match the depth sample count and their published handles are single-sample color resolves; normal alpha may be fractional at coverage edges. A fullscreen `Texture2D` depth input resolves to the nearest covered sample (maximum device depth, because cameras use reversed-Z). The `PassBuffers` shader helpers in `lib/pass_buffers.glsl` take upper-left-origin UVs, reconstruct world position from Vulkan `[0,1]` device depth and this View's inverse view-projection, and use the selected buffer's size for pixel motion. Sample these resources in an effect stage after their producer, such as `after_opaque`; an unavailable semantic fails binding instead of supplying a previous frame.
+In the built-in Forward and Forward+ pipelines, an effect requiring `normal` or `motion` causes a raster pass after opaque depth is complete. The pass tests against that View's opaque depth without changing it. `normal` is encoded world-space XYZ in `[0,1]` with alpha `1` on covered samples and `0` on the cleared background; `motion` is current minus previous screen UV, so previous UV is `uv - motion`. `color`, `depth`, `normal`, and `motion` use the View render resolution. With MSAA, normal and motion raster targets match the depth sample count and their published handles are single-sample color resolves; normal alpha may be fractional at coverage edges. A fullscreen `Texture2D` depth input resolves to the nearest covered sample (maximum device depth, because cameras use reversed-Z). Static GPU helpers use `from infernux.shader.lib.camera import world_position` and `shader.camera()`. The helper takes top-left image UV and `[0,1]` device depth, with this view's inverse view-projection. Use the selected input's dimensions when converting pixel motion. Sample these resources in an effect stage after their producer, such as `after_opaque`; an unavailable semantic fails binding instead of supplying a previous frame.
 
 ```python
 before = self.publish_result(
@@ -382,7 +382,7 @@ with graph.add_pass("SelectedMask") as p:
     p.draw_renderers(renderer_selection=selection)
 ```
 
-Create `mask` and `mask_depth` on the same graph with matching dimensions and sample counts. The project chooses independent mask depth or scene depth. Parameters must be declared by the selection material's ShaderInfo; they do not modify the original shared material or search other parameter domains.
+Create `mask` and `mask_depth` on the same graph with matching dimensions and sample counts. The project chooses independent mask depth or scene depth. Parameters must be declared by the selection material's shader.material fields; they do not modify the original shared material or search other parameter domains.
 
 `set(renderer, submesh=2, parameters=parameters)` selects one submesh; the default `submesh=-1` selects all. An exact submesh entry takes precedence over an all-submeshes entry. Each `set()` captures the parameter values; later changes to the block take effect only after another `set()`. Use `remove(renderer, submesh=2)` or `clear()` to edit membership.
 
@@ -392,29 +392,26 @@ Update the existing selection during Update/LateUpdate without rebuilding topolo
 
 A replacement material can write data instead of surface color. For example, a project outline can store a logical owner ID, positive eye depth, an invalid-state bit, and two flags. Register the renderers through `RendererSelection`; the engine still draws their current geometry. Group parts under the same Rigidbody in project code, rather than using the scene's picking IDs as gameplay group IDs.
 
-Create a fragment shader asset named `ObjectDataMask.frag` and assign it to a material in the Inspector, with the built-in `Standard` vertex shader:
+Create a fragment shader asset named `object_data_mask.frag.py` and assign it to a material in the Inspector, with the built-in `infernux/standard` vertex shader:
 
-```glsl
-#version 450
-ShaderInfo {
-    Name "ObjectDataMask"
-    ShadingModel Unlit
-    CastShadows Off
-    Capabilities [ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors, NoNormalPass, NoBaseColorPass]
-    Properties {
-        Float ownerId = 1.0
-        Float invalid = 0.0
-        Float flags = 0.0
-    }
-}
-void main() {
-    outColor = vec4(material.ownerId, v_ViewDepth, material.invalid, material.flags);
-}
+```python
+import infernux.shader as shader
+
+
+class ObjectDataMask(shader.frag):
+    shader_id = "my_game/masks/object_data"
+    cast_shadows = False
+    owner_id = shader.material.float(default=1.0)
+    invalid = shader.material.float(default=0.0)
+    flags = shader.material.float(default=0.0)
+
+    def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        return shader.vec4(self.owner_id, ctx.view_depth, self.invalid, self.flags)
 ```
 
-The capability declarations are intentional: this raw `main()` writes an application data format, not the engine's generated shadow, picking, motion, normal or albedo formats. `NoDepthPass` disables the generated depth-only variant; it does **not** disable the mask draw's own depth test/write. If authoring a complete material document through MCP, include the declared properties and their defaults as well as the shader references; changing just the shader name is not the Inspector's shader-assignment operation.
+This raw `shader.frag` writes an application data format. It does not synthesize Surface shadow, picking, motion, normal or albedo outputs. The mask draw still uses the Pass's declared depth test and writes. A complete Material document authored through MCP must include the declared properties and defaults as well as shader references; use the material shader-assignment operation to change its schema.
 
-Use a single-sample `RGBA32_SFLOAT` mask and a matching independent `D32_SFLOAT` attachment, such as `owner_mask_depth`. Reserve zero for the cleared background and cap dense owner IDs at `2**24 - 1`; half-float masks do not preserve IDs at that scale. Sample IDs/flags with `texelFetch`, not filtered color sampling or multisample averaging. In this layout, `flags = int(hatched) + 2 * int(depth_tested)`. Set these floats with `DrawParameterBlock` before recording each renderer; the block is captured per draw.
+Use a single-sample `RGBA32_SFLOAT` mask and a matching independent `D32_SFLOAT` attachment, such as `owner_mask_depth`. Reserve zero for the cleared background and cap dense owner IDs at `2**24 - 1`; half-float masks do not preserve IDs at that scale. Read IDs/flags with `shader.load` and integer pixel coordinates, not filtered color sampling or multisample averaging. In this layout, `flags = int(hatched) + 2 * int(depth_tested)`. Set these floats with `DrawParameterBlock` before recording each renderer; the block is captured per draw.
 
 Draw the mask after opaque geometry using its independent depth, then composite it over scene color using a copied scene depth. This preserves selected objects behind unselected walls while still resolving occlusion within the selected set. It does not automatically reproduce source-material alpha clipping or vertex-shader deformation: the replacement shader must express those when the effect requires them. GPU mesh-buffer deformation already uses the current shared geometry.
 
@@ -467,13 +464,13 @@ with graph.add_pass("DepthAwareOverlay") as p:
 
 The scene pass must have already initialized `scene_color` and `scene_depth`. The depth copy must match its source's format, extent and sample count. An attachment cannot also be sampled by the same pass.
 
-Fullscreen inputs declared as `Texture2DMS` or `Texture2DMSUInt` in ShaderInfo `Resources` receive the original multisampled image. Read it with `texelFetch(texture, pixel, sampleIndex)`; categorical owner IDs and flags must retain their individual samples, not be averaged. Ordinary `Texture2D` inputs receive resolved color or depth. This choice is reflected from the shader when the graph is built, and shader hot reload rebuilds the affected resolve topology. A `Texture2DMS` input cannot bind a single-sample image.
+Fullscreen ports declared as `shader.Color2DMS`, `Depth2DMS` or `UInt2DMS` receive the original multisampled image. Read one sample with `shader.load(image, pixel, sample_index)`, query its extent with `shader.dimensions(image)`, and query its sample count with `shader.sample_count(image)`. Categorical IDs and flags must retain their samples. Single-sample Color2D/Depth2D inputs consume resolved data. The graph derives resolve topology from target reflection; a raw MS port cannot bind a single-sample image.
 
-For a per-sample fullscreen effect, use `gl_SampleID` and `gl_SamplePosition`, write the result into a matching multisampled color target, then resolve the final colors. This requires device support for sample-rate shading. Enabling MSAA on the scene color alone does not anti-alias edges generated later by a single-sample shader. Use the effective count returned by `graph.set_msaa_samples(4)` to select the single-sample or multisampled shader when a Camera has a fixed RenderTexture target. Both shader entry points can share their effect logic through ShaderInfo `Imports`.
+For per-sample invocation, declare the entry argument as `shader.multisample_input` and use `ctx.sample_index`. `shader.fragment_input` remains the normal pixel-rate input. Write to a matching multisampled target, then resolve final colors. The device must support per-sample fragment inputs. Enabling MSAA on scene color does not anti-alias edges generated later by a single-sample effect. Use the effective count from `graph.set_msaa_samples(4)` when selecting the matching program; share typed functions through `.shaderlib.py`.
 
 The root pipeline's viewport-sized `depth` is the conventional Camera depth attachment. Other depth texture names create independent images, even when their dimensions match the viewport; use separate names for an object's mask depth or a depth snapshot. Fixed-size, reduced-size and imported RenderTexture depth keep their own resource identity.
 
-`depth_test` accepts `DepthCompare` values such as `LESS_EQUAL` or `ALWAYS`; `None` disables it. Depth writes require a comparison, including `ALWAYS` for unconditional writes. A fragment shader can write `gl_FragDepth` in the current Vulkan view's reversed device-depth range (1 at near, 0 at far), not linear eye depth. Clear scene and shadow depth to `0.0`. Material and graph `LESS_EQUAL` comparisons retain the logical “closer or equal” meaning and map to a GPU greater-or-equal test; low-level RHI comparisons use raw device values. Assign it on every non-discarded path when overriding depth.
+`depth_test` accepts `DepthCompare` values such as `LESS_EQUAL` or `ALWAYS`; `None` disables it. Depth writes require a comparison, including `ALWAYS` for unconditional writes. A fragment shader can return `shader.FragmentOutput(color=..., depth=...)` in the current Vulkan view's reversed device-depth range (1 at near, 0 at far), not linear eye depth. Clear scene and shadow depth to `0.0`. Material and graph `LESS_EQUAL` comparisons retain the logical “closer or equal” meaning and map to a GPU greater-or-equal test; low-level RHI comparisons use raw device values. Assign it on every non-discarded path when overriding depth.
 
 Alpha blending uses straight-alpha source-over: `src.rgb * src.a + dst.rgb * (1-src.a)` and `src.a + dst.a * (1-src.a)`. Do not pre-composite the background into the shader's output. Blending and depth-tested passes preserve earlier color unless explicitly cleared; new transient attachments require a clear or an earlier producer. Non-fullscreen consumers of multisampled color still require a resolved input, such as one produced with `write_resolve()`. These states belong to the ordinary graph; no effect-specific engine renderer is needed.
 
@@ -711,7 +708,7 @@ Provider 接收 `GeometryBufferProviderContext`。它可以读取 `context.graph
 
 派生类声明相同的 Semantic 与 Phase，即可替换内置 Provider。同一个类里为同一注册键声明两个 Provider 会产生歧义并被拒绝。依赖缺失或形成环时，拓扑构建也会失败，错误中会带 Source 与依赖链。每次拓扑构建只会在 Semantic 被请求时运行相关 Provider；API 没有定义跨 Graph 的 Provider 实例缓存。构建局部 Handle 应留在 Context 中，持久 CPU 策略可以保存在 Pipeline 实例上。
 
-Picking Pass 必须声明 `RG32_UINT` 颜色输出和可写的深度附件。这个 Provider 将 ID 目标清零，并用同一 Renderer Queue 重建传入的不透明深度；只声明 `read(depth)` 会被拒绝。消费者必须按整数读取 ID：单采样使用 `Texture2DUInt`，多采样使用 `Texture2DMSUInt` 和 `texelFetch()`。普通 `Fullscreen Blit` 读取浮点颜色，不能用来消费整数 ID。
+Picking Pass 必须声明 `RG32_UINT` 颜色输出和可写的深度附件。这个 Provider 将 ID 目标清零，并用同一 Renderer Queue 重建传入的不透明深度；只声明 `read(depth)` 会被拒绝。消费者必须按整数读取 ID：单采样声明 `shader.UInt2D`，多采样声明 `shader.UInt2DMS`，用 `shader.load` 传入整数像素坐标以及 mip 或样本索引。普通 `Fullscreen Blit` 读取浮点颜色，不能用来消费整数 ID。
 
 把 `graph.set_msaa_samples()` 返回的有效采样数传给 `geometry_stage(msaa_samples=...)`，Provider 才能通过 `context.msaa_samples` 取得正确值。`object_index` 这类整数多采样结果在 Provider 没有声明适用的 Resolve 时仍是多采样纹理，消费它的 Shader Input 也必须匹配。
 
@@ -736,7 +733,7 @@ object_index = self.sample_buffer(result, requested)
 
 `PassResult` 是带 Source 作用域的语义映射，把 `color`、`depth`、`normal`、`motion` 等名称指向 Texture Handle。`source` 在一次 Graph 构建中必须唯一。每次发布或派生 Result 时，Graph 都会分配递增的 `revision`。
 
-内置 Forward 与 Forward+ 管线中，Effect 声明需要 `normal` 或 `motion` 时，会在当前 View 的不透明深度完成后生成光栅 Pass；这些 Pass 读取深度进行测试，不改写深度。`normal` 的 RGB 是映射到 `[0,1]` 的世界空间法线，覆盖采样点的 A 为 `1`，清空背景为 `0`；`motion` 为当前屏幕 UV 减去前一帧屏幕 UV，因此前一帧 UV 是 `uv - motion`。`color`、`depth`、`normal`、`motion` 都使用 View 渲染分辨率。启用 MSAA 时，法线与运动的绘制目标与深度采样数一致，对外发布的是单采样颜色 Resolve；覆盖边缘的法线 A 可能是分数。全屏 `Texture2D` 深度输入解析为最近的覆盖采样点（reversed-Z 中的最大设备深度）。`lib/pass_buffers.glsl` 的 `PassBuffers` 帮助函数使用左上角为原点的 UV、Vulkan `[0,1]` 设备深度及当前 View 的逆视图投影矩阵重建世界坐标，像素运动量按所选纹理尺寸换算。应在生产者之后的 EffectStage（如 `after_opaque`）采样；语义缺失时报绑定错误，不会提供旧帧资源。
+内置 Forward 与 Forward+ 管线中，Effect 声明需要 `normal` 或 `motion` 时，会在当前 View 的不透明深度完成后生成光栅 Pass；这些 Pass 读取深度进行测试，不改写深度。`normal` 的 RGB 是映射到 `[0,1]` 的世界空间法线，覆盖采样点的 A 为 `1`，清空背景为 `0`；`motion` 为当前屏幕 UV 减去前一帧屏幕 UV，因此前一帧 UV 是 `uv - motion`。`color`、`depth`、`normal`、`motion` 都使用 View 渲染分辨率。启用 MSAA 时，法线与运动的绘制目标与深度采样数一致，对外发布的是单采样颜色 Resolve；覆盖边缘的法线 A 可能是分数。全屏 `Texture2D` 深度输入解析为最近的覆盖采样点（reversed-Z 中的最大设备深度）。`infernux.shader.lib.camera` 的 `PassBuffers` 帮助函数使用左上角为原点的 UV、Vulkan `[0,1]` 设备深度及当前 View 的逆视图投影矩阵重建世界坐标，像素运动量按所选纹理尺寸换算。应在生产者之后的 EffectStage（如 `after_opaque`）采样；语义缺失时报绑定错误，不会提供旧帧资源。
 
 ```python
 before = self.publish_result(
@@ -911,7 +908,7 @@ with graph.add_pass("SelectedMask") as p:
     p.draw_renderers(renderer_selection=selection)
 ```
 
-`mask` 和 `mask_depth` 是该图已创建的颜色/深度资源，尺寸和采样数必须匹配。遮罩使用独立深度还是场景深度，由项目的效果决定。颜色、对象 ID 等参数必须由选择材质的 ShaderInfo 声明；不会写入其它对象的共享材质，也不会按同名字段跨参数域查找。
+`mask` 和 `mask_depth` 是该图已创建的颜色/深度资源，尺寸和采样数必须匹配。遮罩使用独立深度还是场景深度，由项目的效果决定。颜色、对象 ID 等参数必须由选择材质的 shader.material 字段声明；不会写入其它对象的共享材质，也不会按同名字段跨参数域查找。
 
 `selection.set(renderer, submesh=2, parameters=parameters)` 只选择一个 submesh；默认 `submesh=-1` 选择全部。两种条目同时存在时，精确 submesh 条目优先。每次 `set()` 都捕获参数值，随后修改 `parameters` 不会追溯修改已记录的条目。`remove(renderer, submesh=2)` 删除精确条目；`clear()` 清空集合。
 
@@ -923,29 +920,26 @@ with graph.add_pass("SelectedMask") as p:
 
 替换材质不一定输出表面颜色，也可以输出项目需要的数据。例如，描边效果可以存储逻辑对象 ID、正值 eye depth、非法状态，以及斜线和遮挡标记。通过 `RendererSelection` 登记对象后，引擎仍绘制它们的当帧几何。同一 Rigidbody 下的零件如何分组由项目决定，不把编辑器 picking ID 当成游戏逻辑的分组 ID。
 
-创建名为 `ObjectDataMask.frag` 的着色器资产，在 Inspector 中将它赋给材质，并搭配内置 `Standard` 顶点着色器：
+创建名为 `object_data_mask.frag.py` 的着色器资产，在 Inspector 中将它赋给材质，并搭配内置 `infernux/standard` 顶点着色器：
 
-```glsl
-#version 450
-ShaderInfo {
-    Name "ObjectDataMask"
-    ShadingModel Unlit
-    CastShadows Off
-    Capabilities [ForwardOnly, NoDepthPass, NoPicking, NoMotionVectors, NoNormalPass, NoBaseColorPass]
-    Properties {
-        Float ownerId = 1.0
-        Float invalid = 0.0
-        Float flags = 0.0
-    }
-}
-void main() {
-    outColor = vec4(material.ownerId, v_ViewDepth, material.invalid, material.flags);
-}
+```python
+import infernux.shader as shader
+
+
+class ObjectDataMask(shader.frag):
+    shader_id = "my_game/masks/object_data"
+    cast_shadows = False
+    owner_id = shader.material.float(default=1.0)
+    invalid = shader.material.float(default=0.0)
+    flags = shader.material.float(default=0.0)
+
+    def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        return shader.vec4(self.owner_id, ctx.view_depth, self.invalid, self.flags)
 ```
 
-这里显式关闭辅助变体，是因为这个 `main()` 输出项目的数据格式，并不输出引擎规定的阴影、拾取、运动、法线或反照率格式。`NoDepthPass` 只关闭自动生成的 depth-only 变体，**不会**关闭遮罩绘制本身的深度测试和写入。通过 MCP 编写完整材质文档时，要同时包含着色器引用、声明的属性及默认值；仅修改着色器名称，不等于执行 Inspector 的着色器赋值操作。
+这里的原始 `shader.frag` 输出项目数据格式，不生成 Surface 的阴影、拾取、运动、法线或反照率入口；遮罩自身仍使用 Pass 声明的深度测试与写入。通过 MCP 编写完整材质文档时，需同时提供声明的字段、默认值和 Shader 引用；切换 Shader 应使用材质的赋值操作来更新 schema。
 
-数据图使用单采样 `RGBA32_SFLOAT`，搭配相同尺寸的独立 `D32_SFLOAT` 深度图，例如 `owner_mask_depth`。零表示清空背景，连续分组 ID 上限设为 `2**24 - 1`；半精度浮点不能在这个规模下保持整数 ID 精确。用 `texelFetch` 读取 ID 和标记，不对它们做颜色滤波或 MSAA 平均。本例可用 `int(hatched) + 2 * int(depth_tested)` 编码两个标记。通过 `DrawParameterBlock` 设置浮点值，再登记每个 Renderer；参数按 draw 捕获。
+数据图使用单采样 `RGBA32_SFLOAT`，搭配相同尺寸的独立 `D32_SFLOAT` 深度图，例如 `owner_mask_depth`。零表示清空背景，连续分组 ID 上限设为 `2**24 - 1`；半精度浮点不能在这个规模下保持整数 ID 精确。用 `shader.load` 和整数像素坐标读取 ID 与标记，不对它们做颜色滤波或 MSAA 平均。本例可用 `int(hatched) + 2 * int(depth_tested)` 编码两个标记。通过 `DrawParameterBlock` 设置浮点值，再登记每个 Renderer；参数按 draw 捕获。
 
 在不透明物体之后，用独立深度绘制遮罩，再读取复制的场景深度，将描边合成到场景颜色。这样既保留墙后选中物体的数据，也能处理选中集合内部的遮挡。替换材质不会自动继承原材质的透明裁剪或顶点着色器变形；需要这些表现时，应在替换着色器中实现。已经写入 GPU 网格缓冲的变形则直接使用当帧几何。
 
@@ -998,15 +992,15 @@ with graph.add_pass("DepthAwareOverlay") as p:
     )
 ```
 
-`depth_test` 接受 `DepthCompare`，例如 `LESS_EQUAL` 或 `ALWAYS`；`None` 关闭测试。`depth_write=True` 必须同时启用测试，无条件写入用 `ALWAYS`。Fragment Shader 可写 `gl_FragDepth`，数值使用当前 Vulkan 视图的设备深度（0—1），而非线性 eye depth；若改变像素深度，应在每个未 discard 的路径上赋值。
+`depth_test` 接受 `DepthCompare`，例如 `LESS_EQUAL` 或 `ALWAYS`；`None` 关闭测试。`depth_write=True` 必须同时启用测试，无条件写入用 `ALWAYS`。Fragment Shader 可返回 `shader.FragmentOutput(color=..., depth=...)`，数值使用当前 Vulkan 视图的设备深度（0—1），而非线性 eye depth；若改变像素深度，应在每个未 discard 的路径上赋值。
 
 `alpha_blend=True` 使用非预乘的 source-over 混合：颜色为 `src.rgb * src.a + dst.rgb * (1-src.a)`，alpha 为 `src.a + dst.a * (1-src.a)`。不要先把背景混入输出颜色再开启混合，否则背景会重复计算。此时颜色附件会保留上一 Pass 的内容；深度测试失败的像素同样保留原色。新建瞬态附件必须通过 `set_clear()` 或此前的写入初始化，不能加载未定义内容。
 
 同一 Pass 不能一边采样深度纹理一边将其作为深度附件；需要读取合成前深度时，像上例一样显式复制，保持格式、尺寸和采样数一致。独立深度附件、只测试不写入和片段深度写入均可组合，不需要引入效果专用的引擎类。
 
-全屏 Shader 在 `Resources` 中声明 `Texture2DMS` 或 `Texture2DMSUInt`，即可用 `texelFetch(texture, pixel, sampleIndex)` 读取多采样颜色或深度的原始样本。物体 ID 和标记应逐样本保留，不能求平均。普通 `Texture2D` 输入则接收解析后的颜色或深度。引擎在构图时从 Shader 反射这一合同；热更新 Shader 后，对应的解析步骤也会重新生成。不能把单采样纹理绑定到 `Texture2DMS`。
+全屏端口声明为 `shader.Color2DMS`、`Depth2DMS` 或 `UInt2DMS` 时，接收未解析的多采样图像。用 `shader.load(image, pixel, sample_index)` 读取单个样本，用 `shader.dimensions(image)` 查询尺寸，用 `shader.sample_count(image)` 查询采样数。ID 与标记要保留逐样本身份。普通 Color2D/Depth2D 端口消费已解析数据；图按目标反射安排解析，原始 MS 端口不能绑定单采样图像。
 
-需要逐样本合成时，用 `gl_SampleID`、`gl_SamplePosition` 处理各采样点，写入采样数匹配的颜色附件，最后解析颜色；设备需支持 sample-rate shading。只给场景颜色开启 MSAA，不会自动平滑后来由单采样 Shader 生成的描边。`graph.set_msaa_samples(4)` 返回本 Camera 实际使用的采样数，固定 RenderTexture 目标可能覆盖请求值；据此选择单采样或多采样入口，两者可通过 ShaderInfo `Imports` 共用效果代码。非全屏材质消费 MSAA 颜色时，仍需使用 `write_resolve()` 等产生的已解析纹理。
+需要逐样本执行时，把入口参数声明为 `shader.multisample_input`，通过 `ctx.sample_index` 读取当前样本编号。普通 `shader.fragment_input` 保持像素级执行。先写入采样数匹配的附件，再解析最终颜色；设备必须支持逐样本片段输入。只给场景颜色开 MSAA，不会自动平滑后续单采样效果生成的边缘。用 `graph.set_msaa_samples(4)` 返回的实际采样数选择匹配程序，公共函数放入 `.shaderlib.py`。
 
 根管线中与视口同尺寸的 `depth` 是约定的 Camera 深度附件。其它名称的深度纹理即使尺寸相同，也各自拥有独立图像；对象遮罩深度和深度快照应使用不同名称。固定尺寸、降采样及导入的 RenderTexture 深度保持自己的资源身份。
 

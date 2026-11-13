@@ -1,8 +1,13 @@
 """Resource value types consumed by the static Shader frontends."""
 
-RESOURCE_TYPES = {"Color2D": "InxColor2D", "Depth2D": "InxDepth2D", "UInt2D": "InxUInt2D", "History2D": "InxHistory2D"}
+RESOURCE_TYPES = {kind: "Inx" + kind for kind in (
+    "Color2D", "Depth2D", "UInt2D", "History2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS",
+)}
 RESOURCE_BINDINGS = RESOURCE_TYPES | {"History2D": "InxColor2D"}
-RESOURCE_ELEMENTS = {"InxColor2D": "float4", "InxDepth2D": "float", "InxUInt2D": "uint4", "InxHistory2D": "float4"}
+RESOURCE_ELEMENTS = {value: "uint4" if key.startswith("UInt") else "float" if key.startswith("Depth") else "float4"
+                     for key, value in RESOURCE_TYPES.items()}
+RESOURCE_DIMENSIONS = {value: 3 if "3D" in key else 2 for key, value in RESOURCE_TYPES.items()}
+MULTISAMPLED_TYPES = {value for key, value in RESOURCE_TYPES.items() if key.endswith("MS")}
 BUFFER_TYPES = {kind + (str(width) if width > 1 else ""): "InxBuffer_" + kind + str(width)
                 for kind in ("float", "int", "uint") for width in range(1, 5)}
 BUFFER_ELEMENTS = {value: key for key, value in BUFFER_TYPES.items()}
@@ -12,12 +17,13 @@ SURFACE_FIELDS = {
     "emission": ("float3", "float3(0.0)"), "alpha": ("float", "1.0"), "specular_highlights": ("float", "1.0"),
     "shading_param0": ("float", "0.0"), "shading_param1": ("float", "0.0"),
 }
-STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
+STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "multisample_input": "InxMultisampleInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
                 "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight",
                 "VertexData": "InxVertexData", "VertexContext": "InxVertexContext", "ViewContext": "InxViewContext",
                 "ProjectionContext": "InxProjectionContext", "CameraContext": "InxCameraContext",
                 "FragmentOutput": "InxFragmentOutput"}
 STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
+                 "InxMultisampleInput": {"position": "float4", "uv": "float2", "sample_index": "uint"},
                  "InxFragmentOutput": {"color": "float4", "depth": "float"},
                  "InxCameraContext": {"view_matrix": "float4x4", "projection_matrix": "float4x4",
                                       "view_projection_matrix": "float4x4", "previous_view_projection_matrix": "float4x4",
@@ -77,6 +83,38 @@ public struct InxFragmentInput
     public float4 position : SV_Position;
     public float2 uv : TEXCOORD0;
 };
+public struct InxMultisampleInput
+{
+    public float4 position : SV_Position;
+    public float2 uv : TEXCOORD0;
+    public uint sample_index : SV_SampleIndex;
+};
+public struct InxColor3D
+{
+    public Texture3D<float4> texture;
+    public SamplerState sampler;
+};
+""" + "\n".join("""
+public struct TYPE { public Texture2DMS<ELEMENT> texture; };
+public uint2 inx_image_dimensions(TYPE image)
+{
+    uint width, height, samples;
+    image.texture.GetDimensions(width, height, samples);
+    return uint2(width, height);
+}
+public uint inx_image_samples(TYPE image)
+{
+    uint width, height, samples;
+    image.texture.GetDimensions(width, height, samples);
+    return samples;
+}
+""".replace("TYPE", kind).replace("ELEMENT", RESOURCE_ELEMENTS[kind]) for kind in sorted(MULTISAMPLED_TYPES)) + """
+public uint3 inx_image_dimensions(InxColor3D image, uint mip)
+{
+    uint width, height, depth, levels;
+    image.texture.GetDimensions(mip, width, height, depth, levels);
+    return uint3(width, height, depth);
+}
 """ + "\n".join("""
 public uint2 inx_image_dimensions(TYPE image, uint mip)
 {
@@ -84,7 +122,7 @@ public uint2 inx_image_dimensions(TYPE image, uint mip)
     image.texture.GetDimensions(mip, width, height, levels);
     return uint2(width, height);
 }
-""".replace("TYPE", kind) for kind in RESOURCE_TYPES.values()) + "\n".join(
+""".replace("TYPE", kind) for kind in RESOURCE_TYPES.values() if kind not in MULTISAMPLED_TYPES and kind != "InxColor3D") + "\n".join(
     """
 public struct WRAPPER
 {
