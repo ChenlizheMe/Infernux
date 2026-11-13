@@ -6,6 +6,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -28,13 +29,14 @@ enum Port : uint8_t
     Joints,
     RuntimeWorlds,
     Arena,
-    SourceArena,
+    Arguments,
     PortCount
 };
 enum Entry : uint8_t
 {
     InitWords,
-    CopyWords,
+    SeedActive,
+    PrepareIndirect,
     BuildSort,
     BuildSuppression,
     Merge,
@@ -59,7 +61,8 @@ enum Entry : uint8_t
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
-                                                              "copy_words",
+                                                              "seed_active",
+                                                              "prepare_indirect_arguments",
                                                               "build_sort_records",
                                                               "build_suppression",
                                                               "merge_items",
@@ -88,7 +91,8 @@ constexpr uint32_t Bit(Port port)
 }
 constexpr uint32_t A = Bit(Arena), P = Bit(Parameters), K = Bit(Work);
 constexpr std::array<uint32_t, EntryCount> EntryPorts{A | P | K,
-                                                      A | Bit(SourceArena) | P | K,
+                                                      A | P,
+                                                      A | Bit(Arguments) | P | K,
                                                       A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(AuthorWorlds) |
                                                           Bit(Bounds),
                                                       A | P | K | Bit(Joints) | Bit(Bodies) | Bit(AuthorWorlds),
@@ -124,7 +128,7 @@ constexpr PortLayout Ports[] = {
     {"broadphase",
      sizeof(BroadphaseParams),
      {"counts", "workspace", "rankRows", "activeQueues", "round", "candidates", "merge", "mergeKey", "scan",
-      "scanParent", "copy", "summary"},
+      "scanParent", "activeState", "summary"},
      0xfffu,
      true},
     {"stage_work", sizeof(StageWork), {"range"}, 1u, true},
@@ -139,9 +143,10 @@ constexpr PortLayout Ports[] = {
     {"joint_stream", sizeof(QueryRecordWord), {"value"}, 1u, true},
     {"runtime_worlds", sizeof(WorldRange), {"bodies", "leaves"}, 3u, false},
     {"contact_patches", sizeof(ContactPatch), {"leaves"}, 1u, false},
-    {"source_patches", sizeof(ContactPatch), {"leaves"}, 1u, true}};
+    {"indirect_arguments", sizeof(QueryRecordWord), {"value"}, 1u, false}};
 
 constexpr uint32_t MaxDispatchesPerPacket = 16;
+constexpr uint32_t ActiveRoundsPerWindow = 4;
 constexpr uint64_t WordBytes = sizeof(UInt4);
 
 template <class T> std::vector<uint8_t> Bytes(const T &value)
@@ -177,8 +182,8 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
 
 bool SummaryEntry(Entry entry)
 {
-    return entry == AccumulateStatus || entry == PublishActive || entry == PublishCount || entry == PublishWorld ||
-           entry == PublishFill || entry == SetCandidateBank;
+    return entry == SeedActive || entry == AccumulateStatus || entry == PublishActive || entry == PublishCount ||
+           entry == PublishWorld || entry == PublishFill || entry == SetCandidateBank;
 }
 } // namespace
 
@@ -273,6 +278,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         FillReduce,
         FillPublish,
         FillBoundary,
+        ActiveBoundary,
         CandidateSort,
         CandidatePublish,
         Done
@@ -283,8 +289,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     };
     struct ScanCursor
     {
-        bool active = false, exclusive = false, descending = false;
-        uint32_t originalInput = 0, originalCount = 0, level = 0, first = 0, root = 0;
+        bool active = false, exclusive = false, descending = false, dynamic = false;
+        uint32_t originalInput = 0, level = 0, first = 0, root = 0;
         std::vector<uint32_t> counts;
     };
 
@@ -318,7 +324,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             requireBytes(Bounds, uint64_t(n) * sizeof(Aabb));
         config.counts = {n, j, w, storage.GetBodyCount()};
         config.round = {BroadphaseNeighborLimit, 0, 0, 0};
-        rounds = n > 1 ? (n - 2u) / BroadphaseNeighborLimit + 1u : 0u;
+        rounds = n > 1 ? (n - 2u) / BroadphaseNeighborLimit + 1u : 1u;
         uint64_t words = 0;
         const auto reserve = [&](uint64_t size) {
             if (size > UINT32_MAX || words > UINT32_MAX - size)
@@ -334,7 +340,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         suppression[0] = reserve(j);
         suppression[1] = reserve(j);
         config.rankRows = {reserve(n), reserve(n), reserve(j), 0};
-        config.activeQueues = {reserve(n), reserve(n), n, 0};
+        queues = {reserve(n), reserve(n)};
+        activeMeta = {reserve(1), reserve(1)};
+        config.activeQueues = {queues[0], queues[1], n, 0};
+        config.activeState = {activeMeta[0], activeMeta[1], 0, 0};
         uint32_t count = std::max({n, j, w, 1u});
         do {
             const uint32_t input = reserve(count), prefix = reserve(count);
@@ -366,21 +375,23 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             throw std::invalid_argument("Jolt GPU broadphase requires the frozen accepted input prefix");
     }
 
-    std::shared_ptr<rhi::ComputeBuffer> Allocate(uint64_t bytes)
+    std::shared_ptr<rhi::ComputeBuffer> Allocate(uint64_t bytes,
+                                                 rhi::BufferUsageFlags usage = rhi::BufferUsageFlags::None)
     {
         if (!bytes || bytes % sizeof(uint32_t) || bytes > std::numeric_limits<size_t>::max() ||
             !implementation->host.device.GetCapabilities().IsStorageBufferRangeValid(0, bytes))
             throw std::length_error("Jolt GPU broadphase requested storage exceeds host or device range: " +
                                     std::to_string(bytes));
         auto buffer = rhi::ComputeBuffer::TryCreatePrivate(
-            implementation->host, {bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+            implementation->host, {bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1, usage});
         return buffer;
     }
 
-    bool Endpoint(std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes)
+    bool Endpoint(std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes,
+                  rhi::BufferUsageFlags usage = rhi::BufferUsageFlags::None)
     {
         if (!buffer)
-            buffer = Allocate(bytes);
+            buffer = Allocate(bytes, usage);
         if (buffer)
             return true;
         allocationBlocked = true;
@@ -391,7 +402,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     {
         if (phase == Phase::InitialCapacity) {
             if (!Endpoint(arena, uint64_t(scratchWords) * WordBytes) ||
-                !Endpoint(runtimeWorlds, uint64_t(config.counts.z) * sizeof(WorldRange)))
+                !Endpoint(runtimeWorlds, uint64_t(config.counts.z) * sizeof(WorldRange)) ||
+                !Endpoint(arguments, (MaxDispatchesPerPacket - 1u) * WordBytes,
+                          rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect))
                 return false;
             phase = Phase::Initialize;
         } else if (phase == Phase::FinalCapacity) {
@@ -408,26 +421,30 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         return true;
     }
 
-    bool Emit(Entry entry, uint32_t first, uint32_t count, const BroadphaseParams &value,
-              std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    bool EmitWork(Entry entry, const StageWork &work, const BroadphaseParams &value,
+                  std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches,
+                  std::optional<rhi::ComputeIndirectArguments> indirect = {})
     {
         const bool block = entry == ScanBlocks || entry == ReduceBlocks;
-        if (!count || count > (block ? BroadphaseBlockLimit : BroadphaseItemLimit))
+        const uint32_t first = work.range.x, count = work.range.y;
+        const uint32_t limit = entry == PrepareIndirect ? MaxDispatchesPerPacket - 1u
+                               : block                  ? BroadphaseBlockLimit
+                                                        : BroadphaseItemLimit;
+        if (!count || count > limit)
             throw std::logic_error("Jolt GPU broadphase emitted an invalid bounded work unit");
-        StageWork work{{first, count, 0, 0}};
-        if (entry == BuildWorldRanges)
-            work.range = {first, count, first, count};
-        // Retain successful allocations when the next managed endpoint defers.
-        // The logical unit and its immutable values have not advanced yet.
-        if (!Endpoint(pendingUniform, sizeof(BroadphaseParams)) || !Endpoint(pendingWorkUniform, sizeof(StageWork)))
+        // Keep acquired uniforms across a temporary managed-capacity deferral.
+        if (!Endpoint(pendingUniform, sizeof(BroadphaseParams)) ||
+            ((EntryPorts[entry] & K) && !Endpoint(pendingWorkUniform, sizeof(StageWork))))
             return false;
         const auto uniform = pendingUniform, workUniform = pendingWorkUniform;
         uploads.push_back({uniform, 0, Bytes(value)});
-        uploads.push_back({workUniform, 0, Bytes(work)});
+        if (EntryPorts[entry] & K)
+            uploads.push_back({workUniform, 0, Bytes(work)});
         const auto &program = implementation->programs[entry];
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = program.kernel;
         dispatch.groupCountX = block ? count : SummaryEntry(entry) ? 1u : Blocks(count);
+        dispatch.indirectArguments = std::move(indirect);
         if (dispatch.groupCountX > implementation->host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
             throw std::length_error("Jolt GPU broadphase bounded work exceeds dispatch limits");
         rhi::ComputeDispatchProof proof;
@@ -437,21 +454,25 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                                  : port == Work          ? workUniform
                                  : port == Arena         ? arena
                                  : port == RuntimeWorlds ? runtimeWorlds
-                                 : port == SourceArena   ? oldArena
+                                 : port == Arguments     ? arguments
                                                          : settingsPorts[port];
             if (!buffer)
                 throw std::logic_error("Jolt GPU broadphase work has an absent resource");
             dispatch.buffers.push_back(buffer);
             const bool initialize = port == Arena && entry == InitWords;
             const bool worldWrite = port == RuntimeWorlds;
-            dispatch.bufferAccesses.push_back(initialize || worldWrite ? rhi::ComputeBufferAccess::Write
-                                              : port == Arena          ? rhi::ComputeBufferAccess::ReadWrite
-                                                                       : rhi::ComputeBufferAccess::Read);
+            const bool argumentWrite = port == Arguments;
+            dispatch.bufferAccesses.push_back(initialize || worldWrite || argumentWrite
+                                                  ? rhi::ComputeBufferAccess::Write
+                                              : port == Arena ? rhi::ComputeBufferAccess::ReadWrite
+                                                              : rhi::ComputeBufferAccess::Read);
             if (initialize)
                 proof.writes.push_back({binding, uint64_t(first) * WordBytes, uint64_t(count) * WordBytes});
             else if (worldWrite)
                 proof.writes.push_back(
                     {binding, uint64_t(first) * sizeof(WorldRange), uint64_t(count) * sizeof(WorldRange)});
+            else if (argumentWrite)
+                proof.writes.push_back({binding, 0, uint64_t(count) * WordBytes});
             else
                 proof.reads.push_back({binding, 0, buffer->GetByteSize()});
         }
@@ -459,6 +480,52 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         dispatches.push_back(std::move(dispatch));
         pendingUniform.reset();
         pendingWorkUniform.reset();
+        return true;
+    }
+
+    bool Emit(Entry entry, uint32_t first, uint32_t count, const BroadphaseParams &value,
+              std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        StageWork work{{first, count, 0, 0}};
+        if (entry == BuildWorldRanges)
+            work.range = {first, count, first, count};
+        return EmitWork(entry, work, value, uploads, dispatches);
+    }
+
+    bool EmitIndirect(Entry entry, uint32_t first, uint32_t count, uint32_t size, const BroadphaseParams &value,
+                      std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        const bool block = entry == ScanBlocks || entry == ReduceBlocks;
+        const uint32_t limit = block ? BroadphaseBlockLimit : BroadphaseItemLimit;
+        const bool matching = indirectEntry == entry && indirectMeta == value.activeState.x &&
+                              indirectLevel == value.activeState.z && first >= indirectFirst &&
+                              (first - indirectFirst) % limit == 0 && (first - indirectFirst) / limit < indirectCount;
+        if (!matching) {
+            const uint32_t available = MaxDispatchesPerPacket - static_cast<uint32_t>(dispatches.size());
+            if (available < 2u) {
+                packetFull = true;
+                return false;
+            }
+            const uint32_t remaining = (size - first) / limit + static_cast<uint32_t>((size - first) % limit != 0);
+            const uint32_t records = std::min(available - 1u, remaining);
+            if (!records || uint64_t(first) + uint64_t(records - 1u) * limit >= size)
+                throw std::logic_error("Jolt GPU indirect chunk plan exceeds its bounded domain");
+            const StageWork producer{{first, records, 0, block ? 1u : 0u}};
+            // A producer is recorded here, after earlier queue/meta publishers;
+            // it must not be hoisted to the front of the packet.
+            if (!EmitWork(PrepareIndirect, producer, value, uploads, dispatches))
+                return false;
+            indirectEntry = entry;
+            indirectMeta = value.activeState.x;
+            indirectLevel = value.activeState.z;
+            indirectFirst = first;
+            indirectCount = records;
+        }
+        const uint32_t record = (first - indirectFirst) / limit;
+        const StageWork work{{first, count, 0, 0}};
+        if (!EmitWork(entry, work, value, uploads, dispatches,
+                      rhi::ComputeIndirectArguments{arguments, uint64_t(record) * WordBytes}))
+            return false;
         return true;
     }
 
@@ -476,13 +543,13 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         return true;
     }
 
-    void BeginScan(uint32_t input, uint32_t count, bool exclusive)
+    void BeginScan(uint32_t input, uint32_t count, bool exclusive, bool dynamic = false)
     {
         scan = {};
         scan.active = count != 0;
         scan.exclusive = exclusive;
         scan.originalInput = input;
-        scan.originalCount = count;
+        scan.dynamic = dynamic;
         scan.root = zeroRecord;
         if (count) {
             do {
@@ -499,10 +566,16 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         auto value = config;
         const uint32_t level = scan.level, size = scan.counts[level];
         const auto &addresses = levels[level];
+        value.activeState.z = level;
+        value.activeState.w = scan.dynamic ? 1u : 0u;
         value.scan = {level ? levels[level].input : scan.originalInput, addresses.prefix, addresses.total, size};
         if (!scan.descending) {
             const uint32_t count = std::min(BroadphaseBlockLimit, Blocks(size) - scan.first);
-            if (!Emit(scan.exclusive ? ScanBlocks : ReduceBlocks, scan.first, count, value, uploads, dispatches))
+            const auto entry = scan.exclusive ? ScanBlocks : ReduceBlocks;
+            const bool emitted = scan.dynamic
+                                     ? EmitIndirect(entry, scan.first, count, Blocks(size), value, uploads, dispatches)
+                                     : Emit(entry, scan.first, count, value, uploads, dispatches);
+            if (!emitted)
                 return true;
             scan.first += count;
             if (scan.first == Blocks(size)) {
@@ -521,7 +594,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         } else {
             value.scanParent.x = levels[level + 1u].prefix;
             const uint32_t count = std::min(BroadphaseItemLimit, size - scan.first);
-            if (!Emit(AddOffsets, scan.first, count, value, uploads, dispatches))
+            const bool emitted = scan.dynamic
+                                     ? EmitIndirect(AddOffsets, scan.first, count, size, value, uploads, dispatches)
+                                     : Emit(AddOffsets, scan.first, count, value, uploads, dispatches);
+            if (!emitted)
                 return true;
             scan.first += count;
             if (scan.first == size) {
@@ -565,25 +641,122 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         return true;
     }
 
-    bool Rounds(Entry entry, std::vector<rhi::ComputeBufferUpdate> &uploads,
-                std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    enum class ActiveStage
     {
-        if (round == rounds) {
-            round = 0;
+        Seed,
+        Round,
+        Scan,
+        Compact,
+        Publish
+    };
+
+    void BeginActive(bool fill)
+    {
+        activeFilling = fill;
+        activeStage = ActiveStage::Seed;
+        activeBound = config.counts.x;
+        round = windowRounds = 0;
+        config.activeQueues = {queues[0], queues[1], activeBound, 0};
+        config.activeState = {activeMeta[0], activeMeta[1], 0, 0};
+    }
+
+    bool ActiveRange(Entry entry, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                     std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        if (item == activeBound) {
             item = 0;
             return false;
         }
-        const uint32_t count = std::min(BroadphaseItemLimit, config.counts.x - item);
         auto value = config;
-        value.scan.x = levels[0].input;
-        if (!Emit(entry, item, count, value, uploads, dispatches))
+        value.activeState.z = 0;
+        value.activeState.w = 1;
+        const uint32_t count = std::min(BroadphaseItemLimit, activeBound - item);
+        if (!EmitIndirect(entry, item, count, activeBound, value, uploads, dispatches))
             return true;
         item += count;
-        if (item == config.counts.x) {
-            item = 0;
-            ++round;
-        }
         return true;
+    }
+
+    bool ActiveRounds(std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        while (true) {
+            switch (activeStage) {
+            case ActiveStage::Seed:
+                if (!Emit(SeedActive, 0, 1, config, uploads, dispatches))
+                    return true;
+                activeStage = ActiveStage::Round;
+                return true;
+            case ActiveStage::Round:
+                config.scan.x = levels[0].input;
+                if (ActiveRange(activeFilling ? FillRound : CountRound, uploads, dispatches))
+                    return true;
+                ++round;
+                ++windowRounds;
+                // A small window amortizes global scan/compaction. Each pass
+                // retains the same input queue and bounded neighbor quantum;
+                // a rank whose cursor reached its end performs no more tests.
+                if (windowRounds < ActiveRoundsPerWindow && round < rounds)
+                    break;
+                BeginScan(levels[0].input, activeBound, true, true);
+                activeStage = ActiveStage::Scan;
+                break;
+            case ActiveStage::Scan:
+                if (Scan(uploads, dispatches))
+                    return true;
+                config.scan.x = levels[0].input;
+                config.scan.y = levels[0].prefix;
+                config.summary.x = scan.root;
+                activeStage = ActiveStage::Compact;
+                break;
+            case ActiveStage::Compact:
+                if (ActiveRange(CompactActive, uploads, dispatches))
+                    return true;
+                activeStage = ActiveStage::Publish;
+                break;
+            case ActiveStage::Publish: {
+                auto value = config;
+                value.round.y = windowRounds;
+                if (!Emit(PublishActive, 0, 1, value, uploads, dispatches))
+                    return true;
+                std::swap(config.activeQueues.x, config.activeQueues.y);
+                std::swap(config.activeState.x, config.activeState.y);
+                activeStage = ActiveStage::Round;
+                if (round == rounds) {
+                    // The full rank validation below already checks every
+                    // cursor/status and publishes the count/fill receipt. At
+                    // the algorithmic final round, share that boundary instead
+                    // of adding an earlier host map of the active metadata.
+                    config.scan.x = levels[0].input;
+                    phase = activeFilling ? Phase::FillCheck : Phase::Counts;
+                } else if (windowRounds == ActiveRoundsPerWindow)
+                    phase = Phase::ActiveBoundary;
+                return true;
+            }
+            }
+        }
+    }
+
+    void DecodeActive(const std::shared_ptr<rhi::PreparedComputeBatch> &packet)
+    {
+        UInt4 value{};
+        const auto read = packet->Readback(0);
+        if (!read || !read->IsComplete())
+            throw std::logic_error("Jolt GPU active queue requires its completed source receipt");
+        read->ReadInto(&value, sizeof(value));
+        if (value.z)
+            throw std::runtime_error("Jolt GPU active queue failed numerical validation (status " +
+                                     std::to_string(value.z) + ")");
+        if (value.x > activeBound || value.y > rounds || value.w || (value.x && (round == rounds || value.y != round)))
+            throw std::runtime_error("Jolt GPU active queue failed its monotone bounded-round contract");
+        item = windowRounds = 0;
+        if (value.x) {
+            activeBound = value.x;
+            config.activeQueues.z = activeBound;
+            phase = activeFilling ? Phase::Fill : Phase::Count;
+        } else {
+            config.scan.x = levels[0].input;
+            phase = activeFilling ? Phase::FillCheck : Phase::Counts;
+        }
     }
 
     bool NextDispatch(std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
@@ -637,14 +810,12 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::Ends:
                 if (Range(FindEnds, config.counts.x, uploads, dispatches))
                     return true;
+                BeginActive(false);
                 phase = Phase::Count;
                 break;
             case Phase::Count:
-                if (Rounds(CountRound, uploads, dispatches))
-                    return true;
-                config.scan.x = levels[0].input;
-                phase = Phase::Counts;
-                break;
+            case Phase::Fill:
+                return ActiveRounds(uploads, dispatches);
             case Phase::Counts:
                 if (Range(MaterializeCounts, config.counts.x, uploads, dispatches))
                     return true;
@@ -688,17 +859,13 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::FinalInitialize:
                 if (Range(InitWords, config.workspace.x, uploads, dispatches))
                     return true;
+                BeginActive(true);
                 phase = Phase::Reset;
                 break;
             case Phase::Reset:
                 if (Range(ResetFill, config.counts.x, uploads, dispatches))
                     return true;
                 phase = Phase::Fill;
-                break;
-            case Phase::Fill:
-                if (Rounds(FillRound, uploads, dispatches))
-                    return true;
-                phase = Phase::FillCheck;
                 break;
             case Phase::FillCheck:
                 if (Range(CheckFill, config.counts.x, uploads, dispatches))
@@ -770,7 +937,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
 
     JoltGpuControlWork Next()
     {
-        allocationBlocked = false;
+        allocationBlocked = packetFull = false;
+        indirectEntry = EntryCount;
+        indirectCount = 0;
         if (!Capacity())
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         std::vector<rhi::ComputeBufferUpdate> uploads;
@@ -796,12 +965,13 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     uploads.push_back({workset->contacts, 0, Bytes(Contact{})});
                 finalUploads = false;
             }
-            for (uint32_t index = 0; index < MaxDispatchesPerPacket; ++index) {
+            while (dispatches.size() < MaxDispatchesPerPacket) {
                 if (!NextDispatch(uploads, dispatches))
                     break;
-                if (allocationBlocked)
+                if (allocationBlocked || packetFull)
                     break;
-                if (phase == Phase::CountBoundary || phase == Phase::FillBoundary || phase == Phase::Done)
+                if (phase == Phase::CountBoundary || phase == Phase::FillBoundary || phase == Phase::ActiveBoundary ||
+                    phase == Phase::Done)
                     break;
             }
         }
@@ -809,6 +979,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         std::vector<rhi::ComputeBufferRead> reads;
         if (boundary == Phase::CountBoundary || boundary == Phase::FillBoundary)
             reads.push_back({arena, uint64_t(config.workspace.y + 1u) * WordBytes, WordBytes});
+        if (boundary == Phase::ActiveBoundary)
+            reads.push_back({arena, uint64_t(config.activeState.x) * WordBytes, WordBytes});
         if (dispatches.empty() && copies.empty() && uploads.empty() && allocationBlocked)
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         if (dispatches.empty() && copies.empty() && uploads.empty())
@@ -820,6 +992,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                         self->oldArena.reset();
                     if (boundary == Phase::CountBoundary || boundary == Phase::FillBoundary)
                         self->Decode(packet, boundary == Phase::CountBoundary);
+                    if (boundary == Phase::ActiveBoundary)
+                        self->DecodeActive(packet);
                     if (boundary == Phase::Done) {
                         self->workset->parameters = self->workset->parameters->Freeze();
                         self->workset->worlds = self->runtimeWorlds->Freeze();
@@ -834,7 +1008,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
 
     std::shared_ptr<Impl> implementation;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> settingsPorts;
-    std::shared_ptr<rhi::ComputeBuffer> arena, oldArena, runtimeWorlds, finalArena;
+    std::shared_ptr<rhi::ComputeBuffer> arena, oldArena, runtimeWorlds, finalArena, arguments;
     std::shared_ptr<rhi::ComputeBuffer> pendingUniform, pendingWorkUniform;
     std::shared_ptr<JoltGpuContactWorkset> workset;
     StepParams parameters;
@@ -843,11 +1017,15 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     std::vector<ScanLevel> levels;
     ScanCursor scan;
     Phase phase = Phase::InitialCapacity;
-    std::array<uint32_t, 2> sap{}, suppression{};
+    std::array<uint32_t, 2> sap{}, suppression{}, queues{}, activeMeta{};
     uint32_t scratchWords = 0, zeroRecord = 0, item = 0, rounds = 0, round = 0;
     uint32_t sortSource = 0, sortTarget = 0, sortCount = 0, sortKey = 0, sortWidth = 1;
     uint64_t copyFirst = 0;
-    bool finalUploads = false, allocationBlocked = false;
+    ActiveStage activeStage = ActiveStage::Seed;
+    Entry indirectEntry = EntryCount;
+    uint32_t activeBound = 0, windowRounds = 0;
+    uint32_t indirectMeta = 0, indirectLevel = 0, indirectFirst = 0, indirectCount = 0;
+    bool finalUploads = false, allocationBlocked = false, packetFull = false, activeFilling = false;
 };
 
 JoltGpuBroadphase::JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetCode &target)
