@@ -95,7 +95,7 @@ FullscreenVertex vertex_main(uint id : SV_VulkanVertexID)
 }
 """
 
-_MESH_VERTEX = """
+_MESH_RESOURCES = """
 [[vk::binding(5, 1)]] ConstantBuffer<InxCameraData> inx_view;
 [[vk::binding(1, 2)]] StructuredBuffer<InxModelMatrix> inx_models;
 [[vk::binding(2, 2)]] StructuredBuffer<InxSkinState> inx_skins;
@@ -132,18 +132,6 @@ void inx_clip_device_bounds(inout InxMeshInput result, uint instance, bool ignor
         && (ignore_near || inx_bounds_halfspace(clip[3] - clip[2], center, extent));
     if (!visible) result.position = float4(2.0, 2.0, 2.0, 1.0);
 }
-InxMeshInput inx_mesh_vertex(InxVertexInput input, uint instance)
-{
-    input = inx_skin_vertex(input, inx_skins[instance], inx_bones);
-    return inx_transform_vertex(input, inx_current_model(instance), inx_view.view, inx_view.projection, inx_instances[instance]);
-}
-[shader("vertex")]
-InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
-{
-    InxMeshInput result = inx_mesh_vertex(input, instance);
-    inx_clip_device_bounds(result, instance);
-    return result;
-}
 """
 
 _VERTEX_DEFORM = """
@@ -165,6 +153,41 @@ InxVertexInput inx_apply_vertex(InxVertexInput input, uint instance, float time,
     return input;
 }
 """
+
+
+_VERTEX_PROJECT = """
+float4 inx_project_vertex(InxMeshInput vertex)
+{
+    InxProjectionContext context;
+    context.view_matrix = inx_view.view;
+    context.projection_matrix = inx_view.projection;
+    context.projection_matrix[1] = -context.projection_matrix[1];
+    return inx_vertex_author::project(vertex, context);
+}
+"""
+
+
+def _mesh_vertex(*, deform=False, project=False):
+    deformation = ("input = inx_apply_vertex(input, instance, inx_globals.time.x, inx_current_model(instance));"
+                   if deform else "")
+    projection = "result.position = inx_project_vertex(result);" if project else ""
+    return _MESH_RESOURCES + f'''
+InxMeshInput inx_mesh_vertex(InxVertexInput input, uint instance)
+{{
+    {deformation}
+    input = inx_skin_vertex(input, inx_skins[instance], inx_bones);
+    return inx_transform_vertex(input, inx_current_model(instance), inx_view.view, inx_view.projection, inx_instances[instance]);
+}}
+{_VERTEX_PROJECT if project else ""}
+[shader("vertex")]
+InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstanceID)
+{{
+    InxMeshInput result = inx_mesh_vertex(input, instance);
+    {projection}
+    inx_clip_device_bounds(result, instance);
+    return result;
+}}
+'''
 
 
 _SURFACE_PASSES = """
@@ -324,6 +347,9 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(declaration, "A material vertex can only be paired with a mesh fragment", code="author.reference")
         location = declaration
         vertex = read_vertex(vertex_path, graph, author, location)
+        if author.is_surface and "self.project" in vertex.author.functions:
+            author.error(location, "A projected vertex pairs with shader.frag; shader.surface shares engine projection across geometry passes",
+                         code="author.reference")
         for name, field in vertex.author.fields.items():
             previous = author.fields.get(name)
             if previous is not None:
@@ -357,10 +383,9 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if vertex:
         vertex_code, vertex_ranges = vertex.emit()
         code.extend([vertex_code, _VERTEX_DEFORM])
-        vertex_main = _MESH_VERTEX.replace("    input = inx_skin_vertex", "    input = inx_apply_vertex(input, instance, inx_globals.time.x, inx_current_model(instance));\n    input = inx_skin_vertex")
-        code.append(vertex_main)
+        code.append(_mesh_vertex(deform=True, project="self.project" in vertex.author.functions))
     else:
-        code.append(_MESH_VERTEX if author.domain == "mesh" else _FULLSCREEN_VERTEX)
+        code.append(_mesh_vertex() if author.domain == "mesh" else _FULLSCREEN_VERTEX)
     for helper in helpers:
         emitter = _Author(source, source_path)
         emitter.alias = author.alias

@@ -21,12 +21,13 @@ def create_skybox_asset(directory, database, kind='procedural'):
         Image.new('RGB', (32, 16), (204, 5, 3)).save(texture)
         imported = AssetManager.import_asset(str(texture), database=database)
         assert imported.succeeded, imported.error
-        material.set_shader('Skybox Panoramic')
+        material.frag_shader_name = 'infernux/skybox/panoramic'
         material.set_texture_guid('albedo_map', imported.guid)
         material.set_color('tint', 1, 1, 1)
         material.set_float('rotation', 90)
-    for key in ('skyTopColor','skyHorizonColor','groundColor'):
-        material.set_color(key,.8,.02,.01)
+    if kind == 'procedural':
+        for key in ('sky_top_color','sky_horizon_color','ground_color'):
+            material.set_color(key,.8,.02,.01)
     material.set_float('exposure',1.)
     assert material.save(str(source))
     imported = AssetManager.import_asset(str(source),database=database)

@@ -451,6 +451,46 @@ def test_packaged_standard_module_is_found_by_native_loader():
         _Infernux._compile_shader_program(source, "standard.compute.py", "standard")
 
 
+def test_sky_projection_belongs_to_the_selected_vertex_asset():
+    from pathlib import Path
+    from infernux.resources import resources_path
+
+    root = Path(resources_path) / "shaders"
+    vertex = root / "skybox.vert.py"
+    for name in ("skybox_procedural", "skybox_panoramic"):
+        path = root / (name + ".frag.py")
+        source = path.read_text(encoding="utf-8")
+        ordinary = parse_shader(source, str(path), name)
+        assert ordinary.vertex_source is None
+        assert "inx_vertex_author::project" not in ordinary.generated_source
+        definition = parse_shader(source, str(path), name, vertex_path=str(vertex))
+        assert definition.info["render_queue"] == 32767
+        assert definition.info["depth_write"] is False
+        assert definition.vertex_source == str(vertex.resolve())
+        for target in definition.compile()["targets"]:
+            assert {entry["name"] for entry in target["entries"]} == {"vertex_main", "fragment_main"}
+            camera = next(resource for resource in target["resources"] if resource["name"] == "inx_view")
+            assert (camera["set"], camera["binding"]) == (1, 5)
+
+    surface = root / "error.frag.py"
+    with pytest.raises(SyntaxError, match="shader.surface shares engine projection"):
+        parse_shader(surface.read_text(encoding="utf-8"), str(surface), "invalid_sky", vertex_path=str(vertex))
+
+
+def test_error_surface_supplies_the_standard_auxiliary_passes():
+    from pathlib import Path
+    from infernux.resources import resources_path
+
+    path = Path(resources_path) / "shaders/error.frag.py"
+    definition = parse_shader(path.read_text(encoding="utf-8"), str(path), "error")
+    assert definition.info["shader_id"] == "infernux/internal/error"
+    assert definition.info["hidden"] is True
+    for target in definition.compile()["targets"]:
+        assert {"vertex_main", "vertex_shadow", "vertex_motion", "fragment_main", "fragment_gbuffer",
+                "fragment_picking", "fragment_depth", "fragment_normal", "fragment_base_color", "fragment_motion"} <= {
+                    entry["name"] for entry in target["entries"]}
+
+
 def test_static_shader_library_dependencies_and_typed_helpers(tmp_path):
     (tmp_path / "curves.shaderlib.py").write_text('''import infernux.shader as shader
 

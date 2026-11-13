@@ -27,10 +27,10 @@ from .theme import Theme, ImGuiCol
 
 _LABEL_W = 190.0
 
-# Procedural sky material property names (Skybox Procedural)
-_SKY_TOP = "skyTopColor"
-_SKY_HORIZON = "skyHorizonColor"
-_SKY_GROUND = "groundColor"
+# Procedural sky material property names (infernux/skybox/procedural)
+_SKY_TOP = "sky_top_color"
+_SKY_HORIZON = "sky_horizon_color"
+_SKY_GROUND = "ground_color"
 _SKY_EXPOSURE = "exposure"
 
 # Ambient sources — order must match SceneEnvironmentSettings::AmbientSource

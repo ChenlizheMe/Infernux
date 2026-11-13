@@ -49,7 +49,12 @@ class shadingmodel(_ShaderAsset):
 
 
 class vert(_ShaderAsset):
-    """Local-space deformation shared by all geometry passes of a material."""
+    """Local-space deformation shared by all geometry passes of a material.
+
+    With a raw ``frag``, an optional ``project(mesh_input, ProjectionContext)``
+    method returns clip position. Surfaces retain the engine's projection for
+    their lighting, depth, shadow and motion passes.
+    """
 
 
 class VertexData:
@@ -71,6 +76,13 @@ class VertexContext:
     object_id: uvec2
     layer_mask: uint
     model_matrix: mat4
+
+
+class ProjectionContext:
+    """Current view matrices with a target-independent projection (+Y up)."""
+
+    view_matrix: mat4
+    projection_matrix: mat4
 
 
 class ShadingContext:
@@ -276,4 +288,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ViewContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "ViewContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", *TYPES, *INTRINSICS]

@@ -249,30 +249,6 @@ void InxVkCoreModular::InitializeMaterialSystem()
             });
     }
 
-    // Pre-build error material pipeline (unlit magenta-black checkerboard).
-    auto errorMaterial = AssetRegistry::Instance().GetBuiltinMaterial("ErrorMaterial");
-    if (errorMaterial) {
-        const std::string &errVertId = errorMaterial->GetVertShaderName();
-        const std::string &errFragId = errorMaterial->GetFragShaderName();
-
-        const auto *errVertCode = m_shaderCache.FindVertCode(errVertId);
-        const auto *errFragCode = m_shaderCache.FindFragCode(errFragId);
-
-        if (errVertCode && errFragCode) {
-            auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-                errorMaterial, *errVertCode, *errFragCode, ShaderProgramKey{{errVertId, errFragId}, 0});
-            if (renderData && renderData->isValid) {
-                INXLOG_INFO("Error material pipeline created successfully (shaders: ", errVertId, "/", errFragId, ")");
-            } else {
-                INXLOG_WARN("InitializeMaterialSystem: error material pipeline deferred to lazy build");
-            }
-        } else {
-            INXLOG_DEBUG("InitializeMaterialSystem: error shader SPIR-V not yet in cache "
-                         "(vert='",
-                         errVertId, "', frag='", errFragId, "'), will be built lazily on first use");
-        }
-    }
-
     m_materialSystemInitialized = true;
 }
 
@@ -557,9 +533,9 @@ void InxVkCoreModular::UpdateLightingState()
                     std::get<glm::vec4>(prop->value) != desired)
                     builtinSky->SetColor(name, desired);
             };
-            syncColor("skyTopColor", env.skyTopColor);
-            syncColor("skyHorizonColor", env.skyHorizonColor);
-            syncColor("groundColor", env.skyGroundColor);
+            syncColor("sky_top_color", env.skyTopColor);
+            syncColor("sky_horizon_color", env.skyHorizonColor);
+            syncColor("ground_color", env.skyGroundColor);
             const auto *exposureProp = builtinSky->GetProperty("exposure");
             if (!exposureProp || !std::holds_alternative<float>(exposureProp->value) ||
                 std::get<float>(exposureProp->value) != env.skyExposure)
@@ -582,9 +558,9 @@ void InxVkCoreModular::UpdateLightingState()
                                                   : AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
         bool applied = false;
         if (skyMat) {
-            const auto *skyTopProp = skyMat->GetProperty("skyTopColor");
-            const auto *horizonProp = skyMat->GetProperty("skyHorizonColor");
-            const auto *groundProp = skyMat->GetProperty("groundColor");
+            const auto *skyTopProp = skyMat->GetProperty("sky_top_color");
+            const auto *horizonProp = skyMat->GetProperty("sky_horizon_color");
+            const auto *groundProp = skyMat->GetProperty("ground_color");
             const auto *exposureProp = skyMat->GetProperty("exposure");
             if (skyTopProp && groundProp) {
                 const glm::vec3 skyTop = glm::vec3(std::get<glm::vec4>(skyTopProp->value));

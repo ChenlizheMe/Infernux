@@ -750,7 +750,7 @@
   "environment.skybox_material": "天空盒材质",
   "environment.builtin_sky": "程序化天空 (内置)",
   "environment.missing_material": "材质缺失",
-  "environment.custom_sky_hint": "全景天空可使用 Skybox Panoramic 着色器。请在检视器中编辑材质参数。",
+  "environment.custom_sky_hint": "全景天空请组合 infernux/skybox/vertex 顶点与 infernux/skybox/panoramic 片元着色器，并在检视器中编辑材质参数。",
   "environment.sky_top_color": "天顶颜色",
   "environment.sky_horizon_color": "地平线颜色",
   "environment.sky_ground_color": "地面颜色",

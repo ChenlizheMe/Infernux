@@ -3473,19 +3473,8 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         if (!m_renderer->PumpStartupEvents())
             throw std::runtime_error("Startup cancelled");
 
-        // The procedural sky is renderer-owned: no authored material GUID
-        // creates a dependency edge that can prewarm it for a Player. Its two
-        // Standalone main() stages are compiled independently, so publish both
-        // before the material system creates the builtin sky material.
-        static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> proceduralSkyShaderStages{{
-            {"Skybox Procedural", "vertex"},
-            {"Skybox Procedural", "fragment"},
-        }};
-        for (const auto &[shaderId, shaderType] : proceduralSkyShaderStages) {
-            if (!EnsureShaderLoaded(std::string(shaderId), std::string(shaderType))) {
-                INXLOG_ERROR("Required procedural sky shader is unavailable: '", shaderId, "' (", shaderType, ")");
-            }
-        }
+        // Builtin author materials prepare their linked programs through the
+        // same material owner as project assets; no independent stage prewarm.
         if (!playerMode) {
             // Editor overlays are present from the first Scene frame. Keep the
             // rest of the shader catalog lazy, but publish this small mandatory

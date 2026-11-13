@@ -42,6 +42,11 @@ public struct InxVertexContext
     public uint layer_mask;
     public column_major float4x4 model_matrix;
 };
+public struct InxProjectionContext
+{
+    public column_major float4x4 view_matrix;
+    public column_major float4x4 projection_matrix;
+};
 public InxVertexData inx_vertex_data(InxVertexInput input)
 {
     InxVertexData result;

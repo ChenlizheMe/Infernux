@@ -10,8 +10,7 @@ ShaderInfo {
 // are provided by lib/common. This file adds sky helpers.
 // ============================================================================
 
-// Shared sky gradient — used by both skybox_procedural.frag and
-// sampleAmbientProbe(). Adjust constants here once.
+// Ambient gradient for the remaining GLSL lighting consumers.
 //
 // Uses a single continuous blend:
 //   ground ──smoothstep──▶ equator ──smoothstep──▶ sky

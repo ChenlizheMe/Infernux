@@ -2134,8 +2134,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
 {
     auto material = std::make_shared<InxMaterial>("SkyboxProcedural");
 
-    // Use the procedural skybox shader registered by ShaderInfo Name.
-    material->SetShader("Skybox Procedural");
+    material->SetVertShader("infernux/skybox/vertex");
+    material->SetFragShader("infernux/skybox/procedural");
 
     // Skybox render state:
     // - Cull back faces (the outside of the cube). In the LH coordinate system,
@@ -2155,12 +2155,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
     state.renderQueue = EngineConfig::Get().skyboxQueue; // After all opaque/transparent, outside shadow caster range
     material->SetRenderState(state);
 
-    // Default sky properties matching the ShaderInfo property declaration.
-    // sRGB: zenith #6E7E9C, horizon #A6B9D0, ground #585858
-    material->SetColor("skyTopColor", glm::vec4(0.431f, 0.494f, 0.612f, 1.0f));
-    material->SetColor("skyHorizonColor", glm::vec4(0.651f, 0.725f, 0.816f, 1.0f));
-    material->SetColor("groundColor", glm::vec4(0.345f, 0.345f, 0.345f, 1.0f));
-    material->SetFloat("exposure", 1.0f);
+    material->PrepareShaderDefaults();
 
     material->SetBuiltin(true);
 
@@ -2171,10 +2166,10 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateErrorMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ErrorMaterial");
 
-    // Use dedicated error shaders: unlit magenta-black checkerboard pattern.
-    // These shaders are self-contained (no material UBO, no textures) and
-    // output a procedural checkerboard using world-position + UV.
-    material->SetShader("Error");
+    // The normal surface program supplies the same checker in visible,
+    // picking, depth, shadow and deferred passes.
+    material->SetVertShader("Standard");
+    material->SetFragShader("infernux/internal/error");
 
     // Double-sided so the error pattern is visible from all angles
     RenderState state;
@@ -2186,6 +2181,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateErrorMaterial()
     state.renderQueue = 2000; // Opaque queue
     material->SetRenderState(state);
 
+    material->PrepareShaderDefaults();
     material->SetBuiltin(true);
 
     return material;

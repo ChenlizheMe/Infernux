@@ -57,7 +57,7 @@ def read_shader_info(source, source_path):
             elif field == "alpha_clip":
                 valid = value is None or (type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1)
             elif field == "render_queue":
-                valid = type(value) is int and 0 <= value <= 5000
+                valid = type(value) is int and 0 <= value <= 2147483647
             else:
                 valid = isinstance(value, str)
             if field == "shader_id":

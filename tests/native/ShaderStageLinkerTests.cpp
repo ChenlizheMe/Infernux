@@ -1112,28 +1112,6 @@ void surface(out SurfaceData s) {
     assert(spriteShadow->generatedFragmentSource.find("uniform ShaderLighting") == std::string::npos);
     assert(spriteShadow->generatedFragmentSource.find("vec3 sampleAmbientProbe") == std::string::npos);
 
-    const auto errorCompilation =
-        compiler.CompileLinkedProgramArtifact(ReadText(shaderRoot + "/error.vert"), shaderRoot + "/error.vert",
-                                              ReadText(shaderRoot + "/error.frag"), shaderRoot + "/error.frag");
-    if (!errorCompilation.IsValid()) {
-        for (const auto &error : errorCompilation.errors)
-            std::cerr << error << '\n';
-    }
-    assert(errorCompilation.IsValid());
-    const auto errorArtifact = errorCompilation.CreateRuntimeArtifact();
-    assert(errorArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
-    assert(errorArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
-    for (const auto &variant : errorCompilation.compiledVariants) {
-        if (variant.target != infernux::ShaderCompileTarget::Forward &&
-            variant.target != infernux::ShaderCompileTarget::ForwardPlus &&
-            variant.target != infernux::ShaderCompileTarget::GBuffer)
-            continue;
-        assert(variant.generatedVertexSource.find("layout(location = 15) flat out uvec2 _inx_ObjectRenderData;") !=
-               std::string::npos);
-        assert(variant.generatedFragmentSource.find("layout(location = 15) flat in uvec2 _inx_ObjectRenderData;") !=
-               std::string::npos);
-    }
-
     const std::string fragmentWithoutCustomInputs = R"(
 ShaderInfo
 {
@@ -1160,6 +1138,22 @@ void surface(out SurfaceData surface)
 #version 450
 ShaderInfo { Name "Standard" }
 )";
+    const auto plainCompilation = compiler.CompileLinkedProgramArtifact(standardVertex, "Standard.vert",
+                                                                        fragmentWithoutCustomInputs, "Plain.frag");
+    assert(plainCompilation.IsValid());
+    const auto plainArtifact = plainCompilation.CreateRuntimeArtifact();
+    assert(plainArtifact.FindVariant(infernux::ShaderCompileTarget::ForwardPlus) != nullptr);
+    assert(plainArtifact.FindVariant(infernux::ShaderCompileTarget::Shadow) != nullptr);
+    for (const auto &variant : plainCompilation.compiledVariants) {
+        if (variant.target != infernux::ShaderCompileTarget::Forward &&
+            variant.target != infernux::ShaderCompileTarget::ForwardPlus &&
+            variant.target != infernux::ShaderCompileTarget::GBuffer)
+            continue;
+        assert(variant.generatedVertexSource.find("layout(location = 15) flat out uvec2 _inx_ObjectRenderData;") !=
+               std::string::npos);
+        assert(variant.generatedFragmentSource.find("layout(location = 15) flat in uvec2 _inx_ObjectRenderData;") !=
+               std::string::npos);
+    }
     const auto migrationProgram = compiler.CompileLinkedForward(standardVertex, "standard.vert",
                                                                 fragmentWithoutCustomInputs, "PlainSurface.frag");
     assert(migrationProgram.IsValid());

@@ -1,4 +1,4 @@
-"""Static local-space deformation; the engine owns projection and pass variants."""
+"""Static vertex methods; surfaces share engine-owned projection and pass variants."""
 
 from __future__ import annotations
 
@@ -75,6 +75,10 @@ def read_vertex(path, graph, owner, location, *, source=None):
     entry = author.functions.get("self.deform")
     if entry is None or entry.arguments != ("InxVertexData", "InxVertexContext") or entry.result != "InxVertexData":
         author.error(declaration, "deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) returns shader.VertexData",
+                     code="author.type")
+    project = author.functions.get("self.project")
+    if project is not None and (project.arguments != ("InxMeshInput", "InxProjectionContext") or project.result != "float4"):
+        author.error(declaration, "project(self, vertex: shader.mesh_input, ctx: shader.ProjectionContext) returns shader.vec4",
                      code="author.type")
     for name, parameter in author.fields.items():
         if not isinstance(parameter, ShaderParameter) or parameter.kind in {"bool", "uint", "mat3"}:

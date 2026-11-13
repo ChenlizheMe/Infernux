@@ -11,7 +11,8 @@ SURFACE_FIELDS = {
 }
 STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
                 "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight",
-                "VertexData": "InxVertexData", "VertexContext": "InxVertexContext", "ViewContext": "InxViewContext"}
+                "VertexData": "InxVertexData", "VertexContext": "InxVertexContext", "ViewContext": "InxViewContext",
+                "ProjectionContext": "InxProjectionContext"}
 STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
                  "InxViewContext": {"size": "float2", "pixel_size": "float2", "camera_position_ws": "float3",
                                     "near_clip": "float", "far_clip": "float", "depth_params": "float4",
@@ -28,7 +29,8 @@ STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
                  "InxVertexData": {"position_os": "float3", "normal_os": "float3", "tangent_os": "float4",
                                    "color": "float3", "uv0": "float2", "uv1": "float2"},
                  "InxVertexContext": {"time": "float", "delta_time": "float", "object_id": "uint2",
-                                      "layer_mask": "uint", "model_matrix": "float4x4"}}
+                                      "layer_mask": "uint", "model_matrix": "float4x4"},
+                 "InxProjectionContext": {"view_matrix": "float4x4", "projection_matrix": "float4x4"}}
 
 # A logical image carries its sampler through typed library calls. Slang
 # flattens the pair for each target; neither authors nor helpers name slots.
