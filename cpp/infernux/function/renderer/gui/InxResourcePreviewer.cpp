@@ -61,8 +61,14 @@ void ResourcePreviewManager::SetGUI(InxGUI *gui)
     // Register default previewers
     RegisterPreviewer(std::make_shared<ImagePreviewer>(gui));
     RegisterPreviewer(std::make_shared<TextPreviewer>());
-    RegisterPreviewer(std::make_shared<MaterialPreviewer>(gui));
+    RegisterPreviewer(
+        std::make_shared<MaterialPreviewer>([this](const std::string &path) { return m_materialPreviewQuery(path); }));
     RegisterPreviewer(std::make_shared<BinaryPreviewer>());
+}
+
+void ResourcePreviewManager::SetMaterialPreviewQuery(std::function<uint64_t(const std::string &)> query)
+{
+    m_materialPreviewQuery = std::move(query);
 }
 
 void ResourcePreviewManager::RegisterPreviewer(std::shared_ptr<IResourcePreviewer> previewer)
@@ -750,7 +756,7 @@ static PreviewTextureResolver MakeTextureResolver(const AssetDatabase *adb)
     };
 }
 
-MaterialPreviewer::MaterialPreviewer(InxGUI *gui, int previewSize) : m_gui(gui), m_previewSize(previewSize)
+MaterialPreviewer::MaterialPreviewer(std::function<uint64_t(const std::string &)> query) : m_query(std::move(query))
 {
 }
 
@@ -790,23 +796,15 @@ bool MaterialPreviewer::Load(const std::string &filePath)
     m_materialName = material.GetName();
     m_shaderName = material.GetShaderName();
 
-    // CPU-render the PBR sphere
-    std::vector<unsigned char> pixels;
-    MaterialPreviewRenderer::RenderPreview(material, m_previewSize, pixels);
-
-    // Upload to ImGui
     m_loadedPath = filePath;
-    m_textureName = filePath + "::mat_preview";
-    (void)m_gui->SubmitTextureForImGui(m_textureName, pixels.data(), pixels.size(), m_previewSize, m_previewSize);
-    m_textureId = m_gui->GetImGuiTextureId(m_textureName);
     INXLOG_INFO("MaterialPreviewer: loaded '", filePath, "'");
     return true;
 }
 
 void MaterialPreviewer::Render(InxGUIContext *ctx, float availWidth, float availHeight)
 {
-    m_textureId = m_gui->GetImGuiTextureId(m_textureName);
-    if (m_textureId == 0)
+    const auto textureId = m_query(m_loadedPath);
+    if (textureId == 0)
         return;
 
     // Draw the square sphere preview centered in the available area
@@ -819,15 +817,11 @@ void MaterialPreviewer::Render(InxGUIContext *ctx, float availWidth, float avail
 
     ctx->SetCursorPosX(cursorX + offsetX);
     ctx->SetCursorPosY(cursorY + offsetY);
-    ctx->Image(reinterpret_cast<void *>(m_textureId), drawSize, drawSize);
+    ctx->Image(reinterpret_cast<void *>(textureId), drawSize, drawSize);
 }
 
 void MaterialPreviewer::Unload()
 {
-    if (m_gui && !m_textureName.empty())
-        m_gui->RemoveImGuiTexture(m_textureName);
-    m_textureId = 0;
-    m_textureName.clear();
     m_loadedPath.clear();
     m_materialName.clear();
     m_shaderName.clear();

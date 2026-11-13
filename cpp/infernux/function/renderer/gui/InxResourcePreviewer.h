@@ -89,6 +89,9 @@ class ResourcePreviewManager : public NativeLifetimeOwner
     /// @brief Set the InxGUI instance (needed for texture upload)
     void SetGUI(InxGUI *gui);
 
+    /// Share the engine's material program, dependency updates and publication.
+    void SetMaterialPreviewQuery(std::function<uint64_t(const std::string &)> query);
+
     /// @brief Register a previewer
     void RegisterPreviewer(std::shared_ptr<IResourcePreviewer> previewer);
 
@@ -132,6 +135,7 @@ class ResourcePreviewManager : public NativeLifetimeOwner
 
     InxGUI *m_gui = nullptr;
     std::vector<std::shared_ptr<IResourcePreviewer>> m_previewers;
+    std::function<uint64_t(const std::string &)> m_materialPreviewQuery;
     std::unordered_map<std::string, IResourcePreviewer *> m_extensionMap; // extension -> previewer
     IResourcePreviewer *m_currentPreviewer = nullptr;
     PreviewDisplayMode m_displayMode = PreviewDisplayMode::Default;
@@ -260,12 +264,12 @@ class BinaryPreviewer : public IResourcePreviewer
 };
 
 /**
- * @brief Material previewer - renders a PBR sphere with the material's properties
+ * @brief Displays the shared material preview, including custom shader behavior.
  */
 class MaterialPreviewer : public IResourcePreviewer
 {
   public:
-    MaterialPreviewer(InxGUI *gui, int previewSize = 128);
+    explicit MaterialPreviewer(std::function<uint64_t(const std::string &)> query);
     ~MaterialPreviewer() override;
 
     std::string GetTypeName() const override
@@ -295,11 +299,8 @@ class MaterialPreviewer : public IResourcePreviewer
                                  const AssetDatabase *adb);
 
   private:
-    InxGUI *m_gui = nullptr;
-    int m_previewSize;
+    std::function<uint64_t(const std::string &)> m_query;
     std::string m_loadedPath;
-    std::string m_textureName;
-    uint64_t m_textureId = 0;
     std::string m_materialName;
     std::string m_shaderName;
 };
