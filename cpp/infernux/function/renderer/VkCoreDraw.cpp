@@ -2940,6 +2940,28 @@ void InxVkCoreModular::PumpPendingMeshUploads()
 {
     if (m_pendingSharedMeshBuffers.empty())
         return;
+    // Pending uploads own CPU source storage until their accepted copies
+    // finish. Count those internal owners separately from actual draw/world
+    // publications; two asset views can share one immutable geometry owner.
+    std::unordered_map<const void *, long> pendingOwners;
+    for (const auto &[key, upload] : m_pendingSharedMeshBuffers)
+        ++pendingOwners[upload.source.get()];
+    auto &registry = AssetRegistry::Instance();
+    for (auto pending = m_pendingSharedMeshBuffers.begin(); pending != m_pendingSharedMeshBuffers.end();) {
+        const auto &key = pending->first;
+        const auto &source = pending->second.source;
+        auto &internalOwners = pendingOwners.at(source.get());
+        if (key.IsRegistryAsset() && key.runtimeVersion != registry.GetAssetVersion(key.assetGuid) &&
+            source.use_count() == internalOwners) {
+            --internalOwners;
+            m_assetMeshViewKeys.erase({key.assetGuid, key.runtimeVersion, key.geometryView});
+            // Accepted copies remain owned by VkResourceManager until their
+            // fences retire. Unsubmitted blocks no longer have a consumer.
+            pending = m_pendingSharedMeshBuffers.erase(pending);
+        } else {
+            ++pending;
+        }
+    }
     m_resourceManager.PollGpuUploads();
     bool publishedRuntimeMesh = false;
     for (auto pending = m_pendingSharedMeshBuffers.begin(); pending != m_pendingSharedMeshBuffers.end();) {
