@@ -61,10 +61,10 @@ glm::vec3 Vector(const Float4 &v)
 }
 JoltGpuControlWork AfterWork(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
 {
-    if (!work.packet)
+    if (!work.packet && !work.continueWork)
         return next();
-    auto continuation = std::move(work.continueAfterCompletion);
-    work.continueAfterCompletion = [continuation = std::move(continuation), next = std::move(next)]() mutable {
+    auto continuation = std::move(work.continueWork);
+    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
         return continuation ? AfterWork(continuation(), std::move(next)) : next();
     };
     return work;
@@ -73,8 +73,8 @@ JoltGpuControlWork PrepareQueryWork(std::function<JoltGpuControlWork()> prepare,
 {
     try {
         auto work = prepare();
-        if (auto continuation = std::move(work.continueAfterCompletion))
-            work.continueAfterCompletion = [continuation = std::move(continuation), &error]() mutable {
+        if (auto continuation = std::move(work.continueWork))
+            work.continueWork = [continuation = std::move(continuation), &error]() mutable {
                 return PrepareQueryWork(std::move(continuation), error);
             };
         return work;
@@ -299,7 +299,7 @@ JoltGpuStepParameters StepParameters(float dt)
 
 struct PhysicsWorld::CompiledGpuPrograms
 {
-    ShaderTargetCode step, mutations, commands;
+    ShaderTargetCode step, mutations, commands, broadphase;
 };
 struct PhysicsWorld::GpuRenderState
 {
@@ -392,6 +392,7 @@ bool PhysicsWorld::EnsureGpuReady()
         p->step = CompileProgram(*m_gpuHost, JoltGpuProgram::Step);
         p->mutations = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyMutations);
         p->commands = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyCommands);
+        p->broadphase = CompileProgram(*m_gpuHost, JoltGpuProgram::Broadphase);
         const auto target = CompileProgram(*m_gpuHost, JoltGpuProgram::Queries);
         auto queries = std::make_unique<JoltGpuQueries>(*m_gpuHost, target);
         auto joints = std::make_unique<JoltGpuJoints>(*m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::Joints));
@@ -405,7 +406,8 @@ bool PhysicsWorld::EnsureGpuReady()
     if (!m_gpuScene) {
         m_recreateActors.reserve(MaxBodiesPerWorld);
         m_gpuScene = std::make_unique<JoltGpuScene>(*m_gpuHost, *m_gpuWork, MaxBodiesPerWorld, m_gpuPrograms->step,
-                                                    m_gpuPrograms->mutations, m_gpuPrograms->commands, *m_gpuJoints);
+                                                    m_gpuPrograms->mutations, m_gpuPrograms->commands,
+                                                    m_gpuPrograms->broadphase, *m_gpuJoints);
         m_gpuScene->SetAdmissionEnabled(false);
         auto &store = PhysicsECSStore::Instance();
         for (const auto handle : m_recreateActors)

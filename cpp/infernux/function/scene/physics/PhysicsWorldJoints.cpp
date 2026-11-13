@@ -49,8 +49,8 @@ JoltGpuControlWork PrepareJointReadWork(std::function<JoltGpuControlWork()> prep
 {
     try {
         auto work = prepare();
-        if (auto continuation = std::move(work.continueAfterCompletion))
-            work.continueAfterCompletion = [continuation = std::move(continuation), &error]() mutable {
+        if (auto continuation = std::move(work.continueWork))
+            work.continueWork = [continuation = std::move(continuation), &error]() mutable {
                 return PrepareJointReadWork(std::move(continuation), error);
             };
         return work;

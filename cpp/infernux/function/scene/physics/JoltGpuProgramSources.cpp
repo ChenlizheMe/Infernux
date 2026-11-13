@@ -11,6 +11,8 @@ ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program)
     switch (program) {
     case JoltGpuProgram::Step:
         return {JPH::GPU::StepModuleName, JPH::GPU::StepSourcePath, jolt_gpu_sources::Step};
+    case JoltGpuProgram::Broadphase:
+        return {"jph_gpu_broadphase", "Jolt/GPU/Shaders/rigid_broadphase.slang", jolt_gpu_sources::Broadphase};
     case JoltGpuProgram::BodyMutations:
         return {"jph_gpu_body_mutations", "Jolt/GPU/Shaders/rigid_body_mutations.slang",
                 jolt_gpu_sources::BodyMutations};
@@ -32,6 +34,7 @@ std::vector<ShaderSourceModule> GetJoltGpuProgramLibraries()
 {
     return {{"jph_gpu_rigid_math", "Jolt/GPU/Shaders/rigid_math.slang", jolt_gpu_sources::Math},
             {"jph_gpu_physics_types", "Jolt/GPU/PhysicsTypes.h", jolt_gpu_sources::Types},
+            {"jph_gpu_broadphase_types", "Jolt/GPU/BroadphaseTypes.h", jolt_gpu_sources::BroadphaseTypes},
             {"jph_gpu_rigid_joints", "Jolt/GPU/Shaders/rigid_joints.slang", jolt_gpu_sources::Joints},
             {"inx_particle_collision_export", "infernux/renderer/particle/collision_export.slang",
              jolt_gpu_sources::ParticleExport}};

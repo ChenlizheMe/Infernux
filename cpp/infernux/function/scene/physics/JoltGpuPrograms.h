@@ -48,6 +48,14 @@ struct JoltGpuStageWork
     JPH::GPU::StageWork parameters;
 };
 
+/// One substep's accepted sparse contact resources. Counts describe logical
+/// candidates, never buffer capacity; writable contacts/arena share this lease.
+struct JoltGpuContactWorkset
+{
+    uint32_t patchCount = 0, maxPatchesPerWorld = 0;
+    std::shared_ptr<rhi::ComputeBuffer> parameters, worlds, contacts, patches;
+};
+
 class JoltGpuModelUpdate;
 
 /// One validated step description, reusing the shared device record. Contact
@@ -133,17 +141,9 @@ class JoltGpuStorage
     {
         return static_cast<uint32_t>(m_model.joints.size());
     }
-    [[nodiscard]] uint32_t GetContactCount() const noexcept
-    {
-        return m_contactCount;
-    }
     [[nodiscard]] uint32_t GetShapeCount() const noexcept
     {
         return m_shapeCount;
-    }
-    [[nodiscard]] uint32_t GetPatchCount() const noexcept
-    {
-        return m_patchCount;
     }
     [[nodiscard]] uint32_t GetMaxLeavesPerWorld() const noexcept
     {
@@ -166,8 +166,7 @@ class JoltGpuStorage
     JoltGpuModel m_model;
     bool m_modelUpdatePending = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> m_buffers;
-    uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_contactCount = 0, m_patchCount = 0,
-             m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
+    uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
 };
 
 /// One model delta and its exact RHI packet. GPU acceptance commits the author
@@ -197,7 +196,7 @@ class JoltGpuModelUpdate final
                        std::vector<JoltGpuJointModelUpdate> jointChanges);
     JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
                        JoltGpuModel replacement, std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> replacementBuffers,
-                       std::array<uint32_t, 5> replacementCounts);
+                       std::array<uint32_t, 3> replacementCounts);
     void Commit() noexcept;
 
     JoltGpuStorage *m_storage;
@@ -207,8 +206,8 @@ class JoltGpuModelUpdate final
     std::vector<JoltGpuJointModelUpdate> m_jointChanges;
     std::optional<JoltGpuModel> m_replacement;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> m_replacementBuffers;
-    // Shapes, contacts, patches, maximum bodies/world, maximum leaves/world.
-    std::array<uint32_t, 5> m_replacementCounts{};
+    // Shapes, maximum bodies/world, maximum leaves/world.
+    std::array<uint32_t, 3> m_replacementCounts{};
 };
 
 /// The five read-only input values of one logical tick. Capture each port
@@ -219,6 +218,14 @@ class JoltGpuStepInputs
   public:
     /// Empty models need no input leases. Writable solver ports are not inputs.
     void Capture(const JoltGpuStorage &storage, JPH::GPU::Resource resource);
+    /// Original frozen author inputs, even while contact work overrides bindings.
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetCaptured(JPH::GPU::Resource resource) const;
+    void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
+    void ClearContacts() noexcept;
+    [[nodiscard]] const std::shared_ptr<const JoltGpuContactWorkset> &GetContacts() const noexcept
+    {
+        return m_contacts;
+    }
 
   private:
     friend class JoltGpuPrograms;
@@ -228,6 +235,7 @@ class JoltGpuStepInputs
         std::shared_ptr<rhi::ComputeBuffer> buffer;
     };
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
+    std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
     mutable std::vector<WorkUniform> m_workUniforms;

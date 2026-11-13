@@ -137,7 +137,7 @@ constexpr uint32_t CompleteWrites(Stage stage)
     case Stage::BuildBounds:
         return Mask(Resource::Bounds);
     case Stage::CollidePairs:
-        return Mask(Resource::Contacts) | Mask(Resource::ContactPatches);
+        return Mask(Resource::Contacts);
     default:
         return 0;
     }
@@ -185,7 +185,7 @@ bool Zero3(const Float4 &value)
 
 struct ModelCounts
 {
-    uint32_t bodies, worlds, shapes, contacts = 0, patches = 0, maxBodiesPerWorld = 0, maxLeavesPerWorld = 0;
+    uint32_t bodies, worlds, shapes, maxBodiesPerWorld = 0, maxLeavesPerWorld = 0;
 };
 
 template <class Change, class Record>
@@ -206,15 +206,14 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
         throw std::invalid_argument("Jolt GPU model exceeds the device index range");
     ModelCounts counts{static_cast<uint32_t>(model.bodies.size()), static_cast<uint32_t>(model.worlds.size()),
                        static_cast<uint32_t>(model.shapes.size())};
-    uint64_t bodyEnd = 0, leafEnd = 0, patchEnd = 0, jointEnd = 0;
+    uint64_t bodyEnd = 0, leafEnd = 0, jointEnd = 0;
     for (size_t world = 0; world < model.worlds.size(); ++world) {
         const auto range = model.worlds[world].bodies;
         const auto leaves = model.worlds[world].leaves;
-        const uint64_t patches = uint64_t(leaves.y) * leaves.y;
-        if (range.x != bodyEnd || leaves.x != leafEnd || range.z != patchEnd || range.y > MaxBodiesPerWorld ||
-            patches > limit || range.w != patches || bodyEnd + range.y > counts.bodies ||
-            leafEnd + leaves.y > counts.shapes || leaves.z != jointEnd || jointEnd + leaves.w > model.joints.size())
-            throw std::invalid_argument("Jolt GPU model requires contiguous body, leaf and patch ranges");
+        if (range.x != bodyEnd || leaves.x != leafEnd || range.z || range.w || range.y > MaxBodiesPerWorld ||
+            bodyEnd + range.y > counts.bodies || leafEnd + leaves.y > counts.shapes || leaves.z != jointEnd ||
+            jointEnd + leaves.w > model.joints.size())
+            throw std::invalid_argument("Jolt GPU model requires contiguous author ranges and zero contact fields");
         uint64_t bodyLeafEnd = leafEnd;
         for (uint32_t body = range.x; body < bodyEnd + range.y; ++body) {
             const auto &record = ModelRecord(model.bodies, bodyChanges, body);
@@ -292,17 +291,12 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
         }
         bodyEnd += range.y;
         leafEnd += leaves.y;
-        patchEnd += patches;
         jointEnd += leaves.w;
-        if (patchEnd > limit / MaxContactPointsPerPair)
-            throw std::invalid_argument("Jolt GPU contact capacity exceeds the device index range");
         counts.maxBodiesPerWorld = std::max(counts.maxBodiesPerWorld, range.y);
         counts.maxLeavesPerWorld = std::max(counts.maxLeavesPerWorld, leaves.y);
     }
     if (bodyEnd != counts.bodies || leafEnd != counts.shapes || jointEnd != model.joints.size())
         throw std::invalid_argument("Jolt GPU ranges do not cover the model");
-    counts.patches = static_cast<uint32_t>(patchEnd);
-    counts.contacts = counts.patches * MaxContactPointsPerPair;
     return counts;
 }
 
@@ -373,27 +367,18 @@ uint32_t Groups(uint32_t count, uint32_t width)
 
 bool WorldDomain(Domain domain)
 {
-    return domain == Domain::WorldPairs || domain == Domain::WorldPatches || domain == Domain::WorldContacts ||
-           domain == Domain::WorldJoints;
+    return domain == Domain::WorldPatches || domain == Domain::WorldContacts || domain == Domain::WorldJoints;
 }
 
-uint64_t WorldItems(Domain domain, const WorldRange &world)
+const JoltGpuContactWorkset &RequireContacts(const JoltGpuStepInputs &inputs)
 {
-    switch (domain) {
-    case Domain::WorldPairs:
-        return uint64_t(world.leaves.y) * world.leaves.y;
-    case Domain::WorldPatches:
-        return world.bodies.w;
-    case Domain::WorldContacts:
-        return uint64_t(world.bodies.w) * MaxContactPointsPerPair;
-    case Domain::WorldJoints:
-        return world.leaves.w;
-    default:
-        throw std::invalid_argument("Jolt GPU work requires a world-local domain");
-    }
+    if (!inputs.GetContacts())
+        throw std::invalid_argument("Jolt GPU contact work requires its substep workset");
+    return *inputs.GetContacts();
 }
 
-bool ValidateWork(const JoltGpuStorage &storage, const StageDefinition &definition, const StageWork &work)
+bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, const StageDefinition &definition,
+                  const StageWork &work)
 {
     const auto range = work.range;
     const bool worldDomain = WorldDomain(definition.domain);
@@ -406,16 +391,22 @@ bool ValidateWork(const JoltGpuStorage &storage, const StageDefinition &definiti
         if (!range.w || !range.y)
             return false;
         uint64_t maximum = 0;
-        const auto &worlds = storage.GetModel().worlds;
-        for (uint32_t local = 0; local < range.w; ++local)
-            maximum = std::max(maximum, WorldItems(definition.domain, worlds[range.z + local]));
+        if (definition.domain == Domain::WorldJoints) {
+            const auto &worlds = storage.GetModel().worlds;
+            for (uint32_t local = 0; local < range.w; ++local)
+                maximum = std::max(maximum, uint64_t(worlds[range.z + local].leaves.w));
+        } else {
+            maximum = RequireContacts(inputs).maxPatchesPerWorld;
+            if (definition.domain == Domain::WorldContacts)
+                maximum *= MaxContactPointsPerPair;
+        }
         if (range.x > maximum || uint64_t(range.y) > maximum - range.x)
             throw std::invalid_argument("Jolt GPU work addresses items outside its selected world domains");
         return true;
     }
     if (range.z || range.w)
         throw std::invalid_argument("Jolt GPU global work must leave its unused world range zero");
-    uint32_t count = 0;
+    uint64_t count = 0;
     switch (definition.domain) {
     case Domain::Bodies:
         count = storage.GetBodyCount();
@@ -424,7 +415,10 @@ bool ValidateWork(const JoltGpuStorage &storage, const StageDefinition &definiti
         count = storage.GetShapeCount();
         break;
     case Domain::Contacts:
-        count = storage.GetContactCount();
+        count = uint64_t(RequireContacts(inputs).patchCount) * MaxContactPointsPerPair;
+        break;
+    case Domain::Patches:
+        count = RequireContacts(inputs).patchCount;
         break;
     case Domain::Joints:
         count = storage.GetJointCount();
@@ -464,8 +458,6 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
     m_bodyCount = counts.bodies;
     m_worldCount = counts.worlds;
     m_shapeCount = counts.shapes;
-    m_contactCount = counts.contacts;
-    m_patchCount = counts.patches;
     m_maxBodiesPerWorld = counts.maxBodiesPerWorld;
     m_maxLeavesPerWorld = counts.maxLeavesPerWorld;
     if (m_bodyCount == 0)
@@ -478,9 +470,9 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
                               uint64_t(m_bodyCount) * sizeof(BodyForces),
                               uint64_t(m_bodyCount) * sizeof(BodyState),
                               uint64_t(m_shapeCount) * sizeof(Aabb),
-                              uint64_t(std::max(1u, m_contactCount)) * sizeof(Contact),
+                              sizeof(Contact),
                               uint64_t(m_bodyCount) * sizeof(KinematicTarget),
-                              uint64_t(std::max(1u, m_patchCount)) * sizeof(ContactPatch),
+                              sizeof(ContactPatch),
                               sizeof(QueryRecordWord)};
     for (size_t port = 0; port < m_buffers.size(); ++port) {
         // Preserve the scalar type for homogeneous float ports so numerical
@@ -525,11 +517,10 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
     updates.push_back({Get(Resource::Joints), 0, Bytes(&jointHeader, 1)});
     if (m_shapeCount)
         updates.push_back({Get(Resource::ShapeModels), 0, Bytes(m_model.shapes.data(), m_model.shapes.size())});
-    else {
+    else
         updates.push_back({Get(Resource::ShapeModels), 0, std::vector<uint8_t>(sizeof(ShapeModel))});
-        updates.push_back({Get(Resource::Contacts), 0, std::vector<uint8_t>(sizeof(Contact))});
-        updates.push_back({Get(Resource::ContactPatches), 0, std::vector<uint8_t>(sizeof(ContactPatch))});
-    }
+    updates.push_back({Get(Resource::Contacts), 0, std::vector<uint8_t>(sizeof(Contact))});
+    updates.push_back({Get(Resource::ContactPatches), 0, std::vector<uint8_t>(sizeof(ContactPatch))});
     return rhi::PrepareComputeBatch(m_host, std::move(updates), {});
 }
 
@@ -549,8 +540,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInputs(const J
     parameters.counts.x = m_bodyCount;
     parameters.counts.y = m_worldCount;
     parameters.counts.z = m_shapeCount;
-    parameters.solve.z = m_contactCount;
-    parameters.solve.w = m_patchCount;
+    parameters.solve.z = parameters.solve.w = 0;
     std::vector<rhi::ComputeBufferUpdate> updates{{Get(Resource::StepParams), 0, Bytes(&parameters, 1)}};
     if (cpuForces)
         updates.push_back({Get(Resource::BodyForces), 0, Bytes(cpuForces->data(), cpuForces->size())});
@@ -642,16 +632,13 @@ JoltGpuStorage::PrepareModelReplacement(JoltGpuModel replacement,
         }
 
     auto buffers = m_buffers;
-    for (auto resource : {Resource::BodyModels, Resource::ShapeModels, Resource::Worlds, Resource::Bounds,
-                          Resource::Contacts, Resource::ContactPatches}) {
+    for (auto resource : {Resource::BodyModels, Resource::ShapeModels, Resource::Worlds, Resource::Bounds}) {
         const auto port = PortIndex(resource);
-        const uint64_t size =
-            resource == Resource::BodyModels    ? uint64_t(counts.bodies) * sizeof(BodyModel)
-            : resource == Resource::ShapeModels ? uint64_t(std::max(1u, counts.shapes)) * sizeof(ShapeModel)
-            : resource == Resource::Worlds      ? uint64_t(counts.worlds) * sizeof(WorldRange)
-            : resource == Resource::Bounds      ? uint64_t(counts.shapes) * sizeof(Aabb)
-            : resource == Resource::Contacts    ? uint64_t(std::max(1u, counts.contacts)) * sizeof(Contact)
-                                                : uint64_t(std::max(1u, counts.patches)) * sizeof(ContactPatch);
+        const uint64_t size = resource == Resource::BodyModels ? uint64_t(counts.bodies) * sizeof(BodyModel)
+                              : resource == Resource::ShapeModels
+                                  ? uint64_t(std::max(1u, counts.shapes)) * sizeof(ShapeModel)
+                              : resource == Resource::Worlds ? uint64_t(counts.worlds) * sizeof(WorldRange)
+                                                             : uint64_t(counts.shapes) * sizeof(Aabb);
         buffers[port] = Allocate(m_host, port, size);
     }
     additionalUpdates.push_back(
@@ -659,19 +646,15 @@ JoltGpuStorage::PrepareModelReplacement(JoltGpuModel replacement,
     if (counts.shapes)
         additionalUpdates.push_back({buffers[PortIndex(Resource::ShapeModels)], 0,
                                      Bytes(replacement.shapes.data(), replacement.shapes.size())});
-    else {
+    else
         additionalUpdates.push_back(
             {buffers[PortIndex(Resource::ShapeModels)], 0, std::vector<uint8_t>(sizeof(ShapeModel))});
-        additionalUpdates.push_back({buffers[PortIndex(Resource::Contacts)], 0, std::vector<uint8_t>(sizeof(Contact))});
-        additionalUpdates.push_back(
-            {buffers[PortIndex(Resource::ContactPatches)], 0, std::vector<uint8_t>(sizeof(ContactPatch))});
-    }
     additionalUpdates.push_back(
         {buffers[PortIndex(Resource::Worlds)], 0, Bytes(replacement.worlds.data(), replacement.worlds.size())});
     auto batch = rhi::PrepareComputeBatch(m_host, std::move(additionalUpdates), std::move(mutations));
-    auto transaction = std::unique_ptr<JoltGpuModelUpdate>(new JoltGpuModelUpdate(
-        *this, std::move(batch), std::move(replacement), std::move(buffers),
-        {counts.shapes, counts.contacts, counts.patches, counts.maxBodiesPerWorld, counts.maxLeavesPerWorld}));
+    auto transaction = std::unique_ptr<JoltGpuModelUpdate>(
+        new JoltGpuModelUpdate(*this, std::move(batch), std::move(replacement), std::move(buffers),
+                               {counts.shapes, counts.maxBodiesPerWorld, counts.maxLeavesPerWorld}));
     m_modelUpdatePending = true;
     return transaction;
 }
@@ -758,9 +741,9 @@ JoltGpuStorage::PrepareJointReplacement(std::vector<JointAuthor> joints, std::sh
         uploads.push_back(
             {buffers[PortIndex(Resource::Worlds)], 0, Bytes(replacement.worlds.data(), replacement.worlds.size())});
     auto batch = rhi::PrepareComputeBatch(m_host, std::move(uploads), std::move(remapInit));
-    auto transaction = std::unique_ptr<JoltGpuModelUpdate>(new JoltGpuModelUpdate(
-        *this, std::move(batch), std::move(replacement), std::move(buffers),
-        {counts.shapes, counts.contacts, counts.patches, counts.maxBodiesPerWorld, counts.maxLeavesPerWorld}));
+    auto transaction = std::unique_ptr<JoltGpuModelUpdate>(
+        new JoltGpuModelUpdate(*this, std::move(batch), std::move(replacement), std::move(buffers),
+                               {counts.shapes, counts.maxBodiesPerWorld, counts.maxLeavesPerWorld}));
     m_modelUpdatePending = true;
     return transaction;
 }
@@ -782,7 +765,7 @@ JoltGpuModelUpdate::~JoltGpuModelUpdate()
 JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
                                        JoltGpuModel replacement,
                                        std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> replacementBuffers,
-                                       std::array<uint32_t, 5> replacementCounts)
+                                       std::array<uint32_t, 3> replacementCounts)
     : m_storage(&storage), m_batch(std::move(batch)), m_replacement(std::move(replacement)),
       m_replacementBuffers(std::move(replacementBuffers)), m_replacementCounts(replacementCounts)
 {
@@ -797,10 +780,8 @@ void JoltGpuModelUpdate::Commit() noexcept
         m_storage->m_model.joints.swap(m_replacement->joints);
         m_storage->m_buffers.swap(m_replacementBuffers);
         m_storage->m_shapeCount = m_replacementCounts[0];
-        m_storage->m_contactCount = m_replacementCounts[1];
-        m_storage->m_patchCount = m_replacementCounts[2];
-        m_storage->m_maxBodiesPerWorld = m_replacementCounts[3];
-        m_storage->m_maxLeavesPerWorld = m_replacementCounts[4];
+        m_storage->m_maxBodiesPerWorld = m_replacementCounts[1];
+        m_storage->m_maxLeavesPerWorld = m_replacementCounts[2];
     }
     for (const auto &change : m_bodyChanges)
         m_storage->m_model.bodies[change.index] = change.model;
@@ -849,6 +830,41 @@ void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource
     m_buffers[slot] = buffer ? buffer->Freeze() : nullptr;
     m_workUniforms.clear();
     m_nextWorkUniform = 0;
+}
+
+const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStepInputs::GetCaptured(Resource resource) const
+{
+    const auto slot = InputIndex(resource);
+    if (slot >= m_buffers.size())
+        throw std::invalid_argument("Jolt GPU captured inputs accept only parameters, models, worlds and forces");
+    return m_buffers[slot];
+}
+
+void JoltGpuStepInputs::SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts)
+{
+    if (!contacts || contacts->patchCount > std::numeric_limits<uint32_t>::max() / MaxContactPointsPerPair ||
+        contacts->maxPatchesPerWorld > contacts->patchCount ||
+        ((contacts->patchCount == 0) != (contacts->maxPatchesPerWorld == 0)))
+        throw std::invalid_argument("Jolt GPU contact workset has invalid logical candidate counts");
+    const auto &authorWorlds = GetCaptured(Resource::Worlds);
+    if (!authorWorlds)
+        throw std::invalid_argument("Jolt GPU contact workset requires its captured author world prefix");
+    for (const auto &buffer : {contacts->parameters, contacts->worlds, contacts->contacts, contacts->patches})
+        if (!buffer || !authorWorlds->GetHost().SharesServicesWith(buffer->GetHost()))
+            throw std::invalid_argument("Jolt GPU contact workset resources must share their captured compute owner");
+    const auto contactCount = uint64_t(contacts->patchCount) * MaxContactPointsPerPair;
+    if (contacts->parameters->GetByteSize() != sizeof(StepParams) ||
+        contacts->worlds->GetByteSize() != authorWorlds->GetByteSize() ||
+        contacts->contacts->GetByteSize() != std::max(uint64_t{1}, contactCount) * sizeof(Contact) ||
+        contacts->patches->GetByteSize() < sizeof(ContactPatch) ||
+        contacts->patches->GetByteSize() % sizeof(ContactPatch))
+        throw std::invalid_argument("Jolt GPU contact workset differs from its logical resource layout");
+    m_contacts = std::move(contacts);
+}
+
+void JoltGpuStepInputs::ClearContacts() noexcept
+{
+    m_contacts.reset();
 }
 
 JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
@@ -927,9 +943,14 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
         const bool writer = binding.access != rhi::ComputeBufferAccess::Read;
         const auto resource = Ports[binding.slot].resource;
         const auto input = InputIndex(resource);
-        const auto &buffer = resource == Resource::StageWork              ? workUniform
-                             : !writer && input < inputs.m_buffers.size() ? inputs.m_buffers[input]
-                                                                          : storage.m_buffers[binding.slot];
+        const auto &contacts = inputs.GetContacts();
+        const auto &buffer = resource == Resource::StageWork                    ? workUniform
+                             : contacts && resource == Resource::StepParams     ? contacts->parameters
+                             : contacts && resource == Resource::Worlds         ? contacts->worlds
+                             : contacts && resource == Resource::Contacts       ? contacts->contacts
+                             : contacts && resource == Resource::ContactPatches ? contacts->patches
+                             : !writer && input < inputs.m_buffers.size()       ? inputs.m_buffers[input]
+                                                                                : storage.m_buffers[binding.slot];
         if (!buffer || !m_host.SharesServicesWith(buffer->GetHost()))
             throw std::invalid_argument("Jolt GPU stage requires captured input: " +
                                         std::string(Ports[binding.slot].name));
@@ -947,19 +968,9 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
             };
             if (resource == Resource::Bounds) {
                 complete(range.x, range.y, sizeof(Aabb));
-            } else if (resource == Resource::Contacts || resource == Resource::ContactPatches) {
-                for (uint32_t local = 0; local < range.w; ++local) {
-                    const auto &world = storage.GetModel().worlds[range.z + local];
-                    const uint64_t count = WorldItems(Domain::WorldPairs, world);
-                    const uint64_t first = std::min(uint64_t(range.x), count);
-                    const uint64_t end = std::min(uint64_t(range.x) + range.y, count);
-                    const uint64_t patch = uint64_t(world.bodies.z) + first;
-                    if (resource == Resource::ContactPatches)
-                        complete(patch, end - first, sizeof(ContactPatch));
-                    else
-                        complete(patch * MaxContactPointsPerPair, (end - first) * MaxContactPointsPerPair,
-                                 sizeof(Contact));
-                }
+            } else if (resource == Resource::Contacts) {
+                complete(uint64_t(range.x) * MaxContactPointsPerPair, uint64_t(range.y) * MaxContactPointsPerPair,
+                         sizeof(Contact));
             } else {
                 throw std::invalid_argument("Jolt GPU stage lacks a typed bounded complete-write domain");
             }
@@ -968,10 +979,7 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
     dispatch.proof = std::move(proof);
     const auto &definition = entry.definition;
     dispatch.groupCountY = dispatch.groupCountZ = 1;
-    if (definition.domain == Domain::WorldPairs) {
-        dispatch.groupCountX = Groups(range.y, definition.groupSizeX);
-        dispatch.groupCountY = Groups(range.w, definition.groupSizeY);
-    } else if (WorldDomain(definition.domain)) {
+    if (WorldDomain(definition.domain)) {
         dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
     } else {
         dispatch.groupCountX = Groups(range.y, definition.groupSizeX);
@@ -1000,7 +1008,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const 
         if (index >= m_entries.size())
             throw std::invalid_argument("Unknown Jolt GPU stage");
         const auto &entry = m_entries[index];
-        if (!ValidateWork(storage, entry.definition, unit.parameters))
+        if (!ValidateWork(storage, inputs, entry.definition, unit.parameters))
             continue;
         const auto range = unit.parameters.range;
         const std::array<uint32_t, 4> key{range.x, range.y, range.z, range.w};

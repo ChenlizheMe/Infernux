@@ -130,7 +130,8 @@ class JoltGpuScene final
     /// exceeding the current fork bound is an explicit error, never paging
     /// colliding bodies into separate physical domains.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
-                 const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget, JoltGpuJoints &joints);
+                 const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
+                 const ShaderTargetCode &broadphaseTarget, JoltGpuJoints &joints);
     ~JoltGpuScene();
     JoltGpuScene(const JoltGpuScene &) = delete;
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;

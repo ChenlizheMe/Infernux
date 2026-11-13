@@ -12,7 +12,8 @@ enum class JoltGpuProgram
     BodyCommands,
     Queries,
     Joints,
-    RenderPoses
+    RenderPoses,
+    Broadphase
 };
 
 /// Builtin native programs, embedded from the pinned Jolt fork at build time.

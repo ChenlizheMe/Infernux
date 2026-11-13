@@ -1,4 +1,5 @@
 #include "JoltGpuTick.h"
+#include "JoltGpuBroadphase.h"
 
 #include <algorithm>
 #include <chrono>
@@ -25,8 +26,8 @@ uint64_t NowNanoseconds()
 class JoltGpuTick::Impl
 {
   public:
-    Impl(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs)
-        : work(work), storage(storage), programs(programs), host(storage.GetHost())
+    Impl(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase)
+        : work(work), storage(storage), programs(programs), broadphase(broadphase), host(storage.GetHost())
     {
         FrameWorkSource source;
         source.observe = [this] { Poll(); };
@@ -62,7 +63,6 @@ class JoltGpuTick::Impl
         parameters = settings ? std::make_optional(*settings) : std::nullopt;
         reuseParameters = false;
         stageCursor = {};
-        worldPairs.clear();
         worldPatches.clear();
         worldContacts.clear();
         worldJoints.clear();
@@ -145,6 +145,7 @@ class JoltGpuTick::Impl
     FrameWorkOwner &work;
     JoltGpuStorage &storage;
     JoltGpuPrograms &programs;
+    JoltGpuBroadphase &broadphase;
     rhi::ComputeHost host;
     FrameWorkOwner::SourceId sourceId = 0;
     Status status = Status::Idle;
@@ -160,6 +161,7 @@ class JoltGpuTick::Impl
         Model,
         Commands,
         Work,
+        NumericalWork,
         FinalWork,
         Inputs,
         Stages,
@@ -175,6 +177,7 @@ class JoltGpuTick::Impl
         PrepareKinematics,
         ApplyForces,
         BuildBounds,
+        Broadphase,
         CollidePairs,
         SetupContacts,
         SetupJoints,
@@ -348,7 +351,7 @@ class JoltGpuTick::Impl
         case Phase::BuildBounds:
             return {Stage::BuildBounds, Domain::Shapes};
         case Phase::CollidePairs:
-            return {Stage::CollidePairs, Domain::WorldPairs};
+            return {Stage::CollidePairs, Domain::Patches};
         case Phase::SetupContacts:
             return {Stage::SetupContacts, Domain::Contacts};
         case Phase::SetupJoints:
@@ -369,6 +372,7 @@ class JoltGpuTick::Impl
             return {Stage::FinishJoints, Domain::Joints};
         case Phase::FinishTick:
             return {Stage::FinishTick, Domain::Bodies};
+        case Phase::Broadphase:
         case Phase::Done:
             break;
         }
@@ -379,8 +383,6 @@ class JoltGpuTick::Impl
     {
         using JPH::GPU::Domain;
         switch (domain) {
-        case Domain::WorldPairs:
-            return &worldPairs;
         case Domain::WorldPatches:
             return &worldPatches;
         case Domain::WorldContacts:
@@ -400,8 +402,10 @@ class JoltGpuTick::Impl
             return storage.GetBodyCount();
         case Domain::Shapes:
             return storage.GetShapeCount();
+        case Domain::Patches:
+            return inputs.GetContacts() ? inputs.GetContacts()->patchCount : 0;
         case Domain::Contacts:
-            return storage.GetContactCount();
+            return inputs.GetContacts() ? inputs.GetContacts()->patchCount * JPH::GPU::MaxContactPointsPerPair : 0;
         case Domain::Joints:
             return storage.GetJointCount();
         default:
@@ -423,6 +427,9 @@ class JoltGpuTick::Impl
             next.phase = Phase::BuildBounds;
             break;
         case Phase::BuildBounds:
+            next.phase = Phase::Broadphase;
+            break;
+        case Phase::Broadphase:
             next.phase = Phase::CollidePairs;
             break;
         case Phase::CollidePairs:
@@ -468,6 +475,8 @@ class JoltGpuTick::Impl
     void Normalize(StageCursor &next) const
     {
         while (next.phase != Phase::Done) {
+            if (next.phase == Phase::Broadphase)
+                return;
             const auto span = Span(next.phase);
             if (const auto *worlds = WorldSpans(span.domain)) {
                 if (next.world < worlds->size())
@@ -509,16 +518,30 @@ class JoltGpuTick::Impl
         const auto &worlds = storage.GetModel().worlds;
         for (uint32_t index = 0; index < worlds.size(); ++index) {
             const auto &world = worlds[index];
-            if (world.leaves.y)
-                worldPairs.push_back({index, static_cast<uint32_t>(uint64_t(world.leaves.y) * world.leaves.y)});
-            if (world.bodies.w) {
-                worldPatches.push_back({index, world.bodies.w});
-                worldContacts.push_back({index, world.bodies.w * JPH::GPU::MaxContactPointsPerPair});
-            }
             if (world.leaves.w)
                 worldJoints.push_back({index, world.leaves.w});
         }
         stageCursor.phase = storage.GetBodyCount() ? Phase::PrepareKinematics : Phase::Done;
+        Normalize(stageCursor);
+    }
+
+    void AcceptContactWorkset(std::shared_ptr<const JoltGpuContactWorkset> contacts)
+    {
+        inputs.SetContacts(std::move(contacts));
+        const auto maximum = inputs.GetContacts()->maxPatchesPerWorld;
+        worldPatches.clear();
+        worldContacts.clear();
+        if (maximum) {
+            for (uint32_t world = 0; world < storage.GetWorldCount(); ++world) {
+                // Per-world counts remain GPU data. Each finite unit uses the
+                // checked maximum; the runtime WorldRange clips ragged tails.
+                worldPatches.push_back({world, maximum});
+                worldContacts.push_back({world, maximum * JPH::GPU::MaxContactPointsPerPair});
+            }
+        }
+        stageCursor.phase = Phase::CollidePairs;
+        stageCursor.item = 0;
+        stageCursor.world = 0;
         Normalize(stageCursor);
     }
 
@@ -531,8 +554,7 @@ class JoltGpuTick::Impl
             actual.counts.x = storage.GetBodyCount();
             actual.counts.y = storage.GetWorldCount();
             actual.counts.z = storage.GetShapeCount();
-            actual.solve.z = storage.GetContactCount();
-            actual.solve.w = storage.GetPatchCount();
+            actual.solve.z = actual.solve.w = 0;
             tickParameters = actual;
             reuseParameters = acceptedParameters && std::memcmp(&*acceptedParameters, &actual, sizeof(actual)) == 0;
             inputs = reuseParameters ? parameterInput : JoltGpuStepInputs{};
@@ -580,13 +602,17 @@ class JoltGpuTick::Impl
     void SelectControlWork(JoltGpuControlWork selected, PacketKind kind)
     {
         ValidateControlPacket(selected.packet);
-        if (!selected.packet && selected.continueAfterCompletion)
-            throw std::invalid_argument("GPU control continuation requires a preceding packet receipt");
         batch = std::move(selected.packet);
-        workContinuation = std::move(selected.continueAfterCompletion);
+        workContinuation = std::move(selected.continueWork);
         continuationKind = kind;
         if (batch)
             batchKind = kind;
+        else if (workContinuation) {
+            submissionBusy = true;
+            busyOpportunity = work.Opportunity();
+            busyProgress = work.ProgressSerial();
+            busySubmissions = host.Queue().GetPendingSubmissionCount();
+        }
     }
 
     void ModelAccepted()
@@ -654,6 +680,8 @@ class JoltGpuTick::Impl
             facts.gpuBusy = true;
             return facts;
         }
+        if (!batch && workContinuation && submissionBusy)
+            return facts;
         if (NumericalInputsAccepted() && finalAccepted) {
             if (!receipts.empty())
                 facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
@@ -703,7 +731,7 @@ class JoltGpuTick::Impl
             ready.reserve(MaxPacketUnits);
             long double planned = 0;
             bool cold = false;
-            while (ready.size() < MaxPacketUnits && next.phase != Phase::Done) {
+            while (ready.size() < MaxPacketUnits && next.phase != Phase::Done && next.phase != Phase::Broadphase) {
                 const auto found = stageEstimates.find(Span(next.phase).stage);
                 // A mixed packet's measured average is only a planning proxy,
                 // never a measurement attributed to an individual stage.
@@ -768,10 +796,10 @@ class JoltGpuTick::Impl
                 auto continuation = std::move(workContinuation);
                 workContinuation = {};
                 SelectControlWork(continuation(), kind);
-                if (!batch) {
+                if (!batch && !workContinuation) {
                     if (kind == PacketKind::FinalWork)
                         finalAccepted = true;
-                    else
+                    else if (kind != PacketKind::NumericalWork)
                         FinishControlGroup();
                     FinishCompleted();
                 }
@@ -785,7 +813,7 @@ class JoltGpuTick::Impl
                     control.prepareFinalWork = {};
                     finalPrepared = true;
                     SelectControlWork(prepareFinalWork(finalStates), PacketKind::FinalWork);
-                    if (!batch) {
+                    if (!batch && !workContinuation) {
                         finalAccepted = true;
                         FinishCompleted();
                     }
@@ -823,7 +851,7 @@ class JoltGpuTick::Impl
                     auto prepareWork = std::move(group.prepareWork);
                     group.prepareWork = {};
                     SelectControlWork(prepareWork(), PacketKind::Work);
-                    if (batch)
+                    if (batch || workContinuation)
                         return true;
                 }
                 FinishControlGroup();
@@ -833,6 +861,14 @@ class JoltGpuTick::Impl
                 batch = reuseParameters ? storage.PrepareForces(*cpuForces)
                                         : storage.PrepareInputs(*parameters, cpuForces ? &*cpuForces : nullptr);
                 batchKind = PacketKind::Inputs;
+                return true;
+            }
+            if (stageCursor.phase == Phase::Broadphase) {
+                inputs.ClearContacts();
+                SelectControlWork(
+                    broadphase.Prepare(storage, inputs, tickParameters,
+                                       [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }),
+                    PacketKind::NumericalWork);
                 return true;
             }
             return PreparePrefix();
@@ -968,7 +1004,7 @@ class JoltGpuTick::Impl
     JPH::GPU::StepParams tickParameters{};
     bool reuseParameters = false;
     StageCursor stageCursor, batchStageEnd;
-    std::vector<WorldSpan> worldPairs, worldPatches, worldContacts, worldJoints;
+    std::vector<WorldSpan> worldPatches, worldContacts, worldJoints;
     std::map<JPH::GPU::Stage, UnitHistory> stageEstimates;
     UnitHistory mixedEstimates;
     bool inputAccepted = false;
@@ -987,8 +1023,9 @@ class JoltGpuTick::Impl
     friend class JoltGpuTick;
 };
 
-JoltGpuTick::JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs)
-    : m_impl(std::make_unique<Impl>(work, storage, programs))
+JoltGpuTick::JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs,
+                         JoltGpuBroadphase &broadphase)
+    : m_impl(std::make_unique<Impl>(work, storage, programs, broadphase))
 {
 }
 JoltGpuTick::~JoltGpuTick() = default;

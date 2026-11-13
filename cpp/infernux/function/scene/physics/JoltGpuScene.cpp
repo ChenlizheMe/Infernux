@@ -1,6 +1,7 @@
 #include "JoltGpuScene.h"
 
 #include "JoltGpuBodyMutations.h"
+#include "JoltGpuBroadphase.h"
 #include "JoltGpuJoints.h"
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
@@ -54,10 +55,10 @@ bool FiniteVector(const Float4 &value)
 
 JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
 {
-    if (!work.packet)
+    if (!work.packet && !work.continueWork)
         return next();
-    auto continuation = std::move(work.continueAfterCompletion);
-    work.continueAfterCompletion = [continuation = std::move(continuation), next = std::move(next)]() mutable {
+    auto continuation = std::move(work.continueWork);
+    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
         return continuation ? Then(continuation(), std::move(next)) : next();
     };
     return work;
@@ -180,10 +181,11 @@ class JoltGpuScene::Impl
     }
 
     Impl(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
-         const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget, JoltGpuJoints &jointProgram)
+         const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
+         const ShaderTargetCode &broadphaseTarget, JoltGpuJoints &jointProgram)
         : actors(PhysicsECSStore::Instance()), storage(host, EmptyModel(capacity)), programs(host, stepTarget),
-          mutations(host, mutationTarget), commands(host, commandTarget), joints(jointProgram), slots(capacity),
-          tick(work, storage, programs)
+          broadphase(host, broadphaseTarget), mutations(host, mutationTarget), commands(host, commandTarget),
+          joints(jointProgram), slots(capacity), tick(work, storage, programs, broadphase)
     {
         byId.reserve(capacity);
         freeSlots.reserve(capacity);
@@ -446,9 +448,8 @@ class JoltGpuScene::Impl
         const auto &accepted = storage.GetModel();
         const uint64_t leafCount =
             uint64_t(accepted.shapes.size()) - accepted.bodies[changedSlot].meta.y + changedLeaves.size();
-        if (leafCount > std::numeric_limits<uint32_t>::max() ||
-            leafCount * leafCount > std::numeric_limits<uint32_t>::max() / MaxContactPointsPerPair)
-            throw std::length_error("Jolt GPU scene exceeds its leaf-pair contact index range");
+        if (leafCount > std::numeric_limits<uint32_t>::max())
+            throw std::length_error("Jolt GPU scene exceeds its leaf index range");
         JoltGpuModel replacement;
         replacement.bodies = accepted.bodies;
         replacement.shapes.reserve(static_cast<size_t>(leafCount));
@@ -465,8 +466,7 @@ class JoltGpuScene::Impl
             replacement.bodies[slot] = body;
         }
         const auto count = static_cast<uint32_t>(leafCount);
-        replacement.worlds.push_back(
-            {{0, static_cast<uint32_t>(replacement.bodies.size()), 0, count * count}, {0, count, 0, 0}});
+        replacement.worlds.push_back({{0, static_cast<uint32_t>(replacement.bodies.size()), 0, 0}, {0, count, 0, 0}});
         return replacement;
     }
 
@@ -918,6 +918,7 @@ class JoltGpuScene::Impl
     PhysicsECSStore &actors;
     JoltGpuStorage storage;
     JoltGpuPrograms programs;
+    JoltGpuBroadphase broadphase;
     JoltGpuBodyMutations mutations;
     JoltGpuBodyCommands commands;
     JoltGpuJoints &joints;
@@ -944,8 +945,10 @@ class JoltGpuScene::Impl
 
 JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity,
                            const ShaderTargetCode &stepTarget, const ShaderTargetCode &mutationTarget,
-                           const ShaderTargetCode &commandTarget, JoltGpuJoints &joints)
-    : m_impl(std::make_unique<Impl>(host, work, capacity, stepTarget, mutationTarget, commandTarget, joints))
+                           const ShaderTargetCode &commandTarget, const ShaderTargetCode &broadphaseTarget,
+                           JoltGpuJoints &joints)
+    : m_impl(std::make_unique<Impl>(host, work, capacity, stepTarget, mutationTarget, commandTarget, broadphaseTarget,
+                                    joints))
 {
 }
 

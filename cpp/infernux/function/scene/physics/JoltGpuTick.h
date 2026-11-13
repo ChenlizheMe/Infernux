@@ -10,16 +10,18 @@
 
 namespace infernux
 {
+class JoltGpuBroadphase;
 
-/// One unaccepted packet and its optional completion-dependent successor.
+/// One unaccepted packet and its optional successor.
 /// The existing tick source alone submits, accounts and observes every packet.
-/// Continuations run once on the owner thread after the preceding real receipt
-/// completes. They may prepare work, but must not submit, wait or reenter.
-/// A null packet ends the chain and must not carry another continuation.
+/// A packet's continuation runs after its real receipt completes. A continuation
+/// without a packet retains host preparation under temporary capacity pressure;
+/// the owner retries only at a new opportunity or after resource progress.
+/// Neither form may submit, wait or reenter. Both absent means chain complete.
 struct JoltGpuControlWork
 {
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
-    std::function<JoltGpuControlWork()> continueAfterCompletion;
+    std::function<JoltGpuControlWork()> continueWork;
 
     JoltGpuControlWork() = default;
     JoltGpuControlWork(std::shared_ptr<rhi::PreparedComputeBatch> value) : packet(std::move(value))
@@ -27,7 +29,7 @@ struct JoltGpuControlWork
     }
     JoltGpuControlWork(std::shared_ptr<rhi::PreparedComputeBatch> value,
                        std::function<JoltGpuControlWork()> continuation)
-        : packet(std::move(value)), continueAfterCompletion(std::move(continuation))
+        : packet(std::move(value)), continueWork(std::move(continuation))
     {
     }
 };
@@ -83,7 +85,8 @@ class JoltGpuTick final
         Failed
     };
 
-    JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs);
+    JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs,
+                JoltGpuBroadphase &broadphase);
     /// Explicit owner shutdown boundary: drains only this owner's accepted
     /// receipts before unregistering. Ordinary Stop first calls Cancel, retains
     /// this owner until CanRetire(), and only then destroys it without waiting.

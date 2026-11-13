@@ -4,6 +4,8 @@
 namespace infernux::jolt_gpu_sources
 {
 inline constexpr char Types[] = R"INX_JPH_GPU(@JOLT_GPU_TYPES_SOURCE@)INX_JPH_GPU";
+inline constexpr char BroadphaseTypes[] = R"INX_JPH_GPU(@JOLT_GPU_BROADPHASE_TYPES_SOURCE@)INX_JPH_GPU";
+inline constexpr char Broadphase[] = R"INX_JPH_GPU(@JOLT_GPU_BROADPHASE_SOURCE@)INX_JPH_GPU";
 inline constexpr char Math[] = R"INX_JPH_GPU(@JOLT_GPU_MATH_SOURCE@)INX_JPH_GPU";
 inline constexpr char Joints[] = R"INX_JPH_GPU(@JOLT_GPU_JOINTS_SOURCE@)INX_JPH_GPU";
 inline constexpr char JointCommands[] = R"INX_JPH_GPU(@JOLT_GPU_JOINT_COMMANDS_SOURCE@)INX_JPH_GPU";

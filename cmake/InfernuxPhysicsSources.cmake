@@ -5,6 +5,8 @@ function(infernux_embed_physics_sources target)
     set(_particle_export "${_engine_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
     set(_physics_sources
         "${_physics_root}/PhysicsTypes.h"
+        "${_physics_root}/BroadphaseTypes.h"
+        "${_physics_root}/Shaders/rigid_broadphase.slang"
         "${_physics_root}/Shaders/rigid_math.slang"
         "${_physics_root}/Shaders/rigid_joints.slang"
         "${_physics_root}/Shaders/joint_commands.slang"
@@ -18,6 +20,8 @@ function(infernux_embed_physics_sources target)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_physics_sources})
 
     file(READ "${_physics_root}/PhysicsTypes.h" JOLT_GPU_TYPES_SOURCE)
+    file(READ "${_physics_root}/BroadphaseTypes.h" JOLT_GPU_BROADPHASE_TYPES_SOURCE)
+    file(READ "${_physics_root}/Shaders/rigid_broadphase.slang" JOLT_GPU_BROADPHASE_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_math.slang" JOLT_GPU_MATH_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_joints.slang" JOLT_GPU_JOINTS_SOURCE)
     file(READ "${_physics_root}/Shaders/joint_commands.slang" JOLT_GPU_JOINT_COMMANDS_SOURCE)
@@ -31,6 +35,7 @@ function(infernux_embed_physics_sources target)
     # Keep individual literals below MSVC's limit without changing the source
     # text or introducing runtime file access. Adjacent literals concatenate.
     foreach(_source IN ITEMS JOLT_GPU_TYPES_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_STEP_SOURCE
+            JOLT_GPU_BROADPHASE_TYPES_SOURCE JOLT_GPU_BROADPHASE_SOURCE
             JOLT_GPU_BODY_MUTATIONS_SOURCE JOLT_GPU_BODY_COMMANDS_SOURCE
             JOLT_GPU_JOINTS_SOURCE JOLT_GPU_JOINT_COMMANDS_SOURCE
             JOLT_GPU_QUERIES_SOURCE JOLT_GPU_RENDER_POSES_SOURCE INFERNUX_PARTICLE_EXPORT_SOURCE)
