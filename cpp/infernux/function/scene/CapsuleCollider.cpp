@@ -6,7 +6,9 @@
 // Jolt/Jolt.h MUST be the very first include in this TU
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/EmptyShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
 
 #include "CapsuleCollider.h"
 #include "ComponentDocumentValidation.h"
@@ -128,7 +130,15 @@ JPH::RefConst<JPH::Shape> CapsuleCollider::CreateJoltShape() const
 
     // Jolt CapsuleShape(halfHeight, radius) — half height is the cylinder portion only
     float halfCylinder = std::max((h - 2.0f * r) * 0.5f, 0.0f);
-    JPH::RefConst<JPH::Shape> shape = new JPH::CapsuleShape(halfCylinder, r);
+    if (r == 0.0f)
+        return new JPH::EmptyShape();
+    // Nonuniform scale can remove the cylinder. This is the same geometric
+    // sphere limit used by CapsuleShapeSettings::Create, not an epsilon capsule.
+    JPH::RefConst<JPH::Shape> shape;
+    if (halfCylinder == 0.0f)
+        shape = new JPH::SphereShape(r);
+    else
+        shape = new JPH::CapsuleShape(halfCylinder, r);
     JPH::Quat rotation = JPH::Quat::sIdentity();
 
     // Jolt capsule is always along Y. Rotate if direction != Y.

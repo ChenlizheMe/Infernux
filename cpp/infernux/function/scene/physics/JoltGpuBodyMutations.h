@@ -23,6 +23,10 @@ class JoltGpuBodyMutations
             std::vector<JoltGpuShapeModelUpdate> shapes,
             const std::vector<JPH::GPU::BodyInitialization> &initializations = {},
             const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {});
+    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
+    PrepareReplacement(JoltGpuStorage &storage, JoltGpuModel replacement,
+                       const std::vector<JPH::GPU::BodyInitialization> &initializations = {},
+                       const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {});
 
   private:
     struct Entry
@@ -30,6 +34,15 @@ class JoltGpuBodyMutations
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<uint8_t> ports;
     };
+    struct MutationPacket
+    {
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
+    };
+    [[nodiscard]] MutationPacket PreparePacket(JoltGpuStorage &storage, const std::vector<JPH::GPU::BodyModel> &models,
+                                               const std::vector<JoltGpuBodyModelUpdate> &bodyChanges,
+                                               const std::vector<JPH::GPU::BodyInitialization> &initializations,
+                                               const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass);
     rhi::ComputeHost m_host;
     Entry m_initialize, m_centerOfMass;
 };

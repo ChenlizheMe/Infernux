@@ -37,6 +37,7 @@ struct PhysicsActorData
     bool sceneSuspended = false;
     bool shapeTransformDirty = false;
     bool centerTransformDirty = false;
+    uint8_t ancestorPoseChannels = 0;
     glm::vec3 lastSyncedPos{0.0f};
     glm::quat lastSyncedRot{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 lastScale{1.0f};
@@ -190,8 +191,9 @@ class PhysicsECSStore
 
     /// Mark the single shared physics actor owned by a GameObject dirty.
     /// Avoids allocating/scanning a temporary component list from Transform observers.
-    void MarkGameObjectDirty(GameObject *owner, const Transform *physicsSource = nullptr);
-    void MarkAuthoredHierarchyDirty(GameObject *root);
+    void MarkGameObjectDirty(GameObject *owner, const Transform *physicsSource = nullptr,
+                             const Transform *authoredSource = nullptr, bool rotationAuthored = false);
+    void MarkAuthoredHierarchyDirty(GameObject *root, bool rotationAuthored);
 
     /// Consume changed actors once, including actors without collision shapes.
     /// The returned reference remains valid until the next call.

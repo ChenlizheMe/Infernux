@@ -73,11 +73,13 @@ SceneManager &SceneManager::Instance()
 
 SceneManager::SceneManager()
 {
-    TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform, const Transform *physicsSource) {
+    TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform, const Transform *physicsSource,
+                                                                 const Transform *authoredSource,
+                                                                 bool rotationAuthored) {
         auto *gameObject = transform ? transform->GetGameObject() : nullptr;
         if (!gameObject)
             return;
-        PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject, physicsSource);
+        PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject, physicsSource, authoredSource, rotationAuthored);
         if (const auto bone = m_skeletonBoneOwners.find(transform); bone != m_skeletonBoneOwners.end())
             bone->second->MarkPoseDirty();
         Scene *scene = gameObject->GetScene();
@@ -1252,8 +1254,8 @@ void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     // FixedUpdate may have authored cached poses. They must reach physics
     // before the solver, rather than waiting for the end-of-frame commit.
-    TransformECSStore::Instance().VisitAuthoredPoseWrites([](Transform *transform) {
-        PhysicsECSStore::Instance().MarkAuthoredHierarchyDirty(transform->GetGameObject());
+    TransformECSStore::Instance().VisitAuthoredPoseWrites([](Transform *transform, bool rotationAuthored) {
+        PhysicsECSStore::Instance().MarkAuthoredHierarchyDirty(transform->GetGameObject(), rotationAuthored);
     });
     auto &store = PhysicsECSStore::Instance();
     const auto &dirtyColliders = store.ConsumeDirtyActors();

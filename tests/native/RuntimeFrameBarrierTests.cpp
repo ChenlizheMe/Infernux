@@ -181,8 +181,11 @@ int main()
     child->SetParent(root, true);
     auto &transforms = TransformECSStore::Instance();
     std::vector<Transform *> invalidated;
-    transforms.SetInvalidationObserver([&invalidated](Transform *transform, const Transform *) {
+    bool authoredRotationInvalidated = false;
+    transforms.SetInvalidationObserver([&](Transform *transform, const Transform *physicsSource,
+                                           const Transform *authoredSource, bool rotationAuthored) {
         invalidated.push_back(transform);
+        authoredRotationInvalidated |= !physicsSource && authoredSource && rotationAuthored;
     });
     transforms.SyncSceneWorldMatrices(scene);
     transforms.BeginFrameCache();
@@ -201,6 +204,17 @@ int main()
     assert(!transforms.EndFrameCache());
     assert((invalidated == std::vector<Transform *>{root->GetTransform(), child->GetTransform()}));
 
+    // A physical rotation alongside an authored position clears rotation
+    // caches without granting an authored rotation to children.
+    invalidated.clear();
+    transforms.BeginFrameCache();
+    root->GetTransform()->SetPosition(glm::vec3(3.0f, 4.0f, 5.0f));
+    transforms.SetCachedWorldPoseFromPhysics(root->GetTransform()->GetECSHandle().index, glm::vec3(3.0f, 4.0f, 5.0f),
+                                             glm::angleAxis(0.3f, glm::vec3(0, 1, 0)), true);
+    assert(transforms.EndFrameCache());
+    assert(!authoredRotationInvalidated);
+    assert((invalidated == std::vector<Transform *>{root->GetTransform(), child->GetTransform()}));
+
     // Runtime authoring and bulk Instantiate may allocate transforms after
     // BeginFrameCache(). Every frame-cache array must grow in lockstep so the
     // new slot can be written and committed in the same frame.
@@ -212,10 +226,12 @@ int main()
     assert(runtimeCreated->GetTransform()->GetPosition() == glm::vec3(7.0f, 8.0f, 9.0f));
     assert((invalidated == std::vector<Transform *>{runtimeCreated->GetTransform()}));
 
-    transforms.SetInvalidationObserver([](Transform *transform, const Transform *) {
+    transforms.SetInvalidationObserver([](Transform *transform, const Transform *physicsSource,
+                                          const Transform *authoredSource, bool rotationAuthored) {
         auto *gameObject = transform ? transform->GetGameObject() : nullptr;
         if (gameObject)
-            PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject);
+            PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject, physicsSource, authoredSource,
+                                                            rotationAuthored);
     });
 
     TestTransformHierarchyPublication(*scene);

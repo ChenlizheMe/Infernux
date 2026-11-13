@@ -49,7 +49,7 @@ struct TransformECSData
 class TransformECSStore
 {
   public:
-    using InvalidationObserver = std::function<void(Transform *, const Transform *)>;
+    using InvalidationObserver = std::function<void(Transform *, const Transform *, const Transform *, bool)>;
     // Keep the same Handle type for binary compatibility.
     struct Handle
     {
@@ -430,7 +430,7 @@ class TransformECSStore
 
     // Publish sparse authored edits at the fixed-step boundary while cached
     // world poses remain authoritative. Physics readback is not an edit.
-    void VisitAuthoredPoseWrites(void (*visitor)(Transform *)) const;
+    void VisitAuthoredPoseWrites(void (*visitor)(Transform *, bool)) const;
 
     // An explicit pose assignment is observable by physics even when its
     // numeric value is unchanged. Solver/presentation writes do not advance it.
@@ -466,6 +466,8 @@ class TransformECSStore
     void InvalidateWorldMatrixCache(uint32_t slotIndex);
     void MarkWorldMatrixDirty(uint32_t slotIndex);
     void InvalidateFrameCacheDescendants(Transform *root, bool rotation);
+    void InvalidateSubtreeFrom(Transform *root, bool clearWorldEulerExact, const Transform *physicsSource,
+                               const Transform *authoredSource, bool rotationAuthored) const;
 
     // ── SoA arrays (all the same length == Capacity()) ───────────────
     std::vector<glm::vec3> m_localPositions;

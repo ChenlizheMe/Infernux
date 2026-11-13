@@ -555,6 +555,7 @@ void GameObject::SetParentInternal(GameObject *newParent, bool worldPositionStay
         m_transform.SetWorldScale(savedWorldScale);
     } else {
         // Parent changed without adjusting local values — world matrix is now stale
+        TransformECSStore::Instance().RecordLocalPoseWrite(m_transform.GetECSHandle(), true, true);
         m_transform.InvalidateWorldMatrix(true);
     }
 

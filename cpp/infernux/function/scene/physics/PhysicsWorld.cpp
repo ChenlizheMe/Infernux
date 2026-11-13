@@ -929,11 +929,17 @@ void PhysicsWorld::SetBodyGravityFactor(uint32_t id, float factor)
 }
 void PhysicsWorld::SetBodyFriction(uint32_t id, float value)
 {
-    RefreshGpuActor(id, [=](PreparedGpuActor &a) { a.body.mass.y = value; });
+    RefreshGpuActor(id, [=](PreparedGpuActor &a) {
+        for (auto &leaf : a.geometry.leaves)
+            leaf.model.material.x = value;
+    });
 }
 void PhysicsWorld::SetBodyRestitution(uint32_t id, float value)
 {
-    RefreshGpuActor(id, [=](PreparedGpuActor &a) { a.body.mass.z = value; });
+    RefreshGpuActor(id, [=](PreparedGpuActor &a) {
+        for (auto &leaf : a.geometry.leaves)
+            leaf.model.material.y = value;
+    });
 }
 void PhysicsWorld::SetBodyMaxAngularVelocity(uint32_t id, float value)
 {
@@ -1146,8 +1152,8 @@ void PhysicsWorld::RaycastBatch(const float *origins, const float *directions, s
     RaycastBatchPublished(origins, directions, count, maximum, hits, mask, layers, triggers, generation, profile);
 }
 void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *directions, size_t count, float maximum,
-                                         RaycastHit *hits, uint8_t *mask, uint32_t layers, bool, uint64_t *generation,
-                                         RaycastBatchProfile *profile, bool) const
+                                         RaycastHit *hits, uint8_t *mask, uint32_t layers, bool triggers,
+                                         uint64_t *generation, RaycastBatchProfile *profile, bool) const
 {
     if (profile)
         *profile = {};
@@ -1168,14 +1174,14 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
             const auto offset = i * 3;
             rays.push_back({{origins[offset], origins[offset + 1], origins[offset + 2], maximum},
                             {directions[offset], directions[offset + 1], directions[offset + 2], 0},
-                            {layers, 0, 0, 0}});
+                            {layers, triggers ? 1u : 0u, 0, 0}});
         }
     }
     JoltGpuRaycastBatch result;
     RunControl([&](const JoltGpuScene::Publication &publication) {
-        result = m_gpuQueries->Prepare(
-            {publication.bodyModels, publication.shapeModels, publication.bodyStates, 0, m_gpuScene->GetCapacity()},
-            rays, true);
+        result = m_gpuQueries->Prepare({publication.bodyModels, publication.shapeModels, publication.bodyStates, 0,
+                                        m_gpuScene->GetCapacity(), static_cast<uint32_t>(publication.leaves.size())},
+                                       rays, true);
         return result.batch;
     });
     std::vector<JPH::GPU::RaycastHit> records(count);
@@ -1191,17 +1197,23 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
         if (record.meta.x >= publication->actors.size() || !publication->actors[record.meta.x])
             throw std::runtime_error("GPU raycast slot is absent from its immutable publication");
         const auto &identity = *publication->actors[record.meta.x];
+        if (record.meta.z >= publication->leaves.size())
+            throw std::runtime_error("GPU raycast leaf is absent from its immutable publication");
+        const auto &address = publication->leaves[record.meta.z];
+        if (address.bodySlot != record.meta.x || address.actorLeaf >= identity.leaves.size())
+            throw std::runtime_error("GPU raycast leaf belongs to a different published actor");
+        const auto &leaf = identity.leaves[address.actorLeaf];
         auto &hit = hits[i];
         hit.bodyId = identity.bodyId;
-        hit.subShapeId = identity.subShapeId;
+        hit.subShapeId = leaf.subShapeId;
         hit.point = Vector(record.positionDistance);
         hit.normal = Vector(record.normalFraction);
         hit.distance = record.positionDistance.w;
-        hit.target = identity.surfaceTarget;
-        hit.collider = identity.surfaceTarget.GetCollider();
-        hit.gameObject = identity.surfaceTarget.GetGameObject();
-        hit.gameObjectId = identity.surfaceGameObjectId;
-        hit.colliderId = identity.colliderId;
+        hit.target = leaf.surfaceTarget;
+        hit.collider = leaf.surfaceTarget.GetCollider();
+        hit.gameObject = leaf.surfaceTarget.GetGameObject();
+        hit.gameObjectId = leaf.surfaceGameObjectId;
+        hit.colliderId = leaf.colliderId;
         mask[i] = 1;
     }
     if (generation)
@@ -1230,7 +1242,9 @@ Collider *PhysicsWorld::FindColliderByBodyId(uint32_t id) const
         return nullptr;
     for (const auto &actor : m_gpuScene->GetPublished()->actors)
         if (actor && actor->bodyId == id)
-            return actor->surfaceTarget.GetCollider();
+            for (const auto &leaf : actor->leaves)
+                if (auto *collider = leaf.surfaceTarget.GetCollider())
+                    return collider;
     return nullptr;
 }
 Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t id, uint32_t subShape) const
@@ -1238,8 +1252,12 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t id, uint32_t subShap
     if (!m_gpuScene || !m_gpuScene->GetPublished())
         return nullptr;
     for (const auto &actor : m_gpuScene->GetPublished()->actors)
-        if (actor && actor->bodyId == id && actor->subShapeId == subShape)
-            return actor->surfaceTarget.GetCollider();
+        if (actor && actor->bodyId == id)
+            for (const auto &leaf : actor->leaves) {
+                const auto prefixMask = leaf.subShapeBits == 32 ? UINT32_MAX : (uint32_t(1) << leaf.subShapeBits) - 1;
+                if ((leaf.subShapeId & prefixMask) == (subShape & prefixMask))
+                    return leaf.surfaceTarget.GetCollider();
+            }
     return nullptr;
 }
 void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *)
@@ -1297,9 +1315,15 @@ void PhysicsWorld::InvalidateContactPairsForBody(uint32_t)
 } // No retained GPU pair cache yet.
 bool PhysicsWorld::IsBodySensor(uint32_t id) const
 {
-    RequireGpu();
-    (void)ActorForBody(*m_gpuScene, id);
-    return false;
+    if (!m_initialized || id == UINT32_MAX)
+        return false;
+    RunControl({});
+    const auto body = m_gpuScene->FindBody(id);
+    if (body.bodyId == UINT32_MAX)
+        return false;
+    const auto &actor = m_gpuScene->GetPublished()->actors[body.slot];
+    return actor && !actor->leaves.empty() &&
+           std::all_of(actor->leaves.begin(), actor->leaves.end(), [](const auto &leaf) { return leaf.sensor; });
 }
 void PhysicsWorld::SetColliderPairIgnored(Collider *, Collider *, bool)
 {

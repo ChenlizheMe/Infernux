@@ -35,6 +35,22 @@ class JoltGpuScene final
         uint32_t slot = UINT32_MAX;
     };
 
+    struct PublishedLeaf
+    {
+        PhysicsTargetReference surfaceTarget;
+        uint64_t surfaceGameObjectId = 0;
+        uint64_t colliderId = 0;
+        uint32_t subShapeId = 0;
+        uint32_t subShapeBits = 0;
+        bool sensor = false;
+    };
+
+    struct LeafAddress
+    {
+        uint32_t bodySlot = UINT32_MAX;
+        uint32_t actorLeaf = UINT32_MAX;
+    };
+
     /// Application identity and authored geometry for exactly one accepted
     /// slot generation. There is no host copy of live motion state here.
     struct PublishedActor
@@ -47,10 +63,7 @@ class JoltGpuScene final
         /// Component generation contributing the nonstatic author model.
         PhysicsECSStore::RigidbodyHandle rigidbody;
         OwnerIdentity owner;
-        PhysicsTargetReference surfaceTarget;
-        uint64_t surfaceGameObjectId = 0;
-        uint64_t colliderId = 0;
-        uint32_t subShapeId = 0;
+        std::vector<PublishedLeaf> leaves;
         JPH::GPU::Float4 rootCenterOfMass{};
         uint64_t shapeRevision = 0;
         JPH::RefConst<JPH::Shape> authoredShape;
@@ -69,6 +82,9 @@ class JoltGpuScene final
         std::shared_ptr<rhi::ComputeBuffer> shapeModels;
         std::shared_ptr<rhi::ComputeBuffer> worlds;
         std::vector<std::shared_ptr<const PublishedActor>> actors;
+        /// Global leaf ordinal -> immutable actor catalog in this publication.
+        /// Addresses own no individual allocation and never refer to live slots.
+        std::vector<LeafAddress> leaves;
     };
     using Consumer = std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)>;
 
@@ -83,7 +99,7 @@ class JoltGpuScene final
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;
 
     [[nodiscard]] BodyAllocation Reserve(PhysicsActorHandle actor, OwnerIdentity owner);
-    /// Captures the raw surfaceCollider as a lifetime-safe target immediately.
+    /// Captures every contributing member as lifetime-safe per-leaf identity.
     /// Only a new ownership initializes state; subsequent changes rebase COM
     /// from the previously accepted metadata using actual device rotation.
     void StageActor(uint32_t bodyId, PreparedGpuActor actor);

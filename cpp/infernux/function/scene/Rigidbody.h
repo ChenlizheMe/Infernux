@@ -300,7 +300,7 @@ class Rigidbody : public Component
     /// interpolation history, so an older presentation pose cannot overwrite
     /// the authored value on the next frame. During a fixed step, kinematic
     /// bodies retain their velocity-producing drive semantics.
-    void SyncExternalMovesToPhysics(float fixedDeltaTime = 0.0f);
+    void SyncExternalMovesToPhysics(float fixedDeltaTime, uint8_t ancestorPoseChannels);
 
     /// @brief Does this Rigidbody have a native body?
     ///        Returns true when the actor is allocated.

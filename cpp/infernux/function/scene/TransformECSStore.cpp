@@ -326,6 +326,14 @@ void TransformECSStore::SetSnapshot(Handle h, const TransformECSData &d)
 void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerExact,
                                           const Transform *skipObserverFor) const
 {
+    InvalidateSubtreeFrom(root, clearWorldEulerExact, skipObserverFor, skipObserverFor ? nullptr : root,
+                          clearWorldEulerExact);
+}
+
+void TransformECSStore::InvalidateSubtreeFrom(Transform *root, bool clearWorldEulerExact,
+                                              const Transform *skipObserverFor, const Transform *authoredSource,
+                                              bool rotationAuthored) const
+{
     if (!root) {
         return;
     }
@@ -349,7 +357,7 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
     }
 
     if (m_invalidationObserver && root != skipObserverFor) {
-        m_invalidationObserver(root, skipObserverFor);
+        m_invalidationObserver(root, skipObserverFor, authoredSource, rotationAuthored);
     }
 
     GameObject *go = root->GetGameObject();
@@ -360,7 +368,8 @@ void TransformECSStore::InvalidateSubtree(Transform *root, bool clearWorldEulerE
     for (size_t i = 0; i < go->GetChildCount(); ++i) {
         GameObject *child = go->GetChild(i);
         if (child) {
-            InvalidateSubtree(child->GetTransform(), clearWorldEulerExact, skipObserverFor);
+            InvalidateSubtreeFrom(child->GetTransform(), clearWorldEulerExact, skipObserverFor, authoredSource,
+                                  rotationAuthored);
         }
     }
 }
@@ -601,7 +610,7 @@ void TransformECSStore::ScatterWorldPositions(Transform *const *transforms, cons
             m_cachedWorldMatrices[idx][3] = glm::vec4(wp, 1.0f);
             m_worldMatrixDirty[idx] = 0;
             if (m_invalidationObserver)
-                m_invalidationObserver(t, nullptr);
+                m_invalidationObserver(t, nullptr, t, false);
         } else {
             if (!parent) {
                 m_localPositions[idx] = wp;
@@ -758,7 +767,7 @@ bool TransformECSStore::EndFrameCache()
         // still need a new local pose when its parent moved this frame.
         if (!changed) {
             if (notifyOwner && m_invalidationObserver)
-                m_invalidationObserver(owner, nullptr);
+                m_invalidationObserver(owner, nullptr, owner, (d & 0x30) != 0);
             return;
         }
 
@@ -774,7 +783,7 @@ bool TransformECSStore::EndFrameCache()
             m_cachedWorldMatrices[i][3] = glm::vec4(m_localPositions[i], 1.0f);
             m_worldMatrixDirty[i] = 0;
             if (notifyOwner && m_invalidationObserver)
-                m_invalidationObserver(owner, nullptr);
+                m_invalidationObserver(owner, nullptr, owner, (d & 0x30) != 0);
             return;
         }
 
@@ -782,9 +791,10 @@ bool TransformECSStore::EndFrameCache()
 
         // Invalidate subtrees for any dirty slot.
         if (hasChildren) {
-            InvalidateSubtree(owner, (d & 0x02) != 0, notifyOwner ? nullptr : owner);
+            InvalidateSubtreeFrom(owner, (d & 0x02) != 0, notifyOwner ? nullptr : owner, notifyOwner ? owner : nullptr,
+                                  (d & 0x30) != 0);
         } else if (notifyOwner && m_invalidationObserver) {
-            m_invalidationObserver(owner, nullptr);
+            m_invalidationObserver(owner, nullptr, owner, (d & 0x30) != 0);
         }
     };
 
@@ -885,14 +895,14 @@ void TransformECSStore::MarkWorldMatrixDirty(uint32_t slotIndex)
         ++m_globalTransformSerial;
 }
 
-void TransformECSStore::VisitAuthoredPoseWrites(void (*visitor)(Transform *)) const
+void TransformECSStore::VisitAuthoredPoseWrites(void (*visitor)(Transform *, bool)) const
 {
     if (!m_frameCacheActive)
         return;
     for (const uint32_t index : m_fcDirtyIndices) {
         if (m_alive[index] && m_owners[index] && m_fcStamp[index] == m_frameCacheSerial &&
             (m_fcDirty[index] & 0x40) != 0)
-            visitor(m_owners[index]);
+            visitor(m_owners[index], (m_fcDirty[index] & 0x30) != 0);
     }
 }
 

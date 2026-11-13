@@ -27,17 +27,17 @@ struct PortLayout
 {
     std::string_view name;
     uint64_t stride;
-    std::array<std::string_view, 6> fields;
+    std::array<std::string_view, 7> fields;
     uint32_t integerFields;
 };
 constexpr PortLayout Ports[] = {
     {"raycast_params", sizeof(RaycastParams), {"counts"}, 1},
     {"raycast_inputs", sizeof(RaycastInput), {"originMaxDistance", "direction", "filter"}, 4},
-    {"body_models",
-     sizeof(BodyModel),
-     {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping", "surface"},
-     33},
-    {"shape_models", sizeof(ShapeModel), {"geometry", "localPositionCOM", "localRotation"}, 0},
+    {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1},
+    {"shape_models",
+     sizeof(ShapeModel),
+     {"meta", "geometry", "localPositionCOM", "localRotation", "material", "surface", "source"},
+     97},
     {"body_states", sizeof(BodyState), {"positionCOM", "rotation", "linearVelocity", "angularVelocity"}, 0},
     {"raycast_hits", sizeof(JPH::GPU::RaycastHit), {"meta", "positionDistance", "normalFraction"}, 1},
 };
@@ -76,7 +76,7 @@ void ValidateRay(const RaycastInput &ray)
     const auto &d = ray.direction;
     if (!std::isfinite(o.x) || !std::isfinite(o.y) || !std::isfinite(o.z) || !std::isfinite(o.w) || o.w <= 0 ||
         !std::isfinite(d.x) || !std::isfinite(d.y) || !std::isfinite(d.z) || d.w != 0 ||
-        (d.x == 0 && d.y == 0 && d.z == 0) || ray.filter.y || ray.filter.z || ray.filter.w)
+        (d.x == 0 && d.y == 0 && d.z == 0) || ray.filter.y > 1 || ray.filter.z || ray.filter.w)
         throw std::invalid_argument(
             "Jolt GPU ray requires finite origin/direction, nonzero direction and positive distance");
 }
@@ -136,11 +136,11 @@ JoltGpuRaycastBatch JoltGpuQueries::Prepare(const JoltGpuQuerySnapshot &snapshot
     buffers[Models] = snapshot.bodyModels;
     buffers[Shapes] = snapshot.shapeModels;
     buffers[States] = snapshot.bodyStates;
-    const bool emptySnapshot = !buffers[Models] && !buffers[Shapes] && !buffers[States];
-    if (emptySnapshot && (snapshot.firstBody || snapshot.bodyCount))
+    const bool emptySnapshot = !buffers[Models] && !buffers[States];
+    if (emptySnapshot && (snapshot.firstBody || snapshot.bodyCount || snapshot.shapeCount || buffers[Shapes]))
         throw std::invalid_argument("Jolt GPU query nonempty range has no publication");
     if (!emptySnapshot) {
-        for (const auto port : {Models, Shapes, States}) {
+        for (const auto port : {Models, States}) {
             const auto &buffer = buffers[port];
             if (!buffer || !buffer->IsFrozen() || !m_host.SharesServicesWith(buffer->GetHost()) ||
                 buffer->GetByteSize() == 0 || buffer->GetByteSize() % Ports[port].stride)
@@ -150,12 +150,17 @@ JoltGpuRaycastBatch JoltGpuQueries::Prepare(const JoltGpuQuerySnapshot &snapshot
         if (buffers[States]->GetByteSize() / sizeof(BodyState) != capacity || snapshot.firstBody > capacity ||
             snapshot.bodyCount > capacity - snapshot.firstBody)
             throw std::invalid_argument("Jolt GPU query range differs from its published model/state capacity");
+        const auto &shapes = buffers[Shapes];
+        if (snapshot.shapeCount ? (!shapes || !shapes->IsFrozen() || !m_host.SharesServicesWith(shapes->GetHost()) ||
+                                   shapes->GetByteSize() != uint64_t(snapshot.shapeCount) * sizeof(ShapeModel))
+                                : bool(shapes))
+            throw std::invalid_argument("Jolt GPU query leaf count differs from its frozen publication");
     }
     if (rays.empty())
         return {};
 
-    // The empty-world case binds initialized dummy records without CPU query
-    // evaluation. The kernel's zero-body loop still writes every miss on GPU.
+    // Logically empty inputs still need typed RHI bindings. These initialized
+    // records are outside all admitted ranges; the GPU writes every miss.
     rhi::ComputeHost host = m_host;
     std::vector<rhi::ComputeBufferUpdate> updates;
     const auto upload = [&](uint8_t port, std::vector<uint8_t> bytes) {
@@ -165,13 +170,16 @@ JoltGpuRaycastBatch JoltGpuQueries::Prepare(const JoltGpuQuerySnapshot &snapshot
     };
     if (emptySnapshot) {
         const BodyModel model{};
-        const ShapeModel shape{};
         const BodyState state{};
         upload(Models, Bytes(&model, 1));
-        upload(Shapes, Bytes(&shape, 1));
         upload(States, Bytes(&state, 1));
     }
-    const RaycastParams parameters{{static_cast<uint32_t>(rays.size()), snapshot.firstBody, snapshot.bodyCount, 0}};
+    if (!snapshot.shapeCount) {
+        const ShapeModel shape{};
+        upload(Shapes, Bytes(&shape, 1));
+    }
+    const RaycastParams parameters{
+        {static_cast<uint32_t>(rays.size()), snapshot.firstBody, snapshot.bodyCount, snapshot.shapeCount}};
     upload(Parameters, Bytes(&parameters, 1));
     upload(Rays, Bytes(rays.data(), rays.size()));
     buffers[Hits] = std::make_shared<rhi::ComputeBuffer>(

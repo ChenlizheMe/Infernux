@@ -329,6 +329,8 @@ void PhysicsECSStore::SyncActorTransform(ActorHandle handle, float fixedDeltaTim
         return;
     auto *transform = actor.owner->GetTransform();
     const auto scale = transform->GetWorldScale();
+    const uint8_t ancestorPoseChannels = actor.ancestorPoseChannels;
+    actor.ancestorPoseChannels = 0;
     bool centerChanged = false;
     if (actor.centerTransformDirty) {
         actor.centerTransformDirty = false;
@@ -354,7 +356,7 @@ void PhysicsECSStore::SyncActorTransform(ActorHandle handle, float fixedDeltaTim
         PhysicsWorld::Instance().UpdateBodyShape(actor);
     }
     if (actor.rigidbody && actor.rigidbody->IsEnabled()) {
-        actor.rigidbody->SyncExternalMovesToPhysics(fixedDeltaTime);
+        actor.rigidbody->SyncExternalMovesToPhysics(fixedDeltaTime, ancestorPoseChannels);
         return;
     }
     const auto position = transform->GetPosition();
@@ -497,7 +499,8 @@ void PhysicsECSStore::MarkActorDirty(ActorHandle actorHandle)
     m_dirtyActorList.push_back(actorHandle);
 }
 
-void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *physicsSource)
+void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *physicsSource,
+                                          const Transform *authoredSource, bool rotationAuthored)
 {
     if (!owner)
         return;
@@ -512,8 +515,11 @@ void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *ph
     const auto found = m_actorByOwner.find(owner);
     if (found != m_actorByOwner.end()) {
         if (!physicsSource || physicsSource->GetGameObject() != owner) {
-            if (!physicsSource)
+            if (!physicsSource) {
                 GetActor(found->second).centerTransformDirty = true;
+                if (authoredSource && authoredSource->GetGameObject() != owner)
+                    GetActor(found->second).ancestorPoseChannels |= rotationAuthored ? 3u : 1u;
+            }
             NotifyCollisionSceneChanged();
             MarkActorDirty(found->second);
         }
@@ -535,11 +541,14 @@ void PhysicsECSStore::MarkGameObjectDirty(GameObject *owner, const Transform *ph
     }
 }
 
-void PhysicsECSStore::MarkAuthoredHierarchyDirty(GameObject *root)
+void PhysicsECSStore::MarkAuthoredHierarchyDirty(GameObject *root, bool rotationAuthored)
 {
-    MarkGameObjectDirty(root);
-    for (size_t index = 0; index < root->GetChildCount(); ++index)
-        MarkAuthoredHierarchyDirty(root->GetChild(index));
+    const auto visit = [&](auto &&self, GameObject *object) -> void {
+        MarkGameObjectDirty(object, nullptr, root->GetTransform(), rotationAuthored);
+        for (size_t index = 0; index < object->GetChildCount(); ++index)
+            self(self, object->GetChild(index));
+    };
+    visit(visit, root);
 }
 
 const std::vector<PhysicsECSStore::ActorHandle> &PhysicsECSStore::ConsumeDirtyActors()

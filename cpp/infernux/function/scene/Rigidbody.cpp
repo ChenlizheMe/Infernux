@@ -1030,7 +1030,7 @@ void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::qua
     CacheActorPose(d.lastSyncedPosition, d.lastSyncedRotation);
 }
 
-void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
+void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime, uint8_t ancestorPoseChannels)
 {
     auto &d = DataMut();
     auto *go = GetGameObject();
@@ -1063,8 +1063,13 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     // An explicit author write can restore an old CPU value after the device
     // has moved away from it. Its revision, rather than stale cache equality,
     // establishes the command that must reach the GPU.
-    const bool posDiff = positionAuthored || glm::length(currentPos - d.lastSyncedPosition) > posEps;
-    const bool rotDiff = rotationAuthored || RotationChanged(currentRot, d.lastSyncedRotation);
+    // A lazy physics read can refresh a parent's CPU pose without authoring
+    // this independent body. Only an authored hierarchy change makes that
+    // world-space cache difference a command; collider edits alone do not.
+    const bool posDiff = positionAuthored ||
+                         ((ancestorPoseChannels & 1u) != 0 && glm::length(currentPos - d.lastSyncedPosition) > posEps);
+    const bool rotDiff =
+        rotationAuthored || ((ancestorPoseChannels & 2u) != 0 && RotationChanged(currentRot, d.lastSyncedRotation));
 
     if (!posDiff && !rotDiff) {
         d.lastAuthoredPoseRevision = authoredRevision;

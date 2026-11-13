@@ -15,6 +15,7 @@ struct JoltGpuQuerySnapshot
     std::shared_ptr<rhi::ComputeBuffer> bodyStates;
     uint32_t firstBody = 0;
     uint32_t bodyCount = 0;
+    uint32_t shapeCount = 0;
 };
 
 struct JoltGpuRaycastBatch
@@ -25,7 +26,7 @@ struct JoltGpuRaycastBatch
 };
 
 /// Typed consumer of the common compiler's raycast_closest artifact. One GPU
-/// lane scans at most 32 slots in one world; no CPU physics/query fallback.
+/// lane visits the admitted body's leaf ranges; no CPU physics/query fallback.
 class JoltGpuQueries final
 {
   public:

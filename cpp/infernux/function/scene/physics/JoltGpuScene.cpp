@@ -6,6 +6,7 @@
 #include <function/scene/Rigidbody.h>
 
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -16,19 +17,12 @@ namespace
 {
 using namespace JPH::GPU;
 
-BodyModel Tombstone(uint32_t slot)
+BodyModel Tombstone()
 {
     BodyModel body{};
-    body.meta = {slot, ShapeEmpty, MotionStatic | MotionNotResident, 0};
+    body.meta = {0, 0, MotionStatic | MotionNotResident, 0};
     body.inertiaRotation.w = 1.0f;
     return body;
-}
-
-ShapeModel EmptyShape()
-{
-    ShapeModel shape{};
-    shape.localRotation.w = 1.0f;
-    return shape;
 }
 
 BodyState EmptyState()
@@ -44,10 +38,9 @@ JoltGpuModel EmptyModel(uint32_t capacity)
         throw std::invalid_argument("Jolt GPU scene capacity exceeds the fork's single-world bound");
     JoltGpuModel model;
     model.bodies.reserve(capacity);
-    model.shapes.assign(capacity, EmptyShape());
     for (uint32_t slot = 0; slot < capacity; ++slot)
-        model.bodies.push_back(Tombstone(slot));
-    model.worlds.push_back({{0, capacity, 0, capacity * capacity * MaxContactPointsPerPair}});
+        model.bodies.push_back(Tombstone());
+    model.worlds.push_back({{0, capacity, 0, 0}, {0, 0, 0, 0}});
     return model;
 }
 
@@ -104,7 +97,7 @@ class JoltGpuScene::Impl
         uint32_t slot;
         uint32_t bodyId;
         BodyModel model;
-        ShapeModel shape;
+        std::vector<ShapeModel> leaves;
         BodyState initialState;
         PhysicsECSStore::RigidbodyHandle initialRigidbody;
         bool hasInitialLinearVelocity = false;
@@ -266,6 +259,38 @@ class JoltGpuScene::Impl
         }
     }
 
+    JoltGpuModel RepackModel(uint32_t changedSlot, BodyModel changedBody,
+                             const std::vector<ShapeModel> &changedLeaves) const
+    {
+        // Only this transaction's actor is new. Everything else comes from the
+        // actual accepted model, including earlier groups in this same prefix.
+        const auto &accepted = storage.GetModel();
+        const uint64_t leafCount =
+            uint64_t(accepted.shapes.size()) - accepted.bodies[changedSlot].meta.y + changedLeaves.size();
+        if (leafCount > std::numeric_limits<uint32_t>::max() ||
+            leafCount * leafCount > std::numeric_limits<uint32_t>::max() / MaxContactPointsPerPair)
+            throw std::length_error("Jolt GPU scene exceeds its leaf-pair contact index range");
+        JoltGpuModel replacement;
+        replacement.bodies = accepted.bodies;
+        replacement.shapes.reserve(static_cast<size_t>(leafCount));
+        for (uint32_t slot = 0; slot < replacement.bodies.size(); ++slot) {
+            const auto &old = accepted.bodies[slot];
+            auto body = slot == changedSlot ? changedBody : old;
+            body.meta.x = static_cast<uint32_t>(replacement.shapes.size());
+            body.meta.y = slot == changedSlot ? static_cast<uint32_t>(changedLeaves.size()) : old.meta.y;
+            for (uint32_t leaf = 0; leaf < body.meta.y; ++leaf) {
+                auto model = slot == changedSlot ? changedLeaves[leaf] : accepted.shapes[old.meta.x + leaf];
+                model.meta.y = slot;
+                replacement.shapes.push_back(model);
+            }
+            replacement.bodies[slot] = body;
+        }
+        const auto count = static_cast<uint32_t>(leafCount);
+        replacement.worlds.push_back(
+            {{0, static_cast<uint32_t>(replacement.bodies.size()), 0, count * count}, {0, count, 0, 0}});
+        return replacement;
+    }
+
     void StageActor(uint32_t id, PreparedGpuActor actor)
     {
         const uint32_t index = RequireSlot(id);
@@ -273,7 +298,7 @@ class JoltGpuScene::Impl
         const bool firstOwnership = !slot.authored;
         const auto center = actor.geometry.centerOfMass;
         const Float4 rootCOM{center.GetX(), center.GetY(), center.GetZ(), 0.0f};
-        if (!FiniteVector(rootCOM) || actor.body.meta.y != actor.geometry.type)
+        if (!FiniteVector(rootCOM) || actor.body.meta.y != actor.geometry.leaves.size())
             throw std::invalid_argument("Jolt GPU actor has inconsistent geometry or an invalid root COM");
         auto identity = std::make_shared<PublishedActor>();
         identity->bodyId = id;
@@ -283,25 +308,41 @@ class JoltGpuScene::Impl
         identity->rigidbody = actor.initialRigidbody;
         identity->owner = slot.owner;
         identity->rootCenterOfMass = rootCOM;
-        identity->subShapeId = actor.geometry.subShapeID.GetValue();
         identity->authoredShape = std::move(actor.authoredShape);
-        if (auto *surface = actor.surfaceCollider) {
-            identity->surfaceTarget = PhysicsTargetReference(surface);
-            identity->colliderId = surface->GetComponentID();
+        identity->leaves.reserve(actor.geometry.leaves.size());
+        for (const auto &leaf : actor.geometry.leaves) {
+            if (leaf.memberIndex >= actor.members.size() || !actor.members[leaf.memberIndex])
+                throw std::invalid_argument("Jolt GPU leaf has no contributing Collider identity");
+            const auto *surface = actor.members[leaf.memberIndex];
+            PublishedLeaf publishedLeaf;
+            publishedLeaf.surfaceTarget = PhysicsTargetReference(surface);
+            publishedLeaf.colliderId = surface->GetComponentID();
             if (auto *object = surface->GetGameObject())
-                identity->surfaceGameObjectId = object->GetID();
+                publishedLeaf.surfaceGameObjectId = object->GetID();
+            publishedLeaf.subShapeId = leaf.subShapeID.GetValue();
+            publishedLeaf.subShapeBits = leaf.subShapeBits;
+            publishedLeaf.sensor = (leaf.model.meta.w & ShapeSensor) != 0;
+            identity->leaves.push_back(std::move(publishedLeaf));
         }
         // No component pointer escapes this capture boundary.
-        actor.surfaceCollider = nullptr;
+        actor.members.clear();
         auto change = std::make_shared<ActorChange>();
         change->slot = index;
         change->bodyId = id;
         change->model = actor.body;
-        change->model.meta.x = index;
+        change->model.meta.x = 0;
         change->model.meta.w = 0;
         change->model.meta.z =
             (change->model.meta.z & ~MotionNotResident) | (slot.desiredResident ? 0 : MotionNotResident);
-        change->shape = actor.geometry.model;
+        change->leaves.reserve(actor.geometry.leaves.size());
+        for (size_t ordinal = 0; ordinal < actor.geometry.leaves.size(); ++ordinal) {
+            auto &leaf = actor.geometry.leaves[ordinal];
+            leaf.model.meta.y = index;
+            const auto colliderId = identity->leaves[ordinal].colliderId;
+            leaf.model.source.x = static_cast<uint32_t>(colliderId);
+            leaf.model.source.y = static_cast<uint32_t>(colliderId >> 32);
+            change->leaves.push_back(std::move(leaf.model));
+        }
         change->initialState = actor.initialState;
         change->initialRigidbody = actor.initialRigidbody;
         change->hasInitialLinearVelocity = actor.hasInitialLinearVelocity;
@@ -332,8 +373,18 @@ class JoltGpuScene::Impl
                 rebases.push_back(
                     {{change->slot, 0, 0, 0}, {newCOM.x - oldCOM.x, newCOM.y - oldCOM.y, newCOM.z - oldCOM.z, 0.0f}});
             }
-            return mutations.Prepare(storage, {{change->slot, change->model}}, {{change->slot, change->shape}}, initial,
-                                     rebases);
+            const auto &acceptedBody = storage.GetModel().bodies[change->slot];
+            if (acceptedBody.meta.y == change->leaves.size()) {
+                auto body = change->model;
+                body.meta.x = acceptedBody.meta.x;
+                std::vector<JoltGpuShapeModelUpdate> leaves;
+                leaves.reserve(change->leaves.size());
+                for (uint32_t leaf = 0; leaf < change->leaves.size(); ++leaf)
+                    leaves.push_back({acceptedBody.meta.x + leaf, change->leaves[leaf]});
+                return mutations.Prepare(storage, {{change->slot, body}}, std::move(leaves), initial, rebases);
+            }
+            return mutations.PrepareReplacement(storage, RepackModel(change->slot, change->model, change->leaves),
+                                                initial, rebases);
         };
         group.modelAccepted = [this, change]() noexcept { CommitActor(change); };
         if (motionChanged) {
@@ -463,7 +514,13 @@ class JoltGpuScene::Impl
         group.prepareModel = [this, index, id] {
             RequireOwnership(index, id);
             const BodyInitialization initial{{index, 0, 0, 0}, EmptyState(), {}};
-            return mutations.Prepare(storage, {{index, Tombstone(index)}}, {{index, EmptyShape()}}, {initial});
+            const auto &body = storage.GetModel().bodies[index];
+            if (body.meta.y == 0) {
+                auto tombstone = Tombstone();
+                tombstone.meta.x = body.meta.x;
+                return mutations.Prepare(storage, {{index, tombstone}}, {}, {initial});
+            }
+            return mutations.PrepareReplacement(storage, RepackModel(index, Tombstone(), {}), {initial});
         };
         group.modelAccepted = [this, index]() noexcept {
             slots[index] = Slot{};
@@ -500,13 +557,23 @@ class JoltGpuScene::Impl
                                 controlOnly]() -> std::unique_ptr<JoltGpuModelUpdate> {
             if (storage.GetBodyCount()) {
                 publication->bodyModels = storage.Get(Resource::BodyModels)->Freeze();
-                publication->shapeModels = storage.Get(Resource::ShapeModels)->Freeze();
+                if (const auto &shapes = storage.Get(Resource::ShapeModels))
+                    publication->shapeModels = shapes->Freeze();
                 publication->worlds = storage.Get(Resource::Worlds)->Freeze();
                 if (controlOnly)
                     publication->bodyStates = storage.Get(Resource::BodyStates)->Freeze();
             }
+            publication->leaves.resize(storage.GetShapeCount());
             for (size_t index = 0; index < slots.size(); ++index) {
                 publication->actors[index] = slots[index].accepted;
+                const auto &acceptedBody = storage.GetModel().bodies[index];
+                if (acceptedBody.meta.y != 0) {
+                    const auto &identity = publication->actors[index];
+                    if (!identity || identity->leaves.size() != acceptedBody.meta.y)
+                        throw std::logic_error("Jolt GPU publication leaf catalog differs from its accepted range");
+                    for (uint32_t leaf = 0; leaf < acceptedBody.meta.y; ++leaf)
+                        publication->leaves[acceptedBody.meta.x + leaf] = {static_cast<uint32_t>(index), leaf};
+                }
                 auto &slot = slots[index];
                 const auto &input = (*prefix)[index];
                 if (input.bodyId == InvalidBodyId || input.bodyId != slot.bodyId || !slot.accepted)

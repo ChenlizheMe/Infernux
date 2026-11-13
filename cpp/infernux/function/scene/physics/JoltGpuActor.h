@@ -32,9 +32,9 @@ struct PreparedGpuActor
     };
     std::vector<ColliderCenter> colliderCenters;
     JPH::RefConst<JPH::Shape> authoredShape;
-    /// Source of the single collision leaf's material and layer, null for Empty.
-    /// The owner retains its normal component identity/lifetime separately.
-    Collider *surfaceCollider = nullptr;
+    /// Exact contributing members, captured immediately by Scene into safe
+    /// per-leaf identities. Ordinals come from the authored outer compound.
+    std::vector<Collider *> members;
 };
 
 /// Capture ordinary component authoring without creating or reading a CPU Body.
@@ -42,11 +42,12 @@ struct PreparedGpuActor
 /// capabilities throw at this boundary. Pending velocities are observed without
 /// consumption; the owner consumes them when that Rigidbody binding's model
 /// packet is accepted, retaining any following velocity commands in FIFO order.
-[[nodiscard]] std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &actor, uint32_t shapeSlot,
+[[nodiscard]] std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &actor, uint32_t bodySlot,
                                                                   uint32_t worldIndex);
 
 /// Refresh only material/filter fields, preserving mass, motion and GPU state.
-/// Collider must be the actual leaf source retained at creation; null is Empty.
-void RefreshGpuActorSurface(JPH::GPU::BodyModel &body, const Collider *collider, const GameObject &owner);
+/// Collider is the actual contributing leaf source. The Scene captures its
+/// full component identity separately; no primary surface stands for a body.
+void RefreshGpuActorSurface(JPH::GPU::ShapeModel &leaf, const Collider &collider);
 
 } // namespace infernux

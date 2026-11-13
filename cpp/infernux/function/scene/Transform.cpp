@@ -230,7 +230,9 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
             handoff.lastSyncedPos = sample.position;
         if (hierarchyPending || pendingRotation || (rotationAuthored && !applyRotation))
             handoff.lastSyncedRot = sample.rotation;
-        physics.MarkAuthoredHierarchyDirty(object);
+        physics.MarkAuthoredHierarchyDirty(object,
+                                           pendingRotation || (rotationAuthored && !applyRotation) ||
+                                               (hierarchyPending && (currentActor.ancestorPoseChannels & 2u) != 0));
     }
     target->m_cpuPhysicsPoseGeneration = world.GetQueryGeneration();
     target->m_cpuPhysicsPoseBodyId = bodyId;

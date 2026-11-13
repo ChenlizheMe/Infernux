@@ -86,6 +86,11 @@ class JoltGpuStorage
                        std::vector<JoltGpuShapeModelUpdate> shapeChanges,
                        std::vector<rhi::ComputeBufferUpdate> additionalUpdates = {},
                        std::vector<rhi::ComputeDispatchDesc> mutations = {});
+    /// Replace leaf streams and world ranges at one accepted boundary. Body
+    /// capacity/world count and the live state/force/target endpoints are retained.
+    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
+    PrepareModelReplacement(JoltGpuModel replacement, std::vector<rhi::ComputeBufferUpdate> additionalUpdates = {},
+                            std::vector<rhi::ComputeDispatchDesc> mutations = {});
     // Initialization/step-input preparation returns nullptr for an empty model;
     // the caller completes that phase without preparing or submitting a packet.
 
@@ -107,6 +112,18 @@ class JoltGpuStorage
     {
         return m_contactCount;
     }
+    [[nodiscard]] uint32_t GetShapeCount() const noexcept
+    {
+        return m_shapeCount;
+    }
+    [[nodiscard]] uint32_t GetPatchCount() const noexcept
+    {
+        return m_patchCount;
+    }
+    [[nodiscard]] uint32_t GetMaxLeavesPerWorld() const noexcept
+    {
+        return m_maxLeavesPerWorld;
+    }
     [[nodiscard]] uint32_t GetMaxBodiesPerWorld() const noexcept
     {
         return m_maxBodiesPerWorld;
@@ -123,8 +140,9 @@ class JoltGpuStorage
     // Accepted author metadata; dynamic state remains exclusively on the GPU.
     JoltGpuModel m_model;
     bool m_modelUpdatePending = false;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, 9> m_buffers;
-    uint32_t m_bodyCount = 0, m_worldCount = 0, m_contactCount = 0, m_maxBodiesPerWorld = 0;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 10> m_buffers;
+    uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_contactCount = 0, m_patchCount = 0,
+             m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
 };
 
 /// One model delta and its exact RHI packet. GPU acceptance commits the author
@@ -151,12 +169,19 @@ class JoltGpuModelUpdate final
     JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
                        std::vector<JoltGpuBodyModelUpdate> bodyChanges,
                        std::vector<JoltGpuShapeModelUpdate> shapeChanges);
+    JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
+                       JoltGpuModel replacement, std::array<std::shared_ptr<rhi::ComputeBuffer>, 10> replacementBuffers,
+                       std::array<uint32_t, 5> replacementCounts);
     void Commit() noexcept;
 
     JoltGpuStorage *m_storage;
     std::shared_ptr<rhi::PreparedComputeBatch> m_batch;
     std::vector<JoltGpuBodyModelUpdate> m_bodyChanges;
     std::vector<JoltGpuShapeModelUpdate> m_shapeChanges;
+    std::optional<JoltGpuModel> m_replacement;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 10> m_replacementBuffers;
+    // Shapes, contacts, patches, maximum bodies/world, maximum leaves/world.
+    std::array<uint32_t, 5> m_replacementCounts{};
 };
 
 /// The five read-only input values of one logical tick. Capture each port

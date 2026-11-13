@@ -65,38 +65,12 @@ class JoltGpuTick::Impl
             auto gravityDt = parameters->Get().gravityDt;
             gravityDt.w = deltaTime / static_cast<float>(parameters->Get().solve.y);
             parameters->SetGravityAndDeltaTime(gravityDt);
-            auto actualParameters = parameters->Get();
-            actualParameters.counts.x = storage.GetBodyCount();
-            actualParameters.counts.y = storage.GetWorldCount();
-            actualParameters.counts.z = storage.GetMaxBodiesPerWorld();
-            actualParameters.solve.z = storage.GetContactCount();
-            reuseParameters = acceptedParameters &&
-                              std::memcmp(&*acceptedParameters, &actualParameters, sizeof(actualParameters)) == 0;
-            tickParameters = actualParameters;
-            stages.push_back(JPH::GPU::Stage::PrepareKinematics);
-            for (uint32_t substep = 0; substep < parameters->Get().solve.y; ++substep) {
-                stages.push_back(JPH::GPU::Stage::ApplyForces);
-                stages.push_back(JPH::GPU::Stage::BuildBounds);
-                stages.push_back(JPH::GPU::Stage::CollidePairs);
-                stages.push_back(JPH::GPU::Stage::SetupContacts);
-                for (uint32_t iteration = 0; iteration < parameters->Get().counts.w; ++iteration)
-                    stages.push_back(JPH::GPU::Stage::SolveVelocity);
-                stages.push_back(JPH::GPU::Stage::Integrate);
-                for (uint32_t iteration = 0; iteration < parameters->Get().solve.x; ++iteration)
-                    stages.push_back(JPH::GPU::Stage::SolvePosition);
-            }
-            // Finish the logical tick once: clear its force accumulator and
-            // transfer active target drives to next-tick stopping ownership.
-            stages.push_back(JPH::GPU::Stage::FinishTick);
         }
-        // This copy contains only the exact previously accepted parameter
-        // lease. It never re-captures a possibly overwritten live endpoint.
-        JoltGpuStepInputs captured = reuseParameters ? parameterInput : JoltGpuStepInputs{};
 
         fixedDeltaTime = deltaTime;
         controlOnly = settings == nullptr;
         cpuForces = std::move(forces);
-        inputs = std::move(captured);
+        inputs = {};
         control = std::move(pendingControl);
         groupCursor = 0;
         modelPrepared = false;
@@ -106,7 +80,7 @@ class JoltGpuTick::Impl
         finalPrepared = finalAccepted = !control.prepareFinalWork;
         finalStates.reset();
         cursor = 0;
-        inputAccepted = controlOnly || (reuseParameters && !cpuForces);
+        inputAccepted = controlOnly;
         planLength = 0;
         submissionBusy = false;
         status = Status::Running;
@@ -275,6 +249,36 @@ class JoltGpuTick::Impl
     void CaptureControlInputs()
     {
         if (!controlOnly) {
+            // Model controls can repack leaves/patches. All sizes, parameter
+            // reuse and stage domains come from that accepted model boundary.
+            auto actual = parameters->Get();
+            actual.counts.x = storage.GetBodyCount();
+            actual.counts.y = storage.GetWorldCount();
+            actual.counts.z = storage.GetShapeCount();
+            actual.solve.z = storage.GetContactCount();
+            actual.solve.w = storage.GetPatchCount();
+            tickParameters = actual;
+            reuseParameters = acceptedParameters && std::memcmp(&*acceptedParameters, &actual, sizeof(actual)) == 0;
+            inputs = reuseParameters ? parameterInput : JoltGpuStepInputs{};
+            inputAccepted = (reuseParameters && !cpuForces) || !storage.GetBodyCount();
+            if (storage.GetBodyCount()) {
+                stages.push_back(JPH::GPU::Stage::PrepareKinematics);
+                for (uint32_t substep = 0; substep < actual.solve.y; ++substep) {
+                    stages.push_back(JPH::GPU::Stage::ApplyForces);
+                    if (storage.GetShapeCount()) {
+                        stages.push_back(JPH::GPU::Stage::BuildBounds);
+                        stages.push_back(JPH::GPU::Stage::CollidePairs);
+                        stages.push_back(JPH::GPU::Stage::SetupContacts);
+                        for (uint32_t iteration = 0; iteration < actual.counts.w; ++iteration)
+                            stages.push_back(JPH::GPU::Stage::SolveVelocity);
+                    }
+                    stages.push_back(JPH::GPU::Stage::Integrate);
+                    if (storage.GetPatchCount())
+                        for (uint32_t iteration = 0; iteration < actual.solve.x; ++iteration)
+                            stages.push_back(JPH::GPU::Stage::SolvePosition);
+                }
+                stages.push_back(JPH::GPU::Stage::FinishTick);
+            }
             for (const auto resource :
                  {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels, JPH::GPU::Resource::Worlds})
                 inputs.Capture(storage, resource);

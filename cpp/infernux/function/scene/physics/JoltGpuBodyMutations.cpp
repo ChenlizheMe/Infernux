@@ -126,16 +126,39 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
         }
         return entry;
     };
-    m_initialize =
-        build("initialize_bodies", (1u << Parameters) | (1u << Initializations) | (1u << States) | (1u << Forces) |
-                                     (1u << Targets));
-    m_centerOfMass = build("update_centers_of_mass", (1u << Parameters) | (1u << CentersOfMass) | (1u << States) |
-                                                       (1u << Targets));
+    m_initialize = build("initialize_bodies", (1u << Parameters) | (1u << Initializations) | (1u << States) |
+                                                  (1u << Forces) | (1u << Targets));
+    m_centerOfMass =
+        build("update_centers_of_mass", (1u << Parameters) | (1u << CentersOfMass) | (1u << States) | (1u << Targets));
 }
 
 std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
     JoltGpuStorage &storage, std::vector<JoltGpuBodyModelUpdate> bodies, std::vector<JoltGpuShapeModelUpdate> shapes,
     const std::vector<BodyInitialization> &initializations, const std::vector<CenterOfMassUpdate> &centersOfMass)
+{
+    std::sort(bodies.begin(), bodies.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
+    auto packet = PreparePacket(storage, storage.GetModel().bodies, bodies, initializations, centersOfMass);
+    return storage.PrepareModelUpdate(std::move(bodies), std::move(shapes), std::move(packet.uploads),
+                                      std::move(packet.dispatches));
+}
+
+std::unique_ptr<JoltGpuModelUpdate>
+JoltGpuBodyMutations::PrepareReplacement(JoltGpuStorage &storage, JoltGpuModel replacement,
+                                         const std::vector<BodyInitialization> &initializations,
+                                         const std::vector<CenterOfMassUpdate> &centersOfMass)
+{
+    if (replacement.bodies.size() != storage.GetBodyCount() || replacement.worlds.size() != storage.GetWorldCount())
+        throw std::invalid_argument("Jolt GPU replacement must retain body capacity and world count");
+    auto packet = PreparePacket(storage, replacement.bodies, {}, initializations, centersOfMass);
+    return storage.PrepareModelReplacement(std::move(replacement), std::move(packet.uploads),
+                                           std::move(packet.dispatches));
+}
+
+JoltGpuBodyMutations::MutationPacket
+JoltGpuBodyMutations::PreparePacket(JoltGpuStorage &storage, const std::vector<BodyModel> &models,
+                                    const std::vector<JoltGpuBodyModelUpdate> &bodyChanges,
+                                    const std::vector<BodyInitialization> &initializations,
+                                    const std::vector<CenterOfMassUpdate> &centersOfMass)
 {
     if (!m_host.SharesServicesWith(storage.GetHost()))
         throw std::invalid_argument("Jolt GPU mutations and storage belong to different compute owners");
@@ -149,14 +172,13 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
             throw std::invalid_argument("Jolt GPU body mutation slot is outside its model");
         indices.push_back(index.x);
     };
-    std::sort(bodies.begin(), bodies.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
     for (const auto &initial : initializations) {
         checkIndex(initial.bodyIndex);
-        const auto changed = std::lower_bound(bodies.begin(), bodies.end(), initial.bodyIndex.x,
+        const auto changed = std::lower_bound(bodyChanges.begin(), bodyChanges.end(), initial.bodyIndex.x,
                                               [](const auto &value, uint32_t index) { return value.index < index; });
-        const auto &model = changed != bodies.end() && changed->index == initial.bodyIndex.x
+        const auto &model = changed != bodyChanges.end() && changed->index == initial.bodyIndex.x
                                 ? changed->model
-                                : storage.GetModel().bodies[initial.bodyIndex.x];
+                                : models[initial.bodyIndex.x];
         ValidateInitial(initial, model);
     }
     std::vector<CenterOfMassUpdate> rebases;
@@ -173,7 +195,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
     if (std::adjacent_find(indices.begin(), indices.end()) != indices.end())
         throw std::invalid_argument("Jolt GPU body mutations require unique slots");
     if (initializations.empty() && rebases.empty())
-        return storage.PrepareModelUpdate(std::move(bodies), std::move(shapes));
+        return {};
 
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
     std::vector<rhi::ComputeBufferUpdate> uploads;
@@ -239,7 +261,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
         input(Parameters, Bytes(&params, 1));
         dispatch(m_centerOfMass, params.counts.y, true, 0);
     }
-    return storage.PrepareModelUpdate(std::move(bodies), std::move(shapes), std::move(uploads), std::move(dispatches));
+    return {std::move(uploads), std::move(dispatches)};
 }
 
 } // namespace infernux
