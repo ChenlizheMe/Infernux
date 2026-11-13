@@ -72,6 +72,7 @@ class JoltGpuTick::Impl
         cpuForces = std::move(forces);
         inputs = {};
         control = std::move(pendingControl);
+        workContinuation = {};
         groupCursor = 0;
         modelPrepared = false;
         modelUpdate.reset();
@@ -106,6 +107,7 @@ class JoltGpuTick::Impl
         parameters.reset();
         cpuForces.reset();
         control = {};
+        workContinuation = {};
         finalStates.reset();
         modelUpdate.reset();
         commandCursor.reset();
@@ -307,7 +309,8 @@ class JoltGpuTick::Impl
 
     void FinishCompleted()
     {
-        if (status == Status::Running && NumericalInputsAccepted() && finalAccepted && receipts.empty())
+        if (status == Status::Running && NumericalInputsAccepted() && finalAccepted && !workContinuation &&
+            receipts.empty())
             Complete();
     }
 
@@ -315,6 +318,18 @@ class JoltGpuTick::Impl
     {
         if (packet && (!host.SharesServicesWith(packet->GetHost()) || packet->GetSubmission().IsValid()))
             throw std::invalid_argument("GPU tick control requires an unaccepted packet from its compute owner");
+    }
+
+    void SelectControlWork(JoltGpuControlWork selected, PacketKind kind)
+    {
+        ValidateControlPacket(selected.packet);
+        if (!selected.packet && selected.continueAfterCompletion)
+            throw std::invalid_argument("GPU control continuation requires a preceding packet receipt");
+        batch = std::move(selected.packet);
+        workContinuation = std::move(selected.continueAfterCompletion);
+        continuationKind = kind;
+        if (batch)
+            batchKind = kind;
     }
 
     void ModelAccepted()
@@ -331,7 +346,7 @@ class JoltGpuTick::Impl
     {
         if (groupCursor < control.groups.size()) {
             const auto &group = control.groups[groupCursor];
-            if (!modelPrepared || modelUpdate || !group.commands.empty() || group.prepareWork ||
+            if (!modelPrepared || modelUpdate || !group.commands.empty() || group.prepareWork || workContinuation ||
                 (commandCursor && !commandCursor->IsComplete()))
                 return;
             commandCursor.reset();
@@ -374,13 +389,22 @@ class JoltGpuTick::Impl
         facts.pending = status == Status::Running || !receipts.empty();
         if (status != Status::Running)
             return facts;
+        // A completion-dependent consumer stays on this source. Waiting for
+        // its preceding receipts neither reruns its factory nor admits another
+        // control group, solver stage or final render consumer.
+        if (!batch && workContinuation && !receipts.empty()) {
+            facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
+            facts.gpuBusy = true;
+            return facts;
+        }
         if (NumericalInputsAccepted() && finalAccepted) {
             if (!receipts.empty())
                 facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
             facts.gpuBusy = !receipts.empty();
             return facts;
         }
-        if ((!batch && (!controlAccepted || !inputAccepted || cursor < stages.size() || !finalPrepared)) ||
+        if ((!batch &&
+             (workContinuation || !controlAccepted || !inputAccepted || cursor < stages.size() || !finalPrepared)) ||
             (batch && !preservation && (batch->RequiresPreparation() || batch->HasPreservationWork()))) {
             facts.host = {static_cast<uint64_t>(HostAction::Prepare), 0, true, false};
         } else if (!submissionBusy && CanSubmit()) {
@@ -483,6 +507,22 @@ class JoltGpuTick::Impl
     bool Prepare()
     {
         if (!batch) {
+            if (workContinuation) {
+                if (!receipts.empty())
+                    return false;
+                const auto kind = continuationKind;
+                auto continuation = std::move(workContinuation);
+                workContinuation = {};
+                SelectControlWork(continuation(), kind);
+                if (!batch) {
+                    if (kind == PacketKind::FinalWork)
+                        finalAccepted = true;
+                    else
+                        FinishControlGroup();
+                    FinishCompleted();
+                }
+                return true;
+            }
             if (NumericalInputsAccepted()) {
                 if (!finalPrepared) {
                     finalStates =
@@ -490,11 +530,8 @@ class JoltGpuTick::Impl
                     auto prepareFinalWork = std::move(control.prepareFinalWork);
                     control.prepareFinalWork = {};
                     finalPrepared = true;
-                    batch = prepareFinalWork(finalStates);
-                    ValidateControlPacket(batch);
-                    if (batch) {
-                        batchKind = PacketKind::FinalWork;
-                    } else {
+                    SelectControlWork(prepareFinalWork(finalStates), PacketKind::FinalWork);
+                    if (!batch) {
                         finalAccepted = true;
                         FinishCompleted();
                     }
@@ -531,12 +568,9 @@ class JoltGpuTick::Impl
                 if (group.prepareWork) {
                     auto prepareWork = std::move(group.prepareWork);
                     group.prepareWork = {};
-                    batch = prepareWork();
-                    ValidateControlPacket(batch);
-                    if (batch) {
-                        batchKind = PacketKind::Work;
+                    SelectControlWork(prepareWork(), PacketKind::Work);
+                    if (batch)
                         return true;
-                    }
                 }
                 FinishControlGroup();
                 return true;
@@ -590,7 +624,7 @@ class JoltGpuTick::Impl
                 inputAccepted = true;
             } else if (kind == PacketKind::Stages) {
                 cursor = batchEnd;
-            } else if (kind == PacketKind::FinalWork) {
+            } else if (kind == PacketKind::FinalWork && !workContinuation) {
                 finalAccepted = true;
             }
             if (!controlAccepted)
@@ -660,6 +694,8 @@ class JoltGpuTick::Impl
 
     std::optional<JoltGpuStepParameters> parameters;
     JoltGpuTickControl control;
+    std::function<JoltGpuControlWork()> workContinuation;
+    PacketKind continuationKind = PacketKind::Work;
     std::unique_ptr<JoltGpuModelUpdate> modelUpdate;
     size_t groupCursor = 0;
     bool modelPrepared = false;

@@ -79,6 +79,7 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
                                  rigidbody->GetMaxAngularVelocity()};
 
         prepared.initialRigidbody = rigidbody->GetECSHandle();
+        prepared.rigidbodyComponentId = rigidbody->GetComponentID();
         const auto &data = PhysicsECSStore::Instance().GetRigidbody(prepared.initialRigidbody);
         prepared.hasInitialLinearVelocity = data.hasLinearVelocity;
         prepared.hasInitialAngularVelocity = data.hasAngularVelocity;

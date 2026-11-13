@@ -23,6 +23,9 @@ struct PreparedGpuActor
     // Creation inputs belong to this exact component generation, even when a
     // different Rigidbody is attached to the actor before GPU acceptance.
     PhysicsECSStore::RigidbodyHandle initialRigidbody;
+    /// Full component identity captured with initialRigidbody; zero without
+    /// an enabled Rigidbody contributing to this authored model.
+    uint64_t rigidbodyComponentId = 0;
     bool hasInitialLinearVelocity = false;
     bool hasInitialAngularVelocity = false;
     struct ColliderCenter

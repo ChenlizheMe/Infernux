@@ -61,6 +61,72 @@ Float4 Rotation(const glm::quat &v)
     const auto q = glm::normalize(v);
     return {q.x, q.y, q.z, q.w};
 }
+QueryInput Query(uint32_t operation, uint32_t collector, uint32_t layers = UINT32_MAX, bool triggers = true)
+{
+    QueryInput request{};
+    request.meta = {operation, collector, ShapeSphere, 0};
+    request.filter = {layers, triggers ? 1u : 0u, 0, 0};
+    request.source.x = InvalidQueryBodySlot;
+    request.rotation.w = 1;
+    return request;
+}
+void TargetCollider(QueryInput &request, const Collider &collider)
+{
+    const auto id = collider.GetComponentID();
+    request.meta.w |= QueryTargetCollider;
+    request.filter.z = static_cast<uint32_t>(id);
+    request.filter.w = static_cast<uint32_t>(id >> 32);
+}
+void QueryRayInput(QueryInput &request, const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
+{
+    request.positionMaximum = Vector(origin);
+    request.direction = Vector(direction);
+    if (!std::isfinite(maximum) || maximum <= 0 || (direction.x == 0 && direction.y == 0 && direction.z == 0))
+        throw std::invalid_argument("Physics ray requires positive finite distance and nonzero direction");
+    request.positionMaximum.w = maximum;
+}
+void QuerySphereInput(QueryInput &request, const glm::vec3 &center, float radius)
+{
+    request.positionMaximum = Vector(center);
+    if (!std::isfinite(radius) || radius <= 0)
+        throw std::invalid_argument("Physics query sphere requires a positive finite radius");
+    request.meta.z = ShapeSphere;
+    request.geometry = {0, 0, 0, radius};
+}
+void QueryBoxInput(QueryInput &request, const glm::vec3 &center, const glm::vec3 &halfExtents,
+                   const glm::quat &rotation)
+{
+    request.positionMaximum = Vector(center);
+    const auto half = Vector(halfExtents);
+    if (half.x <= 0 || half.y <= 0 || half.z <= 0)
+        throw std::invalid_argument("Physics query box requires positive finite half extents");
+    request.meta.z = ShapeBox;
+    request.geometry = {half.x, half.y, half.z, std::min(0.05f, std::min({half.x, half.y, half.z}))};
+    request.rotation = Rotation(rotation);
+}
+void QueryCapsuleInput(QueryInput &request, const glm::vec3 &a, const glm::vec3 &b, float radius)
+{
+    (void)Vector(a);
+    (void)Vector(b);
+    const glm::dvec3 delta = glm::dvec3(b) - glm::dvec3(a);
+    const double radial = std::hypot(delta.x, delta.z);
+    const double length = std::hypot(radial, delta.y);
+    const auto center = glm::vec3((glm::dvec3(a) + glm::dvec3(b)) * 0.5);
+    QuerySphereInput(request, center, radius);
+    if (length == 0)
+        return;
+    if (length * 0.5 > std::numeric_limits<float>::max())
+        throw std::invalid_argument("Physics query capsule length exceeds device coordinates");
+    request.meta.z = ShapeCapsule;
+    request.geometry.y = static_cast<float>(length * 0.5);
+    const double halfAngle = std::atan2(radial, delta.y) * 0.5;
+    const double sine = std::sin(halfAngle);
+    request.rotation =
+        radial > 0    ? Float4{static_cast<float>(delta.z / radial * sine), 0,
+                               static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
+        : delta.y > 0 ? Float4{0, 0, 0, 1}
+                      : Float4{1, 0, 0, 0};
+}
 struct AdmissionScope
 {
     explicit AdmissionScope(JoltGpuScene &scene) : scene(scene)
@@ -388,8 +454,7 @@ bool PhysicsWorld::PublishRenderPoses() const
         throw;
     }
 }
-std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
-PhysicsWorld::PrepareRenderConsumer(bool numericalChange) const
+JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(bool numericalChange) const
 {
     FrameWorkOwner::Scope preparation(*m_gpuWork);
     auto &rendering = *m_gpuRenderState;
@@ -409,11 +474,11 @@ PhysicsWorld::PrepareRenderConsumer(bool numericalChange) const
     job->snapshot = std::move(snapshot);
     job->keys = keys;
     rendering.pending = job;
-    return [this, job = std::move(job)](const JoltGpuScene::Publication &publication) {
+    return [this, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         auto &state = *m_gpuRenderState;
-        job->bindings = state.bindings.Prepare(job->snapshot, publication);
-        job->output = state.program.Prepare(publication.bodyStates, job->bindings->nodes, job->bindings->bindings);
-        job->publication = &publication;
+        job->bindings = state.bindings.Prepare(job->snapshot, *publication);
+        job->output = state.program.Prepare(publication->bodyStates, job->bindings->nodes, job->bindings->bindings);
+        job->publication = publication.get();
         return job->output.batch;
     };
 }
@@ -722,8 +787,7 @@ void PhysicsWorld::FlushAuthoring() const
     if (m_gpuScene && !m_gpuCancelled)
         const_cast<PhysicsWorld *>(this)->RefreshGpuSurfaces();
 }
-void PhysicsWorld::RunControl(
-    const std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)> &consumer) const
+void PhysicsWorld::RunControl(const JoltGpuScene::Consumer &consumer) const
 {
     RequireOwnerThread();
     RequireHealthyStep();
@@ -750,6 +814,79 @@ void PhysicsWorld::RunControl(
         const_cast<PhysicsWorld *>(this)->FailStep();
         throw;
     }
+}
+
+std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunQuery(const std::vector<QueryInput> &requests) const
+{
+    JoltGpuPreparedQuery prepared;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        prepared = m_gpuQueries->Prepare(publication, requests, {},
+                                         GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
+        return std::move(prepared.work);
+    });
+    return std::move(prepared.result);
+}
+
+std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunGeometryQuery(const QueryInput &request,
+                                                                   const QueryPrimitive &other) const
+{
+    RequireOwnerThread();
+    RequireHealthyStep();
+    RequireGpu();
+    if (m_synchronousRead)
+        throw std::logic_error("Physics geometry query cannot reenter its synchronous source");
+    FlagScope reading(m_synchronousRead);
+    // Finish only a logical operation already owned by this source. Do not
+    // flush or admit queued author input, and never start a new fixed step.
+    const_cast<PhysicsWorld *>(this)->CompletePendingStep();
+    JoltGpuPreparedQuery prepared;
+    {
+        FrameWorkOwner::Scope preparation(*m_gpuWork);
+        prepared = m_gpuQueries->Prepare({}, {request}, {other}, 0);
+        m_gpuScene->BeginWork(std::move(prepared.work));
+    }
+    (void)AdvanceGpuJob(true);
+    return std::move(prepared.result);
+}
+
+std::vector<Collider *> PhysicsWorld::QueryColliders(const QueryInput &request) const
+{
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    std::vector<Collider *> colliders;
+    const auto &records = result->ReadHits();
+    colliders.reserve(records.size());
+    for (const auto &record : records)
+        if (auto *collider = DecodeQueryHit(*result, record).collider)
+            colliders.push_back(collider);
+    return colliders;
+}
+
+RaycastHit PhysicsWorld::DecodeQueryHit(const JoltGpuQueryResult &result, const QueryHit &record) const
+{
+    RaycastHit hit;
+    if (!record.meta.y)
+        return hit;
+    const auto &publication = *result.publication;
+    if (record.meta.x >= publication.actors.size() || !publication.actors[record.meta.x] ||
+        record.meta.z >= publication.leaves.size())
+        throw std::runtime_error("GPU query address is absent from its retained publication");
+    const auto &identity = *publication.actors[record.meta.x];
+    const auto &address = publication.leaves[record.meta.z];
+    if (address.bodySlot != record.meta.x || address.actorLeaf >= identity.leaves.size())
+        throw std::runtime_error("GPU query leaf belongs to a different published actor");
+    const auto &leaf = identity.leaves[address.actorLeaf];
+    hit.bodyId = identity.bodyId;
+    hit.subShapeId = leaf.subShapeId;
+    hit.point = Vector(record.positionDistance);
+    hit.normal = Vector(record.normalFraction);
+    hit.distance = record.positionDistance.w;
+    hit.target = leaf.surfaceTarget;
+    hit.collider = leaf.surfaceTarget.GetCollider();
+    hit.gameObject = leaf.surfaceTarget.GetGameObject();
+    hit.gameObjectId = leaf.surfaceGameObjectId;
+    hit.colliderId = leaf.colliderId;
+    return hit;
 }
 
 uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
@@ -1077,15 +1214,18 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(uint32_t id, PhysicsStateFi
     BodyState state{};
     BodyModel model{};
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
-    RunControl([&](const JoltGpuScene::Publication &publication) {
+    std::shared_ptr<const JoltGpuScene::Publication> retainedPublication;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        retainedPublication = publication;
         const auto allocation = m_gpuScene->FindBody(id);
-        if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication.actors.size() ||
-            !publication.actors[allocation.slot] || publication.actors[allocation.slot]->bodyId != id)
+        if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
+            !publication->actors[allocation.slot] || publication->actors[allocation.slot]->bodyId != id)
             throw std::invalid_argument("Physics state requires an accepted live body");
         std::vector<rhi::ComputeBufferRead> reads{
-            {publication.bodyStates, uint64_t(allocation.slot) * sizeof(BodyState), sizeof(BodyState)}};
+            {publication->bodyStates, uint64_t(allocation.slot) * sizeof(BodyState), sizeof(BodyState)}};
         if (wantMass)
-            reads.push_back({publication.bodyModels, uint64_t(allocation.slot) * sizeof(BodyModel), sizeof(BodyModel)});
+            reads.push_back(
+                {publication->bodyModels, uint64_t(allocation.slot) * sizeof(BodyModel), sizeof(BodyModel)});
         packet = rhi::PrepareComputeBatch(*m_gpuHost, {}, {}, std::move(reads));
         return packet;
     });
@@ -1094,7 +1234,7 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(uint32_t id, PhysicsStateFi
     if (wantMass)
         packet->Readback(1)->ReadInto(&model, sizeof(model));
     const auto allocation = m_gpuScene->FindBody(id);
-    const auto &identity = *m_gpuScene->GetPublished()->actors[allocation.slot];
+    const auto &identity = *retainedPublication->actors[allocation.slot];
     PhysicsBodyMotionState result;
     result.bodyId = id;
     result.shapeRevision = identity.shapeRevision;
@@ -1166,59 +1306,31 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
     if (!origins || !directions || !hits || !mask || count > std::numeric_limits<uint32_t>::max())
         throw std::invalid_argument("Raycast batch requires valid arrays within the device index range");
     RequireGpu();
-    std::vector<RaycastInput> rays;
+    std::vector<QueryInput> requests;
     {
         FrameWorkOwner::Scope preparation(*m_gpuWork);
-        rays.reserve(count);
+        requests.reserve(count);
         for (size_t i = 0; i < count; ++i) {
             const auto offset = i * 3;
-            rays.push_back({{origins[offset], origins[offset + 1], origins[offset + 2], maximum},
-                            {directions[offset], directions[offset + 1], directions[offset + 2], 0},
-                            {layers, triggers ? 1u : 0u, 0, 0}});
+            auto request = Query(QueryRay, QueryClosest, layers, triggers);
+            QueryRayInput(request, {origins[offset], origins[offset + 1], origins[offset + 2]},
+                          {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
+            requests.push_back(request);
         }
     }
-    JoltGpuRaycastBatch result;
-    RunControl([&](const JoltGpuScene::Publication &publication) {
-        result = m_gpuQueries->Prepare({publication.bodyModels, publication.shapeModels, publication.bodyStates, 0,
-                                        m_gpuScene->GetCapacity(), static_cast<uint32_t>(publication.leaves.size())},
-                                       rays, true);
-        return result.batch;
-    });
-    std::vector<JPH::GPU::RaycastHit> records(count);
+    const auto result = RunQuery(requests);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    result.batch->Readback(0)->ReadInto(records.data(), uint64_t(count) * sizeof(records.front()));
-    const auto publication = m_gpuScene->GetPublished();
+    const auto &records = result->ReadHits();
+    if (records.size() != count)
+        throw std::runtime_error("GPU closest query did not produce one complete record per request");
     for (size_t i = 0; i < count; ++i) {
-        hits[i] = {};
-        mask[i] = 0;
-        const auto &record = records[i];
-        if (!record.meta.y)
-            continue;
-        if (record.meta.x >= publication->actors.size() || !publication->actors[record.meta.x])
-            throw std::runtime_error("GPU raycast slot is absent from its immutable publication");
-        const auto &identity = *publication->actors[record.meta.x];
-        if (record.meta.z >= publication->leaves.size())
-            throw std::runtime_error("GPU raycast leaf is absent from its immutable publication");
-        const auto &address = publication->leaves[record.meta.z];
-        if (address.bodySlot != record.meta.x || address.actorLeaf >= identity.leaves.size())
-            throw std::runtime_error("GPU raycast leaf belongs to a different published actor");
-        const auto &leaf = identity.leaves[address.actorLeaf];
-        auto &hit = hits[i];
-        hit.bodyId = identity.bodyId;
-        hit.subShapeId = leaf.subShapeId;
-        hit.point = Vector(record.positionDistance);
-        hit.normal = Vector(record.normalFraction);
-        hit.distance = record.positionDistance.w;
-        hit.target = leaf.surfaceTarget;
-        hit.collider = leaf.surfaceTarget.GetCollider();
-        hit.gameObject = leaf.surfaceTarget.GetGameObject();
-        hit.gameObjectId = leaf.surfaceGameObjectId;
-        hit.colliderId = leaf.colliderId;
-        mask[i] = 1;
+        hits[i] = DecodeQueryHit(*result, records[i]);
+        mask[i] = static_cast<uint8_t>(records[i].meta.y != 0);
     }
     if (generation)
-        *generation = GetQueryGeneration();
+        *generation = result->numericalGeneration;
 }
+
 bool PhysicsWorld::Raycast(const glm::vec3 &origin, const glm::vec3 &direction, float maximum, RaycastHit &hit,
                            uint32_t layers, bool triggers) const
 {
@@ -1411,41 +1523,136 @@ void PhysicsWorld::WakeBodiesTouchingStatic(uint32_t)
     Unsupported("static-neighbour sleep/wake control");
 }
 
-std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const Collider &, const glm::vec3 &,
-                                                                         const glm::quat &, const Collider &,
-                                                                         const glm::vec3 &, const glm::quat &) const
+std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const Collider &a, const glm::vec3 &positionA,
+                                                                         const glm::quat &rotationA, const Collider &b,
+                                                                         const glm::vec3 &positionB,
+                                                                         const glm::quat &rotationB) const
 {
-    Unsupported("penetration query");
+    RequireOwnerThread();
+    const auto cook = [](const Collider &collider, const glm::vec3 &position,
+                         const glm::quat &rotation) -> std::optional<QueryPrimitive> {
+        (void)Vector(position);
+        const auto q = Rotation(rotation);
+        const auto shape = collider.CreateJoltShape();
+        if (!shape)
+            throw std::runtime_error("Collider geometry is not ready for an explicit penetration query");
+        const auto prepared = PrepareJoltGpuShape(*shape, 1);
+        if (prepared.leaves.empty())
+            return std::nullopt;
+        if (prepared.leaves.size() != 1)
+            throw std::runtime_error("GPU penetration for a multi-leaf Collider requires a union separation query");
+        const auto &leaf = prepared.leaves.front().model;
+        const glm::quat world(q.w, q.x, q.y, q.z);
+        const glm::quat local(leaf.localRotation.w, leaf.localRotation.x, leaf.localRotation.y, leaf.localRotation.z);
+        const auto center = position + world * (glm::vec3(prepared.centerOfMass.GetX(), prepared.centerOfMass.GetY(),
+                                                          prepared.centerOfMass.GetZ()) +
+                                                Vector(leaf.localPositionCOM));
+        return QueryPrimitive{{leaf.meta.x, 0, 0, 0}, leaf.geometry, Vector(center), Rotation(world * local)};
+    };
+    std::optional<QueryPrimitive> first, second;
+    {
+        TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+        first = cook(a, positionA, rotationA);
+        second = cook(b, positionB, rotationB);
+    }
+    if (!first || !second)
+        return std::nullopt;
+    auto request = Query(QueryPenetration, QueryClosest);
+    request.meta.z = first->meta.x;
+    request.positionMaximum = first->position;
+    request.rotation = first->rotation;
+    request.geometry = first->geometry;
+    auto result = RunGeometryQuery(request, *second);
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    const auto &records = result->ReadHits();
+    if (records.empty() || !records.front().meta.y)
+        return std::nullopt;
+    const auto &hit = records.front();
+    return PhysicsPenetrationResult{Vector(hit.normalFraction), hit.pointADepth.w, Vector(hit.pointADepth),
+                                    Vector(hit.positionDistance)};
 }
-bool PhysicsWorld::RaycastCollider(const Collider &, const glm::vec3 &, const glm::vec3 &, float, RaycastHit &) const
+bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &origin, const glm::vec3 &direction,
+                                   float maximum, RaycastHit &hit) const
 {
-    Unsupported("Collider-only raycast");
+    auto request = Query(QueryRay, QueryClosest);
+    QueryRayInput(request, origin, direction, maximum);
+    TargetCollider(request, collider);
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    const auto &record = result->ReadHits().front();
+    hit = DecodeQueryHit(*result, record);
+    return record.meta.y != 0;
 }
-glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &, const glm::vec3 &) const
+glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const glm::vec3 &point) const
 {
-    Unsupported("closest-point query");
+    (void)Vector(point);
+    if (!collider.IsEnabled() || !collider.GetGameObject() || !collider.GetGameObject()->IsActiveInHierarchy())
+        return point;
+    auto request = Query(QueryClosestPoint, QueryClosest);
+    request.positionMaximum = Vector(point);
+    TargetCollider(request, collider);
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    const auto &record = result->ReadHits().front();
+    if (!record.meta.y)
+        throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
+    return Vector(record.positionDistance);
 }
-std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &, const glm::vec3 &, float, uint32_t, bool) const
+std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maximum,
+                                                 uint32_t layers, bool triggers) const
 {
-    Unsupported("all-hit raycast");
+    auto request = Query(QueryRay, QueryAll, layers, triggers);
+    QueryRayInput(request, origin, direction, maximum);
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    std::vector<RaycastHit> hits;
+    const auto &records = result->ReadHits();
+    hits.reserve(records.size());
+    for (const auto &record : records)
+        hits.push_back(DecodeQueryHit(*result, record));
+    return hits;
 }
-std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &, float, uint32_t, bool) const
+std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, float radius, uint32_t layers,
+                                                    bool triggers) const
 {
-    Unsupported("sphere overlap query");
+    auto request = Query(QueryOverlap, QueryUniqueCollider, layers, triggers);
+    QuerySphereInput(request, center, radius);
+    return QueryColliders(request);
 }
-std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &, const glm::vec3 &, const glm::quat &, uint32_t,
-                                                 bool) const
+std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
+                                                 const glm::quat &rotation, uint32_t layers, bool triggers) const
 {
-    Unsupported("box overlap query");
+    auto request = Query(QueryOverlap, QueryUniqueCollider, layers, triggers);
+    QueryBoxInput(request, center, halfExtents, rotation);
+    return QueryColliders(request);
 }
-std::vector<Collider *> PhysicsWorld::OverlapCapsule(const glm::vec3 &, const glm::vec3 &, float, uint32_t, bool) const
+std::vector<Collider *> PhysicsWorld::OverlapCapsule(const glm::vec3 &a, const glm::vec3 &b, float radius,
+                                                     uint32_t layers, bool triggers) const
 {
-    Unsupported("capsule overlap query");
+    auto request = Query(QueryOverlap, QueryUniqueCollider, layers, triggers);
+    QueryCapsuleInput(request, a, b, radius);
+    return QueryColliders(request);
 }
-std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 &, const glm::vec3 &, uint32_t,
-                                                                bool) const
+std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum,
+                                                                uint32_t layers, bool triggers) const
 {
-    Unsupported("body bounds query");
+    (void)Vector(minimum);
+    (void)Vector(maximum);
+    if (glm::any(glm::greaterThan(minimum, maximum)))
+        throw std::invalid_argument("Physics query bounds require minimum <= maximum");
+    auto request = Query(QueryBodyBounds, QueryUniqueBody, layers, triggers);
+    request.positionMaximum = Vector(glm::vec3((glm::dvec3(minimum) + glm::dvec3(maximum)) * 0.5));
+    request.direction = Vector(glm::vec3((glm::dvec3(maximum) - glm::dvec3(minimum)) * 0.5));
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    auto &store = PhysicsECSStore::Instance();
+    std::vector<Rigidbody *> bodies;
+    for (const auto &record : result->ReadHits()) {
+        const auto &identity = *result->publication->actors[record.meta.x];
+        if (store.IsValid(identity.rigidbody))
+            bodies.push_back(store.GetRigidbody(identity.rigidbody).owner);
+    }
+    return bodies;
 }
 bool PhysicsWorld::SphereCast(const glm::vec3 &, float, const glm::vec3 &, float, RaycastHit &, uint32_t, bool) const
 {

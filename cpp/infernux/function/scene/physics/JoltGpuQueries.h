@@ -1,54 +1,83 @@
 #pragma once
 
-#include "JoltGpuPrograms.h"
+#include "JoltGpuScene.h"
+
+#include <array>
+#include <cstdint>
+#include <vector>
 
 namespace infernux
 {
 
-/// All three frozen values must come from ONE immutable scene publication.
-/// The publication's identity array must remain with results to resolve slots;
-/// current mutable scene/body lookup tables cannot identify an older hit.
-struct JoltGpuQuerySnapshot
+/// One logical request's immutable scene identity and device outputs. Every
+/// continuation retains this exact publication; decoding must never substitute
+/// the scene's current publication after slots or members have changed.
+struct JoltGpuQueryResult
 {
-    std::shared_ptr<rhi::ComputeBuffer> bodyModels;
-    std::shared_ptr<rhi::ComputeBuffer> shapeModels;
-    std::shared_ptr<rhi::ComputeBuffer> bodyStates;
-    uint32_t firstBody = 0;
-    uint32_t bodyCount = 0;
-    uint32_t shapeCount = 0;
-};
-
-struct JoltGpuRaycastBatch
-{
-    std::shared_ptr<rhi::PreparedComputeBatch> batch;
+    std::shared_ptr<const JoltGpuScene::Publication> publication;
+    uint64_t numericalGeneration = 0;
     std::shared_ptr<rhi::ComputeBuffer> hits;
-    uint32_t rayCount = 0;
+    std::shared_ptr<rhi::ComputeBuffer> spans;
+    std::shared_ptr<rhi::ComputeBuffer> summary;
+    uint32_t queryCount = 0;
+    uint32_t hitCapacity = 0;
+
+    /// Header and output transfers retain their actual source packets.
+    /// Known-count collectors fuse summary and outputs into the initial packet.
+    /// Variable-count collectors read the 16-byte summary first and prepare a
+    /// valid-prefix tail only after its receipt; no CPU candidate download.
+    std::shared_ptr<rhi::ComputeReadback> summaryReadback;
+    std::shared_ptr<rhi::PreparedComputeBatch> tailBatch;
+    JPH::GPU::QuerySummary summaryValue{};
+
+    /// Call only after the whole ControlWork completes. Materializes final
+    /// output records once and keeps them available for container adapters.
+    [[nodiscard]] const std::vector<JPH::GPU::QueryHit> &ReadHits();
+    [[nodiscard]] const std::vector<JPH::GPU::QuerySpan> &ReadSpans();
+
+  private:
+    friend class JoltGpuQueries;
+    void ReadSummary();
+    void Materialize();
+    uint32_t hitReadbackIndex = 0;
+    uint32_t spanReadbackIndex = 0;
+    bool knownCount = false;
+    bool headerComplete = false;
+    bool materialized = false;
+    std::vector<JPH::GPU::QueryHit> hostHits;
+    std::vector<JPH::GPU::QuerySpan> hostSpans;
 };
 
-/// Typed consumer of the common compiler's raycast_closest artifact. One GPU
-/// lane visits the admitted body's leaf ranges; no CPU physics/query fallback.
+struct JoltGpuPreparedQuery
+{
+    std::shared_ptr<JoltGpuQueryResult> result;
+    JoltGpuControlWork work;
+};
+
+/// Shared operation/collector pipeline compiled from the common query artifact.
+/// Geometry, filtering, counting and compaction run on the device. Host work
+/// prepares packets, reads status and wraps only the compact result prefix.
 class JoltGpuQueries final
 {
   public:
     JoltGpuQueries(rhi::ComputeHost &host, const ShaderTargetCode &target);
 
-    /// Does not submit or wait. Optional readback is in this SAME packet at
-    /// index zero; callers read it only after the actual receipt completes.
-    /// Empty rays return an empty result. Empty worlds still produce GPU misses.
-    /// Invalid ray records throw before preparing any work. Defaults/configured
-    /// masks belong to the public facade; an explicit zero mask means no hit.
-    /// Convex starts inside report distance zero. Sphere center normal is local
-    /// +Y; box interior normals use the nearest outer face, X/Y/Z tie order.
-    /// Rounded box edges/corners use their actual Minkowski geometry/normals;
-    /// this deliberately corrects the CPU Jolt ray path's outer-AABox shortcut.
-    [[nodiscard]] JoltGpuRaycastBatch Prepare(const JoltGpuQuerySnapshot &snapshot,
-                                              const std::vector<JPH::GPU::RaycastInput> &rays,
-                                              bool readback = false) const;
+    /// Prepare only; the scene's existing source admits every returned packet
+    /// and continuation, retaining its budgets, cancellation and real receipts.
+    /// A null publication is valid for explicit immutable geometry requests.
+    [[nodiscard]] JoltGpuPreparedQuery Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
+                                               const std::vector<JPH::GPU::QueryInput> &queries,
+                                               const std::vector<JPH::GPU::QueryPrimitive> &primitives,
+                                               uint64_t numericalGeneration) const;
 
   private:
+    struct Program
+    {
+        std::shared_ptr<rhi::ComputeKernel> kernel;
+        std::vector<uint8_t> ports;
+    };
     rhi::ComputeHost m_host;
-    std::shared_ptr<rhi::ComputeKernel> m_kernel;
-    std::vector<uint8_t> m_ports;
+    std::array<Program, 3> m_programs;
 };
 
 } // namespace infernux

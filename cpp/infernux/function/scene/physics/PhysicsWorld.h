@@ -32,6 +32,7 @@ class FrameWorkOwner;
 class Infernux;
 class JoltGpuScene;
 class JoltGpuQueries;
+struct JoltGpuQueryResult;
 struct PreparedGpuActor;
 struct ContactEvent;
 namespace rhi
@@ -730,10 +731,13 @@ class PhysicsWorld
     void FlushAuthoring() const;
     void DrainGpuSource() const;
     void ObserveGpuPublication(bool numericalChange) const;
-    [[nodiscard]] std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
-    PrepareRenderConsumer(bool numericalChange) const;
-    void RunControl(const std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const JoltGpuScene::Publication &)>
-                        &consumer) const;
+    [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(bool numericalChange) const;
+    void RunControl(const JoltGpuScene::Consumer &consumer) const;
+    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(const std::vector<JPH::GPU::QueryInput> &requests) const;
+    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(const JPH::GPU::QueryInput &request,
+                                                                       const JPH::GPU::QueryPrimitive &other) const;
+    [[nodiscard]] std::vector<Collider *> QueryColliders(const JPH::GPU::QueryInput &request) const;
+    [[nodiscard]] RaycastHit DecodeQueryHit(const JoltGpuQueryResult &result, const JPH::GPU::QueryHit &record) const;
     void RefreshGpuActor(uint32_t bodyId, const std::function<void(PreparedGpuActor &)> &edit = {});
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(uint32_t bodyId, PhysicsStateFields fields) const;
     void CheckContactSupport() const;

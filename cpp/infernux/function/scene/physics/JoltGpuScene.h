@@ -42,6 +42,9 @@ class JoltGpuScene final
         uint64_t colliderId = 0;
         uint32_t subShapeId = 0;
         uint32_t subShapeBits = 0;
+        uint32_t memberIndex = 0;
+        /// Accepted terminal geometry in leaf COM space, at baked unit scale.
+        JPH::RefConst<JPH::Shape> shape;
         bool sensor = false;
     };
 
@@ -60,8 +63,10 @@ class JoltGpuScene final
         /// Accepted author motion type, without the independent residency bit.
         uint32_t acceptedMotionType = JPH::GPU::MotionStatic;
         PhysicsActorHandle actor;
-        /// Component generation contributing the nonstatic author model.
+        /// Enabled component generation contributing this accepted author model.
         PhysicsECSStore::RigidbodyHandle rigidbody;
+        /// Full component ID captured with rigidbody, not a live pool lookup.
+        uint64_t rigidbodyComponentId = 0;
         OwnerIdentity owner;
         std::vector<PublishedLeaf> leaves;
         JPH::GPU::Float4 rootCenterOfMass{};
@@ -86,7 +91,9 @@ class JoltGpuScene final
         /// Addresses own no individual allocation and never refer to live slots.
         std::vector<LeafAddress> leaves;
     };
-    using Consumer = std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const Publication &)>;
+    /// The retained publication travels with every result/continuation. A
+    /// consumer must resolve hit identities through this exact shared value.
+    using Consumer = std::function<JoltGpuControlWork(const std::shared_ptr<const Publication> &)>;
 
     /// Targets come from the common compiler. This owner creates no compiler,
     /// device or queue. One fixed world range contains all capacity slots;
@@ -138,11 +145,16 @@ class JoltGpuScene final
     /// advancing a solver or a clock. Uses the last published fixed-step
     /// identity (zero before the first tick) within the supplied epoch.
     void BeginControl(uint64_t simulationEpoch);
+    /// Borrow explicit-geometry work on this same source without accepting
+    /// queued author inputs, capturing or publishing a scene generation. The
+    /// source must be idle/complete, with its prior publication already handled.
+    /// Callers observe GetTickStatus/WaitForProgress, not PublishCompletedControl.
+    void BeginWork(JoltGpuControlWork work);
     /// Prepares a read-only GPU consumer against the immutable post-command
     /// publication, through the same tick source and completion receipts. The
-    /// callback may prepare GPU work only: it must not submit, wait, author
-    /// scene changes or reenter the world. Control publication waits for its
-    /// returned packet to complete as well as the preceding author prefix.
+    /// callback and its continuations may prepare GPU work only: they must not
+    /// submit, wait, author scene changes or reenter the world. Publication waits
+    /// for the entire returned chain as well as the preceding author prefix.
     void BeginControl(uint64_t simulationEpoch, Consumer consumer);
     /// The optional final consumer follows all control/query work. Both
     /// consumers may prepare GPU work only under the callback contract above.

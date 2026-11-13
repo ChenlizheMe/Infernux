@@ -6,9 +6,31 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <utility>
 
 namespace infernux
 {
+
+/// One unaccepted packet and its optional completion-dependent successor.
+/// The existing tick source alone submits, accounts and observes every packet.
+/// Continuations run once on the owner thread after the preceding real receipt
+/// completes. They may prepare work, but must not submit, wait or reenter.
+/// A null packet ends the chain and must not carry another continuation.
+struct JoltGpuControlWork
+{
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+    std::function<JoltGpuControlWork()> continueAfterCompletion;
+
+    JoltGpuControlWork() = default;
+    JoltGpuControlWork(std::shared_ptr<rhi::PreparedComputeBatch> value) : packet(std::move(value))
+    {
+    }
+    JoltGpuControlWork(std::shared_ptr<rhi::PreparedComputeBatch> value,
+                       std::function<JoltGpuControlWork()> continuation)
+        : packet(std::move(value)), continueAfterCompletion(std::move(continuation))
+    {
+    }
+};
 
 /// One ordered author-model boundary, per-body FIFO commands, then optional
 /// deferred compute work. Factories run after preceding groups are accepted,
@@ -20,10 +42,10 @@ struct JoltGpuControlGroup
     std::function<std::unique_ptr<JoltGpuModelUpdate>()> prepareModel;
     std::function<void()> modelAccepted;
     std::vector<JPH::GPU::BodyCommand> commands;
-    /// Prepare once, after this group's model and commands are accepted. The
-    /// returned unaccepted packet shares this source's admission and receipts.
-    /// Null means no GPU work; preparation must not submit the packet itself.
-    std::function<std::shared_ptr<rhi::PreparedComputeBatch>()> prepareWork;
+    /// Prepare once, after this group's model and commands are accepted. Its
+    /// packet and completion-dependent successors share this source's admission
+    /// and receipts. The group advances only after the chain's final acceptance.
+    std::function<JoltGpuControlWork()> prepareWork;
 };
 
 /// Accepted through the tick's existing work source before solver inputs are
@@ -41,10 +63,10 @@ struct JoltGpuTickControl
     std::vector<JoltGpuControlGroup> groups;
     /// Prepare exactly once after every numerical writer is accepted, including
     /// for a control-only/empty world. The frozen final state may be null for
-    /// an empty world. The packet uses this source's admission and receipts;
-    /// completion waits for it too. Do not submit, wait or reenter the owner.
-    std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const std::shared_ptr<rhi::ComputeBuffer> &)>
-        prepareFinalWork;
+    /// an empty world. All packets in its chain use this source's admission and
+    /// receipts; completion waits for the whole chain. Do not submit, wait or
+    /// reenter the owner.
+    std::function<JoltGpuControlWork(const std::shared_ptr<rhi::ComputeBuffer> &)> prepareFinalWork;
 };
 
 /// One PhysicsWorld-owned stage cursor using the engine's existing work source,

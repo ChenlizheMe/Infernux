@@ -3,15 +3,11 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/GPU/PhysicsTypes.h>
 #include <Jolt/Math/Vec3.h>
+#include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <Jolt/Physics/Collision/Shape/SubShapeID.h>
 
 #include <cstdint>
 #include <vector>
-
-namespace JPH
-{
-class Shape;
-}
 
 namespace infernux
 {
@@ -23,6 +19,9 @@ struct PreparedGpuLeaf
     JPH::SubShapeID subShapeID;
     uint32_t subShapeBits = 0;
     uint32_t memberIndex = 0;
+    /// Immutable terminal geometry, already baked to unit leaf scale.
+    /// Its COM-local vertices do not contain the body's or leaf's rigid pose.
+    JPH::RefConst<JPH::Shape> shape;
 };
 
 /// Complete authored leaf stream. An empty body has no collidable dummy leaf.

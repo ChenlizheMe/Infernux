@@ -63,6 +63,7 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCou
         if (scale.GetX() != 1.0f || scale.GetY() != 1.0f || scale.GetZ() != 1.0f)
             throw std::invalid_argument("Jolt GPU leaf scale must be unit; component scale must already be baked");
         PreparedGpuLeaf output{};
+        output.shape = leaf.mShape;
         output.subShapeID = leaf.mSubShapeIDCreator.GetID();
         output.subShapeBits = leaf.mSubShapeIDCreator.GetNumBitsWritten();
         output.memberIndex = MemberIndex(shape, output.subShapeID, memberCount);

@@ -306,6 +306,7 @@ class JoltGpuScene::Impl
         identity->acceptedMotionType = actor.body.meta.z & ~MotionNotResident;
         identity->actor = slot.actor;
         identity->rigidbody = actor.initialRigidbody;
+        identity->rigidbodyComponentId = actor.rigidbodyComponentId;
         identity->owner = slot.owner;
         identity->rootCenterOfMass = rootCOM;
         identity->authoredShape = std::move(actor.authoredShape);
@@ -321,6 +322,8 @@ class JoltGpuScene::Impl
                 publishedLeaf.surfaceGameObjectId = object->GetID();
             publishedLeaf.subShapeId = leaf.subShapeID.GetValue();
             publishedLeaf.subShapeBits = leaf.subShapeBits;
+            publishedLeaf.memberIndex = leaf.memberIndex;
+            publishedLeaf.shape = leaf.shape;
             publishedLeaf.sensor = (leaf.model.meta.w & ShapeSensor) != 0;
             identity->leaves.push_back(std::move(publishedLeaf));
         }
@@ -591,15 +594,18 @@ class JoltGpuScene::Impl
             }
             return {};
         };
+        const std::shared_ptr<const Publication> retainedPublication = publication;
         if (consumer)
-            capture.prepareWork = [publication, consumer = std::move(consumer)] { return consumer(*publication); };
+            capture.prepareWork = [retainedPublication, consumer = std::move(consumer)] {
+                return consumer(retainedPublication);
+            };
         JoltGpuTickControl control;
         if (finalConsumer)
-            control.prepareFinalWork =
-                [publication, consumer = std::move(finalConsumer)](const std::shared_ptr<rhi::ComputeBuffer> &states) {
-                    publication->bodyStates = states;
-                    return consumer(*publication);
-                };
+            control.prepareFinalWork = [publication, retainedPublication, consumer = std::move(finalConsumer)](
+                                           const std::shared_ptr<rhi::ComputeBuffer> &states) {
+                publication->bodyStates = states;
+                return consumer(retainedPublication);
+            };
         // Reserve before moving any pending work so allocation failure leaves
         // the authored queue intact and no initialization packet is orphaned.
         pending.reserve(pending.size() + 1);
@@ -649,6 +655,25 @@ class JoltGpuScene::Impl
     {
         const auto step = published && published->simulationEpoch == epoch ? published->fixedStepIndex : 0;
         auto control = PrepareControl(epoch, step, true, std::move(consumer), std::move(finalConsumer));
+        try {
+            tick.BeginControl(std::move(control));
+        } catch (...) {
+            Cancel();
+            throw;
+        }
+    }
+
+    void BeginWork(JoltGpuControlWork work)
+    {
+        RequireUsable();
+        if (tick.GetStatus() != JoltGpuTick::Status::Idle && tick.GetStatus() != JoltGpuTick::Status::Complete)
+            throw std::logic_error("Jolt GPU scene work requires an idle or fully completed source");
+        if (candidate)
+            throw std::logic_error("Publish the completed Jolt GPU scene generation before borrowing its source");
+        JoltGpuTickControl control;
+        JoltGpuControlGroup group;
+        group.prepareWork = [work = std::move(work)]() mutable { return std::move(work); };
+        control.groups.push_back(std::move(group));
         try {
             tick.BeginControl(std::move(control));
         } catch (...) {
@@ -811,6 +836,11 @@ void JoltGpuScene::BeginControl(uint64_t epoch, Consumer consumer)
 void JoltGpuScene::BeginControl(uint64_t epoch, Consumer consumer, Consumer finalConsumer)
 {
     m_impl->BeginControl(epoch, std::move(consumer), std::move(finalConsumer));
+}
+
+void JoltGpuScene::BeginWork(JoltGpuControlWork work)
+{
+    m_impl->BeginWork(std::move(work));
 }
 
 bool JoltGpuScene::PublishCompletedControl()
