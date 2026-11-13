@@ -16,7 +16,7 @@
       "kind": "hub-installer",
       "name": "InfernuxHubInstaller-0.4.8-3-windows-x64.exe",
       "size_bytes": 183085568,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-windows-x64.exe",
+      "url": "https://downloads.infernux-engine.com/hub/0.4.8/build-3/InfernuxHubInstaller-0.4.8-3-windows-x64.exe",
       "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-windows-x64.exe"
     },
     {
@@ -30,7 +30,7 @@
       "kind": "hub-installer",
       "name": "InfernuxHubInstaller-0.4.8-3-linux-x64",
       "size_bytes": 278374616,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-linux-x64",
+      "url": "https://downloads.infernux-engine.com/hub/0.4.8/build-3/InfernuxHubInstaller-0.4.8-3-linux-x64",
       "fallback_url": "https://github.com/ChenlizheMe/Infernux/releases/download/hub-v0.4.8-v3/InfernuxHubInstaller-0.4.8-3-linux-x64"
     },
     {
