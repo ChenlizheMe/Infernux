@@ -192,13 +192,16 @@ void GpuTimestampQueries::FinishFrame(VkCommandBuffer commandBuffer, uint32_t fr
                                           VK_QUERY_RESULT_WAIT_BIT);
             VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
             hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            // The completed slot is read by the host, then overwritten by
+            // another query copy when this same queue reuses the slot.
+            hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
             hostRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             hostRead.buffer = buffer;
             hostRead.size = sizeof(QueryValue) * frame.queryCount;
-            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0,
-                                 nullptr, 1, &hostRead, 0, nullptr);
+            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1,
+                                 &hostRead, 0, nullptr);
         }
     }
     m_recordingFrame = std::numeric_limits<uint32_t>::max();
