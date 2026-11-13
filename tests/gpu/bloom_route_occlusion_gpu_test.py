@@ -26,38 +26,34 @@ class EdgeDetectionProbe(FullScreenEffect):
     intensity: float = serialized_field(default=0.0)
 
     def get_shader_list(self):
-        return ["Fullscreen Triangle", "Probe Edge Detection"]
+        return ["tests/post/edge_detection"]
 
     def setup_passes(self, graph, bus):
         from infernux.rendergraph import Format
         self.apply_single_source_effect(
             graph, bus, output_name="_edge_detection", pass_name="EdgeDetection",
-            shader_name="Probe Edge Detection", format=Format.RGBA16_SFLOAT,
+            shader_name="tests/post/edge_detection", format=Format.RGBA16_SFLOAT,
             params={"intensity": self.intensity},
         )
 
 
-EDGE_SHADER = '''#version 450
-ShaderInfo {
-    Name "Probe Edge Detection"
-    Resources { Texture2D source_tex }
-    Capabilities [Fullscreen]
-    PushConstants pc { Float intensity }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    ivec2 pixel = ivec2(gl_FragCoord.xy);
-    ivec2 last = textureSize(source_tex, 0) - 1;
-    vec4 source = texelFetch(source_tex, pixel, 0);
-    vec3 dx = texelFetch(source_tex, min(pixel + ivec2(1, 0), last), 0).rgb
-            - texelFetch(source_tex, max(pixel - ivec2(1, 0), ivec2(0)), 0).rgb;
-    vec3 dy = texelFetch(source_tex, min(pixel + ivec2(0, 1), last), 0).rgb
-            - texelFetch(source_tex, max(pixel - ivec2(0, 1), ivec2(0)), 0).rgb;
-    vec3 edges = vec3(step(0.2, length(dx) + length(dy)));
-    outColor = vec4(mix(source.rgb, edges, pc.intensity), source.a);
-}
-'''
+EDGE_SHADER = """import infernux.shader as shader
+
+class EdgeDetection(shader.fullscreen):
+    shader_id = "tests/post/edge_detection"
+    hidden = True
+    source_tex = shader.input("color", shader.Color2D)
+    intensity = shader.parameter.float(default=0.0)
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        pixel = shader.ivec2(ctx.position.xy)
+        last = shader.ivec2(shader.dimensions(self.source_tex, 0)) - 1
+        source = shader.load(self.source_tex, pixel, 0)
+        dx = shader.load(self.source_tex, shader.min(pixel + shader.ivec2(1, 0), last), 0).rgb - shader.load(self.source_tex, shader.max(pixel - shader.ivec2(1, 0), shader.ivec2(0)), 0).rgb
+        dy = shader.load(self.source_tex, shader.min(pixel + shader.ivec2(0, 1), last), 0).rgb - shader.load(self.source_tex, shader.max(pixel - shader.ivec2(0, 1), shader.ivec2(0)), 0).rgb
+        edges = shader.vec3(shader.step(0.2, shader.length(dx) + shader.length(dy)))
+        return shader.vec4(shader.lerp(source.rgb, edges, self.intensity), source.a)
+"""
 
 
 class RouteProbe(RenderPipeline):
@@ -112,7 +108,7 @@ def main():
             "f 1//1 2//1 3//1\nf 1//1 3//1 4//1\n"
             "f 3//2 2//2 1//2\nf 4//2 3//2 1//2\n", encoding="ascii",
         )
-        shader = assets / "EdgeDetection.frag"
+        shader = assets / "edge_detection.frag.py"
         shader.write_text(EDGE_SHADER, encoding="ascii")
         frontend = Engine()
         engine = frontend.get_native_engine()

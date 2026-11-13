@@ -42,10 +42,10 @@ class _ImageAccumulator:
         target = self.alternate
         with self.graph.name_scope(f"composite/{self.stable_id}"):
             with self.graph.add_pass(f"{self.composite_index:02d}_{label}") as render_pass:
-                render_pass.set_texture("_BaseTex", self.current)
-                render_pass.set_texture("_LayerTex", image)
+                render_pass.set_texture("base_tex", self.current)
+                render_pass.set_texture("layer_tex", image)
                 render_pass.write_color(target)
-                render_pass.fullscreen_quad("Route Alpha Composite")
+                render_pass.fullscreen_quad("infernux/internal/route_alpha_composite")
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
@@ -53,10 +53,10 @@ class _ImageAccumulator:
         target = self.alternate
         with self.graph.name_scope(f"additive/{self.stable_id}"):
             with self.graph.add_pass(f"{self.composite_index:02d}_{label}") as render_pass:
-                render_pass.set_texture("_BaseTex", self.current)
-                render_pass.set_texture("_AdditiveTex", image)
+                render_pass.set_texture("base_tex", self.current)
+                render_pass.set_texture("additive_tex", image)
                 render_pass.write_color(target)
-                render_pass.fullscreen_quad("Route Additive Composite")
+                render_pass.fullscreen_quad("infernux/internal/route_additive_composite")
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
@@ -65,10 +65,10 @@ class _ImageAccumulator:
         target = self.alternate
         with self.graph.name_scope(f"under/{self.stable_id}"):
             with self.graph.add_pass(f"{self.composite_index:02d}_{label}") as render_pass:
-                render_pass.set_texture("_BaseTex", image)
-                render_pass.set_texture("_LayerTex", self.current)
+                render_pass.set_texture("base_tex", image)
+                render_pass.set_texture("layer_tex", self.current)
                 render_pass.write_color(target)
-                render_pass.fullscreen_quad("Route Alpha Composite")
+                render_pass.fullscreen_quad("infernux/internal/route_alpha_composite")
         self.current, self.alternate = target, self.current
         self.composite_index += 1
 
@@ -554,10 +554,10 @@ def _compile_route(
         with graph.name_scope(f"route/{route.route_id}"):
             additive = graph.create_texture("additive_delta", format=color_format)
             with graph.add_pass("ExtractAdditiveDelta") as render_pass:
-                render_pass.set_texture("_OriginalTex", original_color)
-                render_pass.set_texture("_ProcessedTex", route_color)
+                render_pass.set_texture("original_tex", original_color)
+                render_pass.set_texture("processed_tex", route_color)
                 render_pass.write_color(additive)
-                render_pass.fullscreen_quad("Route Additive Delta")
+                render_pass.fullscreen_quad("infernux/internal/route_additive_delta")
         return _RouteContribution(color=original_color, additive=additive)
 
     if policy is RoutePolicy.INLINE and msaa_samples == 1:
@@ -634,10 +634,10 @@ def _compile_route(
     with graph.name_scope(f"route/{route.route_id}"):
         additive = graph.create_texture("additive_delta", format=color_format)
         with graph.add_pass("ExtractAdditiveDelta") as render_pass:
-            render_pass.set_texture("_OriginalTex", original_color)
-            render_pass.set_texture("_ProcessedTex", route_color)
+            render_pass.set_texture("original_tex", original_color)
+            render_pass.set_texture("processed_tex", route_color)
             render_pass.write_color(additive)
-            render_pass.fullscreen_quad("Route Additive Delta")
+            render_pass.fullscreen_quad("infernux/internal/route_additive_delta")
     return _RouteContribution(color=original_color, additive=additive)
 
 
@@ -651,14 +651,14 @@ def _split_ordered_route(graph, route_id, original, processed, color_format):
     """
     outputs = []
     with graph.name_scope(f"route/{route_id}"):
-        for name, outside in (("ChainGeometry", 0.0), ("ChainOverflow", 1.0)):
+        for name, outside in (("ChainGeometry", False), ("ChainOverflow", True)):
             output = graph.create_texture(name, format=color_format)
             with graph.add_pass(name) as render_pass:
-                render_pass.set_texture("_OriginalTex", original)
-                render_pass.set_texture("_ProcessedTex", processed)
+                render_pass.set_texture("original_tex", original)
+                render_pass.set_texture("processed_tex", processed)
                 render_pass.set_param("outside", outside)
                 render_pass.write_color(output)
-                render_pass.fullscreen_quad("Route Coverage Split")
+                render_pass.fullscreen_quad("infernux/internal/route_coverage_split")
             outputs.append(output)
     return _RouteContribution(color=outputs[0], overlay=outputs[1])
 
