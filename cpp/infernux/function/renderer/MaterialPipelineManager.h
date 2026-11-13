@@ -33,6 +33,9 @@ struct MaterialRenderData
     VkShaderModule vertModule = VK_NULL_HANDLE;
     VkShaderModule fragModule = VK_NULL_HANDLE;
     ShaderProgramPublication shaderProgram;
+    // Same complete compiled artifact as this committed Forward pipeline and
+    // descriptor generation. Optional passes never rediscover it by stages.
+    std::shared_ptr<const ShaderProgramArtifact> shaderArtifact;
     ShaderProgramKey programKey;
     MaterialDescriptorSet *materialDescSet = nullptr; // Per-material descriptor set
     size_t pipelineHash = 0;
@@ -144,6 +147,7 @@ class MaterialPipelineManager
                                                             const std::vector<char> &vertShaderCode,
                                                             const std::vector<char> &fragShaderCode,
                                                             const ShaderProgramKey &programKey,
+                                                            std::shared_ptr<const ShaderProgramArtifact> shaderArtifact,
                                                             const ShaderProgramMetadata &metadata = {});
 
     /**

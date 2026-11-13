@@ -22,6 +22,7 @@
 #include <core/types/ShaderTypes.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -44,6 +45,8 @@ struct RenderTextureGeneration;
 struct RenderViewContext;
 } // namespace rhi
 class RendererSelection;
+class InxMaterial;
+struct FullscreenProgram;
 struct MaterialPassPipelineDescriptor;
 
 /**
@@ -126,8 +129,10 @@ struct GraphCommandDesc
     std::string sortMode;
     std::string passTag;
     std::string overrideMaterial;
+    std::shared_ptr<InxMaterial> overrideMaterialValue;
     /// Stable owner; entry/parameter edits do not change graph topology.
     std::shared_ptr<RendererSelection> rendererSelection;
+    std::shared_ptr<RendererSelection> selectionAuthor; ///< Logical identity; never read during execution.
 
     int32_t lightIndex = 0;
     int screenUIList = 0;
@@ -135,6 +140,7 @@ struct GraphCommandDesc
     uint32_t worldUILayerMask = 0xffffffffu;
 
     std::string shaderName;
+    std::shared_ptr<const FullscreenProgram> fullscreenProgram;
     /// Fullscreen raster state. Renderer draws retain their material state.
     bool depthTest = false;
     bool depthWrite = false;
@@ -198,6 +204,8 @@ struct GraphTextureDesc
     GraphTextureRole role = GraphTextureRole::Transient;    ///< Frame-local or one side of a temporal history pair
     std::string temporalKey;                                ///< Stable per-view history identity for temporal resources
     std::shared_ptr<rhi::RenderTexture> renderTexture;      ///< Persistent owner; never a disk GUID
+    std::shared_ptr<const rhi::RenderTextureGeneration> renderTextureGeneration;
+    [[nodiscard]] std::shared_ptr<const rhi::RenderTextureGeneration> AcquireRenderTextureGeneration() const;
     GraphTextureAttachment attachment = GraphTextureAttachment::Color;
     bool requireCurrentWrite = false; ///< Input-only import requires a producer in the same render opportunity.
     std::string assetGuid;            ///< GUID of a read-only imported Texture asset
@@ -236,6 +244,8 @@ struct GraphWorkBindingDesc
 {
     std::string name;
     std::shared_ptr<rhi::ComputeWorkRecipe> recipe;
+    /// Slot-indexed World input leases. Private Work storage stays renderer-owned.
+    std::vector<std::shared_ptr<rhi::ComputeBuffer>> externalInputs;
     /// Input port name -> earlier graph buffer with a matching true owner.
     std::vector<std::pair<std::string, std::string>> inputBindings;
 };
@@ -288,6 +298,8 @@ struct GraphBufferDesc
     uint32_t usage = static_cast<uint32_t>(GraphBufferUsage::None);
     std::shared_ptr<rhi::ComputeBuffer> computeBuffer; ///< Imported owner captured for this execution.
     std::shared_ptr<GraphBufferInput> input;           ///< Optional slot supplying the imported value.
+    std::shared_ptr<rhi::ComputeBuffer> bufferAuthor;
+    std::shared_ptr<GraphBufferInput> inputAuthor;
     /// Bind the camera-local canonical light buffer for the active frame slot.
     /// This resource is read-only and owned by SceneRenderGraph; it is not a
     /// transient allocation or an imported author buffer.
@@ -386,6 +398,12 @@ struct RenderGraphDescription
 
     [[nodiscard]] bool RenderTextureLayoutsCurrent() const;
 };
+
+/// Capture author values once at the completed-World boundary; no GPU submission.
+RenderGraphDescription CaptureRenderGraphDescription(
+    const RenderGraphDescription &source,
+    const std::function<void(const std::shared_ptr<InxMaterial> &)> &prepareMaterial,
+    const std::function<std::shared_ptr<const FullscreenProgram>(const std::string &)> &acquireProgram);
 
 /// Topology excludes source revisions and independently updated parameter values.
 bool RenderGraphTopologyEquals(const RenderGraphDescription &a, const RenderGraphDescription &b);

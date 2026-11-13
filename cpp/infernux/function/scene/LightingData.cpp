@@ -12,72 +12,132 @@
 #include <core/log/InxLog.h>
 #include <core/types/ColorSpace.h>
 #include <cstring>
+#include <function/renderer/RenderLightingSource.h>
+#include <function/renderer/RenderWorld.h>
 #include <limits>
 #include <stdexcept>
 
 namespace infernux
 {
 
-void SceneLightCollector::CollectLights(Scene *scene, const glm::vec3 &cameraPosition)
+std::vector<RenderLightSource> CaptureRenderLights()
 {
-    Clear();
-
-    if (!scene) {
-        return;
+    std::vector<RenderLightSource> lights;
+    for (const Light *light : SceneManager::Instance().GetActiveLights()) {
+        const GameObject *object = light ? light->GetGameObject() : nullptr;
+        const Transform *transform = object ? object->GetTransform() : nullptr;
+        if (!light || !light->IsEnabled() || !object || !object->IsActiveInHierarchy() || !transform)
+            continue;
+        RenderLightSource value;
+        value.id = object->GetID();
+        value.type = static_cast<uint32_t>(light->GetLightType());
+        value.position = transform->GetWorldPosition();
+        value.direction = transform->GetWorldForward();
+        value.right = transform->GetWorldRight();
+        value.up = transform->GetWorldUp();
+        value.linearColor = light->GetLinearColor();
+        value.intensity = light->GetIntensity();
+        value.range = light->GetRange();
+        value.innerSpotAngle = light->GetSpotAngle();
+        value.outerSpotAngle = light->GetOuterSpotAngle();
+        value.areaSize = light->GetAreaSize();
+        value.areaTwoSided = light->GetAreaTwoSided();
+        value.shadows = static_cast<uint32_t>(light->GetShadows());
+        value.shadowStrength = light->GetShadowStrength();
+        value.shadowBias = light->GetShadowBias();
+        value.shadowNormalBias = light->GetShadowNormalBias();
+        value.shadowSoftness = light->GetShadowSoftness();
+        value.cullingMask = light->GetCullingMask();
+        value.influenceDomains = light->GetInfluenceDomains();
+        lights.push_back(value);
     }
-
-    // Set camera position
-    m_lightingUBO.worldSpaceCameraPos = glm::vec4(cameraPosition, 1.0f);
-
-    // Iterate the Light component registry (O(L) where L = light count)
-    // instead of walking the full scene tree (O(N) where N = all objects).
-    const auto &activeLights = SceneManager::Instance().GetActiveLights();
-
-    for (Light *light : activeLights) {
-        if (!light || !light->IsEnabled())
-            continue;
-
-        GameObject *obj = light->GetGameObject();
-        if (!obj || !obj->IsActiveInHierarchy())
-            continue;
-
-        Transform *transform = obj->GetTransform();
-        if (!transform)
-            continue;
-
-        glm::vec3 worldPosition = transform->GetWorldPosition();
-        glm::vec3 worldForward = transform->GetWorldForward();
-
-        AddCanonicalLight(light, worldPosition, worldForward);
-
-        switch (light->GetLightType()) {
-        case LightType::Directional:
-            AddDirectionalLight(light);
-            break;
-        case LightType::Point:
-            AddPointLight(light, worldPosition);
-            break;
-        case LightType::Spot:
-            AddSpotLight(light, worldPosition, worldForward);
-            break;
-        case LightType::Area:
-            AddAreaLight(light, worldPosition, worldForward);
-            break;
-        }
-    }
-
-    // Sort point lights by importance
-    SortPointLightsByImportance(cameraPosition);
-
-    // Update light counts in UBO
-    m_lightingUBO.lightCounts =
-        glm::ivec4(static_cast<int>(m_directionalLightCount), static_cast<int>(m_pointLightCount),
-                   static_cast<int>(m_spotLightCount), static_cast<int>(m_areaLightCount));
-
-    // Prepare simplified UBO
-    PrepareSimpleLightingUBO();
+    return lights;
 }
 
+void SceneLightCollector::CollectLights(Scene *scene, const glm::vec3 &cameraPosition)
+{
+    RenderLightingSource source;
+    if (scene)
+        source.lights = CaptureRenderLights();
+    Clear();
+    source.ambientSky = m_lightingUBO.ambientSkyColor;
+    source.ambientEquator = m_lightingUBO.ambientEquatorColor;
+    source.ambientGround = m_lightingUBO.ambientGroundColor;
+    CollectLights(source, cameraPosition);
+}
+
+void SceneLightCollector::CollectLights(const RenderLightingSource &source, const glm::vec3 &cameraPosition)
+{
+    Clear();
+    SetAmbientLinear(source.ambientSky, source.ambientEquator, source.ambientGround);
+    SetCameraPosition(cameraPosition);
+    for (const auto &light : source.lights) {
+        const glm::vec3 direction = glm::dot(light.direction, light.direction) > 0.0f ? glm::normalize(light.direction)
+                                                                                      : glm::vec3(0.0f, -1.0f, 0.0f);
+        CanonicalLightData canonical{};
+        canonical.positionRange = glm::vec4(light.position, light.type == 0u ? 0.0f : std::max(light.range, 0.0f));
+        canonical.directionOuterCos =
+            glm::vec4(direction, light.type == 2u ? std::cos(glm::radians(light.outerSpotAngle * 0.5f)) : -1.0f);
+        canonical.colorIntensity = glm::vec4(light.linearColor, std::max(light.intensity, 0.0f));
+        canonical.shadowAndInnerCos =
+            glm::vec4(light.shadowStrength, light.shadowBias, light.shadowNormalBias,
+                      light.type == 2u ? std::cos(glm::radians(light.innerSpotAngle * 0.5f)) : -1.0f);
+        if (light.type == 3u) {
+            canonical.areaRightWidth = glm::vec4(glm::normalize(light.right), light.areaSize.x);
+            canonical.areaUpHeight = glm::vec4(glm::normalize(light.up), light.areaSize.y);
+            canonical.directionOuterCos.w = light.areaTwoSided ? 1.0f : 0.0f;
+        }
+        canonical.metadata = glm::uvec4(light.type, light.cullingMask, light.shadows, light.influenceDomains);
+        canonical.identityAndShadow =
+            glm::uvec4(static_cast<uint32_t>(light.id), static_cast<uint32_t>(light.id >> 32u), 0u, 0u);
+        m_canonicalLightSnapshot.Add(canonical);
+        const glm::vec4 color(light.linearColor, light.intensity);
+        const glm::vec4 shadow(light.shadowStrength, light.shadowBias, light.shadowNormalBias, float(light.shadows));
+        const glm::uvec4 metadata(light.cullingMask, light.influenceDomains, 0u, 0u);
+        if (light.type == 0u && m_directionalLightCount < MAX_DIRECTIONAL_LIGHTS) {
+            auto &data = m_lightingUBO.directionalLights[m_directionalLightCount];
+            data.direction = glm::vec4(direction, 0.0f);
+            data.color = color;
+            data.shadowParams = shadow;
+            data.metadata = metadata;
+            m_directionalLightIds[m_directionalLightCount++] = light.id;
+        } else if (light.type == 1u) {
+            PointLightSortData sorted{};
+            sorted.data.position = glm::vec4(light.position, light.range);
+            sorted.data.color = color;
+            sorted.data.attenuation = glm::vec4(light.range, 0.0f, 0.0f, 0.0f);
+            sorted.data.shadowParams = shadow;
+            sorted.data.metadata = metadata;
+            sorted.lightId = light.id;
+            m_pointLightSortBuffer.push_back(sorted);
+        } else if (light.type == 2u && m_spotLightCount < MAX_SPOT_LIGHTS) {
+            auto &data = m_lightingUBO.spotLights[m_spotLightCount];
+            data.position = glm::vec4(light.position, light.range);
+            data.direction = glm::vec4(direction, 0.0f);
+            data.color = color;
+            data.spotParams = glm::vec4(std::cos(glm::radians(light.innerSpotAngle * 0.5f)),
+                                        std::cos(glm::radians(light.outerSpotAngle * 0.5f)), 0.0f, 0.0f);
+            data.attenuation = glm::vec4(light.range, 0.0f, 0.0f, 0.0f);
+            data.shadowParams = shadow;
+            data.metadata = metadata;
+            m_spotLightIds[m_spotLightCount++] = light.id;
+        } else if (light.type == 3u && m_areaLightCount < MAX_AREA_LIGHTS) {
+            auto &data = m_lightingUBO.areaLights[m_areaLightCount];
+            data.positionRange = glm::vec4(light.position, light.range);
+            data.direction = glm::vec4(direction, light.areaTwoSided ? 1.0f : 0.0f);
+            data.rightWidth = glm::vec4(glm::normalize(light.right), light.areaSize.x);
+            data.upHeight = glm::vec4(glm::normalize(light.up), light.areaSize.y);
+            data.color = color;
+            data.shadowParams = shadow;
+            data.metadata = metadata;
+            m_areaLightIds[m_areaLightCount++] = light.id;
+        }
+    }
+    SortPointLightsByImportance(cameraPosition);
+    m_lightingUBO.lightCounts =
+        glm::ivec4(m_directionalLightCount, m_pointLightCount, m_spotLightCount, m_areaLightCount);
+    PrepareSimpleLightingUBO();
+}
 void SceneLightCollector::Clear()
 {
     m_canonicalLightSnapshot.Clear(m_canonicalGeneration);
@@ -120,118 +180,6 @@ void SceneLightCollector::PublishCanonicalGeneration()
     m_canonicalLightSnapshot.generation = m_canonicalGeneration;
 }
 
-void SceneLightCollector::AddCanonicalLight(const Light *light, const glm::vec3 &worldPosition,
-                                            const glm::vec3 &worldDirection)
-{
-    if (!light)
-        return;
-
-    CanonicalLightData data{};
-    const LightType lightType = light->GetLightType();
-    const bool directional = lightType == LightType::Directional;
-    const bool spot = lightType == LightType::Spot;
-    const glm::vec3 fallbackDirection(0.0f, -1.0f, 0.0f);
-    const glm::vec3 direction =
-        glm::dot(worldDirection, worldDirection) > 0.0f ? glm::normalize(worldDirection) : fallbackDirection;
-
-    data.positionRange = glm::vec4(worldPosition, directional ? 0.0f : std::max(light->GetRange(), 0.0f));
-    data.directionOuterCos =
-        glm::vec4(direction, spot ? std::cos(glm::radians(light->GetOuterSpotAngle() * 0.5f)) : -1.0f);
-    data.colorIntensity = glm::vec4(light->GetLinearColor(), std::max(light->GetIntensity(), 0.0f));
-    data.shadowAndInnerCos = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
-                                       spot ? std::cos(glm::radians(light->GetSpotAngle() * 0.5f)) : -1.0f);
-    if (lightType == LightType::Area && light->GetTransform()) {
-        const glm::vec2 size = light->GetAreaSize();
-        data.areaRightWidth = glm::vec4(glm::normalize(light->GetTransform()->GetWorldRight()), size.x);
-        data.areaUpHeight = glm::vec4(glm::normalize(light->GetTransform()->GetWorldUp()), size.y);
-        data.directionOuterCos.w = light->GetAreaTwoSided() ? 1.0f : 0.0f;
-    }
-    data.metadata = glm::uvec4(static_cast<uint32_t>(lightType), light->GetCullingMask(),
-                               static_cast<uint32_t>(light->GetShadows()), light->GetInfluenceDomains());
-    const uint64_t lightId = light->GetGameObject() ? light->GetGameObject()->GetID() : 0;
-    data.identityAndShadow = glm::uvec4(static_cast<uint32_t>(lightId), static_cast<uint32_t>(lightId >> 32u), 0u, 0u);
-    m_canonicalLightSnapshot.Add(data);
-}
-
-void SceneLightCollector::AddDirectionalLight(const Light *light)
-{
-    if (m_directionalLightCount >= MAX_DIRECTIONAL_LIGHTS) {
-        INXLOG_WARN("Maximum directional lights (", MAX_DIRECTIONAL_LIGHTS, ") exceeded, ignoring light");
-        return;
-    }
-
-    // Get direction from the light's transform (forward vector)
-    // Convention: direction = light ray direction (the way light travels).
-    // The shader computes L = normalize(-direction) to get toward-light vector.
-    // GetForward() already returns the light ray direction, so NO negation here.
-    Transform *transform = light->GetTransform();
-    glm::vec3 direction = transform ? transform->GetWorldForward() : glm::vec3(0.0f, -1.0f, 0.0f);
-
-    DirectionalLightData &data = m_lightingUBO.directionalLights[m_directionalLightCount];
-    data.direction = glm::vec4(glm::normalize(direction), 0.0f);
-    // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
-    data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
-
-    // Shadow parameters: x=strength, y=bias, z=normalBias, w=shadowType (0=off, 1=hard, 2=soft)
-    float shadowType = 0.0f;
-    if (light->GetShadows() == LightShadows::Hard)
-        shadowType = 1.0f;
-    else if (light->GetShadows() == LightShadows::Soft)
-        shadowType = 2.0f;
-    data.shadowParams =
-        glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(), shadowType);
-    data.metadata = glm::uvec4(light->GetCullingMask(), light->GetInfluenceDomains(), 0u, 0u);
-    m_directionalLightIds[m_directionalLightCount] = light->GetGameObject() ? light->GetGameObject()->GetID() : 0;
-
-    m_directionalLightCount++;
-}
-
-void SceneLightCollector::AddPointLight(const Light *light, const glm::vec3 &worldPosition)
-{
-    // Don't add to main buffer yet, add to sort buffer
-    PointLightSortData sortData;
-    sortData.data.position = glm::vec4(worldPosition, light->GetRange());
-    // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
-    sortData.data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
-    // Store range in x for URP-style smooth attenuation (yz unused, kept for compatibility)
-    sortData.data.attenuation = glm::vec4(light->GetRange(), 0.0f, 0.0f, 0.0f);
-    sortData.data.shadowParams = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(),
-                                           light->GetShadowNormalBias(), static_cast<float>(light->GetShadows()));
-    sortData.data.metadata = glm::uvec4(light->GetCullingMask(), light->GetInfluenceDomains(), 0u, 0u);
-    sortData.lightId = light->GetGameObject() ? light->GetGameObject()->GetID() : 0;
-    sortData.importance = 0.0f; // Will be calculated during sorting
-
-    m_pointLightSortBuffer.push_back(sortData);
-}
-
-void SceneLightCollector::AddSpotLight(const Light *light, const glm::vec3 &worldPosition,
-                                       const glm::vec3 &worldDirection)
-{
-    if (m_spotLightCount >= MAX_SPOT_LIGHTS) {
-        INXLOG_WARN("Maximum spot lights (", MAX_SPOT_LIGHTS, ") exceeded, ignoring light");
-        return;
-    }
-
-    SpotLightData &data = m_lightingUBO.spotLights[m_spotLightCount];
-    data.position = glm::vec4(worldPosition, light->GetRange());
-    data.direction = glm::vec4(glm::normalize(worldDirection), 0.0f);
-    // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
-    data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
-
-    // Calculate cos of angles for spot falloff
-    float innerAngleRad = glm::radians(light->GetSpotAngle() * 0.5f);
-    float outerAngleRad = glm::radians(light->GetOuterSpotAngle() * 0.5f);
-    data.spotParams = glm::vec4(std::cos(innerAngleRad), std::cos(outerAngleRad), 0.0f, 0.0f);
-    // Store range in x for URP-style smooth attenuation
-    data.attenuation = glm::vec4(light->GetRange(), 0.0f, 0.0f, 0.0f);
-    data.shadowParams = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
-                                  static_cast<float>(light->GetShadows()));
-    data.metadata = glm::uvec4(light->GetCullingMask(), light->GetInfluenceDomains(), 0u, 0u);
-    m_spotLightIds[m_spotLightCount] = light->GetGameObject() ? light->GetGameObject()->GetID() : 0;
-
-    m_spotLightCount++;
-}
-
 void SceneLightCollector::SortPointLightsByImportance(const glm::vec3 &cameraPosition)
 {
     // Calculate importance for each point light
@@ -259,28 +207,6 @@ void SceneLightCollector::SortPointLightsByImportance(const glm::vec3 &cameraPos
         m_lightingUBO.pointLights[i] = m_pointLightSortBuffer[i].data;
         m_pointLightIds[i] = m_pointLightSortBuffer[i].lightId;
     }
-}
-
-void SceneLightCollector::AddAreaLight(const Light *light, const glm::vec3 &worldPosition,
-                                       const glm::vec3 &worldDirection)
-{
-    if (m_areaLightCount >= MAX_AREA_LIGHTS)
-        return;
-    AreaLightData &data = m_lightingUBO.areaLights[m_areaLightCount];
-    const Transform *transform = light->GetTransform();
-    const glm::vec3 right = transform ? glm::normalize(transform->GetWorldRight()) : glm::vec3(1, 0, 0);
-    const glm::vec3 up = transform ? glm::normalize(transform->GetWorldUp()) : glm::vec3(0, 1, 0);
-    const glm::vec2 size = light->GetAreaSize();
-    data.positionRange = glm::vec4(worldPosition, light->GetRange());
-    data.direction = glm::vec4(glm::normalize(worldDirection), light->GetAreaTwoSided() ? 1.0f : 0.0f);
-    data.rightWidth = glm::vec4(right, size.x);
-    data.upHeight = glm::vec4(up, size.y);
-    data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
-    data.shadowParams = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
-                                  static_cast<float>(light->GetShadows()));
-    data.metadata = glm::uvec4(light->GetCullingMask(), light->GetInfluenceDomains(), 0u, 0u);
-    m_areaLightIds[m_areaLightCount] = light->GetGameObject() ? light->GetGameObject()->GetID() : 0;
-    ++m_areaLightCount;
 }
 
 void SceneLightCollector::PrepareSimpleLightingUBO()
@@ -351,52 +277,59 @@ void SceneLightCollector::SetCameraPosition(const glm::vec3 &position)
 void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraPos, float shadowMapResolution,
                                           const Camera *camera, const lighting::ShadowDepthRange &visibleDepthRange)
 {
+    if (!scene) {
+        m_shadowFrame = {};
+        return;
+    }
+    if (!camera)
+        camera = SceneRenderBridge::Instance().GetEditorCamera();
+    RenderLightingSource source;
+    source.lights = CaptureRenderLights();
+    RenderViewData view = camera ? SceneRenderExtractor::CaptureCameraView(*camera) : RenderViewData{};
+    view.position = cameraPos;
+    ComputeShadowVP(source, view, shadowMapResolution, visibleDepthRange);
+}
+void SceneLightCollector::ComputeShadowVP(const RenderLightingSource &source, const RenderViewData &view,
+                                          float shadowMapResolution,
+                                          const lighting::ShadowDepthRange &visibleDepthRange)
+{
     m_shadowFrame = {};
-    if (!scene || !std::isfinite(shadowMapResolution) || shadowMapResolution < 1.0f)
+    if (!std::isfinite(shadowMapResolution) || shadowMapResolution < 1.0f)
         return;
     m_shadowFrame.atlasSize = static_cast<uint32_t>(shadowMapResolution);
 
-    if (!camera)
-        camera = SceneRenderBridge::Instance().GetEditorCamera();
-
     lighting::ShadowCamera shadowCamera;
-    shadowCamera.position = cameraPos;
+    shadowCamera.position = view.position;
 
-    std::vector<Light *> shadowLights;
-    // Match CollectLights: resident and persistent scenes share one render
-    // world. The active scene is an authoring context, not a shadow filter.
-    // Preview scenes are excluded when Light registers with SceneManager.
-    for (Light *light : SceneManager::Instance().GetActiveLights()) {
-        if (!light || !light->IsEnabled() || light->GetShadows() == LightShadows::None)
-            continue;
-        GameObject *object = light->GetGameObject();
-        if (!object || !object->IsActiveInHierarchy() || !object->GetTransform())
-            continue;
-        shadowLights.push_back(light);
-    }
-    std::stable_sort(shadowLights.begin(), shadowLights.end(), [&](const Light *left, const Light *right) {
-        const auto typePriority = [](LightType type) {
-            return type == LightType::Directional ? 0u
-                   : type == LightType::Spot      ? 1u
-                   : type == LightType::Point     ? 2u
-                                                  : 3u;
-        };
-        const uint32_t leftType = typePriority(left->GetLightType());
-        const uint32_t rightType = typePriority(right->GetLightType());
-        if (leftType != rightType)
-            return leftType < rightType;
-        const float leftImportance = left->GetIntensity() * std::max(left->GetRange(), 1.0f);
-        const float rightImportance = right->GetIntensity() * std::max(right->GetRange(), 1.0f);
-        if (leftImportance != rightImportance)
-            return leftImportance > rightImportance;
-        return left->GetGameObject()->GetID() < right->GetGameObject()->GetID();
-    });
+    std::vector<const RenderLightSource *> shadowLights;
+    for (const auto &light : source.lights)
+        if (light.shadows != 0u)
+            shadowLights.push_back(&light);
+    std::stable_sort(shadowLights.begin(), shadowLights.end(),
+                     [&](const RenderLightSource *left, const RenderLightSource *right) {
+                         const auto typePriority = [](LightType type) {
+                             return type == LightType::Directional ? 0u
+                                    : type == LightType::Spot      ? 1u
+                                    : type == LightType::Point     ? 2u
+                                                                   : 3u;
+                         };
+                         const uint32_t leftType = typePriority(static_cast<LightType>(left->type));
+                         const uint32_t rightType = typePriority(static_cast<LightType>(right->type));
+                         if (leftType != rightType)
+                             return leftType < rightType;
+                         const float leftImportance = left->intensity * std::max(left->range, 1.0f);
+                         const float rightImportance = right->intensity * std::max(right->range, 1.0f);
+                         if (leftImportance != rightImportance)
+                             return leftImportance > rightImportance;
+                         return left->id < right->id;
+                     });
 
     std::array<glm::dvec3, 4> rayOrigins{};
     std::array<glm::dvec3, 4> rayDepthSteps{};
-    if (camera && !shadowLights.empty() && shadowLights.front()->GetLightType() == LightType::Directional) {
-        const auto inverseProjection = glm::inverse(glm::dmat4(camera->GetProjectionMatrix()));
-        const glm::dmat4 cameraToWorld(camera->GetCameraToWorldMatrix());
+    if (view.valid && !shadowLights.empty() &&
+        static_cast<LightType>(shadowLights.front()->type) == LightType::Directional) {
+        const auto inverseProjection = glm::inverse(glm::dmat4(view.projection));
+        const glm::dmat4 cameraToWorld(glm::inverse(view.view));
         const std::array<glm::dvec2, 4> ndcCorners = {glm::dvec2(-1, -1), glm::dvec2(1, -1), glm::dvec2(1, 1),
                                                       glm::dvec2(-1, 1)};
         double nearDepth = std::numeric_limits<double>::infinity();
@@ -439,15 +372,15 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
 
     lighting::ShadowAtlasAllocator atlas(m_shadowFrame.atlasSize);
     bool mainDirectional = true;
-    for (Light *light : shadowLights) {
+    for (const RenderLightSource *light : shadowLights) {
         if (m_shadowFrame.views.size() >= lighting::MaxShadowViews)
             break;
-        const uint64_t lightId = light->GetGameObject()->GetID();
-        const glm::vec3 position = light->GetTransform()->GetWorldPosition();
-        const glm::vec3 direction = light->GetTransform()->GetWorldForward();
+        const uint64_t lightId = light->id;
+        const glm::vec3 position = light->position;
+        const glm::vec3 direction = light->direction;
         const uint32_t firstView = static_cast<uint32_t>(m_shadowFrame.views.size());
 
-        if (light->GetLightType() == LightType::Directional) {
+        if (static_cast<LightType>(light->type) == LightType::Directional) {
             if (firstView + lighting::DirectionalCascadeCount > lighting::MaxShadowViews)
                 continue;
             const uint32_t atlasSize = m_shadowFrame.atlasSize;
@@ -473,7 +406,7 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             if (!tiles)
                 continue;
             for (uint32_t cascade = 0; cascade < lighting::DirectionalCascadeCount; ++cascade) {
-                if (camera) {
+                if (view.valid) {
                     const auto nearSlice = frustumSliceAt(splits[cascade]);
                     const auto farSlice = frustumSliceAt(splits[cascade + 1]);
                     const std::array<glm::vec3, 8> sliceCorners = {nearSlice[0], nearSlice[1], nearSlice[2],
@@ -489,7 +422,7 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
                 }
             }
             mainDirectional = false;
-        } else if (light->GetLightType() == LightType::Spot) {
+        } else if (static_cast<LightType>(light->type) == LightType::Spot) {
             if (firstView + 1u > lighting::MaxShadowViews)
                 continue;
             // Spend the available atlas budget on the active light first. A
@@ -502,7 +435,7 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
             if (!tiles)
                 continue;
             m_shadowFrame.views.push_back(lighting::BuildSpotShadowView(
-                lightId, position, direction, light->GetOuterSpotAngle(), light->GetRange(), (*tiles)[0]));
+                lightId, position, direction, light->outerSpotAngle, light->range, (*tiles)[0]));
         } else {
             constexpr uint32_t faceCount = 6u;
             if (firstView + faceCount > lighting::MaxShadowViews)
@@ -516,19 +449,20 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
                 atlas.AllocateBatchWithFallback(faceSizes, std::max(m_shadowFrame.atlasSize / 32u, 16u), 4);
             if (!tiles)
                 continue;
-            const auto type = light->GetLightType() == LightType::Area ? lighting::ShadowViewType::AreaFace
-                                                                       : lighting::ShadowViewType::PointFace;
-            const auto views = lighting::BuildPointShadowViews(lightId, position, light->GetRange(), *tiles, type);
+            const auto type = static_cast<LightType>(light->type) == LightType::Area
+                                  ? lighting::ShadowViewType::AreaFace
+                                  : lighting::ShadowViewType::PointFace;
+            const auto views = lighting::BuildPointShadowViews(lightId, position, light->range, *tiles, type);
             m_shadowFrame.views.insert(m_shadowFrame.views.end(), views.begin(), views.end());
         }
 
         const uint32_t viewCount = static_cast<uint32_t>(m_shadowFrame.views.size()) - firstView;
         if (viewCount > 0) {
             for (uint32_t index = firstView; index < firstView + viewCount; ++index) {
-                m_shadowFrame.views[index].cullingMask = light->GetCullingMask();
-                m_shadowFrame.views[index].filterRadiusTexels = light->GetShadowSoftness();
-                m_shadowFrame.views[index].depthBiasTexels = light->GetShadowBias();
-                m_shadowFrame.views[index].normalBiasTexels = light->GetShadowNormalBias();
+                m_shadowFrame.views[index].cullingMask = light->cullingMask;
+                m_shadowFrame.views[index].filterRadiusTexels = light->shadowSoftness;
+                m_shadowFrame.views[index].depthBiasTexels = light->shadowBias;
+                m_shadowFrame.views[index].normalBiasTexels = light->shadowNormalBias;
             }
             m_shadowFrame.assignments.push_back({lightId, firstView, viewCount});
         }

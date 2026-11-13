@@ -78,7 +78,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     Base class for scriptable render pipelines.
 
     The minimal subclass only needs ``define_topology()`` and optionally
-    ``render_camera()`` for per-camera custom logic::
+    ``render_view()`` for per-view custom logic::
 
         class MyPipeline(RenderPipeline):
             name = "My Pipeline"
@@ -306,21 +306,21 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     # Standalone render entry point (without RenderStack)
     # ==================================================================
 
-    def render(self, context, camera):
-        """Render one camera through its dedicated context.
+    def render(self, context, view):
+        """Render one view through its dedicated context.
 
         The base implementation builds the graph once from
-        ``define_topology()``, filters the camera via
-        ``should_render_camera()``, then calls ``render_camera()``.
+        ``define_topology()``, filters the view via
+        ``should_render_view()``, then calls ``render_view()``.
 
-        The renderer owns multi-camera enumeration and creates a distinct
-        context and RenderView for every camera. Pipelines must never loop
-        cameras inside one context. For camera filtering, override
-        ``should_render_camera()``.
+        The renderer owns multi-view enumeration and creates a distinct
+        context and RenderView for every view. Pipelines must never loop
+        cameras inside one context. For view filtering, override
+        ``should_render_view()``.
         """
         from infernux.rendergraph.graph import RenderGraph, _rejected_render_texture_inputs
 
-        if not self.should_render_camera(camera):
+        if not self.should_render_view(view):
             return
         samples = context.output_samples
         rejected = self._standalone_rejected_textures.get(samples)
@@ -346,33 +346,32 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
                 return
             finally:
                 self._defining_graph = None
-        context.setup_camera_properties(camera)
-        culling = context.cull(camera)
-        self.render_camera(context, camera, culling)
+        culling = context.cull()
+        self.render_view(context, view, culling)
 
-    def should_render_camera(self, camera) -> bool:
-        """Decide whether *camera* should be rendered this frame.
+    def should_render_view(self, view) -> bool:
+        """Decide whether *view* should be rendered this frame.
 
         Override to filter project cameras by their GameObject names::
 
-            def should_render_camera(self, camera):
-                return camera.game_object.name != "Preview Camera"
+            def should_render_view(self, view):
+                return view.name != "Preview Camera"
 
         Returns ``True`` by default.
         """
         return True
 
-    def render_camera(self, context, camera, culling):
-        """Per-camera render hook.
+    def render_view(self, context, view, culling):
+        """Per-view render hook.
 
         The default implementation applies the compiled graph and submits
-        culling results.  Override to inject custom per-camera logic
-        (e.g. per-camera shadow passes, camera-specific post-process).
+        culling results.  Override to inject custom per-view logic
+        (e.g. per-view shadow passes, view-specific post-process).
 
         Args:
             context: The render context provided by the engine.
-            camera: The current camera being rendered.
-            culling: Culling results from ``context.cull(camera)``.
+            view: The current view being rendered.
+            culling: Culling results from ``context.cull()``.
         """
         if not context.is_graph_revision_current(self._standalone_desc.source_revision):
             if not context.apply_graph(self._standalone_desc):

@@ -319,7 +319,8 @@ class InxVkCoreModular
                            const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr,
                            GraphMaterialFilter materialFilter = GraphMaterialFilter::All,
                            const RendererSelection *selection = nullptr, uint64_t excludedObjectId = 0,
-                           bool requireSourceDepthWrite = false, RenderInstanceHistory *motionHistory = nullptr);
+                           bool requireSourceDepthWrite = false, RenderInstanceHistory *motionHistory = nullptr,
+                           const std::shared_ptr<InxMaterial> &overridePublication = {});
 
     /**
      * @brief Draw shadow casters into a depth-only shadow map.
@@ -433,6 +434,9 @@ class InxVkCoreModular
         m_renderTextureAssetLoader = std::move(loader);
     }
     void PrepareMaterialTextureAssets(const std::shared_ptr<InxMaterial> &material);
+    // Resolve one coherent author contract before completed-World extraction.
+    // Uses existing resource preparation, but creates no material PSO or draw.
+    void PrepareMaterialAuthoring(const std::shared_ptr<InxMaterial> &material);
     bool InvalidateMaterialTextureAssets(const std::string &owner, const std::string &guid, bool deleted);
 
     /// Prepare the requested geometry and optional resident vertex stream as one binding.

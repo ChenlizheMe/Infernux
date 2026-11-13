@@ -28,6 +28,15 @@
 
 using namespace infernux;
 
+static CameraDrawCallResult CullView(SceneRenderBridge &bridge, Camera *camera, bool shadows = false)
+{
+    auto frame = bridge.AcquirePreparedFrameForCamera(camera->GetComponentID());
+    assert(frame);
+    const auto *view = frame->FindView(camera->GetComponentID());
+    assert(view);
+    return bridge.CullAndBuildForView(*view, std::move(frame), shadows);
+}
+
 static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry, SceneManager &manager)
 {
     const auto mesh = registry.CreateRuntimeMesh("AnimatedCulling");
@@ -106,12 +115,12 @@ static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry
         assert(glm::length(translatedMin - localMin - offset) < 1.0e-5f);
         assert(glm::length(translatedMax - localMax - offset) < 1.0e-5f);
         bridge.PrepareFrame(false);
-        const auto nearResult = bridge.CullAndBuildForCamera(nearCamera, false);
-        const auto farResult = bridge.CullAndBuildForCamera(farCamera, false);
+        const auto nearResult = CullView(bridge, nearCamera, false);
+        const auto farResult = CullView(bridge, farCamera, false);
         assert(contains(nearResult) == visibleFromNear);
         assert(contains(farResult) == !visibleFromNear);
         assert(contains(nearResult) == visibleFromNear); // The second camera does not modify the first list.
-        const auto cached = bridge.CullAndBuildForCamera(nearCamera, false);
+        const auto cached = CullView(bridge, nearCamera, false);
         assert(cached.visibleListRevision == nearResult.visibleListRevision);
         assert(contains(cached) == visibleFromNear);
     };
@@ -357,12 +366,14 @@ static void TestRetiredCameraMaterials(SceneManager &manager)
         auto *renderer = object->AddComponent<MeshRenderer>();
         renderer->SetSharedPrimitiveMesh(PrimitiveMeshes::GetCubeVertices(), PrimitiveMeshes::GetCubeIndices(), "Cube");
         auto material = std::make_shared<InxMaterial>("TransientCameraMaterial");
-        std::weak_ptr<InxMaterial> retiredMaterial = material;
+        std::weak_ptr<InxMaterial> retiredAuthor = material;
         renderer->SetMaterial(0, material);
         material.reset();
         bridge.PrepareFrame(false);
-        auto result = bridge.CullAndBuildForCamera(camera, true);
+        auto result = CullView(bridge, camera, true);
         assert(result.visibleDrawCallsRef && result.visibleDrawCallsRef->size() == 1);
+        std::weak_ptr<InxMaterial> retiredMaterial = result.visibleDrawCallsRef->front().material;
+        assert(retiredMaterial.lock() != retiredAuthor.lock());
         // An explicitly retained immutable publication must remain usable.
         auto consumer = result.worldOwner;
         const auto *borrowedVisible = result.visibleDrawCallsRef;
@@ -382,6 +393,7 @@ static void TestRetiredCameraMaterials(SceneManager &manager)
             bridge.PrepareFrame(false);
             (void)bridge.BuildDrawCalls();
         }
+        assert(retiredAuthor.expired());
         assert(!retiredMaterial.expired());
         assert(consumer->DrawCalls().drawCalls.front().material == retiredMaterial.lock());
         assert(borrowedVisible->size() == 1 && borrowedVisible->front().material == retiredMaterial.lock());
@@ -462,8 +474,8 @@ int main()
 
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
     bridge.PrepareFrame(false);
-    CameraDrawCallResult leftResult = bridge.CullAndBuildForCamera(leftCamera, false);
-    CameraDrawCallResult rightResult = bridge.CullAndBuildForCamera(rightCamera, false);
+    CameraDrawCallResult leftResult = CullView(bridge, leftCamera, false);
+    CameraDrawCallResult rightResult = CullView(bridge, rightCamera, false);
     assert(leftResult.visibleListRevision != 0);
     assert(rightResult.visibleListRevision != 0);
     assert(leftResult.visibleDrawCallsRef && leftResult.visibleDrawCallsRef->size() == 2);
@@ -475,7 +487,7 @@ int main()
     // The second camera must not mutate the first camera's cached list.
     assert(std::any_of(leftResult.visibleDrawCallsRef->begin(), leftResult.visibleDrawCallsRef->end(),
                        [leftCube](const DrawCall &draw) { return draw.objectId == leftCube->GetID(); }));
-    CameraDrawCallResult leftCachedResult = bridge.CullAndBuildForCamera(leftCamera, false);
+    CameraDrawCallResult leftCachedResult = CullView(bridge, leftCamera, false);
     assert(leftCachedResult.visibleDrawCallsRef && leftCachedResult.visibleDrawCallsRef->size() == 2);
     assert(std::any_of(leftCachedResult.visibleDrawCallsRef->begin(), leftCachedResult.visibleDrawCallsRef->end(),
                        [leftCube](const DrawCall &draw) { return draw.objectId == leftCube->GetID(); }));
@@ -486,14 +498,15 @@ int main()
     // from the newest RenderWorld publication before reusing its cull result.
     MeshRenderer *leftRenderer = leftCube->GetComponent<MeshRenderer>();
     // A custom near plane affects native culling without altering the other
-    // camera; reset restores the ordinary projection immediately.
+    // camera; the next publication adopts either the override or its reset.
     const auto originalLeftProjection = leftCamera->GetProjectionMatrix();
     leftCamera->SetProjectionMatrix(leftCamera->CalculateObliqueMatrix(glm::vec4(0, 0, 1, -6)));
-    const auto clippedLeft = bridge.CullAndBuildForCamera(leftCamera, false);
+    bridge.PrepareFrame(false);
+    const auto clippedLeft = CullView(bridge, leftCamera, false);
     assert(clippedLeft.visibleDrawCallsRef);
     assert(std::none_of(clippedLeft.visibleDrawCallsRef->begin(), clippedLeft.visibleDrawCallsRef->end(),
                         [leftCube](const DrawCall &draw) { return draw.objectId == leftCube->GetID(); }));
-    const auto untouchedRight = bridge.CullAndBuildForCamera(rightCamera, false);
+    const auto untouchedRight = CullView(bridge, rightCamera, false);
     assert(untouchedRight.visibleListRevision == rightResult.visibleListRevision);
 
     auto clonedLeft = leftCamera->Clone();
@@ -502,14 +515,16 @@ int main()
     assert(clonedCamera->GetProjectionMatrix() == leftCamera->GetProjectionMatrix());
     leftCamera->ResetProjectionMatrix();
     assert(leftCamera->GetProjectionMatrix() == originalLeftProjection);
-    const auto restoredLeft = bridge.CullAndBuildForCamera(leftCamera, false);
+    bridge.PrepareFrame(false);
+    const auto restoredLeft = CullView(bridge, leftCamera, false);
     assert(std::any_of(restoredLeft.visibleDrawCallsRef->begin(), restoredLeft.visibleDrawCallsRef->end(),
                        [leftCube](const DrawCall &draw) { return draw.objectId == leftCube->GetID(); }));
 
     // A view override can look elsewhere without mutating the scene Transform.
     leftCamera->SetViewMatrix(rightCamera->GetViewMatrix());
     leftCamera->SetInvertCulling(true);
-    const auto overridden = bridge.CullAndBuildForCamera(leftCamera, false);
+    bridge.PrepareFrame(false);
+    const auto overridden = CullView(bridge, leftCamera, false);
     assert(overridden.visibleDrawCallsRef);
     assert(std::any_of(overridden.visibleDrawCallsRef->begin(), overridden.visibleDrawCallsRef->end(),
                        [rightCube](const DrawCall &draw) { return draw.objectId == rightCube->GetID(); }));
@@ -523,15 +538,19 @@ int main()
     assert(viewCloneCamera->GetViewMatrix() == rightCamera->GetViewMatrix());
     assert(viewCloneCamera->GetCameraToWorldMatrix() == leftCamera->GetCameraToWorldMatrix());
     assert(!rightCamera->HasCustomViewMatrix() && !rightCamera->GetInvertCulling());
-    const auto stillRight = bridge.CullAndBuildForCamera(rightCamera, false);
+    const auto stillRight = CullView(bridge, rightCamera, false);
     assert(stillRight.visibleListRevision == untouchedRight.visibleListRevision);
     leftCamera->ResetViewMatrix();
     leftCamera->SetInvertCulling(false);
 
     auto sharedMaterial = InxMaterial::CreateDefaultLit();
+    // This CPU culling fixture authors its own parameter declaration; shader
+    // defaults are supplied by the renderer's compiler boundary in a project.
+    sharedMaterial->SetColor("base_color", glm::vec4(1.0f));
+    sharedMaterial->SetFloat("metallic", 0.0f);
     leftRenderer->SetMaterial(0, sharedMaterial);
     bridge.PrepareFrame(false);
-    CameraDrawCallResult leftMaterialAssigned = bridge.CullAndBuildForCamera(leftCamera, false);
+    CameraDrawCallResult leftMaterialAssigned = CullView(bridge, leftCamera, false);
     const auto findLeftDraw = [leftCube](const CameraDrawCallResult &result) -> const DrawCall * {
         if (!result.visibleDrawCallsRef)
             return nullptr;
@@ -548,13 +567,13 @@ int main()
     leftRenderer->SetCastShadows(false);
     leftRenderer->SetReceivesShadows(false);
     bridge.PrepareFrame(false);
-    const auto noShadows = bridge.CullAndBuildForCamera(leftCamera, false);
+    const auto noShadows = CullView(bridge, leftCamera, false);
     const DrawCall *shadowDisabled = findLeftDraw(noShadows);
     assert(shadowDisabled && !shadowDisabled->castsShadows && !shadowDisabled->receivesShadows);
     leftRenderer->SetCastShadows(true);
     leftRenderer->SetReceivesShadows(true);
     bridge.PrepareFrame(false);
-    const auto restoredShadows = bridge.CullAndBuildForCamera(leftCamera, false);
+    const auto restoredShadows = CullView(bridge, leftCamera, false);
     const DrawCall *shadowRestored = findLeftDraw(restoredShadows);
     assert(shadowRestored && shadowRestored->castsShadows && shadowRestored->receivesShadows);
     bool rejectedNonFiniteOverride = false;
@@ -580,7 +599,7 @@ int main()
     assert(std::get<glm::vec4>(leftRenderer->GetParameter(0, "base_color")->value) ==
            glm::vec4(0.1f, 0.8f, 0.2f, 1.0f));
     bridge.PrepareFrame(false);
-    CameraDrawCallResult leftParameterChanged = bridge.CullAndBuildForCamera(leftCamera, false);
+    CameraDrawCallResult leftParameterChanged = CullView(bridge, leftCamera, false);
     const DrawCall *afterParameter = findLeftDraw(leftParameterChanged);
     assert(afterParameter && afterParameter->parameterBlock);
     assert(afterParameter->parameterBlock == leftRenderer->GetParameterBlock(0));
@@ -639,7 +658,7 @@ int main()
     assert(twoSlotRenderer->RemoveParameter(1, "metallic", false, "play-runtime"));
     const auto slotOneBlock = twoSlotRenderer->GetParameterBlock(1);
     bridge.PrepareFrame(false);
-    CameraDrawCallResult twoSlotResult = bridge.CullAndBuildForCamera(leftCamera, false);
+    CameraDrawCallResult twoSlotResult = CullView(bridge, leftCamera, false);
     std::vector<const DrawCall *> twoSlotDraws;
     for (const DrawCall &draw : *twoSlotResult.visibleDrawCallsRef) {
         if (draw.objectId == twoSlotObject->GetID())
@@ -651,7 +670,9 @@ int main()
     assert(twoSlotDraws[0]->materialSlot == 0 &&
            twoSlotDraws[0]->parameterBlock == twoSlotRenderer->GetParameterBlock(0));
     assert(twoSlotDraws[1]->materialSlot == 1 && twoSlotDraws[1]->parameterBlock == slotOneBlock);
-    assert(twoSlotDraws[0]->material == sharedMaterial && twoSlotDraws[1]->material == sharedMaterial);
+    assert(twoSlotDraws[0]->material == twoSlotDraws[1]->material);
+    assert(twoSlotDraws[0]->material != sharedMaterial);
+    assert(twoSlotDraws[0]->material->IsRenderPublication());
 
     auto texturedMaterial = sharedMaterial->Clone();
     texturedMaterial->SetTextureGuid("albedo_map", "white");
@@ -673,7 +694,7 @@ int main()
 
     assert(twoSlotRenderer->RemoveParameter(0, "base_color", true));
     bridge.PrepareFrame(false);
-    CameraDrawCallResult oneSlotRemoved = bridge.CullAndBuildForCamera(leftCamera, false);
+    CameraDrawCallResult oneSlotRemoved = CullView(bridge, leftCamera, false);
     twoSlotDraws.clear();
     for (const DrawCall &draw : *oneSlotRemoved.visibleDrawCallsRef) {
         if (draw.objectId == twoSlotObject->GetID())
@@ -690,7 +711,7 @@ int main()
     // cached submission, or Game View will keep the first (bind) pose.
     manager.NotifyMeshRendererContentChanged(leftRenderer);
     bridge.PrepareFrame(false);
-    CameraDrawCallResult leftContentChanged = bridge.CullAndBuildForCamera(leftCamera, false);
+    CameraDrawCallResult leftContentChanged = CullView(bridge, leftCamera, false);
     assert(leftContentChanged.visibleDrawCallsRef);
     assert(std::any_of(leftContentChanged.visibleDrawCallsRef->begin(), leftContentChanged.visibleDrawCallsRef->end(),
                        [leftCube](const DrawCall &draw) { return draw.objectId == leftCube->GetID(); }));
@@ -700,7 +721,7 @@ int main()
     // Transform must not leave the old world bounds in the camera cache.
     dynamicLine->SetPositions({glm::vec3(99.5f, 0.0f, 0.0f), glm::vec3(100.5f, 0.0f, 0.0f)});
     bridge.PrepareFrame(false);
-    CameraDrawCallResult rightAfterLineMove = bridge.CullAndBuildForCamera(rightCamera, false);
+    CameraDrawCallResult rightAfterLineMove = CullView(bridge, rightCamera, false);
     assert(rightAfterLineMove.visibleDrawCallsRef);
     assert(
         std::any_of(rightAfterLineMove.visibleDrawCallsRef->begin(), rightAfterLineMove.visibleDrawCallsRef->end(),
@@ -859,18 +880,18 @@ int main()
     offscreenCaster->SetLayer(2);
     leftCamera->SetCullingMask(1u);
     bridge.PrepareFrame(false);
-    const auto maskedShadows = bridge.CullAndBuildForCamera(leftCamera, true);
+    const auto maskedShadows = CullView(bridge, leftCamera, true);
     assert(maskedShadows.visibleDrawCallsRef && maskedShadows.shadowDrawCallsRef);
     assert(std::none_of(maskedShadows.visibleDrawCallsRef->begin(), maskedShadows.visibleDrawCallsRef->end(),
                         [offscreenCaster](const DrawCall &draw) { return draw.objectId == offscreenCaster->GetID(); }));
     assert(std::any_of(maskedShadows.shadowDrawCallsRef->begin(), maskedShadows.shadowDrawCallsRef->end(),
                        [offscreenCaster](const DrawCall &draw) { return draw.objectId == offscreenCaster->GetID(); }));
-    const auto cachedMaskedShadows = bridge.CullAndBuildForCamera(leftCamera, true);
+    const auto cachedMaskedShadows = CullView(bridge, leftCamera, true);
     assert(cachedMaskedShadows.visibleListRevision == maskedShadows.visibleListRevision);
     assert(cachedMaskedShadows.shadowDrawCallsRef == maskedShadows.shadowDrawCallsRef);
     assert(cachedMaskedShadows.shadowListRevision == maskedShadows.shadowListRevision);
     assert(cachedMaskedShadows.shadowListRevision != 0);
-    const auto withoutShadows = bridge.CullAndBuildForCamera(leftCamera, false);
+    const auto withoutShadows = CullView(bridge, leftCamera, false);
     assert(!withoutShadows.shadowDrawCallsRef && withoutShadows.shadowDrawCalls.empty());
     leftCamera->SetCullingMask(0xFFFFFFFFu);
     scene->DestroyGameObject(offscreenCaster);

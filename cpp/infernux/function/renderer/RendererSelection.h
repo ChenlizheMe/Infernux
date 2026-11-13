@@ -2,6 +2,7 @@
 
 #include "RenderIdentity.h"
 #include "RendererParameterBlock.h"
+#include "rhi/RhiComputeBuffer.h"
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <limits>
 #include <stdexcept>
@@ -55,6 +56,23 @@ class RendererSelection
             found = m_entries.find(draw);
         }
         return found == m_entries.end() ? nullptr : &found->second;
+    }
+
+    [[nodiscard]] std::shared_ptr<RendererSelection> CaptureRenderPublication() const
+    {
+        auto result = std::make_shared<RendererSelection>(m_material->CaptureRenderPublication());
+        result->m_revision = m_revision;
+        result->m_entries = m_entries;
+        for (auto &[identity, block] : result->m_entries) {
+            if (!block || block->buffers.empty())
+                continue;
+            auto captured = std::make_shared<RendererParameterBlock>(*block);
+            for (auto &[name, buffer] : captured->buffers)
+                if (buffer && !buffer->GetAllocation()->IsGraphWritable())
+                    buffer = buffer->Freeze();
+            block = std::move(captured);
+        }
+        return result;
     }
 
     [[nodiscard]] const std::shared_ptr<InxMaterial> &Material() const noexcept

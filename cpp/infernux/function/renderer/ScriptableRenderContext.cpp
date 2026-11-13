@@ -46,53 +46,48 @@ void ScriptableRenderContext::ResetProfileSnapshot()
 
 int ScriptableRenderContext::GetOutputSamples() const noexcept
 {
-    return m_graph && m_graph->HasOutputTexture() ? static_cast<int>(m_graph->GetRenderViewContext().samples) : 0;
+    return m_cachedCameraView->outputGeneration
+               ? static_cast<int>(m_cachedCameraView->outputGeneration->description.samples)
+               : 0;
 }
 
 ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
-                                                 const EditorGizmosContext &gizmoCtx)
+                                                 const EditorGizmosContext &gizmoCtx,
+                                                 std::shared_ptr<const RenderWorldFrame> world,
+                                                 const RenderViewData &view, bool capture)
     : m_vkCore(vkCore), m_graph(graph), m_draw(draw), m_gizmoCtx(gizmoCtx)
 {
-    // Resolve the scene pointer: prefer the gizmo context's activeScene,
-    // fall back to SceneManager's active scene.
-    m_scene = gizmoCtx.activeScene;
-    if (!m_scene) {
-        m_scene = SceneManager::Instance().GetActiveScene();
-    }
+    const auto *published = world ? world->FindView(view.cameraId) : nullptr;
+    if (!published)
+        throw std::invalid_argument("Render context requires a view in its retained World publication");
+    m_renderWorldOwner = std::move(world);
+    m_cachedCameraView = std::make_shared<RenderViewData>(view);
+    m_scene = capture ? gizmoCtx.activeScene : nullptr;
+    if (capture)
+        m_recordedPlan = std::make_shared<RenderViewPlan>();
+    SetupCameraProperties();
 }
-
 // ============================================================================
 // SetupCameraProperties
 // ============================================================================
 
-void ScriptableRenderContext::SetupCameraProperties(Camera *camera)
+void ScriptableRenderContext::SetupCameraProperties()
 {
-    m_activeCamera = camera;
-
-    // Snapshot the camera's VP matrices NOW so that the executor lambda
-    // uses the exact same values even if the camera transform is modified
-    // later in the frame.  The cached matrices are propagated to the
-    // associated SceneRenderGraph in SubmitCulling().
-    if (camera) {
-        m_cachedView = camera->GetViewMatrix();
-        m_cachedProj = camera->GetProjectionMatrix();
-
-        // Propagate Camera clear flags / background color to the render graph
-        // so the MainColor pass uses the correct clear behaviour this frame.
-        if (m_graph) {
-            m_graph->SetCameraInvertCulling(camera->GetInvertCulling());
-            m_graph->UpdateMainPassClearSettings(camera->GetClearFlags(), camera->GetBackgroundColor(),
-                                                 camera->GetDithering(), camera->GetStopNaNs());
-        }
+    const auto &view = *m_cachedCameraView;
+    m_cachedView = view.view;
+    m_cachedProj = view.projection;
+    if (m_graph && !m_recordedPlan) {
+        m_graph->SetCameraInvertCulling(view.invertCulling);
+        m_graph->UpdateMainPassClearSettings(view.clearFlags, view.backgroundColor, view.dithering, view.stopNaNs);
     }
 }
-
 // ============================================================================
 // Cull
 // ============================================================================
 
-CullingResults &ScriptableRenderContext::Cull(Camera *camera)
+CullingResults &ScriptableRenderContext::Cull()
 {
+    const auto &view = *m_cachedCameraView;
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto cullStart = Clock::now();
@@ -108,18 +103,18 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     }
 
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
-    Camera *editorCam = bridge.GetEditorCamera();
+    const bool editorView = view.editorView;
 
     // Lighting is staged after RenderPipeline::Render, so the graph's shadow
     // views here belong to the previous frame. Collect the scene-owned caster
     // list independently; the current light views filter it during recording.
-    const bool needsShadowDrawCalls = m_graph && m_graph->GetRenderViewContext().kind != rhi::RenderViewKind::Preview;
+    const bool needsShadowDrawCalls = !m_graph || m_graph->GetRenderViewContext().kind != rhi::RenderViewKind::Preview;
     CameraDrawCallResult ownedResult;
     CullingResults results;
 
     // RenderWorld extraction is camera-neutral. Scene, Game, preview, and
     // future stacked cameras all derive an independent visible list here.
-    ownedResult = bridge.CullAndBuildForCamera(camera, needsShadowDrawCalls);
+    ownedResult = bridge.CullAndBuildForView(view, m_renderWorldOwner, needsShadowDrawCalls);
     const std::vector<DrawCall> *drawCallsPtr =
         ownedResult.visibleDrawCallsRef ? ownedResult.visibleDrawCallsRef : &ownedResult.visibleDrawCalls;
     results.visibleListRevision = ownedResult.visibleListRevision;
@@ -151,12 +146,13 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     // Populate visible light count from the scene light collector.
     // CollectLights() runs earlier in the frame (InxRenderer::UpdateSceneLighting),
     // so the count is already available.
-    results.lightCount = m_graph ? m_graph->GetCameraLightCount() : 0;
+    results.lightCount =
+        m_renderWorldOwner->Lighting() ? static_cast<uint32_t>(m_renderWorldOwner->Lighting()->lights.size()) : 0;
     m_cachedCullingResults = std::move(results);
 #if INFERNUX_FRAME_PROFILE
     const double elapsedMs = std::chrono::duration<double, std::milli>(Clock::now() - cullStart).count();
     g_srcProfileSnapshot.cullMs += elapsedMs;
-    if (camera && camera != editorCam) {
+    if (!editorView) {
         g_srcProfileSnapshot.cullGameMs += elapsedMs;
         g_srcProfileSnapshot.cullGameCalls += 1.0;
     } else {
@@ -175,6 +171,12 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
 
 bool ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 {
+    if (m_recordedPlan) {
+        m_recordedPlan->graph = CaptureRenderGraphDescription(
+            desc, [this](const auto &material) { m_vkCore->PrepareMaterialAuthoring(material); },
+            [this](const auto &name) { return m_vkCore->AcquireFullscreenProgram(name); });
+        return true;
+    }
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto t0 = Clock::now();
@@ -190,12 +192,24 @@ bool ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 
 void ScriptableRenderContext::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
 {
+    if (m_recordedPlan) {
+        m_recordedPlan->parameters = updates;
+        return;
+    }
     if (m_graph && !updates.empty())
         m_graph->UpdateParameterBlocks(updates);
 }
 
 void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 {
+    if (m_recordedPlan) {
+        m_recordedPlan->culling = culling;
+        m_recordedPlan->draws = std::move(m_orderedDrawCalls);
+        m_recordedPlan->commands = std::move(m_pendingCommands);
+        m_recordedPlan->submitted = true;
+        m_submitted = true;
+        return;
+    }
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto submitStart = Clock::now();
@@ -233,14 +247,13 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     // Use the camera cache revision as the durable identity instead of that
     // transient address, otherwise a static scene can never reuse submission.
     mixSubmission(culling.shadowListRevision);
-    const bool drawSkyboxForSignature = !m_activeCamera || m_activeCamera->GetClearFlags() == CameraClearFlags::Skybox;
+    const bool drawSkyboxForSignature =
+        !m_cachedCameraView->valid || m_cachedCameraView->clearFlags == CameraClearFlags::Skybox;
     mixSubmission(drawSkyboxForSignature ? 1ULL : 0ULL);
     std::shared_ptr<InxMaterial> signatureSkyboxMaterial;
     if (drawSkyboxForSignature) {
-        if (m_gizmoCtx.activeScene)
-            signatureSkyboxMaterial = m_gizmoCtx.activeScene->ResolveSkyboxMaterial();
-        if (!signatureSkyboxMaterial)
-            signatureSkyboxMaterial = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+        if (m_renderWorldOwner && m_renderWorldOwner->Lighting())
+            signatureSkyboxMaterial = m_renderWorldOwner->Lighting()->skyboxMaterial;
         mixSubmission(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(signatureSkyboxMaterial.get())));
     }
     const bool shadowListReusable = culling.shadowCasters.Empty() || culling.shadowCasters.IsBorrowed();
@@ -251,8 +264,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         graphAvailable && m_graph->CanReuseCachedSubmission(submissionSignature, objectBufferRevision);
     if (!hasEditorAppenders && visibleListReusable && shadowListReusable && signatureReusable) {
         // The cached shadow list borrows storage from the same retained world snapshot.
-        if (m_activeCamera)
-            m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
+        if (m_cachedCameraView->valid)
+            m_graph->SetCachedCameraView(*m_cachedCameraView);
         m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls());
         m_vkCore->SetShadowDrawCalls(m_graph->HasCachedShadowDrawCalls() ? &m_graph->GetCachedShadowDrawCalls()
                                                                          : nullptr);
@@ -293,11 +306,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
 
     // Append skybox draw call only when ClearFlags == Skybox (or no camera set)
-    bool drawSkybox = true;
-    if (m_activeCamera) {
-        CameraClearFlags flags = m_activeCamera->GetClearFlags();
-        drawSkybox = (flags == CameraClearFlags::Skybox);
-    }
+    const bool drawSkybox = !m_cachedCameraView->valid || m_cachedCameraView->clearFlags == CameraClearFlags::Skybox;
 
     if (drawSkybox) {
 #if INFERNUX_FRAME_PROFILE
@@ -306,10 +315,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         // Scene environment picks the skybox material (falls back to the
         // builtin procedural sky when unset or unloadable).
         std::shared_ptr<InxMaterial> skyboxMat;
-        if (m_gizmoCtx.activeScene)
-            skyboxMat = m_gizmoCtx.activeScene->ResolveSkyboxMaterial();
-        if (!skyboxMat)
-            skyboxMat = AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+        if (m_renderWorldOwner && m_renderWorldOwner->Lighting())
+            skyboxMat = m_renderWorldOwner->Lighting()->skyboxMaterial;
         if (skyboxMat) {
             static constexpr uint64_t SKYBOX_OBJECT_ID = 0xFFFFFFFFFFFFFF00ULL;
             DrawCall dc;
@@ -488,8 +495,8 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         }
         m_graph->SetCachedSubmissionSignature(submissionSignature, culling.renderWorldOwner,
                                               objectBuffersReady ? m_vkCore->GetObjectBufferRevision() : 0);
-        if (m_activeCamera) {
-            m_graph->SetCachedCameraVP(m_activeCamera, m_cachedView, m_cachedProj);
+        if (m_cachedCameraView->valid) {
+            m_graph->SetCachedCameraView(*m_cachedCameraView);
         }
         // Point VkCore at the graph's cached copy (survives this scope).
         m_vkCore->SetDrawCalls(&m_graph->GetCachedDrawCalls(), true);
@@ -516,21 +523,39 @@ void ScriptableRenderContext::MarkSubmitted(uint64_t objectBindingIdentity, bool
         m_graph->RequestView(m_draw, objectBindingIdentity, reusesObjectBindings);
 }
 
-bool ScriptableRenderContext::RenderWithGraph(Camera *camera, const RenderGraphDescription &desc,
+bool ScriptableRenderContext::RenderWithGraph(const RenderGraphDescription &desc,
                                               const std::vector<GraphParameterBlockUpdate> &updates)
 {
-    SetupCameraProperties(camera);
+    SetupCameraProperties();
     if (!IsGraphRevisionCurrent(desc.sourceRevision) && !ApplyGraph(desc))
         return false;
     UpdateParameterBlocks(updates);
-    CullingResults &culling = Cull(camera);
+    CullingResults &culling = Cull();
     SubmitCulling(culling);
     return true;
 }
 
+bool ScriptableRenderContext::ExecutePlan(const std::shared_ptr<const RenderViewPlan> &plan)
+{
+    if (plan->graph &&
+        (m_graph->GetAppliedPlan() != plan || !m_graph->IsPythonGraphCurrent(plan->graph->sourceRevision))) {
+        if (!ApplyGraph(*plan->graph))
+            return false;
+        UpdateParameterBlocks(plan->parameters);
+        m_graph->SetAppliedPlan(plan);
+    }
+    if (!plan->submitted)
+        return true;
+    m_orderedDrawCalls = plan->draws;
+    m_pendingCommands = plan->commands;
+    CullingResults culling = plan->culling;
+    SubmitCulling(culling);
+    return m_submitted;
+}
+
 bool ScriptableRenderContext::IsGraphRevisionCurrent(uint64_t sourceRevision) const
 {
-    return m_graph && m_graph->IsPythonGraphCurrent(sourceRevision);
+    return !m_recordedPlan && m_graph && m_graph->IsPythonGraphCurrent(sourceRevision);
 }
 
 // ============================================================================
@@ -615,7 +640,7 @@ bool ScriptableRenderContext::IsCommandImplemented(RenderCommandType type) noexc
 // Camera target
 // ============================================================================
 
-RenderTargetHandle ScriptableRenderContext::GetCameraTarget(Camera * /*camera*/) const
+RenderTargetHandle ScriptableRenderContext::GetCameraTarget() const
 {
     // Returns the sentinel CAMERA_TARGET_HANDLE.
     // At execution time, this resolves to the scene render target's resolved color image.

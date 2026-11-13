@@ -252,15 +252,15 @@ template <typename T> void HashShadowValue(uint64_t &hash, const T &value)
     HashShadowBytes(hash, &value, sizeof(T));
 }
 
-lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const std::vector<DrawCall> &drawCalls)
+lighting::ShadowDepthRange VisibleShadowDepthRange(const RenderViewData &camera, const std::vector<DrawCall> &drawCalls)
 {
     lighting::ShadowDepthRange result{};
-    if (!camera)
+    if (!camera.valid)
         return result;
 
     // Cascade selection in the shader uses view-space z, including any
     // affine view override. A normalized world forward changes those units.
-    const auto view = camera->GetViewMatrix();
+    const auto &view = camera.view;
     const glm::vec3 depthAxis(view[0][2], view[1][2], view[2][2]);
     float nearest = std::numeric_limits<float>::max();
     float farthest = 0.0f;
@@ -323,7 +323,8 @@ uint64_t SceneRenderGraph::GetTransientResidentBytes() const
 // ============================================================================
 
 bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *sceneTarget,
-                                  rhi::RenderViewKind viewKind, std::shared_ptr<rhi::RenderTexture> output)
+                                  rhi::RenderViewKind viewKind, std::shared_ptr<rhi::RenderTexture> output,
+                                  std::shared_ptr<const rhi::RenderTextureGeneration> generation)
 {
     if (!vkCore || (!sceneTarget && !output)) {
         INXLOG_ERROR("SceneRenderGraph::Initialize: Invalid parameters");
@@ -334,7 +335,7 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     m_screenTarget = sceneTarget;
     if (output) {
         m_outputTexture = std::move(output);
-        m_outputGeneration = m_outputTexture->Acquire();
+        m_outputGeneration = generation ? std::move(generation) : m_outputTexture->Acquire();
         m_outputTarget = std::make_unique<SceneRenderTarget>(vkCore);
         m_outputTarget->BindAttachments(m_outputGeneration);
         sceneTarget = m_outputTarget.get();
@@ -500,7 +501,13 @@ void SceneRenderGraph::InvalidateBeforeTargetReplacement()
 
 void SceneRenderGraph::SetOutputTexture(std::shared_ptr<rhi::RenderTexture> output)
 {
-    const auto generation = output ? output->Acquire() : nullptr;
+    auto generation = output ? output->Acquire() : nullptr;
+    SetOutputTextureGeneration(std::move(output), std::move(generation));
+}
+
+void SceneRenderGraph::SetOutputTextureGeneration(std::shared_ptr<rhi::RenderTexture> output,
+                                                  std::shared_ptr<const rhi::RenderTextureGeneration> generation)
+{
     if (m_outputTexture == output && m_outputGeneration == generation)
         return;
     ++m_resourceAccessRevision;
@@ -519,14 +526,14 @@ void SceneRenderGraph::SetOutputTexture(std::shared_ptr<rhi::RenderTexture> outp
     SetEffectiveMsaaSamples(m_effectiveMsaaSamples);
 }
 
-bool SceneRenderGraph::SetCameraViewport(const Camera &camera)
+bool SceneRenderGraph::SetCameraViewport(const RenderViewData &view)
 {
     auto *output = m_outputTarget && m_outputTexture ? m_outputTarget.get() : m_screenTarget;
     if (!output || !output->GetAttachments())
         return false;
-    const bool changed = m_viewport.Prepare(m_vkCore->GetDeviceContext().GetRhiDevice(),
-                                            "camera-viewport/" + std::to_string(m_renderView.id),
-                                            output->GetAttachments(), camera.GetRect());
+    const bool changed =
+        m_viewport.Prepare(m_vkCore->GetDeviceContext().GetRhiDevice(),
+                           "camera-viewport/" + std::to_string(m_renderView.id), output->GetAttachments(), view.rect);
     const auto generation = m_viewport.Work() ? m_viewport.Work()->Acquire() : nullptr;
     if (changed || generation != m_viewportGeneration) {
         m_sceneTarget = nullptr;
@@ -616,7 +623,7 @@ RenderViewAccess SceneRenderGraph::GetResourceAccess() const
         if (texture.role != GraphTextureRole::Persistent)
             continue;
         const auto bound = m_importedTextureBindings.find(texture.name);
-        const auto generation = m_graphBuilt ? nullptr : texture.renderTexture->Acquire();
+        const auto generation = m_graphBuilt ? nullptr : texture.AcquireRenderTextureGeneration();
         const auto *attachment = generation ? ResolveGraphTextureAttachment(*generation, texture.attachment)
                                  : bound == m_importedTextureBindings.end() ? nullptr
                                                                             : bound->second.persistentAttachment;
@@ -938,8 +945,8 @@ bool SceneRenderGraph::PrepareGraphBuffers()
             }
             const auto previous = m_workInstances.find(binding.name);
             auto instance = previous != m_workInstances.end() && &previous->second->GetRecipe() == binding.recipe.get()
-                                ? previous->second->Rebind(std::move(inputs))
-                                : binding.recipe->Instantiate(std::move(inputs));
+                                ? previous->second->Rebind(std::move(inputs), binding.externalInputs)
+                                : binding.recipe->Instantiate(std::move(inputs), binding.externalInputs);
             if (!instance) {
                 m_graphStorageDeferred = true;
                 return false;
@@ -1330,11 +1337,13 @@ void SceneRenderGraph::SetCameraInvertCulling(bool invert)
     InvalidateTemporalHistory();
 }
 
-void SceneRenderGraph::SetCachedCameraVP(const Camera *camera, const glm::mat4 &view, const glm::mat4 &proj)
+void SceneRenderGraph::SetCachedCameraView(const RenderViewData &camera)
 {
-    const uint64_t historyRevision = camera ? camera->GetTemporalHistoryRevision() : 0;
+    const auto &view = camera.view;
+    const auto &proj = camera.projection;
     bool cameraCut =
-        m_hasCachedCameraVP && (camera != m_cachedCamera || historyRevision != m_cachedCameraHistoryRevision);
+        m_hasCachedCameraVP && (camera.cameraId != m_cachedCameraView.cameraId ||
+                                camera.temporalHistoryRevision != m_cachedCameraView.temporalHistoryRevision);
     if (m_hasCachedCameraVP && !cameraCut) {
         const glm::mat4 previousInverseView = glm::inverse(m_cachedView);
         const glm::mat4 currentInverseView = glm::inverse(view);
@@ -1360,8 +1369,7 @@ void SceneRenderGraph::SetCachedCameraVP(const Camera *camera, const glm::mat4 &
     if (cameraCut)
         InvalidateTemporalHistory();
 
-    m_cachedCamera = camera;
-    m_cachedCameraHistoryRevision = historyRevision;
+    m_cachedCameraView = camera;
     m_cachedView = view;
     m_drawView = view;
     m_cachedUnjitteredProj = proj;
@@ -1418,7 +1426,7 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
                                            const glm::mat4 *previousViewProj)
 {
     m_cameraMatricesStaged = false;
-    if (!m_vkCore || !m_cachedCamera || !EnsureViewGpuResources())
+    if (!m_vkCore || !m_cachedCameraView.valid || !EnsureViewGpuResources())
         return false;
     const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
@@ -1432,8 +1440,8 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     camera.previousViewProj =
         previousViewProj ? *previousViewProj : (m_cameraHistoryValid ? m_previousViewProj : proj * view);
     camera.inverseViewProj = glm::inverse(proj * view);
-    const float nearClip = m_cachedCamera->GetNearClip();
-    const float farClip = m_cachedCamera->GetFarClip();
+    const float nearClip = m_cachedCameraView.nearClip;
+    const float farClip = m_cachedCameraView.farClip;
     camera.projectionParams = glm::vec4(nearClip, farClip, 1.0f / farClip, nearClip / farClip);
     camera.zBufferParams = depth::LinearizationParams(nearClip, farClip);
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
@@ -1472,25 +1480,15 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     return true;
 }
 
-void SceneRenderGraph::StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
-                                           const ShaderLightingUBO &environmentLighting)
+void SceneRenderGraph::StageCameraLighting(const RenderLightingSource &source, const RenderViewData &view)
 {
-    if (!m_vkCore || !scene)
-        return;
-
-    m_cameraLightCollector.CollectLights(scene, cameraPosition);
-    // environmentLighting values are already linear (converted once by the
-    // scene collector's SetAmbient* setters) — copy them verbatim to avoid a
-    // second sRGB -> linear conversion.
-    m_cameraLightCollector.SetAmbientLinear(environmentLighting.ambientSkyColor,
-                                            environmentLighting.ambientEquatorColor,
-                                            environmentLighting.ambientGroundColor);
+    m_cameraLightCollector.CollectLights(source, view.position);
     if (m_renderView.kind != rhi::RenderViewKind::Preview) {
-        const lighting::ShadowDepthRange visibleDepthRange =
-            m_hasCachedDrawCalls ? VisibleShadowDepthRange(camera, m_cachedRenderers.DrawCalls())
-                                 : lighting::ShadowDepthRange{};
-        m_cameraLightCollector.ComputeShadowVP(scene, cameraPosition, static_cast<float>(GetShadowMapResolution()),
-                                               camera, visibleDepthRange);
+        const auto visibleDepthRange = m_hasCachedDrawCalls
+                                           ? VisibleShadowDepthRange(view, m_cachedRenderers.DrawCalls())
+                                           : lighting::ShadowDepthRange{};
+        m_cameraLightCollector.ComputeShadowVP(source, view, static_cast<float>(GetShadowMapResolution()),
+                                               visibleDepthRange);
     }
     m_cameraLightCollector.BuildShaderLightingUBO();
 }
@@ -1643,7 +1641,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             for (auto &command : pass.commands) {
                 if (command.type != GraphCommandType::FullscreenQuad)
                     continue;
-                if (const auto program = m_vkCore->AcquireFullscreenProgram(command.shaderName)) {
+                if (const auto &program = command.fullscreenProgram) {
                     m_authorShaderGuids.insert(program->assetGuid);
                     const auto prepared = FullscreenRenderer::PrepareParameters(*program, command.parameters);
                     ValidateFullscreenHistories(*program, prepared, command, pass, normalizedDesc);
@@ -1687,6 +1685,23 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         ++m_bufferGeneration;
     }
     if (!topologyChanged && !callbackContractChanged) {
+        // Logical topology is unchanged. Completed-World resource values
+        // replace only their publication; Work instances retain private state.
+        m_pythonGraphDesc.buffers = std::move(normalizedDesc.buffers);
+        m_pythonGraphDesc.workBindings = std::move(normalizedDesc.workBindings);
+        for (size_t index = 0; index < normalizedDesc.textures.size(); ++index)
+            m_pythonGraphDesc.textures[index].renderTextureGeneration =
+                std::move(normalizedDesc.textures[index].renderTextureGeneration);
+        CacheLiveAuthorPasses();
+        for (size_t pass = 0; pass < normalizedDesc.passes.size(); ++pass)
+            for (size_t command = 0; command < normalizedDesc.passes[pass].commands.size(); ++command) {
+                auto &destination = m_pythonGraphDesc.passes[pass].commands[command];
+                auto &source = normalizedDesc.passes[pass].commands[command];
+                m_needsRebuild |= destination.fullscreenProgram != source.fullscreenProgram;
+                destination.fullscreenProgram = std::move(source.fullscreenProgram);
+                destination.rendererSelection = std::move(source.rendererSelection);
+                destination.overrideMaterialValue = std::move(source.overrideMaterialValue);
+            }
         // Replaying an already-applied description must not clobber live
         // parameter blocks: effect edits arrive through UpdateParameterBlocks
         // *after* the description was built, so its parameter values
@@ -1761,7 +1776,6 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         const int lightIndex = command->lightIndex;
         const std::string sortMode = command->sortMode;
         const std::string overrideMaterial = command->overrideMaterial;
-        const auto rendererSelection = command->rendererSelection;
         const std::string passTag = command->passTag;
         const GraphMaterialFilter materialFilter = command->materialFilter;
         MaterialPassPipelineDescriptor materialPass;
@@ -1772,16 +1786,17 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         }
 
         m_pythonCallbacks[passDesc.name] = [this, vkCore, commandType, queueMin, queueMax, screenUIListIndex,
-                                            worldUILayerMask, lightIndex, sortMode, overrideMaterial, rendererSelection,
-                                            passTag, materialFilter,
+                                            worldUILayerMask, lightIndex, sortMode, overrideMaterial, command, passTag,
+                                            materialFilter,
                                             materialPass](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
             switch (commandType) {
             case GraphCommandType::DrawRenderers:
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), GetViewGlobalsBinding(),
                                           m_drawView, queueMin, queueMax, sortMode, overrideMaterial, passTag,
-                                          &materialPass, materialFilter, rendererSelection.get(), 0, false,
+                                          &materialPass, materialFilter, command->rendererSelection.get(), 0, false,
                                           materialPass.target == ShaderCompileTarget::Motion ? &m_motionHistory
-                                                                                             : nullptr);
+                                                                                             : nullptr,
+                                          command->overrideMaterialValue);
                 break;
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
@@ -1801,11 +1816,10 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 break;
             case GraphCommandType::DrawWorldUI:
                 if (m_screenUIRenderer)
-                    m_screenUIRenderer->RenderWorld(
-                        ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView, materialPass.RenderingSignature(),
-                        vkCore->GetCurrentFrameSlot(),
-                        worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
-                        m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView);
+                    m_screenUIRenderer->RenderWorld(ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView,
+                                                    materialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
+                                                    worldUILayerMask & (m_cachedCameraView.cullingMask), m_drawView,
+                                                    m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {
@@ -2020,14 +2034,14 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
                     const auto &textures = draw.material->GetRenderTextures();
                     if (!textures.empty()) {
                         const auto *material = m_vkCore->ResolveMeshMaterial(draw.material);
-                        const auto program =
-                            material ? m_vkCore->ShareShaderProgramArtifact(material->programKey.stages) : nullptr;
+                        const auto program = material ? material->shaderArtifact : nullptr;
                         if (program && program->FindVariant(ShaderCompileTarget::Shadow))
                             for (const auto &binding : program->properties) {
                                 if (!binding.IsTexture())
                                     continue;
                                 if (const auto texture = textures.find(binding.name); texture != textures.end())
-                                    reads.push_back({pass.name, texture->second, texture->second->Acquire()});
+                                    reads.push_back({pass.name, texture->second,
+                                                     draw.material->GetRenderTextureGeneration(binding.name)});
                             }
                     }
                     readBuffers(pass.name, draw, false);
@@ -2042,7 +2056,7 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
             const auto list = command->type == GraphCommandType::DrawWorldUI
                                   ? ScreenUIList::World
                                   : (command->screenUIList == 0 ? ScreenUIList::Camera : ScreenUIList::Overlay);
-            auto mask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+            auto mask = m_cachedCameraView.cullingMask;
             if (command->type == GraphCommandType::DrawWorldUI)
                 mask &= command->worldUILayerMask;
             for (const auto &texture : m_screenUIRenderer->GetRenderTextureReads(list, mask))
@@ -2057,12 +2071,8 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
         if (command->rendererSelection) {
             overrideMaterial = command->rendererSelection->Material();
             m_vkCore->PrepareMaterialTextureAssets(overrideMaterial);
-        } else if (!skybox && !command->overrideMaterial.empty()) {
-            auto &registry = AssetRegistry::Instance();
-            overrideMaterial = registry.GetBuiltinMaterial(command->overrideMaterial);
-            if (!overrideMaterial)
-                overrideMaterial = registry.LoadAsset<InxMaterial>(command->overrideMaterial, ResourceType::Material);
-            m_vkCore->PrepareMaterialTextureAssets(overrideMaterial);
+        } else if (!skybox) {
+            overrideMaterial = command->overrideMaterialValue;
         }
         const int minimum = skybox ? EngineConfig::Get().skyboxQueue : command->queueMin;
         const int maximum = skybox ? minimum : command->queueMax;
@@ -2089,15 +2099,14 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
                 return;
             if (command->materialFilter != GraphMaterialFilter::All) {
                 const auto *committed = m_vkCore->ResolveMeshMaterial(material);
-                const auto artifact =
-                    committed ? m_vkCore->ShareShaderProgramArtifact(committed->programKey.stages) : nullptr;
+                const auto artifact = committed ? committed->shaderArtifact : nullptr;
                 const bool deferred = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
                 if ((command->materialFilter == GraphMaterialFilter::DeferredCompatible && !deferred) ||
                     (command->materialFilter == GraphMaterialFilter::DeferredUnsupported && deferred))
                     return;
             }
             for (const auto &[name, texture] : material->GetRenderTextures())
-                reads.push_back({pass.name, texture, texture->Acquire()});
+                reads.push_back({pass.name, texture, material->GetRenderTextureGeneration(name)});
             for (const auto &[name, buffer] : material->GetBuffers()) {
                 if (buffer)
                     bufferReads.push_back({pass.name, buffer});
@@ -2194,6 +2203,9 @@ rhi::ComputeBufferBindings SceneRenderGraph::CaptureComputeBufferReads() const
         include(buffer.computeBuffer);
     for (const auto &[name, owner] : m_graphBufferOwners)
         include(owner);
+    for (const auto &binding : m_pythonGraphDesc.workBindings)
+        for (const auto &buffer : binding.externalInputs)
+            include(buffer);
     return reads;
 }
 
@@ -2324,7 +2336,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
 
     uint64_t worldUIDepthSignature = 0;
     if (m_screenUIRenderer) {
-        const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        const uint32_t cameraMask = m_cachedCameraView.cullingMask;
         for (size_t passIndex = 0; passIndex < m_pythonGraphDesc.passes.size(); ++passIndex) {
             const auto &pass = m_pythonGraphDesc.passes[passIndex];
             const auto *command = pass.PrimaryCommand();
@@ -2352,7 +2364,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
     }
     if (worldUIDepthSignature && m_vkCore) {
         std::optional<WorldUIDepthReplay> replay;
-        const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        const uint32_t cameraMask = m_cachedCameraView.cullingMask;
         for (const auto &pass : m_pythonGraphDesc.passes) {
             const auto *command = pass.PrimaryCommand();
             if (!command || command->type != GraphCommandType::DrawWorldUI ||
@@ -2390,8 +2402,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
                 if (!state.depthWriteEnable)
                     continue;
                 const auto *committed = m_vkCore->ResolveMeshMaterial(material);
-                const auto artifact =
-                    committed ? m_vkCore->ShareShaderProgramArtifact(committed->programKey.stages) : nullptr;
+                const auto artifact = committed ? committed->shaderArtifact : nullptr;
                 if (!state.depthTestEnable || state.stencilTestEnable || !artifact ||
                     !artifact->FindVariant(ShaderCompileTarget::Depth)) {
                     INXLOG_ERROR("Selective World UI occlusion cannot replay depth-writing material '",
@@ -2411,8 +2422,8 @@ void SceneRenderGraph::EnsureGraphBuilt()
         if (texture.role != GraphTextureRole::Asset && texture.role != GraphTextureRole::Persistent)
             continue;
         const bool asset = texture.role == GraphTextureRole::Asset;
-        const uint64_t revision =
-            asset ? assetRegistry.GetAssetVersion(texture.assetGuid) : texture.renderTexture->Acquire()->revision;
+        const uint64_t revision = asset ? assetRegistry.GetAssetVersion(texture.assetGuid)
+                                        : texture.AcquireRenderTextureGeneration()->revision;
         const auto found = m_importedTextureBindings.find(texture.name);
         // The content change can precede the next CPU/GPU publication by several frames.
         if (found == m_importedTextureBindings.end() || found->second.revision != revision ||
@@ -2560,7 +2571,7 @@ bool SceneRenderGraph::UsesForwardPlus() const
                 return true;
             }
             if (command.type == GraphCommandType::FullscreenQuad) {
-                const auto program = m_fullscreenRenderer.AcquireProgram(command.shaderName);
+                const auto &program = command.fullscreenProgram;
                 if (program && (program->UsesViewBinding(2) || program->UsesViewBinding(3)))
                     return true;
             }
@@ -3324,7 +3335,7 @@ bool SceneRenderGraph::RegisterGraphTextures(uint32_t width, uint32_t height,
     for (const auto &tex : m_pythonGraphDesc.textures) {
         if (tex.role != GraphTextureRole::Persistent)
             continue;
-        const auto generation = tex.renderTexture->Acquire();
+        const auto generation = tex.AcquireRenderTextureGeneration();
         const auto attachments = m_renderGraph->ImportRenderTexture(tex.name, generation);
         const auto *image = ResolveGraphTextureAttachment(*generation, tex.attachment);
         const auto handle = tex.attachment == GraphTextureAttachment::Depth ? attachments.depth
@@ -3844,7 +3855,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
 
         const auto &sortedPasses = m_pythonGraphDesc.passes;
 
-        const uint32_t cameraWorldUIMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        const uint32_t cameraWorldUIMask = m_cachedCameraView.cullingMask;
         std::unordered_map<std::string, WorldUIDepthReplay> worldUIOpaqueSources;
         for (const auto &candidate : sortedPasses) {
             const auto *candidateCommand = candidate.PrimaryCommand();
@@ -4005,7 +4016,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 resources.indirectArguments = builder.WriteStorageBuffer(resources.indirectArguments);
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
                 return [this, culler, ownerLayerMask = entry.ownerLayerMask](vk::RenderContext &ctx) {
-                    const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+                    const uint32_t cameraMask = m_cachedCameraView.cullingMask;
                     // Keep each view's indirect output and visibility feedback
                     // consistent. A masked view must not keep offscreen
                     // simulation awake for other cameras.
@@ -4849,7 +4860,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
 
                 // Reflect once when building this graph, never in the frame loop.
                 // Texture2DMS retains sample identity; Texture2D consumes resolved data.
-                const auto authorProgram = m_fullscreenRenderer.AcquireProgram(command->shaderName);
+                const auto authorProgram = command->fullscreenProgram;
                 if (!authorProgram)
                     return;
                 m_authorShaderGuids.insert(authorProgram->assetGuid);
@@ -5418,9 +5429,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             m_screenUIRenderer->RenderWorld(
                                 ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
                                 uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
-                                worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
-                                m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView,
-                                run.firstOrdinal, run.endOrdinal);
+                                worldUILayerMask & (m_cachedCameraView.cullingMask), m_drawView, m_cachedProj,
+                                m_hasBillboardView ? m_billboardView : m_drawView, run.firstOrdinal, run.endOrdinal);
                         };
                     });
                     trackAuthorPass(pass);
@@ -5729,7 +5739,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             particlePerView.group = viewFrame.particleGroup;
                         }
                         for (const auto &packet : particlePackets) {
-                            const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+                            const uint32_t cameraMask = m_cachedCameraView.cullingMask;
                             if ((packet.ownerLayerMask & cameraMask) == 0)
                                 continue;
                             auto packetView = view;
@@ -5769,8 +5779,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 continue;
             // Every imported attachment leaves the graph in its declared
             // handoff layout, including unsampleable MSAA/depth attachments.
-            const bool sampleable = texture.samples == 1 &&
-                                    (!texture.IsDepth() || texture.renderTexture->Acquire()->description.sampledDepth);
+            const bool sampleable =
+                texture.samples == 1 &&
+                (!texture.IsDepth() || texture.AcquireRenderTextureGeneration()->description.sampledDepth);
             const auto output = customRTHandles.at(texture.name);
             m_renderGraph->AddPass("__Export/" + texture.name,
                                    [output, isDepth = texture.IsDepth(), sampleable](vk::PassBuilder &builder) {

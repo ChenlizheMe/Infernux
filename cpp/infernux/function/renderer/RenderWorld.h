@@ -3,17 +3,27 @@
 #include <function/renderer/Frustum.h>
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/RenderIdentity.h>
+#include <function/renderer/RenderLightingSource.h>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace infernux
 {
 
 class SceneRenderExtractor;
+class SceneRenderBridge;
+enum class CameraClearFlags;
+namespace rhi
+{
+class RenderTexture;
+struct RenderTextureGeneration;
+} // namespace rhi
 
 /// Immutable structural values copied from a scene renderer at extraction.
 /// No Scene, GameObject, Component, or Transform pointer may cross this boundary.
@@ -62,10 +72,44 @@ struct RenderViewData
     glm::vec3 up{0.0f, 1.0f, 0.0f};
     uint32_t cullingMask = 0xFFFFFFFFu;
     uint64_t cameraId = 0;
+    uint64_t worldId = 0;
+    uint64_t completedWorldFrame = 0;
+    uint64_t simulationEpoch = 0;
+    uint64_t cameraObjectId = 0;
+    uint64_t sceneWorldId = 0;
+    std::string name;
+    std::string sceneName;
+    uint64_t temporalHistoryRevision = 0;
+    float nearClip = 0.1f;
+    float farClip = 1000.0f;
+    float depth = 0.0f;
+    glm::vec4 rect{0.0f, 0.0f, 1.0f, 1.0f};
+    uint32_t pixelWidth = 0;
+    uint32_t pixelHeight = 0;
+    CameraClearFlags clearFlags = static_cast<CameraClearFlags>(0);
+    glm::vec4 backgroundColor{0.0f, 0.0f, 0.0f, 1.0f};
+    bool dithering = false;
+    bool stopNaNs = false;
+    bool invertCulling = false;
+    bool editorView = false;
+    bool isMainCamera = false;
+    bool renderToTexture = false;
+    bool renderOnDemand = false;
+    bool wantsMemoryOutput = false;
+    bool hasAuthoredTargetTexture = false;
+    glm::uvec2 memoryOutputSize{0u, 0u};
+    std::string outputTextureGuid;
+    std::shared_ptr<rhi::RenderTexture> outputTexture;
+    // Allocation/attachment lease only. Persistent output pixels intentionally
+    // remain render-owned and may advance on every actual view execution.
+    std::shared_ptr<const rhi::RenderTextureGeneration> outputGeneration;
     bool valid = false;
 };
 
-/// One complete renderer-frontend publication. The object is writable only
+/// Immutable geometry, view, material and lighting values. Per-view graph
+/// plans are published with this frame by SceneRenderBridge. UI and particle
+/// device storage retain their separate publication boundaries.
+/// The object is writable only
 /// while owned by RenderWorldSnapshot::BeginFrame(); Publish() transfers it as
 /// shared_ptr<const RenderWorldFrame>, so render consumers cannot mutate it.
 class RenderWorldFrame final
@@ -84,6 +128,31 @@ class RenderWorldFrame final
     [[nodiscard]] const RenderViewData &PrimaryView() const noexcept
     {
         return m_primaryView;
+    }
+
+    [[nodiscard]] const std::vector<RenderViewData> &Views() const noexcept
+    {
+        return m_views;
+    }
+
+    [[nodiscard]] const RenderViewData *FindView(uint64_t cameraId) const noexcept
+    {
+        const auto found = m_viewIndices.find(cameraId);
+        return found == m_viewIndices.end() ? nullptr : &m_views[found->second];
+    }
+
+    [[nodiscard]] uint64_t CompletedWorldFrame() const noexcept
+    {
+        return m_completedWorldFrame;
+    }
+
+    [[nodiscard]] uint64_t SimulationEpoch() const noexcept
+    {
+        return m_simulationEpoch;
+    }
+    [[nodiscard]] const std::shared_ptr<const RenderLightingSource> &Lighting() const noexcept
+    {
+        return m_lighting;
     }
 
     [[nodiscard]] uint64_t WorldId() const noexcept
@@ -128,10 +197,16 @@ class RenderWorldFrame final
     std::vector<RenderProxy> m_proxies;
     DrawCallResult m_drawCalls;
     RenderViewData m_primaryView;
+    std::vector<RenderViewData> m_views;
+    std::unordered_map<uint64_t, size_t> m_viewIndices;
+    uint64_t m_completedWorldFrame = 0;
+    uint64_t m_simulationEpoch = 0;
+    std::shared_ptr<const RenderLightingSource> m_lighting;
     uint64_t m_worldId = 0;
     uint64_t m_structuralRevision = 0;
     uint64_t m_transformRevision = 0;
     uint64_t m_contentRevision = 0;
+    uint64_t m_sourceContentRevision = 0;
     uint64_t m_poseRevision = 0;
     uint64_t m_frameRevision = 0;
 };
@@ -158,6 +233,11 @@ class RenderWorldSnapshot final
         frame.m_proxies.clear();
         frame.m_drawCalls = {};
         frame.m_primaryView = {};
+        frame.m_views.clear();
+        frame.m_viewIndices.clear();
+        frame.m_completedWorldFrame = 0;
+        frame.m_simulationEpoch = 0;
+        frame.m_lighting.reset();
         frame.m_worldId = 0;
         frame.m_structuralRevision = 0;
         frame.m_transformRevision = 0;
@@ -203,6 +283,21 @@ class RenderWorldSnapshot final
 
   private:
     friend class SceneRenderExtractor;
+    friend class SceneRenderBridge;
+
+    // Renderer selection borrows a producer's immutable publication. Borrowed
+    // frames must never enter this selector's writable recycle pool.
+    void SelectPublication(std::shared_ptr<const RenderWorldFrame> frame)
+    {
+        std::atomic_store_explicit(&m_published, std::move(frame), std::memory_order_release);
+    }
+
+    void Reset()
+    {
+        SelectPublication(nullptr);
+        m_writable.reset();
+        m_recycled.clear();
+    }
 
     [[nodiscard]] RenderWorldFrame &BeginFrame(uint64_t, uint64_t)
     {

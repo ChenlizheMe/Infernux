@@ -11,7 +11,6 @@
 #include <cmath>
 #include <string_view>
 #include <utility>
-#include <utility>
 
 using namespace infernux;
 
@@ -29,7 +28,8 @@ rhi::RenderViewContext FixtureView(uint32_t samples, uint32_t width, uint32_t he
     return view;
 }
 
-bool ValidateRenderGraphDescription(const RenderGraphDescription &graph, uint32_t samples, uint32_t width = 0, uint32_t height = 0)
+bool ValidateRenderGraphDescription(const RenderGraphDescription &graph, uint32_t samples, uint32_t width = 0,
+                                    uint32_t height = 0)
 {
     return infernux::ValidateRenderGraphDescription(graph, FixtureView(samples, width, height));
 }
@@ -146,9 +146,19 @@ void CheckCameraHistoryResetIsolation()
     const glm::mat4 identity(1.0f);
     glm::mat4 moved(1.0f);
     moved[3][0] = -0.25f; // Below automatic camera-cut detection.
-    firstView.SetCachedCameraVP(&source, identity, identity);
-    secondViewOfSource.SetCachedCameraVP(&source, identity, identity);
-    unrelatedView.SetCachedCameraVP(&other, identity, identity);
+    const auto capturedView = [&](const Camera &camera, const glm::mat4 &viewMatrix) {
+        RenderViewData view;
+        view.cameraId = &camera == &source ? 1 : 2;
+        view.temporalHistoryRevision = camera.GetTemporalHistoryRevision();
+        view.view = viewMatrix;
+        view.projection = identity;
+        view.viewProjection = identity * viewMatrix;
+        view.valid = true;
+        return view;
+    };
+    firstView.SetCachedCameraView(capturedView(source, identity));
+    secondViewOfSource.SetCachedCameraView(capturedView(source, identity));
+    unrelatedView.SetCachedCameraView(capturedView(other, identity));
     firstView.CommitCameraHistory();
     secondViewOfSource.CommitCameraHistory();
     unrelatedView.CommitCameraHistory();
@@ -157,20 +167,20 @@ void CheckCameraHistoryResetIsolation()
     source.ResetHistory(); // Several requests before a frame still reset once per view.
     assert(source.GetTemporalHistoryRevision() == 2);
     assert(other.GetTemporalHistoryRevision() == 0);
-    firstView.SetCachedCameraVP(&source, moved, identity);
+    firstView.SetCachedCameraView(capturedView(source, moved));
     assert(firstView.GetPreviousViewProj() == moved);
     // A second view cannot lose the request because the first rendered earlier.
-    secondViewOfSource.SetCachedCameraVP(&source, moved, identity);
+    secondViewOfSource.SetCachedCameraView(capturedView(source, moved));
     assert(secondViewOfSource.GetPreviousViewProj() == moved);
-    unrelatedView.SetCachedCameraVP(&other, moved, identity);
+    unrelatedView.SetCachedCameraView(capturedView(other, moved));
     assert(unrelatedView.GetPreviousViewProj() == identity);
 
     firstView.CommitCameraHistory();
-    firstView.SetCachedCameraVP(&source, identity, identity);
+    firstView.SetCachedCameraView(capturedView(source, identity));
     assert(firstView.GetPreviousViewProj() == moved); // Accumulation resumes.
     firstView.ClearCachedViewSubmission();
     source.ResetHistory();
-    firstView.SetCachedCameraVP(&source, moved, identity);
+    firstView.SetCachedCameraView(capturedView(source, moved));
     assert(firstView.GetPreviousViewProj() == moved);
 }
 

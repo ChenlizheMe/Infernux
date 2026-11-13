@@ -369,12 +369,14 @@ class ComputeWorkRecipe final : public std::enable_shared_from_this<ComputeWorkR
     /// Reuse matching real input owners before allocating remaining private
     /// slots. Returns null when storage cannot be admitted. No GPU work is submitted.
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeWorkInstance>
-    Instantiate(std::vector<ComputeWorkInput> inputs = {}) const;
+    Instantiate(std::vector<ComputeWorkInput> inputs = {},
+                const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs = {}) const;
 
   private:
     friend class ComputeWorkInstance;
     [[nodiscard]] std::shared_ptr<ComputeWorkInstance>
-    Bind(std::vector<ComputeWorkInput> inputs, const std::vector<std::shared_ptr<ComputeBuffer>> &retained) const;
+    Bind(std::vector<ComputeWorkInput> inputs, const std::vector<std::shared_ptr<ComputeBuffer>> &retained,
+         const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs) const;
     ComputeHost m_host;
     std::vector<ComputeWorkSlot> m_slots;
     std::vector<ComputeWorkPort> m_ports;
@@ -391,7 +393,8 @@ class ComputeWorkInstance final
   public:
     /// Rebuild immutable dispatch bindings while reusing existing private slots.
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeWorkInstance>
-    Rebind(std::vector<ComputeWorkInput> inputs) const;
+    Rebind(std::vector<ComputeWorkInput> inputs,
+           const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs = {}) const;
     /// Lower the bound recipe through the same batch preparation and writer
     /// versioning used by individual compute dispatches. Does not submit work.
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<PreparedComputeBatch>

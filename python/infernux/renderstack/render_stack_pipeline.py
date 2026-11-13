@@ -45,18 +45,18 @@ class RenderStackPipeline(RenderPipeline):
         # recovery path for a broken authored RenderStack.
         self._default_graphs = {}
         self._default_pipeline = None
-        # One cache entry per loaded Scene. Multi-camera additive rendering may
+        # One cache entry per loaded Scene. Multi-view additive rendering may
         # alternate between scene owners every frame.
         self._cached_stacks: dict[tuple[int, str], tuple[int, object | None]] = {}
 
-    def render(self, context, camera) -> None:
-        """Render one engine-owned camera view."""
+    def render(self, context, view) -> None:
+        """Render one engine-owned view view."""
         render_stack = self._find_render_stack(context)
 
         if render_stack is not None:
-            render_stack.render(context, camera)
+            render_stack.render(context, view)
         else:
-            self._render_default(context, camera)
+            self._render_default(context, view)
 
     # ------------------------------------------------------------------
     # Private
@@ -120,7 +120,7 @@ class RenderStackPipeline(RenderPipeline):
             RenderStack.refresh_active_instance(scene)
         return found
 
-    def _render_default(self, context, camera) -> None:
+    def _render_default(self, context, view) -> None:
         """Authoritative rendering path used when no RenderStack exists.
 
         This builds a graph directly from ``DefaultForwardPipeline`` without
@@ -155,4 +155,4 @@ class RenderStackPipeline(RenderPipeline):
                 f"screen_ui={','.join(screen_ui_passes) or 'none'}"
             )
 
-        context.render_with_graph(camera, description)
+        context.render_with_graph(description)

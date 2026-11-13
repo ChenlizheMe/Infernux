@@ -27,6 +27,9 @@
 
 namespace infernux
 {
+struct RenderViewData;
+class RenderWorldFrame;
+class RuntimeWorld;
 struct TextureCpuData;
 class FrameWorkOwner;
 class FrameCpuStorageClaim;
@@ -920,11 +923,12 @@ class InxRenderer
 
     /// Per-frame cached game camera pointer, lazily resolved once per frame
     /// by FindGameCameraCached() and cleared at the start of each DrawFrame.
-    class Camera *m_cachedGameCamera = nullptr;
-    std::vector<class Camera *> m_cachedGameCameras;
+    const RenderViewData *m_cachedGameCamera = nullptr;
+    std::vector<const RenderViewData *> m_cachedGameCameras;
+    std::shared_ptr<const RenderWorldFrame> m_cachedGameFrame;
+    std::shared_ptr<const RenderWorldFrame> m_cameraPreviewFrame;
+    std::unordered_map<uint64_t, std::array<uint64_t, 2>> m_cameraRenderRequests;
     bool m_gameCameraCacheValid = false;
-    uint64_t m_cachedCameraActiveWorld = 0;
-    std::vector<std::pair<uint64_t, uint64_t>> m_cachedCameraSceneVersions;
 
     // Scriptable render pipeline (nullptr = default C++ path)
     std::shared_ptr<RenderPipelineCallback> m_renderPipeline;
@@ -960,13 +964,16 @@ class InxRenderer
 
     /// @brief Per-frame cached version of FindGameCamera().
     /// First call per frame does the actual discovery; subsequent calls return cached result.
-    class Camera *FindGameCameraCached();
+    const RenderViewData *FindGameCameraCached();
 
     /// @brief Per-frame camera stack and per-camera RenderGraph ownership.
-    const std::vector<class Camera *> &FindGameCamerasCached();
-    SceneRenderGraph *EnsureGameRenderGraph(class Camera *camera);
+    const std::vector<const RenderViewData *> &FindGameCamerasCached();
+    SceneRenderGraph *EnsureGameRenderGraph(const RenderViewData *camera);
     bool HasActiveGameViews(bool allowScreen = true);
-    bool ShouldRenderGameCamera(const class Camera *camera, bool allowScreen = true) const;
+    void PrepareWorldRenderInputs();
+    bool PublishRuntimeRenderFrame(RuntimeWorld &world);
+    void RetireRuntimeRenderFrame(uint64_t worldId);
+    bool ShouldRenderGameCamera(const RenderViewData *camera, bool allowScreen = true) const;
 
     /// Callback invoked once per frame BEFORE GUI::BuildFrame().
     /// Used by Python to tick DeferredTaskRunner so that scene-mutating
@@ -978,9 +985,6 @@ class InxRenderer
     std::function<void(float)> m_frameBeginCallback;
     bool m_drawingFrame = false;
     // A render input can wait across host services without replaying gameplay.
-    bool m_waitingRenderResults = false;
-    uint64_t m_waitingRenderEpoch = 0;
-    uint64_t m_waitingRenderWorld = 0;
 
     /// Callback invoked once per frame AFTER VkCore::DrawFrame() + EndFrame().
     /// Used by Python to run heavy scene loads between frames, avoiding

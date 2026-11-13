@@ -113,7 +113,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
     auto &cacheOwner = m_cameraCullCaches[cacheKey];
     if (!cacheOwner)
         cacheOwner = std::make_shared<CameraCullCache>();
-    CameraCullCache &cameraCache = *cacheOwner;
+    CameraCullCache *cameraCache = cacheOwner.get();
     auto retainVisibleList = [&] {
         // The visible list lives in the cull cache, not in RenderWorldFrame.
         // A submitted render graph may still borrow it when its camera or
@@ -124,15 +124,15 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         auto owners = std::make_shared<Owners>(result.worldOwner, cacheOwner);
         result.worldOwner = std::shared_ptr<const RenderWorldFrame>(std::move(owners), result.worldOwner.get());
     };
-    const bool worldMatches = cameraCache.worldId == result.worldOwner->WorldId();
-    const bool structuralMatches = cameraCache.structuralRevision == result.worldOwner->StructuralRevision();
-    const bool transformMatches = cameraCache.transformRevision == result.worldOwner->TransformRevision();
-    const bool contentMatches = cameraCache.contentRevision == result.worldOwner->ContentRevision() &&
-                                cameraCache.poseRevision == result.worldOwner->PoseRevision();
-    const bool maskMatches = cameraCache.cullingMask == camera.cullingMask;
-    const bool frustumMatches = cameraCache.frustumCulling == m_frustumCulling;
+    const bool worldMatches = cameraCache->worldId == result.worldOwner->WorldId();
+    const bool structuralMatches = cameraCache->structuralRevision == result.worldOwner->StructuralRevision();
+    const bool transformMatches = cameraCache->transformRevision == result.worldOwner->TransformRevision();
+    const bool contentMatches = cameraCache->contentRevision == result.worldOwner->ContentRevision() &&
+                                cameraCache->poseRevision == result.worldOwner->PoseRevision();
+    const bool maskMatches = cameraCache->cullingMask == camera.cullingMask;
+    const bool frustumMatches = cameraCache->frustumCulling == m_frustumCulling;
     const bool viewProjectionMatches =
-        std::memcmp(&cameraCache.viewProjection, &camera.viewProjection, sizeof(glm::mat4)) == 0;
+        std::memcmp(&cameraCache->viewProjection, &camera.viewProjection, sizeof(glm::mat4)) == 0;
     const bool cacheHit =
         worldMatches && structuralMatches && transformMatches && maskMatches && frustumMatches && viewProjectionMatches;
 #if INFERNUX_FRAME_PROFILE
@@ -148,41 +148,44 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         m_profileSnapshot.cameraMissViewProjection += viewProjectionMatches ? 0.0 : 1.0;
     }
 #endif
+    // Borrowed visible lists can survive into later World/Host frames. Keep
+    // their storage immutable; a changed result writes a new cache generation.
+    if ((!cacheHit || !contentMatches) && cacheOwner.use_count() > 1) {
+        cacheOwner = std::make_shared<CameraCullCache>(*cacheOwner);
+        cameraCache = cacheOwner.get();
+    }
     if (cacheHit) {
         if (!contentMatches) {
-            if (!cameraCache.usesWorldDrawCalls) {
+            if (!cameraCache->usesWorldDrawCalls) {
                 const size_t patchCount =
-                    std::min(cameraCache.visibleDrawCalls.size(), cameraCache.visibleDrawCallSourceIndices.size());
+                    std::min(cameraCache->visibleDrawCalls.size(), cameraCache->visibleDrawCallSourceIndices.size());
                 for (size_t index = 0; index < patchCount; ++index) {
-                    const size_t sourceIndex = cameraCache.visibleDrawCallSourceIndices[index];
+                    const size_t sourceIndex = cameraCache->visibleDrawCallSourceIndices[index];
                     if (sourceIndex >= cachedResult.drawCalls.size())
                         continue;
-                    DrawCall &destination = cameraCache.visibleDrawCalls[index];
+                    DrawCall &destination = cameraCache->visibleDrawCalls[index];
                     const DrawCall &source = cachedResult.drawCalls[sourceIndex];
-                    destination.skinBoneMatrices = source.skinBoneMatrices;
-                    destination.skinContinuity = source.skinContinuity;
-                    destination.parameterBlock = source.parameterBlock;
-                    destination.castsShadows = source.castsShadows;
-                    destination.receivesShadows = source.receivesShadows;
-                    destination.devicePose = source.devicePose;
+                    const bool visible = destination.frustumVisible;
+                    destination = source;
+                    destination.frustumVisible = visible;
                 }
             }
-            cameraCache.contentRevision = result.worldOwner->ContentRevision();
-            cameraCache.poseRevision = result.worldOwner->PoseRevision();
-            cameraCache.visibleListRevision = m_nextCameraCullRevision++;
+            cameraCache->contentRevision = result.worldOwner->ContentRevision();
+            cameraCache->poseRevision = result.worldOwner->PoseRevision();
+            cameraCache->visibleListRevision = m_nextCameraCullRevision++;
             if (m_nextCameraCullRevision == 0)
                 m_nextCameraCullRevision = 1;
         }
-        cameraCache.worldOwner = result.worldOwner;
+        cameraCache->worldOwner = result.worldOwner;
         result.visibleDrawCallsRef =
-            cameraCache.usesWorldDrawCalls ? &cachedResult.drawCalls : &cameraCache.visibleDrawCalls;
-        if (!cameraCache.usesWorldDrawCalls)
+            cameraCache->usesWorldDrawCalls ? &cachedResult.drawCalls : &cameraCache->visibleDrawCalls;
+        if (!cameraCache->usesWorldDrawCalls)
             retainVisibleList();
-        result.visibleListRevision = cameraCache.visibleListRevision;
+        result.visibleListRevision = cameraCache->visibleListRevision;
         if (result.shadowDrawCallsRef) {
-            result.shadowListRevision = cameraCache.visibleListRevision;
+            result.shadowListRevision = cameraCache->visibleListRevision;
         }
-        m_visibleCount.store(cameraCache.visibleCount, std::memory_order_relaxed);
+        m_visibleCount.store(cameraCache->visibleCount, std::memory_order_relaxed);
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.buildCameraMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
         m_profileSnapshot.buildCameraCalls += 1.0;
@@ -191,8 +194,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         return result;
     }
 
-    cameraCache.visibleDrawCalls.clear();
-    cameraCache.visibleDrawCallSourceIndices.clear();
+    cameraCache->visibleDrawCalls.clear();
+    cameraCache->visibleDrawCallSourceIndices.clear();
     const uint32_t cullingMask = camera.cullingMask;
     Frustum frustum;
     if (m_frustumCulling)
@@ -222,29 +225,29 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.conservativeFullListUses += 1.0;
 #endif
-        const bool sameWorldList = cameraCache.usesWorldDrawCalls && worldMatches && structuralMatches &&
+        const bool sameWorldList = cameraCache->usesWorldDrawCalls && worldMatches && structuralMatches &&
                                    transformMatches && contentMatches && maskMatches;
-        cameraCache.usesWorldDrawCalls = true;
-        cameraCache.worldId = result.worldOwner->WorldId();
-        cameraCache.structuralRevision = result.worldOwner->StructuralRevision();
-        cameraCache.transformRevision = result.worldOwner->TransformRevision();
-        cameraCache.contentRevision = result.worldOwner->ContentRevision();
-        cameraCache.poseRevision = result.worldOwner->PoseRevision();
-        cameraCache.viewProjection = camera.viewProjection;
-        cameraCache.cullingMask = camera.cullingMask;
-        cameraCache.frustumCulling = m_frustumCulling;
-        cameraCache.visibleCount = renderables.size();
+        cameraCache->usesWorldDrawCalls = true;
+        cameraCache->worldId = result.worldOwner->WorldId();
+        cameraCache->structuralRevision = result.worldOwner->StructuralRevision();
+        cameraCache->transformRevision = result.worldOwner->TransformRevision();
+        cameraCache->contentRevision = result.worldOwner->ContentRevision();
+        cameraCache->poseRevision = result.worldOwner->PoseRevision();
+        cameraCache->viewProjection = camera.viewProjection;
+        cameraCache->cullingMask = camera.cullingMask;
+        cameraCache->frustumCulling = m_frustumCulling;
+        cameraCache->visibleCount = renderables.size();
         if (!sameWorldList) {
-            cameraCache.visibleListRevision = m_nextCameraCullRevision++;
+            cameraCache->visibleListRevision = m_nextCameraCullRevision++;
             if (m_nextCameraCullRevision == 0)
                 m_nextCameraCullRevision = 1;
         }
-        cameraCache.worldOwner = result.worldOwner;
+        cameraCache->worldOwner = result.worldOwner;
         m_visibleCount.store(renderables.size(), std::memory_order_relaxed);
         result.visibleDrawCallsRef = &cachedResult.drawCalls;
-        result.visibleListRevision = cameraCache.visibleListRevision;
+        result.visibleListRevision = cameraCache->visibleListRevision;
         if (result.shadowDrawCallsRef)
-            result.shadowListRevision = cameraCache.visibleListRevision;
+            result.shadowListRevision = cameraCache->visibleListRevision;
 #if INFERNUX_FRAME_PROFILE
         m_profileSnapshot.buildCameraMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
         m_profileSnapshot.buildCameraCalls += 1.0;
@@ -253,11 +256,11 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         return result;
     }
 
-    cameraCache.usesWorldDrawCalls = false;
+    cameraCache->usesWorldDrawCalls = false;
 
     constexpr size_t kRenderContextAppendSlack = 32;
     const size_t previousVisibleCount = m_visibleCount.load(std::memory_order_relaxed);
-    cameraCache.visibleDrawCalls.reserve(
+    cameraCache->visibleDrawCalls.reserve(
         (previousVisibleCount > 0 ? previousVisibleCount : cachedResult.drawCalls.size()) + kRenderContextAppendSlack);
 
     size_t visibleCount = 0;
@@ -281,8 +284,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
             DrawCall drawCall = cachedResult.drawCalls[drawCallIndex];
             drawCall.frustumVisible = true;
-            cameraCache.visibleDrawCalls.push_back(drawCall);
-            cameraCache.visibleDrawCallSourceIndices.push_back(drawCallIndex);
+            cameraCache->visibleDrawCalls.push_back(drawCall);
+            cameraCache->visibleDrawCallSourceIndices.push_back(drawCallIndex);
         }
     };
 
@@ -299,29 +302,29 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
             appendRenderable(renderables[index], testBounds);
     }
     m_visibleCount.store(visibleCount, std::memory_order_relaxed);
-    cameraCache.worldId = result.worldOwner->WorldId();
-    cameraCache.structuralRevision = result.worldOwner->StructuralRevision();
-    cameraCache.transformRevision = result.worldOwner->TransformRevision();
-    cameraCache.contentRevision = result.worldOwner->ContentRevision();
-    cameraCache.poseRevision = result.worldOwner->PoseRevision();
-    cameraCache.viewProjection = camera.viewProjection;
-    cameraCache.cullingMask = camera.cullingMask;
-    cameraCache.frustumCulling = m_frustumCulling;
-    cameraCache.visibleCount = visibleCount;
-    cameraCache.visibleListRevision = m_nextCameraCullRevision++;
+    cameraCache->worldId = result.worldOwner->WorldId();
+    cameraCache->structuralRevision = result.worldOwner->StructuralRevision();
+    cameraCache->transformRevision = result.worldOwner->TransformRevision();
+    cameraCache->contentRevision = result.worldOwner->ContentRevision();
+    cameraCache->poseRevision = result.worldOwner->PoseRevision();
+    cameraCache->viewProjection = camera.viewProjection;
+    cameraCache->cullingMask = camera.cullingMask;
+    cameraCache->frustumCulling = m_frustumCulling;
+    cameraCache->visibleCount = visibleCount;
+    cameraCache->visibleListRevision = m_nextCameraCullRevision++;
     if (m_nextCameraCullRevision == 0)
         m_nextCameraCullRevision = 1;
-    cameraCache.worldOwner = result.worldOwner;
-    result.visibleDrawCallsRef = &cameraCache.visibleDrawCalls;
+    cameraCache->worldOwner = result.worldOwner;
+    result.visibleDrawCallsRef = &cameraCache->visibleDrawCalls;
     retainVisibleList();
-    result.visibleListRevision = cameraCache.visibleListRevision;
+    result.visibleListRevision = cameraCache->visibleListRevision;
     if (result.shadowDrawCallsRef || !result.shadowDrawCalls.empty())
-        result.shadowListRevision = cameraCache.visibleListRevision;
+        result.shadowListRevision = cameraCache->visibleListRevision;
 
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.buildCameraMs += std::chrono::duration<double, std::milli>(Clock::now() - buildStart).count();
     m_profileSnapshot.buildCameraCalls += 1.0;
-    m_profileSnapshot.drawCalls += static_cast<double>(cameraCache.visibleDrawCalls.size());
+    m_profileSnapshot.drawCalls += static_cast<double>(cameraCache->visibleDrawCalls.size());
 #endif
     return result;
 }

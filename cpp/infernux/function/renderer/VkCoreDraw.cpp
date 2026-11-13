@@ -667,15 +667,13 @@ void InxVkCoreModular::ReleaseActiveDrawLists() noexcept
 // Filtered draw — renders only draw calls within a queue range
 // ============================================================================
 
-void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
-                                         rhi::BindGroupHandle perViewGroup, vk::ViewGlobalsBinding &viewGlobals,
-                                         const glm::mat4 &viewMatrix, int queueMin, int queueMax,
-                                         const std::string &sortMode, const std::string &overrideMaterial,
-                                         const std::string &passTag,
-                                         const MaterialPassPipelineDescriptor *pipelineDescriptor,
-                                         GraphMaterialFilter materialFilter, const RendererSelection *selection,
-                                         uint64_t excludedObjectId, bool requireSourceDepthWrite,
-                                         RenderInstanceHistory *motionHistory)
+void InxVkCoreModular::DrawSceneFiltered(
+    VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, rhi::BindGroupHandle perViewGroup,
+    vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix, int queueMin, int queueMax,
+    const std::string &sortMode, const std::string &overrideMaterial, const std::string &passTag,
+    const MaterialPassPipelineDescriptor *pipelineDescriptor, GraphMaterialFilter materialFilter,
+    const RendererSelection *selection, uint64_t excludedObjectId, bool requireSourceDepthWrite,
+    RenderInstanceHistory *motionHistory, const std::shared_ptr<InxMaterial> &overridePublication)
 {
     const MaterialPassPipelineDescriptor activePass =
         pipelineDescriptor ? *pipelineDescriptor : m_materialPipelineManager.GetDefaultPassPipelineDescriptor();
@@ -737,6 +735,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     std::shared_ptr<InxMaterial> overrideMatOwner; // keeps alive during this scope
     if (selection) {
         overrideMatOwner = selection->Material();
+        overrideMatRaw = overrideMatOwner.get();
+    } else if (overridePublication) {
+        overrideMatOwner = overridePublication;
         overrideMatRaw = overrideMatOwner.get();
     } else if (!overrideMaterial.empty()) {
         auto &registry = AssetRegistry::Instance();
@@ -1340,8 +1341,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             // Forward. The material may currently hold a rejected shader pair,
             // so resolving from the mutable asset fields would mix two ABIs.
             const ShaderStagePair &stages = forward->programKey.stages;
-            const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
-            if (!artifact || !artifact->FindVariant(activePass.target)) {
+            const auto &artifact = forward->shaderArtifact;
+            if (!artifact || artifact->key != forward->programKey || !artifact->FindVariant(activePass.target)) {
                 if (activePass.target == ShaderCompileTarget::Normal ||
                     activePass.target == ShaderCompileTarget::BaseColor) {
                     static std::unordered_set<std::string> reportedMissingGeometryVariants;
@@ -1355,7 +1356,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 }
                 return {};
             }
-            program = m_shaderCache.MaterializeProgramVariant(stages, activePass.target);
+            program = m_shaderCache.MaterializeProgramVariant(artifact, activePass.target, forward->shaderProgram);
             if (!program)
                 return {};
         }
@@ -2941,15 +2942,8 @@ void InxVkCoreModular::PumpPendingMeshUploads()
         return;
     m_resourceManager.PollGpuUploads();
     bool publishedRuntimeMesh = false;
-    auto &registry = AssetRegistry::Instance();
     for (auto pending = m_pendingSharedMeshBuffers.begin(); pending != m_pendingSharedMeshBuffers.end();) {
         const auto &key = pending->first;
-        if (key.IsRegistryAsset() &&
-            (!registry.IsLoaded(key.assetGuid) || registry.GetAssetVersion(key.assetGuid) != key.runtimeVersion)) {
-            m_assetMeshViewKeys.erase({key.assetGuid, key.runtimeVersion, key.geometryView});
-            pending = m_pendingSharedMeshBuffers.erase(pending);
-            continue;
-        }
         const bool vertexReady = m_resourceManager.TryPublishBufferUpload(pending->second.vertexUpload);
         const bool indexReady = m_resourceManager.TryPublishBufferUpload(pending->second.indexUpload);
         if (!vertexReady || !indexReady) {
@@ -2981,10 +2975,8 @@ bool InxVkCoreModular::QueueSharedMeshUpload(const SharedMeshKey &key, const std
         pending->second.requestedFrame = m_ensureFrameCounter;
         return true;
     }
-    auto &registry = AssetRegistry::Instance();
-    if (key.IsRegistryAsset() &&
-        (!registry.IsLoaded(key.assetGuid) || registry.GetAssetVersion(key.assetGuid) != key.runtimeVersion))
-        return false;
+    if (key.IsRegistryAsset() && !source)
+        throw std::logic_error("Asset mesh upload requires its immutable geometry generation");
     PendingSharedMeshBuffers upload;
     upload.vertices = &vertices;
     upload.indices = &indices;

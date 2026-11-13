@@ -4,6 +4,7 @@
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
 #include "RenderGraphDescription.h"
+#include "RenderWorld.h"
 #include "RendererList.h"
 #include <function/scene/Camera.h>
 #include <function/scene/PrimitiveMeshes.h>
@@ -54,6 +55,18 @@ struct CullingResults
     {
         return lightCount;
     }
+};
+
+/// CPU-authored work for one completed World view. GPU recording, private
+/// Work state, temporal history and shader time stay on actual Host executions.
+struct RenderViewPlan
+{
+    std::optional<RenderGraphDescription> graph;
+    std::vector<GraphParameterBlockUpdate> parameters;
+    CullingResults culling;
+    std::vector<DrawCall> draws;
+    std::vector<RenderCommand> commands;
+    bool submitted = false;
 };
 
 // ============================================================================
@@ -137,14 +150,18 @@ class ScriptableRenderContext
 #endif
 
     ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
-                            const EditorGizmosContext &gizmoCtx);
+                            const EditorGizmosContext &gizmoCtx, std::shared_ptr<const RenderWorldFrame> world,
+                            const RenderViewData &view, bool capture = false);
 
-    /// @brief Set camera VP matrices for rendering
-    void SetupCameraProperties(Camera *camera);
-
-    /// @brief Cull scene objects visible to the given camera. Returns culling results.
-    CullingResults &Cull(Camera *camera);
-
+    [[nodiscard]] const RenderViewData &GetView() const noexcept
+    {
+        return *m_cachedCameraView;
+    }
+    [[nodiscard]] const std::shared_ptr<RenderViewData> &GetViewPublication() const noexcept
+    {
+        return m_cachedCameraView;
+    }
+    CullingResults &Cull();
     // ====================================================================
     // RenderGraph-driven API (replaces DrawRenderers + Submit combo)
     // ====================================================================
@@ -161,7 +178,8 @@ class ScriptableRenderContext
     /// Stable identity used by Python upload caches for this native graph.
     [[nodiscard]] uintptr_t GetGraphInstanceId() const noexcept
     {
-        return reinterpret_cast<uintptr_t>(m_graph);
+        return m_recordedPlan ? static_cast<uintptr_t>(m_cachedCameraView->cameraId)
+                              : reinterpret_cast<uintptr_t>(m_graph);
     }
 
     /// Fixed Camera target samples, or zero when the pipeline owns screen MSAA.
@@ -178,7 +196,7 @@ class ScriptableRenderContext
     /// Unchanged revisions reuse topology. Value publication follows graph
     /// application, including the first frame of a new camera or Play view.
     /// Returns false without submitting culling when native validation rejects the graph.
-    bool RenderWithGraph(Camera *camera, const RenderGraphDescription &desc,
+    bool RenderWithGraph(const RenderGraphDescription &desc,
                          const std::vector<GraphParameterBlockUpdate> &updates = {});
 
     /// Check whether the active SceneRenderGraph already owns an artifact.
@@ -204,11 +222,17 @@ class ScriptableRenderContext
     // ====================================================================
 
     /// @brief Get a handle representing the final camera render target.
-    RenderTargetHandle GetCameraTarget(Camera *camera) const;
+    RenderTargetHandle GetCameraTarget() const;
 
     // ====================================================================
     // Scene access (RenderStack integration)
     // ====================================================================
+
+    [[nodiscard]] std::shared_ptr<const RenderViewPlan> CapturePlan() const
+    {
+        return m_recordedPlan;
+    }
+    bool ExecutePlan(const std::shared_ptr<const RenderViewPlan> &plan);
 
     /// @brief Get the scene associated with this render context.
     /// Returns the gizmo context's active scene, or falls back to
@@ -220,6 +244,7 @@ class ScriptableRenderContext
 
   private:
     void MarkSubmitted(uint64_t objectBindingIdentity, bool reusesObjectBindings);
+    void SetupCameraProperties();
 
     InxVkCoreModular *m_vkCore;
     SceneRenderGraph *m_graph;
@@ -230,12 +255,14 @@ class ScriptableRenderContext
     std::vector<DrawCall> m_orderedDrawCalls;
 
     Scene *m_scene = nullptr;
-    Camera *m_activeCamera = nullptr;
+    std::shared_ptr<RenderViewData> m_cachedCameraView;
+    std::shared_ptr<const RenderWorldFrame> m_renderWorldOwner;
     glm::mat4 m_cachedView{1.0f};
     glm::mat4 m_cachedProj{1.0f};
     bool m_hasCullData = false;
     CullingResults m_cachedCullingResults; ///< Cached for repeated Cull() calls
     bool m_submitted = false;
+    std::shared_ptr<RenderViewPlan> m_recordedPlan;
 
     // Deferred CommandBuffer execution state
     // ExecuteCommandBuffer captures commands immediately; the Python/local
@@ -271,7 +298,7 @@ class RenderPipelineCallback
     virtual ~RenderPipelineCallback() = default;
 
     /// @brief Render one camera through its dedicated context and RenderView.
-    virtual void Render(ScriptableRenderContext &context, Camera *camera) = 0;
+    virtual void Render(ScriptableRenderContext &context, const RenderViewData &view) = 0;
 
     /// @brief Called when the pipeline is being replaced or engine is shutting down.
     virtual void Dispose()

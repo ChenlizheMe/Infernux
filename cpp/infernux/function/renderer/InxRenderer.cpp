@@ -416,6 +416,9 @@ bool InxRenderer::InvalidateMaterialTextureAssets(const std::string &owner, cons
 
 InxRenderer::~InxRenderer()
 {
+    SceneManager::Instance().SetRuntimeFramePublicationCallbacks({}, {});
+    SceneRenderBridge::Instance().SetMaterialPreparation({});
+    SceneRenderBridge::Instance().RetireRuntimeWorld(SceneManager::Instance().CurrentWorld().id);
     // ========================================================================
     // Shutdown order matters!  Every subsystem holds a raw VkCore/device
     // pointer, so they MUST be destroyed BEFORE m_vkCore.  We do ONE
@@ -874,6 +877,11 @@ void InxRenderer::PreparePipeline()
 
         // The Scene RenderGraph owns the outline passes and target layouts.
         m_outlineRenderer = std::make_unique<OutlineRenderer>();
+        SceneRenderBridge::Instance().SetMaterialPreparation(
+            [this](const auto &material) { m_vkCore->PrepareMaterialAuthoring(material); });
+        SceneManager::Instance().SetRuntimeFramePublicationCallbacks(
+            [this](RuntimeWorld &world) { return PublishRuntimeRenderFrame(world); },
+            [this](uint64_t world) { RetireRuntimeRenderFrame(world); });
     }
 }
 
@@ -1146,64 +1154,16 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     auto _sceneUpdateStart = std::chrono::high_resolution_clock::now();
     auto _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     SceneManager &sceneManager = SceneManager::Instance();
-    const auto renderWorld = [&sceneManager]() {
-        const Scene *scene = sceneManager.GetActiveScene();
-        return scene ? scene->GetWorldId() : uint64_t{0};
-    };
-    if (m_waitingRenderResults &&
-        (m_waitingRenderEpoch != sceneManager.GetSimulationEpoch() || m_waitingRenderWorld != renderWorld()))
-        m_waitingRenderResults = false;
-    if (!m_waitingRenderResults) {
-        const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(m_deltaTime);
-        TransformECSStore::Instance().BeginFrameCache();
+    const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(m_deltaTime);
+    sceneManager.ServiceRuntimeFrames(*m_frameWorkOwner, sceneDeltaTime);
+    m_gui->CompleteInputFrame();
+    ConsumeSceneTemporalDiscontinuity();
 #if INFERNUX_FRAME_PROFILE
-        m_frameDetailTiming.frameCacheBeginMs =
-            std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0)
-                .count();
-#endif
-
-        _scenePhaseT0 = std::chrono::high_resolution_clock::now();
-        sceneManager.Update(sceneDeltaTime);
-#if INFERNUX_FRAME_PROFILE
-        m_frameDetailTiming.sceneUpdateCallMs =
-            std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0)
-                .count();
-#endif
-
-        // LateUpdate runs immediately after Update — before rendering — so that
-        // camera-follow scripts see interpolated physics transforms and their
-        // results are picked up by the same frame's render pass.  This matches
-        // Unity's execution order: FixedUpdate → Update → LateUpdate → Render.
-        _scenePhaseT0 = std::chrono::high_resolution_clock::now();
-        sceneManager.LateUpdate(sceneDeltaTime);
-        // GUI capture is prepared before gameplay; unconsumed Editor Escape is
-        // resolved afterwards, including frames that reuse the previous GUI.
-        m_gui->CompleteInputFrame();
-#if INFERNUX_FRAME_PROFILE
-        m_frameDetailTiming.lateUpdateCallMs =
-            std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0)
-                .count();
-#endif
-
-        _scenePhaseT0 = std::chrono::high_resolution_clock::now();
-        const bool publishedPhysicsPose = TransformECSStore::Instance().EndFrameCache();
-        if (publishedPhysicsPose)
-            sceneManager.PublishPhysicsTransformsToRenderer();
-        sceneManager.PublishAuthoredTransformsToPhysics();
-        if (!sceneManager.HasPendingFixedStep()) {
-            sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::FinalTransformResolve);
-            // Animation and Timeline currently execute as ordinary component updates.
-            // This boundary publishes their finalized transform/pose output to all
-            // downstream render and snapshot consumers without running them twice.
-            sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::AnimationTimeline);
-        }
-        ConsumeSceneTemporalDiscontinuity();
-    } else {
-        m_gui->CompleteInputFrame();
-    }
-#if INFERNUX_FRAME_PROFILE
-    m_frameDetailTiming.frameCacheEndMs =
+    m_frameDetailTiming.sceneUpdateCallMs =
         std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - _scenePhaseT0).count();
+    m_frameDetailTiming.frameCacheBeginMs = 0.0;
+    m_frameDetailTiming.lateUpdateCallMs = 0.0;
+    m_frameDetailTiming.frameCacheEndMs = 0.0;
 #endif
     auto _sceneUpdateEnd = std::chrono::high_resolution_clock::now();
     m_sceneUpdateMs = std::chrono::duration<double, std::milli>(_sceneUpdateEnd - _sceneUpdateStart).count();
@@ -1214,7 +1174,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // opportunity leaves the camera's resident texture available as-is.
     frameScope.CloseCameraRequests();
     if (!slotReady) {
-        sceneManager.EndFrame(false);
+        sceneManager.FinishStepPresentation(false);
         runDeferredTasks();
         RequestFullSpeedFrame();
         if (pace)
@@ -1233,28 +1193,18 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
           (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
          m_sceneRenderTarget && m_sceneRenderTarget->IsReady() && m_sceneRenderTarget->GetWidth() > 1 &&
          m_sceneRenderTarget->GetHeight() > 1);
-    const bool gameViewActive = HasActiveGameViews(allowViewportViews);
 
     // Prepare scene rendering data (collect + cull + sort) AFTER GUI processing
     // so we always operate on the current scene state.
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
     auto _prepareStart = std::chrono::high_resolution_clock::now();
-    const uint64_t resultEpoch = sceneManager.GetSimulationEpoch();
-    const uint64_t resultWorld = renderWorld();
-    if (!sceneManager.RuntimeResultsReady(SceneManager::RuntimeFrameBarrier::RenderExtraction)) {
-        m_waitingRenderResults = true;
-        m_waitingRenderEpoch = resultEpoch;
-        m_waitingRenderWorld = resultWorld;
-        sceneManager.EndFrame(false);
-        runDeferredTasks();
-        RequestFullSpeedFrame();
-        // No command recording or acquire has begun. The same GPU services
-        // must remain available to the request this rendering is waiting for.
-        return {true};
-    }
-    m_waitingRenderResults = false;
+    // This is the actual Host extraction boundary for editor views and
+    // previews. Logical World completion has its own publication callback.
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderExtraction);
+    if (!sceneManager.IsPlaying())
+        PrepareWorldRenderInputs();
     bridge.PrepareFrame(sceneViewActive);
+    const bool gameViewActive = HasActiveGameViews(allowViewportViews);
     auto _prepareEnd = std::chrono::high_resolution_clock::now();
     m_prepareFrameMs = std::chrono::duration<double, std::milli>(_prepareEnd - _prepareStart).count();
 #if INFERNUX_FRAME_PROFILE
@@ -1292,7 +1242,6 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 
         // ---- Scene View: always use editor camera ----
         if (sceneViewActive) {
-            ScriptableRenderContext ctx(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx);
             Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
 
             // World-space Billboard UI is gameplay-facing UI.  The Scene view
@@ -1300,17 +1249,24 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             // while billboard expansion explicitly follows the active Game
             // Camera used by scripts and the Game panel.
             if (m_sceneRenderGraph) {
-                Camera *gameBillboardCam = FindGameCameraCached();
+                const auto *gameBillboardCam = FindGameCameraCached();
                 m_sceneRenderGraph->SetBillboardViewMatrix(
-                    gameBillboardCam ? gameBillboardCam->GetViewMatrix()
+                    gameBillboardCam ? gameBillboardCam->view
                                      : (editorCam ? editorCam->GetViewMatrix() : glm::mat4(1.0f)));
             }
 
 #if INFERNUX_FRAME_PROFILE
             auto _srpT0 = std::chrono::high_resolution_clock::now();
 #endif
-            if (editorCam)
-                m_renderPipeline->Render(ctx, editorCam);
+            const auto frame = editorCam ? bridge.AcquirePreparedFrameForCamera(editorCam->GetComponentID()) : nullptr;
+            if (const auto *view = frame ? frame->FindView(editorCam->GetComponentID()) : nullptr) {
+                ScriptableRenderContext capture(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
+                                                frame, *view, true);
+                m_renderPipeline->Render(capture, capture.GetView());
+                ScriptableRenderContext context(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
+                                                frame, *view);
+                context.ExecutePlan(capture.CapturePlan());
+            }
 #if INFERNUX_FRAME_PROFILE
             auto _srpT1 = std::chrono::high_resolution_clock::now();
             _srpSceneViewMs += std::chrono::duration<double, std::milli>(_srpT1 - _srpT0).count();
@@ -1320,30 +1276,31 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         // ---- Game View: one context and one RenderView per active camera ----
         if (gameViewActive) {
             const auto _srpT2 = std::chrono::high_resolution_clock::now();
-            for (Camera *gameCam : FindGameCamerasCached()) {
-                if (!ShouldRenderGameCamera(gameCam, allowViewportViews))
+            const auto completed = bridge.AcquirePreparedRuntimePublication();
+            for (const auto *view : FindGameCamerasCached()) {
+                if (!ShouldRenderGameCamera(view, allowViewportViews))
                     continue;
-                SceneRenderGraph *graph = EnsureGameRenderGraph(gameCam);
+                auto *graph = EnsureGameRenderGraph(view);
                 if (!graph)
                     continue;
-                // Set aspect ratio BEFORE SetupCameraProperties() so the
-                // projection matrix snapshot matches the render target size.
-                const auto &viewTarget = graph->GetRenderViewContext();
-                if (viewTarget.height > 0) {
-                    const auto *output = graph->GetOutputTarget();
-                    gameCam->UpdateAutomaticAspectRatio(static_cast<float>(output->GetWidth()) / output->GetHeight());
-                    gameCam->SetScreenDimensions(output->GetWidth(), output->GetHeight());
+                graph->SetBillboardViewMatrix(view->view);
+                const auto frame = m_cachedGameFrame;
+                EditorGizmosContext content;
+                if (!sceneManager.IsPlaying())
+                    content.activeScene = sceneManager.GetActiveScene();
+                std::shared_ptr<const RenderViewPlan> plan;
+                if (sceneManager.IsPlaying()) {
+                    if (!completed || completed->world != frame)
+                        continue;
+                    plan = completed->plans.at(view->cameraId);
+                } else {
+                    ScriptableRenderContext capture(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, *view,
+                                                    true);
+                    m_renderPipeline->Render(capture, capture.GetView());
+                    plan = capture.CapturePlan();
                 }
-
-                // Game camera excludes editor-only gizmos/grid/outline.
-                EditorGizmosContext gameContentCtx;
-                if (GameObject *cameraObject = gameCam->GetGameObject())
-                    gameContentCtx.activeScene = cameraObject->GetScene();
-                ScriptableRenderContext gameCtx(m_vkCore.get(), graph, m_viewRequestSerial, gameContentCtx);
-
-                graph->SetBillboardViewMatrix(gameCam->GetViewMatrix());
-
-                m_renderPipeline->Render(gameCtx, gameCam);
+                ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, *view);
+                context.ExecutePlan(plan);
             }
             const auto _srpT3 = std::chrono::high_resolution_clock::now();
             m_lastGameRenderMs = std::chrono::duration<double, std::milli>(_srpT3 - _srpT2).count();
@@ -1367,7 +1324,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // The current pipeline submissions decide the shared screen attachments.
     CollectRequestedViews(sceneViewActive, gameViewActive);
     if (CheckAndApplyMsaaRequest()) {
-        sceneManager.EndFrame(false);
+        sceneManager.FinishStepPresentation(false);
         runDeferredTasks();
         return {};
     }
@@ -1460,12 +1417,11 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         m_view->RequestSurfaceRecreation();
     }
     SubmitPendingCaptureReadbacks(renderSubmitted);
-    sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::SnapshotPublication);
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [8] after VkCore::DrawFrame (GPU submit + present)
 #endif
 
-    sceneManager.EndFrame((renderSubmitted || !allowPresentation) && !pendingStepView);
+    sceneManager.FinishStepPresentation((renderSubmitted || !allowPresentation) && !pendingStepView);
 
     // Budget accounting is diagnostic work, not a per-second render task. At
     // uncapped frame rates a 60-frame cadence runs every ~86 ms and the VMA
@@ -2930,9 +2886,23 @@ void InxRenderer::PrepareSceneCameraPreview()
     auto *graph = m_sceneCameraPreviewGraph.get();
     EditorGizmosContext content;
     content.activeScene = camera->GetGameObject()->GetScene();
-    ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content);
-    const auto &description = *m_sceneCameraPreviewDescription;
-    context.RenderWithGraph(camera, description);
+    try {
+        m_cameraPreviewFrame = SceneRenderBridge::Instance().CapturePreview(*camera);
+        auto view = *m_cameraPreviewFrame->FindView(camera->GetComponentID());
+        view.outputTexture = m_sceneCameraPreviewTarget;
+        view.outputGeneration = m_sceneCameraPreviewTarget->Acquire();
+        view.renderToTexture = true;
+        view.pixelWidth = view.outputGeneration->width;
+        view.pixelHeight = view.outputGeneration->height;
+        ScriptableRenderContext capture(m_vkCore.get(), graph, m_viewRequestSerial, content, m_cameraPreviewFrame, view,
+                                        true);
+        capture.RenderWithGraph(*m_sceneCameraPreviewDescription);
+        ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, m_cameraPreviewFrame,
+                                        view);
+        context.ExecutePlan(capture.CapturePlan());
+    } catch (const ShaderProgramSelectionError &) {
+        // Keep the last complete thumbnail while its source issue is resolved.
+    }
 }
 
 void InxRenderer::SupersedePendingImGuiTextureUploads(const std::string &name)
@@ -3142,71 +3112,25 @@ void InxRenderer::InitializeRuntimeScene()
 
 void InxRenderer::UpdateSceneLighting()
 {
-    if (!m_vkCore)
-        return;
-
-    Scene *activeScene = SceneManager::Instance().GetActiveScene();
-    if (!activeScene)
-        return;
-
-    // Get camera position for light sorting
-    glm::vec3 cameraPos(m_cameraPos[0], m_cameraPos[1], m_cameraPos[2]);
-
-    // Collect lights from scene into the light collector
-    SceneLightCollector &collector = m_vkCore->GetLightCollector();
-#if INFERNUX_FRAME_PROFILE
-    using Clock = std::chrono::high_resolution_clock;
-    auto t0 = Clock::now();
-#endif
-    collector.CollectLights(activeScene, cameraPos);
-#if INFERNUX_FRAME_PROFILE
-    m_frameDetailTiming.lightingCollectMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-#endif
-
-    Camera *editorCam = SceneRenderBridge::Instance().GetEditorCamera();
-#if INFERNUX_FRAME_PROFILE
-    t0 = Clock::now();
-#endif
-    m_vkCore->UpdateLightingState();
-    const ShaderLightingUBO environmentLighting = collector.GetShaderLightingUBO();
-    if (m_sceneRenderGraph && editorCam && m_sceneRenderGraph->IsViewRequested(m_viewRequestSerial))
-        m_sceneRenderGraph->StageCameraLighting(activeScene, editorCam, cameraPos, environmentLighting);
-    if (m_sceneCameraPreviewGraph && m_sceneCameraPreviewGraph->IsViewRequested(m_viewRequestSerial)) {
-        auto *camera = dynamic_cast<Camera *>(Component::FindByComponentId(m_sceneCameraPreviewId));
-        m_sceneCameraPreviewGraph->StageCameraLighting(camera->GetGameObject()->GetScene(), camera,
-                                                       glm::vec3(camera->GetCameraToWorldMatrix()[3]),
-                                                       environmentLighting);
+    auto &bridge = SceneRenderBridge::Instance();
+    const auto stage = [this](SceneRenderGraph *graph, const std::shared_ptr<const RenderWorldFrame> &frame,
+                              const RenderViewData *view) {
+        if (graph && view && frame && frame->Lighting() && graph->IsViewRequested(m_viewRequestSerial))
+            graph->StageCameraLighting(*frame->Lighting(), *view);
+    };
+    if (const auto *editor = bridge.GetEditorCamera()) {
+        const auto frame = bridge.AcquirePreparedFrameForCamera(editor->GetComponentID());
+        stage(m_sceneRenderGraph.get(), frame, frame ? frame->FindView(editor->GetComponentID()) : nullptr);
     }
-#if INFERNUX_FRAME_PROFILE
-    m_frameDetailTiming.lightingShadowEditorMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-#endif
-
-#if INFERNUX_FRAME_PROFILE
-    m_frameDetailTiming.lightingShadowGameMs = 0.0;
-#endif
-    if (HasActiveGameViews()) {
-#if INFERNUX_FRAME_PROFILE
-        t0 = Clock::now();
-#endif
-        for (Camera *gameCam : FindGameCamerasCached()) {
-            if (!ShouldRenderGameCamera(gameCam))
-                continue;
-            const glm::vec3 gameCameraPosition(gameCam->GetCameraToWorldMatrix()[3]);
-            if (SceneRenderGraph *graph = EnsureGameRenderGraph(gameCam);
-                graph && graph->IsViewRequested(m_viewRequestSerial))
-                graph->StageCameraLighting(activeScene, gameCam, gameCameraPosition, environmentLighting);
-        }
-#if INFERNUX_FRAME_PROFILE
-        m_frameDetailTiming.lightingShadowGameMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-#endif
-    }
-
-#if INFERNUX_FRAME_PROFILE
-    t0 = Clock::now();
-#endif
-#if INFERNUX_FRAME_PROFILE
-    m_frameDetailTiming.lightingUploadMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-#endif
+    if (m_cameraPreviewFrame)
+        stage(m_sceneCameraPreviewGraph.get(), m_cameraPreviewFrame,
+              m_cameraPreviewFrame->FindView(m_sceneCameraPreviewId));
+    for (const auto *view : FindGameCamerasCached())
+        if (const auto graph = m_gameRenderGraphs.find(view->cameraId); graph != m_gameRenderGraphs.end())
+            stage(graph->second.get(), m_cachedGameFrame, view);
+    const auto frame = bridge.AcquirePreparedGameFrame();
+    if (frame && frame->Lighting())
+        m_vkCore->GetLightCollector().CollectLights(*frame->Lighting(), frame->PrimaryView().position);
 }
 
 uint64_t InxRenderer::GetSceneTextureId() const
@@ -3260,8 +3184,8 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
     snapshot.gameCameraCount = gameCameras.size();
     snapshot.gameCameraIds.reserve(gameCameras.size());
     snapshot.gameRenderViewIds.reserve(gameCameras.size());
-    for (Camera *camera : gameCameras) {
-        snapshot.gameCameraIds.push_back(camera->GetComponentID());
+    for (const auto *camera : gameCameras) {
+        snapshot.gameCameraIds.push_back(camera->cameraId);
         if (SceneRenderGraph *graph = EnsureGameRenderGraph(camera))
             snapshot.gameRenderViewIds.push_back(graph->GetRenderViewContext().id);
     }
@@ -3318,7 +3242,7 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.gameShadowDrawCallCount = 0;
         snapshot.gameShadowViewCount = 0;
         snapshot.gameShadowAssignmentCount = 0;
-        for (Camera *camera : gameCameras) {
+        for (const auto *camera : gameCameras) {
             SceneRenderGraph *graph = EnsureGameRenderGraph(camera);
             if (!graph)
                 continue;
@@ -3600,9 +3524,10 @@ uint64_t InxRenderer::RequestCapture(CaptureSource source, const std::string &ou
         throw std::logic_error("Capture service is not initialized");
     if (source == CaptureSource::Camera) {
         const auto &cameras = FindGameCamerasCached();
-        const auto found = std::find_if(cameras.begin(), cameras.end(), [cameraComponentId](const Camera *camera) {
-            return camera->GetComponentID() == cameraComponentId;
-        });
+        const auto found =
+            std::find_if(cameras.begin(), cameras.end(), [cameraComponentId](const RenderViewData *camera) {
+                return camera->cameraId == cameraComponentId;
+            });
         auto *graph = found == cameras.end() ? nullptr : EnsureGameRenderGraph(*found);
         if (!graph || !graph->HasOutputTexture())
             throw std::invalid_argument("Camera capture requires an active offscreen Camera");
@@ -4292,7 +4217,7 @@ InxRenderer::QueryGpuParticleViewDiagnostics(bool gameView, uint64_t requestId, 
     if (gameView) {
         if (cameraComponentId == 0) {
             graph = m_gameRenderGraph;
-            resolvedCameraComponentId = m_cachedGameCamera ? m_cachedGameCamera->GetComponentID() : 0;
+            resolvedCameraComponentId = m_cachedGameCamera ? m_cachedGameCamera->cameraId : 0;
         } else if (const auto found = m_gameRenderGraphs.find(cameraComponentId); found != m_gameRenderGraphs.end()) {
             graph = found->second.get();
             resolvedCameraComponentId = cameraComponentId;
@@ -4376,6 +4301,59 @@ std::vector<Camera *> InxRenderer::FindGameCameras()
     return activeScene->GetActiveGameCameras(editorCam);
 }
 
+void InxRenderer::PrepareWorldRenderInputs()
+{
+    for (Camera *camera : FindGameCameras()) {
+        const auto output = GetCameraOutputTexture(*camera);
+        const uint32_t width = output               ? output->Acquire()->width
+                               : m_gameRenderTarget ? m_gameRenderTarget->GetWidth()
+                                                    : 0;
+        const uint32_t height = output               ? output->Acquire()->height
+                                : m_gameRenderTarget ? m_gameRenderTarget->GetHeight()
+                                                     : 0;
+        camera->SetScreenDimensions(width, height);
+        if (height)
+            camera->UpdateAutomaticAspectRatio(static_cast<float>(width) / height);
+    }
+}
+
+bool InxRenderer::PublishRuntimeRenderFrame(RuntimeWorld &world)
+{
+    if (!m_renderPipeline)
+        return false;
+    PrepareWorldRenderInputs();
+    return SceneRenderBridge::Instance().PublishRuntimeFrame(world, [this, &world](const auto &frame, auto &plans) {
+        for (const auto &view : frame->Views()) {
+            if (view.editorView)
+                continue;
+            const auto existing = m_gameRenderGraphs.find(view.cameraId);
+            auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
+            EditorGizmosContext content;
+            content.activeScene = world.scenes.active;
+            ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, view, true);
+            m_renderPipeline->Render(context, context.GetView());
+            plans.emplace(view.cameraId, context.CapturePlan());
+        }
+        return true;
+    });
+}
+
+void InxRenderer::RetireRuntimeRenderFrame(uint64_t worldId)
+{
+    SceneRenderBridge::Instance().RetireRuntimeWorld(worldId);
+    m_cachedGameFrame.reset();
+    m_cachedGameCameras.clear();
+    m_cachedGameCamera = nullptr;
+    m_gameRenderGraph = nullptr;
+    m_gameRenderGraphs.clear();
+    m_cameraRenderRequests.clear();
+    m_cameraPreviewFrame.reset();
+    m_gameCameraCacheValid = false;
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->ClearCachedFrameState();
+    m_sceneCameraPreviewGraph.reset();
+}
+
 std::shared_ptr<rhi::RenderTexture> InxRenderer::GetCameraOutputTexture(Camera &camera)
 {
     if (!camera.GetRenderToTexture())
@@ -4412,53 +4390,41 @@ std::shared_ptr<rhi::RenderTexture> InxRenderer::GetCameraOutputTexture(Camera &
 void InxRenderer::RequestCameraRender(Camera &camera)
 {
     if (camera.GetRenderToTexture() && camera.GetRenderOnDemand()) {
-        camera.m_requestedRenderSerials[m_cameraRequestSerial % 2] = m_cameraRequestSerial;
+        m_cameraRenderRequests[camera.GetComponentID()][m_cameraRequestSerial % 2] = m_cameraRequestSerial;
         RequestFullSpeedFrame();
     }
 }
 
-SceneRenderGraph *InxRenderer::EnsureGameRenderGraph(Camera *camera)
+SceneRenderGraph *InxRenderer::EnsureGameRenderGraph(const RenderViewData *camera)
 {
-    if (!camera || !m_vkCore)
+    if (!camera || !m_vkCore ||
+        (!camera->outputGeneration &&
+         (camera->renderToTexture || !m_gameRenderTarget || !m_gameRenderTarget->IsReady())))
         return nullptr;
-    const auto &texture = camera->GetOutputTexture();
-    if (!texture && (camera->GetRenderToTexture() || !m_gameRenderTarget || !m_gameRenderTarget->IsReady()))
-        return nullptr;
-
-    const uint64_t cameraId = camera->GetComponentID();
-    if (texture) {
-        const auto allocation = texture->Acquire();
-        camera->SetScreenDimensions(allocation->width, allocation->height);
-    } else {
-        camera->SetScreenDimensions(m_gameRenderTarget->GetWidth(), m_gameRenderTarget->GetHeight());
+    auto found = m_gameRenderGraphs.find(camera->cameraId);
+    if (found == m_gameRenderGraphs.end()) {
+        auto graph = std::make_unique<SceneRenderGraph>();
+        if (!graph->Initialize(m_vkCore.get(), m_gameRenderTarget.get(), rhi::RenderViewKind::Game,
+                               camera->outputTexture, camera->outputGeneration))
+            return nullptr;
+        graph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+        graph->SetEffectiveMsaaSamples(GetMsaaSamples());
+        found = m_gameRenderGraphs.emplace(camera->cameraId, std::move(graph)).first;
     }
-    auto found = m_gameRenderGraphs.find(cameraId);
-    if (found != m_gameRenderGraphs.end()) {
-        found->second->SetOutputTexture(texture);
-        return found->second->SetCameraViewport(*camera) ? found->second.get() : nullptr;
-    }
-
-    auto graph = std::make_unique<SceneRenderGraph>();
-    if (!graph->Initialize(m_vkCore.get(), m_gameRenderTarget.get(), rhi::RenderViewKind::Game, texture)) {
-        INXLOG_ERROR("Failed to initialize Game RenderGraph for Camera component ", cameraId);
-        return nullptr;
-    }
-    graph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
-    graph->SetEffectiveMsaaSamples(GetMsaaSamples());
-    const bool visibleViewport = graph->SetCameraViewport(*camera);
-    SceneRenderGraph *result = graph.get();
-    m_gameRenderGraphs.emplace(cameraId, std::move(graph));
-    return visibleViewport ? result : nullptr;
+    auto *graph = found->second.get();
+    graph->SetOutputTextureGeneration(camera->outputTexture, camera->outputGeneration);
+    return graph->SetCameraViewport(*camera) ? graph : nullptr;
 }
 
-bool InxRenderer::ShouldRenderGameCamera(const Camera *camera, bool allowScreen) const
+bool InxRenderer::ShouldRenderGameCamera(const RenderViewData *camera, bool allowScreen) const
 {
-    if (camera->GetRenderToTexture())
-        return camera->GetOutputTexture() &&
-               (!camera->GetRenderOnDemand() ||
-                (m_viewRequestSerial != 0 &&
-                 camera->m_requestedRenderSerials[m_viewRequestSerial % 2] == m_viewRequestSerial) ||
-                HasPendingCapture(CaptureSource::Camera, camera->GetComponentID()));
+    if (camera->renderToTexture) {
+        const auto request = m_cameraRenderRequests.find(camera->cameraId);
+        return camera->outputGeneration && (!camera->renderOnDemand ||
+                                            (request != m_cameraRenderRequests.end() && m_viewRequestSerial != 0 &&
+                                             request->second[m_viewRequestSerial % 2] == m_viewRequestSerial) ||
+                                            HasPendingCapture(CaptureSource::Camera, camera->cameraId));
+    }
     return (allowScreen && m_gameCameraEnabled) || HasPendingCapture(CaptureSource::Game);
 }
 
@@ -4467,7 +4433,7 @@ bool InxRenderer::HasActiveGameViews(bool allowScreen)
     if ((allowScreen && m_gameCameraEnabled) || HasPendingCapture(CaptureSource::Game))
         return true;
     const auto &cameras = FindGameCamerasCached();
-    return std::any_of(cameras.begin(), cameras.end(), [this, allowScreen](const Camera *camera) {
+    return std::any_of(cameras.begin(), cameras.end(), [this, allowScreen](const RenderViewData *camera) {
         return ShouldRenderGameCamera(camera, allowScreen);
     });
 }
@@ -4483,7 +4449,7 @@ void InxRenderer::CollectRequestedViews(bool sceneActive, bool gameActive)
         add(m_sceneRenderGraph.get(), true);
     if (gameActive) {
         for (const auto *camera : FindGameCamerasCached()) {
-            const auto view = m_gameRenderGraphs.find(camera->GetComponentID());
+            const auto view = m_gameRenderGraphs.find(camera->cameraId);
             if (view != m_gameRenderGraphs.end())
                 add(view->second.get(), false);
         }
@@ -4537,90 +4503,47 @@ void InxRenderer::UpdateViewSchedule()
     }
 }
 
-const std::vector<Camera *> &InxRenderer::FindGameCamerasCached()
+const std::vector<const RenderViewData *> &InxRenderer::FindGameCamerasCached()
 {
-    const auto &manager = SceneManager::Instance();
-    const auto &scenes = manager.GetAllScenes();
-    const auto state = [](const Scene *scene) {
-        return std::make_pair(scene ? scene->GetWorldId() : uint64_t{0},
-                              scene ? scene->GetStructureVersion() : uint64_t{0});
-    };
-    const auto activeWorld = state(manager.GetActiveScene()).first;
-    const auto persistent = state(manager.GetRuntimePersistentScene());
-    bool unchanged = m_gameCameraCacheValid && m_cachedCameraActiveWorld == activeWorld &&
-                     m_cachedCameraSceneVersions.size() == scenes.size() + 1 &&
-                     m_cachedCameraSceneVersions.back() == persistent;
-    for (size_t i = 0; unchanged && i < scenes.size(); ++i)
-        unchanged = m_cachedCameraSceneVersions[i] == state(scenes[i].get());
-    if (unchanged)
+    const auto frame = SceneRenderBridge::Instance().AcquirePreparedGameFrame();
+    if (m_gameCameraCacheValid && m_cachedGameFrame == frame)
         return m_cachedGameCameras;
-
-    // Camera pointers are borrowed from scene ownership. Same-frame edits,
-    // additive unload and queries between frames must observe the existing
-    // structure versions before dereferencing them. No entity scan/hash on a
-    // cache hit, and no attempt to validate or recover a dangling pointer.
-    m_cachedGameCameras = FindGameCameras();
-    for (Camera *camera : m_cachedGameCameras) {
-        if (!camera->GetRenderToTexture())
-            continue;
-        try {
-            (void)GetCameraOutputTexture(*camera);
-        } catch (const std::exception &error) {
-            // User-authored device/attachment errors keep their GUID visible.
-            // Never route a failed offscreen output into the screen camera.
-            camera->m_memoryOutputTexture.reset();
-            INXLOG_ERROR("Camera output ", camera->GetComponentID(), " could not be prepared: ", error.what());
+    m_cachedGameFrame = frame;
+    m_cachedGameCameras.clear();
+    m_cachedGameCamera = nullptr;
+    if (frame)
+        for (const auto &view : frame->Views()) {
+            if (view.editorView)
+                continue;
+            m_cachedGameCameras.push_back(&view);
+            if (view.isMainCamera && !view.renderToTexture)
+                m_cachedGameCamera = &view;
         }
-    }
-    // Binding an output changes the structure version; publish the final state.
-    m_cachedCameraActiveWorld = activeWorld;
-    m_cachedCameraSceneVersions.resize(scenes.size() + 1);
-    for (size_t i = 0; i < scenes.size(); ++i)
-        m_cachedCameraSceneVersions[i] = state(scenes[i].get());
-    m_cachedCameraSceneVersions.back() = state(manager.GetRuntimePersistentScene());
-    m_cachedGameCamera = FindGameCamera();
-    if (m_cachedGameCamera && m_cachedGameCamera->GetRenderToTexture()) {
-        const auto screen =
-            std::find_if(m_cachedGameCameras.begin(), m_cachedGameCameras.end(), [](const Camera *camera) {
-                return !camera->GetRenderToTexture() && camera->GetPixelWidth() && camera->GetPixelHeight();
-            });
-        m_cachedGameCamera = screen == m_cachedGameCameras.end() ? nullptr : *screen;
+    if (!m_cachedGameCamera)
+        for (const auto *view : m_cachedGameCameras)
+            if (!view->renderToTexture && view->pixelWidth && view->pixelHeight) {
+                m_cachedGameCamera = view;
+                break;
+            }
+    for (auto it = m_gameRenderGraphs.begin(); it != m_gameRenderGraphs.end();) {
+        if (frame && frame->FindView(it->first)) {
+            ++it;
+        } else {
+            if (m_gameRenderGraph == it->second.get())
+                m_gameRenderGraph = nullptr;
+            m_cameraRenderRequests.erase(it->first);
+            it = m_gameRenderGraphs.erase(it);
+        }
     }
     m_gameCameraCacheValid = true;
-
-    for (auto it = m_gameRenderGraphs.begin(); it != m_gameRenderGraphs.end();) {
-        const bool active = std::any_of(
-            m_cachedGameCameras.begin(), m_cachedGameCameras.end(),
-            [cameraId = it->first](const Camera *camera) { return camera && camera->GetComponentID() == cameraId; });
-        if (active) {
-            ++it;
-            continue;
-        }
-        if (m_gameRenderGraph == it->second.get())
-            m_gameRenderGraph = nullptr;
-        it = m_gameRenderGraphs.erase(it);
-    }
-
-    const auto lastScreen =
-        std::find_if(m_cachedGameCameras.rbegin(), m_cachedGameCameras.rend(), [](const Camera *camera) {
-            return !camera->GetRenderToTexture() && camera->GetPixelWidth() && camera->GetPixelHeight();
-        });
     m_gameRenderGraph = m_cachedGameCamera ? EnsureGameRenderGraph(m_cachedGameCamera) : nullptr;
-    if (!m_gameRenderGraph && lastScreen != m_cachedGameCameras.rend())
-        m_gameRenderGraph = EnsureGameRenderGraph(*lastScreen);
-
     return m_cachedGameCameras;
 }
 
-Camera *InxRenderer::FindGameCameraCached()
+const RenderViewData *InxRenderer::FindGameCameraCached()
 {
     (void)FindGameCamerasCached();
-    if (m_cachedGameCamera && m_cachedGameCamera->GetPixelWidth() && m_cachedGameCamera->GetPixelHeight())
-        return m_cachedGameCamera;
-    const auto visible = std::find_if(m_cachedGameCameras.begin(), m_cachedGameCameras.end(), [](const Camera *camera) {
-        return !camera->GetRenderToTexture() && camera->GetPixelWidth() && camera->GetPixelHeight();
-    });
-    return visible == m_cachedGameCameras.end() ? nullptr : *visible;
+    return m_cachedGameCamera;
 }
 
 InxRenderer::GameImageGeneration InxRenderer::CurrentGameImageGeneration() const

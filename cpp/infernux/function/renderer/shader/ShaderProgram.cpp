@@ -749,14 +749,15 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
                                                                 const ShaderProgramMetadata &metadata)
 {
     const ShaderProgramVariantKey canonicalKey = CanonicalKey(variantKey);
+    const ProgramCacheKey cacheKey{canonicalKey, metadata.materialLayoutOwner};
     // Check cache first
-    auto it = m_programs.find(canonicalKey);
+    auto it = m_programs.find(cacheKey);
     if (it != m_programs.end()) {
         return it->second;
     }
 
     // Check if this program previously failed creation (don't retry every frame)
-    if (m_failedPrograms.count(canonicalKey)) {
+    if (m_failedPrograms.count(cacheKey)) {
         return nullptr;
     }
 
@@ -765,7 +766,7 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
     if (!program->Create(m_device, vertSpirv, fragSpirv, canonicalKey, metadata)) {
         INXLOG_ERROR("Failed to create shader program: ", canonicalKey.program.stages.ToString(), " (",
                      ShaderCompileTargetName(canonicalKey.target), ")");
-        m_failedPrograms.insert(canonicalKey);
+        m_failedPrograms.insert(cacheKey);
         return nullptr;
     }
 
@@ -776,7 +777,7 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
     }
     m_devicePrograms.emplace_back(program);
     ShaderProgramPublication publication = std::move(program);
-    m_programs[canonicalKey] = publication;
+    m_programs[cacheKey] = publication;
     return publication;
 }
 
@@ -785,9 +786,11 @@ ShaderProgramPublication ShaderProgramCache::GetProgram(const ShaderProgramKey &
     return GetProgram({programKey, ShaderCompileTarget::Forward});
 }
 
-ShaderProgramPublication ShaderProgramCache::GetProgram(const ShaderProgramVariantKey &variantKey) const
+ShaderProgramPublication ShaderProgramCache::GetProgram(const ShaderProgramVariantKey &variantKey,
+                                                        const ShaderProgramPublication &materialLayoutOwner) const
 {
-    auto it = m_programs.find(CanonicalKey(variantKey));
+    const ProgramCacheKey key{CanonicalKey(variantKey), materialLayoutOwner};
+    auto it = m_programs.find(key);
     return it != m_programs.end() ? it->second : nullptr;
 }
 
@@ -796,9 +799,10 @@ bool ShaderProgramCache::HasProgram(const ShaderProgramKey &programKey) const
     return HasProgram({programKey, ShaderCompileTarget::Forward});
 }
 
-bool ShaderProgramCache::HasProgram(const ShaderProgramVariantKey &variantKey) const
+bool ShaderProgramCache::HasProgram(const ShaderProgramVariantKey &variantKey,
+                                    const ShaderProgramPublication &materialLayoutOwner) const
 {
-    return m_programs.find(CanonicalKey(variantKey)) != m_programs.end();
+    return m_programs.find(ProgramCacheKey{CanonicalKey(variantKey), materialLayoutOwner}) != m_programs.end();
 }
 
 ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramKey &programKey)
@@ -806,39 +810,40 @@ ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramKey 
     return TakeProgram({programKey, ShaderCompileTarget::Forward});
 }
 
-ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramVariantKey &variantKey)
+ShaderProgramPublication ShaderProgramCache::TakeProgram(const ShaderProgramVariantKey &variantKey,
+                                                         const ShaderProgramPublication &materialLayoutOwner)
 {
-    const ShaderProgramVariantKey canonicalKey = CanonicalKey(variantKey);
-    auto found = m_programs.find(canonicalKey);
+    const ProgramCacheKey key{CanonicalKey(variantKey), materialLayoutOwner};
+    auto found = m_programs.find(key);
     if (found == m_programs.end()) {
-        m_failedPrograms.erase(canonicalKey);
+        m_failedPrograms.erase(key);
         return nullptr;
     }
     auto program = std::move(found->second);
     m_programs.erase(found);
-    m_failedPrograms.erase(canonicalKey);
+    m_failedPrograms.erase(key);
     return program;
 }
 
 std::vector<ShaderProgramPublication> ShaderProgramCache::TakePrograms(const ShaderProgramKey &programKey)
 {
-    std::vector<ShaderProgramVariantKey> keys;
-    for (const auto &[key, program] : m_programs) {
-        (void)program;
-        if (key.program == programKey)
-            keys.push_back(key);
+    // Remove every actual layout owner and device-contract incarnation of
+    // this artifact directly; re-canonicalizing an old key could miss one.
+    std::vector<ShaderProgramPublication> programs;
+    for (auto it = m_programs.begin(); it != m_programs.end();) {
+        if (it->first.variant.program == programKey) {
+            programs.push_back(std::move(it->second));
+            it = m_programs.erase(it);
+        } else {
+            ++it;
+        }
     }
     for (auto it = m_failedPrograms.begin(); it != m_failedPrograms.end();) {
-        if (it->program == programKey)
+        if (it->variant.program == programKey)
             it = m_failedPrograms.erase(it);
         else
             ++it;
     }
-
-    std::vector<ShaderProgramPublication> programs;
-    programs.reserve(keys.size());
-    for (const auto &key : keys)
-        programs.push_back(TakeProgram(key));
     return programs;
 }
 
@@ -846,33 +851,29 @@ std::vector<ShaderProgramPublication> ShaderProgramCache::TakeProgramsContaining
 {
     if (shaderName.empty())
         throw std::invalid_argument("Shader program invalidation requires a non-empty shader identifier");
-
-    auto matchesShader = [&](const std::string &stageId) {
-        return stageId == shaderName || stageId.rfind(shaderName + "/", 0) == 0;
+    const auto matchesShader = [&](const ShaderStagePair &stages) {
+        const auto matchesStage = [&](const std::string &stageId) {
+            return stageId == shaderName || stageId.rfind(shaderName + "/", 0) == 0;
+        };
+        return matchesStage(stages.vertexKey) || matchesStage(stages.fragmentKey);
     };
-
-    std::vector<ShaderProgramVariantKey> toRemove;
-    for (const auto &[key, program] : m_programs) {
-        (void)program;
-        if (matchesShader(key.program.stages.vertexKey) || matchesShader(key.program.stages.fragmentKey))
-            toRemove.push_back(key);
+    std::vector<ShaderProgramPublication> retired;
+    for (auto it = m_programs.begin(); it != m_programs.end();) {
+        if (matchesShader(it->first.variant.program.stages)) {
+            retired.push_back(std::move(it->second));
+            it = m_programs.erase(it);
+        } else {
+            ++it;
+        }
     }
     for (auto it = m_failedPrograms.begin(); it != m_failedPrograms.end();) {
-        if (matchesShader(it->program.stages.vertexKey) || matchesShader(it->program.stages.fragmentKey))
+        if (matchesShader(it->variant.program.stages))
             it = m_failedPrograms.erase(it);
         else
             ++it;
     }
-
-    std::vector<ShaderProgramPublication> retired;
-    retired.reserve(toRemove.size());
-    for (const auto &key : toRemove) {
-        retired.push_back(TakeProgram(key));
-    }
-
     return retired;
 }
-
 void ShaderProgramCache::Clear()
 {
     m_programs.clear();

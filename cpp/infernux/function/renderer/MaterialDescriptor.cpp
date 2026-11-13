@@ -388,9 +388,9 @@ bool MaterialDescriptorManager::ResolveBindlessIndex(MaterialDescriptorSet::Text
     return binding.resourceIndex.IsValid();
 }
 
-TextureResolveStatus
-MaterialDescriptorManager::ResolveRenderTextureBinding(const std::shared_ptr<rhi::RenderTexture> &texture,
-                                                       MaterialDescriptorSet::TextureBinding &binding) const
+TextureResolveStatus MaterialDescriptorManager::ResolveRenderTextureBinding(
+    const std::shared_ptr<const rhi::RenderTextureGeneration> &texture,
+    MaterialDescriptorSet::TextureBinding &binding) const
 {
     binding = m_renderTextureResolver(texture);
     if (!ResolveBindlessIndex(binding))
@@ -610,7 +610,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
 
                 const std::string &propName = indexLayout->members[slot].name;
                 const auto property = properties.find(propName);
-                const auto renderTexture = material.GetRenderTexture(propName);
+                const auto renderTexture = material.GetRenderTextureGeneration(propName);
                 const std::string *texturePath = nullptr;
                 if (property != properties.end() && property->second.type == MaterialPropertyType::Texture2D)
                     texturePath = std::get_if<std::string>(&property->second.value);
@@ -654,7 +654,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                     continue;
 
                 const std::string *texturePath = std::get_if<std::string>(&prop.value);
-                const auto renderTexture = material.GetRenderTexture(propName);
+                const auto renderTexture = material.GetRenderTextureGeneration(propName);
                 if (!renderTexture && (!texturePath || texturePath->empty()))
                     continue;
                 // Resolve each logical image once, then publish every physical descriptor.
@@ -1241,7 +1241,7 @@ bool MaterialDescriptorManager::UpdateMaterialProperties(const InxMaterial &mate
                 return;
 
             const auto *path = std::get_if<std::string>(&property->second.value);
-            const auto target = material.GetRenderTexture(name);
+            const auto target = material.GetRenderTextureGeneration(name);
             const auto previous = candidates.find(binding);
             MaterialDescriptorSet::TextureBinding next;
             if (target || (path && !path->empty())) {

@@ -391,16 +391,19 @@ class ShaderProgramCache
      * @brief Get existing program
      */
     ShaderProgramPublication GetProgram(const ShaderProgramKey &programKey) const;
-    ShaderProgramPublication GetProgram(const ShaderProgramVariantKey &variantKey) const;
+    ShaderProgramPublication GetProgram(const ShaderProgramVariantKey &variantKey,
+                                        const ShaderProgramPublication &materialLayoutOwner = {}) const;
 
     /**
      * @brief Check if program exists
      */
     bool HasProgram(const ShaderProgramKey &programKey) const;
-    bool HasProgram(const ShaderProgramVariantKey &variantKey) const;
+    bool HasProgram(const ShaderProgramVariantKey &variantKey,
+                    const ShaderProgramPublication &materialLayoutOwner = {}) const;
 
     [[nodiscard]] ShaderProgramPublication TakeProgram(const ShaderProgramKey &programKey);
-    [[nodiscard]] ShaderProgramPublication TakeProgram(const ShaderProgramVariantKey &variantKey);
+    [[nodiscard]] ShaderProgramPublication TakeProgram(const ShaderProgramVariantKey &variantKey,
+                                                       const ShaderProgramPublication &materialLayoutOwner = {});
 
     /// Transfer every semantic pass program belonging to one artifact revision.
     [[nodiscard]] std::vector<ShaderProgramPublication> TakePrograms(const ShaderProgramKey &programKey);
@@ -427,8 +430,30 @@ class ShaderProgramCache
 
     VkDevice m_device = VK_NULL_HANDLE;
     uint64_t m_deviceContractKey = 0;
-    std::unordered_map<ShaderProgramVariantKey, ShaderProgramPublication, ShaderProgramVariantKeyHash> m_programs;
-    std::unordered_set<ShaderProgramVariantKey, ShaderProgramVariantKeyHash> m_failedPrograms;
+    struct ProgramCacheKey
+    {
+        ShaderProgramVariantKey variant;
+        // Real resource ownership identity, not an extra artifact revision.
+        // The failed-key set also retains this lease, preventing address reuse
+        // from making a later owner inherit another owner's failed build.
+        ShaderProgramPublication materialLayoutOwner;
+
+        bool operator==(const ProgramCacheKey &other) const noexcept
+        {
+            return variant == other.variant && materialLayoutOwner.get() == other.materialLayoutOwner.get();
+        }
+    };
+    struct ProgramCacheKeyHash
+    {
+        size_t operator()(const ProgramCacheKey &key) const noexcept
+        {
+            size_t hash = ShaderProgramVariantKeyHash{}(key.variant);
+            const size_t ownerHash = std::hash<const ShaderProgram *>{}(key.materialLayoutOwner.get());
+            return hash ^ (ownerHash + static_cast<size_t>(0x9e3779b97f4a7c15ull) + (hash << 6u) + (hash >> 2u));
+        }
+    };
+    std::unordered_map<ProgramCacheKey, ShaderProgramPublication, ProgramCacheKeyHash> m_programs;
+    std::unordered_set<ProgramCacheKey, ProgramCacheKeyHash> m_failedPrograms;
     // Publications can outlive their cache entries through materials and
     // frame retirement. The device owns their Vulkan handles until shutdown.
     std::vector<std::weak_ptr<ShaderProgram>> m_devicePrograms;

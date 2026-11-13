@@ -99,10 +99,12 @@ class VkShaderCache
     /// Removes only the exact UI-domain revision. Mesh/particle publications are never owned by UI.
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> TakeUIProgramArtifact(const ShaderProgramKey &key);
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> TakeProgramArtifact(const ShaderProgramKey &key);
-    /// Materialize one semantic pass on first use. Publishing an artifact only
-    /// creates its mandatory Forward program.
-    [[nodiscard]] ShaderProgramPublication MaterializeProgramVariant(const ShaderStagePair &stages,
-                                                                     ShaderCompileTarget target);
+    /// Materialize from the exact artifact retained by committed Forward data.
+    /// Mesh semantic passes require that Forward publication as layout owner;
+    /// no active-stage lookup or recursive latest-Forward materialization occurs.
+    [[nodiscard]] ShaderProgramPublication
+    MaterializeProgramVariant(const std::shared_ptr<const ShaderProgramArtifact> &artifact, ShaderCompileTarget target,
+                              ShaderProgramPublication forwardLayoutOwner);
 
     // ── ShaderProgramCache Access ──────────────────────────────────────────
 

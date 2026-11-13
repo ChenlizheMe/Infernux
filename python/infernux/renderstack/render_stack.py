@@ -13,7 +13,7 @@ Architecture::
       └── effect_slots: List[EffectSlot]      (stage-owned reusable assets)
 
     Each frame:
-      1. RenderStack.render(context, camera)
+      1. RenderStack.render(context, view)
       2. Lazy-build graph if invalidated
       3. context.apply_graph(desc) + context.submit_culling(culling)
 
@@ -943,7 +943,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         )
         return description
 
-    def render(self, context, camera) -> None:
+    def render(self, context, view) -> None:
         """Per-frame render entry point invoked by RenderStackPipeline.
 
         Lazy-builds the graph on first call or after invalidation,
@@ -951,7 +951,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         Args:
             context: The render context provided by the engine.
-            camera: The camera to render from.
+            view: The view to render from.
         """
         self._select_graph_state(context.output_samples)
         state = self._graph_state
@@ -988,9 +988,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
             if AssetManager.refresh_pending():
                 return
-
-            context.setup_camera_properties(camera)
-            culling = context.cull(camera)
+            culling = context.cull()
             previous_graph = state.last_valid_description
             try:
                 state.description = self.build_graph(output_samples=self._output_samples)
@@ -1024,7 +1022,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
             context.submit_culling(culling)
         elif state.description is not None:
-            if not context.render_with_graph(camera, state.description, updates):
+            if not context.render_with_graph(state.description, updates):
                 self._reject_graph_publication(state.description)
                 return
             state.last_valid_description = state.description

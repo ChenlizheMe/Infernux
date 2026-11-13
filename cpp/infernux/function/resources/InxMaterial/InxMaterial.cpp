@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
+#include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetFormatRegistry.h>
@@ -648,6 +649,7 @@ InxMaterial::InxMaterial(const InxMaterial &other)
       m_shaderPropertyOrder(other.m_shaderPropertyOrder), m_pipelineDirty(true), m_propertiesDirty(true), m_version(0),
       m_isDeleted(other.m_isDeleted)
 {
+    m_selectedShaderArtifact = other.m_selectedShaderArtifact;
     // GPU-transient state must never be copied across logical material instances.
 }
 
@@ -655,6 +657,7 @@ void InxMaterial::ResetRenderStateAuthorship()
 {
     if (m_renderStateOverrides == 0)
         return;
+    InvalidateShaderSelection();
     m_renderStateOverrides = 0;
     m_pipelineDirty = true;
     ++m_version;
@@ -667,6 +670,8 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
         return *this;
     }
 
+    InvalidateShaderSelection();
+    m_cachedRenderPublication.reset();
     m_name = other.m_name;
     m_guid = other.m_guid;
     m_filePath = other.m_filePath;
@@ -922,6 +927,8 @@ void InxMaterial::PublishTextureAssets(std::unordered_map<std::string, std::shar
 
 void InxMaterial::InvalidateTextureAssets(const std::string &guid, bool deleted)
 {
+    if (m_isRenderPublication)
+        return;
     ++m_textureAssetRevision;
     // Modified assets publish into their existing graphics owner. Keep that
     // lease until resolution publishes the complete new binding set.
@@ -1010,6 +1017,7 @@ bool InxMaterial::RemoveProperty(const std::string &name)
         m_rendererMaterialOverrides->properties.insert(name);
         m_rendererMaterialOverrides->samplers.insert(name);
     }
+    InvalidateShaderSelection();
     m_properties.erase(it);
     m_propertiesDirty = true;
     ++m_version;
@@ -1047,6 +1055,10 @@ std::string_view InxMaterial::GetTextureDefault(const std::string &name) const
 
 bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact &artifact)
 {
+    if (m_isRenderPublication)
+        return false;
+    if (m_selectedShaderArtifact && m_selectedShaderArtifact->key != artifact.key)
+        InvalidateShaderSelection();
     bool changed = false;
     std::vector<std::string> propertyOrder;
     propertyOrder.reserve(artifact.properties.size());
@@ -1137,6 +1149,8 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
                                         const std::string &passTag, const std::string &stencil,
                                         const std::string &alphaClip)
 {
+    if (m_isRenderPublication)
+        return;
     float threshold = 0.0f;
     const bool alphaEnabled = !alphaClip.empty() && alphaClip != "off" && !HasOverride(RenderStateOverride::AlphaClip);
     if (alphaEnabled) {
@@ -1277,6 +1291,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
     // stable, even when normalized defaults differ from RenderState{}.
     changed = !(previousState == m_renderState) || previousPassTag != m_passTag;
     if (changed) {
+        InvalidateShaderSelection();
         m_pipelineDirty = true;
         ++m_version;
         NotifyRoutingChanged();
@@ -1531,6 +1546,7 @@ void InxMaterial::SetShader(const std::string &name)
         return;
     const bool switched =
         !ReferencesSameShader(m_vertexShader, vertex) || !ReferencesSameShader(m_fragmentShader, fragment);
+    InvalidateShaderSelection();
     m_vertexShader = vertex;
     m_fragmentShader = std::move(fragment);
     TrackRuntimeShaderReferences();
@@ -1549,6 +1565,8 @@ void InxMaterial::SetFragShader(const std::string &name)
 
 void InxMaterial::PrepareShaderDefaults()
 {
+    if (m_isRenderPublication)
+        return;
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     auto &registry = AssetRegistry::Instance();
     const auto &fragment = GetFragShaderReference();
@@ -1633,6 +1651,7 @@ void InxMaterial::PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers)
     if (!keepRuntimeBuffers || !ReferencesSameShader(m_vertexShader, staged.m_vertexShader) ||
         !ReferencesSameShader(m_fragmentShader, staged.m_fragmentShader))
         m_buffers.clear();
+    InvalidateShaderSelection();
     m_name = std::move(staged.m_name);
     m_builtin = staged.m_builtin;
     m_vertexShader = std::move(staged.m_vertexShader);
@@ -1665,6 +1684,7 @@ void InxMaterial::PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers)
 
 void InxMaterial::ApplyDocument(const nlohmann::json &document)
 {
+    InvalidateShaderSelection();
     material_document_validation::ValidateMaterialDocument(document);
     const json &j = document;
     m_name = j["name"].get<std::string>();
@@ -2214,6 +2234,7 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     // Deep copy shader identity
     clone->m_vertexShader = m_vertexShader;
     clone->m_fragmentShader = m_fragmentShader;
+    clone->m_selectedShaderArtifact = m_selectedShaderArtifact;
     clone->m_passTag = m_passTag;
 
     // Deep copy render state & overrides
@@ -2228,6 +2249,8 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     clone->m_renderTextures = m_renderTextures;
     clone->m_buffers = m_buffers;
     clone->m_runtimeTextureOverrides = m_runtimeTextureOverrides;
+    clone->m_textureAssetsPending = m_textureAssetsPending;
+    clone->m_textureAssetRevision = m_textureAssetRevision;
 
     // GPU-transient state is NOT copied — lazily recreated by the renderer.
     // m_passPipelines[] are already default-initialized (VK_NULL_HANDLE).
@@ -2241,6 +2264,75 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     return clone;
 }
 
+std::shared_ptr<InxMaterial> InxMaterial::CaptureRenderPublication() const
+{
+    if (m_isRenderPublication)
+        return std::const_pointer_cast<InxMaterial>(shared_from_this());
+    auto cached = m_cachedRenderPublication.lock();
+    bool unchanged = cached && m_cachedRenderPublicationVersion == m_version &&
+                     cached->m_selectedShaderArtifact == m_selectedShaderArtifact &&
+                     cached->m_isDeleted == m_isDeleted && cached->m_buffers.size() == m_buffers.size() &&
+                     cached->m_renderTextureGenerations.size() == m_renderTextures.size();
+    for (const auto &[name, buffer] : m_buffers) {
+        if (!unchanged)
+            break;
+        const auto found = cached->m_buffers.find(name);
+        unchanged = found != cached->m_buffers.end() && bool(found->second) == bool(buffer) &&
+                    (!buffer || found->second->GetAllocation() == buffer->GetAllocation());
+    }
+    for (const auto &[name, texture] : m_renderTextures) {
+        if (!unchanged)
+            break;
+        const auto found = cached->m_renderTextureGenerations.find(name);
+        unchanged = found != cached->m_renderTextureGenerations.end() &&
+                    found->second == (texture ? texture->Acquire() : nullptr);
+    }
+    if (unchanged)
+        return cached;
+
+    // Do not use Clone(): runtime authoring clones enroll in asset-authoring
+    // rebases. A render publication must never be re-enrolled as an author.
+    auto next = std::make_shared<InxMaterial>();
+    next->m_name = m_name;
+    next->m_builtin = m_builtin;
+    next->m_vertexShader = m_vertexShader;
+    next->m_fragmentShader = m_fragmentShader;
+    next->m_selectedShaderArtifact = m_selectedShaderArtifact;
+    next->m_passTag = m_passTag;
+    next->m_renderState = m_renderState;
+    next->m_renderStateOverrides = kAllRenderStateOverrides;
+    next->m_properties = m_properties;
+    next->m_textureSamplers = m_textureSamplers;
+    next->m_shaderPropertyOrder = m_shaderPropertyOrder;
+    next->m_renderTextures = m_renderTextures;
+    next->m_runtimeTextureOverrides = m_runtimeTextureOverrides;
+    next->m_textureAssetsPending = false;
+    next->m_textureAssetRevision = m_textureAssetRevision;
+    next->m_isDeleted = m_isDeleted;
+    next->m_isRenderPublication = true;
+    // Existing ComputeBuffer reader protection gives World buffers actual
+    // COW content retention. Render-owned graph buffers are intentionally
+    // live endpoints: their producer executes on the renderer's clock.
+    for (const auto &[name, buffer] : m_buffers)
+        next->m_buffers.emplace(name,
+                                !buffer || buffer->GetAllocation()->IsGraphWritable() ? buffer : buffer->Freeze());
+    for (const auto &[name, texture] : m_renderTextures)
+        next->m_renderTextureGenerations.emplace(name, texture ? texture->Acquire() : nullptr);
+    m_cachedRenderPublicationVersion = m_version;
+    m_cachedRenderPublication = next;
+    return next;
+}
+
+std::shared_ptr<const rhi::RenderTextureGeneration>
+InxMaterial::GetRenderTextureGeneration(const std::string &name) const
+{
+    if (m_isRenderPublication) {
+        const auto found = m_renderTextureGenerations.find(name);
+        return found == m_renderTextureGenerations.end() ? nullptr : found->second;
+    }
+    const auto texture = GetRenderTexture(name);
+    return texture ? texture->Acquire() : nullptr;
+}
 std::shared_ptr<InxMaterial> InxMaterial::CloneRendererInstance() const
 {
     auto instance = Clone();

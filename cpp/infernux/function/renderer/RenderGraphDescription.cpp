@@ -1,10 +1,12 @@
 #include "RenderGraphDescription.h"
 #include "MaterialPassPipeline.h"
 #include "MsaaPolicy.h"
+#include "RendererSelection.h"
 #include "rhi/RenderViewContext.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiComputeKernel.h"
 #include "rhi/RhiRenderTexture.h"
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 
 #include <algorithm>
 #include <stdexcept>
@@ -27,7 +29,9 @@ uint32_t AttachmentSamples(const rhi::RenderTextureGeneration &generation, Graph
 bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
 {
     return a.name == b.name && a.byteSize == b.byteSize && a.byteOffset == b.byteOffset && a.usage == b.usage &&
-           a.input == b.input && (a.input || a.computeBuffer == b.computeBuffer) &&
+           (a.inputAuthor ? a.inputAuthor : a.input) == (b.inputAuthor ? b.inputAuthor : b.input) &&
+           (a.input || (a.bufferAuthor ? a.bufferAuthor : a.computeBuffer) ==
+                           (b.bufferAuthor ? b.bufferAuthor : b.computeBuffer)) &&
            a.viewLightList == b.viewLightList && a.workBinding == b.workBinding && a.workSlot == b.workSlot &&
            a.exportLayout.has_value() == b.exportLayout.has_value() && a.exportShape == b.exportShape &&
            (!a.exportLayout || (a.exportLayout->elementCount == b.exportLayout->elementCount &&
@@ -56,7 +60,9 @@ bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
     };
     return a.type == b.type && a.shaderTarget == b.shaderTarget && a.materialFilter == b.materialFilter &&
            a.queueMin == b.queueMin && a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
-           a.overrideMaterial == b.overrideMaterial && a.rendererSelection == b.rendererSelection &&
+           a.overrideMaterial == b.overrideMaterial &&
+           (a.selectionAuthor ? a.selectionAuthor : a.rendererSelection) ==
+               (b.selectionAuthor ? b.selectionAuthor : b.rendererSelection) &&
            a.depthTest == b.depthTest && a.depthWrite == b.depthWrite && a.depthCompare == b.depthCompare &&
            a.alphaBlend == b.alphaBlend && a.lightIndex == b.lightIndex && a.screenUIList == b.screenUIList &&
            a.worldUILayerMask == b.worldUILayerMask && a.shaderName == b.shaderName &&
@@ -84,6 +90,65 @@ bool PassDescEquals(const GraphPassDesc &a, const GraphPassDesc &b)
            CommandListEquals(a.commands, b.commands);
 }
 } // namespace
+
+std::shared_ptr<const rhi::RenderTextureGeneration> GraphTextureDesc::AcquireRenderTextureGeneration() const
+{
+    return renderTextureGeneration ? renderTextureGeneration : renderTexture ? renderTexture->Acquire() : nullptr;
+}
+
+RenderGraphDescription CaptureRenderGraphDescription(
+    const RenderGraphDescription &source,
+    const std::function<void(const std::shared_ptr<InxMaterial> &)> &prepareMaterial,
+    const std::function<std::shared_ptr<const FullscreenProgram>(const std::string &)> &acquireProgram)
+{
+    auto result = source;
+    const auto capture = [](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+        return !buffer || buffer->GetAllocation()->IsGraphWritable() ? buffer : buffer->Freeze();
+    };
+    for (auto &texture : result.textures)
+        if (texture.renderTexture)
+            texture.renderTextureGeneration = texture.renderTexture->Acquire();
+    for (auto &buffer : result.buffers) {
+        if (buffer.input) {
+            buffer.inputAuthor = buffer.input;
+            buffer.input = std::make_shared<GraphBufferInput>(*buffer.input);
+            buffer.computeBuffer = buffer.input->GetValue();
+        } else if (buffer.computeBuffer) {
+            buffer.bufferAuthor = buffer.computeBuffer;
+            buffer.computeBuffer = capture(buffer.computeBuffer);
+        }
+    }
+    for (auto &binding : result.workBindings) {
+        binding.externalInputs.clear();
+        for (const auto &slot : binding.recipe->GetSlots())
+            binding.externalInputs.push_back(capture(slot.external));
+    }
+    std::unordered_map<const RendererSelection *, std::shared_ptr<RendererSelection>> selections;
+    for (auto &pass : result.passes)
+        for (auto &command : pass.commands) {
+            if (command.type == GraphCommandType::FullscreenQuad)
+                command.fullscreenProgram = acquireProgram(command.shaderName);
+            if (command.rendererSelection) {
+                command.selectionAuthor = command.rendererSelection;
+                auto &selected = selections[command.rendererSelection.get()];
+                if (!selected) {
+                    prepareMaterial(command.rendererSelection->Material());
+                    selected = command.rendererSelection->CaptureRenderPublication();
+                }
+                command.rendererSelection = selected;
+            } else if (!command.overrideMaterial.empty()) {
+                auto &registry = AssetRegistry::Instance();
+                auto material = registry.GetBuiltinMaterial(command.overrideMaterial);
+                if (!material)
+                    material = registry.LoadAsset<InxMaterial>(command.overrideMaterial, ResourceType::Material);
+                if (!material)
+                    throw std::invalid_argument("Render override material is unavailable: " + command.overrideMaterial);
+                prepareMaterial(material);
+                command.overrideMaterialValue = material->CaptureRenderPublication();
+            }
+        }
+    return result;
+}
 
 GraphBufferInput::GraphBufferInput(const std::shared_ptr<rhi::ComputeBuffer> &value, uint64_t offset, uint64_t byteSize)
     : m_offset(offset), m_byteSize(byteSize)
@@ -210,7 +275,7 @@ bool RenderGraphDescription::RenderTextureLayoutsCurrent() const
     return std::all_of(textures.begin(), textures.end(), [](const auto &texture) {
         if (texture.role != GraphTextureRole::Persistent)
             return true;
-        const auto generation = texture.renderTexture ? texture.renderTexture->Acquire() : nullptr;
+        const auto generation = texture.AcquireRenderTextureGeneration();
         return generation && texture.MatchesRenderTextureLayout(*generation);
     });
 }
@@ -218,7 +283,7 @@ bool RenderGraphDescription::RenderTextureLayoutsCurrent() const
 std::pair<uint32_t, uint32_t> GraphTextureDesc::ResolveExtent(uint32_t viewWidth, uint32_t viewHeight) const noexcept
 {
     if (role == GraphTextureRole::Persistent && renderTexture) {
-        const auto generation = renderTexture->Acquire();
+        const auto generation = AcquireRenderTextureGeneration();
         return {generation->width, generation->height};
     }
     if (sizeDivisor > 0)
@@ -260,7 +325,7 @@ rhi::TextureHandle ResolveGraphTextureImport(const GraphTextureDesc &texture)
 {
     if (texture.role != GraphTextureRole::Persistent || !texture.renderTexture)
         return {};
-    const auto generation = texture.renderTexture->Acquire();
+    const auto generation = texture.AcquireRenderTextureGeneration();
     const auto *attachment = ResolveGraphTextureAttachment(*generation, texture.attachment);
     return attachment ? attachment->GetTexture() : rhi::TextureHandle{};
 }

@@ -19,10 +19,7 @@ class PublicationContext:
         self.current_revision = None
         self.submitted = 0
 
-    def setup_camera_properties(self, camera):
-        pass
-
-    def cull(self, camera):
+    def cull(self):
         return object()
 
     def apply_graph(self, graph):
@@ -39,7 +36,7 @@ class PublicationContext:
     def is_graph_revision_current(self, revision):
         return self.current_revision == revision
 
-    def render_with_graph(self, camera, graph, updates=()):
+    def render_with_graph(self, graph, updates=()):
         if not self.is_graph_revision_current(graph.source_revision) and not self.apply_graph(graph):
             return False
         self.submit_culling(None)

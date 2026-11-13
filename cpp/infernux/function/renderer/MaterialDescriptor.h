@@ -255,8 +255,9 @@ class MaterialDescriptorManager
     {
         m_textureResolver = std::move(resolver);
     }
-    void SetRenderTextureResolver(
-        std::function<MaterialDescriptorSet::TextureBinding(const std::shared_ptr<rhi::RenderTexture> &)> resolver)
+    void SetRenderTextureResolver(std::function<MaterialDescriptorSet::TextureBinding(
+                                      const std::shared_ptr<const rhi::RenderTextureGeneration> &)>
+                                      resolver)
     {
         m_renderTextureResolver = std::move(resolver);
     }
@@ -471,9 +472,9 @@ class MaterialDescriptorManager
   private:
     // Texture resolver callback (set via SetTextureResolver)
     TextureResolver m_textureResolver;
-    std::function<MaterialDescriptorSet::TextureBinding(const std::shared_ptr<rhi::RenderTexture> &)>
+    std::function<MaterialDescriptorSet::TextureBinding(const std::shared_ptr<const rhi::RenderTextureGeneration> &)>
         m_renderTextureResolver;
-    TextureResolveStatus ResolveRenderTextureBinding(const std::shared_ptr<rhi::RenderTexture> &texture,
+    TextureResolveStatus ResolveRenderTextureBinding(const std::shared_ptr<const rhi::RenderTextureGeneration> &texture,
                                                      MaterialDescriptorSet::TextureBinding &binding) const;
     BindlessTextureResolver m_bindlessTextureResolver;
     BufferResolver m_bufferResolver;

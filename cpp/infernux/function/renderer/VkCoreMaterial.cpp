@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <glm/glm.hpp>
+#include <stdexcept>
 #include <unordered_set>
 
 namespace infernux
@@ -238,10 +239,9 @@ void InxVkCoreModular::InitializeMaterialSystem()
                 return ResolveTextureForMaterial(textureRef, bindingName, sampler);
             });
         m_materialPipelineManager.GetDescriptorManager().SetRenderTextureResolver(
-            [this](const std::shared_ptr<rhi::RenderTexture> &texture) {
+            [this](const std::shared_ptr<const rhi::RenderTextureGeneration> &texture) {
                 MaterialDescriptorSet::TextureBinding binding;
-                binding.gpuSlot = texture->GetSampledColorSlot();
-                binding.gpuView = binding.gpuSlot->Acquire();
+                binding.gpuView = texture->sampledColor;
                 auto &device = m_backend.Device().GetRhiDevice();
                 binding.imageView = device.Resolve(binding.gpuView->GetView());
                 binding.sampler = device.Resolve(binding.gpuView->GetSampler());
@@ -281,9 +281,50 @@ bool InxVkCoreModular::CommitMaterialPipelineGeneration(VkSampleCountFlagBits ne
     return true;
 }
 
-void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMaterial> &material)
+void InxVkCoreModular::PrepareMaterialAuthoring(const std::shared_ptr<InxMaterial> &material)
 {
     if (!material)
+        return;
+    if (material->IsRenderPublication()) {
+        if (!material->GetSelectedShaderArtifact())
+            throw ShaderProgramSelectionError("Render publication has no prepared shader author contract");
+        return;
+    }
+    const auto stages = material->GetShaderStages();
+    const auto previous = material->GetSelectedShaderArtifact();
+    try {
+        // The existing author resolver validates current source even when an
+        // older linked artifact is already resident. Its own revision cache
+        // avoids recompilation/publication for unchanged source.
+        if (m_shaderCache.FindProgramArtifact(stages) && m_shaderProgramArtifactResolver)
+            m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+        (void)ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+        auto selected = m_shaderCache.ShareProgramArtifact(stages);
+        if (!selected)
+            throw ShaderProgramSelectionError("Mesh author program is unavailable before material publication: " +
+                                              stages.ToString());
+        if (previous != selected) {
+            // Shader/schema selection and explicit author-contract invalidation
+            // require rehydration. Ordinary per-F scalar writes do not.
+            material->InvalidateShaderSelection();
+            material->SynchronizeShaderPropertyDefaults(*selected);
+            if (const auto *meta = m_shaderCache.GetRenderMeta(stages.fragmentKey))
+                material->ApplyShaderRenderMeta(meta->cullMode, meta->depthWrite, meta->depthTest, meta->blend,
+                                                meta->queue, meta->passTag, meta->stencil, meta->alphaClip);
+        }
+        if (material->NeedsTextureAssetResolution())
+            PrepareMaterialTextureAssets(material);
+        // Publish the selected immutable program only after its author values
+        // and resource bindings are ready. Failure cannot leave it marked ready.
+        material->m_selectedShaderArtifact = std::move(selected);
+    } catch (...) {
+        material->InvalidateShaderSelection();
+        throw;
+    }
+}
+void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material || material->IsRenderPublication())
         return;
     if (!material->IsPipelineDirty() && m_materialPipelineManager.GetRenderData(material->GetMaterialKey()))
         return;
@@ -324,6 +365,10 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
 {
     if (!material)
         return nullptr;
+    const bool publication = material->IsRenderPublication();
+    const auto selected = publication ? material->GetSelectedShaderArtifact() : nullptr;
+    if (publication && !selected)
+        throw ShaderProgramSelectionError("Render publication has no prepared shader author contract");
     const std::string &materialKey = material->GetMaterialKey();
     auto *forward = m_materialPipelineManager.GetRenderData(materialKey);
     if (forward && forward->descriptorSet != VK_NULL_HANDLE &&
@@ -343,10 +388,10 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
 
     const auto requestedStages = material->GetShaderStages();
     const std::string rejectionKey = materialKey + "|" + requestedStages.ToString() + "|Mesh";
-    const auto *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
-    bool domainRejected =
-        m_rejectedGeometryMaterialPrograms.find(rejectionKey) != m_rejectedGeometryMaterialPrograms.end();
-    if (!domainRejected && !requestedArtifact && (!forward || material->IsPipelineDirty()) &&
+    const auto *requestedArtifact = publication ? selected.get() : m_shaderCache.FindProgramArtifact(requestedStages);
+    bool domainRejected = !publication && m_rejectedGeometryMaterialPrograms.find(rejectionKey) !=
+                                              m_rejectedGeometryMaterialPrograms.end();
+    if (!publication && !domainRejected && !requestedArtifact && (!forward || material->IsPipelineDirty()) &&
         m_shaderProgramArtifactResolver) {
         try {
             m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
@@ -378,17 +423,28 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     if (!material) {
         return false;
     }
-    PrepareMaterialTextureAssets(material);
+    const bool publication = material->IsRenderPublication();
+    if (!publication)
+        PrepareMaterialTextureAssets(material);
 
     const auto stages = material->GetShaderStages();
-    const ShaderProgramArtifact *artifact = nullptr;
+    std::shared_ptr<const ShaderProgramArtifact> artifact;
     try {
-        // Direct Fullscreen stages have no linked artifact. Resolve the declared
-        // domain before constructing a geometry layout, including on first use.
-        // A hot edit can also change domain while an older Mesh artifact exists.
-        if (m_shaderCache.FindProgramArtifact(stages) && m_shaderProgramArtifactResolver)
-            m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
-        artifact = ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+        if (publication) {
+            artifact = material->GetSelectedShaderArtifact();
+            if (!artifact)
+                throw ShaderProgramSelectionError("Render publication has no prepared shader author contract");
+        } else {
+            // Live previews retain the existing author resolver path.
+            if (m_shaderCache.FindProgramArtifact(stages) && m_shaderProgramArtifactResolver)
+                m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+            const auto *resolved = ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+            if (resolved) {
+                artifact = m_shaderCache.ShareProgramArtifact(stages);
+                if (!artifact || artifact.get() != resolved)
+                    throw std::logic_error("Selected Forward shader artifact changed during owner-thread preparation");
+            }
+        }
     } catch (const ShaderProgramDomainMismatch &error) {
         if (reportDomainMismatch)
             m_rejectedGeometryMaterialPrograms.insert(material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh");
@@ -422,6 +478,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         }
         return false;
     } catch (const ShaderProgramSelectionError &) {
+        if (publication)
+            throw;
         // The resolver already reported the source/pair error. Retain the
         // complete previous publication, including every pass and its layout.
         const auto *previous = m_materialPipelineManager.GetRenderData(material->GetMaterialKey());
@@ -430,31 +488,33 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
                m_materialPipelineManager.IsDescriptorSetLive(previous->descriptorSet);
     }
 
-    // Material documents intentionally store only authored values. Resolve
-    // omitted values from the linked shader contract before any descriptor or
-    // preview pipeline observes the material, so passive Project thumbnails,
-    // Inspector previews and scene rendering all start from the same snapshot.
-    if (artifact)
-        material->SynchronizeShaderPropertyDefaults(*artifact);
-
-    // Apply shader render-state annotations to the material before pipeline creation.
-    // Fragment shader annotations take priority (they define the surface behaviour).
-    const auto *renderMeta = m_shaderCache.GetRenderMeta(artifact ? stages.fragmentKey : material->GetFragShaderName());
-    if (renderMeta) {
-        material->ApplyShaderRenderMeta(renderMeta->cullMode, renderMeta->depthWrite, renderMeta->depthTest,
-                                        renderMeta->blend, renderMeta->queue, renderMeta->passTag, renderMeta->stencil,
-                                        renderMeta->alphaClip);
+    if (!publication) {
+        // Live material preparation keeps its existing default/meta behavior.
+        // Completed-World copies already captured both from their selected artifact.
+        if (artifact)
+            material->SynchronizeShaderPropertyDefaults(*artifact);
+        const auto *renderMeta =
+            m_shaderCache.GetRenderMeta(artifact ? stages.fragmentKey : material->GetFragShaderName());
+        if (renderMeta) {
+            material->ApplyShaderRenderMeta(renderMeta->cullMode, renderMeta->depthWrite, renderMeta->depthTest,
+                                            renderMeta->blend, renderMeta->queue, renderMeta->passTag,
+                                            renderMeta->stencil, renderMeta->alphaClip);
+        }
     }
-
     const auto *forward = artifact ? artifact->FindVariant(ShaderCompileTarget::Forward) : nullptr;
-    const auto *vertCode = forward ? &forward->vertexSpirv : m_shaderCache.FindVertCode(material->GetVertShaderName());
-    const auto *fragCode =
-        forward ? &forward->fragmentSpirv : m_shaderCache.FindFragCode(material->GetFragShaderName());
+    if (publication && !forward)
+        throw ShaderProgramSelectionError("Prepared material artifact has no Forward program");
+    const std::vector<char> *vertCode = forward ? &forward->vertexSpirv : nullptr;
+    const std::vector<char> *fragCode = forward ? &forward->fragmentSpirv : nullptr;
+    if (!publication && !forward) {
+        vertCode = m_shaderCache.FindVertCode(material->GetVertShaderName());
+        fragCode = m_shaderCache.FindFragCode(material->GetFragShaderName());
+    }
     const ShaderProgramKey programKey = artifact ? artifact->key : ShaderProgramKey{stages, 0};
 
     if (vertCode && fragCode && m_materialPipelineManagerInitialized) {
         auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-            material, *vertCode, *fragCode, programKey,
+            material, *vertCode, *fragCode, programKey, artifact,
             {artifact ? artifact->domain : ShaderProgramDomain::Mesh, forward ? forward->vertexEntryPoint : "main",
              forward ? forward->fragmentEntryPoint : "main", forward ? forward->vertexTarget.get() : nullptr,
              forward ? forward->fragmentTarget.get() : nullptr, artifact ? &artifact->properties : nullptr});
@@ -712,16 +772,20 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     if (!forwardRenderData)
         return VK_NULL_HANDLE;
     const ShaderStagePair &stagePair = forwardRenderData->programKey.stages;
-    if (!material->GetPassShaderProgram(ShaderCompileTarget::Shadow)) {
-        const auto *artifact = m_shaderCache.FindProgramArtifact(stagePair);
-        if (!artifact || !artifact->FindVariant(ShaderCompileTarget::Shadow))
-            return VK_NULL_HANDLE;
-        auto publication = m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
+    const auto &artifact = forwardRenderData->shaderArtifact;
+    const auto &forwardProgram = forwardRenderData->shaderProgram;
+    if (!artifact || !forwardProgram || artifact->key != forwardRenderData->programKey ||
+        !artifact->FindVariant(ShaderCompileTarget::Shadow))
+        return VK_NULL_HANDLE;
+    const auto &cachedShadow = material->GetPassShaderProgramPublication(ShaderCompileTarget::Shadow);
+    if (!cachedShadow || cachedShadow->GetVariantKey().program != forwardRenderData->programKey ||
+        cachedShadow->GetDescriptorSetLayout(0) != forwardProgram->GetDescriptorSetLayout(0)) {
+        auto publication =
+            m_shaderCache.MaterializeProgramVariant(artifact, ShaderCompileTarget::Shadow, forwardProgram);
         if (!publication) {
-            INXLOG_ERROR("Failed to materialize Shadow variant for '", stagePair.ToString(), "'");
+            INXLOG_ERROR("Failed to materialize committed Shadow variant for '", stagePair.ToString(), "'");
             return VK_NULL_HANDLE;
         }
-        // Shader and stage-pair invalidation clear this publication on the material.
         material->SetPassShaderProgram(ShaderCompileTarget::Shadow, std::move(publication));
     }
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData->materialDescSet;

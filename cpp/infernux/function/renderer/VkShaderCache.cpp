@@ -281,32 +281,48 @@ std::shared_ptr<const ShaderProgramArtifact> VkShaderCache::TakeProgramArtifact(
     return artifact;
 }
 
-ShaderProgramPublication VkShaderCache::MaterializeProgramVariant(const ShaderStagePair &stages,
-                                                                  ShaderCompileTarget target)
+ShaderProgramPublication
+VkShaderCache::MaterializeProgramVariant(const std::shared_ptr<const ShaderProgramArtifact> &artifact,
+                                         ShaderCompileTarget target, ShaderProgramPublication forwardLayoutOwner)
 {
-    const auto artifact = m_programArtifacts.find(stages);
-    if (artifact == m_programArtifacts.end())
+    if (!artifact)
         return nullptr;
-
-    const auto *variant = artifact->second->FindVariant(target);
+    const auto *variant = artifact->FindVariant(target);
     if (!variant)
         return nullptr;
 
-    const ShaderProgramVariantKey key{artifact->second->key, target};
-    ShaderProgramMetadata metadata{artifact->second->domain,      variant->vertexEntryPoint,
-                                   variant->fragmentEntryPoint,   variant->vertexTarget.get(),
-                                   variant->fragmentTarget.get(), &artifact->second->properties};
-    if (target != ShaderCompileTarget::Forward && artifact->second->domain == ShaderProgramDomain::Mesh)
-        metadata.materialLayoutOwner = MaterializeProgramVariant(stages, ShaderCompileTarget::Forward);
+    const bool borrowsForward = target != ShaderCompileTarget::Forward && artifact->domain == ShaderProgramDomain::Mesh;
+    if (borrowsForward && (!forwardLayoutOwner || !forwardLayoutOwner->IsValid() ||
+                           forwardLayoutOwner->GetCompileTarget() != ShaderCompileTarget::Forward ||
+                           forwardLayoutOwner->GetVariantKey().program != artifact->key)) {
+        INXLOG_ERROR("Semantic material variant requires its committed Forward artifact/layout owner");
+        return nullptr;
+    }
+    const ShaderProgramVariantKey key{artifact->key, target,
+                                      forwardLayoutOwner ? forwardLayoutOwner->GetVariantKey().deviceContract : 0};
+    ShaderProgramMetadata metadata{artifact->domain,
+                                   variant->vertexEntryPoint,
+                                   variant->fragmentEntryPoint,
+                                   variant->vertexTarget.get(),
+                                   variant->fragmentTarget.get(),
+                                   &artifact->properties};
+    if (borrowsForward)
+        metadata.materialLayoutOwner = forwardLayoutOwner;
     ShaderProgramPublication program =
         m_programCache.GetOrCreateProgram(key, variant->vertexSpirv, variant->fragmentSpirv, metadata);
-    if (!program || !program->IsValid()) {
-        INXLOG_ERROR("VkShaderCache: failed to lazily materialize shader program variant '", key.ToString(), "'");
+    if (!program || !program->IsValid() || program->GetVariantKey().program != artifact->key ||
+        program->GetCompileTarget() != target) {
+        INXLOG_ERROR("VkShaderCache: failed to materialize committed shader variant '", key.ToString(), "'");
+        return nullptr;
+    }
+    // A cached program must also retain the exact committed Forward layout,
+    // not merely another program with similar reflected bindings.
+    if (borrowsForward && program->GetDescriptorSetLayout(0) != forwardLayoutOwner->GetDescriptorSetLayout(0)) {
+        INXLOG_ERROR("Cached semantic shader variant belongs to another Forward layout owner");
         return nullptr;
     }
     return program;
 }
-
 // ============================================================================
 // Lifecycle
 // ============================================================================

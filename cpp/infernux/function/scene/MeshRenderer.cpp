@@ -631,7 +631,7 @@ void MeshRenderer::SetVertexBuffer(std::shared_ptr<rhi::ComputeBuffer> buffer, c
                                                  ? glm::inverse(m_gameObject->GetTransform()->GetWorldMatrix())
                                                  : glm::mat4(1.0f);
     SetLocalBounds(boundsMin, boundsMax);
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     SceneManager::Instance().NotifyMeshRendererGeometryChanged(this);
 }
 
@@ -648,7 +648,7 @@ void MeshRenderer::ClearVertexBuffer()
     m_vertexBufferWorldSpace = false;
     m_vertexBufferWorldBoundsAnchorInverse = glm::mat4(1.0f);
     ComputeLocalBoundsFromInlineVertices();
-    m_meshBufferDirty = true;
+    MarkMeshSourceDirty();
     SceneManager::Instance().NotifyMeshRendererGeometryChanged(this);
 }
 

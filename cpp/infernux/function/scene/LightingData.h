@@ -14,6 +14,8 @@ namespace infernux
 class Scene;
 class Light;
 class Camera;
+struct RenderLightingSource;
+struct RenderViewData;
 
 // ============================================================================
 // Light Data Structures for GPU (std140 layout compatible)
@@ -314,6 +316,7 @@ class SceneLightCollector
      * @param cameraPosition Camera world position for light sorting
      */
     void CollectLights(Scene *scene, const glm::vec3 &cameraPosition = glm::vec3(0.0f));
+    void CollectLights(const RenderLightingSource &source, const glm::vec3 &cameraPosition);
 
     /**
      * @brief Clear all collected light data.
@@ -381,6 +384,8 @@ class SceneLightCollector
      */
     void ComputeShadowVP(Scene *scene, const glm::vec3 &cameraPos, float shadowMapResolution,
                          const Camera *camera = nullptr, const lighting::ShadowDepthRange &visibleDepthRange = {});
+    void ComputeShadowVP(const RenderLightingSource &source, const RenderViewData &view, float shadowMapResolution,
+                         const lighting::ShadowDepthRange &visibleDepthRange = {});
 
     [[nodiscard]] const lighting::ShadowFrame &GetShadowFrame() const noexcept
     {
@@ -470,25 +475,6 @@ class SceneLightCollector
 
   private:
     void PublishCanonicalGeneration();
-
-    /**
-     * @brief Add a directional light to the collection.
-     */
-    void AddDirectionalLight(const Light *light);
-
-    /**
-     * @brief Add a point light to the collection.
-     */
-    void AddPointLight(const Light *light, const glm::vec3 &worldPosition);
-
-    /**
-     * @brief Add a spot light to the collection.
-     */
-    void AddSpotLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
-
-    void AddAreaLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
-
-    void AddCanonicalLight(const Light *light, const glm::vec3 &worldPosition, const glm::vec3 &worldDirection);
 
     /**
      * @brief Sort point lights by importance (distance to camera, intensity).

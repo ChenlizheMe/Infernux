@@ -16,6 +16,7 @@
 
 #pragma once
 #include "RenderViewSchedule.h"
+#include "RenderWorld.h"
 #include <core/config/EngineConfig.h>
 #include <function/scene/NativeLifetime.h>
 
@@ -51,6 +52,7 @@
 
 namespace infernux
 {
+struct RenderViewPlan;
 /// A capture of one submitted graph execution, not a mutable latest-value slot.
 struct GraphBufferCapture
 {
@@ -159,7 +161,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
      */
     bool Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *sceneTarget,
                     rhi::RenderViewKind viewKind = rhi::RenderViewKind::Scene,
-                    std::shared_ptr<rhi::RenderTexture> output = {});
+                    std::shared_ptr<rhi::RenderTexture> output = {},
+                    std::shared_ptr<const rhi::RenderTextureGeneration> generation = {});
 
     /// Called after Initialize at the renderer's idle scene boundary. Only
     /// physical transient images move; all previous view/scene state is retired.
@@ -294,7 +297,9 @@ class SceneRenderGraph : public NativeLifetimeOwner
     }
 
     void SetOutputTexture(std::shared_ptr<rhi::RenderTexture> output);
-    bool SetCameraViewport(const Camera &camera);
+    void SetOutputTextureGeneration(std::shared_ptr<rhi::RenderTexture> output,
+                                    std::shared_ptr<const rhi::RenderTextureGeneration> generation);
+    bool SetCameraViewport(const RenderViewData &view);
     [[nodiscard]] bool HasOutputTexture() const noexcept
     {
         return m_outputTexture != nullptr;
@@ -593,7 +598,15 @@ class SceneRenderGraph : public NativeLifetimeOwner
     // ========================================================================
 
     /// @brief Cache camera VP matrices (called by SubmitCulling)
-    void SetCachedCameraVP(const Camera *camera, const glm::mat4 &view, const glm::mat4 &proj);
+    [[nodiscard]] const std::shared_ptr<const RenderViewPlan> &GetAppliedPlan() const noexcept
+    {
+        return m_appliedPlan;
+    }
+    void SetAppliedPlan(std::shared_ptr<const RenderViewPlan> plan)
+    {
+        m_appliedPlan = std::move(plan);
+    }
+    void SetCachedCameraView(const RenderViewData &view);
     /// World UI billboards follow the active Game Camera even in Scene View.
     /// Scene geometry and editor picking continue to use the cached view.
     void SetBillboardViewMatrix(const glm::mat4 &view)
@@ -650,7 +663,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_cachedProj = glm::mat4(1.0f);
         m_cachedUnjitteredProj = glm::mat4(1.0f);
         m_hasCachedCameraVP = false;
-        m_cachedCamera = nullptr;
+        m_cachedCameraView = {};
+        m_appliedPlan.reset();
         m_requestedDraw = 0;
         InvalidateTemporalHistory();
     }
@@ -770,8 +784,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     /// Build immutable lighting and shadow state owned by this camera graph.
     /// Stage the existing CPU collector; EnsureGraphBuilt publishes its GPU data.
-    void StageCameraLighting(Scene *scene, Camera *camera, const glm::vec3 &cameraPosition,
-                             const ShaderLightingUBO &environmentLighting);
+    void StageCameraLighting(const RenderLightingSource &source, const RenderViewData &view);
     [[nodiscard]] bool HasCameraShadows() const noexcept
     {
         return !m_cameraLightCollector.GetShadowFrame().views.empty();
@@ -1085,8 +1098,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
     float m_stagedShaderTime = 0.0f;
     RenderInstanceHistory m_motionHistory;
     bool m_cameraHistoryValid = false;
-    const Camera *m_cachedCamera = nullptr;
-    uint64_t m_cachedCameraHistoryRevision = 0;
+    RenderViewData m_cachedCameraView;
+    std::shared_ptr<const RenderViewPlan> m_appliedPlan;
     static constexpr uint32_t kTemporalJitterSampleCount = 8;
     uint32_t m_temporalSampleIndex = 0;
     glm::vec2 m_temporalJitterNdc{0.0f};

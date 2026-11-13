@@ -4,7 +4,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
+#include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/scene/Light.h>
+#include <function/scene/LightingData.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <memory>
 
@@ -30,7 +34,6 @@ std::optional<CpuRenderPose> ReadCpuRenderPose(MeshRenderer &renderer, Transform
     if (devicePose && !renderer.RequiresCpuPoseForGeometry())
         return std::nullopt;
     const auto &world = transform.GetWorldMatrix();
-    renderer.RefreshProceduralGeometry(world);
     return CpuRenderPose{renderer.ResolveRenderWorldMatrix(world), renderer.ResolveBoundsWorldMatrix(world)};
 }
 
@@ -80,88 +83,21 @@ RenderPoseBinding SceneRenderExtractor::CaptureDevicePose(const MeshRenderer &re
 
 size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling)
 {
-#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
-    // Minimal platform players intentionally omit the editor-camera service.
-    // Keeping this symbol available lets the portable extractor compile while
-    // making accidental editor-view use fail closed.
     (void)useActiveCameraCulling;
+#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     world.Clear();
-    m_activeCamera = nullptr;
     m_sceneSources.clear();
+    m_activeCamera = nullptr;
     m_visibleCount = 0;
     return 0;
 #else
-    // Extraction is deliberately camera-neutral. Scene, Game, previews, and
-    // future stacked Game cameras all consume this same immutable world and
-    // derive their own visible lists in SceneRenderer.
-    (void)useActiveCameraCulling;
-#if INFERNUX_FRAME_PROFILE
-    using Clock = std::chrono::high_resolution_clock;
-    const auto prepareStart = Clock::now();
-#endif
-    SceneManager &sm = SceneManager::Instance();
-    sm.PublishSkeletonPoses();
-    m_activeCamera = sm.GetEditorCameraController().GetCamera();
-
-    const uint64_t currentVersion = sm.GetMeshRendererVersion();
-    const uint64_t currentTransformRevision = sm.GetRenderTransformRevision();
-    const uint64_t currentContentRevision = sm.GetRenderContentRevision();
-    Scene *activeScene = sm.GetActiveScene();
-    const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
-    RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
-    CapturePrimaryView(frame, m_activeCamera);
-    m_framePoseValues.clear();
-    const bool fastPath =
-        frame.MatchesSource(currentWorldId, currentVersion) && frame.m_proxies.size() == m_sceneSources.size();
-    if (fastPath) {
-        // Fast path: renderer set unchanged — fuse transform/bounds/draw-call patch.
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        if (!(m_allRenderersStatic && currentTransformRevision == frame.m_transformRevision &&
-              currentContentRevision == frame.m_contentRevision))
-            UpdateCachedRenderableTransforms(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-        m_profileSnapshot.prepareFastCalls += 1.0;
-#endif
-    } else {
-        // Slow path: full rebuild.
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        CollectRenderables(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-        m_profileSnapshot.prepareSlowCalls += 1.0;
-#endif
-    }
-
-    if (!fastPath) {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        SortRenderables(frame);
-        RebuildDrawCalls(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.sortMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-#endif
-    }
-
-#if INFERNUX_FRAME_PROFILE
-    m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
-    m_profileSnapshot.prepareCalls += 1.0;
-    m_profileSnapshot.renderables += static_cast<double>(frame.m_proxies.size());
-    m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
-#endif
-    frame.m_worldId = currentWorldId;
-    frame.m_structuralRevision = currentVersion;
-    frame.m_transformRevision = currentTransformRevision;
-    frame.m_contentRevision = currentContentRevision;
-    frame.m_poseRevision = m_poseRevision;
-    m_previousPoseValues.swap(m_framePoseValues);
-    world.Publish();
-    return m_visibleCount;
+    SceneManager &manager = SceneManager::Instance();
+    // A partial runtime F may already have advanced CPU skeleton state. Scene
+    // View deliberately stays live, using this extractor's independent state.
+    manager.PublishSkeletonPoses();
+    Scene *scene = manager.GetActiveScene();
+    return ExtractSourceFrame(world, manager.GetEditorCameraController().GetCamera(), scene ? scene->GetWorldId() : 0,
+                              0, 0, true);
 #endif
 }
 
@@ -173,74 +109,114 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
         m_visibleCount = 0;
         return 0;
     }
+    SceneManager &manager = SceneManager::Instance();
+    manager.PublishSkeletonPoses();
+    Scene *scene = manager.GetActiveScene();
+    return ExtractSourceFrame(world, camera, scene ? scene->GetWorldId() : 0, 0, 0, false);
+}
 
+size_t SceneRenderExtractor::ExtractRuntimeFrame(RenderWorldSnapshot &publication, RuntimeWorld &world)
+{
+    WorldExecutionScope scope(&world);
+    Scene *scene = world.scenes.active;
+    Camera *editorCamera = nullptr;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    editorCamera = SceneManager::Instance().GetEditorCameraController().GetCamera();
+#endif
+    Camera *primary = scene ? scene->FindGameCamera(editorCamera) : nullptr;
+    // The caller has already completed skeleton/transform publication. Do not
+    // perform another simulation update or borrow a later Host's live state.
+    return ExtractSourceFrame(publication, primary, world.id, world.simulation.frameTime.frameCount,
+                              world.simulation.simulationEpoch, false);
+}
+
+size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication, Camera *primary, uint64_t worldId,
+                                                uint64_t completedWorldFrame, uint64_t simulationEpoch,
+                                                bool includeEditorView)
+{
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
     const auto prepareStart = Clock::now();
 #endif
-    m_activeCamera = camera;
-
-    SceneManager &sm = SceneManager::Instance();
-    sm.PublishSkeletonPoses();
-    const uint64_t currentVersion = sm.GetMeshRendererVersion();
-    const uint64_t currentTransformRevision = sm.GetRenderTransformRevision();
-    const uint64_t currentContentRevision = sm.GetRenderContentRevision();
-    Scene *activeScene = sm.GetActiveScene();
-    const uint64_t currentWorldId = activeScene ? activeScene->GetWorldId() : 0;
-    RenderWorldFrame &frame = world.BeginFrame(currentWorldId, currentVersion);
-    CapturePrimaryView(frame, m_activeCamera);
+    m_activeCamera = primary;
+    SceneManager &manager = SceneManager::Instance();
+    // Procedural rebuilds and material defaults can change source revisions.
+    // Finish author preparation before selecting structural/content caches.
+    std::unordered_set<const InxMaterial *> prepared;
+    for (auto *renderer : manager.GetActiveMeshRenderers()) {
+        if (!renderer || !renderer->IsEnabled())
+            continue;
+        auto *object = renderer->GetGameObject();
+        if (!object || !object->IsActiveInHierarchy())
+            continue;
+        if (!renderer->GetPoseBuffer() || renderer->RequiresCpuPoseForGeometry())
+            renderer->RefreshProceduralGeometry(object->GetTransform()->GetWorldMatrix());
+        for (uint32_t slot = 0, count = std::max(1u, renderer->GetMaterialCount()); slot < count; ++slot) {
+            const auto material = renderer->GetEffectiveMaterial(slot);
+            if (m_prepareMaterial && material && prepared.insert(material.get()).second)
+                m_prepareMaterial(material);
+        }
+    }
+    const uint64_t sourceStructure = manager.GetMeshRendererVersion();
+    const uint64_t sourceRouting = InxMaterial::GetRoutingPublicationRevision();
+    if (m_sourceWorldId != worldId || m_sourceStructureRevision != sourceStructure ||
+        m_sourceRoutingRevision != sourceRouting) {
+        ++m_structurePublicationRevision;
+        m_sourceWorldId = worldId;
+        m_sourceStructureRevision = sourceStructure;
+        m_sourceRoutingRevision = sourceRouting;
+    }
+    const uint64_t currentVersion = m_structurePublicationRevision;
+    const uint64_t transformRevision = manager.GetRenderTransformRevision();
+    const uint64_t contentRevision = manager.GetRenderContentRevision();
+    RenderWorldFrame &frame = publication.BeginFrame(worldId, currentVersion);
+    CaptureViews(frame, primary, includeEditorView);
+    frame.m_completedWorldFrame = completedWorldFrame;
+    frame.m_simulationEpoch = simulationEpoch;
+    for (auto &view : frame.m_views) {
+        view.worldId = worldId;
+        view.completedWorldFrame = completedWorldFrame;
+        view.simulationEpoch = simulationEpoch;
+    }
+    if (const auto *primaryView = primary ? frame.FindView(primary->GetComponentID()) : nullptr)
+        frame.m_primaryView = *primaryView;
     m_framePoseValues.clear();
     const bool fastPath =
-        frame.MatchesSource(currentWorldId, currentVersion) && frame.m_proxies.size() == m_sceneSources.size();
+        frame.MatchesSource(worldId, currentVersion) && frame.m_proxies.size() == m_sceneSources.size();
     if (fastPath) {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
-        if (!(m_allRenderersStatic && currentTransformRevision == frame.m_transformRevision &&
-              currentContentRevision == frame.m_contentRevision))
+        if (!(m_allRenderersStatic && transformRevision == frame.m_transformRevision &&
+              contentRevision == frame.m_sourceContentRevision))
             UpdateCachedRenderableTransforms(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.updateMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-        m_profileSnapshot.prepareFastCalls += 1.0;
-#endif
     } else {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
         CollectRenderables(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.collectMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-        m_profileSnapshot.prepareSlowCalls += 1.0;
-#endif
-    }
-
-    if (!fastPath) {
-#if INFERNUX_FRAME_PROFILE
-        const auto t0 = Clock::now();
-#endif
         SortRenderables(frame);
         RebuildDrawCalls(frame);
-#if INFERNUX_FRAME_PROFILE
-        m_profileSnapshot.sortMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-#endif
     }
-
+    const bool meshPublicationsChanged = CaptureMeshPublications(frame);
+    CaptureMaterialPublications(frame);
+    CaptureLighting(frame);
+    if (m_sourceContentRevision != contentRevision || m_materialPublicationsChanged || meshPublicationsChanged) {
+        ++m_contentPublicationRevision;
+        m_sourceContentRevision = contentRevision;
+    }
+    frame.m_worldId = worldId;
+    frame.m_structuralRevision = currentVersion;
+    frame.m_transformRevision = transformRevision;
+    frame.m_contentRevision = m_contentPublicationRevision;
+    frame.m_sourceContentRevision = contentRevision;
+    frame.m_poseRevision = m_poseRevision;
+    m_previousPoseValues.swap(m_framePoseValues);
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
     m_profileSnapshot.prepareCalls += 1.0;
+    m_profileSnapshot.prepareFastCalls += fastPath ? 1.0 : 0.0;
+    m_profileSnapshot.prepareSlowCalls += fastPath ? 0.0 : 1.0;
     m_profileSnapshot.renderables += static_cast<double>(frame.m_proxies.size());
     m_profileSnapshot.visible += static_cast<double>(m_visibleCount);
 #endif
-    frame.m_worldId = currentWorldId;
-    frame.m_structuralRevision = currentVersion;
-    frame.m_transformRevision = currentTransformRevision;
-    frame.m_contentRevision = currentContentRevision;
-    frame.m_poseRevision = m_poseRevision;
-    m_previousPoseValues.swap(m_framePoseValues);
-    world.Publish();
+    publication.Publish();
     return m_visibleCount;
 }
-
 void SceneRenderExtractor::SetAspectRatio(float aspect)
 {
     if (m_activeCamera) {
@@ -248,25 +224,256 @@ void SceneRenderExtractor::SetAspectRatio(float aspect)
     }
 }
 
-void SceneRenderExtractor::CapturePrimaryView(RenderWorldFrame &frame, Camera *camera)
+RenderViewData SceneRenderExtractor::CaptureCameraView(const Camera &camera)
 {
-    frame.m_primaryView = {};
-    if (!camera)
-        return;
-
-    auto &view = frame.m_primaryView;
-    view.view = camera->GetViewMatrix();
-    view.projection = camera->GetProjectionMatrix();
-    view.viewProjection = camera->GetViewProjectionMatrix();
-    view.cullingMask = camera->GetCullingMask();
-    view.cameraId = camera->GetComponentID();
+    RenderViewData view;
+    view.view = camera.GetViewMatrix();
+    view.projection = camera.GetProjectionMatrix();
+    view.viewProjection = view.projection * view.view;
+    view.cullingMask = camera.GetCullingMask();
+    view.cameraId = camera.GetComponentID();
+    if (const auto *object = camera.GetGameObject()) {
+        view.cameraObjectId = object->GetID();
+        view.name = object->GetName();
+        if (const auto *scene = object->GetScene()) {
+            view.sceneWorldId = scene->GetWorldId();
+            view.sceneName = scene->GetName();
+        }
+    }
+    view.temporalHistoryRevision = camera.GetTemporalHistoryRevision();
+    view.nearClip = camera.GetNearClip();
+    view.farClip = camera.GetFarClip();
+    view.depth = camera.GetDepth();
+    view.rect = camera.GetRect();
+    view.pixelWidth = camera.GetPixelWidth();
+    view.pixelHeight = camera.GetPixelHeight();
+    view.clearFlags = camera.GetClearFlags();
+    view.backgroundColor = camera.GetBackgroundColor();
+    view.dithering = camera.GetDithering();
+    view.stopNaNs = camera.GetStopNaNs();
+    view.invertCulling = camera.GetInvertCulling();
+    view.renderToTexture = camera.GetRenderToTexture();
+    view.renderOnDemand = camera.GetRenderOnDemand();
+    view.wantsMemoryOutput = camera.WantsMemoryOutput();
+    view.memoryOutputSize = camera.GetMemoryOutputSize();
+    view.hasAuthoredTargetTexture = camera.HasTargetTexture();
+    view.outputTextureGuid = camera.GetTargetTextureGuid();
+    view.outputTexture = camera.GetOutputTexture();
+    view.outputGeneration = view.outputTexture ? view.outputTexture->Acquire() : nullptr;
     view.valid = true;
-    const auto cameraToWorld = camera->GetCameraToWorldMatrix();
+    const auto cameraToWorld = camera.GetCameraToWorldMatrix();
     view.position = glm::vec3(cameraToWorld[3]);
     view.forward = glm::normalize(glm::vec3(cameraToWorld[2]));
     view.up = glm::normalize(glm::vec3(cameraToWorld[1]));
+    return view;
 }
 
+void SceneRenderExtractor::CapturePrimaryView(RenderWorldFrame &frame, Camera *camera)
+{
+    frame.m_primaryView = camera ? CaptureCameraView(*camera) : RenderViewData{};
+}
+
+void SceneRenderExtractor::CaptureViews(RenderWorldFrame &frame, Camera *primary, bool includeEditorView)
+{
+    frame.m_views.clear();
+    frame.m_viewIndices.clear();
+    CapturePrimaryView(frame, primary);
+    Camera *editorCamera = nullptr;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    editorCamera = SceneManager::Instance().GetEditorCameraController().GetCamera();
+#endif
+    Scene *scene = SceneManager::Instance().GetActiveScene();
+    const auto *gamePrimary = scene ? scene->FindGameCamera(editorCamera) : nullptr;
+    const auto append = [&](Camera &camera, bool editor) {
+        RenderViewData view = CaptureCameraView(camera);
+        view.editorView = editor;
+        view.isMainCamera = !editor && &camera == gamePrimary;
+        frame.m_viewIndices.emplace(view.cameraId, frame.m_views.size());
+        frame.m_views.push_back(std::move(view));
+    };
+    if (scene) {
+        // Includes all loaded/persistent Scene cameras, deterministically
+        // ordered by depth + component ID. Output cameras remain continuous.
+        for (Camera *camera : scene->GetActiveGameCameras(editorCamera))
+            append(*camera, false);
+    }
+    if (includeEditorView && editorCamera)
+        append(*editorCamera, true);
+    if (primary && !frame.FindView(primary->GetComponentID()))
+        append(*primary, primary == editorCamera);
+    if (const auto *captured = primary ? frame.FindView(primary->GetComponentID()) : nullptr)
+        frame.m_primaryView = *captured;
+}
+void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
+{
+    auto next = std::make_shared<RenderLightingSource>();
+    SceneManager &manager = SceneManager::Instance();
+    next->lights = CaptureRenderLights();
+    Scene *scene = manager.GetActiveScene();
+    const SceneEnvironmentSettings environment = scene ? scene->GetEnvironment() : SceneEnvironmentSettings{};
+    auto sourceSky =
+        scene ? scene->ResolveSkyboxMaterial() : AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+    if (sourceSky && m_prepareMaterial)
+        m_prepareMaterial(sourceSky);
+    auto capturedSky = sourceSky ? sourceSky->CaptureRenderPublication() : nullptr;
+    const auto baseSky = capturedSky;
+    if (environment.skyboxMaterialGuid.empty() && sourceSky) {
+        const auto previous = m_lighting ? m_lighting->skyboxMaterial : nullptr;
+        const auto matchesColor = [&](const char *name, const glm::vec3 &color) {
+            const auto *property = previous ? previous->GetProperty(name) : nullptr;
+            return property && std::holds_alternative<glm::vec4>(property->value) &&
+                   std::get<glm::vec4>(property->value) == glm::vec4(color, 1.0f);
+        };
+        const auto *exposure = previous ? previous->GetProperty("exposure") : nullptr;
+        const bool unchanged = m_baseSkybox == capturedSky && matchesColor("sky_top_color", environment.skyTopColor) &&
+                               matchesColor("sky_horizon_color", environment.skyHorizonColor) &&
+                               matchesColor("ground_color", environment.skyGroundColor) && exposure &&
+                               std::holds_alternative<float>(exposure->value) &&
+                               std::get<float>(exposure->value) == environment.skyExposure;
+        if (unchanged) {
+            capturedSky = previous;
+        } else {
+            // A private authoring copy prepares this environment override;
+            // published render values are then sealed through the same cache.
+            auto authoredSky = sourceSky->Clone();
+            authoredSky->SetColor("sky_top_color", glm::vec4(environment.skyTopColor, 1.0f));
+            authoredSky->SetColor("sky_horizon_color", glm::vec4(environment.skyHorizonColor, 1.0f));
+            authoredSky->SetColor("ground_color", glm::vec4(environment.skyGroundColor, 1.0f));
+            authoredSky->SetFloat("exposure", environment.skyExposure);
+            capturedSky = authoredSky->CaptureRenderPublication();
+        }
+        m_baseSkybox = baseSky;
+    } else {
+        m_baseSkybox.reset();
+    }
+    next->skyboxMaterial = capturedSky;
+    SceneLightCollector ambient;
+    ambient.Clear();
+    using AmbientSource = SceneEnvironmentSettings::AmbientSource;
+    if (static_cast<AmbientSource>(environment.ambientSource) == AmbientSource::Color) {
+        ambient.SetAmbientColor(environment.ambientColor, environment.ambientIntensity);
+    } else if (static_cast<AmbientSource>(environment.ambientSource) == AmbientSource::Gradient) {
+        ambient.SetAmbientGradient(environment.ambientSkyColor, environment.ambientEquatorColor,
+                                   environment.ambientGroundColor, environment.ambientIntensity);
+    } else {
+        const auto *top = capturedSky ? capturedSky->GetProperty("sky_top_color") : nullptr;
+        const auto *horizon = capturedSky ? capturedSky->GetProperty("sky_horizon_color") : nullptr;
+        const auto *ground = capturedSky ? capturedSky->GetProperty("ground_color") : nullptr;
+        const auto *exposure = capturedSky ? capturedSky->GetProperty("exposure") : nullptr;
+        if (top && ground && std::holds_alternative<glm::vec4>(top->value) &&
+            std::holds_alternative<glm::vec4>(ground->value)) {
+            const glm::vec3 topColor(std::get<glm::vec4>(top->value));
+            const glm::vec3 groundColor(std::get<glm::vec4>(ground->value));
+            const glm::vec3 horizonColor = horizon && std::holds_alternative<glm::vec4>(horizon->value)
+                                               ? glm::vec3(std::get<glm::vec4>(horizon->value))
+                                               : glm::mix(groundColor, topColor, 0.5f);
+            const float scale =
+                exposure && std::holds_alternative<float>(exposure->value) ? std::get<float>(exposure->value) : 1.0f;
+            ambient.SetAmbientGradient(topColor, horizonColor, groundColor, scale * environment.ambientIntensity);
+        } else {
+            ambient.SetAmbientGradient(glm::vec3(0.5f), glm::vec3(0.4f), glm::vec3(0.25f),
+                                       environment.ambientIntensity);
+        }
+    }
+    const auto &values = ambient.GetLightingUBO();
+    next->ambientSky = values.ambientSkyColor;
+    next->ambientEquator = values.ambientEquatorColor;
+    next->ambientGround = values.ambientGroundColor;
+    if (!m_lighting || !next->SameValues(*m_lighting)) {
+        next->generation = ++m_lightingGeneration;
+        m_lighting = std::move(next);
+    }
+    frame.m_lighting = m_lighting;
+}
+bool SceneRenderExtractor::CaptureMeshPublications(RenderWorldFrame &frame)
+{
+    bool changed = false;
+    for (size_t index = 0; index < frame.m_proxies.size(); ++index) {
+        auto &source = m_sceneSources[index];
+        const auto &live = source.meshRenderer->GetVertexBuffer();
+        auto &value = source.vertexPublication;
+        const auto sameValue = [&] {
+            if (!live || !value)
+                return !live && !value;
+            const auto &a = live->GetDesc();
+            const auto &b = value->GetDesc();
+            return live->GetAllocation() == value->GetAllocation() && a.elementCount == b.elementCount &&
+                   a.scalarType == b.scalarType && a.lanes == b.lanes;
+        };
+        if (!sameValue()) {
+            value = live ? live->Freeze() : nullptr;
+            changed = true;
+        }
+        const auto &range = frame.m_proxies[index].cache;
+        const auto end = range.drawCallStart + range.drawCallCount;
+        for (size_t draw = range.drawCallStart; draw < end; ++draw)
+            frame.m_drawCalls.drawCalls[draw].meshVertexBuffer = value;
+    }
+    return changed;
+}
+
+void SceneRenderExtractor::CaptureMaterialPublications(RenderWorldFrame &frame)
+{
+    std::unordered_map<const InxMaterial *, std::weak_ptr<InxMaterial>> materials;
+    std::unordered_map<const RendererParameterBlock *, ParameterPublication> parameters;
+    m_materialPublicationsChanged = false;
+    const auto captureMaterial = [&](const std::shared_ptr<InxMaterial> &source) {
+        if (!source)
+            return std::shared_ptr<InxMaterial>{};
+        const auto sameFrame = materials.find(source.get());
+        if (sameFrame != materials.end())
+            return sameFrame->second.lock();
+        auto value = source->CaptureRenderPublication();
+        const auto previous = m_lastMaterialPublications.find(source.get());
+        if (previous == m_lastMaterialPublications.end() || previous->second.lock() != value)
+            m_materialPublicationsChanged = true;
+        materials[source.get()] = value;
+        return value;
+    };
+    const auto captureParameters = [&](const std::shared_ptr<const RendererParameterBlock> &source) {
+        if (!source || source->buffers.empty())
+            return source;
+        if (const auto sameFrame = parameters.find(source.get()); sameFrame != parameters.end())
+            return sameFrame->second.frozen;
+        const auto previous = m_parameterPublications.find(source.get());
+        auto frozen = previous == m_parameterPublications.end() ? nullptr : previous->second.frozen;
+        bool unchanged = frozen && previous->second.source.lock() == source;
+        for (const auto &[name, buffer] : source->buffers) {
+            if (!unchanged)
+                break;
+            const auto found = frozen->buffers.find(name);
+            unchanged = found != frozen->buffers.end() && bool(found->second) == bool(buffer) &&
+                        (!buffer || found->second->GetAllocation() == buffer->GetAllocation());
+        }
+        if (!unchanged) {
+            auto next = std::make_shared<RendererParameterBlock>(*source);
+            for (auto &[name, buffer] : next->buffers)
+                if (buffer && !buffer->GetAllocation()->IsGraphWritable())
+                    buffer = buffer->Freeze();
+            frozen = std::move(next);
+            m_materialPublicationsChanged = true;
+        }
+        parameters.emplace(source.get(), ParameterPublication{source, frozen});
+        return frozen;
+    };
+    for (size_t index = 0; index < frame.m_proxies.size(); ++index) {
+        auto &proxy = frame.m_proxies[index];
+        MeshRenderer *renderer = m_sceneSources[index].meshRenderer;
+        proxy.structural.renderMaterial = captureMaterial(renderer->GetEffectiveMaterial());
+        proxy.structural.renderQueue =
+            proxy.structural.renderMaterial ? proxy.structural.renderMaterial->GetRenderQueue() : 2000;
+        proxy.structural.materialSortKey = reinterpret_cast<uintptr_t>(proxy.structural.renderMaterial.get());
+        const size_t end =
+            std::min(proxy.cache.drawCallStart + proxy.cache.drawCallCount, frame.m_drawCalls.drawCalls.size());
+        for (size_t drawIndex = proxy.cache.drawCallStart; drawIndex < end; ++drawIndex) {
+            auto &draw = frame.m_drawCalls.drawCalls[drawIndex];
+            draw.material = captureMaterial(renderer->GetEffectiveMaterial(draw.materialSlot));
+            draw.parameterBlock = captureParameters(renderer->GetParameterBlock(draw.materialSlot));
+        }
+    }
+    m_lastMaterialPublications.swap(materials);
+    m_parameterPublications.swap(parameters);
+}
 void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
 {
     frame.m_proxies.clear();
@@ -396,14 +603,12 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
             std::min(cache.drawCallStart + cache.drawCallCount, frame.m_drawCalls.drawCalls.size());
         bool inlinePublicationChanged = false;
         if (mr->HasInlineMesh()) {
-            const auto &resident = mr->GetVertexBuffer();
             const uint64_t version = mr->GetInlineMeshVersion();
             inlinePublicationChanged = source.inlineMeshVersion != version;
             for (size_t drawCallIndex = cache.drawCallStart;
                  !inlinePublicationChanged && drawCallIndex < cachedDrawCallEnd; ++drawCallIndex) {
                 const DrawCall &draw = frame.m_drawCalls.drawCalls[drawCallIndex];
-                inlinePublicationChanged =
-                    draw.meshRuntimeVersion != version || draw.meshVertexBuffer.get() != resident.get();
+                inlinePublicationChanged = draw.meshRuntimeVersion != version;
             }
         }
         const bool geometryPublicationChanged = bufferDirty || inlinePublicationChanged;

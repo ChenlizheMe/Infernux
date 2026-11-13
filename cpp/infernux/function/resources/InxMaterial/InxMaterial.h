@@ -29,6 +29,7 @@ namespace infernux
 
 // Forward declarations
 class MeshRenderer;
+class InxVkCoreModular;
 class AssetDependencyGraph;
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 class ShaderProgram;
@@ -39,6 +40,7 @@ namespace rhi
 {
 class RenderTexture;
 class ComputeBuffer;
+struct RenderTextureGeneration;
 } // namespace rhi
 
 /**
@@ -367,6 +369,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         if (m_vertexShader == reference)
             return;
         m_vertexShader = std::move(reference);
+        InvalidateShaderSelection();
         TrackRuntimeShaderReferences();
         m_pipelineDirty = true;
         ++m_version;
@@ -381,6 +384,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
             return;
         const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
         m_fragmentShader = std::move(reference);
+        InvalidateShaderSelection();
         TrackRuntimeShaderReferences();
         if (switched)
             ResetRenderStateAuthorship();
@@ -505,6 +509,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void SetRenderStateOverrides(uint32_t overrides)
     {
         if (m_renderStateOverrides != overrides) {
+            InvalidateShaderSelection();
             ++m_version;
             NotifyRoutingChanged();
         }
@@ -800,6 +805,19 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     /// GPU-transient state (pipelines, UBO) is NOT copied — lazily recreated.
     /// The clone has no GUID and no file path (runtime-only instance).
     [[nodiscard]] std::shared_ptr<InxMaterial> Clone() const;
+    // Immutable authoring values, with renderer-owned mutable GPU caches.
+    // Cached by real material/resource publication changes, never by Host/F.
+    [[nodiscard]] std::shared_ptr<InxMaterial> CaptureRenderPublication() const;
+    [[nodiscard]] bool IsRenderPublication() const noexcept
+    {
+        return m_isRenderPublication;
+    }
+    [[nodiscard]] const std::shared_ptr<const ShaderProgramArtifact> &GetSelectedShaderArtifact() const noexcept
+    {
+        return m_selectedShaderArtifact;
+    }
+    [[nodiscard]] std::shared_ptr<const rhi::RenderTextureGeneration>
+    GetRenderTextureGeneration(const std::string &name) const;
     /// Renderer-owned copies keep inheriting asset publications for fields
     /// the instance has not authored locally.
     [[nodiscard]] std::shared_ptr<InxMaterial> CloneRendererInstance() const;
@@ -821,6 +839,11 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 
     friend class MaterialLoader;
+    friend class InxVkCoreModular;
+    void InvalidateShaderSelection() noexcept
+    {
+        m_selectedShaderArtifact.reset();
+    }
 
     std::string m_name;
     uint64_t m_runtimeId = AllocateRuntimeId();
@@ -859,6 +882,11 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     mutable std::vector<std::weak_ptr<InxMaterial>> m_rendererMaterialInstances;
     std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> m_renderTextures;
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
+    bool m_isRenderPublication = false;
+    std::shared_ptr<const ShaderProgramArtifact> m_selectedShaderArtifact;
+    mutable std::weak_ptr<InxMaterial> m_cachedRenderPublication;
+    mutable uint64_t m_cachedRenderPublicationVersion = 0;
+    std::unordered_map<std::string, std::shared_ptr<const rhi::RenderTextureGeneration>> m_renderTextureGenerations;
     std::unordered_set<std::string> m_runtimeTextureOverrides;
     bool m_textureAssetsPending = true;
     uint64_t m_textureAssetRevision = 0;

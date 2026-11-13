@@ -1451,21 +1451,24 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
     }
 }
 
-std::shared_ptr<ComputeWorkInstance> ComputeWorkRecipe::Instantiate(std::vector<ComputeWorkInput> inputs) const
+std::shared_ptr<ComputeWorkInstance>
+ComputeWorkRecipe::Instantiate(std::vector<ComputeWorkInput> inputs,
+                               const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs) const
 {
-    return Bind(std::move(inputs), {});
+    return Bind(std::move(inputs), {}, externalInputs);
 }
 
 std::shared_ptr<ComputeWorkInstance>
 ComputeWorkRecipe::Bind(std::vector<ComputeWorkInput> inputs,
-                        const std::vector<std::shared_ptr<ComputeBuffer>> &retained) const
+                        const std::vector<std::shared_ptr<ComputeBuffer>> &retained,
+                        const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs) const
 {
     if (!m_host.IsAlive())
         throw std::runtime_error("Compute work device is retired");
     std::vector<std::shared_ptr<ComputeBuffer>> buffers;
     buffers.reserve(m_slots.size());
-    for (const auto &slot : m_slots)
-        buffers.push_back(slot.external);
+    for (size_t index = 0; index < m_slots.size(); ++index)
+        buffers.push_back(externalInputs.empty() ? m_slots[index].external : externalInputs[index]);
     std::vector<bool> provided(m_ports.size());
     for (const auto &input : inputs) {
         const auto found = m_portIndices.find(input.port);
@@ -1534,9 +1537,11 @@ ComputeWorkInstance::ComputeWorkInstance(std::shared_ptr<const ComputeWorkRecipe
 {
 }
 
-std::shared_ptr<ComputeWorkInstance> ComputeWorkInstance::Rebind(std::vector<ComputeWorkInput> inputs) const
+std::shared_ptr<ComputeWorkInstance>
+ComputeWorkInstance::Rebind(std::vector<ComputeWorkInput> inputs,
+                            const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs) const
 {
-    return m_recipe->Bind(std::move(inputs), m_buffers);
+    return m_recipe->Bind(std::move(inputs), m_buffers, externalInputs);
 }
 
 std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vector<ComputeBufferUpdate> updates) const

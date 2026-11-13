@@ -70,10 +70,7 @@ class _Context:
         self.applied = []
         self.parameter_updates = []
 
-    def setup_camera_properties(self, camera):
-        pass
-
-    def cull(self, camera):
+    def cull(self):
         return object()
 
     def apply_graph(self, description):
@@ -87,7 +84,7 @@ class _Context:
     def is_graph_revision_current(self, revision):
         return self.description is not None and self.description.source_revision == revision
 
-    def render_with_graph(self, camera, description, updates=()):
+    def render_with_graph(self, description, updates=()):
         if not self.is_graph_revision_current(description.source_revision):
             self.apply_graph(description)
         self.update_parameter_blocks(updates)

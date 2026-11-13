@@ -489,6 +489,12 @@ MaterialPipelineManager::GetOrCreatePassRenderData(std::shared_ptr<InxMaterial> 
     if (!forward || !forward->isValid || !forward->shaderProgram || forward->descriptorSet == VK_NULL_HANDLE ||
         !IsDescriptorSetLive(forward->descriptorSet))
         return nullptr;
+    if (program.GetVariantKey().program != forward->programKey ||
+        (pipeline.target != ShaderCompileTarget::Forward &&
+         program.GetDescriptorSetLayout(0) != forward->shaderProgram->GetDescriptorSetLayout(0))) {
+        INXLOG_ERROR("Semantic material pipeline does not belong to the committed Forward generation");
+        return nullptr;
+    }
     if (!IsMaterialDescriptorSetCompatible(*forward->shaderProgram, program)) {
         INXLOG_ERROR("Material pass '", ShaderCompileTargetName(pipeline.target), "' changed set-0 ABI for '",
                      material->GetName(), "'; linked variants must preserve the Forward material layout");
@@ -551,10 +557,28 @@ VkPipeline MaterialPipelineManager::GetCachedPipeline(size_t pipelineHash) const
 
 MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection(
     std::shared_ptr<InxMaterial> material, const std::vector<char> &vertShaderCode,
-    const std::vector<char> &fragShaderCode, const ShaderProgramKey &programKey, const ShaderProgramMetadata &metadata)
+    const std::vector<char> &fragShaderCode, const ShaderProgramKey &programKey,
+    std::shared_ptr<const ShaderProgramArtifact> shaderArtifact, const ShaderProgramMetadata &metadata)
 {
     if (!material) {
         INXLOG_ERROR("Cannot create render data for null material");
+        return nullptr;
+    }
+
+    if (shaderArtifact) {
+        const auto *forwardVariant = shaderArtifact->FindVariant(ShaderCompileTarget::Forward);
+        if (shaderArtifact->key != programKey || !forwardVariant || forwardVariant->vertexSpirv != vertShaderCode ||
+            forwardVariant->fragmentSpirv != fragShaderCode || metadata.domain != shaderArtifact->domain ||
+            metadata.properties != &shaderArtifact->properties ||
+            metadata.vertexEntryPoint != forwardVariant->vertexEntryPoint ||
+            metadata.fragmentEntryPoint != forwardVariant->fragmentEntryPoint ||
+            metadata.vertexTarget != forwardVariant->vertexTarget.get() ||
+            metadata.fragmentTarget != forwardVariant->fragmentTarget.get()) {
+            INXLOG_ERROR("Forward material candidate does not belong to its retained shader artifact");
+            return nullptr;
+        }
+    } else if (programKey.revision != 0) {
+        INXLOG_ERROR("Revisioned Forward material requires its complete shader artifact");
         return nullptr;
     }
 
@@ -640,6 +664,7 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
     renderData->pipelineHash = currentHash;
     renderData->programKey = programKey;
     renderData->shaderProgram = program;
+    renderData->shaderArtifact = std::move(shaderArtifact);
     renderData->vertModule = program->GetVertexModule();
     renderData->fragModule = program->GetFragmentModule();
     renderData->pipelineLayout = program->GetPipelineLayout();
