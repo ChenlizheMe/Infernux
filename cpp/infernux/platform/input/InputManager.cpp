@@ -29,6 +29,359 @@
 namespace infernux
 {
 
+namespace
+{
+thread_local InputFrameLease s_readInput;
+thread_local uint64_t s_readWorldId = 0;
+thread_local std::shared_ptr<InputFrameReadState> s_readState;
+} // namespace
+
+InputReadScope::InputReadScope(InputFrameLease lease, uint64_t worldId) noexcept
+    : m_previous(std::move(s_readInput)), m_previousWorld(s_readWorldId), m_previousReadState(std::move(s_readState))
+{
+    s_readInput = std::move(lease);
+    s_readWorldId = worldId;
+    s_readState = s_readInput && worldId ? InputManager::Instance().FindWorldReadState(worldId) : nullptr;
+}
+InputReadScope::~InputReadScope()
+{
+    s_readInput = std::move(m_previous);
+    s_readWorldId = m_previousWorld;
+    s_readState = std::move(m_previousReadState);
+}
+const InputFrameSample *InputReadScope::Current() noexcept
+{
+    if (!s_readState && s_readWorldId)
+        s_readState = InputManager::Instance().FindWorldReadState(s_readWorldId);
+    if (s_readInput && s_readState && s_readState->overrideValue &&
+        s_readState->overrideValue->sampleIdentity == s_readInput->sampleIdentity)
+        return s_readState->overrideValue.get();
+    return s_readInput.get();
+}
+uint64_t InputReadScope::WorldId() noexcept
+{
+    return s_readWorldId;
+}
+
+std::shared_ptr<InputFrameReadState> InputManager::AcquireWorldReadState(uint64_t worldId)
+{
+    auto &state = m_worldReadStates[worldId];
+    if (!state)
+        state = std::make_shared<InputFrameReadState>();
+    return state;
+}
+std::shared_ptr<InputFrameReadState> InputManager::FindWorldReadState(uint64_t worldId) noexcept
+{
+    const auto found = m_worldReadStates.find(worldId);
+    return found == m_worldReadStates.end() ? nullptr : found->second;
+}
+void InputManager::RetireWorldInput(uint64_t worldId) noexcept
+{
+    if (const auto found = m_worldReadStates.find(worldId); found != m_worldReadStates.end()) {
+        found->second->retired = true;
+        m_worldReadStates.erase(found);
+    }
+}
+std::shared_ptr<InputFrameReadState> InputManager::RetainWorldInputReadState()
+{
+    if (!s_readInput || !s_readWorldId)
+        throw std::logic_error("World input read owner requires a logical input scope");
+    return AcquireWorldReadState(s_readWorldId);
+}
+InputFrameSample *InputManager::OverrideReadFrame()
+{
+    const auto *sample = InputReadScope::Current();
+    if (!sample)
+        return nullptr;
+    if (!s_readState && s_readWorldId)
+        s_readState = AcquireWorldReadState(s_readWorldId);
+    if (!s_readState)
+        throw std::logic_error("Mutable sampled input requires a World owner");
+    if (!s_readState->overrideValue || s_readState->overrideValue->sampleIdentity != sample->sampleIdentity)
+        s_readState->overrideValue = std::make_shared<InputFrameSample>(*sample);
+    ++s_readState->revision;
+    return s_readState->overrideValue.get();
+}
+uint64_t InputManager::GetInputReadRevision() const noexcept
+{
+    if (InputReadScope::Current())
+        return s_readState ? s_readState->revision : 0;
+    return m_hostReadRevision;
+}
+void InputManager::SetGameplayFocused(bool value)
+{
+    if (auto *sample = OverrideReadFrame())
+        sample->gameplayFocused = value;
+    else {
+        m_gameplayFocused = value;
+        ++m_hostReadRevision;
+        InvalidateCapture();
+    }
+}
+void InputManager::SetGameplayViewportOrigin(float x, float y)
+{
+    if (auto *sample = OverrideReadFrame())
+        sample->gameplayViewportOrigin = {x, y};
+    else {
+        m_gameplayViewportOrigin = {x, y};
+        ++m_hostReadRevision;
+        InvalidateCapture();
+    }
+}
+void InputManager::SetGameplayViewportSize(float x, float y)
+{
+    if (auto *sample = OverrideReadFrame())
+        sample->gameplayViewportSize = {x, y};
+    else {
+        m_gameplayViewportSize = {x, y};
+        ++m_hostReadRevision;
+        InvalidateCapture();
+    }
+}
+
+void InputManager::SetGameplayViewOutput(float width, float height, std::array<float, 4> touchViewport)
+{
+    if (auto *sample = OverrideReadFrame()) {
+        sample->gameplayRenderSize = {width, height};
+        sample->gameplayTouchViewport = touchViewport;
+    } else {
+        m_gameplayRenderSize = {width, height};
+        m_gameplayTouchViewport = touchViewport;
+        InvalidateCapture();
+    }
+}
+std::array<float, 2> InputManager::GetGameplayRenderSize() const noexcept
+{
+    const auto *sample = InputReadScope::Current();
+    return sample ? sample->gameplayRenderSize : m_gameplayRenderSize;
+}
+std::array<float, 4> InputManager::GetGameplayTouchViewport() const noexcept
+{
+    const auto *sample = InputReadScope::Current();
+    return sample ? sample->gameplayTouchViewport : m_gameplayTouchViewport;
+}
+
+void InputManager::AppendSampleEvent(SampleEvent event)
+{
+    m_sampleEvents.push_back(std::move(event));
+    InvalidateCapture();
+}
+void InputManager::ClearSampleTransients(InputFrameSample &sample)
+{
+    sample.keyDown.fill(0);
+    sample.keyUp.fill(0);
+    sample.keyDownConsumed.fill(0);
+    sample.mouseDown.fill(0);
+    sample.mouseUp.fill(0);
+    sample.mouseDX = sample.mouseDY = sample.scrollX = sample.scrollY = 0;
+    sample.gameScroll = {};
+    sample.inputString.clear();
+    sample.gameInputString.clear();
+    sample.accelerationEvents.clear();
+    sample.droppedFiles.clear();
+    sample.anyKeyDown = false;
+    sample.syntheticInputFrame = false;
+    sample.syntheticGameplayInput = sample.syntheticHeld;
+    sample.touches.erase(std::remove_if(sample.touches.begin(), sample.touches.end(),
+                                        [](const auto &touch) {
+                                            return touch.phase == TouchPhase::Ended ||
+                                                   touch.phase == TouchPhase::Canceled;
+                                        }),
+                         sample.touches.end());
+    for (auto &touch : sample.touches) {
+        touch.phase = TouchPhase::Stationary;
+        touch.deltaX = touch.deltaY = touch.deltaTime = 0;
+        touch.beganThisFrame = false;
+    }
+    for (auto &mouse : sample.gameMouseFrames) {
+        std::get<2>(mouse) = std::get<3>(mouse) = 0;
+        std::get<5>(mouse) = std::get<6>(mouse) = false;
+    }
+}
+InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameLease external,
+                                                   uint64_t logicalFrameIndex)
+{
+    if (!worldId || !external || external->logical)
+        throw std::invalid_argument("World input admission requires its owner and an external Host sample");
+    auto state = AcquireWorldReadState(worldId);
+    if (state->logicalValue && state->lastLogicalFrameIndex == logicalFrameIndex) {
+        if (state->lastExternalSample != external->sampleIdentity)
+            throw std::logic_error("A World input admission cannot replace its already accepted external sample");
+        return state->logicalValue;
+    }
+    auto value = std::make_shared<InputFrameSample>(*external);
+    if (state->lastExternalSample == external->sampleIdentity)
+        ClearSampleTransients(*value);
+    value->logical = true;
+    value->logicalFrameIndex = logicalFrameIndex;
+    value->sourceSampleIdentity = external->sampleIdentity;
+    value->sampleIdentity = ++m_sampleIdentity;
+    state->overrideValue.reset();
+    state->lastLogicalFrameIndex = logicalFrameIndex;
+    state->lastExternalSample = external->sampleIdentity;
+    state->logicalValue = std::move(value);
+    return state->logicalValue;
+}
+
+InputFrameLease InputManager::CaptureFrame()
+{
+    // Never recapture an open World's old scope. One shared immutable value
+    // is sealed after event ingestion for this Host; callers retain its lease.
+    if (m_capturedFrame)
+        return m_capturedFrame;
+    InputReadScope live(nullptr);
+    auto sample = std::make_shared<InputFrameSample>();
+    sample->hostFrameIndex = m_frameIndex;
+    sample->sampleIdentity = ++m_sampleIdentity;
+    sample->sourceSampleIdentity = sample->sampleIdentity;
+    sample->keys = m_keys;
+    for (size_t i = 0; i < sample->keyDown.size(); ++i) {
+        sample->gameKeyOwned[i] = IsGameKeyOwned(static_cast<int>(i));
+    }
+    sample->mouseButtons = m_mouseButtons;
+    for (size_t i = 0; i < sample->gameMouseOwned.size(); ++i) {
+        sample->gameMouseOwned[i] = IsGameMouseButtonOwned(static_cast<int>(i));
+        sample->gameMouseFrames[i] = GetGameMouseFrameState(static_cast<int>(i));
+    }
+    sample->mouseX = m_mouseX;
+    sample->mouseY = m_mouseY;
+    sample->mouseDX = m_mouseDX;
+    sample->mouseDY = m_mouseDY;
+    sample->scrollX = m_scrollX;
+    sample->scrollY = m_scrollY;
+    sample->gameScroll = m_gameScroll;
+    sample->inputString = m_inputString;
+    sample->gameInputString = m_gameInputString;
+    sample->touches = m_touches;
+    sample->accelerationEvents = m_accelerationEvents;
+    sample->droppedFiles = m_droppedFiles;
+    sample->acceleration = m_acceleration;
+    sample->gyroscopeRotationRate = m_gyroscopeRotationRate;
+    sample->screen = m_screenState;
+    sample->accelerometerAvailable = m_accelerometerAvailable;
+    sample->gyroscopeAvailable = m_gyroscopeAvailable;
+    sample->syntheticInputFrame = m_syntheticInputThisFrame;
+    sample->syntheticGameplayInput = m_syntheticInputThisFrame || m_syntheticHeldCount != 0;
+    sample->syntheticHeld = m_syntheticHeldCount != 0;
+    sample->gameplayFocused = m_gameplayFocused;
+    sample->gameplayViewportOrigin = m_gameplayViewportOrigin;
+    sample->gameplayViewportSize = m_gameplayViewportSize;
+    sample->gameplayRenderSize = m_gameplayRenderSize;
+    sample->gameplayTouchViewport = m_gameplayTouchViewport;
+    // Raw Host queries retain their own edges/text; World delivery consumes
+    // only this sealed occurrence prefix, shared by all Host admissions.
+    auto originalTouches = std::move(sample->touches);
+    ClearSampleTransients(*sample);
+    for (auto &touch : originalTouches) {
+        const bool terminal = touch.phase == TouchPhase::Ended || touch.phase == TouchPhase::Canceled;
+        const bool changed = std::any_of(m_sampleEvents.begin(), m_sampleEvents.end(), [&](const auto &event) {
+            return event.kind == SampleEventKind::Touch && event.touch.touchId == touch.touchId &&
+                   event.touch.fingerId == touch.fingerId;
+        });
+        if (terminal && !changed)
+            continue;
+        touch.phase = TouchPhase::Stationary;
+        touch.deltaX = touch.deltaY = touch.deltaTime = 0;
+        touch.beganThisFrame = false;
+        sample->touches.push_back(std::move(touch));
+    }
+    for (const auto &event : m_sampleEvents) {
+        switch (event.kind) {
+        case SampleEventKind::KeyDown:
+            sample->keyDown[event.index] = 1;
+            sample->anyKeyDown = true;
+            break;
+        case SampleEventKind::SyntheticKeyDown:
+            sample->keyDown[event.index] = 1;
+            break;
+        case SampleEventKind::KeyUp:
+            sample->keyUp[event.index] = 1;
+            break;
+        case SampleEventKind::MouseDown:
+            sample->mouseDown[event.index] = 1;
+            break;
+        case SampleEventKind::MouseUp:
+            sample->mouseUp[event.index] = 1;
+            break;
+        case SampleEventKind::Motion:
+            sample->mouseDX += event.x;
+            sample->mouseDY += event.y;
+            break;
+        case SampleEventKind::Scroll:
+            sample->scrollX += event.x;
+            sample->scrollY += event.y;
+            if (event.game) {
+                sample->gameScroll.first += event.x;
+                sample->gameScroll.second += event.y;
+            }
+            break;
+        case SampleEventKind::Text:
+            sample->inputString += event.text;
+            if (event.game)
+                sample->gameInputString += event.text;
+            break;
+        case SampleEventKind::Acceleration:
+            sample->accelerationEvents.push_back(event.acceleration);
+            break;
+        case SampleEventKind::Synthetic:
+            sample->syntheticInputFrame = true;
+            break;
+        case SampleEventKind::DroppedFile:
+            sample->droppedFiles.push_back(event.text);
+            break;
+        case SampleEventKind::Touch: {
+            auto found = std::find_if(sample->touches.begin(), sample->touches.end(), [&](const auto &touch) {
+                return touch.touchId == event.touch.touchId && touch.fingerId == event.touch.fingerId;
+            });
+            if (found == sample->touches.end()) {
+                sample->touches.push_back(event.touch);
+                break;
+            }
+            const bool began = event.touch.phase == TouchPhase::Began;
+            const float dx = began ? event.touch.deltaX : found->deltaX + event.touch.deltaX;
+            const float dy = began ? event.touch.deltaY : found->deltaY + event.touch.deltaY;
+            const bool beganInSample = began || found->beganThisFrame;
+            const float beginX = began ? event.touch.x : found->beginX;
+            const float beginY = began ? event.touch.y : found->beginY;
+            *found = event.touch;
+            found->deltaX = dx;
+            found->deltaY = dy;
+            found->beganThisFrame = beganInSample;
+            found->beginX = beginX;
+            found->beginY = beginY;
+            break;
+        }
+        }
+    }
+    sample->syntheticGameplayInput = sample->syntheticInputFrame || m_syntheticHeldCount != 0;
+    for (size_t index = 0; index < sample->gameMouseFrames.size(); ++index) {
+        auto &mouse = sample->gameMouseFrames[index];
+        std::get<2>(mouse) = sample->gameScroll.first;
+        std::get<3>(mouse) = sample->gameScroll.second;
+        std::get<5>(mouse) = sample->gameMouseOwned[index] && sample->mouseDown[index];
+        std::get<6>(mouse) = sample->gameMouseOwned[index] && sample->mouseUp[index];
+    }
+    m_sampleEvents.clear();
+    m_capturedFrame = std::move(sample);
+    return m_capturedFrame;
+}
+
+bool InputManager::GetGameplayFocused() const noexcept
+{
+    const auto *sample = InputReadScope::Current();
+    return sample ? sample->gameplayFocused : m_gameplayFocused;
+}
+std::array<float, 2> InputManager::GetGameplayViewportOrigin() const noexcept
+{
+    const auto *sample = InputReadScope::Current();
+    return sample ? sample->gameplayViewportOrigin : m_gameplayViewportOrigin;
+}
+std::array<float, 2> InputManager::GetGameplayViewportSize() const noexcept
+{
+    const auto *sample = InputReadScope::Current();
+    return sample ? sample->gameplayViewportSize : m_gameplayViewportSize;
+}
+
 // ============================================================================
 // Static name table
 // ============================================================================
@@ -162,6 +515,8 @@ InputManager::InputManager()
 
 void InputManager::BeginFrame()
 {
+    m_capturedFrame.reset();
+    m_sampleEvents.clear();
     ++m_frameIndex;
     m_keyDown.fill(0);
     m_keyUp.fill(0);
@@ -202,24 +557,30 @@ void InputManager::BeginFrame()
 
 void InputManager::ProcessKeyEvent(int scancode, bool pressed, bool gameInput)
 {
+    InvalidateCapture();
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return;
     const size_t index = static_cast<size_t>(scancode);
     if (pressed) {
         if (m_keys[index] == 0 || !gameInput || m_syntheticKeyDown[index] != 0)
             m_gameKeyOwnership[index] = gameInput;
-        if (m_keys[index] == 0)
+        if (m_keys[index] == 0) {
             m_keyDown[index] = 1;
+            AppendSampleEvent({SampleEventKind::KeyDown, scancode});
+        }
         m_keys[index] = 1;
     } else {
-        if (m_keys[index] != 0)
+        if (m_keys[index] != 0) {
             m_keyUp[index] = 1;
+            AppendSampleEvent({SampleEventKind::KeyUp, scancode});
+        }
         m_keys[index] = 0;
     }
 }
 
 void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool gameInput)
 {
+    InvalidateCapture();
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return;
     const bool wasHidden = IsCursorHidden();
@@ -233,11 +594,14 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool game
             else
                 m_gameMouseButtonOwnership &= ~(1u << button);
             m_mouseButtonDown[index] = 1;
+            AppendSampleEvent({SampleEventKind::MouseDown, button});
         }
         m_mouseButtons[index] = 1;
     } else {
-        if (m_mouseButtons[index] != 0)
+        if (m_mouseButtons[index] != 0) {
             m_mouseButtonUp[index] = 1;
+            AppendSampleEvent({SampleEventKind::MouseUp, button});
+        }
         m_mouseButtons[index] = 0;
     }
     if (wasHidden != IsCursorHidden())
@@ -246,6 +610,7 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool game
 
 void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY)
 {
+    InvalidateCapture();
     if (m_warpMotionPending) {
         m_warpMotionPending = false;
         if (std::abs(x - m_warpTargetX) <= 1.0f && std::abs(y - m_warpTargetY) <= 1.0f) {
@@ -258,6 +623,7 @@ void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, flo
     m_mouseY = y;
     m_mouseDX += deltaX;
     m_mouseDY += deltaY;
+    AppendSampleEvent({SampleEventKind::Motion, 0, deltaX, deltaY});
     if (m_editorMouseCaptured) {
         m_editorMouseDX += deltaX;
         m_editorMouseDY += deltaY;
@@ -268,6 +634,7 @@ void InputManager::ProcessScrollEvent(float deltaX, float deltaY, bool gameInput
 {
     m_scrollX += deltaX;
     m_scrollY += deltaY;
+    AppendSampleEvent({SampleEventKind::Scroll, 0, deltaX, deltaY, gameInput});
     if (gameInput) {
         m_gameScroll.first += deltaX;
         m_gameScroll.second += deltaY;
@@ -277,6 +644,7 @@ void InputManager::ProcessScrollEvent(float deltaX, float deltaY, bool gameInput
 void InputManager::ProcessTextInputEvent(const std::string &text, bool gameInput)
 {
     m_inputString += text;
+    AppendSampleEvent({SampleEventKind::Text, 0, 0, 0, gameInput, text});
     if (gameInput)
         m_gameInputString += text;
 }
@@ -291,10 +659,14 @@ void InputManager::ProcessMotionSensorEvent(MotionSensorType type, uint64_t time
                                     : 0.0f;
         m_lastAccelerationTimestampNs = timestampNs;
         m_accelerationEvents.push_back({m_acceleration, deltaTime});
+        SampleEvent sample{SampleEventKind::Acceleration};
+        sample.acceleration = m_accelerationEvents.back();
+        AppendSampleEvent(std::move(sample));
         m_accelerometerAvailable = true;
         return;
     }
 
+    InvalidateCapture();
     m_gyroscopeRotationRate = {x, y, z};
     m_gyroscopeAvailable = true;
 }
@@ -400,10 +772,16 @@ void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64
     }
     touch->cancelReason = phase == TouchPhase::Canceled ? cancelReason : std::string{};
     touch->phase = phase;
+    SampleEvent sample{SampleEventKind::Touch};
+    sample.touch = *touch;
+    sample.touch.deltaX = deltaX;
+    sample.touch.deltaY = deltaY;
+    AppendSampleEvent(std::move(sample));
 }
 
 void InputManager::ProcessFocusEvent(bool focused)
 {
+    InvalidateCapture();
     // OS activation starts a new editor interaction; only a viewport click
     // may acquire capture again, even if no loss event preceded activation.
     m_editorMouseCaptured = false;
@@ -435,6 +813,7 @@ void InputManager::ProcessScreenMetrics(int logicalWidth, int logicalHeight, int
                                         int safeAreaWidth, int safeAreaHeight, bool keyboardInsetKnown,
                                         int keyboardInset)
 {
+    InvalidateCapture();
     if (!std::isfinite(pixelRatio) || pixelRatio <= 0.0f)
         throw std::invalid_argument("screen pixel ratio must be finite and positive");
     ScreenState next = m_screenState;
@@ -629,6 +1008,7 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event, bool gameInput)
         m_mouseY = event.drop.y;
         if (event.drop.data) {
             m_droppedFiles.emplace_back(event.drop.data);
+            AppendSampleEvent({SampleEventKind::DroppedFile, 0, 0, 0, false, event.drop.data});
         }
         break;
     }
@@ -670,6 +1050,7 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event, bool gameInput)
 
 void InputManager::SetSyntheticMousePosition(float x, float y)
 {
+    InvalidateCapture();
     m_mouseX = x;
     m_mouseY = y;
     m_syntheticMouseX = x;
@@ -688,16 +1069,19 @@ bool InputManager::GetSyntheticMousePosition(float &x, float &y) const
 
 void InputManager::ReleaseSyntheticMousePosition()
 {
+    InvalidateCapture();
     m_hasSyntheticMousePosition = false;
 }
 
 void InputManager::MarkSyntheticInputForFrame()
 {
+    AppendSampleEvent({SampleEventKind::Synthetic});
     m_syntheticInputThisFrame = true;
 }
 
 void InputManager::TrackSyntheticEvent(const SDL_Event &event)
 {
+    AppendSampleEvent({SampleEventKind::Synthetic});
     m_syntheticInputThisFrame = true;
     const auto setHeld = [this](auto &states, int index, bool held) {
         if (index < 0 || index >= static_cast<int>(states.size()))
@@ -719,8 +1103,10 @@ void InputManager::TrackSyntheticEvent(const SDL_Event &event)
                                  ? m_syntheticKeys[static_cast<size_t>(scancode)] != 0
                                  : false;
         setHeld(m_syntheticKeys, scancode, pressed);
-        if (pressed && !wasHeld && scancode >= 0 && scancode < static_cast<int>(m_syntheticKeyDown.size()))
+        if (pressed && !wasHeld && scancode >= 0 && scancode < static_cast<int>(m_syntheticKeyDown.size())) {
             m_syntheticKeyDown[static_cast<size_t>(scancode)] = 1;
+            AppendSampleEvent({SampleEventKind::SyntheticKeyDown, scancode});
+        }
         return;
     }
     if (event.type != SDL_EVENT_MOUSE_BUTTON_DOWN && event.type != SDL_EVENT_MOUSE_BUTTON_UP)
@@ -755,6 +1141,8 @@ void InputManager::TrackSyntheticEvent(const SDL_Event &event)
 
 bool InputManager::GetKey(int scancode) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return scancode >= 0 && scancode < INPUT_MAX_KEYS && sample->keys[static_cast<size_t>(scancode)] != 0;
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return false;
     return m_keys[scancode] != 0;
@@ -762,6 +1150,8 @@ bool InputManager::GetKey(int scancode) const
 
 bool InputManager::GetKeyDown(int scancode) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return scancode >= 0 && scancode < INPUT_MAX_KEYS && sample->keyDown[static_cast<size_t>(scancode)] != 0;
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return false;
     return m_keyDown[scancode] != 0 || m_syntheticKeyDown[scancode] != 0;
@@ -769,6 +1159,8 @@ bool InputManager::GetKeyDown(int scancode) const
 
 bool InputManager::GetKeyUp(int scancode) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return scancode >= 0 && scancode < INPUT_MAX_KEYS && sample->keyUp[static_cast<size_t>(scancode)] != 0;
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return false;
     return m_keyUp[scancode] != 0;
@@ -776,6 +1168,8 @@ bool InputManager::GetKeyUp(int scancode) const
 
 bool InputManager::AnyKey() const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return std::any_of(sample->keys.begin(), sample->keys.end(), [](uint8_t value) { return value != 0; });
     for (int i = 0; i < INPUT_MAX_KEYS; ++i) {
         if (m_keys[i])
             return true;
@@ -785,6 +1179,8 @@ bool InputManager::AnyKey() const
 
 bool InputManager::AnyKeyDown() const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return sample->anyKeyDown;
     for (int i = 0; i < INPUT_MAX_KEYS; ++i) {
         if (m_keyDown[i])
             return true;
@@ -794,6 +1190,8 @@ bool InputManager::AnyKeyDown() const
 
 bool InputManager::IsGameKeyOwned(int scancode) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return scancode >= 0 && scancode < INPUT_MAX_KEYS && sample->gameKeyOwned[static_cast<size_t>(scancode)] != 0;
     return scancode >= 0 && scancode < INPUT_MAX_KEYS &&
            (!m_editorCursorCaptureManaged || m_gameKeyOwnership[scancode] != 0 || m_syntheticKeys[scancode] != 0 ||
             m_syntheticKeyDown[scancode] != 0);
@@ -811,12 +1209,20 @@ void InputManager::ConsumeKeyDown(int scancode)
 {
     if (!GetKeyDown(scancode))
         return;
+    if (InputReadScope::Current()) {
+        OverrideReadFrame()->keyDownConsumed[static_cast<size_t>(scancode)] = 1;
+        return;
+    }
     m_keyDownConsumed[static_cast<size_t>(scancode)] = 1;
 }
 
 bool InputManager::IsKeyDownConsumed(int scancode) const
 {
-    return scancode >= 0 && scancode < INPUT_MAX_KEYS && m_keyDownConsumed[static_cast<size_t>(scancode)] != 0;
+    if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
+        return false;
+    if (const auto *sample = InputReadScope::Current())
+        return sample->keyDownConsumed[static_cast<size_t>(scancode)] != 0;
+    return m_keyDownConsumed[static_cast<size_t>(scancode)] != 0;
 }
 
 // ============================================================================
@@ -825,6 +1231,9 @@ bool InputManager::IsKeyDownConsumed(int scancode) const
 
 bool InputManager::GetMouseButton(int button) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return button >= 0 && button < INPUT_MAX_MOUSE_BUTTONS &&
+               sample->mouseButtons[static_cast<size_t>(button)] != 0;
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return false;
     return m_mouseButtons[button] != 0;
@@ -832,6 +1241,8 @@ bool InputManager::GetMouseButton(int button) const
 
 bool InputManager::GetMouseButtonDown(int button) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return button >= 0 && button < INPUT_MAX_MOUSE_BUTTONS && sample->mouseDown[static_cast<size_t>(button)] != 0;
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return false;
     return m_mouseButtonDown[button] != 0;
@@ -839,6 +1250,8 @@ bool InputManager::GetMouseButtonDown(int button) const
 
 bool InputManager::GetMouseButtonUp(int button) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return button >= 0 && button < INPUT_MAX_MOUSE_BUTTONS && sample->mouseUp[static_cast<size_t>(button)] != 0;
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS)
         return false;
     return m_mouseButtonUp[button] != 0;
@@ -856,6 +1269,12 @@ bool InputManager::GetGameMouseButtonDown(int button) const
 
 std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetGameMouseFrameState(int button) const
 {
+    if (const auto *sample = InputReadScope::Current()) {
+        if (button >= 0 && button < INPUT_MAX_MOUSE_BUTTONS)
+            return sample->gameMouseFrames[static_cast<size_t>(button)];
+        return {sample->mouseX, sample->mouseY, sample->gameScroll.first, sample->gameScroll.second, false,
+                false,          false};
+    }
     auto state = GetMouseFrameState(button);
     if (IsCursorLocked()) {
         const auto [x, y] = CursorLockPosition(true);
@@ -871,6 +1290,9 @@ std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetGameMo
 
 bool InputManager::IsGameMouseButtonOwned(int button) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return button >= 0 && button < INPUT_MAX_MOUSE_BUTTONS &&
+               sample->gameMouseOwned[static_cast<size_t>(button)] != 0;
     return button >= 0 && button < INPUT_MAX_MOUSE_BUTTONS &&
            (!m_editorCursorCaptureManaged || (m_gameMouseButtonOwnership & (1u << button)) != 0);
 }
@@ -927,6 +1349,10 @@ void InputManager::SetEditorGameViewport(const std::array<float, 4> &imageRect, 
 
 std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseFrameState(int button) const
 {
+    if (const auto *sample = InputReadScope::Current())
+        return {sample->mouseX,          sample->mouseY,         sample->scrollX,
+                sample->scrollY,         GetMouseButton(button), GetMouseButtonDown(button),
+                GetMouseButtonUp(button)};
     if (button < 0 || button >= INPUT_MAX_MOUSE_BUTTONS) {
         return {m_mouseX, m_mouseY, m_scrollX, m_scrollY, false, false, false};
     }
@@ -943,6 +1369,32 @@ std::tuple<float, float, float, float, bool, bool, bool> InputManager::GetMouseF
 
 void InputManager::ResetAll()
 {
+    if (auto *sample = OverrideReadFrame()) {
+        sample->keys.fill(0);
+        sample->keyDown.fill(0);
+        sample->keyUp.fill(0);
+        sample->keyDownConsumed.fill(0);
+        sample->gameKeyOwned.fill(0);
+        sample->mouseButtons.fill(0);
+        sample->mouseDown.fill(0);
+        sample->mouseUp.fill(0);
+        sample->gameMouseOwned.fill(0);
+        sample->mouseX = sample->mouseY = sample->mouseDX = sample->mouseDY = 0;
+        sample->scrollX = sample->scrollY = 0;
+        sample->gameScroll = {};
+        for (auto &mouse : sample->gameMouseFrames)
+            mouse = {0, 0, 0, 0, false, false, false};
+        sample->inputString.clear();
+        sample->gameInputString.clear();
+        sample->touches.clear();
+        sample->accelerationEvents.clear();
+        sample->droppedFiles.clear();
+        sample->syntheticInputFrame = sample->syntheticGameplayInput = sample->anyKeyDown = false;
+        return;
+    }
+    InvalidateCapture();
+    m_sampleEvents.clear();
+    ++m_hostReadRevision;
     const bool wasHidden = IsCursorHidden();
     m_gameMouseButtonOwnership = 0;
     m_keys.fill(0);
@@ -994,6 +1446,9 @@ void InputManager::ResetPhysicalInputForFocusLoss()
             touch.deltaX = 0.0f;
             touch.deltaY = 0.0f;
             m_touches.emplace_back(std::move(touch));
+            SampleEvent sample{SampleEventKind::Touch};
+            sample.touch = m_touches.back();
+            AppendSampleEvent(std::move(sample));
         }
     }
     m_syntheticKeys = syntheticKeys;
@@ -1020,14 +1475,18 @@ void InputManager::CancelActiveTouches(const std::string &reason)
         touch.cancelReason = reason;
         touch.deltaX = 0.0f;
         touch.deltaY = 0.0f;
+        SampleEvent sample{SampleEventKind::Touch};
+        sample.touch = touch;
+        AppendSampleEvent(std::move(sample));
     }
 }
 
 const TouchState &InputManager::GetTouch(int index) const
 {
-    if (index < 0 || static_cast<size_t>(index) >= m_touches.size())
+    const auto &touches = GetTouches();
+    if (index < 0 || static_cast<size_t>(index) >= touches.size())
         throw std::out_of_range("Touch index is outside the current frame snapshot");
-    return m_touches[static_cast<size_t>(index)];
+    return touches[static_cast<size_t>(index)];
 }
 
 // ============================================================================

@@ -13,6 +13,11 @@ thread_local RuntimeWorld *s_currentWorld = nullptr;
 RuntimeWorld::SceneCollection::SceneCollection() = default;
 RuntimeWorld::SceneCollection::~SceneCollection()
 {
+    Clear();
+}
+
+void RuntimeWorld::SceneCollection::Clear()
+{
     auto retiringPersistent = std::move(persistent);
     std::vector<std::unique_ptr<Scene>> retiringScenes;
     retiringScenes.swap(loaded);
@@ -25,13 +30,21 @@ RuntimeWorld::SceneCollection::~SceneCollection()
 }
 RuntimeWorld::RuntimeWorld() : id(s_nextRuntimeWorldId.fetch_add(1, std::memory_order_relaxed))
 {
+    // Input must outlive every World, including the SceneManager default World.
+    (void)InputManager::Instance();
 }
-RuntimeWorld::~RuntimeWorld() = default;
+RuntimeWorld::~RuntimeWorld()
+{
+    scenes.Clear();
+    InputManager::Instance().RetireWorldInput(id);
+}
 
 WorldExecutionScope::WorldExecutionScope(RuntimeWorld *world) noexcept : m_previous(s_currentWorld)
 {
-    if (world)
+    if (world && world != m_previous) {
+        m_inputScope.emplace(world->frame.input, world->id);
         s_currentWorld = world;
+    }
 }
 
 WorldExecutionScope::~WorldExecutionScope()

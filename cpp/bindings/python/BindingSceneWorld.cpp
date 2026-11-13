@@ -416,7 +416,9 @@ void BindSceneManager(py::module_ &m)
         .value("SNAPSHOT_PUBLICATION", SceneManager::RuntimeFrameBarrier::SnapshotPublication)
         .value("RENDER_SUBMITTED", SceneManager::RuntimeFrameBarrier::RenderSubmitted)
         .value("RENDER_PRESENTED", SceneManager::RuntimeFrameBarrier::RenderPresented)
-        .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy);
+        .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy)
+        .value("UPDATE_SCRIPT", SceneManager::RuntimeFrameBarrier::UpdateScript)
+        .value("LATE_SCRIPT", SceneManager::RuntimeFrameBarrier::LateScript);
 
     py::class_<RuntimeWorld::FrameTime>(m, "_FrameTime")
         .def_readonly("time", &RuntimeWorld::FrameTime::time)
@@ -479,6 +481,10 @@ void BindSceneManager(py::module_ &m)
              py::arg("destination"), "Move a root GameObject hierarchy to another loaded Scene")
         .def_property_readonly("scene_count", &SceneManager::GetSceneCount, "Number of currently loaded scenes")
         .def("is_playing", &SceneManager::IsPlaying, "Check if in play mode")
+        .def("set_runtime_input_callback", &SceneManager::SetRuntimeInputCallback, py::arg("callback"))
+        .def("_can_continue_runtime_frame", &SceneManager::CanContinueRuntimeFrame)
+        .def_property_readonly("_runtime_frame_generation",
+                               [](const SceneManager &manager) { return std::get<3>(manager.GetSimulationState()); })
         .def("set_runtime_lifecycle_callbacks", &SceneManager::SetRuntimeLifecycleCallbacks, py::arg("begin_frame"),
              py::arg("fixed_update"), py::arg("update"), py::arg("late_update"), py::arg("editor_update"),
              py::arg("end_frame"), "Install the shared Editor/Player runtime lifecycle bridge")

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <core/config/EngineConfig.h>
 #include <core/threading/JobSystem.h>
 #include <function/scene/BoxCollider.h>
@@ -8,11 +9,12 @@
 #include <function/scene/SceneManager.h>
 #include <function/scene/Transform.h>
 #include <function/scene/physics/PhysicsWorld.h>
-#include <array>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 
-inline void TestPhysicsQueryDefaultMask()
+inline void TestPhysicsQueryDefaultMask(const std::function<void()> &initializePhysics,
+                                        const std::function<void()> &shutdownPhysics)
 {
     using namespace infernux;
     auto &world = PhysicsWorld::Instance();
@@ -22,12 +24,12 @@ inline void TestPhysicsQueryDefaultMask()
     JobSystem::Initialize(2);
     const auto clean = [&] {
         manager.UnloadAllScenes();
-        world.Shutdown();
+        shutdownPhysics();
     };
     try {
         for (uint32_t mask : {0u, 4u, 0x80000000u, 0xFFFFFFFBu}) {
             config.defaultQueryLayerMask = mask;
-            world.Initialize();
+            initializePhysics();
             auto *scene = manager.CreateScene("Configured native query masks");
             std::array<Collider *, 3> colliders{};
             const std::array<int, 3> layers{0, 2, 31};
@@ -71,8 +73,8 @@ inline void TestPhysicsQueryDefaultMask()
             checkHit(found != 0);
             world.RaycastBatchPublished(starts, directions, 1, 12, &hit, &found);
             checkHit(found != 0);
-            if (world.Raycast(origin, down, 12, hit, 0u) ||
-                !world.Raycast(origin, down, 12, hit, 4u) || hit.collider != colliders[1])
+            if (world.Raycast(origin, down, 12, hit, 0u) || !world.Raycast(origin, down, 12, hit, 4u) ||
+                hit.collider != colliders[1])
                 throw std::runtime_error("explicit native mask was replaced by the default");
             clean();
         }

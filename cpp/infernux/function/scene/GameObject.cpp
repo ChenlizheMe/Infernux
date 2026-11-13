@@ -1397,14 +1397,17 @@ void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(floa
     const ObjectHandle owner = GetHandle();
     const bool fixed = update == &Component::FixedUpdate;
     auto components = GetComponentDispatchSnapshot();
-    if (fixed) {
-        const auto step = std::pair{manager.GetSimulationEpoch(), manager.GetFixedStepIndex()};
-        if (!m_fixedDispatchSnapshot || step != m_fixedDispatchStep) {
-            m_fixedDispatchStep = step;
-            m_fixedDispatchSnapshot = components;
-            m_fixedDispatchCursor = 0;
+    RuntimeDispatchState *dispatch = nullptr;
+    if (!editMode && (fixed || manager.IsPlaying())) {
+        dispatch = fixed ? &m_fixedDispatch : update == &Component::LateUpdate ? &m_lateDispatch : &m_updateDispatch;
+        const auto token = std::pair{manager.GetSimulationEpoch(),
+                                     fixed ? manager.GetFixedStepIndex() : manager.GetFrameTime().frameCount};
+        if (!dispatch->snapshot || token != dispatch->token) {
+            dispatch->token = token;
+            dispatch->snapshot = components;
+            dispatch->cursor = 0;
         }
-        components = m_fixedDispatchSnapshot;
+        components = dispatch->snapshot;
     }
     const auto resolve = [&](ObjectHandle handle) -> Component * {
         auto *component = scene ? scene->ResolveComponent(handle) : Component::FindByComponentId(handle.id);
@@ -1413,14 +1416,14 @@ void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(floa
                    ? component
                    : nullptr;
     };
-    for (size_t index = fixed ? m_fixedDispatchCursor : 0; index < components->size(); ++index) {
-        if (SceneManager::Instance().GetSimulationState() != admittedState)
+    for (size_t index = dispatch ? dispatch->cursor : 0; index < components->size(); ++index) {
+        if (SceneManager::Instance().GetSimulationState() != admittedState || !manager.CanContinueRuntimeFrame())
             return;
         if (scene && scene->ResolveGameObject(owner) != this)
             return;
         const ObjectHandle handle = (*components)[index];
-        if (fixed)
-            m_fixedDispatchCursor = index + 1;
+        if (dispatch)
+            dispatch->cursor = index + 1;
         Component *component = resolve(handle);
         if (!component || !component->IsEnabled())
             continue;
@@ -1431,7 +1434,7 @@ void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(floa
                 continue;
             if (!component->HasAwake() && component->WantsEditModeLifecycle())
                 component->CallAwake();
-            if (SceneManager::Instance().GetSimulationState() != admittedState)
+            if (SceneManager::Instance().GetSimulationState() != admittedState || !manager.CanContinueRuntimeFrame())
                 return;
             component = resolve(handle);
             if (!component || !component->HasAwake())

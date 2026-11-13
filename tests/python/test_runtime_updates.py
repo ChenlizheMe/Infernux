@@ -68,7 +68,15 @@ def test_native_phases_supply_scaled_and_independent_time(engine, scene, live_cl
     updates(lambda dt: observed.append(("independent", dt)), unscaled=True)
     updates(lambda dt: observed.append(("late", dt)), phase="late_update")
     Time.time_scale = scale
-    engine.tick(0.04)
+    # This case checks phase/time semantics, not budget-induced continuation.
+    # Give the measured logical frame enough Host time for its cold callbacks.
+    work = engine.frame_work
+    previous_budget = work.owner_ns, work.foreground_reserve_ns
+    work.configure(100_000_000, 0)
+    try:
+        engine.tick(0.04)
+    finally:
+        work.configure(*previous_budget)
     assert [name for name, _ in observed] == ["fixed"] * fixed_steps + ["component", "update", "independent", "late"]
     assert [dt for name, dt in observed if name == "fixed"] == pytest.approx([0.02 / scale] * fixed_steps if scale else [])
     assert [dt for _, dt in observed[-4:]] == pytest.approx([0.04 * scale, 0.04 * scale, 0.04, 0.04 * scale])

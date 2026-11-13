@@ -98,6 +98,12 @@ class _InputMeta(type):
     """Metaclass that enables ``Input.mouse_position`` (no parentheses)."""
 
     @property
+    def _sample_identity(cls):
+        native = _NativeInputManager.instance()
+        return (int(native._read_world_id), int(native.frame_index), int(native._read_revision),
+                int(cls._automation_game_input_depth), float(cls.mouse_sensitivity))
+
+    @property
     def frame_index(cls) -> int:
         """Monotonic identity of the native input frame."""
         return int(_NativeInputManager.instance().frame_index)
@@ -118,13 +124,13 @@ class _InputMeta(type):
         """
         mgr = _NativeInputManager.instance()
         mouse = mgr.get_game_mouse_frame_state(0)
-        vx, vy = cls._game_viewport_origin
+        vx, vy = _NativeInputManager.instance()._sampled_game_viewport_origin
         return (mouse[0] - vx, mouse[1] - vy)
 
     @property
     def game_viewport_size(cls) -> Tuple[float, float]:
         """Current Game View size in pixels as ``(width, height)``."""
-        return cls._game_viewport_size
+        return tuple(_NativeInputManager.instance()._sampled_game_viewport_size)
 
     @property
     def mouse_scroll_delta(cls) -> Tuple[float, float]:
@@ -360,7 +366,9 @@ class Input(metaclass=_InputMeta):
         When *focused* is ``False`` every query returns its "idle" value
         (``False`` for booleans, ``0.0`` for floats, ``""`` for strings).
         """
-        Input._game_focused = focused
+        if _NativeInputManager.instance()._read_world_id == 0:
+            Input._game_focused = bool(focused)
+        _NativeInputManager.instance()._set_game_focused(bool(focused))
 
     @staticmethod
     def set_game_viewport_origin(x: float, y: float) -> None:
@@ -370,22 +378,27 @@ class Input(metaclass=_InputMeta):
         ``Input.game_mouse_position`` can convert absolute mouse
         coordinates to viewport-relative ones.
         """
-        Input._game_viewport_origin = (x, y)
+        if _NativeInputManager.instance()._read_world_id == 0:
+            Input._game_viewport_origin = (x, y)
+        _NativeInputManager.instance()._set_game_viewport_origin(float(x), float(y))
 
     @staticmethod
     def set_game_viewport_size(width: float, height: float) -> None:
         """Store the current Game View size in pixels."""
-        Input._game_viewport_size = (max(0.0, float(width)), max(0.0, float(height)))
+        size = (max(0.0, float(width)), max(0.0, float(height)))
+        if _NativeInputManager.instance()._read_world_id == 0:
+            Input._game_viewport_size = size
+        _NativeInputManager.instance()._set_game_viewport_size(*size)
 
     @staticmethod
     def is_game_focused() -> bool:
         """Return whether the Game View is currently focused."""
-        return Input._game_focused
+        return bool(_NativeInputManager.instance()._sampled_game_focused)
 
     @staticmethod
     def _accepts_game_input() -> bool:
         return (
-            Input._game_focused
+            bool(_NativeInputManager.instance()._sampled_game_focused)
             or Input._automation_game_input_depth > 0
             or bool(_NativeInputManager.instance().has_synthetic_gameplay_input)
         )
@@ -495,7 +508,7 @@ class Input(metaclass=_InputMeta):
     def get_game_mouse_frame_state(button: int = 0):
         """Return ``(game_x, game_y, scroll_x, scroll_y, held, down, up)`` for one button."""
         abs_x, abs_y, scroll_x, scroll_y, held, down, up = Input.get_mouse_frame_state(button)
-        vx, vy = Input._game_viewport_origin
+        vx, vy = _NativeInputManager.instance()._sampled_game_viewport_origin
         return (abs_x - vx, abs_y - vy, scroll_x, scroll_y, held, down, up)
 
     # ------------------------------------------------------------------

@@ -6,16 +6,18 @@
 #include <function/scene/SceneManager.h>
 #include <function/scene/SphereCollider.h>
 #include <function/scene/physics/PhysicsWorld.h>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 
-inline void TestCompoundColliderPublication()
+inline void TestCompoundColliderPublication(const std::function<void()> &initializePhysics,
+                                            const std::function<void()> &shutdownPhysics)
 {
     using namespace infernux;
     auto &world = PhysicsWorld::Instance();
     auto &manager = SceneManager::Instance();
     JobSystem::Initialize(2);
-    world.Initialize();
+    initializePhysics();
     Scene *scene = manager.CreateScene("Compound publication native stress");
     const auto expect = [&](float x, bool triggers, Collider *expected) {
         manager.SyncTransforms();
@@ -73,7 +75,7 @@ inline void TestCompoundColliderPublication()
             throw std::runtime_error("compound teardown left an allocated physics body");
     }
     manager.UnloadAllScenes();
-    world.Shutdown();
+    shutdownPhysics();
     JobSystem::Shutdown();
     std::cout << "COMPOUND_PUBLICATION cycles=" << cycles << " identities=sensor+solid teardown=passed\n";
 }

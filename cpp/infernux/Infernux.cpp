@@ -1014,24 +1014,8 @@ void Infernux::TickFrame(float deltaTime)
     auto &sceneManager = SceneManager::Instance();
     BeginRuntimeFrame(deltaTime);
     const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(deltaTime);
-    TransformECSStore::Instance().BeginFrameCache();
-    sceneManager.Update(sceneDeltaTime);
-    sceneManager.LateUpdate(sceneDeltaTime);
-    // Mirror the graphical DrawFrame simulation segment exactly (see
-    // InxRenderer::DrawFrame). Headless previously skipped the world-matrix
-    // sync and the FinalTransformResolve/AnimationTimeline barriers, so
-    // transform reads between frames and Python systems registered on those
-    // barriers observed a different world than the graphical runtime.
-    // Graphics-only barriers (RenderExtraction, RenderGraph,
-    // SnapshotPublication) stay renderer-owned by design.
-    if (TransformECSStore::Instance().EndFrameCache())
-        sceneManager.PublishPhysicsTransformsToRenderer();
-    sceneManager.PublishAuthoredTransformsToPhysics();
-    if (!sceneManager.HasPendingFixedStep()) {
-        sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::FinalTransformResolve);
-        sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::AnimationTimeline);
-    }
-    sceneManager.EndFrame();
+    sceneManager.ServiceRuntimeFrames(m_frameWork, sceneDeltaTime);
+    sceneManager.FinishStepPresentation(true);
     FinishFrame({true});
 }
 
@@ -1077,6 +1061,7 @@ void Infernux::SetRuntimeFrameCallbacks(std::function<void(float)> beforeWork, s
 void Infernux::BeginRuntimeFrame(float deltaTime)
 {
     m_frameWork.BeginOpportunity();
+    SceneManager::Instance().BindRuntimeFrameWork(m_frameWork);
     PollGpuCompletions();
     if (m_textureWorkSource)
         m_frameWork.Wake(m_textureWorkSource);

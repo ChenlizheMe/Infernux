@@ -19,7 +19,7 @@ import time
 from typing import Callable, Dict, List, Optional
 
 from infernux.debug import Debug
-from infernux.lib import InxGUIRenderable, InxGUIContext
+from infernux.lib import InxGUIRenderable, InxGUIContext, InputManager
 from infernux.input import Input, TouchPhase
 from infernux.engine.ui.viewport_utils import capture_viewport_info
 from infernux.engine.build_settings import BUILD_SETTINGS_DEFAULTS, normalize_render_output
@@ -124,6 +124,9 @@ class PlayerGUI(InxGUIRenderable):
                  render_output: Optional[dict] = None):
         super().__init__()
         self._engine = engine
+        from weakref import ref
+        engine._runtime_input_view = ref(self)
+        engine._track_runtime_input_view(self)
         self._last_w = 0
         self._last_h = 0
         self._render_scale = _player_render_scale()
@@ -328,16 +331,36 @@ class PlayerGUI(InxGUIRenderable):
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
 
-        # The standalone Player owns the entire window. Touchscreen contacts
-        # do not define an ImGui mouse-hover state, so UI dispatch must not be
-        # gated by the desktop hover bit.
-        mouse_frame = Input.get_game_mouse_frame_state(0)
-        mouse_frame = (
-            mouse_frame[0] * target_w / display_w, mouse_frame[1] * target_h / display_h,
-            *mouse_frame[2:],
-        )
-        scene_hit = self._process_ui_events(target_w, target_h, mouse_frame=mouse_frame)
-        self._process_mouse_events(target_w, target_h, scene_hit=scene_hit, mouse_frame=mouse_frame)
+        InputManager.instance()._set_game_view_output(float(target_w), float(target_h), self._touch_viewport)
+
+    def process_runtime_input(self):
+        """Dispatch gameplay mouse/touch only in the admitted World Input phase."""
+        from infernux.engine.runtime_input_state import world_pointer_state
+        factories = {
+            "_ui_event_processor": UIEventProcessor,
+            "_mouse_event_dispatcher": MouseEventDispatcher,
+            "_input_scene_token": lambda: None,
+            "_has_shared_scene_query": lambda: False,
+            "_touch_scene_frame": lambda: None,
+            "_touch_scene_hit": lambda: None,
+            "_touch_scene_query_shared": lambda: False,
+            "_touch_viewport": lambda: (0.0, 0.0, 1.0, 1.0),
+            "_ui_input_frame": lambda: -1,
+        }
+        with world_pointer_state(self, factories):
+            if self._ui_input_frame == Input.frame_index:
+                return
+            self._ui_input_frame = Input.frame_index
+            native = InputManager.instance()
+            target_w, target_h = native._sampled_game_render_size
+            display_w, display_h = Input.game_viewport_size
+            if min(target_w, target_h, display_w, display_h) <= 0:
+                return
+            self._touch_viewport = tuple(native._sampled_touch_viewport)
+            frame = Input.get_game_mouse_frame_state(0)
+            mouse_frame = (frame[0] * target_w / display_w, frame[1] * target_h / display_h, *frame[2:])
+            scene_hit = self._process_ui_events(int(target_w), int(target_h), mouse_frame=mouse_frame)
+            self._process_mouse_events(int(target_w), int(target_h), scene_hit=scene_hit, mouse_frame=mouse_frame)
 
     def pointer_debug_state(self) -> dict:
         """Return the last runtime UI pointer transition for Player diagnostics."""

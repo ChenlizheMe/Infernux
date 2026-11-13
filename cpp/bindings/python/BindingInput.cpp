@@ -22,6 +22,8 @@ namespace infernux
 
 void RegisterInputBindings(py::module_ &m)
 {
+    py::class_<InputFrameReadState, std::shared_ptr<InputFrameReadState>>(m, "_InputFrameReadOwner")
+        .def_readonly("retired", &InputFrameReadState::retired);
     py::class_<TouchState>(m, "TouchState", "Immutable snapshot of one touch contact for the current frame")
         .def_readonly("touch_id", &TouchState::touchId)
         .def_readonly("finger_id", &TouchState::fingerId)
@@ -84,6 +86,18 @@ void RegisterInputBindings(py::module_ &m)
                     "Get the singleton InputManager instance")
         .def_property_readonly("frame_index", &InputManager::GetFrameIndex,
                                "Monotonic input-frame identity for action sampling")
+        .def_property_readonly("_read_world_id", [](const InputManager &) { return InputReadScope::WorldId(); })
+        .def_property_readonly("_read_owner", &InputManager::RetainWorldInputReadState)
+        .def_property_readonly("_read_revision", &InputManager::GetInputReadRevision)
+        .def_property_readonly("_sampled_game_focused", &InputManager::GetGameplayFocused)
+        .def_property_readonly("_sampled_game_viewport_origin", &InputManager::GetGameplayViewportOrigin)
+        .def_property_readonly("_sampled_game_viewport_size", &InputManager::GetGameplayViewportSize)
+        .def("_set_game_focused", &InputManager::SetGameplayFocused)
+        .def("_set_game_viewport_origin", &InputManager::SetGameplayViewportOrigin)
+        .def("_set_game_viewport_size", &InputManager::SetGameplayViewportSize)
+        .def("_set_game_view_output", &InputManager::SetGameplayViewOutput)
+        .def_property_readonly("_sampled_game_render_size", &InputManager::GetGameplayRenderSize)
+        .def_property_readonly("_sampled_touch_viewport", &InputManager::GetGameplayTouchViewport)
 
         // ---- Keyboard ----
         .def("get_key", &InputManager::GetKey, py::arg("scancode"), "True while the key (by SDL scancode) is held down")

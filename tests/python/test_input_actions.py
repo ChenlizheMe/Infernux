@@ -15,7 +15,15 @@ from infernux.input import (
 )
 
 
-class _FakeInput:
+class _FakeInputMeta(type):
+    @property
+    def _sample_identity(cls):
+        return (cls.world_id, cls.frame_index, cls.read_revision)
+
+
+class _FakeInput(metaclass=_FakeInputMeta):
+    world_id = 0
+    read_revision = 0
     frame_index = 1
     held: set[str | int] = set()
     down: set[str | int] = set()
@@ -41,6 +49,8 @@ class _FakeInput:
 
 def _reset_fake(monkeypatch):
     _FakeInput.frame_index = 1
+    _FakeInput.world_id = 0
+    _FakeInput.read_revision = 0
     _FakeInput.held = set()
     _FakeInput.down = set()
     _FakeInput.up = set()
@@ -162,3 +172,53 @@ def test_pointer_look_and_map_disable(monkeypatch):
     assert actions["Look"].read_value() == (0.0, 0.0)
     actions.enable()
     assert actions["Look"].read_value() == (0.25, -0.5)
+
+
+def test_virtual_writes_stay_live_within_one_external_sample(monkeypatch):
+    _reset_fake(monkeypatch)
+    _FakeInput.world_id = 7
+    action = InputAction("Fire")
+    assert action.read_value() == 0.0
+    action.set_virtual_value("controller", 1.0)
+    assert action.read_value() == 1.0
+    assert action.was_pressed_this_frame
+    action.set_virtual_value("controller", 0.0)
+    assert action.read_value() == 0.0
+    assert action.was_released_this_frame
+    assert _FakeInput.frame_index == 1
+
+
+def test_same_host_world_and_mutable_read_revision_invalidate_action_cache(monkeypatch):
+    _reset_fake(monkeypatch)
+    action = InputAction("Fire").bind_key(KeyCode.SPACE)
+    _FakeInput.world_id = 7
+    _FakeInput.held = _FakeInput.down = {KeyCode.SPACE}
+    assert action.read_value() == 1.0
+    # Owner reset_input_axes changed this World's reads, not its external sample.
+    _FakeInput.held = _FakeInput.down = set()
+    _FakeInput.read_revision += 1
+    assert action.read_value() == 0.0
+    # Another World can consume the same Host independently.
+    _FakeInput.world_id = 8
+    _FakeInput.read_revision = 0
+    _FakeInput.held = _FakeInput.down = {KeyCode.SPACE}
+    assert action.read_value() == 1.0
+    assert action.was_pressed_this_frame
+
+
+def test_virtual_pressed_edge_expires_on_distinct_logical_input_identity(monkeypatch):
+    _reset_fake(monkeypatch)
+    _FakeInput.world_id = 7
+    _FakeInput.frame_index = 101
+    action = InputAction("Fire")
+    action.set_virtual_value("controller", 1.0)
+    assert action.was_pressed_this_frame
+    # BeginWorldFrameInput assigns a fresh identity even for the same external
+    # source/headless Host stamp. Virtual held state stays ordinary mutable.
+    _FakeInput.frame_index = 102
+    assert action.is_pressed
+    assert not action.was_pressed_this_frame
+    action.set_virtual_value("controller", 0.0)
+    assert action.was_released_this_frame
+    _FakeInput.frame_index = 103
+    assert not action.was_released_this_frame

@@ -435,6 +435,8 @@ void Scene::RetireRootObjects()
     m_updateObjects.clear();
     m_fixedUpdateObjects.clear();
     m_lateUpdateObjects.clear();
+    m_updateDispatchObjects.clear();
+    m_lateDispatchObjects.clear();
     retiring.clear();
     m_objectsById.clear();
     m_pendingDestroy.clear();
@@ -912,7 +914,8 @@ void Scene::Start()
     const auto interrupted = [&] {
         if (SceneManager::Instance().GetSimulationState() == admittedState)
             return false;
-        if (SceneManager::Instance().GetSimulationEpoch() == std::get<0>(admittedState))
+        if (SceneManager::Instance().GetSimulationEpoch() == std::get<0>(admittedState) &&
+            std::get<3>(SceneManager::Instance().GetSimulationState()) == std::get<3>(admittedState))
             for (const auto &root : m_rootObjects)
                 QueueStartObject(root.get());
         return true;
@@ -1029,32 +1032,29 @@ void Scene::Update(float deltaTime)
     const WorldExecutionScope worldScope(m_runtimeWorld);
     if (!m_isPlaying)
         return;
-    const auto admittedState = SceneManager::Instance().GetSimulationState();
-
+    auto &manager = SceneManager::Instance();
+    const auto admittedState = manager.GetSimulationState();
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
-
-    // Keep one GIL ownership interval for the ordered phase. PyComponentProxy
-    // still owns the boundary guard, so direct native lifecycle calls remain
-    // safe, but the common path no longer transitions the interpreter lock
-    // once per component.
     PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
-
-    // Flush deferred Start() calls for components that were added/enabled
-    // during previous callbacks.
     ProcessPendingStarts();
-    if (SceneManager::Instance().GetSimulationState() != admittedState)
+    if (manager.GetSimulationState() != admittedState)
         return;
-
     RebuildRuntimeLifecycleObjectCaches();
-    const size_t receiverCount = m_updateObjects.size();
-    for (size_t i = 0; i < receiverCount && SceneManager::Instance().GetSimulationState() == admittedState &&
-                       i < m_updateObjects.size();
-         ++i) {
-        if (!m_isPlaying || SceneManager::Instance().GetSimulationState() != admittedState)
+    const auto frame = std::pair{manager.GetSimulationEpoch(), manager.GetFrameTime().frameCount};
+    if (frame != m_updateDispatchFrame) {
+        m_updateDispatchFrame = frame;
+        m_updateDispatchObjects = m_updateObjects;
+        m_updateDispatchCursor = 0;
+    }
+    while (m_updateDispatchCursor < m_updateDispatchObjects.size()) {
+        if (!m_isPlaying || manager.GetSimulationState() != admittedState || !manager.CanContinueRuntimeFrame())
             return;
-        GameObject *object = ResolveGameObject(m_updateObjects[i]);
+        GameObject *object = ResolveGameObject(m_updateDispatchObjects[m_updateDispatchCursor]);
         if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
             object->Update(deltaTime);
+        if (manager.GetSimulationState() != admittedState || !manager.CanContinueRuntimeFrame())
+            return;
+        ++m_updateDispatchCursor;
     }
 }
 
@@ -1078,12 +1078,13 @@ void Scene::FixedUpdate(float fixedDeltaTime)
         m_fixedDispatchCursor = 0;
     }
     while (m_fixedDispatchCursor < m_fixedDispatchObjects.size()) {
-        if (!m_isPlaying || SceneManager::Instance().GetSimulationState() != admittedState)
+        if (!m_isPlaying || SceneManager::Instance().GetSimulationState() != admittedState ||
+            !manager.CanContinueRuntimeFrame())
             return;
         GameObject *object = ResolveGameObject(m_fixedDispatchObjects[m_fixedDispatchCursor]);
         if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
             object->FixedUpdate(fixedDeltaTime);
-        if (SceneManager::Instance().GetSimulationState() != admittedState)
+        if (SceneManager::Instance().GetSimulationState() != admittedState || !manager.CanContinueRuntimeFrame())
             return;
         ++m_fixedDispatchCursor;
     }
@@ -1150,22 +1151,26 @@ void Scene::LateUpdate(float deltaTime)
     const WorldExecutionScope worldScope(m_runtimeWorld);
     if (!m_isPlaying)
         return;
-    const auto admittedState = SceneManager::Instance().GetSimulationState();
-
+    auto &manager = SceneManager::Instance();
+    const auto admittedState = manager.GetSimulationState();
     TransformECSStore::Instance().SyncSceneWorldMatrices(this);
-
     PyComponentProxy::PythonLifecyclePhaseScope pythonPhase;
-
     RebuildRuntimeLifecycleObjectCaches();
-    const size_t receiverCount = m_lateUpdateObjects.size();
-    for (size_t i = 0; i < receiverCount && SceneManager::Instance().GetSimulationState() == admittedState &&
-                       i < m_lateUpdateObjects.size();
-         ++i) {
-        if (!m_isPlaying || SceneManager::Instance().GetSimulationState() != admittedState)
+    const auto frame = std::pair{manager.GetSimulationEpoch(), manager.GetFrameTime().frameCount};
+    if (frame != m_lateDispatchFrame) {
+        m_lateDispatchFrame = frame;
+        m_lateDispatchObjects = m_lateUpdateObjects;
+        m_lateDispatchCursor = 0;
+    }
+    while (m_lateDispatchCursor < m_lateDispatchObjects.size()) {
+        if (!m_isPlaying || manager.GetSimulationState() != admittedState || !manager.CanContinueRuntimeFrame())
             return;
-        GameObject *object = ResolveGameObject(m_lateUpdateObjects[i]);
+        GameObject *object = ResolveGameObject(m_lateDispatchObjects[m_lateDispatchCursor]);
         if (object && object->IsActiveInHierarchy() && !IsPendingDestroy(object))
             object->LateUpdate(deltaTime);
+        if (manager.GetSimulationState() != admittedState || !manager.CanContinueRuntimeFrame())
+            return;
+        ++m_lateDispatchCursor;
     }
 }
 
@@ -1525,9 +1530,11 @@ void Scene::ProcessPendingStarts()
     });
 
     const auto interrupted = [&](size_t cursor) {
-        if (SceneManager::Instance().GetSimulationState() == admittedState)
+        if (SceneManager::Instance().GetSimulationState() == admittedState &&
+            SceneManager::Instance().CanContinueRuntimeFrame())
             return false;
-        if (SceneManager::Instance().GetSimulationEpoch() == std::get<0>(admittedState))
+        if (SceneManager::Instance().GetSimulationEpoch() == std::get<0>(admittedState) &&
+            std::get<3>(SceneManager::Instance().GetSimulationState()) == std::get<3>(admittedState))
             for (; cursor < indices.size(); ++cursor)
                 QueueComponentStart(Component::FindByComponentId(pending[indices[cursor]]));
         return true;
@@ -1556,6 +1563,8 @@ void Scene::ProcessPendingStarts()
                 component->CallOnDisable();
             continue;
         }
+        // Awake and its synchronous OnEnable form one activation operation.
+        // Check the shared allowance before starting the next lifecycle operation.
         component->CallAwake();
         if (interrupted(cursor))
             return;

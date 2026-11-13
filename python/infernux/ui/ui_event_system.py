@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from infernux.engine.runtime_dispatch import (
@@ -20,6 +23,43 @@ _DRAG_THRESHOLD = 5.0
 _DOUBLE_CLICK_TIME = 0.3
 _MOUSE_POINTER_ID = -1
 _TERMINAL_CALLBACKS = frozenset({"on_pointer_up", "on_end_drag", "on_pointer_exit"})
+
+
+_logical_ui_callbacks = ContextVar("infernux_logical_ui_callbacks", default=None)
+
+
+@contextmanager
+def logical_ui_callback_batch():
+    """Finish gameplay UI after traversal, before leaving its logical Input phase."""
+    from infernux.lib import InputManager
+    native = InputManager.instance()
+    identity = (int(native._read_world_id), int(native.frame_index))
+    if not identity[0]:
+        raise RuntimeError("Logical UI dispatch requires an admitted World input sample")
+    active = _logical_ui_callbacks.get()
+    if active is not None:
+        if active[0] != identity:
+            raise RuntimeError("Nested logical UI dispatch cannot replace its World/sample")
+        yield
+        return
+    callbacks = deque()
+    owner = native._read_owner
+    token = _logical_ui_callbacks.set((identity, callbacks))
+    try:
+        yield
+        # Pointer/view traversals have returned, while world_pointer_state is
+        # still installed. Callbacks may destroy/reparent, and may queue cancel.
+        while callbacks:
+            if owner.retired:
+                callbacks.clear()
+                break
+            if identity != (int(native._read_world_id), int(native.frame_index)):
+                raise RuntimeError("Logical UI callback escaped its World input sample")
+            callback = callbacks.popleft()
+            callback()
+    finally:
+        callbacks.clear()
+        _logical_ui_callbacks.reset(token)
 
 
 def _accepts_pointer_input(target, surface) -> bool:
@@ -497,13 +537,11 @@ class UIEventProcessor:
         return dict(self._last_pointer_debug)
 
     def _dispatch_pointer_callback(self, target, method_name, event, epoch) -> None:
-        """Queue one callback outside the native GUI draw traversal.
+        """Queue outside traversal in the current owner/sample boundary.
 
-        Pointer callbacks are allowed to replace scenes and destroy UI objects.
-        Running them synchronously from ``PyGUIRenderable::OnRender`` lets that
-        mutation invalidate the C++ renderable traversal on Android and other
-        backends.  Resolve the runtime method again at the owner safe point so
-        a scene retired before the drain cannot call stale Python objects.
+        World Input batches drain after their traversal and before Fixed. GUI
+        and plugin callers retain the existing Host post-draw queue. A pointer
+        callback never mutates a Canvas traversal that is still running.
         """
         if getattr(target, "_is_destroyed", False):
             return
@@ -556,7 +594,9 @@ class UIEventProcessor:
                     })
                     return
             try:
-                callback(event)
+                from infernux.execution import component_execution
+                with component_execution(target):
+                    callback(event)
             except BaseException as exc:
                 self._last_pointer_debug.update({
                     "last_callback": method_name,
@@ -577,7 +617,11 @@ class UIEventProcessor:
                 "executed_callback_count": self._executed_callback_count,
             })
 
-        enqueue(invoke_later)
+        logical = _logical_ui_callbacks.get()
+        if logical is None:
+            enqueue(invoke_later)
+        else:
+            logical[1].append(invoke_later)
 
     @staticmethod
     def _make_event(

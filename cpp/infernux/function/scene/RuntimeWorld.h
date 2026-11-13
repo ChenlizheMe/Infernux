@@ -3,7 +3,10 @@
 #include <core/math/FrameTimeSmoothing.h>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
+#include <optional>
+#include <platform/input/InputManager.h>
 #include <unordered_set>
 #include <vector>
 
@@ -38,10 +41,48 @@ class RuntimeWorld final
         PostStep
     };
 
+    enum class FramePhase
+    {
+        Idle,
+        Input,
+        Fixed,
+        Update,
+        Late,
+        Ready,
+        Complete,
+        Publish
+    };
+
+    struct FrameAdmission
+    {
+        float unscaledDeltaTime = 0.0f;
+        float deltaTime = 0.0f;
+        InputFrameLease input;
+    };
+
+    struct FrameState
+    {
+        std::deque<FrameAdmission> pending;
+        InputFrameLease input;
+        FramePhase phase = FramePhase::Idle;
+        uint64_t generation = 0;
+        uint64_t fixedTarget = 0;
+        std::vector<uint64_t> phaseScenes;
+        size_t sceneCursor = 0;
+        bool updateStarted = false;
+        bool animationStarted = false;
+        bool lateStarted = false;
+        bool hadRuntimeLifecycleScope = false;
+        bool debitFixedAccumulator = false;
+        uint64_t stepTarget = 0;
+        InputFrameLease stepInput;
+    };
+
     struct SceneCollection
     {
         SceneCollection();
         ~SceneCollection();
+        void Clear();
 
         std::vector<std::unique_ptr<Scene>> loaded;
         std::unordered_set<Scene *> loadedSet;
@@ -105,6 +146,7 @@ class RuntimeWorld final
     const uint64_t id;
     SimulationState simulation;
     LifecycleState lifecycle;
+    FrameState frame;
     SceneCollection scenes;
 };
 
@@ -121,6 +163,7 @@ class WorldExecutionScope final
 
   private:
     RuntimeWorld *m_previous;
+    std::optional<InputReadScope> m_inputScope;
 };
 
 } // namespace infernux

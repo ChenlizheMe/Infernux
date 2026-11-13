@@ -760,6 +760,7 @@ class RuntimeExecutionScheduler:
         *,
         editor_only: bool = False,
         cursor=None,
+        execution_epoch=None,
     ) -> None:
         from infernux.compute import _record_commands
 
@@ -769,6 +770,7 @@ class RuntimeExecutionScheduler:
             scale = Time.time_scale
             unscaled_delta = delta_time / scale if scale > 0.0 else 0.0
         counters = self._counters
+        execution_epoch = frame.epoch if execution_epoch is None else execution_epoch
         tick_coroutines = (
             phase == "update" or phase == "fixed_update" or phase == "late_update"
         )
@@ -777,6 +779,9 @@ class RuntimeExecutionScheduler:
             cursor = [0, 0, 0, None] if cursor is None else cursor
             entries = frame.dispatch_plan[phase]
             while cursor[0] < len(entries):
+                from infernux.lib import SceneManager
+                if not SceneManager.instance()._can_continue_runtime_frame():
+                    return
                 component, invoke = entries[cursor[0]]
                 if simulation_state() != admitted_state:
                     break
@@ -793,24 +798,29 @@ class RuntimeExecutionScheduler:
                     cursor[1] = 1
                     if component._enabled:
                         try:
+                            if execution_epoch is not frame.epoch:
+                                descriptor = execution_epoch.require_descriptor(type(component))
+                                invoke = descriptor.phase_invokers[_RUNTIME_PHASE_NAMES.index(phase)]
                             invoke(component, delta_time)
                         except Exception as exc:
                             self._report_phase_error(component, exc, phase)
                 if simulation_state() != admitted_state:
+                    return
+                if not SceneManager.instance()._can_continue_runtime_frame():
                     return
                 if tick_coroutines and not component._is_destroyed and component._runtime_active_in_hierarchy:
                     scheduler = component.__dict__.get("_runtime_coroutine_scheduler")
                     if scheduler is not None and scheduler.count > 0:
                         try:
                             if phase == "update":
-                                scheduler.tick_update(delta_time, epoch=frame.epoch)
+                                scheduler.tick_update(delta_time, epoch=execution_epoch)
                             elif phase == "fixed_update":
                                 if cursor[3] is None:
                                     cursor[3] = []
-                                if not scheduler.tick_fixed_update(delta_time, epoch=frame.epoch, continuation=cursor[3]):
+                                if not scheduler.tick_fixed_update(delta_time, epoch=execution_epoch, continuation=cursor[3]):
                                     return
                             else:
-                                scheduler.tick_late_update(delta_time, epoch=frame.epoch)
+                                scheduler.tick_late_update(delta_time, epoch=execution_epoch)
                         except Exception as exc:
                             self._report_phase_error(component, exc, "coroutine." + phase)
                 cursor[0] += 1
@@ -818,6 +828,9 @@ class RuntimeExecutionScheduler:
                 cursor[3] = None
                 counters["phase_dispatches"] += 1
             while cursor[2] < len(callbacks) and simulation_state() == admitted_state:
+                from infernux.lib import SceneManager
+                if not SceneManager.instance()._can_continue_runtime_frame():
+                    return
                 registration = callbacks[cursor[2]]
                 cursor[2] += 1
                 _dispatch_updates((registration,), delta_time, unscaled_delta)
@@ -932,8 +945,16 @@ class RuntimeExecutionScheduler:
             with step_execution():
                 self._native_frame.execute_phase(phase, delta, cursor=cursor, dispatch_frame=source)
         else:
+            from infernux.lib import SceneManager
+            manager = SceneManager.instance()
+            key = int(manager.simulation_epoch), int(manager._frame_time.frame_count)
+            if getattr(self, '_logical_dispatch_key', None) != key:
+                self._logical_dispatch_key = key
+                self._logical_dispatch = {}
+            record = self._logical_dispatch.setdefault(phase, (self._native_frame, [0, 0, 0, None], float(delta_time)))
+            source, cursor, delta = record
             with step_execution():
-                self._native_frame.execute_phase(phase, float(delta_time))
+                self._native_frame.execute_phase(phase, delta, cursor=cursor, dispatch_frame=source)
         self._last_native_phase = (phase, float(delta_time))
         if phase == "fixed_update":
             self._counters["native_fixed_callbacks"] += 1
@@ -945,16 +966,22 @@ class RuntimeExecutionScheduler:
             'FIXED_SCRIPT': 'fixed_update',
             'PHYSICS_SIMULATION': 'physics_pre_step',
             'PHYSICS_POST_SCRIPT': 'physics_post_step',
+            'UPDATE_SCRIPT': 'update',
+            'ANIMATION_EVALUATION': 'animation_update',
+            'LATE_SCRIPT': 'late_update',
         }.get(barrier.name)
-        return phase is None or self.resume_native_fixed_phase(phase)
+        return phase is None or self._resume_native_phase(phase)
 
-    def resume_native_fixed_phase(self, phase):
+    def _resume_native_phase(self, phase):
         from infernux.lib import SceneManager
         manager = SceneManager.instance()
-        key = int(manager.simulation_epoch), int(manager.fixed_step_index)
-        if getattr(self, '_fixed_dispatch_key', None) != key:
+        fixed = phase in ('fixed_update', 'physics_pre_step', 'physics_post_step')
+        key = int(manager.simulation_epoch), int(manager.fixed_step_index if fixed else manager._frame_time.frame_count)
+        key_name = '_fixed_dispatch_key' if fixed else '_logical_dispatch_key'
+        if getattr(self, key_name, None) != key:
             return True
-        record = getattr(self, '_fixed_dispatch', {}).get(phase)
+        records = getattr(self, '_fixed_dispatch' if fixed else '_logical_dispatch', {})
+        record = records.get(phase)
         if record is None:
             return True
         source, cursor, delta = record
@@ -1022,6 +1049,8 @@ class RuntimeExecutionScheduler:
             frame.close()
         self._fixed_dispatch = {}
         self._fixed_dispatch_key = None
+        self._logical_dispatch = {}
+        self._logical_dispatch_key = None
         self._components.clear()
         self._component_tokens.clear()
         self._sync_native_work_availability(force=True)
@@ -1114,7 +1143,9 @@ class RuntimeExecutionFrame:
         # without taking the journal lock per write. The next barrier publishes
         # one coalesced revision for the whole phase.
         with self._scheduler.change_journal.transaction():
-            self._scheduler._execute_frame_phase(dispatch_frame or self, phase, delta_time, cursor=cursor)
+            self._scheduler._execute_frame_phase(
+                dispatch_frame or self, phase, delta_time, cursor=cursor, execution_epoch=self.epoch,
+            )
 
     def resolve_method(self, component: Any, name: str) -> Any:
         """Resolve a helper against this frame's captured dispatch epoch."""

@@ -561,9 +561,15 @@ class GameObject : public NativeLifetimeOwner
     std::unordered_set<Component *> m_preparedPythonComponents;
     mutable std::vector<Component *> m_executionOrderCache;
     mutable std::shared_ptr<const std::vector<ObjectHandle>> m_componentDispatchSnapshot;
-    std::pair<uint64_t, uint64_t> m_fixedDispatchStep{};
-    std::shared_ptr<const std::vector<ObjectHandle>> m_fixedDispatchSnapshot;
-    size_t m_fixedDispatchCursor = 0;
+    struct RuntimeDispatchState
+    {
+        std::pair<uint64_t, uint64_t> token{};
+        std::shared_ptr<const std::vector<ObjectHandle>> snapshot;
+        size_t cursor = 0;
+    };
+    RuntimeDispatchState m_fixedDispatch;
+    RuntimeDispatchState m_updateDispatch;
+    RuntimeDispatchState m_lateDispatch;
     mutable bool m_executionOrderCacheDirty = true;
 
     GameObject *m_parent = nullptr;

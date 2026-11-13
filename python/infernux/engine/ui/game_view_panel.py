@@ -92,7 +92,10 @@ class GameViewPanel(EditorPanel):
     def __init__(self, title: str = "Game", engine=None, play_mode_manager: Optional[PlayModeManager] = None):
         super().__init__(title, window_id="game_view")
         self._engine = engine
+        if engine is not None:
+            engine._track_runtime_input_view(self)
         self._play_mode_manager = play_mode_manager
+
         if self._engine and self._play_mode_manager is None:
             self._play_mode_manager = self._engine.get_play_mode_manager()
         self.__is_playing = False
@@ -463,6 +466,12 @@ class GameViewPanel(EditorPanel):
         self._reset_pointer_input()
 
     def _reset_pointer_input(self):
+        if _NativeInputManager.instance()._read_world_id == 0:
+            self._ui_event_processor.discard()
+            self._mouse_event_dispatcher.discard()
+            if self._engine is not None:
+                self._engine._defer_runtime_input_cancel(self)
+            return
         # Stop/reload can retire the captured graph before this panel's next
         # render. Discard that graph before cancellation calls authored hooks.
         self._synchronize_input_scene(_SM.instance().get_active_scene())
@@ -810,14 +819,9 @@ class GameViewPanel(EditorPanel):
         if not is_playing:
             Input.set_cursor_locked(False)
 
-        if should_process_game_ui_events(
-            is_playing=can_capture,
-            panel_focused=panel_focused,
-            cursor_locked=cursor_locked,
-        ):
-            self._process_ui_events(target_w, target_h)
-        else:
-            self._reset_pointer_input()
+        # Host only publishes routing; the logical Input phase owns
+        # Canvas/OnMouse dispatch and capture cancellation for each World.
+        native_input._set_game_view_output(float(target_w), float(target_h), (0.0, 0.0, 1.0, 1.0))
 
     def _render_game_viewport(self, ctx, target_w, target_h, fit_scale):
         """Render the game texture, screen UI, and route input events."""
@@ -1053,20 +1057,38 @@ class GameViewPanel(EditorPanel):
     # UI event processing
     # ------------------------------------------------------------------
 
+    def cancel_runtime_input(self):
+        """Settle a Host view close/focus loss at this World's input boundary."""
+        from infernux.engine.runtime_input_state import world_pointer_state
+        factories = {
+            "_ui_event_processor": UIEventProcessor,
+            "_mouse_event_dispatcher": MouseEventDispatcher,
+            "_input_scene_token": lambda: None,
+            "_ui_input_frame": lambda: -1,
+            "_ui_pointer_position": lambda: None,
+            "_ui_input_time": lambda: None,
+        }
+        with world_pointer_state(self, factories):
+            self._reset_pointer_input()
+
     def process_runtime_input(self):
-        """Dispatch game pointer transitions without rebuilding editor panels."""
-        if not self._game_camera_was_enabled or not should_process_game_ui_events(
-            is_playing=self._is_playing() and not self._is_paused(),
-            panel_focused=ClosablePanel.get_active_view_id() == self.window_id,
-            cursor_locked=Input.is_cursor_locked(),
-        ):
-            return
-        frames = tuple(Input.get_game_mouse_frame_state(button) for button in range(3))
-        primary = frames[0]
-        changed = any(frame[5] or frame[6] for frame in frames) or any(primary[2:4])
-        dragging = any(frame[4] for frame in frames) and primary[:2] != self._ui_pointer_position
-        if changed or dragging:
-            self._process_ui_events(*self.render_target_size, mouse_frames=frames)
+        """Consume one World's admitted external input sample once."""
+        from infernux.engine.runtime_input_state import world_pointer_state
+        factories = {
+            "_ui_event_processor": UIEventProcessor,
+            "_mouse_event_dispatcher": MouseEventDispatcher,
+            "_input_scene_token": lambda: None,
+            "_ui_input_frame": lambda: -1,
+            "_ui_pointer_position": lambda: None,
+            "_ui_input_time": lambda: None,
+        }
+        with world_pointer_state(self, factories):
+            if not Input.is_game_focused():
+                self._reset_pointer_input()
+                return
+            target_w, target_h = _NativeInputManager.instance()._sampled_game_render_size
+            if target_w > 0 and target_h > 0:
+                self._process_ui_events(int(target_w), int(target_h))
 
     def _process_ui_events(self, game_w: int, game_h: int, *, mouse_frames=None):
         """Convert Input mouse state to per-canvas pointer events."""
@@ -1105,11 +1127,7 @@ class GameViewPanel(EditorPanel):
 
         camera = scene.effective_game_camera if scene is not None else None
         from infernux.engine.runtime_screen_ui import map_runtime_ui_pointer
-        route_scene_input = should_route_game_input(
-            is_playing=self._is_playing(),
-            panel_focused=ClosablePanel.get_active_view_id() == self.window_id,
-            cursor_locked=Input.is_cursor_locked(),
-        )
+        route_scene_input = Input.is_game_focused()
         dispatcher = self._mouse_event_dispatcher
         pick_scene = route_scene_input and dispatcher.needs_scene_hit()
         mapped_positions = map_runtime_ui_pointer(

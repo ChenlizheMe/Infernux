@@ -231,9 +231,10 @@ class InputAction:
 
     def _sample(self) -> _ActionSample:
         frame = Input.frame_index
-        if self._sample_frame == frame:
+        identity = Input._sample_identity
+        if self._sample_frame == identity:
             return self._sample_cache
-        self._sample_frame = frame
+        self._sample_frame = identity
         if not self.enabled:
             zero = _zero(self.action_type)
             self._sample_cache = _ActionSample(zero, zero, False, False)

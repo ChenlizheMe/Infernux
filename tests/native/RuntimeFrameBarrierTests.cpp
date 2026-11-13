@@ -1,9 +1,11 @@
+#include <Infernux.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
 #include <function/scene/Transform.h>
 #include <function/scene/TransformECSStore.h>
 #include <function/scene/physics/PhysicsECSStore.h>
+#include <function/scene/physics/PhysicsWorld.h>
 
 #include "BroadphaseQueuePublicationTests.h"
 #include "CompoundColliderPublicationTests.h"
@@ -11,6 +13,10 @@
 #include "TransformHierarchyPublicationTests.h"
 #include "TransformWorldBatchTests.h"
 #include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <vector>
 
 using infernux::GameObject;
@@ -19,6 +25,51 @@ using infernux::Scene;
 using infernux::SceneManager;
 using infernux::Transform;
 using infernux::TransformECSStore;
+
+namespace
+{
+// Physics services belong to the engine. Each publication run uses the public
+// headless startup/cleanup lifecycle, including the query-mask reinitializations.
+class PhysicsPublicationGpuFixture
+{
+  public:
+    PhysicsPublicationGpuFixture()
+    {
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        m_projectPath =
+            std::filesystem::temp_directory_path() / ("infernux-physics-publication-" + std::to_string(stamp));
+        if (!std::filesystem::create_directory(m_projectPath))
+            throw std::runtime_error("Could not create isolated physics publication project");
+    }
+
+    ~PhysicsPublicationGpuFixture()
+    {
+        ShutdownPhysics();
+        infernux::JobSystem::Shutdown();
+        std::error_code ignored;
+        std::filesystem::remove_all(m_projectPath, ignored);
+    }
+
+    void InitializePhysics()
+    {
+        m_engine = std::make_unique<infernux::Infernux>("", infernux::RuntimeMode::Headless);
+        m_engine->InitHeadless(infernux::FromFsPath(m_projectPath), "", {}, true);
+    }
+
+    void ShutdownPhysics()
+    {
+        if (!m_engine)
+            return;
+        m_engine->Exit();
+        m_engine->Cleanup();
+        m_engine.reset();
+    }
+
+  private:
+    std::filesystem::path m_projectPath;
+    std::unique_ptr<infernux::Infernux> m_engine;
+};
+} // namespace
 
 int main()
 {
@@ -56,12 +107,13 @@ int main()
     // in a scene with no script components, while engine barriers remain
     // authoritative and observable.
     manager.Update(0.0f);
-    manager.EmitRuntimeFrameBarrier(Barrier::RenderExtraction);
     manager.EndFrame();
+    manager.EmitRuntimeFrameBarrier(Barrier::RenderExtraction);
     assert(beginCount == 0);
     assert(editorUpdateCount == 0);
     assert(endCount == 0);
-    assert((observed == std::vector<Barrier>{Barrier::RenderExtraction, Barrier::PendingDestroy}));
+    assert((observed == std::vector<Barrier>{Barrier::FinalTransformResolve, Barrier::AnimationTimeline,
+                                             Barrier::PendingDestroy, Barrier::RenderExtraction}));
     observed.clear();
 
     manager.SetRuntimeLifecycleWorkAvailable(true);
@@ -73,31 +125,29 @@ int main()
     assert(editorUpdateCount == 1);
     assert(endCount == 0);
 
+    manager.EndFrame();
     manager.EmitRuntimeFrameBarrier(Barrier::RenderExtraction);
     manager.EmitRuntimeFrameBarrier(Barrier::RenderGraph);
     manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
-    manager.EndFrame();
-    assert((observed == std::vector<Barrier>{Barrier::RenderExtraction, Barrier::RenderGraph,
-                                             Barrier::SnapshotPublication, Barrier::PendingDestroy}));
+    assert((observed == std::vector<Barrier>{Barrier::FinalTransformResolve, Barrier::AnimationTimeline,
+                                             Barrier::PendingDestroy, Barrier::RenderExtraction, Barrier::RenderGraph,
+                                             Barrier::SnapshotPublication}));
     assert(endCount == 1);
 
-    // Exercise the real empty-scene production flow. Physics work is skipped,
-    // but its fixed-step boundaries remain observable and no extra transform
-    // synchronization is introduced merely to emit a barrier.
+    // Exercise the empty-scene simulation and publisher completion protocol.
+    // This data-only publisher accepts a complete F; it does not pretend to
+    // record a renderer graph or generate its separate Host notifications.
     observed.clear();
+    manager.SetRuntimeFramePublicationCallbacks([](infernux::RuntimeWorld &) { return true; }, {});
     manager.Play();
     assert(manager.GetRuntimeFrameCount() == 0);
     assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.0f);
     assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.25f);
     manager.Update(manager.GetFixedTimeStep());
-    assert(manager.GetRuntimeFrameCount() == 1);
+    assert(manager.GetRuntimeFrameCount() == 0);
     manager.LateUpdate(manager.GetFixedTimeStep());
-    manager.EmitRuntimeFrameBarrier(Barrier::FinalTransformResolve);
-    manager.EmitRuntimeFrameBarrier(Barrier::AnimationTimeline);
-    manager.EmitRuntimeFrameBarrier(Barrier::RenderExtraction);
-    manager.EmitRuntimeFrameBarrier(Barrier::RenderGraph);
-    manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
     manager.EndFrame();
+    assert(manager.GetRuntimeFrameCount() == 1);
     assert(fixedUpdateCount == 1);
     assert(updateCount == 1);
     assert(lateUpdateCount == 1);
@@ -109,10 +159,8 @@ int main()
                             Barrier::AnimationEvaluation,
                             Barrier::FinalTransformResolve,
                             Barrier::AnimationTimeline,
-                            Barrier::RenderExtraction,
-                            Barrier::RenderGraph,
-                            Barrier::SnapshotPublication,
                             Barrier::PendingDestroy,
+                            Barrier::SnapshotPublication,
                         }));
     assert(endCount == 2);
     manager.Stop();
@@ -169,6 +217,7 @@ int main()
     manager.Stop();
     manager.SetTimeScale(1.0f);
     manager.SetMaxFixedDeltaTime(1.0f / 3.0f);
+    manager.SetRuntimeFramePublicationCallbacks({}, {});
     observed.clear();
 
     // Frame-cache commits retain mutation origin. A physics-authored root pose
@@ -264,8 +313,11 @@ int main()
     manager.UnloadAllScenes();
     try {
         TestBroadphaseQueuePublication();
-        TestCompoundColliderPublication();
-        TestPhysicsQueryDefaultMask();
+        PhysicsPublicationGpuFixture physics;
+        const auto initializePhysics = [&] { physics.InitializePhysics(); };
+        const auto shutdownPhysics = [&] { physics.ShutdownPhysics(); };
+        TestCompoundColliderPublication(initializePhysics, shutdownPhysics);
+        TestPhysicsQueryDefaultMask(initializePhysics, shutdownPhysics);
     } catch (const std::exception &error) {
         std::cerr << "Physics publication test failed: " << error.what() << std::endl;
         return 1;

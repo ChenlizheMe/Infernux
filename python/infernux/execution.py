@@ -426,7 +426,8 @@ def close_component_execution(component):
 def simulation_state():
     from infernux.lib import SceneManager
     manager = SceneManager.instance()
-    return int(manager.simulation_epoch), bool(manager.is_playing()), bool(manager.is_paused())
+    return (int(manager.simulation_epoch), bool(manager.is_playing()), bool(manager.is_paused()),
+            int(manager._runtime_frame_generation))
 
 
 @contextmanager

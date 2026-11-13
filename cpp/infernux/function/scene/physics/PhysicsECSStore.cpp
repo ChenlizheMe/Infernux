@@ -86,6 +86,7 @@ void PhysicsECSStore::ReleaseActor(ActorHandle handle, Collider *collider)
 void PhysicsECSStore::RetireActor(ActorHandle handle)
 {
     auto &actor = m_actorPool.Get(handle);
+    m_pendingBodyCreationSet.erase(ActorHandleKey(handle));
     if (actor.bodyId != 0xFFFFFFFF) {
         const bool pendingAdd = CancelBroadphaseAdd(actor.bodyId);
         const bool pendingRemove = CancelBroadphaseRemove(actor.bodyId);

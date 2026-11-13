@@ -526,6 +526,12 @@ class Scene : public NativeLifetimeOwner
     std::pair<uint64_t, uint64_t> m_fixedDispatchStep{};
     std::vector<ObjectHandle> m_fixedDispatchObjects;
     size_t m_fixedDispatchCursor = 0;
+    std::pair<uint64_t, uint64_t> m_updateDispatchFrame{};
+    std::vector<ObjectHandle> m_updateDispatchObjects;
+    size_t m_updateDispatchCursor = 0;
+    std::pair<uint64_t, uint64_t> m_lateDispatchFrame{};
+    std::vector<ObjectHandle> m_lateDispatchObjects;
+    size_t m_lateDispatchCursor = 0;
     std::vector<ObjectHandle> m_lateUpdateObjects;
 
     // Explicit seeks/cuts only. The renderer consumes this monotonic revision

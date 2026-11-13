@@ -107,6 +107,7 @@ static int ExtendedCases(nlohmann::json &report)
         panel.SetSceneHeaderSnapshot("Projection primary", true, "Prefab");
         panel.SetSelectionSnapshot({b->GetID()}, b->GetID());
         InxGUIContext context;
+        context.resolveEditorIcon = [](const std::string &) { return uint64_t{0}; };
         const auto frame = [&] {
             ImGui::NewFrame();
             ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
@@ -344,6 +345,7 @@ static int ExtendedCases(nlohmann::json &report)
             p.rangeSelectId = [&](uint64_t) { called = true; };
             p.setOrderedIds = [&](const auto &ids) { order = ids; };
             InxGUIContext context;
+            context.resolveEditorIcon = [](const std::string &) { return uint64_t{0}; };
             ImGui::NewFrame();
             p.VisiblePreRender(&context);
             ImGui::EndFrame();
@@ -365,6 +367,7 @@ int main()
     int width, height;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     InxGUIContext context;
+    context.resolveEditorIcon = [](const std::string &) { return uint64_t{0}; };
     auto &manager = SceneManager::Instance();
     auto *scene = manager.CreateScene("Audit hierarchy range");
     manager.SetActiveScene(scene);

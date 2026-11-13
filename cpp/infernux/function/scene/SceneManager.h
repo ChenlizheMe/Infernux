@@ -25,6 +25,7 @@ namespace infernux
 class MeshRenderer;
 class SkinnedMeshRenderer;
 class SkeletonInstance;
+class FrameWorkOwner;
 // Forward declaration for Light registry
 class Light;
 
@@ -157,6 +158,16 @@ class SceneManager
     /// @brief Call every frame
     void Update(float deltaTime);
 
+    /// One Host admission, then all ready logical phases within the existing allowance.
+    void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime);
+    void BindRuntimeFrameWork(FrameWorkOwner &work) noexcept;
+    void SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
+                                             std::function<void(uint64_t)> retire);
+    void RecordHostFrame(float deltaTime);
+    [[nodiscard]] bool CanContinueRuntimeFrame() const noexcept;
+    void SetRuntimeInputCallback(std::function<void()> callback);
+    void FinishStepPresentation(bool completeStep) noexcept;
+
     /// Consume the one-frame timing boundary published by a scene replacement.
     /// The first frame of a newly committed scene receives zero delta so asset
     /// preparation and graph construction time cannot leak into gameplay,
@@ -214,9 +225,9 @@ class SceneManager
         return m_lastFrameProfile;
     }
 
-    /// Number of gameplay frames completed for the current active runtime
-    /// scene. The counter advances only when Update() actually runs the play
-    /// graph; editor, loading, and paused render frames do not affect it.
+    /// Completed logical gameplay frames for the current active runtime scene.
+    /// Advances after Update, LateUpdate, required consumers and complete
+    /// publication succeed; Host-only and pending opportunities do not count.
     [[nodiscard]] uint64_t GetRuntimeFrameCount() const noexcept
     {
         return CurrentWorld().simulation.runtimeFrameCount;
@@ -227,11 +238,11 @@ class SceneManager
     {
         return CurrentWorld().simulation.simulationEpoch;
     }
-    using SimulationState = std::tuple<uint64_t, bool, bool>;
+    using SimulationState = std::tuple<uint64_t, bool, bool, uint64_t>;
     [[nodiscard]] SimulationState GetSimulationState() const noexcept
     {
         return std::tuple{CurrentWorld().simulation.simulationEpoch, CurrentWorld().simulation.isPlaying,
-                          CurrentWorld().simulation.isPaused};
+                          CurrentWorld().simulation.isPaused, CurrentWorld().frame.generation};
     }
     /// Fixed bundles begun in this session, including empty-body and paused steps.
     [[nodiscard]] uint64_t GetFixedStepIndex() const noexcept
@@ -409,8 +420,8 @@ class SceneManager
     {
         // Initial Start precedes fixed-step admission. Starts after integration
         // and continuations of an admitted fixed step use its current identity.
-        return CurrentWorld().simulation.fixedStepIndex +
-               static_cast<uint64_t>(CurrentWorld().simulation.pausedStepPending && !HasPendingFixedStep());
+        return CurrentWorld().simulation.pausedStepPending ? CurrentWorld().frame.stepTarget
+                                                           : CurrentWorld().simulation.fixedStepIndex;
     }
 
     /// @brief Get the fixed physics timestep in seconds.
@@ -499,6 +510,8 @@ class SceneManager
         PendingDestroy,
         RenderSubmitted,
         RenderPresented,
+        UpdateScript,
+        LateScript,
     };
     using RuntimeFrameBarrierCallback = std::function<void(RuntimeFrameBarrier)>;
     using RuntimeResultConsumerCallback = std::function<bool(RuntimeFrameBarrier)>;
@@ -617,6 +630,16 @@ class SceneManager
     void AdvanceFrameTime(float unscaledDeltaTime, float scaledDeltaTime);
     void ResetFrameTime();
     void ResetFrameDelta();
+    void ContinueRuntimeUpdate();
+    void ContinueRuntimeLateUpdate();
+    void AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission, bool stepping);
+    void BeginRuntimePhaseScenes();
+    void BeginRuntimeLifecycleFrame(bool useScheduler);
+    void CloseRuntimeFrame(bool completed);
+    void CompleteRuntimeFrame();
+    bool EndRuntimeFrame(bool completeStep);
+    void FinalizeRuntimeTransforms(bool completed);
+    bool TryPublishRuntimeFrame();
 
     /// Walk all colliders in the active scene and sync transforms to Jolt.
     /// Uses a global transform serial to skip entirely when no transforms changed.
@@ -647,6 +670,10 @@ class SceneManager
     void UpdateRuntimeScenePlayingState(bool playing);
 
     RuntimeWorld m_defaultWorld;
+    FrameWorkOwner *m_runtimeFrameWork = nullptr;
+    std::function<void()> m_runtimeInput;
+    std::function<bool(RuntimeWorld &)> m_runtimeFramePublication;
+    std::function<void(uint64_t)> m_runtimeFrameRetirement;
     std::vector<std::unique_ptr<Scene>> m_previewScenes;
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
