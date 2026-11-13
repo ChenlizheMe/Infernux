@@ -2,7 +2,6 @@
 import argparse
 import json
 from pathlib import Path
-import re
 import sys
 import tempfile
 
@@ -10,40 +9,52 @@ import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.engine.path_utils import resolved_path
-from infernux.lib import ConsolePanel, InxMaterial, SceneManager, Vector3
+from infernux.lib import ConsolePanel, SceneManager, Vector3
 from infernux.renderstack.resource_bus import ResourceBus
 
 ROOT=Path(resolved_path(__file__)).parents[2]
 sys.path.append(str(ROOT/'tests/gpu'))
 from skinned_mesh_gpu_fixture import write_skinned_quad
 
-SURFACE='''#version 450
-ShaderInfo { Name "Tutorial Motion Pattern" ShadingModel Unlit Cull Off }
-void surface(out SurfaceData s) {
-    s=InitSurfaceData();
-    float stripe=step(0.5,fract(v_TexCoord.x*12.0));
-    s.albedo=mix(vec3(0.05,0.2,0.5),vec3(1.0,0.7,0.1),stripe);
-}
-'''
-COMPARE='''#version 450
-ShaderInfo {
-    Name "Tutorial Motion Blur Comparison"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources { Texture2D originalTex Texture2D blurredTex Texture2D motionTex }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    ivec2 p=ivec2(gl_FragCoord.xy);
-    vec4 original=texelFetch(originalTex,p,0);
-    vec4 blurred=texelFetch(blurredTex,p,0);
-    vec2 motion=texelFetch(motionTex,p,0).xy;
-    bool changed=any(greaterThan(abs(original.rgb-blurred.rgb),vec3(0.005)));
-    bool moving=length(motion)>0.00001;
-    outColor=vec4(changed?1.0:0.0,moving?1.0:0.0,original.a>0.9?1.0:0.0,1.0);
-}
-'''
+VERTEX = """import infernux.shader as shader
+
+class Wave(shader.vert):
+    shader_id = "tests/vertex/motion_wave"
+
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os.y += shader.sin(vertex.position_os.x * 4.0) * 0.1
+        return vertex
+"""
+SURFACE = """import infernux.shader as shader
+
+class Pattern(shader.surface):
+    shader_id = "tests/motion/pattern"
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "none"
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        stripe = shader.step(0.5, shader.frac(ctx.uv0.x * 12.0))
+        color = shader.lerp(shader.vec3(0.05, 0.2, 0.5), shader.vec3(1.0, 0.7, 0.1), stripe)
+        return shader.SurfaceData(albedo=color, normal_ws=ctx.normal_ws)
+"""
+COMPARE = """import infernux.shader as shader
+
+class Compare(shader.fullscreen):
+    shader_id = "tests/motion/compare"
+    original_tex = shader.input("original", shader.Color2D)
+    blurred_tex = shader.input("blurred", shader.Color2D)
+    motion_tex = shader.input("motion", shader.Color2D)
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        pixel = shader.ivec2(ctx.position.xy)
+        original = shader.load(self.original_tex, pixel, 0)
+        blurred = shader.load(self.blurred_tex, pixel, 0)
+        motion = shader.load(self.motion_tex, pixel, 0).xy
+        changed = shader.any(shader.abs(original.rgb - blurred.rgb) > shader.vec3(0.005))
+        moving = shader.length(motion) > 0.00001
+        return shader.vec4(1.0 if changed else 0.0, 1.0 if moving else 0.0,
+                           1.0 if original.a > 0.9 else 0.0, 1.0)
+"""
 
 class BlurPipeline(inx.renderstack.RenderPipeline):
     name='Tutorial Motion Blur Same Frame'
@@ -65,7 +76,7 @@ class BlurPipeline(inx.renderstack.RenderPipeline):
         effect.depth_rejection=1.
         effect.setup_passes(graph,bus)
         target=graph.create_texture('color',camera_target=True)
-        graph.add_pass('CompareSameFrame').set_texture('originalTex',source).set_texture('blurredTex',bus.get('color')).set_texture('motionTex',motion).write_color(target).fullscreen_quad('Tutorial Motion Blur Comparison')
+        graph.add_pass('CompareSameFrame').set_texture('original_tex',source).set_texture('blurred_tex',bus.get('color')).set_texture('motion_tex',motion).write_color(target).fullscreen_quad('tests/motion/compare')
         graph.screen_ui_overlay_section(resources={'color'})
         graph.set_output(target)
 
@@ -81,9 +92,7 @@ def main():
         mesh_path=project/('Assets/Animated.gltf' if args.skinned else 'Assets/Shared.obj')
         if args.skinned:write_skinned_quad(mesh_path)
         else:mesh_path.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 -1\nf 1/1/1 3/3/1 2/2/1\nf 1/1/1 4/4/1 3/3/1\n',encoding='ascii')
-        guide=(ROOT/'docs/learn/vertex-stage.md').read_text(encoding='utf-8')
-        wave=next(b for b in re.findall(r'```glsl\n(.*?)```',guide,re.S) if 'Name "Wave"' in b)
-        for name,text in (('Wave.vert',wave),('Pattern.frag',SURFACE),('Compare.frag',COMPARE)):
+        for name,text in (('wave.vert.py',VERTEX),('pattern.frag.py',SURFACE),('compare.frag.py',COMPARE)):
             (project/'Assets'/name).write_text(text,encoding='utf-8')
         frontend=inx.Engine()
         native=frontend.get_native_engine()
@@ -101,7 +110,7 @@ def main():
             database=frontend.get_asset_database()
             mesh=AssetManager.import_asset(str(mesh_path),database=database)
             assert mesh,mesh.error
-            for name in ('Wave.vert','Pattern.frag','Compare.frag'):
+            for name in ('wave.vert.py','pattern.frag.py','compare.frag.py'):
                 result=AssetManager.import_asset(str(project/'Assets'/name),database=database)
                 assert result,result.error
             scene=SceneManager.instance().get_active_scene()
@@ -109,9 +118,8 @@ def main():
             camera=scene.create_game_object('Motion Camera')
             camera.transform.position=Vector3(0,0,-5)
             camera.add_component('Camera')
-            material=InxMaterial.create_default_unlit()
-            material.vert_shader_name='Wave'
-            material.frag_shader_name='Tutorial Motion Pattern'
+            material=inx.Material.from_shader(str(project/'Assets/pattern.frag.py'))
+            material.vert_shader_name='tests/vertex/motion_wave'
             objects=[]
             for index,x in enumerate((-1.,1.)):
                 obj=scene.create_game_object('Moving '+str(index))
@@ -121,7 +129,7 @@ def main():
                     renderer.set_source_model_guid(mesh.guid)
                     renderer.submit_animation_pose('Scale',0.,0.,loop=False)
                 else:renderer.set_mesh_asset_guid(mesh.guid)
-                renderer.set_material(0,material)
+                renderer.set_material(material)
                 objects.append(obj)
             frontend.set_render_pipeline(pipeline)
             native.set_game_camera_enabled(True)

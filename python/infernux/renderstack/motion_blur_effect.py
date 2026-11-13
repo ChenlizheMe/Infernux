@@ -47,27 +47,14 @@ class MotionBlurEffect(FullScreenEffect):
     )
 
     def get_shader_list(self) -> List[str]:
-        return ["Fullscreen Triangle", "Motion Blur"]
+        return ["infernux/post/motion_blur"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
 
-        color_in = bus.get(COLOR_TEXTURE)
-        depth = bus.get(DEPTH_TEXTURE)
-        motion = bus.get(MOTION_TEXTURE)
-        if color_in is None or depth is None or motion is None:
-            missing = [
-                name
-                for name, handle in (
-                    (COLOR_TEXTURE, color_in),
-                    (DEPTH_TEXTURE, depth),
-                    (MOTION_TEXTURE, motion),
-                )
-                if handle is None
-            ]
-            raise ValueError(
-                "Motion Blur requires effect-stage resources: " + ", ".join(missing)
-            )
+        color_in = bus.require_texture(COLOR_TEXTURE)
+        depth = bus.require_texture(DEPTH_TEXTURE)
+        motion = bus.require_texture(MOTION_TEXTURE)
 
         color_out = self.get_or_create_texture(
             graph,
@@ -78,21 +65,14 @@ class MotionBlurEffect(FullScreenEffect):
             render_pass.set_textures(
                 {
                     "source_tex": color_in,
-                    "_MotionTex": motion,
-                    "_DepthTex": depth,
+                    "motion_tex": motion,
+                    "depth_tex": depth,
                 }
             )
             render_pass.write_color(color_out)
-            render_pass.set_param("intensity", min(max(float(self.intensity), 0.0), 2.0))
-            render_pass.set_param(
-                "maxBlurPixels",
-                min(max(float(self.max_blur_pixels), 0.0), 128.0),
-            )
-            render_pass.set_param(
-                "depthRejection",
-                min(max(float(self.depth_rejection), 0.0), 8.0),
-            )
-            render_pass.set_param("_pad0", 0.0)
-            render_pass.fullscreen_quad("Motion Blur")
+            render_pass.set_param("intensity", self.intensity)
+            render_pass.set_param("max_blur_pixels", self.max_blur_pixels)
+            render_pass.set_param("depth_rejection", self.depth_rejection)
+            render_pass.fullscreen_quad("infernux/post/motion_blur")
 
         bus.set(COLOR_TEXTURE, color_out)
