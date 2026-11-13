@@ -135,6 +135,8 @@ class PhysicsECSStore
     // A Rigidbody owns its actor even when it has no collision shapes.
     // Collider-only objects own static actors.
     ActorHandle AcquireActor(GameObject *owner);
+    /// Transfer a staged root's actor when its components are committed to an existing object.
+    void AdoptActorOwner(GameObject *stagedOwner, GameObject *owner);
     void ReleaseActor(ActorHandle handle, Collider *collider);
     void AttachCollider(Collider *collider);
     void RefreshHierarchy(GameObject *root, const Rigidbody *excludedBody = nullptr);

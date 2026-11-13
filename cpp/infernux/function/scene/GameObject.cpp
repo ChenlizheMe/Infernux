@@ -1801,6 +1801,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, InstantiationIds &
         m_components = std::move(stagedRoot->m_components);
         for (auto &component : m_components)
             component->SetGameObject(this);
+        PhysicsECSStore::Instance().AdoptActorOwner(stagedRoot.get(), this);
         m_children = std::move(stagedRoot->m_children);
         for (auto &child : m_children) {
             child->m_parent = this;

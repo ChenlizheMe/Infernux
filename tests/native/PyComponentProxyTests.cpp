@@ -2,8 +2,10 @@
 #include <function/scene/GameObject.h>
 #include <function/scene/InstantiationIds.h>
 #include <function/scene/PyComponentProxy.h>
+#include <function/scene/Rigidbody.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
+#include <function/scene/physics/PhysicsECSStore.h>
 #include <function/scene/physics/PhysicsWorld.h>
 
 #ifdef NDEBUG
@@ -19,6 +21,34 @@ namespace py = pybind11;
 
 namespace
 {
+void TestReplacedPhysicsActorOwner()
+{
+    auto &manager = infernux::SceneManager::Instance();
+    auto &store = infernux::PhysicsECSStore::Instance();
+    auto &world = infernux::PhysicsWorld::Instance();
+    world.Initialize(); // Register shape authoring types; no GPU services or numerical step.
+    const auto initialActors = store.GetAliveActorCount();
+    for (bool rigidbodyFirst : {true, false}) {
+        auto *scene = manager.CreateScene("Object document physics owner");
+        auto *object = scene->CreateGameObject("Restored physics object");
+        if (rigidbodyFirst)
+            object->AddComponent<infernux::Rigidbody>();
+        object->AddComponent<infernux::BoxCollider>();
+        if (!rigidbodyFirst)
+            object->AddComponent<infernux::Rigidbody>();
+        infernux::InstantiationIds ids;
+        assert(object->DeserializeDocument(object->SerializeDocument(), ids));
+        const auto *body = object->GetComponent<infernux::Rigidbody>();
+        const auto actor = store.GetRigidbody(body->GetECSHandle()).actorHandle;
+        assert(store.IsValid(actor));
+        assert(store.GetActor(actor).owner == object);
+        assert(store.FindActor(object) == actor);
+        manager.UnloadScene(scene);
+        assert(store.GetAliveActorCount() == initialActors);
+    }
+    world.Shutdown();
+}
+
 class TeardownQueryProbe final : public infernux::Component
 {
   public:
@@ -258,6 +288,7 @@ class CollisionEnterOnlyProbe(InxComponent):
 )PY");
 
     TestRetainedPhysicsTargets();
+    TestReplacedPhysicsActorOwner();
     TestSceneTeardownQueries();
     TestSubtreeReplacementTeardown();
 

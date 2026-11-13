@@ -69,6 +69,16 @@ PhysicsECSStore::ActorHandle PhysicsECSStore::AcquireActor(GameObject *owner)
     return handle;
 }
 
+void PhysicsECSStore::AdoptActorOwner(GameObject *stagedOwner, GameObject *owner)
+{
+    auto actor = m_actorByOwner.extract(stagedOwner);
+    if (actor.empty())
+        return;
+    m_actorPool.Get(actor.mapped()).owner = owner;
+    actor.key() = owner;
+    m_actorByOwner.insert(std::move(actor));
+}
+
 void PhysicsECSStore::ReleaseActor(ActorHandle handle, Collider *collider)
 {
     if (!m_actorPool.IsAlive(handle))
