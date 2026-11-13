@@ -31,7 +31,7 @@ class ChromaticAberrationEffect(FullScreenEffect):
     intensity: float = serialized_field(default=0.1, range=(0.0, 1.0), slider=False)
 
     def get_shader_list(self) -> List[str]:
-        return ["Fullscreen Triangle", "Chromatic Aberration"]
+        return ["infernux/post/chromatic_aberration"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
@@ -41,7 +41,7 @@ class ChromaticAberrationEffect(FullScreenEffect):
             bus,
             output_name="_chromab_out",
             pass_name="ChromAb_Apply",
-            shader_name="Chromatic Aberration",
+            shader_name="infernux/post/chromatic_aberration",
             format=Format.RGBA16_SFLOAT,
             params={"intensity": self.intensity},
         )

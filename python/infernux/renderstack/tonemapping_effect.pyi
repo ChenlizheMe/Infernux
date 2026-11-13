@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 class ToneMappingMode(IntEnum):
     """Tone mapping operator selection."""
     None_ = 0
-    """No tone mapping — pass through raw HDR values."""
+    """Clamp to the display-linear range without applying a tone curve."""
     Reinhard = 1
     """Reinhard operator (simple, soft rolloff)."""
     ACES = 2
@@ -31,7 +31,6 @@ class ToneMappingEffect(FullScreenEffect):
     Attributes:
         mode: Tone mapping operator (ACES is recommended).
         exposure: Pre-tonemap exposure multiplier (default 1.0).
-        gamma: Gamma correction exponent (default 2.2 = standard sRGB).
     """
 
     name: ClassVar[str]
@@ -41,10 +40,6 @@ class ToneMappingEffect(FullScreenEffect):
 
     mode: ToneMappingMode
     exposure: float
-    gamma: float
 
     def get_shader_list(self) -> List[str]: ...
     def setup_passes(self, graph: RenderGraph, bus: ResourceBus) -> None: ...
-    def set_params_dict(self, params: Dict[str, Any]) -> None:
-        """Restore parameters from a dictionary, normalizing the mode value."""
-        ...

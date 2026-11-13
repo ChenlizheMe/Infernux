@@ -19,26 +19,33 @@ def half(value):
 
 Y, X = np.meshgrid((np.arange(24) + .5) / 24, (np.arange(32) + .5) / 32, indexing="ij")
 UV = np.stack((X, Y), axis=-1)
-NAMES = ("white_balance", "color_adjustments", "vignette", "sharpen", "pixelation")
+NAMES = ("white_balance", "color_adjustments", "vignette", "sharpen", "pixelation",
+         "chromatic_aberration", "tonemapping")
 PLANS = (
     ({"temperature": 0., "tint": 0.},
      {"post_exposure": 0., "contrast": 0., "saturation": 0., "hue_shift": 0.},
      {"intensity": 0., "smoothness": .3, "roundness": 1., "rounded": False, "color": (0., 0., 0., 1.)},
      {"intensity": 0.},
      {"pixel_size": 4, "pixel_aspect": 1., "grid_offset_x": 0., "grid_offset_y": 0.,
-      "intensity": 0., "sampling": 0, "preserve_alpha_coverage": False}),
+      "intensity": 0., "sampling": 0, "preserve_alpha_coverage": False},
+     {"intensity": 0.},
+     {"mode": 0, "exposure": 1.}),
     ({"temperature": 25., "tint": -10.},
      {"post_exposure": .5, "contrast": 20., "saturation": -15., "hue_shift": 45.},
      {"intensity": .4, "smoothness": .5, "roundness": .4, "rounded": True, "color": (.15, .05, .2, 1.)},
      {"intensity": .4},
      {"pixel_size": 4, "pixel_aspect": 1.4, "grid_offset_x": .2, "grid_offset_y": -.1,
-      "intensity": .8, "sampling": 1, "preserve_alpha_coverage": True}),
+      "intensity": .8, "sampling": 1, "preserve_alpha_coverage": True},
+     {"intensity": .8},
+     {"mode": 1, "exposure": 1.2}),
     ({"temperature": -25., "tint": 15.},
      {"post_exposure": -.5, "contrast": -10., "saturation": 25., "hue_shift": -30.},
      {"intensity": .6, "smoothness": .6, "roundness": .8, "rounded": False, "color": (.02, .08, .12, 1.)},
      {"intensity": .8},
      {"pixel_size": 5, "pixel_aspect": .8, "grid_offset_x": -.3, "grid_offset_y": .25,
-      "intensity": 1., "sampling": 2, "preserve_alpha_coverage": False}),
+      "intensity": 1., "sampling": 2, "preserve_alpha_coverage": False},
+     {"intensity": .2},
+     {"mode": 2, "exposure": 1.5}),
 )
 
 
@@ -52,7 +59,7 @@ def sample(image, uv):
 
 
 def reference(plan):
-    wb, ca, vig, sharp, pix = plan
+    wb, ca, vig, sharp, pix, chroma, tone = plan
     image = half(np.stack((.1 + .7 * X, .05 + .5 * Y, .2 + .2 * X * Y, .1 + .8 * X), axis=-1))
     # Adapt XYZ independently of the production shader's fused LMS matrices.
     primaries = np.array(((.4124564, .3575761, .1804375), (.2126729, .7151522, .0721750), (.0193339, .1191920, .9503041)))
@@ -105,6 +112,24 @@ def reference(plan):
         color = (taps[..., :3] * taps[..., 3:]).sum(axis=0) / alpha
         alpha = taps[..., 3:].max(axis=0) if pix["preserve_alpha_coverage"] else alpha / (width * width)
         image = np.concatenate((color, alpha), axis=-1)
+    image = half(image)
+    center = UV - .5
+    offset = center * np.linalg.norm(center, axis=-1, keepdims=True) * chroma["intensity"] * .02
+    red = sample(image, UV - offset)[..., 0]
+    blue = sample(image, UV + offset)[..., 2]
+    image[..., 0], image[..., 2] = red, blue
+    image = half(image)
+    color = image[..., :3] * tone["exposure"]
+    if tone["mode"] == 1:
+        color = color / (color + 1)
+    elif tone["mode"] == 2:
+        # Explicit rows catch transposed matrix construction during lowering.
+        input_matrix = np.array(((.59719, .35458, .04823), (.076, .90834, .01566), (.0284, .13383, .83777)))
+        output_matrix = np.array(((1.60475, -.53108, -.07367), (-.10208, 1.10813, -.00605), (-.00327, -.07276, 1.07602)))
+        value = color @ input_matrix.T
+        value = (value * (value + .0245786) - .000090537) / np.maximum(value * (.983729 * value + .432951) + .238081, 1e-6)
+        color = value @ output_matrix.T
+    image[..., :3] = np.clip(color, 0, 1)
     image = half(image)
     image[..., :3] = np.where(image[..., :3] <= .0031308, image[..., :3] * 12.92,
                               1.055 * image[..., :3] ** (1 / 2.4) - .055)

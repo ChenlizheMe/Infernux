@@ -57,45 +57,26 @@ class ToneMappingEffect(FullScreenEffect):
         tooltip="Pre-tonemap exposure multiplier",
     )
 
-    @staticmethod
-    def _normalize_mode_value(value) -> ToneMappingMode:
-        """Ensure the mode value is a valid ToneMappingMode enum member."""
-        if isinstance(value, ToneMappingMode):
-            return value
-        try:
-            return ToneMappingMode(int(value))
-        except (ValueError, KeyError):
-            return ToneMappingMode.ACES
-
-    def set_params_dict(self, params):
-        super().set_params_dict(params)
-        self.mode = self._normalize_mode_value(self.mode)
-
     # ------------------------------------------------------------------
     # FullScreenEffect interface
     # ------------------------------------------------------------------
 
     def get_shader_list(self) -> List[str]:
-        return [
-            "Fullscreen Triangle",
-            "Tonemapping",
-        ]
+        return ["infernux/post/tonemapping"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         """Inject the tonemapping pass into the render graph."""
         from infernux.rendergraph.graph import Format
 
-        mode = self._normalize_mode_value(self.mode)
-        self.mode = mode
         self.apply_single_source_effect(
             graph,
             bus,
             output_name="_tonemap_out",
             pass_name="ToneMap_Apply",
-            shader_name="Tonemapping",
+            shader_name="infernux/post/tonemapping",
             format=Format.RGBA16_SFLOAT,
             params={
-                "mode": float(int(mode)),
+                "mode": int(self.mode),
                 "exposure": self.exposure,
             },
         )
