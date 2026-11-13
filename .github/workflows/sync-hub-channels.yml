@@ -1,0 +1,31 @@
+name: Sync published Hub download channels
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-hub-channels
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install publication helper dependency
+        run: python -m pip install packaging
+      - name: Mirror the stable published Hub and add its installers to the engine release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R2_UPLOAD_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
+        run: >-
+          python scripts/release/sync_hub_channels.py
+          --repository "$GITHUB_REPOSITORY"
+          --download-dir "$RUNNER_TEMP/stable-hub"

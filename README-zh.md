@@ -73,7 +73,9 @@ class Spin(inx.InxComponent):
 
 ## 开始使用
 
-**直接使用引擎。** 安装 [InfernuxHub](https://infernux-engine.com/download.html)，选择引擎版本并创建项目。Hub 会替你管理 Python 环境与 Android 工具，无需安装原生编译器。然后跟着 [五步入门](https://infernux-engine.com/start.html) 写出第一个让方块旋转的组件，再继续学习 [系列课程](https://infernux-engine.com/learn.html)。
+**直接使用引擎。** 安装 [InfernuxHub 0.4.8-3](https://infernux-engine.com/download.html)，选择引擎版本并创建项目。Hub 会替你管理 Python 环境与 Android 工具，无需安装原生编译器。然后跟着 [五步入门](https://infernux-engine.com/start.html) 写出第一个让方块旋转的组件，再继续学习 [系列课程](https://infernux-engine.com/learn.html)。
+
+已有 Hub？打开 **设置 → 检查更新**，选择 **更新并重启**。请在设置里确认完整的 Hub 版本；左侧栏只显示基础版本号。重新安装前，请从系统托盘退出 Hub，避免后台旧进程被重新唤醒。Hub 与引擎分别更新：当前使用 Hub **0.4.8-3** 搭配引擎 **0.4.8**。[Hub 更新说明与直接安装包](https://github.com/ChenlizheMe/Infernux/releases/tag/hub-v0.4.8-v3)。
 
 **从源码构建。** Windows 需要安装带 C++ 桌面开发工作负载的 Visual
 Studio、CMake 3.25+、Vulkan SDK 与 Python 3.13。Windows 预设会让 CMake

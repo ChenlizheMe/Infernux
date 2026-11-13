@@ -73,7 +73,9 @@ Requirements and known limits per platform are in [SUPPORT.md](SUPPORT.md#platfo
 
 ## Get started
 
-**Use the engine.** Install [InfernuxHub](https://infernux-engine.com/download.html), pick an engine version and create a project. The Hub manages Python environments and Android tools for you; no native compiler is needed. Then follow the [five-step start](https://infernux-engine.com/start.html) to a component spinning a cube, and continue with the [courses](https://infernux-engine.com/learn.html).
+**Use the engine.** Install [InfernuxHub 0.4.8-3](https://infernux-engine.com/download.html), pick an engine version and create a project. The Hub manages Python environments and Android tools for you; no native compiler is needed. Then follow the [five-step start](https://infernux-engine.com/start.html) to a component spinning a cube, and continue with the [courses](https://infernux-engine.com/learn.html).
+
+Already have Hub? Open **Settings → Check for Updates**, then choose **Update and restart**. The full Hub version is shown in Settings; the sidebar only shows the base version. Before reinstalling, exit Hub from the system tray so an older background process does not reopen in place of the new version. Hub and engine versions are independent: use Hub **0.4.8-3** with engine **0.4.8**. [Hub release notes and direct installers](https://github.com/ChenlizheMe/Infernux/releases/tag/hub-v0.4.8-v3).
 
 **Build from source.** Windows needs a Visual Studio installation with the
 Desktop C++ workload, CMake 3.25+, the Vulkan SDK and Python 3.13. The Windows

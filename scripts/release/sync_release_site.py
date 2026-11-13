@@ -28,19 +28,23 @@ def write_json(path: Path, value):
 
 def sync_release_labels(version: str):
     code = version.replace(".", "")
+    catalog = read_json(DOCS / "hub-catalog.json")
+    stable = next(release for release in catalog["releases"] if release["version"] == catalog["stable"])
     for path in DOCS.glob("*.html"):
         source = path.read_text(encoding="utf-8")
         source = re.sub(
             r'(<span\b[^>]*\bdata-release-code="([^"]+)"[^>]*>)[^<]*(</span>)',
             lambda match: match[1] + html.escape(match[2].format(code=code)) + match[3], source,
         )
+        source = re.sub(
+            r'(<span\b[^>]*\bdata-hub-version[^>]*>)[^<]*(</span>)',
+            lambda match: match[1] + html.escape(stable["version"]) + match[2], source,
+        )
         path.write_text(source, encoding="utf-8", newline="\n")
     style = DOCS / "css/style.css"
     source = style.read_text(encoding="utf-8")
     source = re.sub(r'(--release-code:\s*")[^"]+(";)', lambda match: match[1] + code + match[2], source)
     style.write_text(source, encoding="utf-8", newline="\n")
-    catalog = read_json(DOCS / "hub-catalog.json")
-    stable = next(release for release in catalog["releases"] if release["version"] == catalog["stable"])
     download_path = DOCS / "download.html"
     download = download_path.read_text(encoding="utf-8")
     for platform, label in (("windows-x64", "Windows x64"), ("linux-x64", "Linux x64")):

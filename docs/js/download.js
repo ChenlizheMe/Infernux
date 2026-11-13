@@ -74,6 +74,12 @@
         });
         loadHubCatalog().then((release) => {
             currentRelease = release;
+            document.querySelectorAll("[data-hub-version]").forEach((label) => {
+                label.textContent = release.version;
+            });
+            document.querySelectorAll("[data-hub-release]").forEach((link) => {
+                link.href = release.release_url;
+            });
             applyPlatform(release, "windows-x64");
             applyPlatform(release, "linux-x64");
             document.querySelectorAll("[data-version-select]").forEach(syncVersionLink);

@@ -61,6 +61,8 @@ const windowsLinks = [makeLink(), makeLink()];
 const linuxLinks = [makeLink(), makeLink()];
 const windowsLabels = [makeLabel(false), makeLabel(true)];
 const linuxLabels = [makeLabel(false), makeLabel(true)];
+const hubVersions = [makeLabel(false), makeLabel(true)];
+const hubReleaseLinks = [makeLink(), makeLink()];
 
 const sandbox = {
     Array,
@@ -81,6 +83,8 @@ const sandbox = {
             if (selector === "[data-hub-link='linux-x64']") return linuxLinks;
             if (selector === "[data-hub-meta='windows-x64']") return windowsLabels;
             if (selector === "[data-hub-meta='linux-x64']") return linuxLabels;
+            if (selector === "[data-hub-version]") return hubVersions;
+            if (selector === "[data-hub-release]") return hubReleaseLinks;
             return [];
         }
     }
@@ -100,6 +104,8 @@ assert.equal(linuxLinks[0].href, release.platforms["linux-x64"].installer.url);
 assert.equal(linuxLinks[0].classList.contains("is-disabled"), false);
 assert.equal(windowsLabels[0].textContent, `Windows x64 · ${catalog.stable}`);
 assert.equal(windowsLabels[1].textContent, `Windows x64 · ${catalog.stable}`);
+assert.deepEqual(hubVersions.map(label => label.textContent), [catalog.stable, catalog.stable]);
+assert.deepEqual(hubReleaseLinks.map(link => link.href), [release.release_url, release.release_url]);
 
 release.published_at = null;
 listeners.get("DOMContentLoaded")();
