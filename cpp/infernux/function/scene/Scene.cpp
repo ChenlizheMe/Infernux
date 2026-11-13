@@ -5,6 +5,7 @@
 #include "Light.h"
 #include "MeshRenderer.h"
 #include "PyComponentProxy.h"
+#include "RuntimeWorld.h"
 #include "SceneManager.h"
 #include "SkeletonInstance.h"
 #include "TransformECSStore.h"
@@ -222,6 +223,7 @@ void RestoreSceneComponentRegistries(Scene &scene)
 
 SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>())
 {
+    const WorldExecutionScope worldScope(scene.GetRuntimeWorld());
     if (scene.m_retainedCommit)
         throw std::logic_error("The Scene already has an unsettled retained-world commit");
     // Commit pending body creation and broadphase membership before retaining
@@ -314,6 +316,7 @@ bool SceneCommitToken::Rollback()
 
     Impl &state = *m_impl;
     Scene &scene = *state.scene;
+    const WorldExecutionScope worldScope(scene.GetRuntimeWorld());
     const WorldRetirementScope retirement;
     state.restoring = true;
     try {
@@ -367,6 +370,7 @@ void SceneCommitToken::Finalize()
 {
     if (!IsActive())
         return;
+    const WorldExecutionScope worldScope(m_impl->scene->GetRuntimeWorld());
     const WorldRetirementScope retirement;
     Impl &state = *m_impl;
     // End ownership before callbacks. A surviving token is inert, including
@@ -383,6 +387,7 @@ void SceneCommitToken::Finalize()
 
 std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(const nlohmann::json &document)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
     // Reject bad headers before SceneCommitToken extracts the live world.
     // Otherwise a schema mismatch empties the scene, and a failed Rollback
@@ -400,6 +405,7 @@ std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(con
 
 Scene::~Scene()
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     const WorldRetirementScope retirement;
     m_retiringObjects = true;
     if (m_retainedCommit)
@@ -415,6 +421,7 @@ void Scene::RequireWritableWorld() const
 
 void Scene::RetireRootObjects()
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     const WorldRetirementScope retirement;
     // Publish an empty traversal before callbacks run. vector::clear keeps
     // already deleted roots visible to OnDisable/OnDestroy scene queries.
@@ -477,6 +484,7 @@ void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
 
 void Scene::RemoveGameObject(GameObject *gameObject)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
     if (!gameObject || gameObject->IsDestroying())
         return;
@@ -496,6 +504,7 @@ void Scene::RemoveGameObject(GameObject *gameObject)
 
 void Scene::DestroyGameObject(GameObject *gameObject)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     if (!gameObject || gameObject->IsDestroying())
         return;
 
@@ -546,6 +555,7 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
 
 bool Scene::TransferObjectTo(GameObject *gameObject, Scene &destination, GameObject *destinationParent)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
     destination.RequireWritableWorld();
     if (!gameObject || gameObject->GetScene() != this || &destination == this || IsPreview() || destination.IsPreview())
@@ -897,6 +907,7 @@ std::vector<GameObject *> Scene::FindGameObjectsInLayer(int layer) const
 
 void Scene::Start()
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     const auto admittedState = SceneManager::Instance().GetSimulationState();
     const auto interrupted = [&] {
         if (SceneManager::Instance().GetSimulationState() == admittedState)
@@ -937,6 +948,7 @@ void Scene::Start()
 
 void Scene::AwakeObject(GameObject *obj)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     const auto admittedState = SceneManager::Instance().GetSimulationState();
     const auto publish = [&](const auto &self, GameObject *object) -> void {
         if (SceneManager::Instance().GetSimulationState() != admittedState)
@@ -978,6 +990,7 @@ void Scene::StartObject(GameObject *obj)
 
 void Scene::DispatchInitialLifecycle(GameObject *obj, bool start)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     if (!obj || !obj->IsActiveInHierarchy())
         return;
     const ObjectHandle owner = obj->GetHandle();
@@ -1013,6 +1026,7 @@ void Scene::DispatchInitialLifecycle(GameObject *obj, bool start)
 
 void Scene::Update(float deltaTime)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     if (!m_isPlaying)
         return;
     const auto admittedState = SceneManager::Instance().GetSimulationState();
@@ -1046,6 +1060,7 @@ void Scene::Update(float deltaTime)
 
 void Scene::FixedUpdate(float fixedDeltaTime)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     if (!m_isPlaying)
         return;
     const auto admittedState = SceneManager::Instance().GetSimulationState();
@@ -1132,6 +1147,7 @@ void Scene::UpdateObject(GameObject *obj, float deltaTime)
 
 void Scene::LateUpdate(float deltaTime)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     if (!m_isPlaying)
         return;
     const auto admittedState = SceneManager::Instance().GetSimulationState();
@@ -1155,6 +1171,7 @@ void Scene::LateUpdate(float deltaTime)
 
 void Scene::EditorUpdate(float deltaTime)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     if (m_isPlaying)
         return;
 
@@ -1434,6 +1451,7 @@ void Scene::RegisterObjectSubtree(GameObject *root)
 
 void Scene::ProcessPendingDestroys()
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     std::vector<uint64_t> currentPending;
     currentPending.swap(m_pendingDestroy); // To ensure we don't loop forever if destroy triggers destroy
 
@@ -1477,6 +1495,7 @@ void Scene::QueueComponentStart(Component *component)
 
 void Scene::ProcessPendingStarts()
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     if (m_pendingStartComponentIds.empty())
         return;
     const auto admittedState = SceneManager::Instance().GetSimulationState();
@@ -1580,6 +1599,7 @@ Component *Scene::FindComponentByID(uint64_t componentId) const
 GameObject *Scene::InstantiateGameObject(GameObject *source, InstantiationIds &ids, GameObject *parent,
                                          bool instantiateInWorldSpace)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
     if (parent && parent->GetScene() != this)
         throw std::invalid_argument("Instantiate parent must belong to the destination Scene");
@@ -1661,6 +1681,7 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, InstantiationIds &i
 
 GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, InstantiationIds &ids, GameObject *parent)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
     if (parent && parent->GetScene() != this)
         throw std::invalid_argument("Instantiate parent must belong to the destination Scene");
@@ -1843,6 +1864,7 @@ std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
 bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint64_t, uint64_t> *objectIdRemap,
                                 std::unordered_map<uint64_t, uint64_t> *componentIdRemap)
 {
+    const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
     try {
         using ProfileClock = std::chrono::steady_clock;

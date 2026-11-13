@@ -22,27 +22,27 @@ class _TimeMeta(type):
     @property
     def time(cls) -> float:
         """Scaled game time since this Play session began."""
-        return cls._frame_time.time
+        return cls._scene_manager._frame_time.time
 
     @property
     def delta_time(cls) -> float:
         """Scaled duration admitted to the current simulation frame."""
-        return cls._frame_time.delta_time
+        return cls._scene_manager._frame_time.delta_time
 
     @property
     def smooth_delta_time(cls) -> float:
         """Smoothed scaled game-frame duration."""
-        return cls._frame_time.smooth_delta_time
+        return cls._scene_manager._frame_time.smooth_delta_time
 
     @property
     def unscaled_time(cls) -> float:
         """Game-frame duration accumulated before scaling or clamping."""
-        return cls._frame_time.unscaled_time
+        return cls._scene_manager._frame_time.unscaled_time
 
     @property
     def unscaled_delta_time(cls) -> float:
         """Duration of this simulation frame before scaling or clamping."""
-        return cls._frame_time.unscaled_delta_time
+        return cls._scene_manager._frame_time.unscaled_delta_time
 
     @property
     def game_delta_time(cls) -> float:
@@ -81,7 +81,7 @@ class _TimeMeta(type):
     @property
     def frame_count(cls) -> int:
         """Simulation frames admitted in this Play session."""
-        return cls._frame_time.frame_count
+        return cls._scene_manager._frame_time.frame_count
 
     @property
     def realtime_since_startup(cls) -> float:
@@ -112,4 +112,3 @@ class Time(metaclass=_TimeMeta):
     discards loading delay without restarting the Play-session clock.
     """
     _scene_manager = _SceneManager.instance()
-    _frame_time = _scene_manager._frame_time

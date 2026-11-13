@@ -3,7 +3,7 @@
 import pytest
 
 from infernux.components import InxComponent
-from infernux.lib import RenderPipelineCallback, SceneManager
+from infernux.lib import Physics, RenderPipelineCallback, SceneManager, Vector3
 from infernux.runtime_services import register_update
 from infernux.timing import Time
 from test_plugin_preload_failures import package_project
@@ -51,6 +51,11 @@ def live_clock(engine, scene):
 
 @pytest.mark.parametrize("scale,fixed_steps", [(1.0, 2), (0.5, 1), (0.0, 0)])
 def test_native_phases_supply_scaled_and_independent_time(engine, scene, live_clock, updates, scale, fixed_steps):
+    # Resolve Play's cold GPU control publication before measuring script phases.
+    # A query is a synchronous consumer, not another simulation frame or step.
+    clock = (Time.frame_count, Time.fixed_time, live_clock.fixed_step_index)
+    Physics.raycast(Vector3(0, 0, 0), Vector3(0, -1, 0), 1)
+    assert (Time.frame_count, Time.fixed_time, live_clock.fixed_step_index) == clock
     observed = []
 
     class Probe(InxComponent):

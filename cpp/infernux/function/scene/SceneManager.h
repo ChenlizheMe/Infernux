@@ -3,6 +3,7 @@
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include "EditorCameraController.h"
 #endif
+#include "RuntimeWorld.h"
 #include "Scene.h"
 #include <algorithm>
 #include <chrono>
@@ -36,16 +37,6 @@ class Light;
 class SceneManager
 {
   public:
-    struct FrameTime
-    {
-        double time = 0.0;
-        double unscaledTime = 0.0;
-        float deltaTime = 0.0f;
-        float unscaledDeltaTime = 0.0f;
-        float smoothDeltaTime = 0.0f;
-        uint64_t frameCount = 0;
-    };
-
     struct FrameProfile
     {
         double editorCameraMs = 0.0;
@@ -77,6 +68,9 @@ class SceneManager
     // Singleton access
     static SceneManager &Instance();
 
+    [[nodiscard]] RuntimeWorld &CurrentWorld() noexcept;
+    [[nodiscard]] const RuntimeWorld &CurrentWorld() const noexcept;
+
     // Prevent copying
     SceneManager(const SceneManager &) = delete;
     SceneManager &operator=(const SceneManager &) = delete;
@@ -102,15 +96,15 @@ class SceneManager
     /// @brief Get the currently active scene
     [[nodiscard]] Scene *GetActiveScene() const
     {
-        return m_activeScene;
+        return CurrentWorld().scenes.active;
     }
 
     /// Publish an explicit time jump in the active world. This is intentionally
     /// separate from Pause/Resume and ordinary simulation updates.
     void MarkActiveSceneTemporalDiscontinuity() noexcept
     {
-        if (m_activeScene)
-            m_activeScene->MarkTemporalDiscontinuity();
+        if (CurrentWorld().scenes.active)
+            CurrentWorld().scenes.active->MarkTemporalDiscontinuity();
     }
 
     /// @brief Unload a scene
@@ -139,18 +133,18 @@ class SceneManager
     [[nodiscard]] Scene *GetSceneByWorldId(uint64_t worldId) const noexcept;
     [[nodiscard]] Scene *GetSceneAt(size_t index) const
     {
-        return index < m_scenes.size() ? m_scenes[index].get() : nullptr;
+        return index < CurrentWorld().scenes.loaded.size() ? CurrentWorld().scenes.loaded[index].get() : nullptr;
     }
 
     /// @brief Get all loaded scenes
     [[nodiscard]] const std::vector<std::unique_ptr<Scene>> &GetAllScenes() const
     {
-        return m_scenes;
+        return CurrentWorld().scenes.loaded;
     }
 
     [[nodiscard]] size_t GetSceneCount() const
     {
-        return m_scenes.size();
+        return CurrentWorld().scenes.loaded.size();
     }
 
     // ========================================================================
@@ -178,11 +172,11 @@ class SceneManager
     void LateUpdate(float deltaTime);
     [[nodiscard]] float GetFrameDeltaTime() const
     {
-        return m_frameTime.deltaTime;
+        return CurrentWorld().simulation.frameTime.deltaTime;
     }
-    [[nodiscard]] const FrameTime &GetFrameTime() const noexcept
+    [[nodiscard]] const RuntimeWorld::FrameTime &GetFrameTime() const noexcept
     {
-        return m_frameTime;
+        return CurrentWorld().simulation.frameTime;
     }
     void StartRuntimeClock();
     [[nodiscard]] double GetRealtimeSinceStartup() const noexcept
@@ -225,36 +219,37 @@ class SceneManager
     /// graph; editor, loading, and paused render frames do not affect it.
     [[nodiscard]] uint64_t GetRuntimeFrameCount() const noexcept
     {
-        return m_runtimeFrameCount;
+        return CurrentWorld().simulation.runtimeFrameCount;
     }
 
     /// Simulation session identity; changes only at Fresh Play and Stop.
     [[nodiscard]] uint64_t GetSimulationEpoch() const noexcept
     {
-        return m_simulationEpoch;
+        return CurrentWorld().simulation.simulationEpoch;
     }
     using SimulationState = std::tuple<uint64_t, bool, bool>;
     [[nodiscard]] SimulationState GetSimulationState() const noexcept
     {
-        return std::tuple{m_simulationEpoch, m_isPlaying, m_isPaused};
+        return std::tuple{CurrentWorld().simulation.simulationEpoch, CurrentWorld().simulation.isPlaying,
+                          CurrentWorld().simulation.isPaused};
     }
     /// Fixed bundles begun in this session, including empty-body and paused steps.
     [[nodiscard]] uint64_t GetFixedStepIndex() const noexcept
     {
-        return m_fixedStepIndex;
+        return CurrentWorld().simulation.fixedStepIndex;
     }
     /// Last fixed bundle whose physical integration has completed, including an empty world.
     [[nodiscard]] uint64_t GetCompletedFixedStepIndex() const noexcept
     {
-        return m_completedFixedStepIndex;
+        return CurrentWorld().simulation.completedFixedStepIndex;
     }
     [[nodiscard]] uint64_t GetPublishedFixedStepIndex() const noexcept
     {
-        return m_publishedFixedStepIndex;
+        return CurrentWorld().simulation.publishedFixedStepIndex;
     }
     [[nodiscard]] bool HasPendingFixedStep() const noexcept
     {
-        return m_fixedPhase != FixedPhase::Idle;
+        return CurrentWorld().simulation.fixedPhase != RuntimeWorld::FixedPhase::Idle;
     }
 
     [[nodiscard]] size_t GetLastColliderSyncCandidateCount() const
@@ -311,7 +306,7 @@ class SceneManager
 
     [[nodiscard]] Scene *GetRuntimePersistentScene() const noexcept
     {
-        return m_runtimePersistentScene.get();
+        return CurrentWorld().scenes.persistent.get();
     }
 
     [[nodiscard]] GameObject *FindRuntimeObjectByID(uint64_t id) const;
@@ -326,8 +321,9 @@ class SceneManager
 
     [[nodiscard]] bool IsRuntimeScene(const Scene *scene) const noexcept
     {
-        return scene && (scene == m_runtimePersistentScene.get() ||
-                         m_loadedSceneSet.find(const_cast<Scene *>(scene)) != m_loadedSceneSet.end());
+        return scene && (scene == CurrentWorld().scenes.persistent.get() ||
+                         CurrentWorld().scenes.loadedSet.find(const_cast<Scene *>(scene)) !=
+                             CurrentWorld().scenes.loadedSet.end());
     }
 
     // ========================================================================
@@ -345,7 +341,7 @@ class SceneManager
     /// @brief Is the scene in play mode?
     [[nodiscard]] bool IsPlaying() const
     {
-        return m_isPlaying;
+        return CurrentWorld().simulation.isPlaying;
     }
 
     /// @brief Enter play mode.
@@ -369,7 +365,7 @@ class SceneManager
 
     /// @brief Exit play mode.
     ///
-    /// Flips `m_isPlaying`/`m_isPaused` to false, fires the play-state-changed
+    /// Flips `isPlaying`/`isPaused` to false, fires the play-state-changed
     /// callback, and destroys the runtime persistent Scene
     /// (DontDestroyOnLoad does NOT outlive a play session). Scene snapshot restore is the responsibility
     /// of the Python `PlayModeManager.exit_play_mode` flow — Stop() itself
@@ -391,34 +387,37 @@ class SceneManager
 
     [[nodiscard]] bool IsPaused() const
     {
-        return m_isPaused;
+        return CurrentWorld().simulation.isPaused;
     }
 
     [[nodiscard]] bool IsStepping() const noexcept
     {
-        return m_isStepping || m_pausedStepPending || m_stepFrameOpen;
+        return CurrentWorld().simulation.isStepping || CurrentWorld().simulation.pausedStepPending ||
+               CurrentWorld().simulation.stepFrameOpen;
     }
     /// Actual native callback dispatch, excluding a logical Step awaiting results.
     [[nodiscard]] bool IsExecutingStep() const noexcept
     {
-        return m_isStepping;
+        return CurrentWorld().simulation.isStepping;
     }
     void RetainStepFrame() noexcept
     {
-        if (m_isStepping)
-            m_stepFrameOpen = true;
+        if (CurrentWorld().simulation.isStepping)
+            CurrentWorld().simulation.stepFrameOpen = true;
     }
     [[nodiscard]] uint64_t GetStepPermissionIndex() const noexcept
     {
         // Initial Start precedes fixed-step admission. Starts after integration
         // and continuations of an admitted fixed step use its current identity.
-        return m_fixedStepIndex + static_cast<uint64_t>(m_pausedStepPending && !HasPendingFixedStep());
+        return CurrentWorld().simulation.fixedStepIndex +
+               static_cast<uint64_t>(CurrentWorld().simulation.pausedStepPending && !HasPendingFixedStep());
     }
 
     /// @brief Get the fixed physics timestep in seconds.
     [[nodiscard]] float GetFixedTimeStep() const
     {
-        return HasPendingFixedStep() ? m_admittedFixedDeltaTime : m_fixedTimeStep;
+        return HasPendingFixedStep() ? CurrentWorld().simulation.admittedFixedDeltaTime
+                                     : CurrentWorld().simulation.fixedTimeStep;
     }
 
     /// @brief Set the fixed physics timestep in seconds.
@@ -426,47 +425,48 @@ class SceneManager
     {
         if (!std::isfinite(value) || value < 0.001f)
             throw std::invalid_argument("fixed time step must be finite and at least 0.001 seconds");
-        m_fixedTimeStep = value;
-        m_maxFixedDeltaTime = std::max(m_maxFixedDeltaTime, m_fixedTimeStep);
+        CurrentWorld().simulation.fixedTimeStep = value;
+        CurrentWorld().simulation.maxFixedDeltaTime =
+            std::max(CurrentWorld().simulation.maxFixedDeltaTime, CurrentWorld().simulation.fixedTimeStep);
     }
 
     /// @brief Get the max clamped frame delta used by the fixed-step accumulator.
     [[nodiscard]] float GetMaxFixedDeltaTime() const
     {
-        return m_maxFixedDeltaTime;
+        return CurrentWorld().simulation.maxFixedDeltaTime;
     }
 
     /// @brief Set the max clamped frame delta used by the fixed-step accumulator.
     void SetMaxFixedDeltaTime(float value)
     {
-        if (!std::isfinite(value) || value < m_fixedTimeStep)
+        if (!std::isfinite(value) || value < CurrentWorld().simulation.fixedTimeStep)
             throw std::invalid_argument("max fixed delta time must be finite and not less than the fixed time step");
-        m_maxFixedDeltaTime = value;
+        CurrentWorld().simulation.maxFixedDeltaTime = value;
     }
 
     /// @brief Global gameplay time scale. Zero keeps Update running with dt=0
     ///        while suspending fixed-step simulation.
     [[nodiscard]] float GetTimeScale() const
     {
-        return m_timeScale;
+        return CurrentWorld().simulation.timeScale;
     }
     void SetTimeScale(float value)
     {
         if (!std::isfinite(value) || value < 0.0f)
             throw std::invalid_argument("time scale must be finite and non-negative");
-        m_timeScale = value;
+        CurrentWorld().simulation.timeScale = value;
     }
 
     /// @brief Scaled simulation time at the current fixed step.
     [[nodiscard]] double GetFixedTime() const
     {
-        return m_fixedTime;
+        return CurrentWorld().simulation.fixedTime;
     }
 
     /// @brief Real time represented by completed fixed steps.
     [[nodiscard]] double GetFixedUnscaledTime() const
     {
-        return m_fixedUnscaledTime;
+        return CurrentWorld().simulation.fixedUnscaledTime;
     }
 
     // ========================================================================
@@ -515,7 +515,7 @@ class SceneManager
     void SetRuntimeResultConsumerCallback(RuntimeResultConsumerCallback callback);
     void SetRuntimeResultConsumersPresent(bool present) noexcept
     {
-        m_runtimeResultConsumersPresent = present;
+        CurrentWorld().lifecycle.runtimeResultConsumersPresent = present;
     }
     /// Publish the immutable Python phase plan consumed by the native frame
     /// driver. Python still owns arbitrary user-callable objects; native code
@@ -646,10 +646,8 @@ class SceneManager
     void RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt = nullptr);
     void UpdateRuntimeScenePlayingState(bool playing);
 
-    std::vector<std::unique_ptr<Scene>> m_scenes;
+    RuntimeWorld m_defaultWorld;
     std::vector<std::unique_ptr<Scene>> m_previewScenes;
-    std::unordered_set<Scene *> m_loadedSceneSet;
-    Scene *m_activeScene = nullptr;
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Editor camera (exists even when no scene is loaded)
@@ -658,55 +656,8 @@ class SceneManager
     EditorCameraController m_editorCamera;
 #endif
 
-    // Unity-style runtime-only DontDestroyOnLoad Scene. It is deliberately
-    // excluded from m_scenes and from authored Scene serialization.
-    std::unique_ptr<Scene> m_runtimePersistentScene;
-    std::vector<uint64_t> m_pendingPersistentRootIds;
-    std::unordered_set<uint64_t> m_pendingPersistentRootIdSet;
-
-    // Fixed-update timing
-    float m_fixedTimeStep = 1.0f / 50.0f; // 50 Hz default (Unity default)
-    float m_fixedTimeAccumulator = 0.0f;
-    float m_maxFixedDeltaTime = 1.0f / 3.0f; // Unity Maximum Allowed Timestep default
-    float m_timeScale = 1.0f;
-    FrameTime m_frameTime;
-    timing::FrameTimeSmoother m_frameTimeSmoother;
+    // Host real time is independent from World simulation clocks.
     std::chrono::steady_clock::time_point m_startupTime = std::chrono::steady_clock::now();
-    bool m_resetDeltaTimeOnNextFrame = true;
-    double m_fixedTime = 0.0;
-    double m_fixedUnscaledTime = 0.0;
-    uint64_t m_simulationEpoch = 0;
-    uint64_t m_fixedStepIndex = 0;
-    uint64_t m_completedFixedStepIndex = 0;
-    uint64_t m_publishedFixedStepIndex = 0;
-    enum class FixedPhase
-    {
-        Idle,
-        SceneScripts,
-        Control,
-        Integration,
-        Failed,
-        Publication,
-        PostNotification,
-        PostStep
-    };
-    FixedPhase m_fixedPhase = FixedPhase::Idle;
-    float m_admittedFixedDeltaTime = 0.0f;
-    bool m_fixedAccumulatorDebit = false;
-    bool m_fixedHasPhysics = false;
-    bool m_fixedExecuting = false;
-    std::vector<uint64_t> m_fixedSceneWorlds;
-    size_t m_fixedSceneCursor = 0;
-
-    // Play mode state
-    bool m_isPlaying = false;
-    bool m_isPaused = false;
-    bool m_isStepping = false;
-    bool m_pausedStepPending = false;
-    bool m_stepFrameOpen = false;
-    float m_pausedStepDeltaTime = 0.0f;
-    bool m_startupPending = false;
-    uint64_t m_runtimeFrameCount = 0;
 
     // Callbacks
     SceneCallback m_onSceneLoaded;
@@ -723,14 +674,6 @@ class SceneManager
     RuntimeFrameBarrierCallback m_runtimeFrameBarrier;
     RuntimeResultConsumerCallback m_runtimeResultConsumer;
     bool m_runtimeLifecycleSchedulerEnabled = false;
-    bool m_runtimeLifecycleWorkAvailable = false;
-    bool m_runtimeResultConsumersPresent = false;
-    bool m_runtimeLifecycleFrameOpen = false;
-    uint64_t m_runtimeLifecyclePlanRevision = 0;
-    size_t m_runtimeLifecycleFixedUpdateCount = 0;
-    size_t m_runtimeLifecycleUpdateCount = 0;
-    size_t m_runtimeLifecycleAnimationUpdateCount = 0;
-    size_t m_runtimeLifecycleLateUpdateCount = 0;
     uint64_t m_renderTransformRevision = 1;
     uint64_t m_renderContentRevision = 1;
 

@@ -71,6 +71,18 @@ SceneManager &SceneManager::Instance()
     return *instance;
 }
 
+RuntimeWorld &SceneManager::CurrentWorld() noexcept
+{
+    auto *world = WorldExecutionScope::Current();
+    return world ? *world : m_defaultWorld;
+}
+
+const RuntimeWorld &SceneManager::CurrentWorld() const noexcept
+{
+    auto *world = WorldExecutionScope::Current();
+    return world ? *world : m_defaultWorld;
+}
+
 SceneManager::SceneManager()
 {
     TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform, const Transform *physicsSource,
@@ -83,6 +95,7 @@ SceneManager::SceneManager()
         if (const auto bone = m_skeletonBoneOwners.find(transform); bone != m_skeletonBoneOwners.end())
             bone->second->MarkPoseDirty();
         Scene *scene = gameObject->GetScene();
+        const WorldExecutionScope worldScope(scene ? scene->GetRuntimeWorld() : nullptr);
         // A moving camera, light, audio source, or UI element must not force
         // the renderer to rescan every geometry proxy. Invalidate the shared
         // RenderWorld only for objects that actually contribute geometry.
@@ -127,18 +140,21 @@ void SceneManager::PublishPhysicsStateToRenderer()
 
 Scene *SceneManager::CreateScene(const std::string &name)
 {
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
     auto scene = std::make_unique<Scene>(name);
+    scene->m_runtimeWorld = &world;
     scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     Scene *ptr = scene.get();
-    m_scenes.push_back(std::move(scene));
-    m_loadedSceneSet.insert(ptr);
+    world.scenes.loaded.push_back(std::move(scene));
+    world.scenes.loadedSet.insert(ptr);
 
     // If no active scene, make this one active
-    if (!m_activeScene) {
+    if (!world.scenes.active) {
         SetActiveScene(ptr);
     }
 
-    if (m_isPlaying) {
+    if (world.simulation.isPlaying) {
         ptr->SetPlaying(true);
         ptr->Start();
     }
@@ -174,16 +190,18 @@ void SceneManager::ClosePreviewScene(Scene *scene)
 
 void SceneManager::SetActiveScene(Scene *scene)
 {
-    if (scene && m_loadedSceneSet.find(scene) == m_loadedSceneSet.end())
+    const WorldExecutionScope worldScope(scene ? scene->GetRuntimeWorld() : nullptr);
+    auto &world = CurrentWorld();
+    if (scene && world.scenes.loadedSet.find(scene) == world.scenes.loadedSet.end())
         throw std::invalid_argument("active Scene must be loaded in this SceneManager");
-    const bool activeSceneChanged = scene != m_activeScene;
-    if (activeSceneChanged && m_isPlaying)
+    const bool activeSceneChanged = scene != world.scenes.active;
+    if (activeSceneChanged && world.simulation.isPlaying)
         FlushPersistentPromotions();
 
-    m_activeScene = scene;
-    if (m_activeScene) {
-        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
-        m_activeScene->SetPlaying(m_isPlaying);
+    world.scenes.active = scene;
+    if (world.scenes.active) {
+        world.scenes.active->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+        world.scenes.active->SetPlaying(world.simulation.isPlaying);
     }
 
     // Note: We do NOT auto-assign the editor camera as mainCamera.
@@ -194,56 +212,63 @@ void SceneManager::SetActiveScene(Scene *scene)
 
 float SceneManager::ConsumeFrameDeltaTime(float deltaTime) noexcept
 {
-    if (!m_resetDeltaTimeOnNextFrame)
+    auto &world = CurrentWorld();
+    if (!world.simulation.resetDeltaTimeOnNextFrame)
         return deltaTime;
-    m_resetDeltaTimeOnNextFrame = false;
+    world.simulation.resetDeltaTimeOnNextFrame = false;
     return 0.0f;
 }
 
 void SceneManager::StartRuntimeClock()
 {
+    auto &world = CurrentWorld();
     m_startupTime = std::chrono::steady_clock::now();
-    m_timeScale = 1.0f;
+    world.simulation.timeScale = 1.0f;
     ResetFrameTime();
 }
 
 void SceneManager::ResetFrameTime()
 {
-    m_frameTime = {};
-    m_frameTimeSmoother.Reset();
+    auto &world = CurrentWorld();
+    world.simulation.frameTime = {};
+    world.simulation.frameTimeSmoother.Reset();
 }
 
 void SceneManager::ResetFrameDelta()
 {
-    m_frameTime.deltaTime = 0.0f;
-    m_frameTime.unscaledDeltaTime = 0.0f;
-    m_frameTime.smoothDeltaTime = 0.0f;
-    m_frameTimeSmoother.Reset();
+    auto &world = CurrentWorld();
+    world.simulation.frameTime.deltaTime = 0.0f;
+    world.simulation.frameTime.unscaledDeltaTime = 0.0f;
+    world.simulation.frameTime.smoothDeltaTime = 0.0f;
+    world.simulation.frameTimeSmoother.Reset();
 }
 
 void SceneManager::AdvanceFrameTime(float unscaledDeltaTime, float scaledDeltaTime)
 {
-    m_frameTime.deltaTime = scaledDeltaTime;
-    m_frameTime.unscaledDeltaTime = unscaledDeltaTime;
-    m_frameTime.smoothDeltaTime = m_frameTimeSmoother.Advance(scaledDeltaTime);
-    m_frameTime.time += static_cast<double>(scaledDeltaTime);
-    m_frameTime.unscaledTime += static_cast<double>(unscaledDeltaTime);
-    ++m_frameTime.frameCount;
+    auto &world = CurrentWorld();
+    world.simulation.frameTime.deltaTime = scaledDeltaTime;
+    world.simulation.frameTime.unscaledDeltaTime = unscaledDeltaTime;
+    world.simulation.frameTime.smoothDeltaTime = world.simulation.frameTimeSmoother.Advance(scaledDeltaTime);
+    world.simulation.frameTime.time += static_cast<double>(scaledDeltaTime);
+    world.simulation.frameTime.unscaledTime += static_cast<double>(unscaledDeltaTime);
+    ++world.simulation.frameTime.frameCount;
 }
 
 void SceneManager::UnloadScene(Scene *scene)
 {
+    const WorldExecutionScope worldScope(scene ? scene->GetRuntimeWorld() : nullptr);
+    auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
-    if (!scene || m_loadedSceneSet.find(scene) == m_loadedSceneSet.end())
+    if (!scene || world.scenes.loadedSet.find(scene) == world.scenes.loadedSet.end())
         return;
 
-    if (m_isPlaying)
+    if (world.simulation.isPlaying)
         FlushPersistentPromotions();
 
-    const bool wasActive = m_activeScene == scene;
+    const bool wasActive = world.scenes.active == scene;
     Scene *replacement = nullptr;
     if (wasActive) {
-        for (const auto &candidate : m_scenes) {
+        for (const auto &candidate : world.scenes.loaded) {
             if (candidate && candidate.get() != scene) {
                 replacement = candidate.get();
                 break;
@@ -251,7 +276,7 @@ void SceneManager::UnloadScene(Scene *scene)
         }
         // Every active-scene transition goes through the same publication
         // path. Never leave registries and lifecycle flags behind by assigning
-        // m_activeScene directly.
+        // world.scenes.active directly.
         SetActiveScene(replacement);
     }
 
@@ -259,58 +284,64 @@ void SceneManager::UnloadScene(Scene *scene)
         callback(scene);
     }
 
-    m_loadedSceneSet.erase(scene);
+    world.scenes.loadedSet.erase(scene);
 
-    auto it = std::find_if(m_scenes.begin(), m_scenes.end(),
+    auto it = std::find_if(world.scenes.loaded.begin(), world.scenes.loaded.end(),
                            [scene](const std::unique_ptr<Scene> &s) { return s.get() == scene; });
 
-    if (it != m_scenes.end()) {
+    if (it != world.scenes.loaded.end()) {
         auto retiring = std::move(*it);
-        m_scenes.erase(it);
+        world.scenes.loaded.erase(it);
     }
 }
 
 bool SceneManager::MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWorldId, bool after)
 {
+    auto &world = CurrentWorld();
     if (draggedWorldId == 0 || targetWorldId == 0 || draggedWorldId == targetWorldId)
         return false;
 
-    auto draggedIt = std::find_if(m_scenes.begin(), m_scenes.end(), [draggedWorldId](const auto &candidate) {
-        return candidate && candidate->GetWorldId() == draggedWorldId;
-    });
-    auto targetIt = std::find_if(m_scenes.begin(), m_scenes.end(), [targetWorldId](const auto &candidate) {
-        return candidate && candidate->GetWorldId() == targetWorldId;
-    });
-    if (draggedIt == m_scenes.end() || targetIt == m_scenes.end())
+    auto draggedIt =
+        std::find_if(world.scenes.loaded.begin(), world.scenes.loaded.end(), [draggedWorldId](const auto &candidate) {
+            return candidate && candidate->GetWorldId() == draggedWorldId;
+        });
+    auto targetIt =
+        std::find_if(world.scenes.loaded.begin(), world.scenes.loaded.end(), [targetWorldId](const auto &candidate) {
+            return candidate && candidate->GetWorldId() == targetWorldId;
+        });
+    if (draggedIt == world.scenes.loaded.end() || targetIt == world.scenes.loaded.end())
         return false;
 
     std::unique_ptr<Scene> dragged = std::move(*draggedIt);
-    m_scenes.erase(draggedIt);
-    targetIt = std::find_if(m_scenes.begin(), m_scenes.end(), [targetWorldId](const auto &candidate) {
-        return candidate && candidate->GetWorldId() == targetWorldId;
-    });
+    world.scenes.loaded.erase(draggedIt);
+    targetIt =
+        std::find_if(world.scenes.loaded.begin(), world.scenes.loaded.end(), [targetWorldId](const auto &candidate) {
+            return candidate && candidate->GetWorldId() == targetWorldId;
+        });
     if (after)
         ++targetIt;
-    m_scenes.insert(targetIt, std::move(dragged));
+    world.scenes.loaded.insert(targetIt, std::move(dragged));
     return true;
 }
 
 void SceneManager::Shutdown()
 {
+    const WorldExecutionScope worldScope(&m_defaultWorld);
+    auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
     PhysicsWorld::Instance().CancelPendingStep();
 
     // No play-mode restore logic here — this is irreversible engine teardown.
-    m_isPlaying = false;
-    m_isPaused = false;
+    world.simulation.isPlaying = false;
+    world.simulation.isPaused = false;
     ResetFrameTime();
-    m_startupPending = false;
-    m_fixedPhase = FixedPhase::Idle;
-    m_pausedStepPending = false;
-    m_isStepping = false;
-    m_stepFrameOpen = false;
-    m_fixedSceneWorlds.clear();
-    m_fixedSceneCursor = 0;
+    world.simulation.startupPending = false;
+    world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
+    world.simulation.pausedStepPending = false;
+    world.simulation.isStepping = false;
+    world.simulation.stepFrameOpen = false;
+    world.simulation.fixedSceneWorlds.clear();
+    world.simulation.fixedSceneCursor = 0;
 
     // Destroy the runtime-only persistent Scene first so its colliders release
     // Jolt bodies while PhysicsWorld is still initialized.
@@ -341,27 +372,30 @@ void SceneManager::Shutdown()
 
 void SceneManager::UnloadAllScenes()
 {
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
-    if (m_isPlaying)
+    if (world.simulation.isPlaying)
         FlushPersistentPromotions();
 
     SetActiveScene(nullptr);
 
-    for (auto &scene : m_scenes) {
+    for (auto &scene : world.scenes.loaded) {
         if (auto callback = m_onSceneUnloaded) {
             callback(scene.get());
         }
     }
 
     std::vector<std::unique_ptr<Scene>> retiring;
-    retiring.swap(m_scenes);
-    m_loadedSceneSet.clear();
+    retiring.swap(world.scenes.loaded);
+    world.scenes.loadedSet.clear();
     retiring.clear();
 }
 
 Scene *SceneManager::GetScene(const std::string &name) const
 {
-    for (const auto &scene : m_scenes) {
+    auto &world = CurrentWorld();
+    for (const auto &scene : world.scenes.loaded) {
         if (scene->GetName() == name) {
             return scene.get();
         }
@@ -371,11 +405,13 @@ Scene *SceneManager::GetScene(const std::string &name) const
 
 void SceneManager::Start()
 {
-    for (const auto &scene : m_scenes)
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
+    for (const auto &scene : world.scenes.loaded)
         if (scene)
             scene->Start();
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->Start();
+    if (world.scenes.persistent)
+        world.scenes.persistent->Start();
 }
 
 void SceneManager::SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback beginFrame,
@@ -385,6 +421,7 @@ void SceneManager::SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback be
                                                 RuntimeLifecyclePhaseCallback editorUpdate,
                                                 RuntimeLifecycleEndCallback endFrame)
 {
+    auto &world = CurrentWorld();
     m_runtimeLifecycleBegin = std::move(beginFrame);
     m_runtimeLifecycleFixedUpdate = std::move(fixedUpdate);
     m_runtimeLifecycleUpdate = std::move(update);
@@ -395,32 +432,34 @@ void SceneManager::SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback be
         static_cast<bool>(m_runtimeLifecycleBegin) && static_cast<bool>(m_runtimeLifecycleFixedUpdate) &&
         static_cast<bool>(m_runtimeLifecycleUpdate) && static_cast<bool>(m_runtimeLifecycleLateUpdate) &&
         static_cast<bool>(m_runtimeLifecycleEditorUpdate) && static_cast<bool>(m_runtimeLifecycleEnd);
-    for (const auto &scene : m_scenes) {
+    for (const auto &scene : world.scenes.loaded) {
         if (scene)
             scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     }
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+    if (world.scenes.persistent)
+        world.scenes.persistent->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
 }
 
 void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
 {
-    if (m_runtimeLifecycleWorkAvailable == available)
+    auto &world = CurrentWorld();
+    if (world.lifecycle.runtimeLifecycleWorkAvailable == available)
         return;
 
-    m_runtimeLifecycleWorkAvailable = available;
+    world.lifecycle.runtimeLifecycleWorkAvailable = available;
 }
 
 void SceneManager::SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
                                            size_t animationUpdateCount, size_t lateUpdateCount) noexcept
 {
-    if (revision < m_runtimeLifecyclePlanRevision)
+    auto &world = CurrentWorld();
+    if (revision < world.lifecycle.runtimeLifecyclePlanRevision)
         return;
-    m_runtimeLifecyclePlanRevision = revision;
-    m_runtimeLifecycleFixedUpdateCount = fixedUpdateCount;
-    m_runtimeLifecycleUpdateCount = updateCount;
-    m_runtimeLifecycleAnimationUpdateCount = animationUpdateCount;
-    m_runtimeLifecycleLateUpdateCount = lateUpdateCount;
+    world.lifecycle.runtimeLifecyclePlanRevision = revision;
+    world.lifecycle.runtimeLifecycleFixedUpdateCount = fixedUpdateCount;
+    world.lifecycle.runtimeLifecycleUpdateCount = updateCount;
+    world.lifecycle.runtimeLifecycleAnimationUpdateCount = animationUpdateCount;
+    world.lifecycle.runtimeLifecycleLateUpdateCount = lateUpdateCount;
 }
 
 void SceneManager::SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback callback)
@@ -454,8 +493,9 @@ void SceneManager::EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const
 
 void SceneManager::ClearRuntimeLifecycleCallbacks()
 {
-    if (m_runtimeLifecycleFrameOpen) {
-        m_runtimeLifecycleFrameOpen = false;
+    auto &world = CurrentWorld();
+    if (world.lifecycle.runtimeLifecycleFrameOpen) {
+        world.lifecycle.runtimeLifecycleFrameOpen = false;
         if (auto callback = m_runtimeLifecycleEnd)
             callback();
     }
@@ -468,24 +508,26 @@ void SceneManager::ClearRuntimeLifecycleCallbacks()
     m_runtimeFrameBarrier = nullptr;
     m_runtimeResultConsumer = nullptr;
     m_runtimeLifecycleSchedulerEnabled = false;
-    m_runtimeLifecycleWorkAvailable = false;
-    m_runtimeResultConsumersPresent = false;
-    m_runtimeLifecycleFrameOpen = false;
-    m_runtimeLifecyclePlanRevision = 0;
-    m_runtimeLifecycleFixedUpdateCount = 0;
-    m_runtimeLifecycleUpdateCount = 0;
-    m_runtimeLifecycleAnimationUpdateCount = 0;
-    m_runtimeLifecycleLateUpdateCount = 0;
-    for (const auto &scene : m_scenes) {
+    world.lifecycle.runtimeLifecycleWorkAvailable = false;
+    world.lifecycle.runtimeResultConsumersPresent = false;
+    world.lifecycle.runtimeLifecycleFrameOpen = false;
+    world.lifecycle.runtimeLifecyclePlanRevision = 0;
+    world.lifecycle.runtimeLifecycleFixedUpdateCount = 0;
+    world.lifecycle.runtimeLifecycleUpdateCount = 0;
+    world.lifecycle.runtimeLifecycleAnimationUpdateCount = 0;
+    world.lifecycle.runtimeLifecycleLateUpdateCount = 0;
+    for (const auto &scene : world.scenes.loaded) {
         if (scene)
             scene->SetRuntimeLifecycleSchedulerEnabled(false);
     }
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(false);
+    if (world.scenes.persistent)
+        world.scenes.persistent->SetRuntimeLifecycleSchedulerEnabled(false);
 }
 
 void SceneManager::Update(float deltaTime)
 {
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
     m_lastFrameProfile = {};
     const auto admittedState = GetSimulationState();
 
@@ -497,21 +539,22 @@ void SceneManager::Update(float deltaTime)
     auto t0 = ProfileClock::now();
 #endif
 
-    if (m_pausedStepPending && m_isPlaying && m_isPaused) {
-        Step(m_pausedStepDeltaTime);
+    if (world.simulation.pausedStepPending && world.simulation.isPlaying && world.simulation.isPaused) {
+        Step(world.simulation.pausedStepDeltaTime);
         return;
     }
 
-    if (!m_isPlaying && !m_scenes.empty()) {
-        const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
+    if (!world.simulation.isPlaying && !world.scenes.loaded.empty()) {
+        const bool useRuntimeScheduler =
+            m_runtimeLifecycleSchedulerEnabled && world.lifecycle.runtimeLifecycleWorkAvailable;
         if (useRuntimeScheduler) {
-            m_runtimeLifecycleFrameOpen = true;
+            world.lifecycle.runtimeLifecycleFrameOpen = true;
             if (auto callback = m_runtimeLifecycleBegin)
                 callback();
         }
 
         t0 = ProfileClock::now();
-        for (const auto &scene : m_scenes) {
+        for (const auto &scene : world.scenes.loaded) {
             if (GetSimulationState() != admittedState)
                 return;
             if (scene)
@@ -519,8 +562,9 @@ void SceneManager::Update(float deltaTime)
         }
         m_lastFrameProfile.editorUpdateMs += ProfileMsSince(t0);
 
-        if (useRuntimeScheduler && (m_runtimeLifecycleUpdateCount > 0 || m_runtimeLifecycleAnimationUpdateCount > 0 ||
-                                    m_runtimeLifecycleLateUpdateCount > 0)) {
+        if (useRuntimeScheduler && (world.lifecycle.runtimeLifecycleUpdateCount > 0 ||
+                                    world.lifecycle.runtimeLifecycleAnimationUpdateCount > 0 ||
+                                    world.lifecycle.runtimeLifecycleLateUpdateCount > 0)) {
             if (auto callback = m_runtimeLifecycleEditorUpdate)
                 callback(deltaTime);
         }
@@ -529,12 +573,14 @@ void SceneManager::Update(float deltaTime)
     }
 
     // Update active scene if playing
-    if (m_isPlaying && !m_isPaused && (!m_scenes.empty() || m_runtimePersistentScene)) {
+    if (world.simulation.isPlaying && !world.simulation.isPaused &&
+        (!world.scenes.loaded.empty() || world.scenes.persistent)) {
         // Admit one simulation frame before any lifecycle callback observes it.
         // Fixed-step continuations retain their own already admitted step time.
-        AdvanceFrameTime(deltaTime, std::clamp(deltaTime * m_timeScale, 0.0f, m_maxFixedDeltaTime));
+        AdvanceFrameTime(deltaTime,
+                         std::clamp(deltaTime * world.simulation.timeScale, 0.0f, world.simulation.maxFixedDeltaTime));
         t0 = ProfileClock::now();
-        for (const auto &scene : m_scenes) {
+        for (const auto &scene : world.scenes.loaded) {
             if (GetSimulationState() != admittedState)
                 return;
             if (scene)
@@ -542,18 +588,18 @@ void SceneManager::Update(float deltaTime)
         }
         if (GetSimulationState() != admittedState)
             return;
-        if (m_runtimePersistentScene)
-            m_runtimePersistentScene->ProcessPendingStarts();
+        if (world.scenes.persistent)
+            world.scenes.persistent->ProcessPendingStarts();
         if (GetSimulationState() != admittedState)
             return;
         if (GetSimulationState() != admittedState)
             return;
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
 
-        const bool useRuntimeScheduler =
-            m_runtimeLifecycleSchedulerEnabled && (m_runtimeLifecycleWorkAvailable || HasPendingFixedStep());
+        const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled &&
+                                         (world.lifecycle.runtimeLifecycleWorkAvailable || HasPendingFixedStep());
         if (useRuntimeScheduler) {
-            m_runtimeLifecycleFrameOpen = true;
+            world.lifecycle.runtimeLifecycleFrameOpen = true;
             if (auto callback = m_runtimeLifecycleBegin)
                 callback();
         }
@@ -565,8 +611,8 @@ void SceneManager::Update(float deltaTime)
         // Each host update contributes time once, including while a fixed
         // step is waiting for its dependencies. Resuming that step does not
         // replay FixedUpdate or debit the accumulator until it completes.
-        m_fixedTimeAccumulator += m_frameTime.deltaTime;
-        while (HasPendingFixedStep() || m_fixedTimeAccumulator >= m_fixedTimeStep) {
+        world.simulation.fixedTimeAccumulator += world.simulation.frameTime.deltaTime;
+        while (HasPendingFixedStep() || world.simulation.fixedTimeAccumulator >= world.simulation.fixedTimeStep) {
             const bool current = RunFixedSimulationStep(useRuntimeScheduler, admittedState);
             if (!current)
                 return;
@@ -579,49 +625,53 @@ void SceneManager::Update(float deltaTime)
             return;
 
         t0 = ProfileClock::now();
-        if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
+        if (useRuntimeScheduler && world.lifecycle.runtimeLifecycleUpdateCount > 0) {
             if (auto callback = m_runtimeLifecycleUpdate)
-                callback(m_frameTime.deltaTime);
+                callback(world.simulation.frameTime.deltaTime);
         }
-        for (const auto &scene : m_scenes) {
+        for (const auto &scene : world.scenes.loaded) {
             if (GetSimulationState() != admittedState)
                 return;
             if (scene)
-                scene->Update(m_frameTime.deltaTime);
+                scene->Update(world.simulation.frameTime.deltaTime);
         }
         if (GetSimulationState() != admittedState)
             return;
-        if (m_runtimePersistentScene)
-            m_runtimePersistentScene->Update(m_frameTime.deltaTime);
+        if (world.scenes.persistent)
+            world.scenes.persistent->Update(world.simulation.frameTime.deltaTime);
         if (GetSimulationState() != admittedState)
             return;
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.gameplayUpdateMs += ProfileMsSince(t0);
-        ++m_runtimeFrameCount;
+        ++world.simulation.runtimeFrameCount;
     }
 }
 
 void SceneManager::EnsurePhysicsQueriesCurrent()
 {
-    if (HasPendingFixedStep() && !m_fixedExecuting) {
+    auto &world = CurrentWorld();
+    if (HasPendingFixedStep() && !world.simulation.fixedExecuting) {
         PhysicsWorld::Instance().CompletePendingStep();
     }
-    if (m_scenes.empty() && !m_runtimePersistentScene)
+    if (world.scenes.loaded.empty() && !world.scenes.persistent)
         return;
     FlushPendingBroadphase();
     // Outside play mode nothing steps the simulation, so moved bodies must be
     // teleported (dt = 0): the kinematic-velocity paths would otherwise leave
     // bodies with a velocity that is never integrated nor settled.
-    SyncCollidersToPhysics(m_isPlaying ? GetFixedTimeStep() : 0.0f);
+    SyncCollidersToPhysics(world.simulation.isPlaying ? GetFixedTimeStep() : 0.0f);
 }
 
 void SceneManager::LateUpdate(float deltaTime)
 {
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
     const auto admittedState = GetSimulationState();
-    if (m_isPlaying && !m_isPaused && !HasPendingFixedStep() && (!m_scenes.empty() || m_runtimePersistentScene)) {
+    if (world.simulation.isPlaying && !world.simulation.isPaused && !HasPendingFixedStep() &&
+        (!world.scenes.loaded.empty() || world.scenes.persistent)) {
         auto t0 = ProfileClock::now();
-        for (const auto &scene : m_scenes) {
+        for (const auto &scene : world.scenes.loaded) {
             if (GetSimulationState() != admittedState)
                 return;
             if (scene)
@@ -629,8 +679,8 @@ void SceneManager::LateUpdate(float deltaTime)
         }
         if (GetSimulationState() != admittedState)
             return;
-        if (m_runtimePersistentScene)
-            m_runtimePersistentScene->ProcessPendingStarts();
+        if (world.scenes.persistent)
+            world.scenes.persistent->ProcessPendingStarts();
         if (GetSimulationState() != admittedState)
             return;
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
@@ -639,21 +689,21 @@ void SceneManager::LateUpdate(float deltaTime)
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationEvaluation);
         if (GetSimulationState() != admittedState)
             return;
-        if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable &&
-            m_runtimeLifecycleLateUpdateCount > 0) {
+        if (m_runtimeLifecycleSchedulerEnabled && world.lifecycle.runtimeLifecycleWorkAvailable &&
+            world.lifecycle.runtimeLifecycleLateUpdateCount > 0) {
             if (auto callback = m_runtimeLifecycleLateUpdate)
-                callback(m_frameTime.deltaTime);
+                callback(world.simulation.frameTime.deltaTime);
         }
-        for (const auto &scene : m_scenes) {
+        for (const auto &scene : world.scenes.loaded) {
             if (GetSimulationState() != admittedState)
                 return;
             if (scene)
-                scene->LateUpdate(m_frameTime.deltaTime);
+                scene->LateUpdate(world.simulation.frameTime.deltaTime);
         }
         if (GetSimulationState() != admittedState)
             return;
-        if (m_runtimePersistentScene)
-            m_runtimePersistentScene->LateUpdate(m_frameTime.deltaTime);
+        if (world.scenes.persistent)
+            world.scenes.persistent->LateUpdate(world.simulation.frameTime.deltaTime);
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.lateUpdateMs += ProfileMsSince(t0);
@@ -674,54 +724,58 @@ void SceneManager::LateUpdate(float deltaTime)
 
 void SceneManager::EndFrame(bool completeStep)
 {
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PendingDestroy);
-    if (!m_scenes.empty() || m_runtimePersistentScene) {
+    if (!world.scenes.loaded.empty() || world.scenes.persistent) {
         auto t0 = ProfileClock::now();
-        for (const auto &scene : m_scenes)
+        for (const auto &scene : world.scenes.loaded)
             if (scene)
                 scene->ProcessPendingDestroys();
-        if (m_runtimePersistentScene)
-            m_runtimePersistentScene->ProcessPendingDestroys();
+        if (world.scenes.persistent)
+            world.scenes.persistent->ProcessPendingDestroys();
         FlushPersistentPromotions();
         m_lastFrameProfile.endFrameMs += ProfileMsSince(t0);
     }
-    if (m_runtimeLifecycleFrameOpen) {
-        m_runtimeLifecycleFrameOpen = false;
+    if (world.lifecycle.runtimeLifecycleFrameOpen) {
+        world.lifecycle.runtimeLifecycleFrameOpen = false;
         if (auto callback = m_runtimeLifecycleEnd)
             callback();
     }
     if (completeStep)
-        m_stepFrameOpen = false;
+        world.simulation.stepFrameOpen = false;
 }
 
 void SceneManager::Play()
 {
-    if (m_fixedPhase == FixedPhase::Failed)
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
         throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
     Scene::RequireNoWorldRetirement();
     // Only reset accumulator on initial play, not on resume-from-pause.
-    const bool fresh = !m_isPlaying;
+    const bool fresh = !world.simulation.isPlaying;
     if (fresh) {
         ClearRuntimePersistentScene();
-        m_resetDeltaTimeOnNextFrame = true;
-        m_fixedTimeAccumulator = 0.0f;
-        m_fixedTime = 0.0;
-        m_fixedUnscaledTime = 0.0;
+        world.simulation.resetDeltaTimeOnNextFrame = true;
+        world.simulation.fixedTimeAccumulator = 0.0f;
+        world.simulation.fixedTime = 0.0;
+        world.simulation.fixedUnscaledTime = 0.0;
         ResetFrameTime();
-        m_runtimeFrameCount = 0;
+        world.simulation.runtimeFrameCount = 0;
     }
 
-    m_isPlaying = true;
-    m_isPaused = false;
-    m_pausedStepPending = false;
-    m_stepFrameOpen = false;
+    world.simulation.isPlaying = true;
+    world.simulation.isPaused = false;
+    world.simulation.pausedStepPending = false;
+    world.simulation.stepFrameOpen = false;
     if (fresh) {
-        ++m_simulationEpoch;
-        m_startupPending = true;
-        m_fixedStepIndex = 0;
-        m_completedFixedStepIndex = 0;
-        m_publishedFixedStepIndex = 0;
-        m_fixedPhase = FixedPhase::Idle;
+        ++world.simulation.simulationEpoch;
+        world.simulation.startupPending = true;
+        world.simulation.fixedStepIndex = 0;
+        world.simulation.completedFixedStepIndex = 0;
+        world.simulation.publishedFixedStepIndex = 0;
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
     }
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
@@ -731,15 +785,17 @@ void SceneManager::Play()
     if (auto callback = m_onPlayStateChanged)
         callback(true);
 
-    m_resetDeltaTimeOnNextFrame = true;
-    if (m_startupPending)
+    world.simulation.resetDeltaTimeOnNextFrame = true;
+    if (world.simulation.startupPending)
         StartActiveSceneForPlay();
 }
 
 void SceneManager::StartActiveSceneForPlay()
 {
-    if (m_scenes.empty()) {
-        m_startupPending = false;
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
+    if (world.scenes.loaded.empty()) {
+        world.simulation.startupPending = false;
         return;
     }
     const auto admittedState = GetSimulationState();
@@ -747,10 +803,10 @@ void SceneManager::StartActiveSceneForPlay()
     // Scene-relative frame numbering is the useful contract for deterministic
     // capture and diagnostics. A transactional scene replacement therefore
     // starts a fresh sequence even though the play session itself continues.
-    m_runtimeFrameCount = 0;
+    world.simulation.runtimeFrameCount = 0;
 
     const auto transitionStart = ProfileClock::now();
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : world.scenes.loaded)
         if (scene)
             scene->SetPlaying(true);
 
@@ -759,13 +815,13 @@ void SceneManager::StartActiveSceneForPlay()
     // values from recycled ECS slots. Jolt shapes consume world scale during
     // body creation, so synchronize the graph before Collider::RegisterBody.
     auto phaseStart = ProfileClock::now();
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : world.scenes.loaded)
         if (scene)
             TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
     const double initialTransformMs = ProfileMsSince(phaseStart);
 
     phaseStart = ProfileClock::now();
-    for (const auto &scene : m_scenes) {
+    for (const auto &scene : world.scenes.loaded) {
         if (GetSimulationState() != admittedState)
             return;
         if (scene)
@@ -779,7 +835,7 @@ void SceneManager::StartActiveSceneForPlay()
     // Start callbacks may author transforms. Publish those edits before shape
     // creation as well, matching the transform state visible to gameplay.
     phaseStart = ProfileClock::now();
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : world.scenes.loaded)
         if (scene)
             TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
     const double postStartTransformMs = ProfileMsSince(phaseStart);
@@ -788,7 +844,7 @@ void SceneManager::StartActiveSceneForPlay()
     // records exactly which physics actors changed, so avoid rewriting every
     // resident body when entering Play Mode.
     phaseStart = ProfileClock::now();
-    SyncCollidersToPhysics(m_fixedTimeStep);
+    SyncCollidersToPhysics(world.simulation.fixedTimeStep);
     const double colliderSyncMs = ProfileMsSince(phaseStart);
 
     phaseStart = ProfileClock::now();
@@ -799,7 +855,7 @@ void SceneManager::StartActiveSceneForPlay()
     FlushPendingBroadphase();
     const double flushMs = ProfileMsSince(phaseStart);
 
-    m_startupPending = false;
+    world.simulation.startupPending = false;
 
     const double totalMs = ProfileMsSince(transitionStart);
     if (totalMs > 25.0) {
@@ -812,9 +868,11 @@ void SceneManager::StartActiveSceneForPlay()
 
 void SceneManager::StartSceneForPlay(Scene *scene)
 {
-    if (!scene || m_loadedSceneSet.find(scene) == m_loadedSceneSet.end())
+    const WorldExecutionScope worldScope(scene ? scene->GetRuntimeWorld() : nullptr);
+    auto &world = CurrentWorld();
+    if (!scene || world.scenes.loadedSet.find(scene) == world.scenes.loadedSet.end())
         throw std::invalid_argument("additive Scene must be loaded before entering Play");
-    if (!m_isPlaying)
+    if (!world.simulation.isPlaying)
         throw std::logic_error("additive Scene can enter Play only during a play session");
 
     scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
@@ -825,7 +883,7 @@ void SceneManager::StartSceneForPlay(Scene *scene)
     if (GetSimulationState() != admittedState)
         return;
     TransformECSStore::Instance().SyncSceneWorldMatrices(scene);
-    SyncCollidersToPhysics(m_fixedTimeStep);
+    SyncCollidersToPhysics(world.simulation.fixedTimeStep);
     FlushPendingBroadphase();
     MeshCollider::FlushCompletedCooking(true);
     FlushPendingBroadphase();
@@ -833,31 +891,33 @@ void SceneManager::StartSceneForPlay(Scene *scene)
 
 void SceneManager::Stop()
 {
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
     PhysicsWorld::Instance().CancelPendingStep();
-    const bool wasPlaying = m_isPlaying;
-    m_isPlaying = false;
-    m_isPaused = false;
+    const bool wasPlaying = world.simulation.isPlaying;
+    world.simulation.isPlaying = false;
+    world.simulation.isPaused = false;
     if (wasPlaying) {
-        ++m_simulationEpoch;
-        m_fixedStepIndex = 0;
-        m_completedFixedStepIndex = 0;
-        m_publishedFixedStepIndex = 0;
+        ++world.simulation.simulationEpoch;
+        world.simulation.fixedStepIndex = 0;
+        world.simulation.completedFixedStepIndex = 0;
+        world.simulation.publishedFixedStepIndex = 0;
     }
     // CancelPendingStep retires bound constraints before the Play epoch ends.
     // Drop those callbacks' pending nodes before editor/runtime graph restore.
     PhysicsECSStore::Instance().ClearPendingJoints();
-    m_fixedPhase = FixedPhase::Idle;
-    m_pausedStepPending = false;
-    m_stepFrameOpen = false;
+    world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
+    world.simulation.pausedStepPending = false;
+    world.simulation.stepFrameOpen = false;
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
 #endif
-    m_fixedTimeAccumulator = 0.0f;
-    m_fixedTime = 0.0;
-    m_fixedUnscaledTime = 0.0;
+    world.simulation.fixedTimeAccumulator = 0.0f;
+    world.simulation.fixedTime = 0.0;
+    world.simulation.fixedUnscaledTime = 0.0;
     ResetFrameTime();
-    m_runtimeFrameCount = 0;
+    world.simulation.runtimeFrameCount = 0;
 
     // Notify renderer that play stopped.
     if (auto callback = m_onPlayStateChanged)
@@ -874,9 +934,11 @@ void SceneManager::Stop()
 
 void SceneManager::Pause()
 {
-    if (!m_isPlaying || m_isPaused)
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
+    if (!world.simulation.isPlaying || world.simulation.isPaused)
         return;
-    m_isPaused = true;
+    world.simulation.isPaused = true;
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().PauseAll();
 #endif
@@ -884,18 +946,21 @@ void SceneManager::Pause()
 
 void SceneManager::Step(float requestedDeltaTime)
 {
-    if (m_fixedPhase == FixedPhase::Failed)
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
         throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
-    if (!m_isPaused || !m_isPlaying || (m_scenes.empty() && !m_runtimePersistentScene))
+    if (!world.simulation.isPaused || !world.simulation.isPlaying ||
+        (world.scenes.loaded.empty() && !world.scenes.persistent))
         return;
-    if (m_isStepping || (m_stepFrameOpen && !m_pausedStepPending))
+    if (world.simulation.isStepping || (world.simulation.stepFrameOpen && !world.simulation.pausedStepPending))
         throw std::logic_error("a paused simulation step cannot be reentered");
-    const bool beginningFrame = !m_pausedStepPending;
-    m_isStepping = true;
-    m_pausedStepPending = true;
+    const bool beginningFrame = !world.simulation.pausedStepPending;
+    world.simulation.isStepping = true;
+    world.simulation.pausedStepPending = true;
     if (beginningFrame)
-        m_pausedStepDeltaTime = requestedDeltaTime;
-    const float deltaTime = m_pausedStepDeltaTime;
+        world.simulation.pausedStepDeltaTime = requestedDeltaTime;
+    const float deltaTime = world.simulation.pausedStepDeltaTime;
     struct StepScope
     {
         bool &active;
@@ -903,19 +968,19 @@ void SceneManager::Step(float requestedDeltaTime)
         {
             active = false;
         }
-    } stepScope{m_isStepping};
+    } stepScope{world.simulation.isStepping};
     const auto admittedState = GetSimulationState();
     if (beginningFrame)
-        AdvanceFrameTime(m_timeScale > 0.0f ? deltaTime / m_timeScale : 0.0f, deltaTime);
+        AdvanceFrameTime(world.simulation.timeScale > 0.0f ? deltaTime / world.simulation.timeScale : 0.0f, deltaTime);
 
-    if (m_startupPending) {
+    if (world.simulation.startupPending) {
         StartActiveSceneForPlay();
         if (GetSimulationState() != admittedState)
             return;
     }
     m_lastFrameProfile = {};
     auto phaseStarted = ProfileClock::now();
-    for (const auto &scene : m_scenes) {
+    for (const auto &scene : world.scenes.loaded) {
         if (GetSimulationState() != admittedState)
             return;
         if (scene)
@@ -923,16 +988,16 @@ void SceneManager::Step(float requestedDeltaTime)
     }
     if (GetSimulationState() != admittedState)
         return;
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->ProcessPendingStarts();
+    if (world.scenes.persistent)
+        world.scenes.persistent->ProcessPendingStarts();
     if (GetSimulationState() != admittedState)
         return;
     m_lastFrameProfile.pendingStartsMs += ProfileMsSince(phaseStarted);
     const bool useRuntimeScheduler =
-        m_runtimeLifecycleSchedulerEnabled &&
-        (m_runtimeLifecycleWorkAvailable || HasPendingFixedStep() || m_runtimeResultConsumersPresent);
+        m_runtimeLifecycleSchedulerEnabled && (world.lifecycle.runtimeLifecycleWorkAvailable || HasPendingFixedStep() ||
+                                               world.lifecycle.runtimeResultConsumersPresent);
     if (useRuntimeScheduler) {
-        m_runtimeLifecycleFrameOpen = true;
+        world.lifecycle.runtimeLifecycleFrameOpen = true;
         if (auto callback = m_runtimeLifecycleBegin)
             callback();
     }
@@ -941,16 +1006,16 @@ void SceneManager::Step(float requestedDeltaTime)
         return;
     if (GetSimulationState() != admittedState || !RunFixedSimulationStep(useRuntimeScheduler, admittedState))
         return;
-    m_pausedStepPending = false;
+    world.simulation.pausedStepPending = false;
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
     if (GetSimulationState() != admittedState)
         return;
     phaseStarted = ProfileClock::now();
-    if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
+    if (useRuntimeScheduler && world.lifecycle.runtimeLifecycleUpdateCount > 0) {
         if (auto callback = m_runtimeLifecycleUpdate)
             callback(deltaTime);
     }
-    for (const auto &scene : m_scenes) {
+    for (const auto &scene : world.scenes.loaded) {
         if (GetSimulationState() != admittedState)
             return;
         if (scene)
@@ -958,15 +1023,15 @@ void SceneManager::Step(float requestedDeltaTime)
     }
     if (GetSimulationState() != admittedState)
         return;
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->Update(deltaTime);
+    if (world.scenes.persistent)
+        world.scenes.persistent->Update(deltaTime);
     if (GetSimulationState() != admittedState)
         return;
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
     m_lastFrameProfile.gameplayUpdateMs += ProfileMsSince(phaseStarted);
     phaseStarted = ProfileClock::now();
-    for (const auto &scene : m_scenes) {
+    for (const auto &scene : world.scenes.loaded) {
         if (GetSimulationState() != admittedState)
             return;
         if (scene)
@@ -974,8 +1039,8 @@ void SceneManager::Step(float requestedDeltaTime)
     }
     if (GetSimulationState() != admittedState)
         return;
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->ProcessPendingStarts();
+    if (world.scenes.persistent)
+        world.scenes.persistent->ProcessPendingStarts();
     if (GetSimulationState() != admittedState)
         return;
     m_lastFrameProfile.pendingStartsMs += ProfileMsSince(phaseStarted);
@@ -983,11 +1048,11 @@ void SceneManager::Step(float requestedDeltaTime)
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::AnimationEvaluation);
     if (GetSimulationState() != admittedState)
         return;
-    if (useRuntimeScheduler && m_runtimeLifecycleLateUpdateCount > 0) {
+    if (useRuntimeScheduler && world.lifecycle.runtimeLifecycleLateUpdateCount > 0) {
         if (auto callback = m_runtimeLifecycleLateUpdate)
             callback(deltaTime);
     }
-    for (const auto &scene : m_scenes) {
+    for (const auto &scene : world.scenes.loaded) {
         if (GetSimulationState() != admittedState)
             return;
         if (scene)
@@ -995,22 +1060,22 @@ void SceneManager::Step(float requestedDeltaTime)
     }
     if (GetSimulationState() != admittedState)
         return;
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->LateUpdate(deltaTime);
+    if (world.scenes.persistent)
+        world.scenes.persistent->LateUpdate(deltaTime);
     if (GetSimulationState() != admittedState)
         return;
     m_lastFrameProfile.lateUpdateMs += ProfileMsSince(phaseStarted);
-    ++m_runtimeFrameCount;
+    ++world.simulation.runtimeFrameCount;
     phaseStarted = ProfileClock::now();
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : world.scenes.loaded)
         if (scene)
             TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
     if (GetSimulationState() != admittedState)
         return;
-    if (m_runtimePersistentScene)
-        TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
+    if (world.scenes.persistent)
+        TransformECSStore::Instance().SyncSceneWorldMatrices(world.scenes.persistent.get());
     if (!TransformECSStore::Instance().IsFrameCacheActive()) {
         PublishSkeletonPoses();
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
@@ -1024,55 +1089,61 @@ void SceneManager::Step(float requestedDeltaTime)
 
 void SceneManager::DontDestroyOnLoad(GameObject *gameObject)
 {
+    const WorldExecutionScope worldScope(
+        gameObject && gameObject->GetScene() ? gameObject->GetScene()->GetRuntimeWorld() : nullptr);
+    auto &world = CurrentWorld();
     // DontDestroyOnLoad is runtime residency, not an authored flag. Ignoring
     // Edit Mode calls prevents a script/tool invocation from leaking an object
     // across project or play-session boundaries.
-    if (!m_isPlaying || !gameObject)
+    if (!world.simulation.isPlaying || !gameObject)
         return;
 
     while (gameObject->GetParent())
         gameObject = gameObject->GetParent();
-    if (gameObject->GetScene() == m_runtimePersistentScene.get())
+    if (gameObject->GetScene() == world.scenes.persistent.get())
         return;
     if (!gameObject->GetScene())
         return;
 
     gameObject->SetPersistent(true);
-    if (m_pendingPersistentRootIdSet.insert(gameObject->GetID()).second)
-        m_pendingPersistentRootIds.push_back(gameObject->GetID());
+    if (world.scenes.pendingPersistentRootIdSet.insert(gameObject->GetID()).second)
+        world.scenes.pendingPersistentRootIds.push_back(gameObject->GetID());
 }
 
 Scene *SceneManager::EnsureRuntimePersistentScene()
 {
-    if (!m_isPlaying)
+    auto &world = CurrentWorld();
+    if (!world.simulation.isPlaying)
         return nullptr;
-    if (!m_runtimePersistentScene) {
-        m_runtimePersistentScene = std::make_unique<Scene>("DontDestroyOnLoad");
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
-        m_runtimePersistentScene->SetPlaying(true);
+    if (!world.scenes.persistent) {
+        world.scenes.persistent = std::make_unique<Scene>("DontDestroyOnLoad");
+        world.scenes.persistent->m_runtimeWorld = &world;
+        world.scenes.persistent->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+        world.scenes.persistent->SetPlaying(true);
         // Start the empty Scene once. Trees transferred into it already own
         // their lifecycle state and must never replay Awake/Start/OnEnable.
-        m_runtimePersistentScene->Start();
+        world.scenes.persistent->Start();
     }
-    return m_runtimePersistentScene.get();
+    return world.scenes.persistent.get();
 }
 
 GameObject *SceneManager::FindRuntimeObjectByID(uint64_t id) const
 {
+    auto &world = CurrentWorld();
     if (id == 0)
         return nullptr;
-    if (m_activeScene) {
-        if (GameObject *object = m_activeScene->FindByID(id))
+    if (world.scenes.active) {
+        if (GameObject *object = world.scenes.active->FindByID(id))
             return object;
     }
-    for (const auto &scene : m_scenes) {
-        if (!scene || scene.get() == m_activeScene)
+    for (const auto &scene : world.scenes.loaded) {
+        if (!scene || scene.get() == world.scenes.active)
             continue;
         if (GameObject *object = scene->FindByID(id))
             return object;
     }
-    if (m_runtimePersistentScene) {
-        if (GameObject *object = m_runtimePersistentScene->FindByID(id))
+    if (world.scenes.persistent) {
+        if (GameObject *object = world.scenes.persistent->FindByID(id))
             return object;
     }
     return nullptr;
@@ -1080,14 +1151,15 @@ GameObject *SceneManager::FindRuntimeObjectByID(uint64_t id) const
 
 Scene *SceneManager::GetSceneByWorldId(uint64_t worldId) const noexcept
 {
+    auto &world = CurrentWorld();
     if (worldId == 0)
         return nullptr;
-    for (const auto &scene : m_scenes) {
+    for (const auto &scene : world.scenes.loaded) {
         if (scene && scene->GetWorldId() == worldId)
             return scene.get();
     }
-    if (m_runtimePersistentScene && m_runtimePersistentScene->GetWorldId() == worldId)
-        return m_runtimePersistentScene.get();
+    if (world.scenes.persistent && world.scenes.persistent->GetWorldId() == worldId)
+        return world.scenes.persistent.get();
     for (const auto &scene : m_previewScenes)
         if (scene->GetWorldId() == worldId)
             return scene.get();
@@ -1096,36 +1168,39 @@ Scene *SceneManager::GetSceneByWorldId(uint64_t worldId) const noexcept
 
 GameObject *SceneManager::FindRuntimeObject(const std::string &name) const
 {
-    if (m_activeScene) {
-        if (GameObject *object = m_activeScene->Find(name))
+    auto &world = CurrentWorld();
+    if (world.scenes.active) {
+        if (GameObject *object = world.scenes.active->Find(name))
             return object;
     }
-    for (const auto &scene : m_scenes) {
-        if (!scene || scene.get() == m_activeScene)
+    for (const auto &scene : world.scenes.loaded) {
+        if (!scene || scene.get() == world.scenes.active)
             continue;
         if (GameObject *object = scene->Find(name))
             return object;
     }
-    return m_runtimePersistentScene ? m_runtimePersistentScene->Find(name) : nullptr;
+    return world.scenes.persistent ? world.scenes.persistent->Find(name) : nullptr;
 }
 
 GameObject *SceneManager::FindRuntimeObjectWithTag(const std::string &tag) const
 {
-    if (m_activeScene) {
-        if (GameObject *object = m_activeScene->FindWithTag(tag))
+    auto &world = CurrentWorld();
+    if (world.scenes.active) {
+        if (GameObject *object = world.scenes.active->FindWithTag(tag))
             return object;
     }
-    for (const auto &scene : m_scenes) {
-        if (!scene || scene.get() == m_activeScene)
+    for (const auto &scene : world.scenes.loaded) {
+        if (!scene || scene.get() == world.scenes.active)
             continue;
         if (GameObject *object = scene->FindWithTag(tag))
             return object;
     }
-    return m_runtimePersistentScene ? m_runtimePersistentScene->FindWithTag(tag) : nullptr;
+    return world.scenes.persistent ? world.scenes.persistent->FindWithTag(tag) : nullptr;
 }
 
 std::vector<GameObject *> SceneManager::FindRuntimeObjectsWithTag(const std::string &tag) const
 {
+    auto &world = CurrentWorld();
     std::vector<GameObject *> objects;
     const auto append = [&](const Scene *scene) {
         if (!scene)
@@ -1133,17 +1208,18 @@ std::vector<GameObject *> SceneManager::FindRuntimeObjectsWithTag(const std::str
         auto found = scene->FindGameObjectsWithTag(tag);
         objects.insert(objects.end(), found.begin(), found.end());
     };
-    append(m_activeScene);
-    for (const auto &scene : m_scenes) {
-        if (scene && scene.get() != m_activeScene)
+    append(world.scenes.active);
+    for (const auto &scene : world.scenes.loaded) {
+        if (scene && scene.get() != world.scenes.active)
             append(scene.get());
     }
-    append(m_runtimePersistentScene.get());
+    append(world.scenes.persistent.get());
     return objects;
 }
 
 std::vector<GameObject *> SceneManager::FindRuntimeObjectsInLayer(int layer) const
 {
+    auto &world = CurrentWorld();
     std::vector<GameObject *> objects;
     const auto append = [&](const Scene *scene) {
         if (!scene)
@@ -1151,20 +1227,23 @@ std::vector<GameObject *> SceneManager::FindRuntimeObjectsInLayer(int layer) con
         auto found = scene->FindGameObjectsInLayer(layer);
         objects.insert(objects.end(), found.begin(), found.end());
     };
-    append(m_activeScene);
-    for (const auto &scene : m_scenes) {
-        if (scene && scene.get() != m_activeScene)
+    append(world.scenes.active);
+    for (const auto &scene : world.scenes.loaded) {
+        if (scene && scene.get() != world.scenes.active)
             append(scene.get());
     }
-    append(m_runtimePersistentScene.get());
+    append(world.scenes.persistent.get());
     return objects;
 }
 
 void SceneManager::MoveGameObjectToScene(GameObject *gameObject, Scene *destination)
 {
+    const WorldExecutionScope worldScope(
+        gameObject && gameObject->GetScene() ? gameObject->GetScene()->GetRuntimeWorld() : nullptr);
+    auto &world = CurrentWorld();
     if (!gameObject || !destination)
         throw std::invalid_argument("game object and destination Scene are required");
-    if (m_loadedSceneSet.find(destination) == m_loadedSceneSet.end())
+    if (world.scenes.loadedSet.find(destination) == world.scenes.loadedSet.end())
         throw std::invalid_argument("destination Scene must be loaded");
     Scene *source = gameObject->GetScene();
     if (!source || !IsRuntimeScene(source))
@@ -1179,12 +1258,13 @@ void SceneManager::MoveGameObjectToScene(GameObject *gameObject, Scene *destinat
 
 void SceneManager::FlushPersistentPromotions()
 {
-    if (!m_isPlaying || m_pendingPersistentRootIds.empty())
+    auto &world = CurrentWorld();
+    if (!world.simulation.isPlaying || world.scenes.pendingPersistentRootIds.empty())
         return;
 
     std::vector<uint64_t> requests;
-    requests.swap(m_pendingPersistentRootIds);
-    m_pendingPersistentRootIdSet.clear();
+    requests.swap(world.scenes.pendingPersistentRootIds);
+    world.scenes.pendingPersistentRootIdSet.clear();
     Scene *persistentScene = EnsureRuntimePersistentScene();
     if (!persistentScene)
         return;
@@ -1207,16 +1287,19 @@ void SceneManager::FlushPersistentPromotions()
 
 void SceneManager::PrepareActiveSceneReplacement()
 {
+    auto &world = CurrentWorld();
     // Finish accepted work against the old graph before retiring its actors.
     // This does not run FixedUpdate or admit another solver step, and leaves
     // additive/persistent actors on the same compute owner.
     auto &physics = PhysicsWorld::Instance();
     const bool retainedStep = physics.HasPendingStep();
-    const bool needsPublication = m_fixedHasPhysics && (m_fixedPhase == FixedPhase::Publication ||
-                                                        (retainedStep && m_fixedPhase == FixedPhase::Integration));
+    const bool needsPublication =
+        world.simulation.fixedHasPhysics &&
+        (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Publication ||
+         (retainedStep && world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Integration));
     physics.CompletePendingStep();
-    if (retainedStep && m_fixedPhase == FixedPhase::Integration) {
-        if (!physics.Step(m_admittedFixedDeltaTime))
+    if (retainedStep && world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Integration) {
+        if (!physics.Step(world.simulation.admittedFixedDeltaTime))
             throw std::logic_error("Completed physical step did not retire at the scene replacement boundary");
     }
     if (needsPublication) {
@@ -1226,13 +1309,13 @@ void SceneManager::PrepareActiveSceneReplacement()
     // Scene pointer does not change and SetActiveScene cannot publish this
     // boundary. Discard both wall-clock loading time and old-scene fixed-step
     // remainder before the new graph is allowed to tick.
-    m_fixedTimeAccumulator = 0.0f;
-    m_fixedPhase = FixedPhase::Idle;
-    m_pausedStepPending = false;
-    m_stepFrameOpen = false;
+    world.simulation.fixedTimeAccumulator = 0.0f;
+    world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
+    world.simulation.pausedStepPending = false;
+    world.simulation.stepFrameOpen = false;
     ResetFrameDelta();
-    m_resetDeltaTimeOnNextFrame = true;
-    if (m_isPlaying) {
+    world.simulation.resetDeltaTimeOnNextFrame = true;
+    if (world.simulation.isPlaying) {
         FlushPersistentPromotions();
         // Publish promoted bodies at this explicit Single-replacement boundary.
         // Scene commits retain other Worlds' pending physics work.
@@ -1242,29 +1325,33 @@ void SceneManager::PrepareActiveSceneReplacement()
 
 void SceneManager::UpdateRuntimeScenePlayingState(bool playing)
 {
-    for (const auto &scene : m_scenes)
+    auto &world = CurrentWorld();
+    for (const auto &scene : world.scenes.loaded)
         if (scene)
             scene->SetPlaying(playing);
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetPlaying(playing);
+    if (world.scenes.persistent)
+        world.scenes.persistent->SetPlaying(playing);
 }
 
 void SceneManager::ClearRuntimePersistentScene()
 {
+    auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
-    for (uint64_t id : m_pendingPersistentRootIds) {
+    for (uint64_t id : world.scenes.pendingPersistentRootIds) {
         if (GameObject *root = FindRuntimeObjectByID(id))
             root->SetPersistent(false);
     }
-    m_pendingPersistentRootIds.clear();
-    m_pendingPersistentRootIdSet.clear();
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetPlaying(false);
-    m_runtimePersistentScene.reset();
+    world.scenes.pendingPersistentRootIds.clear();
+    world.scenes.pendingPersistentRootIdSet.clear();
+    if (world.scenes.persistent)
+        world.scenes.persistent->SetPlaying(false);
+    world.scenes.persistent.reset();
 }
 
 void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
 {
+    const WorldExecutionScope worldScope(sceneBeingRebuilt ? sceneBeingRebuilt->GetRuntimeWorld() : nullptr);
+    auto &world = CurrentWorld();
     auto restore = [this](Scene *scene) {
         if (!scene)
             return;
@@ -1281,10 +1368,10 @@ void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
             }
         }
     };
-    for (const auto &scene : m_scenes)
+    for (const auto &scene : world.scenes.loaded)
         if (scene && scene.get() != sceneBeingRebuilt)
             restore(scene.get());
-    restore(m_runtimePersistentScene.get());
+    restore(world.scenes.persistent.get());
 }
 
 void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
@@ -1319,17 +1406,18 @@ void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
 
 void SceneManager::PublishAuthoredTransformsToPhysics()
 {
+    auto &world = CurrentWorld();
     if (HasPendingFixedStep())
         return; // The retained step owns its original synchronization boundary and dt.
     // Runtime persistence is committed only after the Transform frame cache
     // has flushed. Moving a root while that cache still names the authored
     // Scene would otherwise make EndFrameCache skip its dirty slots.
     FlushPersistentPromotions();
-    if (m_runtimePersistentScene)
-        TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
+    if (world.scenes.persistent)
+        TransformECSStore::Instance().SyncSceneWorldMatrices(world.scenes.persistent.get());
 
     auto &store = PhysicsECSStore::Instance();
-    if (m_scenes.empty() && !m_runtimePersistentScene)
+    if (world.scenes.loaded.empty() && !world.scenes.persistent)
         return;
 
     // Transform writes performed by Update/LateUpdate are collected by the
@@ -1348,11 +1436,13 @@ void SceneManager::PublishAuthoredTransformsToPhysics()
 
 bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const SimulationState &admittedState)
 {
-    if (m_fixedPhase == FixedPhase::Failed)
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
         throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
-    if (m_fixedExecuting)
+    if (world.simulation.fixedExecuting)
         throw std::logic_error("a fixed simulation step cannot be reentered");
-    m_fixedExecuting = true;
+    world.simulation.fixedExecuting = true;
     struct ExecutionScope
     {
         bool &active;
@@ -1360,83 +1450,85 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
         {
             active = false;
         }
-    } executionScope{m_fixedExecuting};
+    } executionScope{world.simulation.fixedExecuting};
     const auto validWorld = [&] {
-        return m_simulationEpoch == std::get<0>(admittedState) && m_isPlaying && m_fixedPhase != FixedPhase::Idle;
+        return world.simulation.simulationEpoch == std::get<0>(admittedState) && world.simulation.isPlaying &&
+               world.simulation.fixedPhase != RuntimeWorld::FixedPhase::Idle;
     };
     const auto current = [&] { return validWorld() && GetSimulationState() == admittedState; };
-    if (m_fixedPhase == FixedPhase::Idle) {
-        m_admittedFixedDeltaTime = m_fixedTimeStep;
-        m_fixedAccumulatorDebit = !m_isStepping;
-        m_fixedHasPhysics = false;
-        ++m_fixedStepIndex;
-        m_fixedTime += static_cast<double>(m_admittedFixedDeltaTime);
-        if (m_timeScale > 0.0f)
-            m_fixedUnscaledTime += static_cast<double>(m_admittedFixedDeltaTime / m_timeScale);
-        m_fixedSceneWorlds.clear();
-        for (const auto &scene : m_scenes)
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Idle) {
+        world.simulation.admittedFixedDeltaTime = world.simulation.fixedTimeStep;
+        world.simulation.fixedAccumulatorDebit = !world.simulation.isStepping;
+        world.simulation.fixedHasPhysics = false;
+        ++world.simulation.fixedStepIndex;
+        world.simulation.fixedTime += static_cast<double>(world.simulation.admittedFixedDeltaTime);
+        if (world.simulation.timeScale > 0.0f)
+            world.simulation.fixedUnscaledTime +=
+                static_cast<double>(world.simulation.admittedFixedDeltaTime / world.simulation.timeScale);
+        world.simulation.fixedSceneWorlds.clear();
+        for (const auto &scene : world.scenes.loaded)
             if (scene)
-                m_fixedSceneWorlds.push_back(scene->GetWorldId());
-        if (m_runtimePersistentScene)
-            m_fixedSceneWorlds.push_back(m_runtimePersistentScene->GetWorldId());
-        m_fixedSceneCursor = 0;
-        m_fixedPhase = FixedPhase::SceneScripts;
+                world.simulation.fixedSceneWorlds.push_back(scene->GetWorldId());
+        if (world.scenes.persistent)
+            world.simulation.fixedSceneWorlds.push_back(world.scenes.persistent->GetWorldId());
+        world.simulation.fixedSceneCursor = 0;
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::SceneScripts;
         FlushPendingBroadphase();
         if (!current())
             return false;
         const auto phaseStart = ProfileClock::now();
-        if (useRuntimeScheduler && m_runtimeLifecycleFixedUpdateCount > 0)
+        if (useRuntimeScheduler && world.lifecycle.runtimeLifecycleFixedUpdateCount > 0)
             if (auto callback = m_runtimeLifecycleFixedUpdate)
-                callback(m_admittedFixedDeltaTime);
+                callback(world.simulation.admittedFixedDeltaTime);
         m_lastFrameProfile.fixedUpdateMs += ProfileMsSince(phaseStart);
         if (!current())
             return false;
     }
-    if (m_fixedPhase == FixedPhase::SceneScripts) {
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::SceneScripts) {
         if (!RuntimeResultsReady(RuntimeFrameBarrier::FixedScript) || !current())
             return false;
         const auto phaseStart = ProfileClock::now();
-        while (m_fixedSceneCursor < m_fixedSceneWorlds.size()) {
-            if (auto *scene = GetSceneByWorldId(m_fixedSceneWorlds[m_fixedSceneCursor]))
-                scene->FixedUpdate(m_admittedFixedDeltaTime);
+        while (world.simulation.fixedSceneCursor < world.simulation.fixedSceneWorlds.size()) {
+            if (auto *scene = GetSceneByWorldId(world.simulation.fixedSceneWorlds[world.simulation.fixedSceneCursor]))
+                scene->FixedUpdate(world.simulation.admittedFixedDeltaTime);
             if (!current())
                 return false;
-            ++m_fixedSceneCursor;
+            ++world.simulation.fixedSceneCursor;
         }
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.fixedUpdateMs += ProfileMsSince(phaseStart);
-        m_fixedPhase = FixedPhase::Control;
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Control;
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformToPhysics);
         if (!current())
             return false;
     }
-    if (m_fixedPhase == FixedPhase::Control) {
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Control) {
         if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsSimulation) || !current())
             return false;
         // Applying a result may author Transform, body, or joint data. The
         // admitted dt belongs to this step even when settings changed while waiting.
         FlushPendingBroadphase();
-        SyncCollidersToPhysics(m_admittedFixedDeltaTime);
-        m_fixedPhase = FixedPhase::Integration;
+        SyncCollidersToPhysics(world.simulation.admittedFixedDeltaTime);
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Integration;
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsSimulation);
         if (!current())
             return false;
     }
-    if (m_fixedPhase == FixedPhase::Integration) {
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Integration) {
         if (PhysicsWorld::Instance().HasPendingStep() || PhysicsWorld::Instance().HasPendingControl() ||
             PhysicsECSStore::Instance().GetAliveRigidbodyCount() > 0) {
-            m_fixedHasPhysics = true;
+            world.simulation.fixedHasPhysics = true;
             const auto phaseStart = ProfileClock::now();
             PhysicsStepProfile profile;
             bool completed = false;
             try {
-                completed = PhysicsWorld::Instance().Step(m_admittedFixedDeltaTime, &profile);
+                completed = PhysicsWorld::Instance().Step(world.simulation.admittedFixedDeltaTime, &profile);
             } catch (...) {
                 // Accepted GPU work may have changed its retained storage. Preserve the
                 // last published world and never replay this admitted step.
-                m_fixedPhase = FixedPhase::Failed;
-                m_pausedStepPending = false;
+                world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Failed;
+                world.simulation.pausedStepPending = false;
                 Pause();
                 throw;
             }
@@ -1450,14 +1542,14 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             if (!completed)
                 return false;
         }
-        m_completedFixedStepIndex = m_fixedStepIndex;
+        world.simulation.completedFixedStepIndex = world.simulation.fixedStepIndex;
         m_lastFrameProfile.fixedSteps += 1.0;
-        if (m_fixedAccumulatorDebit)
-            m_fixedTimeAccumulator -= m_admittedFixedDeltaTime;
+        if (world.simulation.fixedAccumulatorDebit)
+            world.simulation.fixedTimeAccumulator -= world.simulation.admittedFixedDeltaTime;
         // Mark before user collision callbacks: a Pause or delayed publication
         // must never repeat the solver or dispatch this batch a second time.
-        m_fixedPhase = FixedPhase::Publication;
-        if (m_fixedHasPhysics) {
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Publication;
+        if (world.simulation.fixedHasPhysics) {
             const auto phaseStart = ProfileClock::now();
             m_lastFrameProfile.contactEvents += static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
             m_lastFrameProfile.physicsEventsMs += ProfileMsSince(phaseStart);
@@ -1465,30 +1557,30 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
         if (!validWorld())
             return false;
     }
-    if (m_fixedPhase == FixedPhase::Publication) {
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Publication) {
         if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsToTransform) || !validWorld())
             return false;
-        if (m_fixedHasPhysics) {
+        if (world.simulation.fixedHasPhysics) {
             const auto phaseStart = ProfileClock::now();
             // The world published one completed GPU generation. Invalidating
             // consumers here does not read every body back into Transform.
             PublishPhysicsStateToRenderer();
             m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(phaseStart);
         }
-        m_publishedFixedStepIndex = m_completedFixedStepIndex;
-        m_fixedPhase = FixedPhase::PostNotification;
+        world.simulation.publishedFixedStepIndex = world.simulation.completedFixedStepIndex;
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::PostNotification;
         if (!current())
             return false;
     }
-    if (m_fixedPhase == FixedPhase::PostNotification) {
-        m_fixedPhase = FixedPhase::PostStep;
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::PostNotification) {
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::PostStep;
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsToTransform);
         if (!current())
             return false;
     }
     if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsPostScript) || !current())
         return false;
-    m_fixedPhase = FixedPhase::Idle;
+    world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
     return true;
 }
 
@@ -1612,6 +1704,7 @@ void SceneManager::ForceAllBodiesToCurrentTransform()
 
 void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
 {
+    const WorldExecutionScope worldScope(sceneBeingRebuilt ? sceneBeingRebuilt->GetRuntimeWorld() : nullptr);
     // Renderer-facing registries: MeshRenderer/Light keep raw component
     // pointers, so we must drop them before the owning GameObjects die during
     // a Scene::DeserializeDocument() commit (see the Scene Rebuild Contract).

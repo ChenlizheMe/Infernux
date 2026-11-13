@@ -16,6 +16,8 @@ namespace infernux
 {
 
 class SceneCommitToken;
+class SceneManager;
+class RuntimeWorld;
 class InxMaterial;
 
 /**
@@ -172,6 +174,11 @@ class Scene : public NativeLifetimeOwner
 
     /// @brief Resolve a Component handle only when world, ID, and lifetime match.
     [[nodiscard]] Component *ResolveComponent(const ObjectHandle &handle) const;
+
+    [[nodiscard]] RuntimeWorld *GetRuntimeWorld() const noexcept
+    {
+        return m_runtimeWorld;
+    }
 
     [[nodiscard]] uint64_t GetWorldId() const
     {
@@ -414,6 +421,7 @@ class Scene : public NativeLifetimeOwner
     friend class GameObject;
     friend class Component;
     friend class SceneCommitToken;
+    friend class SceneManager;
 
     void RequireWritableWorld() const;
     void RetireRootObjects();
@@ -463,6 +471,7 @@ class Scene : public NativeLifetimeOwner
     std::string m_name = "Untitled Scene";
     bool m_isPreview = false;
     uint64_t m_worldId = GenerateWorldId();
+    RuntimeWorld *m_runtimeWorld = nullptr;
 
     // Root-level game objects (objects without parents)
     std::vector<std::unique_ptr<GameObject>> m_rootObjects;

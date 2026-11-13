@@ -418,13 +418,13 @@ void BindSceneManager(py::module_ &m)
         .value("RENDER_PRESENTED", SceneManager::RuntimeFrameBarrier::RenderPresented)
         .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy);
 
-    py::class_<SceneManager::FrameTime>(m, "_FrameTime")
-        .def_readonly("time", &SceneManager::FrameTime::time)
-        .def_readonly("unscaled_time", &SceneManager::FrameTime::unscaledTime)
-        .def_readonly("delta_time", &SceneManager::FrameTime::deltaTime)
-        .def_readonly("unscaled_delta_time", &SceneManager::FrameTime::unscaledDeltaTime)
-        .def_readonly("smooth_delta_time", &SceneManager::FrameTime::smoothDeltaTime)
-        .def_readonly("frame_count", &SceneManager::FrameTime::frameCount);
+    py::class_<RuntimeWorld::FrameTime>(m, "_FrameTime")
+        .def_readonly("time", &RuntimeWorld::FrameTime::time)
+        .def_readonly("unscaled_time", &RuntimeWorld::FrameTime::unscaledTime)
+        .def_readonly("delta_time", &RuntimeWorld::FrameTime::deltaTime)
+        .def_readonly("unscaled_delta_time", &RuntimeWorld::FrameTime::unscaledDeltaTime)
+        .def_readonly("smooth_delta_time", &RuntimeWorld::FrameTime::smoothDeltaTime)
+        .def_readonly("frame_count", &RuntimeWorld::FrameTime::frameCount);
 
     py::class_<SceneManager, std::unique_ptr<SceneManager, py::nodelete>>(m, "SceneManager")
         .def_static("instance", &SceneManager::Instance, py::return_value_policy::reference,
