@@ -1024,6 +1024,10 @@ class Buffer:
         self._dtype = _buffer_dtype(dtype)
         self._storage_shape = self._shape + ((self._dtype.lanes,) if self._dtype.lanes > 1 else ())
         self._device = device
+        self._usage = (
+            ("storage", "uniform", "vertex", "transfer_source", "transfer_destination")
+            if device == "gpu" else ("host_read", "host_write")
+        )
         self._closed = False
         self._host = None
         self._native = None
@@ -1050,6 +1054,10 @@ class Buffer:
         if native.lanes != 1 or byte_offset < 0 or result.nbytes > native.byte_size - byte_offset:
             raise ValueError("GPU value layout exceeds its actual scalar storage")
         result._host, result._native = host, native
+        flags = int(native.usage)
+        result._usage = tuple(name for bit, name in (
+            (1, "storage"), (2, "indirect"), (4, "transfer_source"), (8, "transfer_destination"),
+            (16, "uniform"), (32, "vertex"), (64, "index")) if flags & bit)
         result._byte_offset, result._readonly, result._ownership = byte_offset, True, "borrowed"
         _gpu_buffers.add(result)
         return result
@@ -1127,11 +1135,7 @@ class Buffer:
         if self._native is not None:
             resource_index = int(self._native.resource_index)
             resource_generation = int(self._native.resource_generation)
-        usage = (
-            ("storage", "uniform", "vertex", "transfer_source", "transfer_destination")
-            if self._device == "gpu"
-            else ("host_read", "host_write")
-        )
+        usage = self._usage
         byte_length = self.nbytes
         return BufferDescription(
             shape=self._shape,
@@ -1336,6 +1340,7 @@ class Buffer:
         result._dtype = self._dtype
         result._storage_shape = result._shape + ((self._dtype.lanes,) if self._dtype.lanes > 1 else ())
         result._device = self._device
+        result._usage = self._usage
         result._closed = False
         result._host = self._host
         result._native = self._native

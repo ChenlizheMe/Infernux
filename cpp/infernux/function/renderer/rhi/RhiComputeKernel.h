@@ -51,6 +51,14 @@ struct ComputeDispatchProof
     std::vector<ComputeBindingRange> writes;
 };
 
+/// Device-produced XYZ workgroup counts; not a shader resource binding.
+struct ComputeIndirectArguments
+{
+    static constexpr uint64_t ByteSize = 3 * sizeof(uint32_t);
+    std::shared_ptr<ComputeBuffer> buffer;
+    uint64_t offset = 0;
+};
+
 struct ComputeDispatchDesc
 {
     std::shared_ptr<ComputeKernel> kernel;
@@ -61,6 +69,8 @@ struct ComputeDispatchDesc
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
     std::optional<ComputeDispatchProof> proof;
+    /// groupCountXYZ are finite algorithmic upper bounds for indirect work.
+    std::optional<ComputeIndirectArguments> indirectArguments;
 };
 
 struct ComputeBufferUpdate
@@ -155,6 +165,10 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
         PreparedDispatch &operator=(const PreparedDispatch &) = delete;
 
         [[nodiscard]] INFERNUX_RENDER_CORE_API bool RecordOne(const ComputeCommandEncoder &encoder) const;
+        [[nodiscard]] bool IsIndirect() const noexcept
+        {
+            return indirectOffset.has_value();
+        }
         [[nodiscard]] const std::vector<std::shared_ptr<ComputeBufferAllocation>> &GetAllocations() const noexcept
         {
             return allocations;
@@ -181,6 +195,8 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
         uint32_t groupCountY = 1;
         uint32_t groupCountZ = 1;
         std::optional<ComputeDispatchProof> proof;
+        /// The final allocation/state is the indirect read, outside shader bindings.
+        std::optional<uint64_t> indirectOffset;
     };
 
     /// Prepare once for either a background compute batch or a frame graph.
@@ -188,7 +204,7 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     [[nodiscard]] INFERNUX_RENDER_CORE_API PreparedDispatch PrepareDispatch(
         std::vector<std::shared_ptr<ComputeBuffer>> buffers, std::vector<ComputeBufferAccess> bufferAccesses,
         std::vector<uint8_t> pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
-        std::optional<ComputeDispatchProof> proof = {});
+        std::optional<ComputeDispatchProof> proof = {}, std::optional<ComputeIndirectArguments> indirectArguments = {});
 
   private:
     struct BatchDispatch
@@ -221,6 +237,7 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
         std::vector<std::shared_ptr<ComputeKernel>> kernels;
         std::vector<std::shared_ptr<ComputeReadback::Storage>> readOwners;
         std::vector<std::shared_ptr<ComputeBufferState>> contentReadOwners;
+        bool hasIndirect = false;
     };
 
     struct PendingDispatch
@@ -244,7 +261,8 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     [[nodiscard]] BindGroupHandle
     ResolveBindGroup(const std::vector<std::shared_ptr<ComputeBufferAllocation>> &allocations);
     void ValidateDispatch(const std::vector<ComputeBufferAccess> &accesses, size_t pushConstantBytes,
-                          uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const;
+                          uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
+                          bool indirect = false) const;
     [[nodiscard]] static PreparedBatch PrepareBatch(ComputeHost &host, std::vector<ComputeBufferUpdate> updates,
                                                     std::vector<ComputeDispatchDesc> dispatches,
                                                     std::vector<ComputeBufferCopy> copies = {});
@@ -307,6 +325,8 @@ struct ComputeWorkDispatch
     uint32_t groupCountX = 1;
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
+    /// An exact twelve-byte execution input in a declared storage slot.
+    std::optional<ComputeWorkRange> indirectArguments;
 };
 
 struct ComputeWorkInput

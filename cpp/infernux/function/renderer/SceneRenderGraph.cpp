@@ -696,18 +696,21 @@ void SceneRenderGraph::CacheLiveAuthorPasses()
         if (record.dispatch) {
             const auto &work = *FindGraphWorkBinding(m_pythonGraphDesc, pass.PrimaryCommand()->workBinding);
             const auto &ports = work.recipe->GetPorts();
-            const auto &bindings = work.recipe->GetDispatches()[*record.dispatch].bindings;
+            const auto &operation = work.recipe->GetDispatches()[*record.dispatch];
+            const auto &bindings = operation.bindings;
             for (const auto &inputBinding : work.inputBindings) {
                 if (inputs.find(inputBinding.second) == inputs.end())
                     continue;
                 const auto port = std::find_if(ports.begin(), ports.end(), [&inputBinding](const auto &entry) {
                     return entry.input && entry.name == inputBinding.first;
                 });
-                if (std::any_of(bindings.begin(), bindings.end(), [&](const auto &binding) {
-                        return binding.range.slot == port->range.slot &&
-                               (static_cast<uint8_t>(binding.access) &
-                                static_cast<uint8_t>(rhi::ComputeBufferAccess::Read));
-                    }))
+                if (std::any_of(bindings.begin(), bindings.end(),
+                                [&](const auto &binding) {
+                                    return binding.range.slot == port->range.slot &&
+                                           (static_cast<uint8_t>(binding.access) &
+                                            static_cast<uint8_t>(rhi::ComputeBufferAccess::Read));
+                                }) ||
+                    (operation.indirectArguments && operation.indirectArguments->slot == port->range.slot))
                     read(inputBinding.second);
             }
             continue;
@@ -909,12 +912,14 @@ bool SceneRenderGraph::PrepareGraphBuffers()
                 owners.emplace(buffer.name, buffer.computeBuffer);
             } else if (buffer.workBinding.empty() && buffer.exportLayout) {
                 const auto old = m_graphBufferOwners.find(buffer.name);
-                const auto &layout = *buffer.exportLayout;
+                auto layout = *buffer.exportLayout;
+                layout.usage = static_cast<rhi::BufferUsageFlags>(buffer.usage);
                 std::shared_ptr<rhi::ComputeBuffer> owner;
                 if (old != m_graphBufferOwners.end() && old->second->GetHost().SharesServicesWith(current)) {
                     const auto &previous = old->second->GetDesc();
                     if (previous.elementCount == layout.elementCount && previous.scalarType == layout.scalarType &&
-                        previous.lanes == layout.lanes && !old->second->GetAllocation()->IsReadProtected())
+                        previous.lanes == layout.lanes && rhi::HasBufferUsage(previous.usage, layout.usage) &&
+                        !old->second->GetAllocation()->IsReadProtected())
                         owner = old->second;
                 }
                 if (!owner)
@@ -4625,14 +4630,20 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 if (access.write)
                                     written.push_back(builder.WriteStorageBuffer(access.handle));
                             }
+                            if (operation.indirectArguments)
+                                builder.ReadIndirectBuffer(
+                                    bufferHandles.at(slotNames[operation.indirectArguments->slot]));
                             builder.SetSideEffect(passDesc.sideEffect);
                             return [this, workName = command->workBinding, index](vk::RenderContext &ctx) {
                                 const auto &current = *m_workInstances.at(workName);
                                 if (!current.GetDispatches()[index].RecordOne(ctx.GetComputeCommandEncoder()))
                                     throw std::runtime_error("Prepared common graph work could not record");
                                 const auto &dispatch = current.GetRecipe().GetDispatches()[index];
-                                ctx.RecordComputeDispatch(dispatch.groupCountX, dispatch.groupCountY,
-                                                          dispatch.groupCountZ, 0, false);
+                                if (dispatch.indirectArguments)
+                                    ctx.RecordComputeDispatch(0, 0, 0, 0, true);
+                                else
+                                    ctx.RecordComputeDispatch(dispatch.groupCountX, dispatch.groupCountY,
+                                                              dispatch.groupCountZ, 0, false);
                             };
                         });
                     trackAuthorPass(pass, index);

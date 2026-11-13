@@ -1561,7 +1561,7 @@ class RenderGraph:
         if native is not None:
             count, scalar, lanes = native.element_count, native.scalar_type, native.lanes
         elif handle._work_binding is not None:
-            count, scalar, lanes, _ = handle._work_binding._native.slots[handle._work_slot]
+            count, scalar, lanes, _, _usage = handle._work_binding._native.slots[handle._work_slot]
         else:
             scalar = "float32" if dtype is None else np.dtype(dtype).name
             lanes = 1
@@ -1608,13 +1608,15 @@ class RenderGraph:
         usage = int(GraphBufferUsage.STORAGE) | int(GraphBufferUsage.UNIFORM)
         usage |= int(GraphBufferUsage.TRANSFER_SOURCE) | int(GraphBufferUsage.TRANSFER_DESTINATION)
         resources = []
-        for slot, (count, _scalar, lanes, _external) in enumerate(native.slots):
-            handle = BufferHandle(f"{binding_name}/__slot{slot}", count * lanes * np.dtype(_scalar).itemsize, usage)
+        for slot, (count, _scalar, lanes, _external, extra_usage) in enumerate(native.slots):
+            slot_usage = usage | (extra_usage & int(GraphBufferUsage.INDIRECT))
+            handle = BufferHandle(f"{binding_name}/__slot{slot}", count * lanes * np.dtype(_scalar).itemsize, slot_usage)
             handle._work_binding, handle._work_slot = binding, slot
             binding._slots.append(handle)
             resources.append(handle)
         for port_name, slot, offset, length, is_input in ports:
-            handle = BufferHandle(f"{binding_name}/{'input' if is_input else 'output'}/{port_name}", length, usage)
+            handle = BufferHandle(f"{binding_name}/{'input' if is_input else 'output'}/{port_name}", length,
+                                  binding._slots[slot].usage)
             handle.byte_offset = offset
             handle._work_binding, handle._work_slot = binding, slot
             binding._ports[(port_name, is_input)] = handle

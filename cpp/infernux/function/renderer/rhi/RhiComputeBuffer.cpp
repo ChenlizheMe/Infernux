@@ -30,7 +30,7 @@ BufferDesc ComputeStorageDesc(const ComputeHost &host, ComputeBufferDesc desc, B
         throw std::overflow_error("Compute buffer byte size exceeds the addressable range");
     return {desc.GetByteSize(),
             BufferUsageFlags::Storage | BufferUsageFlags::Uniform | BufferUsageFlags::Vertex |
-                BufferUsageFlags::TransferSource | BufferUsageFlags::TransferDestination | usage,
+                BufferUsageFlags::TransferSource | BufferUsageFlags::TransferDestination | desc.usage | usage,
             BufferMemory::DeviceLocal,
             nullptr,
             0,
@@ -110,7 +110,7 @@ std::shared_ptr<ComputeBuffer> ComputeBuffer::TryCreatePrivate(ComputeHost &host
 
 std::shared_ptr<ComputeBuffer> ComputeBuffer::TryCreateGraphBuffer(ComputeHost &host, ComputeBufferDesc desc)
 {
-    return TryCreate(host, desc, BufferUsageFlags::Indirect, true);
+    return TryCreate(host, desc, BufferUsageFlags::None, true);
 }
 
 std::shared_ptr<ComputeBuffer> ComputeBuffer::TryCreate(ComputeHost &host, ComputeBufferDesc desc,

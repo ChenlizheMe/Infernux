@@ -4222,6 +4222,8 @@ class _ComputeBuffer:
     @property
     def lanes(self) -> int: ...
     @property
+    def usage(self) -> int: ...
+    @property
     def scalar_type(self) -> Literal["float32", "int32", "uint32", "int64"]: ...
     def set_bytes(self, value: bytes, offset: int = 0) -> None: ...
     def get_bytes(self, byte_size: int, offset: int = 0) -> bytes: ...
@@ -4264,18 +4266,23 @@ _ComputeDispatchProof = tuple[Sequence[_ComputeBindingRange], Sequence[_ComputeB
 _ComputeDispatch = tuple[
     _ComputeKernel, Sequence[_ComputeBuffer], Iterable[Literal["read", "write", "read_write"]],
     bytes, int, int, int, _ComputeDispatchProof | None,
+] | tuple[
+    _ComputeKernel, Sequence[_ComputeBuffer], Iterable[Literal["read", "write", "read_write"]],
+    bytes, int, int, int, _ComputeDispatchProof | None, tuple[_ComputeBuffer, int] | None,
 ]
 _ComputeUpdate = tuple[_ComputeBuffer, Buffer, int]
 _ComputeRead = tuple[_ComputeBuffer, int, int]
 _ComputeCopy = tuple[_ComputeBuffer, _ComputeBuffer, int, int, int]
 
 _ComputeWorkBinding = tuple[int, int, int, Literal["read", "write", "read_write"]]
-_ComputeWorkDispatch = tuple[_ComputeKernel, Sequence[_ComputeWorkBinding], Sequence[_ComputeBindingRange], bytes, int, int, int]
+_ComputeWorkDispatch = tuple[_ComputeKernel, Sequence[_ComputeWorkBinding], Sequence[_ComputeBindingRange], bytes, int, int, int] | tuple[
+    _ComputeKernel, Sequence[_ComputeWorkBinding], Sequence[_ComputeBindingRange], bytes, int, int, int, tuple[int, int] | None,
+]
 _ComputeWorkPort = tuple[str, int, int, int, bool]
 
 class _ComputeWorkRecipe:
     @property
-    def slots(self) -> list[tuple[int, str, int, _ComputeBuffer | None]]: ...
+    def slots(self) -> list[tuple[int, str, int, _ComputeBuffer | None, int]]: ...
     @property
     def ports(self) -> list[_ComputeWorkPort]: ...
     @property
@@ -4358,10 +4365,10 @@ class _ComputeHost:
     def identity(self) -> int: ...
     @overload
     def create_buffer(self, element_count: int, scalar_type: str, lanes: int = 1, *,
-                      managed: Literal[False] = False) -> _ComputeBuffer: ...
+                      managed: Literal[False] = False, indirect: bool = False) -> _ComputeBuffer: ...
     @overload
     def create_buffer(self, element_count: int, scalar_type: str, lanes: int = 1, *,
-                      managed: Literal[True]) -> _ComputeBuffer | None: ...
+                      managed: Literal[True], indirect: bool = False) -> _ComputeBuffer | None: ...
     def create_kernel(
         self, spirv: bytes, buffer_binding_count: int, push_constant_bytes: int = 0
     ) -> _ComputeKernel: ...

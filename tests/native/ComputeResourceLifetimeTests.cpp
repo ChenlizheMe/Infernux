@@ -149,6 +149,8 @@ class TestDevice final : public Device
 class TestRecordingContext final : public ComputeRecordingContext
 {
   public:
+    std::vector<std::pair<BufferHandle, uint64_t>> indirect;
+    bool indirectDependency = false;
     ComputeCommandEncoder Compute() override
     {
         static const ComputeCommandEncoder::DispatchTable table{
@@ -156,7 +158,9 @@ class TestRecordingContext final : public ComputeRecordingContext
             [](void *, ComputePipelineHandle, uint32_t, BindGroupHandle) {},
             [](void *, ComputePipelineHandle, uint32_t, const void *) {},
             [](void *, uint32_t, uint32_t, uint32_t) {},
-            [](void *, BufferHandle, uint64_t) {},
+            [](void *context, BufferHandle buffer, uint64_t offset) {
+                static_cast<TestRecordingContext *>(context)->indirect.emplace_back(buffer, offset);
+            },
             [](void *, ComputePipelineHandle, BindGroupHandle) { return true; }};
         return {this, &table};
     }
@@ -167,8 +171,11 @@ class TestRecordingContext final : public ComputeRecordingContext
             [](void *, BufferHandle, uint64_t, const void *, uint64_t) { return true; }, nullptr};
         return {this, &table};
     }
-    void PipelineBarrier(PipelineStage, Access, PipelineStage, Access) override
+    void PipelineBarrier(PipelineStage, Access, PipelineStage destination, Access access) override
     {
+        indirectDependency |=
+            (static_cast<uint64_t>(destination) & static_cast<uint64_t>(PipelineStage::DrawIndirect)) &&
+            (static_cast<uint64_t>(access) & static_cast<uint64_t>(Access::IndirectRead));
     }
     void Require(SubmissionTicket) override
     {
@@ -182,6 +189,8 @@ class TestQueue final : public ComputeQueue
     uint64_t waits = 0;
     uint64_t completed = 0;
     bool complete = true;
+    std::vector<std::pair<BufferHandle, uint64_t>> indirect;
+    bool indirectDependency = false;
     std::map<uint64_t, ComputeSubmissionResources> retained;
     ~TestQueue() override
     {
@@ -192,6 +201,8 @@ class TestQueue final : public ComputeQueue
     {
         TestRecordingContext context;
         assert(record(context));
+        indirect.insert(indirect.end(), context.indirect.begin(), context.indirect.end());
+        indirectDependency |= context.indirectDependency;
         retained.emplace(submissions + 1, std::move(resources));
         return {1, QueueRole::Compute, ++submissions};
     }
@@ -337,12 +348,94 @@ bool VerifyDispatchLimits()
     std::cout << "Compute dispatch limits: passed=" << passed << " failed=" << failed << '\n';
     return failed == 0;
 }
+
+void VerifyIndirectLifetime()
+{
+    TestDevice device;
+    TestQueue queue;
+    queue.complete = false;
+    ComputeHost host(device, queue);
+    {
+        const uint32_t spirv[] = {0x07230203u, 0, 0, 0, 0};
+        auto kernel = std::make_shared<ComputeKernel>(host, spirv, 5, 1, 0);
+        auto output = std::make_shared<ComputeBuffer>(host, ComputeBufferDesc{4, ComputeScalarType::UInt32});
+        auto arguments = std::make_shared<ComputeBuffer>(
+            host, ComputeBufferDesc{4, ComputeScalarType::UInt32, 1, BufferUsageFlags::Indirect});
+        ComputeDispatchDesc consumer;
+        consumer.kernel = kernel;
+        consumer.buffers = {output};
+        consumer.bufferAccesses = {ComputeBufferAccess::Write};
+        consumer.proof = ComputeDispatchProof{{}, {{0, 0, 16}}};
+        consumer.indirectArguments = ComputeIndirectArguments{arguments, 4};
+        const auto rejects = [](auto &&operation) {
+            bool rejected = false;
+            try {
+                operation();
+            } catch (const std::invalid_argument &) {
+                rejected = true;
+            } catch (const std::out_of_range &) {
+                rejected = true;
+            }
+            assert(rejected);
+        };
+        for (const uint64_t offset : {uint64_t{2}, uint64_t{8}}) {
+            auto invalid = consumer;
+            invalid.indirectArguments->offset = offset;
+            rejects([&] { (void)PrepareComputeBatch(host, {}, {invalid}); });
+        }
+        auto invalid = consumer;
+        invalid.indirectArguments->buffer = output; // No Indirect allocation usage.
+        rejects([&] { (void)PrepareComputeBatch(host, {}, {invalid}); });
+        invalid = consumer;
+        invalid.buffers = {arguments}; // One WebGPU usage scope cannot write its command buffer.
+        rejects([&] { (void)PrepareComputeBatch(host, {}, {invalid}); });
+        rejects([&] { (void)PrepareComputeBatch(host, {}, {consumer})->Submit(); });
+        assert(queue.submissions == 0);
+
+        ComputeDispatchDesc producer;
+        producer.kernel = kernel;
+        producer.buffers = {arguments};
+        producer.bufferAccesses = {ComputeBufferAccess::Write};
+        producer.proof = ComputeDispatchProof{{}, {{0, 4, 12}}};
+        // A potentially empty consumer cannot initialize a fresh fixed output.
+        rejects([&] { (void)PrepareComputeBatch(host, {}, {producer, consumer})->Submit(); });
+        assert(queue.submissions == 0 && !output->HasInitializedRange(0, 16));
+
+        (void)SubmitComputeBatch(host, {{output, 0, std::vector<uint8_t>(16)}}, {});
+        const auto oldOutput = output->Freeze();
+        auto work = PrepareComputeBatch(host, {}, {producer, consumer});
+        auto preservation = work->PreparePreservation(64, false);
+        // Even a declared full write needs preservation: its device count may be zero.
+        assert(preservation.capacityGranted && preservation.copy);
+        (void)preservation.copy->Submit();
+        preservation = work->PreparePreservation(64, false);
+        assert(preservation.capacityGranted && !preservation.copy);
+        assert(work->TrySubmit());
+        assert(output->GetBuffer() != oldOutput->GetBuffer());
+        assert(queue.indirect.size() == 1 && queue.indirect.back().first == arguments->GetBuffer());
+        assert(queue.indirect.back().second == 4 && queue.indirectDependency);
+
+        const auto oldArguments = arguments->Freeze();
+        work = PrepareComputeBatch(host, {}, {producer, consumer});
+        (void)work->Submit();
+        assert(arguments->GetBuffer() != oldArguments->GetBuffer());
+        assert(queue.indirect.size() == 2 && queue.indirect.back().first == arguments->GetBuffer());
+        assert(HasBufferUsage(arguments->GetAllocation()->GetStorageDesc().usage, BufferUsageFlags::Indirect));
+        assert(queue.waits == 0);
+    }
+    // Accepted command reads retain their allocations after all wrappers vanish.
+    assert(!device.live.empty() && queue.waits == 0);
+    queue.complete = true;
+    queue.Collect();
+    assert(device.live.empty() && queue.waits == 0);
+}
 } // namespace
 
 int main()
 {
     if (!VerifyDispatchLimits())
         return 1;
+    VerifyIndirectLifetime();
     TestDevice device;
     TestQueue originalQueue, replacementQueue;
     std::optional<ComputeHost> wrapper;

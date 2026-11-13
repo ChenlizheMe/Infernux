@@ -121,14 +121,25 @@ std::vector<rhi::ComputeBindingRange> DecodeComputeRanges(py::iterable values)
     return result;
 }
 
+std::optional<rhi::ComputeIndirectArguments> DecodeIndirectArguments(py::handle value)
+{
+    if (value.is_none())
+        return {};
+    const auto arguments = py::cast<py::tuple>(value);
+    if (arguments.size() != 2)
+        throw py::value_error("Indirect arguments require a compute buffer and byte offset");
+    return rhi::ComputeIndirectArguments{arguments[0].cast<std::shared_ptr<rhi::ComputeBuffer>>(),
+                                         arguments[1].cast<uint64_t>()};
+}
+
 std::vector<rhi::ComputeDispatchDesc> DecodeComputeDispatches(py::iterable values)
 {
     std::vector<rhi::ComputeDispatchDesc> dispatches;
     for (const auto value : values) {
         const auto dispatch = py::cast<py::tuple>(value);
-        if (dispatch.size() != 8)
-            throw py::value_error(
-                "Compute dispatch requires kernel, buffers, accesses, constants, three group counts and a proof");
+        if (dispatch.size() != 8 && dispatch.size() != 9)
+            throw py::value_error("Compute dispatch requires kernel, buffers, accesses, constants, three group "
+                                  "counts, a proof and optional indirect arguments");
         std::vector<rhi::ComputeBufferAccess> accesses;
         for (const auto access : dispatch[2].cast<py::iterable>())
             accesses.push_back(DecodeComputeAccess(py::cast<std::string>(access)));
@@ -143,7 +154,8 @@ std::vector<rhi::ComputeDispatchDesc> DecodeComputeDispatches(py::iterable value
         dispatches.push_back({dispatch[0].cast<std::shared_ptr<rhi::ComputeKernel>>(),
                               dispatch[1].cast<std::vector<std::shared_ptr<rhi::ComputeBuffer>>>(), std::move(accesses),
                               DecodeComputeBytes(dispatch[3]), dispatch[4].cast<uint32_t>(),
-                              dispatch[5].cast<uint32_t>(), dispatch[6].cast<uint32_t>(), std::move(proof)});
+                              dispatch[5].cast<uint32_t>(), dispatch[6].cast<uint32_t>(), std::move(proof),
+                              dispatch.size() == 9 ? DecodeIndirectArguments(dispatch[8]) : std::nullopt});
     }
     return dispatches;
 }
@@ -182,9 +194,9 @@ std::vector<rhi::ComputeWorkDispatch> DecodeComputeWorkDispatches(py::iterable v
     std::vector<rhi::ComputeWorkDispatch> result;
     for (const auto value : values) {
         const auto dispatch = py::cast<py::tuple>(value);
-        if (dispatch.size() != 7)
-            throw py::value_error("Compute work dispatch must contain kernel, bindings, complete-write indices, "
-                                  "push constants and three group counts");
+        if (dispatch.size() != 7 && dispatch.size() != 8)
+            throw py::value_error("Compute work dispatch must contain kernel, bindings, complete writes, "
+                                  "constants, three group bounds and optional indirect slot/offset");
         rhi::ComputeWorkDispatch item;
         item.kernel = dispatch[0].cast<std::shared_ptr<rhi::ComputeKernel>>();
         for (const auto bindingValue : dispatch[1].cast<py::iterable>()) {
@@ -200,6 +212,13 @@ std::vector<rhi::ComputeWorkDispatch> DecodeComputeWorkDispatches(py::iterable v
         item.groupCountX = dispatch[4].cast<uint32_t>();
         item.groupCountY = dispatch[5].cast<uint32_t>();
         item.groupCountZ = dispatch[6].cast<uint32_t>();
+        if (dispatch.size() == 8 && !dispatch[7].is_none()) {
+            const auto arguments = dispatch[7].cast<py::tuple>();
+            if (arguments.size() != 2)
+                throw py::value_error("Work indirect arguments require a slot and byte offset");
+            item.indirectArguments = rhi::ComputeWorkRange{arguments[0].cast<uint32_t>(), arguments[1].cast<uint64_t>(),
+                                                           rhi::ComputeIndirectArguments::ByteSize};
+        }
         result.push_back(std::move(item));
     }
     return result;
@@ -430,6 +449,10 @@ void infernux::RegisterComputeBindings(py::module_ &m)
         .def_property_readonly("element_stride",
                                [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().GetElementStride(); })
         .def_property_readonly("lanes", [](const rhi::ComputeBuffer &buffer) { return buffer.GetDesc().lanes; })
+        .def_property_readonly("usage",
+                               [](const rhi::ComputeBuffer &buffer) {
+                                   return static_cast<uint16_t>(buffer.GetAllocation()->GetStorageDesc().usage);
+                               })
         .def_property_readonly(
             "scalar_type",
             [](const rhi::ComputeBuffer &buffer) { return ComputeScalarName(buffer.GetDesc().scalarType); })
@@ -488,7 +511,8 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                                    for (const auto &slot : work.GetSlots())
                                        result.append(py::make_tuple(slot.allocation.elementCount,
                                                                     ComputeScalarName(slot.allocation.scalarType),
-                                                                    slot.allocation.lanes, slot.external));
+                                                                    slot.allocation.lanes, slot.external,
+                                                                    static_cast<uint16_t>(slot.allocation.usage)));
                                    return result;
                                })
         .def_property_readonly("ports",
@@ -663,7 +687,7 @@ void infernux::RegisterComputeBindings(py::module_ &m)
         .def(
             "create_buffer",
             [](rhi::ComputeHost &host, uint64_t elementCount, const std::string &scalarType, uint8_t lanes,
-               bool managed) {
+               bool managed, bool indirect) {
                 host.Queue().RecordNativeBoundary();
                 rhi::ComputeScalarType scalar;
                 if (scalarType == "float32")
@@ -676,12 +700,14 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                     scalar = rhi::ComputeScalarType::Int64;
                 else
                     throw std::invalid_argument("Compute buffer scalar_type must be float32, int32, uint32, or int64");
-                const rhi::ComputeBufferDesc desc{elementCount, scalar, lanes};
+                const rhi::ComputeBufferDesc desc{elementCount, scalar, lanes,
+                                                  indirect ? rhi::BufferUsageFlags::Indirect
+                                                           : rhi::BufferUsageFlags::None};
                 return managed ? rhi::ComputeBuffer::TryCreatePrivate(host, desc)
                                : std::make_shared<rhi::ComputeBuffer>(host, desc);
             },
             py::arg("element_count"), py::arg("scalar_type"), py::arg("lanes") = 1, py::kw_only(),
-            py::arg("managed") = false, py::keep_alive<0, 1>())
+            py::arg("managed") = false, py::arg("indirect") = false, py::keep_alive<0, 1>())
         .def(
             "create_kernel",
             [](rhi::ComputeHost &host, py::bytes spirv, uint32_t bufferBindingCount, uint32_t pushConstantBytes) {

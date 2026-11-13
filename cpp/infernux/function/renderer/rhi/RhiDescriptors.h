@@ -23,26 +23,6 @@ enum class ComputeScalarType : uint8_t
     Int64,
 };
 
-struct ComputeBufferDesc
-{
-    uint64_t elementCount = 0;
-    ComputeScalarType scalarType = ComputeScalarType::Float32;
-    uint8_t lanes = 1;
-
-    [[nodiscard]] uint32_t GetScalarBytes() const noexcept
-    {
-        return scalarType == ComputeScalarType::Int64 ? 8 : 4;
-    }
-    [[nodiscard]] uint32_t GetElementStride() const noexcept
-    {
-        return GetScalarBytes() * lanes;
-    }
-    [[nodiscard]] uint64_t GetByteSize() const noexcept
-    {
-        return elementCount * GetElementStride();
-    }
-};
-
 enum class ShaderStage : uint8_t
 {
     None = 0,
@@ -201,6 +181,27 @@ enum class TextureUsageFlags : uint16_t
 {
     return (static_cast<uint16_t>(available) & static_cast<uint16_t>(required)) == static_cast<uint16_t>(required);
 }
+
+struct ComputeBufferDesc
+{
+    uint64_t elementCount = 0;
+    ComputeScalarType scalarType = ComputeScalarType::Float32;
+    uint8_t lanes = 1;
+    BufferUsageFlags usage = BufferUsageFlags::None;
+
+    [[nodiscard]] uint32_t GetScalarBytes() const noexcept
+    {
+        return scalarType == ComputeScalarType::Int64 ? 8 : 4;
+    }
+    [[nodiscard]] uint32_t GetElementStride() const noexcept
+    {
+        return GetScalarBytes() * lanes;
+    }
+    [[nodiscard]] uint64_t GetByteSize() const noexcept
+    {
+        return elementCount * GetElementStride();
+    }
+};
 
 enum class BufferMemory : uint8_t
 {

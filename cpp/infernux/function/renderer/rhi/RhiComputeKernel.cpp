@@ -14,6 +14,15 @@ namespace infernux::rhi
 
 namespace
 {
+void ValidateIndirectRange(const ComputeBufferDesc &desc, uint64_t offset)
+{
+    if (!HasBufferUsage(desc.usage, BufferUsageFlags::Indirect))
+        throw std::invalid_argument("Indirect arguments require an allocation with Indirect usage");
+    const auto capacity = desc.GetByteSize();
+    if (offset % sizeof(uint32_t) || offset > capacity || ComputeIndirectArguments::ByteSize > capacity - offset)
+        throw std::out_of_range("Indirect arguments require twelve aligned bytes within their allocation");
+}
+
 std::vector<uint32_t> SequentialBindings(uint32_t count)
 {
     std::vector<uint32_t> result(count);
@@ -139,15 +148,15 @@ void ComputeKernel::Dispatch(std::vector<std::shared_ptr<ComputeBuffer>> buffers
                                  groupCountX, groupCountY, groupCountZ}});
 }
 
-ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(std::vector<std::shared_ptr<ComputeBuffer>> buffers,
-                                                               std::vector<ComputeBufferAccess> bufferAccesses,
-                                                               std::vector<uint8_t> pushConstants, uint32_t groupCountX,
-                                                               uint32_t groupCountY, uint32_t groupCountZ,
-                                                               std::optional<ComputeDispatchProof> proof)
+ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
+    std::vector<std::shared_ptr<ComputeBuffer>> buffers, std::vector<ComputeBufferAccess> bufferAccesses,
+    std::vector<uint8_t> pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
+    std::optional<ComputeDispatchProof> proof, std::optional<ComputeIndirectArguments> indirectArguments)
 {
     if (bufferAccesses.size() != buffers.size())
         throw std::invalid_argument("Compute kernel buffer access count does not match its resource bindings");
-    ValidateDispatch(bufferAccesses, pushConstants.size(), groupCountX, groupCountY, groupCountZ);
+    ValidateDispatch(bufferAccesses, pushConstants.size(), groupCountX, groupCountY, groupCountZ,
+                     indirectArguments.has_value());
     for (const auto &buffer : buffers)
         if (!buffer || !buffer->GetHost().SharesServicesWith(m_host))
             throw std::invalid_argument("Compute kernel buffers must belong to its host");
@@ -182,11 +191,32 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(std::vector<std::
     result.groupCountY = groupCountY;
     result.groupCountZ = groupCountZ;
     result.proof = std::move(proof);
+    if (indirectArguments) {
+        const auto &arguments = *indirectArguments;
+        if (!arguments.buffer || !arguments.buffer->GetHost().SharesServicesWith(m_host))
+            throw std::invalid_argument("Indirect arguments must belong to the kernel host");
+        ValidateIndirectRange(arguments.buffer->GetDesc(), arguments.offset);
+        const auto allocation = arguments.buffer->GetAllocation();
+        for (size_t index = 0; index < result.allocations.size(); ++index)
+            if (result.allocations[index] == allocation &&
+                (m_defaultBufferAccesses[index] != ComputeBufferAccess::Read ||
+                 result.bufferAccesses[index] != ComputeBufferAccess::Read))
+                throw std::invalid_argument("Indirect arguments cannot alias writable shader storage");
+        if (!result.proof)
+            result.proof.emplace();
+        result.proof->reads.push_back(
+            {static_cast<uint32_t>(result.allocations.size()), arguments.offset, ComputeIndirectArguments::ByteSize});
+        result.allocations.push_back(allocation);
+        result.states.push_back(arguments.buffer->m_state);
+        result.bufferAccesses.push_back(ComputeBufferAccess::Read);
+        result.indirectOffset = arguments.offset;
+    }
     return result;
 }
 
 void ComputeKernel::ValidateDispatch(const std::vector<ComputeBufferAccess> &bufferAccesses, size_t pushConstantBytes,
-                                     uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const
+                                     uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
+                                     bool indirect) const
 {
     if (!m_host.IsAlive())
         throw std::runtime_error("Compute kernel device is retired");
@@ -196,7 +226,7 @@ void ComputeKernel::ValidateDispatch(const std::vector<ComputeBufferAccess> &buf
         throw std::invalid_argument("Compute kernel buffer binding count does not match its compiled layout");
     if (pushConstantBytes != m_pushConstantBytes)
         throw std::invalid_argument("Compute kernel push constants do not match its compiled layout");
-    if (groupCountX == 0 || groupCountY == 0 || groupCountZ == 0)
+    if (!indirect && (groupCountX == 0 || groupCountY == 0 || groupCountZ == 0))
         throw std::invalid_argument("Compute kernel dispatch dimensions must be positive");
     const uint32_t groups[] = {groupCountX, groupCountY, groupCountZ};
     const auto &limits = m_host.device.GetCapabilities().limits;
@@ -219,7 +249,10 @@ bool ComputeKernel::PreparedDispatch::RecordOne(const ComputeCommandEncoder &enc
     encoder.BindGroup(pipeline, 0, group);
     if (!pushConstants.empty())
         encoder.PushConstants(pipeline, static_cast<uint32_t>(pushConstants.size()), pushConstants.data());
-    encoder.Dispatch(groupCountX, groupCountY, groupCountZ);
+    if (indirectOffset)
+        encoder.DispatchIndirect(allocations.back()->GetBuffer(), *indirectOffset);
+    else
+        encoder.Dispatch(groupCountX, groupCountY, groupCountZ);
     return true;
 }
 
@@ -283,7 +316,9 @@ ComputeKernel::PreparedBatch ComputeKernel::PrepareBatch(ComputeHost &host, std:
     for (auto &dispatch : dispatches) {
         auto prepared = dispatch.kernel->PrepareDispatch(
             std::move(dispatch.buffers), std::move(dispatch.bufferAccesses), std::move(dispatch.pushConstants),
-            dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ, std::move(dispatch.proof));
+            dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ, std::move(dispatch.proof),
+            std::move(dispatch.indirectArguments));
+        result.hasIndirect |= prepared.IsIndirect();
         std::unordered_map<ComputeBufferAllocation *, uint8_t> currentAccesses;
         for (size_t index = 0; index < prepared.allocations.size(); ++index) {
             const auto bits = static_cast<uint8_t>(prepared.bufferAccesses[index]);
@@ -377,6 +412,9 @@ std::vector<ComputeKernel::BufferValueState> ComputeKernel::PrepareValues(const 
             if (!intervals::Contains(known(work.allocations[read.binding]), read.offset, read.offset + read.byteSize))
                 throw std::invalid_argument("Compute input range lacks a prior accepted complete writer");
         for (const auto &write : work.proof->writes) {
+            if (work.IsIndirect() && !intervals::Contains(known(work.allocations[write.binding]), write.offset,
+                                                          write.offset + write.byteSize))
+                throw std::invalid_argument("Indirect work cannot establish an unconditional complete-write range");
             auto &target = std::find_if(values.begin(), values.end(), [&](const auto &value) {
                                return value.allocation == work.allocations[write.binding];
                            })->initialized;
@@ -429,17 +467,20 @@ bool ComputeKernel::RecordBatch(ComputeRecordingContext &context, const Prepared
     if (!prepared.empty()) {
         // Compiler arguments are uniform buffers; ShaderRead only covers
         // storage/image reads and does not make uploaded uniforms visible.
-        constexpr auto computeAccess = Access::UniformRead | Access::ShaderRead | Access::ShaderWrite;
+        auto destinationStage = PipelineStage::ComputeShader;
+        auto computeAccess = Access::UniformRead | Access::ShaderRead | Access::ShaderWrite;
+        if (batch.hasIndirect) {
+            destinationStage = destinationStage | PipelineStage::DrawIndirect;
+            computeAccess = computeAccess | Access::IndirectRead;
+        }
         if (!updates.empty())
-            context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, PipelineStage::ComputeShader,
-                                    computeAccess);
-        context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, PipelineStage::ComputeShader,
-                                computeAccess);
+            context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, destinationStage, computeAccess);
+        context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, destinationStage, computeAccess);
         const auto encoder = context.Compute();
         for (size_t index = 0; index < prepared.size(); ++index) {
             const auto &dispatch = prepared[index];
             if (dispatch.barrierBefore)
-                context.PipelineBarrier(PipelineStage::ComputeShader, Access::ShaderWrite, PipelineStage::ComputeShader,
+                context.PipelineBarrier(PipelineStage::ComputeShader, Access::ShaderWrite, destinationStage,
                                         computeAccess);
             if (!dispatch.work.RecordOne(encoder))
                 return false;
@@ -539,7 +580,8 @@ PreparedComputeBatch::PreparedComputeBatch(ComputeHost &host, std::vector<Comput
         const auto &work = dispatch.work;
         m_executionSignature.insert(m_executionSignature.end(),
                                     {work.pipeline.index, work.pipeline.generation, work.groupCountX, work.groupCountY,
-                                     work.groupCountZ, work.allocations.size()});
+                                     work.groupCountZ, work.allocations.size(), work.IsIndirect(),
+                                     work.indirectOffset.value_or(0)});
         for (size_t index = 0; index < work.allocations.size(); ++index) {
             m_executionSignature.push_back(work.allocations[index]->GetByteSize());
             m_executionSignature.push_back(static_cast<uint64_t>(work.bufferAccesses[index]));
@@ -650,7 +692,7 @@ bool PreparedComputeBatch::OverwritesBeforeRead(const ComputeBufferState &state)
             if (work.states[index].get() == &state &&
                 (static_cast<uint8_t>(work.bufferAccesses[index]) & static_cast<uint8_t>(ComputeBufferAccess::Read)))
                 return false;
-        if (work.proof)
+        if (work.proof && !work.IsIndirect())
             for (const auto &write : work.proof->writes)
                 if (work.states[write.binding].get() == &state)
                     intervals::Add(covered, write.offset, write.offset + write.byteSize);
@@ -1086,8 +1128,8 @@ BindGroupHandle ComputeKernel::ResolveBindGroup(const std::vector<std::shared_pt
 {
     CollectBindingGroups();
     for (const auto &entry : m_groups) {
-        bool matches = buffers.size() == entry.allocations.size();
-        for (size_t index = 0; matches && index < buffers.size(); ++index) {
+        bool matches = m_bufferBindings.size() == entry.allocations.size();
+        for (size_t index = 0; matches && index < m_bufferBindings.size(); ++index) {
             const auto cached = entry.allocations[index].lock();
             matches = cached && buffers[index].get() == cached.get();
         }
@@ -1106,9 +1148,9 @@ BindGroupHandle ComputeKernel::ResolveBindGroup(const std::vector<std::shared_pt
     if (!group.IsValid())
         throw std::runtime_error("Failed to create compute kernel bind group");
     std::vector<std::weak_ptr<ComputeBufferAllocation>> weakBuffers;
-    weakBuffers.reserve(buffers.size());
-    for (const auto &buffer : buffers)
-        weakBuffers.push_back(buffer);
+    weakBuffers.reserve(m_bufferBindings.size());
+    for (size_t index = 0; index < m_bufferBindings.size(); ++index)
+        weakBuffers.push_back(buffers[index]);
     m_groups.push_back({group, std::move(weakBuffers)});
     return group;
 }
@@ -1190,7 +1232,8 @@ bool Reads(ComputeBufferAccess access)
 
 bool SameAllocationLayout(const ComputeBufferDesc &left, const ComputeBufferDesc &right)
 {
-    return left.elementCount == right.elementCount && left.scalarType == right.scalarType && left.lanes == right.lanes;
+    return left.elementCount == right.elementCount && left.scalarType == right.scalarType &&
+           left.lanes == right.lanes && HasBufferUsage(right.usage, left.usage);
 }
 
 bool Overlaps(const ComputeWorkRange &left, const ComputeWorkRange &right)
@@ -1202,6 +1245,13 @@ void ValidateWorkAliases(const ComputeWorkDispatch &dispatch, const std::vector<
 {
     for (size_t index = 0; index < dispatch.bindings.size(); ++index) {
         const auto &left = dispatch.bindings[index];
+        if (dispatch.indirectArguments) {
+            const auto slot = dispatch.indirectArguments->slot;
+            const bool same = left.range.slot == slot || (identities[left.range.slot].IsValid() &&
+                                                          identities[left.range.slot] == identities[slot]);
+            if (same && Writes(left.access))
+                throw std::invalid_argument("Indirect arguments cannot alias writable shader storage");
+        }
         for (size_t other = 0; other < index; ++other) {
             const auto &right = dispatch.bindings[other];
             const bool same =
@@ -1220,7 +1270,7 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
     struct AllocationUses
     {
         bool aliases = false, external = false;
-        std::vector<const ComputeWorkBinding *> bindings;
+        std::vector<ComputeWorkBinding> bindings;
         std::vector<const ComputeWorkRange *> ports;
     };
     // Most instances bind distinct allocations. Compare logical lifetimes only
@@ -1242,7 +1292,13 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
                 continue;
             auto &uses = allocations.at(identity);
             if (uses.aliases)
-                uses.bindings.push_back(&binding);
+                uses.bindings.push_back(binding);
+        }
+        if (dispatch.indirectArguments) {
+            const auto &range = *dispatch.indirectArguments;
+            const auto identity = identities[range.slot];
+            if (identity.IsValid() && allocations.at(identity).aliases)
+                allocations.at(identity).bindings.push_back({range, ComputeBufferAccess::Read});
         }
     }
     for (const auto &port : ports) {
@@ -1255,16 +1311,16 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
     }
     for (const auto &allocation : allocations) {
         const auto &uses = allocation.second;
-        for (const auto *binding : uses.bindings) {
-            if (!Writes(binding->access))
+        for (const auto &binding : uses.bindings) {
+            if (!Writes(binding.access))
                 continue;
             if (uses.external)
                 throw std::invalid_argument("Compute work input binding aliases read-only external storage");
             const auto conflicts = [&](const ComputeWorkRange &other) {
-                return other.slot != binding->range.slot && Overlaps(binding->range, other);
+                return other.slot != binding.range.slot && Overlaps(binding.range, other);
             };
-            for (const auto *other : uses.bindings)
-                if (conflicts(other->range))
+            for (const auto &other : uses.bindings)
+                if (conflicts(other.range))
                     throw std::invalid_argument("Compute work input bindings alias distinct logical slot lifetimes");
             for (const auto *other : uses.ports)
                 if (conflicts(*other))
@@ -1306,6 +1362,15 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
         if (range.offset > capacity || range.byteSize > capacity - range.offset)
             throw std::out_of_range("Compute work binding range exceeds its allocation");
     };
+    const auto requireRead = [&](const ComputeWorkRange &range) {
+        if (const auto &external = m_slots[range.slot].external; external) {
+            if (!external->HasInitializedRange(range.offset, range.byteSize))
+                throw std::invalid_argument("Compute work external input lacks an initialized logical range");
+            intervals::Add(initialized[range.slot], range.offset, range.offset + range.byteSize);
+        }
+        if (!intervals::Contains(initialized[range.slot], range.offset, range.offset + range.byteSize))
+            throw std::invalid_argument("Compute work reads storage without a prior complete writer or input port");
+    };
     m_portIndices.reserve(m_ports.size());
     for (size_t index = 0; index < m_ports.size(); ++index) {
         const auto &port = m_ports[index];
@@ -1329,23 +1394,24 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
             accesses.push_back(binding.access);
             if (m_slots[binding.range.slot].external && Writes(binding.access))
                 throw std::invalid_argument("Compute work cannot write external storage");
-            if (m_slots[binding.range.slot].external && Reads(binding.access)) {
-                if (!m_slots[binding.range.slot].external->HasInitializedRange(binding.range.offset,
-                                                                               binding.range.byteSize))
-                    throw std::invalid_argument("Compute work external input lacks an initialized logical range");
-                intervals::Add(initialized[binding.range.slot], binding.range.offset,
-                               binding.range.offset + binding.range.byteSize);
-            }
         }
         dispatch.kernel->ValidateDispatch(accesses, dispatch.pushConstants.size(), dispatch.groupCountX,
-                                          dispatch.groupCountY, dispatch.groupCountZ);
+                                          dispatch.groupCountY, dispatch.groupCountZ,
+                                          dispatch.indirectArguments.has_value());
+        if (dispatch.indirectArguments) {
+            const auto &arguments = *dispatch.indirectArguments;
+            validateRange(arguments);
+            if (arguments.byteSize != ComputeIndirectArguments::ByteSize)
+                throw std::invalid_argument("Compute work indirect input must contain exactly three uint32 values");
+            ValidateIndirectRange(m_slots[arguments.slot].allocation, arguments.offset);
+            requireRead(arguments);
+        }
         for (size_t index = 0; index < dispatch.bindings.size(); ++index) {
             const auto &binding = dispatch.bindings[index];
             if (dispatch.kernel->m_bufferBindingTypes[index] == BindingType::UniformBuffer && Writes(binding.access))
                 throw std::invalid_argument("Compute work uniform bindings must be read-only");
-            if (Reads(binding.access) && !intervals::Contains(initialized[binding.range.slot], binding.range.offset,
-                                                              binding.range.offset + binding.range.byteSize))
-                throw std::invalid_argument("Compute work reads storage without a prior complete writer or input port");
+            if (Reads(binding.access))
+                requireRead(binding.range);
         }
         ValidateWorkAliases(dispatch, identities);
         for (const auto &fact : dispatch.completeWrites) {
@@ -1357,6 +1423,9 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
             if (fact.offset < binding.offset || fact.offset - binding.offset > binding.byteSize ||
                 fact.byteSize > binding.byteSize - (fact.offset - binding.offset))
                 throw std::out_of_range("Compute work complete write exceeds its binding range");
+            if (dispatch.indirectArguments &&
+                !intervals::Contains(initialized[binding.slot], fact.offset, fact.offset + fact.byteSize))
+                throw std::invalid_argument("Indirect work cannot establish an unconditional complete-write range");
             intervals::Add(initialized[binding.slot], fact.offset, fact.offset + fact.byteSize);
         }
     }
@@ -1373,10 +1442,13 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
     for (const auto &port : m_ports)
         if (port.input)
             include(port.range);
-    for (const auto &dispatch : m_dispatches)
+    for (const auto &dispatch : m_dispatches) {
         for (const auto &binding : dispatch.bindings)
             if (m_slots[binding.range.slot].external && Reads(binding.access))
                 include(binding.range);
+        if (dispatch.indirectArguments && m_slots[dispatch.indirectArguments->slot].external)
+            include(*dispatch.indirectArguments);
+    }
 }
 
 std::shared_ptr<ComputeWorkInstance> ComputeWorkRecipe::Instantiate(std::vector<ComputeWorkInput> inputs) const
@@ -1444,9 +1516,13 @@ const std::vector<ComputeKernel::PreparedDispatch> &ComputeWorkInstance::GetDisp
             resources.push_back(m_buffers[binding.range.slot]);
             accesses.push_back(binding.access);
         }
-        prepared.push_back(dispatch.kernel->PrepareDispatch(std::move(resources), std::move(accesses),
-                                                            dispatch.pushConstants, dispatch.groupCountX,
-                                                            dispatch.groupCountY, dispatch.groupCountZ));
+        std::optional<ComputeIndirectArguments> arguments;
+        if (dispatch.indirectArguments)
+            arguments = ComputeIndirectArguments{m_buffers[dispatch.indirectArguments->slot],
+                                                 dispatch.indirectArguments->offset};
+        prepared.push_back(dispatch.kernel->PrepareDispatch(
+            std::move(resources), std::move(accesses), dispatch.pushConstants, dispatch.groupCountX,
+            dispatch.groupCountY, dispatch.groupCountZ, {}, std::move(arguments)));
     }
     m_dispatches = std::move(prepared);
     return m_dispatches;
@@ -1476,6 +1552,9 @@ std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vec
         dispatch.groupCountZ = operation.groupCountZ;
         dispatch.proof.emplace();
         dispatch.proof->writes = operation.completeWrites;
+        if (operation.indirectArguments)
+            dispatch.indirectArguments = ComputeIndirectArguments{m_buffers[operation.indirectArguments->slot],
+                                                                  operation.indirectArguments->offset};
         dispatch.buffers.reserve(operation.bindings.size());
         dispatch.bufferAccesses.reserve(operation.bindings.size());
         for (uint32_t index = 0; index < operation.bindings.size(); ++index) {
