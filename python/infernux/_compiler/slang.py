@@ -203,6 +203,14 @@ class _KernelEmitter(_NumericalEmitter):
         if plan.continuation.eligible:
             self.argument_fields.extend([("int", "inx_range_begin"), ("int", "inx_range_end")])
         self.types[plan.work_item.index_name] = "int"
+        self.atomic_buffers = {
+            node.args[0].value.id
+            for node in ast.walk(plan.definition)
+            if isinstance(node, ast.Call) and self.symbol(qualified(node.func)) == "atomic_add"
+            and node.args and isinstance(node.args[0], ast.Subscript)
+            and isinstance(node.args[0].value, ast.Name)
+            and node.args[0].value.id in self.buffers
+        }
         for name, value in plan.globals_map.items():
             if isinstance(value, (bool, int, float, np.number)):
                 kind = "bool" if isinstance(value, (bool, np.bool_)) else "int" if isinstance(value, (int, np.integer)) else "float"
@@ -224,6 +232,8 @@ class _KernelEmitter(_NumericalEmitter):
             return "int"
         if isinstance(node, ast.Call):
             name = qualified(node.func)
+            if self.symbol(name) == "atomic_add":
+                return self.types[self._atomic_target(node)[0]]
             if name == "len":
                 return "int"
             if name in self.helpers:
@@ -251,6 +261,8 @@ class _KernelEmitter(_NumericalEmitter):
             name = node.value.id
             address = self._address(name, node.slice)
             self.accesses[name] = self.accesses.get(name, 0) | 1
+            if name in self.atomic_buffers:
+                return f"inx_atomic_load_{self.types[name]}({name}, {address})"
             return f"{name}.Load<{self.types[name]}>({address})"
         if isinstance(node.value, ast.Attribute) and node.value.attr == "shape" and isinstance(node.value.value, ast.Name):
             name = node.value.value.id
@@ -284,7 +296,10 @@ class _KernelEmitter(_NumericalEmitter):
             name = target.value.id
             address = self._address(name, target.slice)
             self.accesses[name] = self.accesses.get(name, 0) | 2
-            self.line(f"{name}.Store<{self.types[name]}>({address}, {self.types[name]}({value}));")
+            if name in self.atomic_buffers:
+                self.line(f"inx_atomic_store_{self.types[name]}({name}, {address}, {self.types[name]}({value}));")
+            else:
+                self.line(f"{name}.Store<{self.types[name]}>({address}, {self.types[name]}({value}));")
         else:
             super().assign(target, value)
 
@@ -326,16 +341,24 @@ class _KernelEmitter(_NumericalEmitter):
             self.source_ranges.extend(emitter.source_ranges)
         return (*self.helper_return_types[key], arguments)
 
+    def _atomic_target(self, node):
+        if len(node.args) != 2 or node.keywords:
+            self.error(node, "atomic_add takes a buffer element and an increment")
+        target = node.args[0]
+        if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name) or target.value.id not in self.buffers:
+            self.error(target, "atomic_add writes one buffer element")
+        buffer = target.value.id
+        if self.types[buffer] not in {"int", "uint", "float"}:
+            self.error(target, "atomic_add requires a scalar int32, uint32 or float32 buffer element")
+        return buffer, target.slice
+
     def visit_Call(self, node):
         name = qualified(node.func)
         if self.symbol(name) == "atomic_add":
-            target, value = node.args
-            if not isinstance(target, ast.Subscript) or not isinstance(target.value, ast.Name) or target.value.id not in self.buffers:
-                self.error(target, "atomic_add writes one buffer element")
-            buffer = target.value.id
-            address = self._address(buffer, target.slice)
+            buffer, indices = self._atomic_target(node)
+            address = self._address(buffer, indices)
             self.accesses[buffer] = 3
-            return f"inx_atomic_add({buffer}, {address}, {self.types[buffer]}({self.visit(value)}))"
+            return f"inx_atomic_add({buffer}, {address}, {self.types[buffer]}({self.visit(node.args[1])}))"
         if name == "len" and len(node.args) == 1 and isinstance(node.args[0], ast.Name) and node.args[0].id in self.buffers:
             return "inx_args." + node.args[0].id + "_shape_0"
         if name in self.helpers:
@@ -347,8 +370,11 @@ class _KernelEmitter(_NumericalEmitter):
         fields = "\n".join("    " + kind + " " + name + ";" for kind, name in self.argument_fields)
         result = ["struct Arguments {\n" + fields + "\n};", "ConstantBuffer<Arguments> inx_args;", *self.constants]
         for name, access in self.accesses.items():
-            prefix = "RW" if access & 2 else ""
-            result.append(f"{prefix}ByteAddressBuffer {name};")
+            if name in self.atomic_buffers:
+                result.append(f"RWStructuredBuffer<Atomic<uint>> {name};")
+            else:
+                prefix = "RW" if access & 2 else ""
+                result.append(f"{prefix}ByteAddressBuffer {name};")
         for name, access in self.gradient_accesses.items():
             prefix = "RW" if access & 2 else ""
             result.append(f"{prefix}ByteAddressBuffer inx_grad_{name};")
@@ -459,17 +485,35 @@ float inx_floor_div(float a, float b) { return floor(a / b); }
 int inx_mod(int a, int b) { int r = a % b; return r != 0 && (r < 0) != (b < 0) ? r + b : r; }
 uint inx_mod(uint a, uint b) { return a % b; }
 float inx_mod(float a, float b) { return a - floor(a / b) * b; }
-int inx_atomic_add(RWByteAddressBuffer buffer, uint address, int value) {
-    int original; buffer.InterlockedAdd(address, value, original); return original;
+int inx_atomic_load_int(RWStructuredBuffer<Atomic<uint>> buffer, uint address) {
+    return asint(buffer[address / 4u].load());
 }
-uint inx_atomic_add(RWByteAddressBuffer buffer, uint address, uint value) {
-    uint original; buffer.InterlockedAdd(address, value, original); return original;
+uint inx_atomic_load_uint(RWStructuredBuffer<Atomic<uint>> buffer, uint address) {
+    return buffer[address / 4u].load();
 }
-float inx_atomic_add(RWByteAddressBuffer buffer, uint address, float value) {
-    uint original = buffer.Load<uint>(address);
+float inx_atomic_load_float(RWStructuredBuffer<Atomic<uint>> buffer, uint address) {
+    return asfloat(buffer[address / 4u].load());
+}
+void inx_atomic_store_int(RWStructuredBuffer<Atomic<uint>> buffer, uint address, int value) {
+    buffer[address / 4u].store(asuint(value));
+}
+void inx_atomic_store_uint(RWStructuredBuffer<Atomic<uint>> buffer, uint address, uint value) {
+    buffer[address / 4u].store(value);
+}
+void inx_atomic_store_float(RWStructuredBuffer<Atomic<uint>> buffer, uint address, float value) {
+    buffer[address / 4u].store(asuint(value));
+}
+int inx_atomic_add(RWStructuredBuffer<Atomic<uint>> buffer, uint address, int value) {
+    return asint(buffer[address / 4u].add(asuint(value)));
+}
+uint inx_atomic_add(RWStructuredBuffer<Atomic<uint>> buffer, uint address, uint value) {
+    return buffer[address / 4u].add(value);
+}
+float inx_atomic_add(RWStructuredBuffer<Atomic<uint>> buffer, uint address, float value) {
+    uint original = buffer[address / 4u].load();
     for (;;) {
         uint assumed = original;
-        buffer.InterlockedCompareExchange(address, assumed, asuint(asfloat(assumed) + value), original);
+        original = buffer[address / 4u].compareExchange(assumed, asuint(asfloat(assumed) + value));
         if (original == assumed) return asfloat(assumed);
     }
 }

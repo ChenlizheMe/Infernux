@@ -552,6 +552,29 @@ def main() -> int:
                 np.asarray([sum(range(1, 18))], dtype=np.int32),
             )
 
+            @inx.compute.kernel
+            def atomic_fetch(domain_values, total, tickets, increment):
+                i = inx.compute.index(domain_values)
+                tickets[i] = inx.compute.atomic_add(total[0], increment)
+                if i == 0:
+                    total[1] = total[2] + 1
+
+            for dtype, increment in ((np.int32, -1), (np.uint32, 1), (np.float32, .25)):
+                backing = inx.buffer(shape=5, dtype=dtype, device="gpu",
+                                     data=np.asarray([11, 0, 7, 33, 44], dtype=dtype))
+                total_view = backing.view(offset=1, count=3)
+                tickets = inx.buffer(shape=17, dtype=dtype, device="gpu")
+                try:
+                    inx.compute.launch(atomic_fetch, params=(explicit_domain, total_view, tickets, increment))
+                    np.testing.assert_array_equal(backing.get_data().numpy(),
+                                                  np.asarray([11, 17 * increment, 34, 33, 44], dtype=dtype))
+                    np.testing.assert_array_equal(np.sort(tickets.get_data().numpy()),
+                                                  np.sort(np.arange(17, dtype=dtype) * increment))
+                finally:
+                    tickets.close()
+                    total_view.close()
+                    backing.close()
+
             inx.compute.launch(_helper_kernel, params=(explicit_domain, local_loop_output, 3, -2))
             np.testing.assert_array_equal(
                 local_loop_output.get_data().numpy(),

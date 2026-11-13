@@ -3031,7 +3031,7 @@ def index(domain: Buffer) -> int:
 
 
 def atomic_add(target, value):
-    """Atomically add ``value`` to one buffer element inside a GPU kernel."""
+    """Add to an int32/uint32/float32 GPU buffer element and return its previous value."""
     raise RuntimeError("inx.compute.atomic_add is valid only inside @inx.compute.kernel")
 
 
