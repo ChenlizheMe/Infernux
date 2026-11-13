@@ -767,7 +767,8 @@ class PhysicsWorld
     void ObserveGpuPublication(bool numericalChange) const;
     [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(bool numericalChange) const;
     void RunControl(const JoltGpuScene::Consumer &consumer) const;
-    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(const std::vector<JPH::GPU::QueryInput> &requests) const;
+    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(const std::vector<JPH::GPU::QueryInput> &requests,
+                                                               uint64_t sweepColliderId = 0) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(const JPH::GPU::QueryInput &request,
                                                                        const JPH::GPU::QueryPrimitive &other) const;
     [[nodiscard]] std::vector<Collider *> QueryColliders(const JPH::GPU::QueryInput &request) const;

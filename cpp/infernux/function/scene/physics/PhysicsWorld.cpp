@@ -3,12 +3,14 @@
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <Jolt/RegisterTypes.h>
+#include "../BoxCollider.h"
 #include "../Collider.h"
 #include "../Component.h"
 #include "../GameObject.h"
 #include "../Rigidbody.h"
 #include "../Scene.h"
 #include "../SceneManager.h"
+#include "../TagLayerManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
 #include "JoltGpuProgramSources.h"
@@ -174,6 +176,30 @@ void QueryCapsuleInput(QueryInput &request, const glm::vec3 &a, const glm::vec3 
                                static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
         : delta.y > 0 ? Float4{0, 0, 0, 1}
                       : Float4{1, 0, 0, 0};
+}
+std::optional<QueryPrimitive> CookColliderQueryPrimitive(const Collider &collider, const glm::vec3 &position,
+                                                         const glm::quat &rotation)
+{
+    (void)Vector(position);
+    const auto q = Rotation(rotation);
+    // Collider dimensions and center offsets use authored affine transforms,
+    // including scale and mirrors, without demanding a live device pose.
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    const auto shape = collider.CreateJoltShape();
+    if (!shape)
+        throw std::runtime_error("Collider geometry is not ready for an explicit geometry query");
+    const auto prepared = PrepareJoltGpuShape(*shape, 1);
+    if (prepared.leaves.empty())
+        return std::nullopt;
+    if (prepared.leaves.size() != 1)
+        throw std::runtime_error("Explicit GPU Collider queries require a single cooked leaf");
+    const auto &leaf = prepared.leaves.front().model;
+    const glm::quat world(q.w, q.x, q.y, q.z);
+    const glm::quat local(leaf.localRotation.w, leaf.localRotation.x, leaf.localRotation.y, leaf.localRotation.z);
+    const auto center = position + world * (glm::vec3(prepared.centerOfMass.GetX(), prepared.centerOfMass.GetY(),
+                                                      prepared.centerOfMass.GetZ()) +
+                                            Vector(leaf.localPositionCOM));
+    return QueryPrimitive{{leaf.meta.x, 0, 0, 0}, leaf.geometry, Vector(center), Rotation(world * local)};
 }
 struct AdmissionScope
 {
@@ -865,19 +891,38 @@ void PhysicsWorld::RunControl(const JoltGpuScene::Consumer &consumer) const
     }
 }
 
-std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunQuery(const std::vector<QueryInput> &requests) const
+std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunQuery(const std::vector<QueryInput> &requests,
+                                                           uint64_t sweepColliderId) const
 {
     JoltGpuPreparedQuery prepared;
     std::exception_ptr requestError;
     RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) -> JoltGpuControlWork {
-        try {
-            prepared = m_gpuQueries->Prepare(publication, requests, {},
-                                             GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
-            return std::move(prepared.work);
-        } catch (const JoltGpuQueryRequestError &) {
-            requestError = std::current_exception();
-            return {};
-        }
+        return PrepareQueryWork(
+            [&] {
+                const auto *inputs = &requests;
+                std::vector<QueryInput> sweepInputs;
+                if (sweepColliderId) {
+                    sweepInputs = requests;
+                    // Only this accepted publication can name the source slot.
+                    // An unregistered Collider still excludes its GameObject.
+                    for (const auto &actor : publication->actors) {
+                        if (!actor || !std::any_of(actor->leaves.begin(), actor->leaves.end(), [&](const auto &leaf) {
+                                return leaf.colliderId == sweepColliderId;
+                            }))
+                            continue;
+                        for (auto &input : sweepInputs) {
+                            input.source.x = actor->slot;
+                            input.meta.w |= QueryExcludeBody;
+                        }
+                        break;
+                    }
+                    inputs = &sweepInputs;
+                }
+                prepared = m_gpuQueries->Prepare(
+                    publication, *inputs, {}, GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
+                return std::move(prepared.work);
+            },
+            requestError);
     });
     if (requestError)
         std::rethrow_exception(requestError);
@@ -1786,32 +1831,8 @@ std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const C
                                                                          const glm::quat &rotationB) const
 {
     RequireOwnerThread();
-    const auto cook = [](const Collider &collider, const glm::vec3 &position,
-                         const glm::quat &rotation) -> std::optional<QueryPrimitive> {
-        (void)Vector(position);
-        const auto q = Rotation(rotation);
-        const auto shape = collider.CreateJoltShape();
-        if (!shape)
-            throw std::runtime_error("Collider geometry is not ready for an explicit penetration query");
-        const auto prepared = PrepareJoltGpuShape(*shape, 1);
-        if (prepared.leaves.empty())
-            return std::nullopt;
-        if (prepared.leaves.size() != 1)
-            throw std::runtime_error("GPU penetration for a multi-leaf Collider requires a union separation query");
-        const auto &leaf = prepared.leaves.front().model;
-        const glm::quat world(q.w, q.x, q.y, q.z);
-        const glm::quat local(leaf.localRotation.w, leaf.localRotation.x, leaf.localRotation.y, leaf.localRotation.z);
-        const auto center = position + world * (glm::vec3(prepared.centerOfMass.GetX(), prepared.centerOfMass.GetY(),
-                                                          prepared.centerOfMass.GetZ()) +
-                                                Vector(leaf.localPositionCOM));
-        return QueryPrimitive{{leaf.meta.x, 0, 0, 0}, leaf.geometry, Vector(center), Rotation(world * local)};
-    };
-    std::optional<QueryPrimitive> first, second;
-    {
-        TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
-        first = cook(a, positionA, rotationA);
-        second = cook(b, positionB, rotationB);
-    }
+    const auto first = CookColliderQueryPrimitive(a, positionA, rotationA);
+    const auto second = CookColliderQueryPrimitive(b, positionB, rotationB);
     if (!first || !second)
         return std::nullopt;
     auto request = Query(QueryPenetration, QueryClosest);
@@ -1911,24 +1932,82 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
     }
     return bodies;
 }
-bool PhysicsWorld::SphereCast(const glm::vec3 &, float, const glm::vec3 &, float, RaycastHit &, uint32_t, bool) const
+bool PhysicsWorld::SphereCast(const glm::vec3 &center, float radius, const glm::vec3 &direction, float maximum,
+                              RaycastHit &hit, uint32_t layers, bool triggers) const
 {
-    Unsupported("sphere cast");
+    auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
+    QuerySphereInput(request, center, radius);
+    QueryRayInput(request, center, direction, maximum);
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    const auto &record = result->ReadHits().front();
+    hit = DecodeQueryHit(*result, record);
+    return record.meta.y != 0;
 }
-bool PhysicsWorld::BoxCast(const glm::vec3 &, const glm::vec3 &, const glm::vec3 &, const glm::quat &, float,
-                           RaycastHit &, uint32_t, bool) const
+bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
+                           const glm::quat &rotation, float maximum, RaycastHit &hit, uint32_t layers,
+                           bool triggers) const
 {
-    Unsupported("box cast");
+    auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
+    QueryBoxInput(request, center, halfExtents, rotation);
+    QueryRayInput(request, center, direction, maximum);
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    const auto &record = result->ReadHits().front();
+    hit = DecodeQueryHit(*result, record);
+    return record.meta.y != 0;
 }
-bool PhysicsWorld::SweepBox(const BoxCollider &, const glm::vec3 &, const glm::quat &, const glm::vec3 &,
-                            RaycastHit &) const
+bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
+                            const glm::vec3 &displacement, RaycastHit &hit) const
 {
-    Unsupported("BoxCollider sweep");
+    RequireOwnerThread();
+    (void)Vector(position);
+    (void)Rotation(rotation);
+    (void)Vector(displacement);
+    const double distance =
+        std::hypot(std::hypot(double(displacement.x), double(displacement.y)), double(displacement.z));
+    auto *object = box.GetGameObject();
+    if (!object || distance == 0) {
+        hit = {};
+        return false;
+    }
+    if (distance > std::numeric_limits<float>::max())
+        throw std::invalid_argument("BoxCollider sweep displacement exceeds device coordinates");
+    const auto colliderId = box.GetComponentID();
+    const auto objectId = object->GetID();
+    const auto layers = TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer());
+    const auto primitive = CookColliderQueryPrimitive(box, position, rotation);
+    if (!primitive) {
+        hit = {};
+        return false;
+    }
+    auto request = Query(QueryShapeCast, QueryClosest, layers, false);
+    request.meta.z = primitive->meta.x;
+    request.meta.w = QuerySweepPolicy;
+    request.geometry = primitive->geometry;
+    request.rotation = primitive->rotation;
+    QueryRayInput(request, Vector(primitive->position), displacement, static_cast<float>(distance));
+    request.source.z = static_cast<uint32_t>(objectId);
+    request.source.w = static_cast<uint32_t>(objectId >> 32);
+    request.filter.z = static_cast<uint32_t>(colliderId);
+    request.filter.w = static_cast<uint32_t>(colliderId >> 32);
+    auto result = RunQuery({request}, colliderId);
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    const auto &record = result->ReadHits().front();
+    hit = DecodeQueryHit(*result, record);
+    return record.meta.y != 0;
 }
-bool PhysicsWorld::CapsuleCast(const glm::vec3 &, const glm::vec3 &, float, const glm::vec3 &, float, RaycastHit &,
-                               uint32_t, bool) const
+bool PhysicsWorld::CapsuleCast(const glm::vec3 &a, const glm::vec3 &b, float radius, const glm::vec3 &direction,
+                               float maximum, RaycastHit &hit, uint32_t layers, bool triggers) const
 {
-    Unsupported("capsule cast");
+    auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
+    QueryCapsuleInput(request, a, b, radius);
+    QueryRayInput(request, Vector(request.positionMaximum), direction, maximum);
+    auto result = RunQuery({request});
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    const auto &record = result->ReadHits().front();
+    hit = DecodeQueryHit(*result, record);
+    return record.meta.y != 0;
 }
 std::shared_ptr<const PhysicsShapeGeometry> PhysicsWorld::ResolveShapeGeometry(const JoltGpuScene::PublishedLeaf &leaf,
                                                                                const QueryShapeState &record) const

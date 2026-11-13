@@ -138,7 +138,8 @@ class JoltGpuQueries final
                                                const std::vector<JPH::GPU::QueryInput> &queries,
                                                const std::vector<JPH::GPU::QueryPrimitive> &primitives,
                                                uint64_t numericalGeneration,
-                                               JoltGpuQueryReadback readback = JoltGpuQueryReadback::Host) const;
+                                               JoltGpuQueryReadback readback = JoltGpuQueryReadback::Host,
+                                               uint32_t castIterationQuantum = 32) const;
 
     /// Prepare after the gather metadata receipt, inside the same source's
     /// continuation. Writes only the validated prefix; no CPU numerical upload.
@@ -152,12 +153,14 @@ class JoltGpuQueries final
                           uint64_t topologyRevision = 1) const;
 
   private:
+    struct Execution;
+    static JoltGpuControlWork Continue(const std::shared_ptr<Execution> &execution);
     struct Program
     {
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<uint8_t> ports;
     };
     rhi::ComputeHost m_host;
-    std::array<Program, 7> m_programs;
+    std::array<Program, 8> m_programs;
 };
 } // namespace infernux

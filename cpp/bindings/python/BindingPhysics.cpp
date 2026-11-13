@@ -112,7 +112,7 @@ py::array GetPointVelocities(const Rigidbody &body, py::array points, py::array 
 void RequireDirectionAndDistance(const glm::vec3 &direction, float maxDistance)
 {
     RequireFinite(direction, "direction");
-    if (glm::dot(direction, direction) <= 1e-12f)
+    if (direction.x == 0 && direction.y == 0 && direction.z == 0)
         throw std::invalid_argument("direction must be non-zero");
     if (!std::isfinite(maxDistance) || maxDistance <= 0.0f)
         throw std::invalid_argument("max_distance must be finite and greater than zero");
@@ -173,7 +173,7 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
         const double lengthSq = static_cast<double>(direction.x) * direction.x +
                                 static_cast<double>(direction.y) * direction.y +
                                 static_cast<double>(direction.z) * direction.z;
-        if (!std::isfinite(lengthSq) || lengthSq <= 1e-12)
+        if (lengthSq == 0)
             throw std::invalid_argument("direction must be non-zero");
         directionsAlreadyNormalized = directionsAlreadyNormalized && lengthSq == 1.0;
     }
