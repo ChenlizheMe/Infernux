@@ -12,6 +12,8 @@ Handles:
 - Python component recreation after scene restore
 """
 
+from infernux.engine.i18n import t
+
 import time
 import os
 import types
@@ -873,9 +875,9 @@ class PlayModeManager(PlayModeSerializationMixin):
         def on_done(ok):
             from infernux.engine.ui.engine_status import EngineStatus
             if ok:
-                EngineStatus.flash("已启动 Playing", 1.0, duration=1.5)
+                EngineStatus.flash(t("editor.status.playing"), 1.0, duration=1.5)
             else:
-                EngineStatus.flash("启动失败 Play Failed", 0.0, duration=2.0)
+                EngineStatus.flash(t("editor.status.play_failed"), 0.0, duration=2.0)
 
         runner.submit("Enter Play Mode", [
             ("启动运行模式 Entering play mode...", 0.5, enter_with_progress),
@@ -985,14 +987,14 @@ class PlayModeManager(PlayModeSerializationMixin):
         def on_done(ok):
             from infernux.engine.ui.engine_status import EngineStatus
             if ok:
-                EngineStatus.flash("已停止 Stopped ■", 1.0, duration=1.5)
+                EngineStatus.flash(t("editor.status.stopped"), 1.0, duration=1.5)
             else:
                 self._state = PlayModeState.RECOVERY_REQUIRED
                 Material._suppress_auto_save = True
                 RenderEffect._suppress_auto_save = True
                 if self._native_engine is not None:
                     self._native_engine.set_play_mode_rendering(False)
-                EngineStatus.flash("恢复失败，请修正错误后再次停止 Restore Failed", 0.0, duration=4.0)
+                EngineStatus.flash(t("editor.status.restore_failed"), 0.0, duration=4.0)
             if on_complete:
                 try:
                     on_complete(ok)

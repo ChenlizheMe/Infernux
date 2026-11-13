@@ -8,6 +8,7 @@ that callers can provide for per-session caching.
 import json
 import os
 import re
+from functools import lru_cache
 from infernux.engine.path_utils import lexical_path_key, path_key, portable_path
 from infernux._source_kinds import source_extension
 
@@ -49,8 +50,8 @@ def _normalize_imported_property(item: dict) -> dict:
 def _read_compiled_shader_metadata(filepath: str) -> dict | None:
     """Read the schema emitted by the native shader importer."""
     try:
-        from infernux.core.asset_types import read_meta_file
-        metadata = read_meta_file(filepath)
+        from infernux.core.asset_types import read_published_asset_metadata
+        metadata = read_published_asset_metadata(filepath)
     except (ImportError, OSError, TypeError, ValueError):
         return None
     if not metadata or not isinstance(metadata.get("shader_id"), str):
@@ -99,6 +100,16 @@ def _strip_glsl_comments(source: str) -> str:
 
 
 def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
+    """Share one source parse between names, domains, visibility and properties."""
+    try:
+        revision = os.stat(filepath)
+    except OSError:
+        return {}
+    return _read_source_shader_metadata_revision(filepath, revision.st_mtime_ns, revision.st_size)
+
+
+@lru_cache(maxsize=512)
+def _read_source_shader_metadata_revision(filepath: str, _mtime_ns: int, _size: int) -> dict[str, object]:
     """Read catalog fields from a source-level ``ShaderInfo`` declaration."""
     from infernux._source_kinds import is_gpu_source
 
@@ -110,7 +121,8 @@ def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
                 info = read_shader_info(handle.read(), filepath)
         except (OSError, SyntaxError):
             return {}
-        return {"shader_id": info["shader_id"], "shader_hidden": info["hidden"], "queue": info["render_queue"]}
+        return {"shader_id": info["shader_id"], "shader_hidden": info["hidden"], "queue": info["render_queue"],
+                "domain": info["domain"]}
     try:
         with open(filepath, "r", encoding="utf-8") as handle:
             source = _strip_glsl_comments(handle.read())
@@ -248,6 +260,8 @@ def bump_shader_property_generation():
     _shader_catalog_cache.clear()
     _shader_properties_cache.clear()
     _shader_visibility_cache.clear()
+    _read_source_shader_metadata_revision.cache_clear()
+    _canonical_shader_roots.cache_clear()
 
 
 def get_shader_property_generation() -> int:
@@ -296,6 +310,11 @@ def _is_builtin_shader_path(filepath: str) -> bool:
     return False
 
 
+def shader_menu_folders(shader_id: str) -> tuple[str, ...]:
+    """Logical Shader ID folders; physical storage never participates in the menu."""
+    return tuple(shader_id.split("/")[:-1])
+
+
 def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dict[str, object]:
     """Scan shader roots once and cache both candidates and id->path mapping."""
     items = []
@@ -310,11 +329,6 @@ def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dic
                 if not _matches_stage(fname, ext):
                     continue
                 full_path = os.path.join(dirpath, fname)
-                if source_extension(fname) == ".frag.py":
-                    from infernux.core.shader import Shader
-                    if Shader.get_schema(full_path)["domain"] != "mesh":
-                        continue
-
                 shader_id = parse_shader_id(full_path)
                 if not shader_id:
                     continue
@@ -324,9 +338,8 @@ def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dic
                     continue
                 seen_shader_ids.add(shader_id)
 
-                if is_shader_hidden(full_path):
+                if shader_picker_name(full_path, material_fragment=ext == ".frag") is None:
                     continue
-
                 items.append((shader_id, shader_id))
 
     if not items:
@@ -338,10 +351,15 @@ def _scan_shader_catalog(ext: str, search_roots: list[str] | None = None) -> dic
     }
 
 
+@lru_cache(maxsize=16)
+def _canonical_shader_roots(roots: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(path_key(root) for root in roots)
+
+
 def _get_shader_catalog(ext: str) -> dict[str, object]:
     """Return cached shader catalog for the requested extension."""
     search_roots = _get_shader_search_roots()
-    root_signature = tuple(path_key(root) for root in search_roots if root)
+    root_signature = _canonical_shader_roots(tuple(root for root in search_roots if root))
     cache_key = (ext, root_signature)
     catalog = _shader_catalog_cache.get(cache_key)
     if catalog is None:
@@ -388,6 +406,16 @@ def parse_shader_id(filepath: str) -> str:
     if isinstance(shader_id, str) and shader_id:
         return shader_id
     return None
+
+
+def shader_picker_name(filepath: str, *, material_fragment: bool = False) -> str | None:
+    """Read picker identity and domain without compiling or executing the source."""
+    if is_shader_hidden(filepath):
+        return None
+    if material_fragment and source_extension(filepath) == ".frag.py":
+        if _read_source_shader_metadata(filepath).get("domain") != "mesh":
+            return None
+    return parse_shader_id(filepath)
 
 
 def parse_shader_properties(filepath: str) -> list:
@@ -453,9 +481,14 @@ def is_shader_hidden(filepath: str) -> bool:
 
 
 def get_shader_file_path(shader_id: str, ext: str) -> str:
-    """Find the file path for a given shader_id by scanning project and built-in dirs."""
+    """Resolve the imported Shader ID; standalone authoring uses the source catalog."""
     if not shader_id:
         return None
+    from infernux.core.assets import AssetManager
+    database = AssetManager._asset_database
+    if database is not None:
+        stage = {".vert": "vertex", ".frag": "fragment"}[ext]
+        return database.find_shader_path_by_id(shader_id, stage) or None
     return _get_shader_catalog(ext).get("paths", {}).get(shader_id)
 
 

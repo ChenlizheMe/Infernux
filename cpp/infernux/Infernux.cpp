@@ -3482,6 +3482,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     INXLOG_DEBUG("Prepare pipeline.");
     phaseBegin = StartupClock::now();
     m_renderer->PreparePipeline();
+    m_renderer->SetEditorIconsDirectory(JoinPath({builtinResourcePath, "icons"}));
     m_renderer->GetResourcePreviewManager()->SetMaterialPreviewQuery(
         [this](const std::string &path) { return QueryOrScheduleMaterialPreview("mat|" + path, path, {}, 0, false); });
     startupPhase("prepare_pipeline", phaseBegin);

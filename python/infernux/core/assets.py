@@ -38,7 +38,7 @@ from infernux.core.mesh import Mesh
 from infernux.core.audio_clip import AudioClip
 from infernux.core.physic_material import PhysicMaterial
 from infernux.core.document_store import PathWriteScope
-from infernux._source_kinds import is_gpu_source, is_host_python_source
+from infernux._source_kinds import is_gpu_source, is_host_python_source, source_extension
 from infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, SHADER_DEPENDENCY_EXTENSIONS,
     SHADER_SOURCE_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
@@ -390,7 +390,7 @@ class AssetManager:
             ext = runtime_asset_extension(guid)
         else:
             path = cls._get_path_from_guid(guid)
-            ext = os.path.splitext(path or "")[1].lower()
+            ext = source_extension(path or "")
         if not path:
             return None
 
@@ -502,7 +502,7 @@ class AssetManager:
         for guid, path in entries:
             if not path or "::" in path:
                 continue
-            if asset_type is not None and cls._type_from_extension(os.path.splitext(path)[1].lower()) != asset_type:
+            if asset_type is not None and cls._type_from_extension(source_extension(path)) != asset_type:
                 continue
             if has_glob:
                 try:
@@ -925,7 +925,7 @@ class AssetManager:
 
     @classmethod
     def _reimport_shader_runtime(cls, path, metadata):
-        ext = os.path.splitext(path)[1].lower()
+        ext = source_extension(path)
         previous_shader_id = ""
         if ext in SHADER_EXTENSIONS and metadata is not None and metadata.has_key("shader_id"):
             previous_shader_id = metadata.get_string("shader_id")
@@ -1042,20 +1042,15 @@ class AssetManager:
         return result
 
     @staticmethod
-    def _publish_compile_diagnostic(path: str, error: str = "", *, line: int = 0) -> None:
+    def _publish_compile_diagnostic(path: str, error: str = "", *, line: int = 0,
+                                    key_path: str = "", summary: str = "") -> None:
         """Replace this source's diagnostic after one compiler result."""
-        Debug.clear_source_entries(path)
+        key = path_key(key_path or path)
         if error:
-            from datetime import datetime
-            from infernux.debug import DebugConsole, LogEntry, LogType
-
-            DebugConsole.instance().log(LogEntry(
-                message=error,
-                log_type=LogType.ERROR,
-                timestamp=datetime.now(),
-                source_file=path,
-                source_line=line,
-            ))
+            Debug.set_diagnostic("asset.compile", key, summary or error.splitlines()[0],
+                                 source_file=path, source_line=line, details=error)
+        else:
+            Debug.resolve_diagnostic("asset.compile", key)
 
     @classmethod
     def _publish_shader_compile_result(cls, path: str, error: str, native) -> None:
@@ -1063,16 +1058,15 @@ class AssetManager:
         sources = tuple(native._shader_reload_sources)
         roots = frozenset(path_key(source) for source in sources)
         key = path_key(path)
-        previous = cls._shader_diagnostic_roots.pop(key, None)
-        if previous is not None:
-            cls._publish_compile_diagnostic(previous[0])
+        cls._shader_diagnostic_roots.pop(key, None)
         diagnostic = next((item for item in native._shader_reload_diagnostics
                            if item["severity"] in {"error", "fatal error"}), {"path": path, "line": 0})
         source = diagnostic["path"] or path
-        cls._publish_compile_diagnostic(source, error, line=diagnostic["line"])
+        cls._publish_compile_diagnostic(source, error, line=diagnostic["line"], key_path=path,
+                                        summary=diagnostic.get("message", ""))
         if error:
             if roots:
-                cls._shader_diagnostic_roots[key] = (source, roots)
+                cls._shader_diagnostic_roots[key] = (path, roots)
             return
         Shader._record_runtime_publication(cls._asset_database, sources or (path,))
         for owner, (source, outstanding) in tuple(cls._shader_diagnostic_roots.items()):
@@ -1198,7 +1192,7 @@ class AssetManager:
     @staticmethod
     def _invalidate_shader_authoring_cache(path: str) -> None:
         """Publish shader catalog changes independently of runtime renderer state."""
-        if not is_gpu_source(path) and os.path.splitext(path)[1].lower() not in SHADER_SOURCE_EXTENSIONS:
+        if source_extension(path) not in SHADER_SOURCE_EXTENSIONS:
             return
         try:
             from infernux.engine.ui import inspector_shader_utils
@@ -1209,7 +1203,7 @@ class AssetManager:
 
     @classmethod
     def _compile_shader_dependency_runtime(cls, path: str, previous_path: str = "") -> str:
-        if not any(os.path.splitext(source)[1].lower() in SHADER_DEPENDENCY_EXTENSIONS
+        if not any(source_extension(source) in SHADER_DEPENDENCY_EXTENSIONS
                    for source in (path, previous_path)):
             return ""
         native = cls._native_engine()
@@ -2063,6 +2057,8 @@ class AssetManager:
         if key is not None:
             record = cls._scheduled_saves.get(key)
             if not record:
+                if not cls._pending_document_write_records:
+                    return False
                 # A runtime owner (for example RenderEffect.flush()) may have
                 # submitted the shared path before its Inspector controller
                 # reaches the footer in the same frame. Return that exact
@@ -2247,7 +2243,7 @@ class AssetManager:
             return Material
         if ext in IMAGE_EXTENSIONS:
             return Texture
-        if ext in SHADER_EXTENSIONS:
+        if ext in SHADER_SOURCE_EXTENSIONS:
             return Shader
         if ext in AUDIO_EXTENSIONS:
             return AudioClip

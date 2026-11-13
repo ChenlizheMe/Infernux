@@ -7,6 +7,9 @@ from infernux.engine.interaction import EditorInteractionCore, PanelInteractionD
 
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
+from .theme import Theme, ImGuiCol
+from .igui import IGUI
+from .editor_icons import EditorIcons
 
 
 @editor_panel(
@@ -67,9 +70,24 @@ class HistoryPanel(EditorPanel):
                     if row.state == "applied"
                     else t("history.state.redo")
                 )
-                marker = " >" if row.is_next_undo or row.is_next_redo else ""
-                context = f"  [{row.context}]" if row.context else ""
-                ctx.label(f"{row.sequence:03d}  {state}{marker}  {row.description}{context}")
+                current = row.is_next_undo or row.is_next_redo
+                dpi = ctx.get_dpi_scale()
+                width = ctx.get_content_region_avail_width()
+                if row.state != "applied":
+                    ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+                ctx.selectable(f"##history_{row.operation_id}", current, width=0, height=32 * dpi)
+                x, y = ctx.get_item_rect_min_x(), ctx.get_item_rect_min_y()
+                icon_name = "plus" if ".create" in row.command_id else "close" if ".delete" in row.command_id else "back" if row.state != "applied" else "key"
+                icon = EditorIcons.get_cached(icon_name)
+                if icon:
+                    ctx.draw_image_rect(icon, x + 6 * dpi, y + 9 * dpi, x + 20 * dpi, y + 23 * dpi)
+                with IGUI.mono_font(ctx):
+                    ctx.draw_text(x + 30 * dpi, y + 9 * dpi, f"{row.sequence:03d}", *Theme.TEXT_DISABLED)
+                color = Theme.TEXT if row.state == "applied" else Theme.TEXT_DISABLED
+                ctx.draw_text_aligned(x + 72 * dpi, y, x + width - 8 * dpi, y + 32 * dpi,
+                                      row.description, *color, 0, 0.5, 0, True)
+                if row.state != "applied":
+                    ctx.pop_style_color(1)
                 ctx.record_semantic_item(
                     "history_entry",
                     row.description,
@@ -78,6 +96,7 @@ class HistoryPanel(EditorPanel):
                 )
                 if ctx.is_item_hovered():
                     details = [
+                        state,
                         f"{t('history.command')}: {row.command_id}",
                         f"{t('history.target')}: {row.target or '-'}",
                         f"{t('history.document')}: {row.document or '-'}",

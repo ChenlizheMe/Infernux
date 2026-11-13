@@ -40,6 +40,12 @@ def test_player_keeps_engine_notices_from_source_and_installed_wheel(tmp_path, m
         "python/infernux/resources/fonts/MapleMono-LICENSE.txt": (
             source / "python/infernux/resources/fonts/MapleMono-LICENSE.txt"
         ).read_bytes(),
+        "python/infernux/resources/fonts/Inter-LICENSE.txt": (
+            source / "python/infernux/resources/fonts/Inter-LICENSE.txt"
+        ).read_bytes(),
+        "python/infernux/resources/fonts/NotoSansSC-LICENSE.txt": (
+            source / "python/infernux/resources/fonts/NotoSansSC-LICENSE.txt"
+        ).read_bytes(),
     }
     if installed:
         site = tmp_path / "site-packages"

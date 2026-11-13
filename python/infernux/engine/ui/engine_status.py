@@ -8,6 +8,7 @@ status bar, and a lower-priority status becomes visible again when it finishes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
 import threading
 import time
 
@@ -28,6 +29,7 @@ class EngineStatus:
     _lock = threading.RLock()
     _entries: dict[str, _StatusEntry] = {}
     _sequence: int = 0
+    _notifications = deque(maxlen=32)
 
     @classmethod
     def _store(
@@ -50,6 +52,16 @@ class EngineStatus:
                 priority=int(priority),
                 sequence=cls._sequence,
             )
+            if expire_at > 0.0 and kind in ("success", "error"):
+                cls._notifications.append((cls._sequence, str(text), str(kind), source))
+
+    @classmethod
+    def take_notifications(cls):
+        """Consume completion events once, independent of activity priorities."""
+        with cls._lock:
+            messages = tuple(cls._notifications)
+            cls._notifications.clear()
+            return messages
 
     @classmethod
     def set(
@@ -100,6 +112,7 @@ class EngineStatus:
         with cls._lock:
             if source is None:
                 cls._entries.clear()
+                cls._notifications.clear()
             else:
                 cls._entries.pop(source or "default", None)
 

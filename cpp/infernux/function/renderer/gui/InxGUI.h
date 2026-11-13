@@ -41,7 +41,10 @@ class InxGUI
 
     void Init(SDL_Window *window);
 
-    void SetGUIFont(const char *fontPath, float fontSize);
+    /// Install the editor font stack: `ui` = uiFontPath with uiCjkFontPath merged
+    /// (ImGui default and UIText default), `mono` = monoFontPath. Throws if any face fails.
+    void SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath, const std::string &monoFontPath,
+                     float fontSize);
     void InvalidateFontAsset(const std::string &path);
     float GetDisplayScale() const
     {
@@ -141,6 +144,8 @@ class InxGUI
     /// @param name Texture identifier
     /// @return Texture ID or 0 if not found
     uint64_t GetImGuiTextureId(const std::string &name);
+    void SetEditorIconsDirectory(const std::string &path);
+    uint64_t GetEditorIconId(const std::string &name);
     [[nodiscard]] ImGuiTexturePublication GetImGuiTexturePublication(const std::string &name);
     /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
     /// @return false when the descriptor is no longer owned by the live texture registry.
@@ -212,7 +217,7 @@ class InxGUI
     void FailTextureUpload(PendingTextureUpload &pending, const char *error);
     bool AppendTextureUpload(PendingTextureUpload &pending, FrameWorkOwner &owner);
     void RefreshDisplayScale();
-    void ReloadGUIFont();
+    bool ReloadGUIFont();
 
     struct ImGuiTextureResource
     {
@@ -280,6 +285,8 @@ class InxGUI
     std::unordered_map<std::string, double> m_lastPanelTimesMs;
     std::unordered_map<std::string, std::unordered_map<std::string, double>> m_lastPanelSubTimesMs;
     std::unordered_map<std::string, ImGuiTextureResource> m_textures_umap;
+    std::string m_editorIconsDirectory;
+    std::unordered_map<std::string, std::string> m_editorIconTextures;
     vk::RenderGraph::PersistentImageInitializations m_renderTextureInitializations;
     std::unordered_map<VkDescriptorSet, std::string> m_textureNamesByDescriptor;
     std::unordered_map<std::string, uint64_t> m_textureUploadGenerations;

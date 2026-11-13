@@ -268,7 +268,7 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
                                                                       const std::string &textureRef)
 {
     auto material = std::make_shared<InxMaterial>(name);
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/editor/gizmo_icon");
 
     RenderState state;
@@ -637,7 +637,7 @@ void InxMaterial::PublishDependencies()
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
     : m_name(name), m_fragmentShader(ResolveShaderReference({"", shaderName, ""}, "fragment"))
 {
-    m_vertexShader = {"", m_fragmentShader.guid.empty() ? shaderName : "Standard", ""};
+    m_vertexShader = {"", m_fragmentShader.guid.empty() ? shaderName : infernux::kStandardVertexShaderId, ""};
 }
 
 InxMaterial::InxMaterial(const InxMaterial &other)
@@ -1363,8 +1363,12 @@ nlohmann::json InxMaterial::SerializeDocument() const
         propJson["type"] = static_cast<int>(prop.type);
         if (prop.hdr)
             propJson["hdr"] = true;
-        if (prop.range)
-            propJson["range"] = {(*prop.range)[0], (*prop.range)[1]};
+        if (prop.range) {
+            if (prop.type == MaterialPropertyType::Int)
+                propJson["range"] = {static_cast<int64_t>((*prop.range)[0]), static_cast<int64_t>((*prop.range)[1])};
+            else
+                propJson["range"] = {(*prop.range)[0], (*prop.range)[1]};
+        }
 
         switch (prop.type) {
         case MaterialPropertyType::Float:
@@ -1522,7 +1526,7 @@ ShaderAssetReference InxMaterial::ResolveShaderReference(ShaderAssetReference re
 void InxMaterial::SetShader(const std::string &name)
 {
     auto fragment = ResolveShaderReference({"", name, ""}, "fragment");
-    const ShaderAssetReference vertex{"", fragment.guid.empty() ? name : "Standard", ""};
+    const ShaderAssetReference vertex{"", fragment.guid.empty() ? name : infernux::kStandardVertexShaderId, ""};
     if (m_vertexShader == vertex && m_fragmentShader == fragment)
         return;
     const bool switched =
@@ -1583,7 +1587,10 @@ void InxMaterial::TrackRuntimeShaderReferences()
 bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
 {
     InxMaterial staged(*this);
-    if (!staged.ApplyDocument(document)) {
+    try {
+        staged.ApplyDocument(document);
+    } catch (const std::exception &error) {
+        INXLOG_ERROR_INTERNAL("Invalid material document: ", error.what());
         return false;
     }
     if (m_rendererMaterialOverrides) {
@@ -1656,154 +1663,147 @@ void InxMaterial::PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers)
     PublishDependencies();
 }
 
-bool InxMaterial::ApplyDocument(const nlohmann::json &document)
+void InxMaterial::ApplyDocument(const nlohmann::json &document)
 {
-    try {
-        material_document_validation::ValidateMaterialDocument(document);
-        const json &j = document;
-        m_name = j["name"].get<std::string>();
-        m_builtin = j["builtin"].get<bool>();
+    material_document_validation::ValidateMaterialDocument(document);
+    const json &j = document;
+    m_name = j["name"].get<std::string>();
+    m_builtin = j["builtin"].get<bool>();
 
-        const auto &shaders = j["shaders"];
-        m_vertexShader = ResolveShaderReference(DeserializeShaderReference(shaders["vertex"]), "vertex");
-        m_fragmentShader = ResolveShaderReference(DeserializeShaderReference(shaders["fragment"]), "fragment");
+    const auto &shaders = j["shaders"];
+    m_vertexShader = ResolveShaderReference(DeserializeShaderReference(shaders["vertex"]), "vertex");
+    m_fragmentShader = ResolveShaderReference(DeserializeShaderReference(shaders["fragment"]), "fragment");
 
-        const auto &rs = j["renderState"];
-        m_renderState.cullMode = static_cast<MaterialCullMode>(rs["cullMode"].get<int>());
-        m_renderState.frontFace = static_cast<MaterialFrontFace>(rs["frontFace"].get<int>());
-        m_renderState.polygonMode = static_cast<MaterialPolygonMode>(rs["polygonMode"].get<int>());
-        m_renderState.lineWidth = rs["lineWidth"].get<float>();
-        m_renderState.depthBiasEnable = rs["depthBiasEnable"].get<bool>();
-        m_renderState.depthBiasConstantFactor = rs["depthBiasConstantFactor"].get<float>();
-        m_renderState.depthBiasSlopeFactor = rs["depthBiasSlopeFactor"].get<float>();
-        m_renderState.depthBiasClamp = rs["depthBiasClamp"].get<float>();
-        m_renderState.topology = static_cast<MaterialPrimitiveTopology>(rs["topology"].get<int>());
-        m_renderState.depthTestEnable = rs["depthTestEnable"].get<bool>();
-        m_renderState.depthWriteEnable = rs["depthWriteEnable"].get<bool>();
-        m_renderState.depthCompareOp = static_cast<MaterialCompareOp>(rs["depthCompareOp"].get<int>());
-        m_renderState.blendEnable = rs["blendEnable"].get<bool>();
-        m_renderState.srcColorBlendFactor = static_cast<MaterialBlendFactor>(rs["srcColorBlendFactor"].get<int>());
-        m_renderState.dstColorBlendFactor = static_cast<MaterialBlendFactor>(rs["dstColorBlendFactor"].get<int>());
-        m_renderState.colorBlendOp = static_cast<MaterialBlendOp>(rs["colorBlendOp"].get<int>());
-        m_renderState.srcAlphaBlendFactor = static_cast<MaterialBlendFactor>(rs["srcAlphaBlendFactor"].get<int>());
-        m_renderState.dstAlphaBlendFactor = static_cast<MaterialBlendFactor>(rs["dstAlphaBlendFactor"].get<int>());
-        m_renderState.alphaBlendOp = static_cast<MaterialBlendOp>(rs["alphaBlendOp"].get<int>());
-        m_renderState.alphaClipEnabled = rs["alphaClipEnabled"].get<bool>();
-        m_renderState.alphaClipThreshold = rs["alphaClipThreshold"].get<float>();
-        m_renderState.renderQueue = rs["renderQueue"].get<int32_t>();
-        m_renderState.stencilTestEnable = rs["stencilTestEnable"].get<bool>();
-        m_renderState.stencilFront = {};
-        m_renderState.stencilBack = {};
-        if (m_renderState.stencilTestEnable) {
-            const auto jsonToStencilOp = [](const json &state) {
-                MaterialStencilOpState result{};
-                result.failOp = static_cast<MaterialStencilOp>(state["failOp"].get<int>());
-                result.passOp = static_cast<MaterialStencilOp>(state["passOp"].get<int>());
-                result.depthFailOp = static_cast<MaterialStencilOp>(state["depthFailOp"].get<int>());
-                result.compareOp = static_cast<MaterialCompareOp>(state["compareOp"].get<int>());
-                result.compareMask = state["compareMask"].get<uint32_t>();
-                result.writeMask = state["writeMask"].get<uint32_t>();
-                result.reference = state["reference"].get<uint32_t>();
-                return result;
-            };
-            m_renderState.stencilFront = jsonToStencilOp(rs["stencilFront"]);
-            m_renderState.stencilBack = jsonToStencilOp(rs["stencilBack"]);
-        }
-
-        m_passTag = j.value("passTag", std::string());
-        m_renderStateOverrides = j.value("renderStateOverrides", uint32_t{0});
-        m_shaderPropertyOrder = j.value("_shader_property_order", std::vector<std::string>{});
-
-        m_properties.clear();
-        for (const auto &[propName, propJson] : j["properties"].items()) {
-            const int typeValue = propJson["type"].get<int>();
-            MaterialProperty prop;
-            prop.name = propName;
-            prop.type = static_cast<MaterialPropertyType>(typeValue);
-            prop.hdr = propJson.value("hdr", false);
-            if (propJson.contains("range")) {
-                const auto &range = propJson["range"];
-                prop.range = std::array<double, 2>{range[0].get<double>(), range[1].get<double>()};
-            }
-
-            switch (prop.type) {
-            case MaterialPropertyType::Float:
-                prop.value = propJson["value"].get<float>();
-                break;
-            case MaterialPropertyType::Float2: {
-                const auto &value = propJson["value"];
-                prop.value = glm::vec2(value[0].get<float>(), value[1].get<float>());
-                break;
-            }
-            case MaterialPropertyType::Float3: {
-                const auto &value = propJson["value"];
-                prop.value = glm::vec3(value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
-                break;
-            }
-            case MaterialPropertyType::Float4:
-            case MaterialPropertyType::Color: {
-                const auto &value = propJson["value"];
-                prop.value = glm::vec4(value[0].get<float>(), value[1].get<float>(), value[2].get<float>(),
-                                       value[3].get<float>());
-                break;
-            }
-            case MaterialPropertyType::Int:
-                prop.value = propJson["value"].get<int>();
-                break;
-            case MaterialPropertyType::Mat4: {
-                glm::mat4 m;
-                const auto &value = propJson["value"];
-                for (int i = 0; i < 4; i++) {
-                    for (int k = 0; k < 4; k++) {
-                        m[i][k] = value[i * 4 + k].get<float>();
-                    }
-                }
-                prop.value = m;
-                break;
-            }
-            case MaterialPropertyType::Texture2D:
-                // A durable material reference survives deletion of its target.
-                // Keep the GUID so Undo/reimport can reconnect it and the
-                // Inspector can present a recoverable Missing Texture field.
-                // Interactive assignment remains strict in SetTextureGuid().
-                prop.value = RestoreTextureGuidReference(propJson["guid"].get<std::string>());
-                break;
-            case MaterialPropertyType::FloatArray:
-                prop.value = propJson["value"].get<std::vector<float>>();
-                break;
-            case MaterialPropertyType::Float4Array: {
-                std::vector<glm::vec4> values;
-                for (const auto &value : propJson["value"])
-                    values.emplace_back(value[0].get<float>(), value[1].get<float>(), value[2].get<float>(),
-                                        value[3].get<float>());
-                prop.value = std::move(values);
-                break;
-            }
-            }
-            m_properties[propName] = std::move(prop);
-        }
-
-        m_textureSamplers.clear();
-        if (j.contains("textureSamplers")) {
-            for (const auto &[name, value] : j["textureSamplers"].items()) {
-                MaterialTextureSampler sampler;
-                sampler.minFilter = static_cast<MaterialSamplerFilter>(value.at("minFilter").get<uint32_t>());
-                sampler.magFilter = static_cast<MaterialSamplerFilter>(value.at("magFilter").get<uint32_t>());
-                sampler.mipFilter = static_cast<MaterialSamplerFilter>(value.at("mipFilter").get<uint32_t>());
-                sampler.addressU = static_cast<MaterialSamplerAddress>(value.at("addressU").get<uint32_t>());
-                sampler.addressV = static_cast<MaterialSamplerAddress>(value.at("addressV").get<uint32_t>());
-                sampler.addressW = static_cast<MaterialSamplerAddress>(value.at("addressW").get<uint32_t>());
-                m_textureSamplers.emplace(name, sampler);
-            }
-        }
-
-        SyncAlphaClipProperty();
-
-        return true;
-    } catch (const std::exception &e) {
-        INXLOG_ERROR("Failed to deserialize material: ", e.what());
-        return false;
+    const auto &rs = j["renderState"];
+    m_renderState.cullMode = static_cast<MaterialCullMode>(rs["cullMode"].get<int>());
+    m_renderState.frontFace = static_cast<MaterialFrontFace>(rs["frontFace"].get<int>());
+    m_renderState.polygonMode = static_cast<MaterialPolygonMode>(rs["polygonMode"].get<int>());
+    m_renderState.lineWidth = rs["lineWidth"].get<float>();
+    m_renderState.depthBiasEnable = rs["depthBiasEnable"].get<bool>();
+    m_renderState.depthBiasConstantFactor = rs["depthBiasConstantFactor"].get<float>();
+    m_renderState.depthBiasSlopeFactor = rs["depthBiasSlopeFactor"].get<float>();
+    m_renderState.depthBiasClamp = rs["depthBiasClamp"].get<float>();
+    m_renderState.topology = static_cast<MaterialPrimitiveTopology>(rs["topology"].get<int>());
+    m_renderState.depthTestEnable = rs["depthTestEnable"].get<bool>();
+    m_renderState.depthWriteEnable = rs["depthWriteEnable"].get<bool>();
+    m_renderState.depthCompareOp = static_cast<MaterialCompareOp>(rs["depthCompareOp"].get<int>());
+    m_renderState.blendEnable = rs["blendEnable"].get<bool>();
+    m_renderState.srcColorBlendFactor = static_cast<MaterialBlendFactor>(rs["srcColorBlendFactor"].get<int>());
+    m_renderState.dstColorBlendFactor = static_cast<MaterialBlendFactor>(rs["dstColorBlendFactor"].get<int>());
+    m_renderState.colorBlendOp = static_cast<MaterialBlendOp>(rs["colorBlendOp"].get<int>());
+    m_renderState.srcAlphaBlendFactor = static_cast<MaterialBlendFactor>(rs["srcAlphaBlendFactor"].get<int>());
+    m_renderState.dstAlphaBlendFactor = static_cast<MaterialBlendFactor>(rs["dstAlphaBlendFactor"].get<int>());
+    m_renderState.alphaBlendOp = static_cast<MaterialBlendOp>(rs["alphaBlendOp"].get<int>());
+    m_renderState.alphaClipEnabled = rs["alphaClipEnabled"].get<bool>();
+    m_renderState.alphaClipThreshold = rs["alphaClipThreshold"].get<float>();
+    m_renderState.renderQueue = rs["renderQueue"].get<int32_t>();
+    m_renderState.stencilTestEnable = rs["stencilTestEnable"].get<bool>();
+    m_renderState.stencilFront = {};
+    m_renderState.stencilBack = {};
+    if (m_renderState.stencilTestEnable) {
+        const auto jsonToStencilOp = [](const json &state) {
+            MaterialStencilOpState result{};
+            result.failOp = static_cast<MaterialStencilOp>(state["failOp"].get<int>());
+            result.passOp = static_cast<MaterialStencilOp>(state["passOp"].get<int>());
+            result.depthFailOp = static_cast<MaterialStencilOp>(state["depthFailOp"].get<int>());
+            result.compareOp = static_cast<MaterialCompareOp>(state["compareOp"].get<int>());
+            result.compareMask = state["compareMask"].get<uint32_t>();
+            result.writeMask = state["writeMask"].get<uint32_t>();
+            result.reference = state["reference"].get<uint32_t>();
+            return result;
+        };
+        m_renderState.stencilFront = jsonToStencilOp(rs["stencilFront"]);
+        m_renderState.stencilBack = jsonToStencilOp(rs["stencilBack"]);
     }
+
+    m_passTag = j.value("passTag", std::string());
+    m_renderStateOverrides = j.value("renderStateOverrides", uint32_t{0});
+    m_shaderPropertyOrder = j.value("_shader_property_order", std::vector<std::string>{});
+
+    m_properties.clear();
+    for (const auto &[propName, propJson] : j["properties"].items()) {
+        const int typeValue = propJson["type"].get<int>();
+        MaterialProperty prop;
+        prop.name = propName;
+        prop.type = static_cast<MaterialPropertyType>(typeValue);
+        prop.hdr = propJson.value("hdr", false);
+        if (propJson.contains("range")) {
+            const auto &range = propJson["range"];
+            prop.range = std::array<double, 2>{range[0].get<double>(), range[1].get<double>()};
+        }
+
+        switch (prop.type) {
+        case MaterialPropertyType::Float:
+            prop.value = propJson["value"].get<float>();
+            break;
+        case MaterialPropertyType::Float2: {
+            const auto &value = propJson["value"];
+            prop.value = glm::vec2(value[0].get<float>(), value[1].get<float>());
+            break;
+        }
+        case MaterialPropertyType::Float3: {
+            const auto &value = propJson["value"];
+            prop.value = glm::vec3(value[0].get<float>(), value[1].get<float>(), value[2].get<float>());
+            break;
+        }
+        case MaterialPropertyType::Float4:
+        case MaterialPropertyType::Color: {
+            const auto &value = propJson["value"];
+            prop.value =
+                glm::vec4(value[0].get<float>(), value[1].get<float>(), value[2].get<float>(), value[3].get<float>());
+            break;
+        }
+        case MaterialPropertyType::Int:
+            prop.value = propJson["value"].get<int>();
+            break;
+        case MaterialPropertyType::Mat4: {
+            glm::mat4 m;
+            const auto &value = propJson["value"];
+            for (int i = 0; i < 4; i++) {
+                for (int k = 0; k < 4; k++) {
+                    m[i][k] = value[i * 4 + k].get<float>();
+                }
+            }
+            prop.value = m;
+            break;
+        }
+        case MaterialPropertyType::Texture2D:
+            // A durable material reference survives deletion of its target.
+            // Keep the GUID so Undo/reimport can reconnect it and the
+            // Inspector can present a recoverable Missing Texture field.
+            // Interactive assignment remains strict in SetTextureGuid().
+            prop.value = RestoreTextureGuidReference(propJson["guid"].get<std::string>());
+            break;
+        case MaterialPropertyType::FloatArray:
+            prop.value = propJson["value"].get<std::vector<float>>();
+            break;
+        case MaterialPropertyType::Float4Array: {
+            std::vector<glm::vec4> values;
+            for (const auto &value : propJson["value"])
+                values.emplace_back(value[0].get<float>(), value[1].get<float>(), value[2].get<float>(),
+                                    value[3].get<float>());
+            prop.value = std::move(values);
+            break;
+        }
+        }
+        m_properties[propName] = std::move(prop);
+    }
+
+    m_textureSamplers.clear();
+    if (j.contains("textureSamplers")) {
+        for (const auto &[name, value] : j["textureSamplers"].items()) {
+            MaterialTextureSampler sampler;
+            sampler.minFilter = static_cast<MaterialSamplerFilter>(value.at("minFilter").get<uint32_t>());
+            sampler.magFilter = static_cast<MaterialSamplerFilter>(value.at("magFilter").get<uint32_t>());
+            sampler.mipFilter = static_cast<MaterialSamplerFilter>(value.at("mipFilter").get<uint32_t>());
+            sampler.addressU = static_cast<MaterialSamplerAddress>(value.at("addressU").get<uint32_t>());
+            sampler.addressV = static_cast<MaterialSamplerAddress>(value.at("addressV").get<uint32_t>());
+            sampler.addressW = static_cast<MaterialSamplerAddress>(value.at("addressW").get<uint32_t>());
+            m_textureSamplers.emplace(name, sampler);
+        }
+    }
+
+    SyncAlphaClipProperty();
 }
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
@@ -1811,7 +1811,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
     auto material = std::make_shared<InxMaterial>("DefaultLit");
 
     // Use the shared standard vertex shader with the lit fragment shader.
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/lit");
 
     // Default lit opaque render state
@@ -1837,7 +1837,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
     auto material = std::make_shared<InxMaterial>("DefaultUnlit");
 
     // Use the shared standard vertex shader with the unlit fragment shader.
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/unlit");
 
     // Default unlit opaque render state
@@ -1858,7 +1858,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
 std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLineMaterial()
 {
     auto material = std::make_shared<InxMaterial>("DefaultLineMaterial");
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/unlit");
 
     // A camera-facing ribbon is not a closed surface: both windings must be
@@ -1892,8 +1892,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLineMaterial()
 std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleSpriteMaterial");
-    material->SetVertShader("Particle Sprite");
-    material->SetFragShader("Particle Unlit");
+    material->SetVertShader("infernux/particle/vertex");
+    material->SetFragShader("infernux/particle/unlit");
 
     RenderState state;
     state.cullMode = MaterialCullMode::None;
@@ -1919,8 +1919,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSixWaySmokeMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleSixWaySmokeMaterial");
-    material->SetVertShader("Particle Sprite");
-    material->SetFragShader("Particle Six-Way Smoke");
+    material->SetVertShader("infernux/particle/vertex");
+    material->SetFragShader("infernux/particle/six_way_smoke");
 
     RenderState state;
     state.cullMode = MaterialCullMode::None;
@@ -1963,7 +1963,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
     auto material = std::make_shared<InxMaterial>("GizmoMaterial");
 
     // Use gizmo shader (simple unlit with vertex color)
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/editor/gizmo");
 
     // Gizmo render state: no culling (double-sided), depth test, depth write
@@ -2025,7 +2025,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateEditorToolsMaterial()
     auto material = std::make_shared<InxMaterial>("EditorToolsMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/editor/gizmo");
 
     // Editor tools render state: always on top (no depth test), double-sided
@@ -2049,7 +2049,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmosMaterial()
     auto material = std::make_shared<InxMaterial>("ComponentGizmosMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/editor/gizmo");
 
     // Component gizmos: depth-tested (occluded by scene geometry), double-sided, LINE topology
@@ -2175,7 +2175,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateErrorMaterial()
 
     // The normal surface program supplies the same checker in visible,
     // picking, depth, shadow and deferred passes.
-    material->SetVertShader("Standard");
+    material->SetVertShader(infernux::kStandardVertexShaderId);
     material->SetFragShader("infernux/internal/error");
 
     // Double-sided so the error pattern is visible from all angles

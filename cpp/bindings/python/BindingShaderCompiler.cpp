@@ -1,6 +1,7 @@
 #include "BindingRegistration.h"
 #include "ShaderDiagnosticPyBridge.h"
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
@@ -192,10 +193,24 @@ void RegisterShaderCompilerBindings(py::module_ &m)
     m.def(
         "_shader_source_schema",
         [](const std::string &guid) {
-            const auto asset = AssetRegistry::Instance().LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-            if (!asset || asset->authoringSchema.empty())
+            // Logical fields are authoring data. Loading ShaderAsset here also
+            // compiles every GPU target, making a cold Inspector query block UI.
+            auto *database = AssetRegistry::Instance().GetAssetDatabase();
+            if (!database)
+                throw std::logic_error("Reading a shader schema requires an AssetDatabase");
+            const auto path = database->GetPathFromGuid(guid);
+            if (!asset_formats::FindShaderSourceKind(path))
                 throw std::invalid_argument("Asset has no static GPU author schema: " + guid);
-            return asset->authoringSchema;
+            const auto reader = [database](const std::string &sourcePath) -> std::optional<std::string> {
+                std::vector<char> contents;
+                if (!database->ReadFile(sourcePath, contents))
+                    return std::nullopt;
+                return std::string(contents.begin(), contents.end());
+            };
+            const auto source = reader(path);
+            if (!source)
+                throw std::invalid_argument("GPU author source could not be read: " + path);
+            return SlangCompiler::Get().PrepareAuthorSource({"schema_" + guid, path, *source}, reader).schema;
         },
         py::arg("guid"), py::call_guard<py::gil_scoped_release>());
     m.def("_slang_version", [] { return SlangCompiler::Get().GetVersion(); }, py::call_guard<py::gil_scoped_release>());

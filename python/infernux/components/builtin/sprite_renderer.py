@@ -376,6 +376,7 @@ class SpriteRenderer(BuiltinComponent):
             render_asset_reference_field, _record_builtin_property,
         )
         from infernux.engine.ui.inspector_utils import _render_color_bar
+        from infernux.engine.ui.igui import IGUI
 
         labels = ["Sprite", "Material", "Color", "Frame", "Flip X", "Flip Y"]
         lw = max_label_w(ctx, labels)
@@ -439,8 +440,8 @@ class SpriteRenderer(BuiltinComponent):
             ctx.begin_disabled(frame_count <= 1)
             if frame_count:
                 frame_number = current_index + 1
-                selected_number = int(ctx.int_slider(
-                    "##sprite_frame", frame_number,
+                selected_number = int(IGUI.slider_int(
+                    ctx, "##sprite_frame", frame_number,
                     1 if current_index >= 0 else 0, frame_count,
                 ))
             else:
@@ -556,7 +557,7 @@ class SpriteRenderer(BuiltinComponent):
         frag = getattr(mat, 'frag_shader_name', None)
         native = getattr(mat, '_native', None) or getattr(mat, 'native', mat)
         path = getattr(native, 'file_path', '') or ''
-        return frag == 'Sprite Unlit' and not path
+        return frag == 'infernux/sprite/unlit' and not path
 
     # ── Internals ───────────────────────────────────────────────────
 
@@ -695,7 +696,7 @@ class SpriteRenderer(BuiltinComponent):
             return
         from infernux.core.material import Material
         mat = Material.create_unlit()
-        mat.frag_shader_name = "Sprite Unlit"
+        mat.frag_shader_name = "infernux/sprite/unlit"
         mat.surface_type = "opaque"
         mat.alpha_clip_enabled = True
         mat.alpha_clip_threshold = 0.5
@@ -703,7 +704,7 @@ class SpriteRenderer(BuiltinComponent):
         # component ID would change the embedded scene document on every reopen.
         mat._native.name = "Sprite Unlit (Generated)"
         mat.set_color("base_color", 1.0, 1.0, 1.0, 1.0)
-        mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
+        mat.set_vector4("uv_rect", 0.0, 0.0, 1.0, 1.0)
         self._sprite_material = mat._native
         self._material_ready = True
         cpp.set_material(0, mat._native)
@@ -774,7 +775,7 @@ class SpriteRenderer(BuiltinComponent):
         fy = cpp.flip_y
         # Default: full texture
         u, v, su, sv = 0.0, 0.0, 1.0, 1.0
-        ds_x, ds_y = 1.0, 1.0  # displayScale for aspect-fit centering
+        ds_x, ds_y = 1.0, 1.0  # display_scale for aspect-fit centering
 
         if self._sprite_frames and self._tex_w > 0 and self._tex_h > 0:
             frame = (
@@ -817,7 +818,7 @@ class SpriteRenderer(BuiltinComponent):
             v = v + sv
             sv = -sv
 
-        # displayScale tells the shader what fraction of the quad the sprite
+        # display_scale tells the shader what fraction of the quad the sprite
         # occupies.  The shader centers the image and discards outside pixels.
         cpp._publish_sprite_uv((u, v, su, sv), (ds_x, ds_y, 0.0, 0.0))
         self._last_frame_id = frame_id

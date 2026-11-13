@@ -529,76 +529,22 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         _GAP = _metric(ctx, Theme.UI_EDITOR_TOOLBAR_GAP)
         _SEC = _metric(ctx, Theme.UI_EDITOR_TOOLBAR_SECTION_GAP)
 
-        ctx.label(f"Canvas: {canvas_go.name}")
+        ctx.label(t("ui_editor.canvas_name").format(name=canvas_go.name))
         ctx.same_line(0, _SEC)
 
-        native = self._engine.get_native_engine() if self._engine else None
-        _ICO_SZ = _metric(ctx, Theme.EDITOR_ICON_SIZE)
-
-        # ── Create Canvas button ──
-        ctx.button(
-            "Canvas",
-            self._create_canvas,
-            width=_metric(ctx, 72.0),
-            height=_ICO_SZ + _metric(ctx, 8.0),
+        from .igui import IGUI
+        actions = (
+            ("canvas", "ui_editor.tooltip_canvas", self._create_canvas),
+            ("frame", "ui_editor.tooltip_frame", lambda: self._create_frame_element(canvas_go)),
+            ("text", "ui_editor.tooltip_text", lambda: self._create_text_element(canvas_go)),
+            ("image", "ui_editor.tooltip_image", lambda: self._create_image_element(canvas_go)),
+            ("button", "ui_editor.tooltip_button", lambda: self._create_button_element(canvas_go)),
         )
-        if ctx.is_item_hovered():
-            ctx.set_tooltip(t("ui_editor.tooltip_canvas"))
-
-        ctx.same_line(0, _GAP)
-        ctx.button(
-            "Frame",
-            lambda: self._create_frame_element(canvas_go),
-            width=_metric(ctx, 62.0),
-            height=_ICO_SZ + _metric(ctx, 8.0),
-        )
-        if ctx.is_item_hovered():
-            ctx.set_tooltip(t("ui_editor.tooltip_frame"))
-
-        ctx.same_line(0, _GAP)
-        tid_text = EditorIcons.get(native, Theme.ICON_IMG_UI_TEXT)
-        if tid_text:
-            if ctx.image_button("##add_text", tid_text, _ICO_SZ, _ICO_SZ):
-                self._create_text_element(canvas_go)
-        else:
-            ctx.button(
-                "T",
-                lambda: self._create_text_element(canvas_go),
-                width=_ICO_SZ + _metric(ctx, 8.0),
-                height=_ICO_SZ + _metric(ctx, 8.0),
-            )
-        if ctx.is_item_hovered():
-            ctx.set_tooltip(t("ui_editor.tooltip_text"))
-
-        ctx.same_line(0, _GAP)
-        tid_img = EditorIcons.get(native, Theme.ICON_IMG_UI_IMAGE)
-        if tid_img:
-            if ctx.image_button("##add_image", tid_img, _ICO_SZ, _ICO_SZ):
-                self._create_image_element(canvas_go)
-        else:
-            ctx.button(
-                "Img",
-                lambda: self._create_image_element(canvas_go),
-                width=_ICO_SZ + _metric(ctx, 8.0),
-                height=_ICO_SZ + _metric(ctx, 8.0),
-            )
-        if ctx.is_item_hovered():
-            ctx.set_tooltip(t("ui_editor.tooltip_image"))
-
-        ctx.same_line(0, _GAP)
-        tid_btn = EditorIcons.get(native, Theme.ICON_IMG_UI_BUTTON)
-        if tid_btn:
-            if ctx.image_button("##add_button", tid_btn, _ICO_SZ, _ICO_SZ):
-                self._create_button_element(canvas_go)
-        else:
-            ctx.button(
-                "Btn",
-                lambda: self._create_button_element(canvas_go),
-                width=_ICO_SZ + _metric(ctx, 8.0),
-                height=_ICO_SZ + _metric(ctx, 8.0),
-            )
-        if ctx.is_item_hovered():
-            ctx.set_tooltip(t("ui_editor.tooltip_button"))
+        for index, (icon, tip, callback) in enumerate(actions):
+            if index:
+                ctx.same_line(0, _GAP)
+            if IGUI.icon_button(ctx, f"##create_{icon}", icon, tooltip=t(tip), kind="ghost", width=28, height=26):
+                callback()
 
         ctx.same_line(0, _SEC // 2)
         zoom_pct = int(self._zoom * 100)

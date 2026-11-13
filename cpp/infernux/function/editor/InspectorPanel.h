@@ -36,6 +36,7 @@ enum class InspectorMode
     Object,  // GameObject selected from Hierarchy
     Asset,   // Asset file selected from Project panel
     Preview, // Non-editable file preview
+    Diagnostic,
 };
 
 /// C++ native Inspector panel — Unity-style property/component editor.
@@ -61,6 +62,7 @@ class InspectorPanel : public EditorPanel
 
     void SetSelectedFile(const std::string &filePath, const std::string &category);
     void ClearSelectedFile();
+    void ShowDiagnostic();
     [[nodiscard]] const std::string &GetSelectedFile() const
     {
         return m_selectedFile;
@@ -161,6 +163,7 @@ class InspectorPanel : public EditorPanel
 
     /// Render the asset inspector for the given file/category.
     std::function<void(InxGUIContext *, const std::string &, const std::string &)> renderAssetInspector;
+    std::function<void(InxGUIContext *)> renderDiagnosticInspector;
     /// Render generic file preview.
     std::function<void(InxGUIContext *, const std::string &)> renderFilePreview;
 
@@ -325,7 +328,8 @@ class InspectorPanel : public EditorPanel
                           bool showEnabled, bool isEnabled, const std::string &suffix = "", bool defaultOpen = true,
                           const std::string &semanticId = "", const std::string &contextPopupId = "",
                           bool selected = false, const std::vector<uint64_t> &dragObjectIds = {},
-                          const std::vector<uint64_t> &dragComponentIds = {}, bool allowComponentReorder = true);
+                          const std::vector<uint64_t> &dragComponentIds = {}, bool allowComponentReorder = true,
+                          const std::string &typeIdentity = "");
 
     bool RenderInspectorCheckbox(InxGUIContext *ctx, const char *label, bool value);
 

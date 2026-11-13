@@ -49,6 +49,7 @@ def test_animation_clip_source_reference_survives_sprite_frame_reorder():
 def test_inspector_preview_preserves_elapsed_pause_resume_and_nonloop_end(monkeypatch):
     import time
     from infernux.engine.ui import asset_details_renderer as inspector
+    from infernux.engine.ui import preview_transport
 
     clip = AnimationClip(frames=_frames(0, 1, 2, 3), fps=4.0, loop=False)
     state = inspector._State()
@@ -58,6 +59,10 @@ def test_inspector_preview_preserves_elapsed_pause_resume_and_nonloop_end(monkey
                    for index in range(4)],
     }
     clock = SimpleNamespace(now=10.0, click=False)
+    def render_transport(_ctx, _key, *, on_toggle, **_kwargs):
+        if clock.click:
+            on_toggle()
+    monkeypatch.setattr(preview_transport, "render_preview_transport", render_transport)
     images = []
     ctx = SimpleNamespace(
         button=lambda _label: clock.click, same_line=lambda *_args: None,

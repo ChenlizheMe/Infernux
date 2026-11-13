@@ -601,6 +601,38 @@ void VerifyTextureSamplerBindingRoundTrip()
     assert(!restored.SerializeDocument().contains("textureSamplers"));
 }
 
+void VerifyTypedSliderRangeRoundTrip()
+{
+    InxMaterial material("SliderRanges", "infernux/lit");
+    ShaderProgramArtifact artifact;
+    artifact.materialLayoutSignature = 0x52414e4745;
+    ShaderProgramPropertyBinding channel;
+    channel.name = "channel";
+    channel.type = "Int";
+    channel.defaultValue = "0";
+    channel.range = std::array<double, 2>{0, 1};
+    channel.stages = ShaderProgramStageMask::Fragment;
+    channel.byteSize = 4;
+    ShaderProgramPropertyBinding smoothness = channel;
+    smoothness.name = "smoothness";
+    smoothness.type = "Float";
+    smoothness.defaultValue = "0.5";
+    smoothness.bufferOffset = 4;
+    artifact.properties = {channel, smoothness};
+    assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    material.SetInt("channel", 1);
+    material.SetFloat("smoothness", 0.25f);
+    const auto document = material.SerializeDocument();
+    const auto &integerRange = document.at("properties").at("channel").at("range");
+    const auto &floatRange = document.at("properties").at("smoothness").at("range");
+    assert(integerRange[0].is_number_integer() && integerRange[1].is_number_integer());
+    assert(floatRange[0].is_number_float() && floatRange[1].is_number_float());
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(document));
+    assert(restored.GetInt("channel") == 1 && restored.GetFloat("smoothness") == 0.25f);
+    assert(restored.SerializeDocument() == document);
+}
+
 void VerifyReflectedArrayRoundTripAndLengthAuthority()
 {
     InxMaterial material("ArrayContract", "Unlit");
@@ -673,6 +705,7 @@ int main()
     VerifyShaderReferenceVersioning();
     VerifyPropertyRemoval();
     VerifyTextureSamplerBindingRoundTrip();
+    VerifyTypedSliderRangeRoundTrip();
     VerifyShaderDefaultsReplacePreviousShaderState();
     VerifyMaterialOverridesSurviveShaderDefaults();
     VerifyBuiltinSixWaySmokeMaterial();

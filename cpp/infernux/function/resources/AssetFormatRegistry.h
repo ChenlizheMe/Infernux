@@ -27,8 +27,8 @@ struct ShaderSourceKind
 // UI and cook consumers use this table before looking at the final suffix.
 inline constexpr std::array<ShaderSourceKind, 5> kShaderSourceKinds = {{
     {".shadingmodel.py", "shadingmodel", "shadingmodel", "SHADING_MODEL_FILE"},
-    {".shaderlib.py", "library", "shader_glsl", "SHADER_LIBRARY_FILE"},
-    {".compute.py", "compute", "shader_hlsl", "COMPUTE_SHADER_FILE"},
+    {".shaderlib.py", "library", "shader_lib", "SHADER_LIBRARY_FILE"},
+    {".compute.py", "compute", "shader_compute", "COMPUTE_SHADER_FILE"},
     {".vert.py", "vertex", "shader_vert", "SHADER_FILE"},
     {".frag.py", "fragment", "shader_frag", "SHADER_FILE"},
 }};

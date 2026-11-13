@@ -1,7 +1,7 @@
 #version 450
 
 ShaderInfo {
-    Name "Fullscreen Triangle"
+    Name "infernux/internal/fullscreen_triangle"
     Hidden On
     Capabilities [Fullscreen]
     Outputs {

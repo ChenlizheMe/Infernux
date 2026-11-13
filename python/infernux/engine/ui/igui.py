@@ -30,7 +30,8 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Sequence, Union
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Optional, Sequence, Union
 
 from infernux.lib import InxGUIContext
 from infernux.engine.i18n import t
@@ -51,6 +52,7 @@ from infernux.engine.interaction.context_menus import (
     ContextMenuCommand,
 )
 from .editor_icons import EditorIcons
+from .dpi import editor_dpi_scale
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -69,6 +71,43 @@ class _PickerLabels:
     def __getitem__(self, index: int) -> str:
         return str(self._items[index][0])
 
+
+class _PickerMenuNode:
+    """One folder of the cascading picker menu (sub-folders + leaf items)."""
+
+    __slots__ = ("folders", "leaves")
+
+    def __init__(self) -> None:
+        self.folders: dict[str, _PickerMenuNode] = {}
+        self.leaves: list[tuple[str, Any]] = []
+
+
+# Popups redraw every frame; the tree is rebuilt only when the candidates change.
+_picker_menu_cache: list = [None, None, None]  # items, folders_of, tree
+
+
+def _picker_menu_tree(
+    items: Sequence[tuple],
+    folders_of: Callable[[str], tuple[str, ...]],
+) -> _PickerMenuNode:
+    """Trie of *items* keyed by folder path; only folders holding assets exist."""
+    items = tuple(items)
+    cached_items, cached_folders_of, cached_tree = _picker_menu_cache
+    if cached_folders_of is folders_of and cached_items == items:
+        return cached_tree
+    root = _PickerMenuNode()
+    for label, value in items:
+        node = root
+        for folder in folders_of(str(label)):
+            node = node.folders.setdefault(folder, _PickerMenuNode())
+        node.leaves.append((str(label).rsplit("/", 1)[-1], value))
+    _picker_menu_cache[:] = [items, folders_of, root]
+    return root
+
+
+def _picker_value_key(value: Any) -> str:
+    return str(value or "").replace("\\", "/").casefold()
+
 # Internal drag-drop type for generic list reordering
 _LIST_REORDER_TYPE = "IGUI_LIST_REORDER"
 
@@ -77,6 +116,7 @@ _INLINE_BTN_W: float = 24.0
 _PICKER_DOT_W: float = 20.0
 _MINI_ICON_BTN_SIDE: float = _PICKER_DOT_W
 _MINI_ICON_DRAW_SIZE: float = 10.0
+_SLIDER_UNIT_GAP: float = 4.0
 
 # Cache list body heights from previous frame so the fill can be drawn behind
 # the next frame's content while the border uses exact bounds every frame.
@@ -91,6 +131,31 @@ class IGUI:
 
     Every method is ``@staticmethod`` so callers write ``IGUI.xxx(ctx, ...)``.
     """
+
+    @staticmethod
+    def icon(ctx: InxGUIContext, name: str, size: float = 14.0):
+        """Reserve an inline glyph slot; the native GUI owns its texture."""
+        from .editor_icons import icon_key
+        side = size * editor_dpi_scale(ctx)
+        ctx.dummy(side, side)
+        texture = ctx.editor_icon(icon_key(name))
+        if texture:
+            x, y = ctx.get_item_rect_min_x(), ctx.get_item_rect_min_y()
+            ctx.draw_image_rect(texture, x, y, x + side, y + side)
+
+    # ------------------------------------------------------------------
+    #  Font roles: default font is ``ui``; numbers/paths/code use ``mono``
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    @contextmanager
+    def mono_font(ctx: InxGUIContext) -> Iterator[None]:
+        """Render the enclosed widgets with the monospace face at the current size."""
+        ctx.push_mono_font()
+        try:
+            yield
+        finally:
+            ctx.pop_font()
 
     # ------------------------------------------------------------------
     #  Drop-target outline (white highlight when hovering a valid target)
@@ -158,38 +223,109 @@ class IGUI:
         return accepted
 
     @staticmethod
-    def _mini_icon_button(
+    def icon_button(
         ctx: InxGUIContext,
         button_id: str,
-        icon_name: str,
-        fallback_label: str,
+        icon: str,
+        *,
+        tooltip: str | None = None,
+        kind: str = "normal",
+        width: float | None = None,
+        height: float | None = None,
     ) -> bool:
-        """Render a shared square mini icon button used by picker and list +/-."""
-        btn_side = _MINI_ICON_BTN_SIDE
-        color_count = Theme.push_inline_button_style(ctx)
-        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_SMALL_ICON_BTN_FRAME_PAD)
-        clicked = ctx.button(button_id, None, width=btn_side, height=Theme.INSPECTOR_INLINE_BTN_H)
-        min_x = ctx.get_item_rect_min_x()
-        min_y = ctx.get_item_rect_min_y()
-        max_x = ctx.get_item_rect_max_x()
-        max_y = ctx.get_item_rect_max_y()
-        draw_size = min(
-            _MINI_ICON_DRAW_SIZE,
-            max(0.0, (max_x - min_x) - 6.0),
-            max(0.0, (max_y - min_y) - 4.0),
-        )
-        draw_x = min_x + max(0.0, ((max_x - min_x) - draw_size) * 0.5)
-        draw_y = min_y + max(0.0, ((max_y - min_y) - draw_size) * 0.5)
-        tex_id = EditorIcons.get_cached(icon_name)
-        if tex_id and draw_size > 0.0:
-            ctx.draw_image_rect(tex_id, draw_x, draw_y, draw_x + draw_size, draw_y + draw_size)
+        """Square icon button. *icon* is an EditorIcons name (glyph or tool).
+
+        No text fallback: if the texture is not live yet the button still
+        reserves space; unknown names raise from EditorIcons.
+        kind: ``normal`` (inline field button) or any
+        :meth:`Theme.push_button_kind_style` kind (``ghost``, ``danger`` …).
+        """
+        btn_side = width if width is not None else _MINI_ICON_BTN_SIDE
+        btn_h = height if height is not None else Theme.INSPECTOR_INLINE_BTN_H
+        if kind == "normal":
+            pushed = (Theme.push_inline_button_style(ctx), 0)
         else:
-            ctx.draw_text_aligned(min_x, min_y, max_x, max_y, fallback_label,
-                                  1.0, 1.0, 1.0, 1.0,
-                                  0.5, 0.5)
-        ctx.pop_style_var(1)
-        ctx.pop_style_color(color_count)
+            pushed = Theme.push_button_kind_style(ctx, kind)
+        from .dpi import editor_dpi_scale
+        from .editor_icons import icon_key
+
+        dpi = editor_dpi_scale(ctx)
+        clicked = ctx.icon_button(button_id, icon_key(icon), tooltip or "", btn_side * dpi, btn_h * dpi)
+        Theme.pop_button_kind_style(ctx, pushed)
         return clicked
+
+    # ------------------------------------------------------------------
+    #  Sliders and dropdowns (native-drawn; style comes from the theme)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def slider_float(
+        ctx: InxGUIContext,
+        slider_id: str,
+        value: float,
+        vmin: float,
+        vmax: float,
+        *,
+        format: str = "%.3f",
+        unit: str | None = None,
+    ) -> float:
+        """Track slider (3px track, accent fill, warm-white grab) with a value box.
+
+        *unit* is drawn after the widget in text-disabled (``ms``, ``°``, ``%``);
+        the slider then fills the remaining row width. Use only for fields
+        with a declared range; plain numbers use drag fields.
+        """
+        IGUI._reserve_unit_width(ctx, unit)
+        new_value = ctx.float_slider(slider_id, value, vmin, vmax, format)
+        IGUI._slider_unit(ctx, unit)
+        return new_value
+
+    @staticmethod
+    def slider_int(
+        ctx: InxGUIContext,
+        slider_id: str,
+        value: int,
+        vmin: int,
+        vmax: int,
+        *,
+        unit: str | None = None,
+    ) -> int:
+        """Integer counterpart of :meth:`slider_float`."""
+        IGUI._reserve_unit_width(ctx, unit)
+        new_value = ctx.int_slider(slider_id, value, vmin, vmax)
+        IGUI._slider_unit(ctx, unit)
+        return new_value
+
+    @staticmethod
+    def _reserve_unit_width(ctx: InxGUIContext, unit: str | None) -> None:
+        if unit:
+            unit_w = ctx.calc_text_width(unit) + _SLIDER_UNIT_GAP
+            ctx.set_next_item_width(max(1.0, ctx.get_content_region_avail_width() - unit_w))
+
+    @staticmethod
+    def _slider_unit(ctx: InxGUIContext, unit: str | None) -> None:
+        if not unit:
+            return
+        ctx.same_line(0.0, _SLIDER_UNIT_GAP)
+        ctx.align_text_to_frame_padding()
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+        ctx.label(unit)
+        ctx.pop_style_color(1)
+
+    @staticmethod
+    def combo(
+        ctx: InxGUIContext,
+        combo_id: str,
+        current: int,
+        items: Sequence[str],
+        *,
+        max_height_items: int = -1,
+    ) -> int:
+        """Editor dropdown: flat frame, chevron, shared popup chrome.
+
+        Returns the selected index. Width follows the current item width.
+        """
+        return ctx.combo(combo_id, current, list(items), max_height_items)
 
     # ------------------------------------------------------------------
     #  Object field (reference slot: material, texture, shader, etc.)
@@ -264,7 +400,7 @@ class IGUI:
         picker_texture = EditorIcons.get_cached(Theme.ICON_IMG_PICKER) if has_picker else 0
         interaction = int(ctx.render_object_field_chrome(
             model.field_id,
-            model.display_text,
+            t("igui.none") if model.display_text == "None" else model.display_text,
             model.type_hint,
             model.selected,
             model.clickable,
@@ -456,6 +592,7 @@ class IGUI:
         if not poll_picker and not (picker_open or open_requested):
             return
 
+        is_asset_field = isinstance(model, AssetReferenceFieldModel)
         picker_intent = None
         ctx.push_id_str(model.field_id)
         try:
@@ -464,11 +601,9 @@ class IGUI:
                 model.field_id,
                 model.scene_items,
                 model.asset_items,
-                (
-                    model.can_clear
-                    if isinstance(model, AssetReferenceFieldModel)
-                    else model.on_clear is not None
-                ),
+                model.can_clear if is_asset_field else model.on_clear is not None,
+                asset_menu_folders=model.picker_menu_folders if is_asset_field else None,
+                current_value=model.ping_path,
             )
         finally:
             ctx.pop_id()
@@ -485,8 +620,15 @@ class IGUI:
         scene_items: Optional[Callable[[str], Sequence[tuple]]],
         asset_items: Optional[Callable[[str], Sequence[tuple]]],
         allow_clear: bool,
+        *,
+        asset_menu_folders: Optional[Callable[[str], tuple[str, ...]]] = None,
+        current_value: Any = None,
     ) -> Optional[tuple[str, Any]]:
-        """Render the picker and return an intent after all ImGui scopes close."""
+        """Render the picker and return an intent after all ImGui scopes close.
+
+        With *asset_menu_folders*, asset candidates cascade through folder
+        menus (filtered by the search box) instead of the flat list.
+        """
         if not ctx.begin_popup("##obj_picker"):
             return None
 
@@ -552,6 +694,14 @@ class IGUI:
                         intent = IGUI._render_picker_items(ctx, scene_items, new_filter)
                 finally:
                     ctx.end_child()
+            elif intent is None and has_assets and asset_menu_folders is not None:
+                tree = _picker_menu_tree(asset_items(new_filter), asset_menu_folders)
+                if tree.folders or tree.leaves:
+                    intent = IGUI._render_picker_menu(ctx, tree, _picker_value_key(current_value))
+                else:
+                    ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+                    ctx.label(t("igui.no_results"))
+                    ctx.pop_style_color(1)
             elif intent is None and has_assets:
                 visible = ctx.begin_child("##picker_list", 0, picker_height, False)
                 try:
@@ -561,6 +711,30 @@ class IGUI:
                     ctx.end_child()
         finally:
             ctx.end_popup()
+        return intent
+
+    @staticmethod
+    def _render_picker_menu(
+        ctx: InxGUIContext,
+        node: "_PickerMenuNode",
+        current_key: str,
+    ) -> Optional[tuple[str, Any]]:
+        """Folders as cascading menus (sorted), then this folder's assets.
+
+        A menu item click closes the whole picker chain (ImGui closes the
+        parent popup of a child menu), so no explicit close is needed.
+        """
+        intent = None
+        for name in sorted(node.folders, key=str.casefold):
+            if ctx.begin_menu(name):
+                try:
+                    picked = IGUI._render_picker_menu(ctx, node.folders[name], current_key)
+                finally:
+                    ctx.end_menu()
+                intent = intent or picked
+        for label, value in node.leaves:
+            if ctx.menu_item(label, "", _picker_value_key(value) == current_key, True):
+                intent = ("pick", value)
         return intent
 
     @staticmethod
@@ -632,42 +806,47 @@ class IGUI:
         """
         from .inspector_utils import render_compact_section_header
 
-        header_label = f"{label} [{count}]"
-
         # Determine if we'll have overlapping buttons
         has_btns = bool(on_add) or (bool(on_remove) and count > 0)
 
         header_open = render_compact_section_header(
-            ctx, header_label, level=level, allow_overlap=has_btns, header_id=f"list:{label}",
+            ctx, label, level=level, allow_overlap=has_btns, header_id=f"list:{label}",
         )
+        cursor_x, cursor_y = ctx.get_cursor_pos_x(), ctx.get_cursor_pos_y()
+        left, top = ctx.get_item_rect_min_x(), ctx.get_item_rect_min_y()
+        right, bottom = ctx.get_item_rect_max_x(), ctx.get_item_rect_max_y()
+        from .dpi import editor_dpi_scale
+        dpi = editor_dpi_scale(ctx)
 
         # Drop target on the header
         if accept_drop and on_header_drop:
             IGUI.drop_target(ctx, accept_drop, on_header_drop)
 
-        # [−][+] buttons right-aligned on the same row
-        btns_w = 0.0
-        if on_add:
-            btns_w += _MINI_ICON_BTN_SIDE
-        if on_remove and count > 0:
-            btns_w += _MINI_ICON_BTN_SIDE
-
-        if btns_w > 0:
-            ctx.same_line(0, 0)
-            avail_w = ctx.get_content_region_avail_width()
-            if avail_w >= btns_w:
-                ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + avail_w - btns_w)
-
+        count_buttons = int(bool(on_add)) + int(bool(on_remove) and count > 0)
+        button_w = 24.0 * dpi
+        badge_right = right - count_buttons * button_w - 6.0 * dpi
+        badge_left = max(left + 24.0 * dpi, badge_right - 28.0 * dpi)
+        ctx.draw_filled_rect(badge_left, top + 3 * dpi, right, bottom - 3 * dpi, *Theme.INSPECTOR_HEADER_LIST, 0.0)
+        with IGUI.mono_font(ctx):
+            ctx.draw_text_aligned(badge_left, top, badge_right, bottom, str(count), *Theme.TEXT_DISABLED,
+                                  0.5, 0.5, 11.0 * dpi, True)
+        if count_buttons:
+            ctx.set_cursor_screen_pos(right - count_buttons * button_w,
+                                       top + max(0.0, (bottom - top - 22.0 * dpi) * 0.5))
             if on_remove and count > 0:
-                if IGUI._mini_icon_button(ctx, f"##{label}_remove", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS):
+                if IGUI.icon_button(ctx, f"##{label}_remove", Theme.ICON_IMG_MINUS, tooltip=t("igui.remove"),
+                                    kind="ghost", width=24, height=22):
                     on_remove()
 
             if on_add:
                 if on_remove and count > 0:
                     ctx.same_line(0, 0)
-                if IGUI._mini_icon_button(ctx, f"##{label}_add", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS):
+                if IGUI.icon_button(ctx, f"##{label}_add", Theme.ICON_IMG_PLUS, tooltip=t("igui.add"),
+                                    kind="ghost", width=24, height=22):
                     on_add()
-
+        # Overlay controls never determine the next field's origin or row height.
+        ctx.set_cursor_pos_x(cursor_x)
+        ctx.set_cursor_pos_y(cursor_y)
         return header_open
 
     # ------------------------------------------------------------------
@@ -723,7 +902,7 @@ class IGUI:
         Returns True if clicked.  Caller should ``same_line`` after this
         before rendering the item widget.
         """
-        return IGUI._mini_icon_button(ctx, f"##{item_id}_rm", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS)
+        return IGUI.icon_button(ctx, f"##{item_id}_rm", Theme.ICON_IMG_MINUS, tooltip=t("igui.remove"))
 
     # ------------------------------------------------------------------
     #  Searchable combo (popup with search box + filtered items)
@@ -738,24 +917,20 @@ class IGUI:
         *,
         width: float = 0.0,
     ) -> int:
-        """Render a combo-style widget that opens a searchable popup.
+        """Render a dropdown frame that opens a searchable popup.
 
         Returns the new selected index (unchanged if nothing was picked).
         """
         btn_w = width if width > 0.0 else ctx.get_content_region_avail_width()
-        color_count = Theme.push_inline_button_style(ctx)
-        try:
-            return ctx.searchable_combo(
-                combo_id,
-                current_idx,
-                list(labels),
-                btn_w,
-                8,
-                t("igui.search_hint"),
-                t("igui.no_results"),
-            )
-        finally:
-            ctx.pop_style_color(color_count)
+        return ctx.searchable_combo(
+            combo_id,
+            current_idx,
+            list(labels),
+            btn_w,
+            8,
+            t("igui.search_hint"),
+            t("igui.no_results"),
+        )
 
     # ------------------------------------------------------------------
     #  Internal drawing helpers

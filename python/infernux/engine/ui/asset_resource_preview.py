@@ -240,8 +240,23 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
     if tex_id == 0:
         return False
 
-    _draw_preview_image(ctx, tex_id, width, height, src_w, src_h, preserve_aspect, center)
+    from .dpi import editor_dpi_scale
+    _draw_preview_image(ctx, tex_id, width, height, src_w, src_h, preserve_aspect, center,
+                        max_scale=editor_dpi_scale(ctx))
     return True
+
+
+def render_preview_placeholder(ctx, file_path: str, icon: str, height: float) -> None:
+    """Keep pending previews distinct from failures without querying the renderer again."""
+    from infernux.engine.i18n import t
+    from .asset_load_errors import AssetLoadErrors
+    errors = AssetLoadErrors.instance()
+    error = errors.error(file_path) if errors is not None else ""
+    ctx.empty_state(f"preview:{file_path}", "warning" if error else icon,
+                    t("asset.preview_failed" if error else "asset.preview_rendering"),
+                    t("asset.preview_console") if error else "", height)
+    if error and ctx.is_item_hovered():
+        ctx.set_tooltip(error)
 
 
 def render_document_image(ctx: Any, panel: Any, file_path: str, width: float, height: float) -> bool:
@@ -262,12 +277,15 @@ def render_document_image(ctx: Any, panel: Any, file_path: str, width: float, he
 
 
 def _draw_preview_image(ctx: Any, tex_id: int, width: float, height: float,
-                        src_w: int, src_h: int, preserve_aspect: bool, center: bool) -> None:
+                        src_w: int, src_h: int, preserve_aspect: bool, center: bool,
+                        *, max_scale: float | None = None) -> None:
     draw_w = float(width)
     draw_h = float(height)
 
     if preserve_aspect and src_w > 0 and src_h > 0:
         scale = min(float(width) / float(src_w), float(height) / float(src_h))
+        if max_scale is not None:
+            scale = min(scale, max_scale)
         draw_w = max(1.0, float(src_w) * scale)
         draw_h = max(1.0, float(src_h) * scale)
 

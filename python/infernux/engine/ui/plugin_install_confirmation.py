@@ -101,14 +101,16 @@ class PluginInstallConfirmationCoordinator:
             ctx,
             (
                 EditorModalAction(
-                    t("plugins.restart.now" if restarting else "plugins.install_confirm.install"),
-                    "confirm",
-                    lambda: self._confirm(ctx),
-                ),
-                EditorModalAction(
                     t("plugins.restart.later" if restarting else "editor.modal.cancel"),
                     "cancel",
                     lambda: self._cancel(ctx),
+                    kind="ghost",
+                ),
+                EditorModalAction(
+                    t("plugins.restart.now" if restarting else "plugins.install_confirm.install"),
+                    "confirm",
+                    lambda: self._confirm(ctx),
+                    kind="primary",
                 ),
             ),
             semantic_prefix=self.MODAL_ID,

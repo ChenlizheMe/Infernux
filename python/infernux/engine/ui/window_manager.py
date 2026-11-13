@@ -116,6 +116,7 @@ class WindowManager:
         self._panel_interactions = panel_interactions
         self._register_panel_gui_callback = register_panel_gui
         self._registered_types: Dict[str, WindowInfo] = {}  # type_id -> WindowInfo
+        self._window_aliases: dict[str, tuple[str, str]] = {}
         self._window_states: Dict[str, WindowState] = {}
         self._window_instances: Dict[str, InxGUIRenderable] = {}  # window_id -> instance
         self._registered_instance_ids: set[str] = set()
@@ -166,8 +167,8 @@ class WindowManager:
     ) -> None:
         self._register_panel_gui_callback(window_id, instance)
 
-    @staticmethod
     def _assign_panel_identity(
+        self,
         instance: InxGUIRenderable,
         type_id: str,
         window_id: str,
@@ -175,6 +176,10 @@ class WindowManager:
         setter = getattr(instance, "set_panel_identity", None)
         if callable(setter):
             setter(type_id, window_id)
+        title_setter = getattr(instance, "set_title", None)
+        info = self._registered_types.get(type_id)
+        if callable(title_setter) and info is not None:
+            title_setter(info.display_name)
 
     def _bind_panel_lifecycle(
         self,
@@ -290,7 +295,7 @@ class WindowManager:
 
     def is_window_content_visible(self, window_id: str) -> bool:
         """Return true only when the panel is the visible tab in its dock node."""
-        target_id = str(window_id or "").strip()
+        target_id = self._canonical_window_id(str(window_id or "").strip())
         if not target_id or not self.is_window_open(target_id):
             return False
         instance = self._window_instances.get(target_id)
@@ -331,7 +336,8 @@ class WindowManager:
 
     def refresh_type_labels(self) -> None:
         """Invalidate native menu labels after an Editor locale catalog change."""
-
+        for window_id, instance in self._window_instances.items():
+            self._assign_panel_identity(instance, self._window_type_ids[window_id], window_id)
         self._notify_type_changed()
 
     def observe_native_panel_focus(
@@ -691,6 +697,16 @@ class WindowManager:
         self._notify_type_changed()
         return True
     
+    def register_window_alias(self, type_id: str, target_type: str, child_context: str) -> None:
+        """Route a functional entry point into a page of one shared window."""
+        if target_type not in self._registered_types:
+            raise KeyError(f"Unknown window type: {target_type}")
+        self._window_aliases[type_id] = (target_type, child_context)
+
+    def _canonical_window_id(self, window_id: str) -> str:
+        route = self._window_aliases.get(window_id)
+        return route[0] if route else window_id
+
     def open_window(self, type_id: str, instance_id: Optional[str] = None) -> Optional[InxGUIRenderable]:
         """
         Open a window of the specified type.
@@ -702,6 +718,11 @@ class WindowManager:
         Returns:
             The window instance.
         """
+        route = self._window_aliases.get(type_id)
+        if route:
+            instance = self.open_window(route[0])
+            instance.restore_child_context(route[1])
+            return instance
         if type_id not in self._registered_types:
             raise KeyError(f"Unknown window type: {type_id}")
         
@@ -824,6 +845,10 @@ class WindowManager:
         already visible side-by-side panel only receives keyboard focus.
         """
         target_type = str(type_id or "").strip()
+        route = self._window_aliases.get(target_type)
+        if route:
+            target_type, page = route
+            instance_id = None
         target_view = str(instance_id or target_type).strip()
         if not target_type or not target_view:
             raise ValueError("user window open requires a type and view id")
@@ -836,6 +861,8 @@ class WindowManager:
         instance = self.open_window(target_type, instance_id=instance_id)
         if instance is None:
             return None
+        if route:
+            instance.restore_child_context(page)
 
         if self._window_states.get(target_view) in {
             WindowState.OPENING,
@@ -916,6 +943,7 @@ class WindowManager:
     
     def close_window(self, window_id: str) -> bool:
         """Close a window by its ID."""
+        window_id = self._canonical_window_id(window_id)
         if window_id not in self._window_states:
             raise KeyError(f"Unknown window id: {window_id}")
         state = self._window_states[window_id]
@@ -1069,13 +1097,14 @@ class WindowManager:
     
     def is_window_open(self, window_id: str) -> bool:
         """Check if a window is currently open."""
+        window_id = self._canonical_window_id(window_id)
         if window_id in self._window_instances:
             return self._sync_instance_open_state(window_id)
         return self._window_states.get(window_id, WindowState.CLOSED) in _VISIBLE_STATES
 
     def focus_window(self, window_id: str) -> None:
         """Request focus for an already-open editor panel."""
-        target_id = str(window_id).strip()
+        target_id = self._canonical_window_id(str(window_id).strip())
         if target_id not in self._window_states:
             raise KeyError(f"Unknown window id: {target_id}")
         if not self.is_window_open(target_id):
@@ -1100,6 +1129,7 @@ class WindowManager:
     
     def set_window_open(self, window_id: str, is_open: bool):
         """Set window open state (called by window when close button is clicked)."""
+        window_id = self._canonical_window_id(window_id)
         if window_id not in self._window_states:
             raise KeyError(f"Unknown window id: {window_id}")
         if is_open:
@@ -1114,7 +1144,7 @@ class WindowManager:
 
     def window_type_id(self, window_id: str) -> str:
         """Return the registered panel type that owns one window instance."""
-        identifier = str(window_id or "").strip()
+        identifier = self._canonical_window_id(str(window_id or "").strip())
         if not identifier:
             return ""
         return str(self._window_type_ids.get(identifier, identifier) or identifier)
@@ -1200,10 +1230,12 @@ class WindowManager:
 
     def get_window_instance(self, window_id: str) -> Optional[InxGUIRenderable]:
         """Return the live panel instance for routing editor commands."""
+        window_id = self._canonical_window_id(window_id)
         return self._window_instances.get(window_id) or self._default_instances.get(window_id)
 
     def get_window_state(self, window_id: str) -> WindowState:
         """Return the explicit lifecycle state for a known window."""
+        window_id = self._canonical_window_id(window_id)
         if window_id not in self._window_states:
             raise KeyError(f"Unknown window id: {window_id}")
         return self._window_states[window_id]

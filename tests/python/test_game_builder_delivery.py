@@ -48,6 +48,40 @@ def test_player_path_audit_distinguishes_model_names_from_absolute_paths():
     assert not _contains_absolute_author_path(json.dumps({"source": "Assets/Models/Model.glb"}))
 
 
+@pytest.mark.parametrize("archive_name,prefix,programs_allowed", [
+    ("Runtime.inxrt", "infernux/resources/shaders/", True),
+    ("Content.inxpkg", "Library/Artifacts/Blob/", True),
+    ("Parallel.inxmod", "infernux/resources/shaders/", False),
+    ("Content.inxpkg", "Assets/Shaders/", False),
+])
+def test_player_audit_retains_static_program_inputs_and_rejects_host_sources(
+    tmp_path, archive_name, prefix, programs_allowed,
+):
+    from collections import defaultdict
+    from infernux._source_kinds import GPU_SOURCE_SUFFIXES
+    from infernux.engine.player_package_audit import _archive_entry_records
+
+    programs = {"program" + suffix for suffix in (*GPU_SOURCE_SUFFIXES, ".particle.py")}
+    host_sources = {"component.py", "api.pyi", "native.pyx"}
+    files = []
+    for name in sorted(programs | host_sources):
+        source = tmp_path / name
+        source.write_text("pass\n", encoding="utf-8")
+        files.append((prefix + name, source))
+    archive = tmp_path / archive_name
+    write_pack(files, archive)
+    observations = {name: [] for name in (
+        "archive_entries", "forbidden", "author_sources", "meta_files", "absolute_paths",
+        "native_files", "hidden_executables", "authoring_tree_files", "unknown_author_documents",
+        "unsafe_entry_paths",
+    )}
+    relative = "Game_Data/" + archive_name
+    _archive_entry_records(archive, relative, payload_candidates=defaultdict(list), **observations)
+    assert not observations["forbidden"], observations
+    rejected = host_sources | (set() if programs_allowed else programs)
+    assert set(observations["author_sources"]) == {relative + "::" + prefix + name for name in rejected}
+
+
 def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
@@ -491,6 +525,10 @@ def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
     builder._write_payload_manifest(str(final_dir))
 
     builder._materialize_desktop_player_layout(str(final_dir))
+    shader_root = data_root / "Runtime/infernux/resources/shaders"
+    shader_root.mkdir(parents=True, exist_ok=True)
+    (shader_root / "color.frag.py").write_text("pass\n", encoding="utf-8")
+    (shader_root / "color.shaderlib.py").write_text("pass\n", encoding="utf-8")
     builder._audit_direct_player_layout(str(final_dir))
 
     assert (data_root / "Runtime" / "_InfernuxBootstrap.pyd").read_bytes() == b"bootstrap"
@@ -520,6 +558,10 @@ def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
     assert "content\t" in package_index
     assert "catalog\t" in package_index
     assert "runtime\t" not in package_index
+
+    (shader_root / "component.py").write_text("pass\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="authoring files"):
+        builder._audit_direct_player_layout(str(final_dir))
 
 
 def test_desktop_player_indexes_the_sealed_parallel_module(tmp_path):

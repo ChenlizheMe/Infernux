@@ -4,7 +4,7 @@
   "shaders": {
     "vertex": {
       "guid": "",
-      "shader_id": "Standard"
+      "shader_id": "infernux/standard"
     },
     "fragment": {
       "guid": "",

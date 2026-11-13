@@ -3081,19 +3081,19 @@ class ParticleSystem(InxComponent):
             material = cache.get(cache_key)
             if material is None and materials is not None:
                 previous = self._output_materials.get(cache_key)
-                if previous is not None and previous.vert_shader_name == "Particle Sprite" and previous.frag_shader_name == output.shader:
+                if previous is not None and previous.vert_shader_name == "infernux/particle/vertex" and previous.frag_shader_name == output.shader:
                     material = previous.clone()
                     cache[cache_key] = material
             if (
                 material is None
-                or material.vert_shader_name != "Particle Sprite"
+                or material.vert_shader_name != "infernux/particle/vertex"
                 or material.frag_shader_name != output.shader
             ):
                 template = None if is_mesh else Material.get("ParticleSpriteMaterial")
                 material = template.clone() if template is not None else Material.create_unlit(
                     f"ParticleOutput:{emitter_id}:{output.output_id}"
                 )
-                material.vert_shader_name = "Particle Sprite"
+                material.vert_shader_name = "infernux/particle/vertex"
                 material.frag_shader_name = str(output.shader)
                 Shader._apply_published_surface(material)
                 cache[cache_key] = material

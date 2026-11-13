@@ -13,6 +13,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,12 +30,17 @@ class ConsolePanel : public EditorPanel
   public:
     explicit ConsolePanel(const std::string &projectRoot = "");
     ~ConsolePanel() override;
+    std::function<std::string(const std::string &)> translate = [](const std::string &key) { return key; };
 
     // ── Public API (called from pybind11 or other C++ systems) ──
 
     /// Log a message originating from Python's Debug.log() system.
     void LogFromPython(LogLevel level, const std::string &message, const std::string &stackTrace = "",
                        const std::string &sourceFile = "", int sourceLine = 0, const ObjectHandle &contextHandle = {});
+    void SetDiagnostic(const std::string &owner, const std::string &key, LogLevel level, const std::string &message,
+                       const std::string &stackTrace = "", const std::string &sourceFile = "", int sourceLine = 0,
+                       const ObjectHandle &contextHandle = {}, int occurrences = 1);
+    bool ResolveDiagnostic(const std::string &owner, const std::string &key);
 
     [[nodiscard]] const std::string &GetProjectRoot() const
     {
@@ -87,10 +93,14 @@ class ConsolePanel : public EditorPanel
         uint64_t uid = 0;
         uint64_t latestUid = 0;
         int count = 1;
+        std::string diagnosticOwner;
+        std::string diagnosticKey;
+        int occurrences = 1;
     };
 
     std::vector<VisibleLogSnapshot> GetVisibleLogSnapshot(size_t limit);
     bool CopySelectedEntry();
+    void RenderSelectionInspector(InxGUIContext *ctx);
     [[nodiscard]] bool HasViewOption(const std::string &option) const noexcept;
     [[nodiscard]] bool GetViewOption(const std::string &option) const noexcept;
     void SetViewOption(const std::string &option, bool enabled);
@@ -100,8 +110,6 @@ class ConsolePanel : public EditorPanel
     {
         m_focusSearchNextFrame = true;
     }
-    [[nodiscard]] float GetDetailHeight() const noexcept;
-    void SetDetailHeight(float height) noexcept;
 
     std::function<void()> onErrorPause;
     std::function<void()> onRequestFocus;
@@ -126,6 +134,8 @@ class ConsolePanel : public EditorPanel
     {
         std::string message;
         std::string firstLine; // cached first line for display
+        std::string displayLine;
+        std::string sourceLabel;
         std::string timestamp;
         std::string stackTrace;
         std::string sourceFile;
@@ -133,6 +143,9 @@ class ConsolePanel : public EditorPanel
         LogLevel level = LOG_INFO;
         uint64_t uid = 0;
         ObjectHandle contextHandle;
+        std::string diagnosticOwner;
+        std::string diagnosticKey;
+        int occurrences = 1;
     };
 
     // ── Visible entry after filtering/collapsing ──
@@ -148,6 +161,10 @@ class ConsolePanel : public EditorPanel
     size_t m_sinkId = 0;
     const std::string m_projectRoot;
     void OnLogMessage(LogLevel level, const char *file, int line, const std::string &message, bool internalOnly);
+    void CacheDisplayFields(LogEntry &entry) const;
+    void UpdateCounts(LogLevel level, int delta);
+    void ApplyDiagnosticChanges(std::unordered_map<uint64_t, std::optional<LogEntry>> &changes,
+                                std::vector<LogEntry> &incoming);
 
     // ── Log storage ──
     static constexpr size_t MAX_LOGS = 100000u;
@@ -155,6 +172,8 @@ class ConsolePanel : public EditorPanel
     uint64_t m_nextUid = 1;
     mutable std::mutex m_logMutex;       // protects m_logs + m_pendingLogs
     std::vector<LogEntry> m_pendingLogs; // accumulated off-main-thread, flushed in OnRender
+    std::unordered_map<std::string, LogEntry> m_diagnostics;
+    std::unordered_map<uint64_t, std::optional<LogEntry>> m_pendingDiagnosticChanges;
     std::atomic<int> m_infoCount{0};
     std::atomic<int> m_warnCount{0};
     std::atomic<int> m_errorCount{0};
@@ -175,8 +194,7 @@ class ConsolePanel : public EditorPanel
     int m_cachedErrorCount = 0;
 
     // ── Selection projection & scroll ──
-    // Context navigation selects the owning GameObject globally while this
-    // projection retains the selected diagnostic for its detail pane.
+    // The global diagnostic selection projects into the Inspector.
     uint64_t m_selectedUid = 0;
     std::vector<uint64_t> m_selectedUids;
     std::unordered_set<uint64_t> m_selectedUidLookup;
@@ -187,11 +205,28 @@ class ConsolePanel : public EditorPanel
     std::array<char, 256> m_search{};
     std::string m_searchEditStart;
     bool m_focusSearchNextFrame = false;
-    float m_rowHeight = 22.0f;
+    float m_rowHeight = 48.0f;
     bool m_rowHeightMeasured = false;
     float m_lastDpiScale = 0.0f;
-    float m_detailHeight = 90.0f;
-    float m_detailResizeStart = 90.0f;
+    std::vector<uint64_t> m_inspectorUids;
+    uint64_t m_inspectorPrimaryUid = 0;
+    bool m_inspectorDirty = false;
+    struct InspectorStackLine
+    {
+        std::string text;
+        std::string sourceFile;
+        int sourceLine = 0;
+    };
+    struct InspectorEntry
+    {
+        uint64_t uid;
+        LogLevel level;
+        std::string timestamp, message, sourceFile;
+        int sourceLine;
+        std::vector<InspectorStackLine> stack;
+    };
+    std::vector<InspectorEntry> m_inspectorEntries;
+    std::string m_inspectorText;
 
     double m_subFlush = 0.0;
     double m_subCache = 0.0;
@@ -210,13 +245,14 @@ class ConsolePanel : public EditorPanel
     void ReplaceLocalSelection(uint64_t uid);
     void ToggleLocalSelection(uint64_t uid);
     void PruneLocalSelection();
-    [[nodiscard]] std::vector<int> SelectedVisibleIndices() const;
     void SelectUid(uint64_t uid, bool focusWindow, bool publishSelection = true, bool recordHistory = true);
     void PublishSelection(uint64_t uid, bool recordHistory);
     void RenderToolbar(InxGUIContext *ctx);
     void RenderBody(InxGUIContext *ctx);
+    void UpdateSelectionInspector();
+    static InspectorStackLine ParseInspectorStackLine(std::string text);
     void RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry &ve, bool selected);
-    const ImVec4 &LevelColor(LogLevel lv) const;
+    ImVec4 LevelColor(LogLevel lv) const;
     static std::string CurrentTimestamp();
     static bool IsInternalNoise(const std::string &msg);
 };

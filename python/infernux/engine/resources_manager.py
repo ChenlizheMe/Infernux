@@ -650,12 +650,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
             line = diagnostic.line
             message = f"{os.path.basename(result.path)}{location}  {message}"
         set_script_error(result.path, message)
-        Debug.log_error(
-            f"Script frontend failed for {result.path} "
-            f"(generation={result.generation}, hash={result.content_hash}): {message}",
-            source_file=result.path,
-            source_line=line,
-        )
+        Debug.set_diagnostic("script.compile", path_key(result.path), message,
+                             source_file=result.path, source_line=line or 0,
+                             details=(f"{diagnostic.phase}: {diagnostic.code}\n{diagnostic.message}"
+                                      if diagnostic is not None else ""))
 
     @staticmethod
     def _require_current_script_source(result: ScriptChangeResult) -> None:
@@ -898,7 +896,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         from infernux.components.script_loader import _clear_script_error
 
         _clear_script_error(result.path)
-        Debug.clear_source_entries(result.path)
         rm = ResourcesManager.instance()
         if rm is not None:
             # The initial project scan only registers the current source and

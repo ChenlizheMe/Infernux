@@ -139,53 +139,31 @@ def _render_sensor_type(ctx, comp, label_width) -> None:
 
 
 def _render_culling_mask(ctx, comp, label_width) -> None:
+    from infernux.engine.i18n import t
     from infernux.engine.ui.inspector_components import _record_builtin_property
     from infernux.engine.ui.inspector_utils import field_label
-    from infernux.engine.ui.theme import ImGuiCol, ImGuiStyleVar, Theme
     from infernux.lib import TagLayerManager
 
     names = list(TagLayerManager.instance().get_all_layers() or [])
-    names = [str(name).strip() or f"Layer {index}" for index, name in enumerate(names)]
-    names = (names + [f"Layer {i}" for i in range(len(names), 32)])[:32]
+    names = [str(name).strip() or t("inspector.layer_number").format(index=index) for index, name in enumerate(names)]
+    names = (names + [t("inspector.layer_number").format(index=i) for i in range(len(names), 32)])[:32]
     old_mask = int(comp.culling_mask) & 0xFFFFFFFF
     selected = sum(1 for i in range(32) if old_mask & (1 << i))
-    label = "Everything" if selected == 32 else ("Nothing" if selected == 0 else f"{selected} Layers")
-    field_label(ctx, "Culling Mask", label_width)
-    ctx.push_style_var_vec2(ImGuiStyleVar.ButtonTextAlign, 0.0, 0.5)
-    ctx.push_style_color(ImGuiCol.Button, *Theme.FRAME_BG)
-    ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.FRAME_BG_HOVERED)
-    ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.FRAME_BG_ACTIVE)
-    try:
-        opened = ctx.button(f"{label}##camera_culling_mask", width=-1.0)
-    finally:
-        ctx.pop_style_color(3)
-        ctx.pop_style_var(1)
-    right = ctx.get_item_rect_max_x()
-    top, bottom = ctx.get_item_rect_min_y(), ctx.get_item_rect_max_y()
-    ctx.draw_text_aligned(
-        right - (bottom - top), top, right, bottom, "▼",
-        *Theme.TEXT, align_x=0.5, align_y=0.5,
-    )
-    if opened:
-        ctx.open_popup("##camera_culling_mask_popup")
-    if ctx.begin_popup("##camera_culling_mask_popup"):
-        new_mask = old_mask
-        if ctx.button("Everything##camera_culling_everything"):
-            new_mask = 0xFFFFFFFF
-        ctx.same_line()
-        if ctx.button("Nothing##camera_culling_nothing"):
-            new_mask = 0
-        for index, name in enumerate(names):
-            checked = bool(new_mask & (1 << index))
-            updated = ctx.checkbox(f"{name}##camera_layer_{index}", checked)
-            if updated != checked:
-                new_mask ^= 1 << index
-        if new_mask != old_mask:
-            _record_builtin_property(
-                comp, "culling_mask", old_mask, new_mask,
-                "Set Camera Culling Mask",
-            )
-        ctx.end_popup()
+    preview = t("inspector.all_layers") if selected == 32 else (t("inspector.no_layers") if selected == 0 else t("inspector.layer_count").format(count=selected))
+    field_label(ctx, t("inspector.culling_mask"), label_width)
+    ctx.set_next_item_width(-1)
+    new_mask = int(ctx.flags_combo(
+        "##camera_culling_mask",
+        old_mask,
+        [t("inspector.no_layers"), t("inspector.all_layers"), *names],
+        [0, 0xFFFFFFFF, *(1 << index for index in range(32))],
+        preview,
+    )) & 0xFFFFFFFF
+    if new_mask != old_mask:
+        _record_builtin_property(
+            comp, "culling_mask", old_mask, new_mask,
+            "Set Camera Culling Mask",
+        )
 
 
 class Camera(BuiltinComponent):

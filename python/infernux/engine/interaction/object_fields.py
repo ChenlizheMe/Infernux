@@ -129,11 +129,20 @@ class AssetReferenceCatalog:
             if not is_virtual and not any(folded.endswith(extension) for extension in descriptor.extensions):
                 continue
             if shader_type:
-                from infernux.engine.ui.inspector_shader_utils import is_shader_hidden
+                from infernux.core.assets import AssetManager
+                from infernux._source_kinds import source_extension
 
-                if is_shader_hidden(lexical_path(candidate_path)):
+                metadata = AssetManager._asset_database.get_meta_by_path(candidate_path)
+                if metadata is None or not metadata.has_key("shader_id"):
                     continue
-            name = os.path.basename(portable)
+                if metadata.get_bool("shader_hidden"):
+                    continue
+                if (cache_key == "shader.fragment" and source_extension(candidate_path) == ".frag.py"
+                        and metadata.get_string("shader_domain") != "mesh"):
+                    continue
+                name = metadata.get_string("shader_id")
+            else:
+                name = os.path.basename(portable)
             if "::subtex:" in portable:
                 from infernux.core.assets import AssetManager
                 metadata = AssetManager._asset_database.get_meta_by_path(candidate_path)
@@ -435,6 +444,19 @@ class AssetReferenceFieldModel(ObjectReferenceFieldModel):
     @property
     def has_picker(self) -> bool:
         return bool(not self.read_only and super().has_picker)
+
+    @property
+    def picker_menu_folders(self) -> Optional[Callable[[str], tuple[str, ...]]]:
+        """Logical path per candidate label for cascading picker menus.
+
+        Shaders pick through Unity-style folder menus; other asset types use
+        the searchable list (``None``).
+        """
+        if not self.asset_type.casefold().startswith("shader"):
+            return None
+        from infernux.engine.ui.inspector_shader_utils import shader_menu_folders
+
+        return shader_menu_folders
 
     def dispatch_chrome(self, flags: int) -> ObjectFieldGesture:
         gesture = ObjectFieldGesture(int(flags))

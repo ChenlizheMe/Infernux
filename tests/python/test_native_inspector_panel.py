@@ -77,6 +77,7 @@ def test_native_authoring_payload_preserves_identity_transform_and_prefab_state(
 def test_repeated_serialized_group_labels_have_independent_fold_state(monkeypatch):
     from infernux.components import SerializableObject, serialized_field
     from infernux.engine.ui import inspector_declarative as inspector
+    from infernux.engine.ui import field_draw
 
     class Settings(SerializableObject):
         first: float = serialized_field(default=1.0, group="Effects")
@@ -90,11 +91,82 @@ def test_repeated_serialized_group_labels_have_independent_fold_state(monkeypatc
 
     monkeypatch.setattr(inspector, "render_compact_section_header", header)
     monkeypatch.setattr(inspector, "max_label_w", lambda *args: 80)
-    monkeypatch.setattr(inspector, "render_serialized_field",
-                        lambda ctx, key, label, meta, value, width: drawn.append(value) or value)
+    monkeypatch.setattr(field_draw, "draw_field",
+                        lambda ctx, meta, value, **kwargs: drawn.append(value) or False)
     monkeypatch.setattr(inspector, "record_inspector_component_item", lambda *args, **kwargs: None)
     settings = Settings()
     control = inspector.InspectorSerializedTarget("settings", lambda: settings, owner=None)
     inspector._render_serialized_target(None, control)
     assert len(headers) == len({key for _, key in headers}) == 3
     assert drawn == [2.0, 3.0]
+
+
+def test_grouped_serialized_columns_match_native_vector_columns(engine):
+    """Nested Inspector groups must not add ImGui's GroupOffset a second time."""
+    from infernux import lib, resources
+    from infernux.engine.ui.inspector_utils import field_label
+    from infernux.engine.ui.theme import ImGuiWindowFlags
+    from infernux.engine.ui.field_draw import draw_field_value
+    from infernux.components.fields import FieldMetadata, FieldType
+
+    engine.set_gui_fonts(resources.engine_font_path, resources.engine_font_cjk_path,
+                         resources.engine_mono_font_path, 13.0)
+    observed, failures = [], []
+
+    class Probe(lib.InxGUIRenderable):
+        def on_render(self, ctx):
+            ctx.set_next_window_pos(0.0, 0.0, 0, 0.0, 0.0)
+            ctx.set_next_window_size(640.0, 420.0, 0)
+            visible = ctx.begin_window("Fields###field_column_contract", True,
+                                       ImGuiWindowFlags.NoSavedSettings | ImGuiWindowFlags.NoTitleBar)
+            try:
+                if not visible:
+                    return
+                column = ctx.inspector_label_width()
+                ctx.vector3("Native", 1.0, 2.0, 3.0, 0.1, column)
+                native_x = ctx.get_item_rect_min_x()
+                untouched_float = draw_field_value(
+                    ctx, "##unmodified_float", "Float precision",
+                    FieldMetadata("float_precision", FieldType.FLOAT, 0.1), 0.1, column,
+                )
+                assert untouched_float == 0.1
+                ctx.begin_group()
+                try:
+                    ctx.begin_group()
+                    try:
+                        ctx.vector3("Serialized vector", 1.0, 2.0, 3.0, 0.1, column)
+                        vector_x = ctx.get_item_rect_min_x()
+                        field_label(ctx, "Serialized scalar", column)
+                        ctx.drag_float("##scalar", 4.0, 0.1, 0.0, 0.0)
+                        scalar_x = ctx.get_item_rect_min_x()
+                    finally:
+                        ctx.end_group()
+                finally:
+                    ctx.end_group()
+                observed.append((native_x, vector_x, scalar_x))
+            except Exception as error:
+                failures.append(error)
+            finally:
+                ctx.end_window()
+
+    frames = 0
+
+    def tick(_delta):
+        nonlocal frames
+        frames += 1
+        if frames >= 6 or failures:
+            engine.exit()
+
+    probe = Probe()
+    engine.register_gui_renderable("test.field_column_contract", probe)
+    try:
+        engine.set_pre_scene_update_callback(tick)
+        engine.run()
+    finally:
+        engine.set_pre_scene_update_callback(None)
+        engine.unregister_gui_renderable("test.field_column_contract")
+    assert not failures, failures
+    assert observed
+    for native_x, vector_x, scalar_x in observed:
+        assert abs(native_x - vector_x) < 0.1
+        assert abs(native_x - scalar_x) < 0.1

@@ -23,7 +23,7 @@ from . import inspector_support as _inspector_support
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .inspector_utils import (
     max_label_w,
-    field_label,
+    field_label, pretty_field_name,
     render_compact_section_header,
     _render_color_bar,
 )
@@ -71,7 +71,7 @@ def _render_virtualized_material_block(ctx, state, block_key, renderer, empty_re
 
 
 def _draw_centered_texture(ctx: InxGUIContext, tex_id: int, width: float, height: float,
-                           src_w: int = 256, src_h: int = 256) -> bool:
+                           src_w: int = 200, src_h: int = 200) -> bool:
     """Draw a cached preview texture without touching the preview query path."""
     if tex_id == 0 or width <= 0.0 or height <= 0.0 or src_w <= 0 or src_h <= 0:
         return False
@@ -312,123 +312,54 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
 
 
 def render_material_property(
-    ctx: InxGUIContext,
-    prop_name: str,
-    prop: dict,
-    ptype: int,
-    value,
-    plw: float,
-    wid_prefix: str = "mp",
-    reference_cache=None,
+    ctx, prop_name, prop, ptype, value, plw, wid_prefix="mp", reference_cache=None,
 ) -> bool:
-    """Render one material property row.  Returns ``True`` if changed."""
-    changed = False
+    """Adapt shader metadata to the same fields used by components and resources."""
+    from infernux.components.fields import FieldMetadata, FieldType
+    from .field_draw import draw_field_value
+
+    label = prop.get("label", pretty_field_name(prop_name))
     wid = f"##{wid_prefix}_{prop_name}"
-    label = prop.get("label", prop_name)
-
-    if ptype == 0:  # Float
-        field_label(ctx, label, plw)
-        authored_range = prop.get("range")
-        if isinstance(authored_range, list) and len(authored_range) == 2:
-            nv = float(ctx.float_slider(
-                wid, float(value), float(authored_range[0]), float(authored_range[1])))
-        else:
-            nv = float(ctx.drag_float(wid, float(value), 0.1, 0.0, 100.0))
-        if nv != float(value):
-            prop["value"] = nv
-            changed = True
-
-    elif ptype == 1:  # Float2
-        x, y = value[0], value[1]
-        nx, ny = ctx.vector2(prop_name, float(x), float(y), 0.1, plw)
-        if [nx, ny] != [x, y]:
-            prop["value"] = [nx, ny]
-            changed = True
-
-    elif ptype == 2:  # Float3
-        x, y, z = value[0], value[1], value[2]
-        nx, ny, nz = ctx.vector3(
-            prop_name, float(x), float(y), float(z), 0.1, plw,
-        )
-        if [nx, ny, nz] != [x, y, z]:
-            prop["value"] = [nx, ny, nz]
-            changed = True
-
-    elif ptype == 3:  # Float4
-        x, y, z, w = value[0], value[1], value[2], value[3]
-        nx, ny, nz, nw = ctx.vector4(
-            prop_name, float(x), float(y), float(z), float(w), 0.1, plw,
-        )
-        if [nx, ny, nz, nw] != [x, y, z, w]:
-            prop["value"] = [nx, ny, nz, nw]
-            changed = True
-
-    elif ptype == 4:  # Int
-        field_label(ctx, label, plw)
-        authored_range = prop.get("range")
-        if isinstance(authored_range, list) and len(authored_range) == 2:
-            nv = int(ctx.int_slider(
-                wid, int(value), int(authored_range[0]), int(authored_range[1])))
-        else:
-            nv = int(ctx.drag_int(wid, int(value), 1.0, 0, 0))
-        if nv != int(value):
-            prop["value"] = nv
-            changed = True
-
-    elif ptype == 5:  # Mat4
-        arr = list(value)
-        mat_changed = False
+    if ptype == 6:
+        return _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
+                                          reference_cache=reference_cache)
+    if ptype == 5:
+        values = list(value)
+        changed = False
         for row in range(4):
             indices = [column * 4 + row for column in range(4)]
-            values = [arr[index] for index in indices]
-            nx, ny, nz, nw = ctx.vector4(
-                f"{label}[{row}]##{wid_prefix}_{prop_name}_{row}",
-                *map(float, values),
-            )
-            nr = [nx, ny, nz, nw]
-            if nr != values:
-                for index, component in zip(indices, nr):
-                    arr[index] = component
-                mat_changed = True
-        if mat_changed:
-            prop["value"] = arr
-            changed = True
+            before = [values[index] for index in indices]
+            metadata = FieldMetadata(prop_name, FieldType.VEC4, None)
+            after = draw_field_value(ctx, f"{wid}_{row}", f"{label} [{row + 1}]", metadata, before, plw)
+            after = [after.x, after.y, after.z, after.w] if after is not before else before
+            if after != before:
+                for index, channel in zip(indices, after):
+                    values[index] = channel
+                changed = True
+        if changed:
+            prop["value"] = values
+        return changed
 
-    elif ptype == 6:  # Texture2D
-        changed = _render_texture2d_property(
-            ctx, prop, prop_name, wid_prefix, plw,
-            reference_cache=reference_cache,
-        )
-
-    elif ptype == 7:  # Color
-        if value is not None and len(value) >= 4:
-            x, y, z, w = value[0], value[1], value[2], value[3]
-        else:
-            x, y, z, w = 1.0, 1.0, 1.0, 1.0
-        field_label(ctx, label, plw)
-        allow_hdr = bool(prop.get("hdr", False))
-        nr, ng, nb, na = _render_color_bar(
-            ctx, wid, float(x), float(y), float(z), float(w),
-            allow_hdr=allow_hdr, default_hdr_enabled=allow_hdr)
-        if (nr, ng, nb, na) != (x, y, z, w):
-            prop["value"] = [nr, ng, nb, na]
-            changed = True
-
-    else:
-        ctx.label(f"{prop_name}: (type {ptype})")
-
-    return changed
+    field_types = {0: FieldType.FLOAT, 1: FieldType.VEC2, 2: FieldType.VEC3,
+                   3: FieldType.VEC4, 4: FieldType.INT, 7: FieldType.COLOR}
+    field_type = field_types[ptype]
+    metadata = FieldMetadata(
+        prop_name, field_type, None,
+        range=tuple(prop["range"]) if prop.get("range") else None,
+        slider=prop.get("slider", True), hdr=bool(prop.get("hdr", False)),
+        drag_speed=prop.get("drag_speed"),
+    )
+    updated = draw_field_value(ctx, wid, label, metadata, value, plw)
+    if field_type in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
+        count = {FieldType.VEC2: 2, FieldType.VEC3: 3, FieldType.VEC4: 4}[field_type]
+        updated = [getattr(updated, name) for name in ("x", "y", "z", "w")[:count]] if updated is not value else value
+    if updated != value:
+        prop["value"] = updated
+        return True
+    return False
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Module-level shortcuts (set per render call from unified state)
-# ═══════════════════════════════════════════════════════════════════════════
-
-_native_mat = None
-_cached_data: Optional[dict] = None
-_shader_cache: dict = {".vert": None, ".frag": None}
 _SURFACE_BATCH_SCHEMA = 2
-
 
 def _shader_value_token(value):
     """Return the durable identity key for a serialized shader reference."""
@@ -484,7 +415,7 @@ def _get_material_shader_ui_cache(state, vert_ref, frag_ref):
 
 
 def _get_material_property_layout_cache(ctx, state, mat_data):
-    """Cache property order and label width; values never invalidate this cache."""
+    """Cache property order; field geometry follows the current panel width."""
     locale = get_locale()
     key = (
         id(ctx),
@@ -499,7 +430,6 @@ def _get_material_property_layout_cache(ctx, state, mat_data):
     cache = {
         "key": key,
         "property_names": prop_names,
-        "label_width": max_label_w(ctx, prop_names),
     }
     state.extra["_material_property_layout_cache"] = cache
     return cache
@@ -892,7 +822,7 @@ def _render_properties_section(ctx, mat_data, state, is_builtin, default_open):
         else:
             layout_cache = _get_material_property_layout_cache(ctx, state, mat_data)
             prop_names = layout_cache["property_names"]
-            plw = layout_cache["label_width"]
+            plw = ctx.inspector_label_width()
             for prop_name in prop_names:
                 prop = props[prop_name]
                 ptype = int(prop.get("type", 0))
@@ -1201,23 +1131,22 @@ def _sync_shader_annotations(mat_data, state):
 def _prepare_shader_annotations(mat_data, state, *, read_only: bool):
     """Synchronize shader metadata without inventing a user edit.
 
-    Built-in materials are shared, immutable renderer resources.  Their
-    Inspector copy may still need newly imported shader annotations, but that
-    cache refresh must never enter the document/undo path.
+    Defaults and annotations are a view of the current shader. Refreshing that
+    view must not create an edit, autosave, GPU rebuild or undo entry, including
+    while history is restoring an editable material.
     """
-    changed, requires_deserialize = _sync_shader_annotations(mat_data, state)
-    if not read_only or not changed:
-        return changed, requires_deserialize
-
-    state.extra["cached_data"] = mat_data
-    state.extra["cached_json"] = json.dumps(mat_data)
+    del read_only
+    changed, _ = _sync_shader_annotations(mat_data, state)
+    if changed:
+        state.extra["cached_data"] = mat_data
+        state.extra["cached_json"] = json.dumps(mat_data)
     return False, False
 
 
 def _get_material_layout_cache(ctx, state):
     """Cache translated labels/widths while keeping locale changes observable."""
     cache = state.extra.setdefault("_material_layout_cache", {})
-    key = (id(ctx), get_locale())
+    key = (id(ctx), get_locale(), round(ctx.inspector_label_width(), 1))
     if cache.get("key") != key:
         shader_labels = (t("material.vertex"), t("material.fragment"))
         surface_labels = (
@@ -1243,6 +1172,29 @@ def _get_material_layout_cache(ctx, state):
 
 
 
+def _render_material_preview(ctx, panel, state, mat_data):
+    from .dpi import editor_dpi_scale
+    from .asset_resource_preview import render_preview_placeholder
+
+    native_mat = state.extra.get("native_mat")
+    avail_w = max(1.0, ctx.get_content_region_avail_width())
+    preview_size = min(avail_w, 200.0 * editor_dpi_scale(ctx))
+    preview_path = getattr(state, "file_path", "")
+    if not preview_path and native_mat is not None:
+        preview_path = _ensure_material_file_path(panel, native_mat)
+    previous_preview_path = state.extra.get("_material_preview_path", "")
+    if preview_path != previous_preview_path:
+        if previous_preview_path:
+            from .asset_resource_preview import invalidate_live_material_preview
+            invalidate_live_material_preview(previous_preview_path)
+        state.extra["_material_preview_path"] = preview_path
+    preview_tex_id = 0
+    if preview_path or native_mat is not None:
+        preview_tex_id = _get_cached_material_preview_tex(panel, native_mat, mat_data, state, preview_path)
+    if not _draw_centered_texture(ctx, preview_tex_id, avail_w, preview_size, 200, 200):
+        render_preview_placeholder(ctx, preview_path, "material", preview_size)
+
+
 def _render_material_top(ctx, panel, state, mat_data, section_readonly,
                          default_open_sections, is_embedded_slot):
     """Render the material shader, surface, and preview controls."""
@@ -1251,9 +1203,16 @@ def _render_material_top(ctx, panel, state, mat_data, section_readonly,
     requires_pipeline_refresh = False
     change_key = ""
 
-    did_split = ctx.begin_table("##material_top_split", 2, 0, 0.0)
+    from .dpi import editor_dpi_scale
+    wide = ctx.get_content_region_avail_width() >= 640.0 * editor_dpi_scale(ctx)
+    did_split = wide and ctx.begin_table("##material_top_split", 2, 0, 0.0)
     if did_split:
+        ctx.table_setup_column("##properties", 1 << 3, 0.64, 0)
+        ctx.table_setup_column("##preview", 1 << 3, 0.36, 1)
         ctx.table_next_column()
+    else:
+        _render_material_preview(ctx, panel, state, mat_data)
+        ctx.dummy(0, 8 * editor_dpi_scale(ctx))
 
     layout_cache = _get_material_layout_cache(ctx, state)
     s_ch, s_ds, s_pr, s_ck = _render_shader_section(
@@ -1278,25 +1237,7 @@ def _render_material_top(ctx, panel, state, mat_data, section_readonly,
 
     if did_split:
         ctx.table_next_column()
-        avail_w = max(140.0, ctx.get_content_region_avail_width())
-        preview_size = min(max(avail_w * 0.90, 140.0), 240.0)
-        preview_path = getattr(state, "file_path", "")
-        if not preview_path and _native_mat is not None:
-            preview_path = _ensure_material_file_path(panel, _native_mat)
-        previous_preview_path = state.extra.get("_material_preview_path", "")
-        if preview_path != previous_preview_path:
-            if previous_preview_path:
-                from .asset_resource_preview import invalidate_live_material_preview
-                invalidate_live_material_preview(previous_preview_path)
-            state.extra["_material_preview_path"] = preview_path
-        preview_tex_id = 0
-        if preview_path or _native_mat is not None:
-            preview_tex_id = _get_cached_material_preview_tex(
-                panel, _native_mat, mat_data, state, preview_path)
-        if not _draw_centered_texture(ctx, preview_tex_id, avail_w, preview_size, 256, 256):
-            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-            ctx.label("Material preview unavailable.")
-            ctx.pop_style_color(1)
+        _render_material_preview(ctx, panel, state, mat_data)
         ctx.end_table()
     ctx.separator()
     return (
@@ -1363,7 +1304,11 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
         or getattr(_native_mat, "file_path", "")
         or getattr(state, "file_path", "")
     )
-    section_readonly = is_builtin or is_embedded_slot or is_runtime_material
+    from infernux.engine.interaction import AuthoringMutationService
+    section_readonly = (
+        is_builtin or is_embedded_slot or is_runtime_material
+        or not AuthoringMutationService.require().can_record()
+    )
 
     default_open_sections = bool(state.extra.get("default_open_sections", True))
 

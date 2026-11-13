@@ -146,8 +146,9 @@ class ProjectDeleteConfirmationCoordinator:
                     "confirm",
                     lambda: self._confirm(ctx),
                     enabled=self._history_ready() and not self._confirming,
+                    kind="danger",
                 ),
-                EditorModalAction(t("editor.modal.cancel"), "cancel", lambda: self._cancel(ctx)),
+                EditorModalAction(t("editor.modal.cancel"), "cancel", lambda: self._cancel(ctx), kind="ghost"),
             ],
             semantic_prefix="project.delete",
         )

@@ -99,7 +99,7 @@ class CppProperty:
         native_setter=None,
         hdr: bool = False,
         curve_non_negative: bool = False,
-        slider: bool = False,
+        slider: bool = True,
         related_components=None,
     ):
         self.cpp_attr = cpp_attr
@@ -172,7 +172,7 @@ class CppProperty:
             visible_when=visible_when, get_converter=get_converter, set_converter=set_converter,
             native_getter=native_getter, native_setter=native_setter,
             related_components=related_components,
-            slider=bool(attributes.get("slider", False)),
+            slider=bool(attributes.get("slider", True)),
         )
         result.metadata.hidden = bool(attributes.get("hidden", False))
         result.metadata.former_names = tuple(attributes.get("former_names", ()))

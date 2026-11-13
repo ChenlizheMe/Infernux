@@ -133,10 +133,11 @@ class Rigidbody(BuiltinComponent):
                                    skip_fields=self._FREEZE_FIELDS)
 
         # Freeze Transform section
-        ctx.separator()
-        ctx.label("Freeze Transform")
-        self._render_freeze_row(ctx, "Position", "freeze_position")
-        self._render_freeze_row(ctx, "Rotation", "freeze_rotation")
+        from infernux.engine.i18n import t
+        from infernux.engine.ui.inspector_utils import render_section_kicker
+        render_section_kicker(ctx, t("inspector.freeze_transform"))
+        self._render_freeze_row(ctx, t("inspector.transform.position"), "freeze_position")
+        self._render_freeze_row(ctx, t("inspector.transform.rotation"), "freeze_rotation")
 
     def _render_freeze_row(self, ctx, label: str, prefix: str) -> None:
         from infernux.engine.ui.inspector_components import (

@@ -59,12 +59,12 @@ void SpriteRenderer::PublishSpriteColor()
     SetRuntimeParameterProperty(0, {"base_color", MaterialPropertyType::Color, m_color}, "sprite-renderer");
 }
 
-void SpriteRenderer::PublishSpriteUV(const glm::vec4 &uvRect, const glm::vec4 &displayScale)
+void SpriteRenderer::PublishSpriteUV(const glm::vec4 &uv_rect, const glm::vec4 &display_scale)
 {
-    RequireFiniteSpriteVector(uvRect);
-    RequireFiniteSpriteVector(displayScale);
-    SetRuntimeParameterProperty(0, {"uvRect", MaterialPropertyType::Float4, uvRect}, "sprite-renderer");
-    SetRuntimeParameterProperty(0, {"displayScale", MaterialPropertyType::Float4, displayScale}, "sprite-renderer");
+    RequireFiniteSpriteVector(uv_rect);
+    RequireFiniteSpriteVector(display_scale);
+    SetRuntimeParameterProperty(0, {"uv_rect", MaterialPropertyType::Float4, uv_rect}, "sprite-renderer");
+    SetRuntimeParameterProperty(0, {"display_scale", MaterialPropertyType::Float4, display_scale}, "sprite-renderer");
 }
 
 std::shared_ptr<InxMaterial> SpriteRenderer::GetEffectiveMaterial(uint32_t slot) const

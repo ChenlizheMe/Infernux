@@ -1,6 +1,7 @@
 #pragma once
 
 #include <function/editor/EditorPanelFocusPublisher.h>
+#include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUIContext.h>
 #include <function/renderer/gui/InxGUIRenderable.h>
 
@@ -73,6 +74,15 @@ class EditorPanel : public InxGUIRenderable
         return m_windowId;
     }
 
+    void SetTitle(const std::string &title)
+    {
+        m_title = title;
+    }
+    [[nodiscard]] const std::string &GetTitle() const
+    {
+        return m_title;
+    }
+
     // The second argument distinguishes a direct pointer activation from
     // passive/native focus synchronization. Only the former is user history.
     std::function<void(bool, bool)> onPanelFocused;
@@ -130,6 +140,15 @@ class EditorPanel : public InxGUIRenderable
         std::string label = m_title + "###" + m_windowId;
 
         bool requestedOpen = m_isOpen;
+        ctx->PushUIFont(EditorThemeRegistry::Float("EDITOR_TITLE_FONT_SIZE"));
+        struct TitleFontScope
+        {
+            InxGUIContext *context;
+            ~TitleFontScope()
+            {
+                context->PopFont();
+            }
+        } titleFontScope{ctx};
         bool visible = ImGui::Begin(label.c_str(), &requestedOpen, GetWindowFlags());
         struct WindowScope
         {
@@ -186,6 +205,23 @@ class EditorPanel : public InxGUIRenderable
                 },
                 [this](const std::string &token) { EndTransientInteraction(token); });
             VisiblePreRender(ctx);
+            const float panelDpi = ctx->GetDpiScale();
+            const ImVec2 fieldPadding = EditorThemeRegistry::Vec2("FIELD_PADDING");
+            const ImVec2 contentSpacing = EditorThemeRegistry::Vec2("CONTENT_SPACING");
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                                ImVec2(fieldPadding.x * panelDpi, fieldPadding.y * panelDpi));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                                ImVec2(contentSpacing.x * panelDpi, contentSpacing.y * panelDpi));
+            ctx->PushUIFont(EditorThemeRegistry::Float("EDITOR_FONT_SIZE"));
+            struct ContentStyleScope
+            {
+                InxGUIContext *context;
+                ~ContentStyleScope()
+                {
+                    context->PopFont();
+                    ImGui::PopStyleVar(2);
+                }
+            } contentStyleScope{ctx};
             OnRenderContent(ctx);
         }
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from infernux.engine.i18n import t
+from infernux.engine.i18n import t, get_locale
 
 from .inspector_declarative import (
     InspectorChoice,
@@ -20,6 +20,15 @@ from .inspector_utils import format_display_name, render_compact_section_header
 
 if TYPE_CHECKING:
     from infernux.renderstack.render_stack import RenderStack
+
+
+_STAGE_TITLES = {
+    "After Opaque": "renderstack.stage_opaque",
+    "After Sky": "renderstack.stage_sky",
+    "After Transparent": "renderstack.stage_transparent",
+    "After Camera UI": "renderstack.stage_camera_ui",
+    "Final Post Processing": "renderstack.final_stage",
+}
 
 
 def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
@@ -49,6 +58,7 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
         for stage in (topology.effect_stages if topology is not None else ())
     )
     cache_key = (
+        get_locale(),
         stack.pipeline_class_name,
         id(pipeline),
         stack._topology_probe_error,
@@ -155,7 +165,7 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
         topology_controls.append(
             InspectorList(
                 key=f"stage_{stage.stable_id}",
-                label=stage.display_name,
+                label=t(_STAGE_TITLES.get(stage.display_name, stage.display_name)),
                 target=stack,
                 field_name=f"effect_slots_{stage.stable_id}",
                 metadata=list_metadata,
@@ -166,6 +176,9 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
                 drop_factory=make_drop,
                 item_label=make_item_label,
                 item_renderer=render_item,
+                item_icon="render_effect",
+                item_domain="DOMAIN_POST_FX",
+                item_toggle="enabled",
                 on_change=stage_slots_changed,
             )
         )
@@ -200,7 +213,7 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
                     InspectorChoice(
                         key="pipeline",
                         label=t("renderstack.pipeline"),
-                        options=lambda: pipeline_names,
+                        options=lambda: tuple(t("renderstack.default_forward") if name == default_pipeline_name else name for name in pipeline_names),
                         current_index=current_pipeline_index,
                         on_change=set_pipeline_index,
                     ),
@@ -208,7 +221,6 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
                         key="pipeline_parameters",
                         target=lambda: stack._pipeline,
                         owner=stack,
-                        title=t("renderstack.pipeline_settings"),
                         on_change=pipeline_parameter_changed,
                     ),
                     InspectorMessages(
@@ -250,7 +262,7 @@ def _pipeline_name_conflict_messages():
 def _render_effect_assets(ctx, references, widget_prefix: str) -> None:
     """Render shared Effect parameters through the common inline-asset hook."""
     from infernux.renderstack.render_effect_compiler import expand_render_effect_reference
-    from .render_effect_inspector import render_render_effect_parameters
+    from .render_effect_inspector import render_render_effect_parameters, render_render_effect_header
 
     seen = set()
     for reference_index, reference in enumerate(tuple(references)):
@@ -268,11 +280,7 @@ def _render_effect_assets(ctx, references, widget_prefix: str) -> None:
             label = effect.name
             if len(effects) > 1:
                 label = f"{effect_index + 1}. {label}"
-            if not render_compact_section_header(
-                ctx,
-                f"{label}##{widget_prefix}_{reference_index}_{effect_index}",
-                level="tertiary",
-            ):
+            if not render_render_effect_header(ctx, effect, f"{widget_prefix}_{reference_index}_{effect_index}", label=label):
                 continue
             render_render_effect_parameters(
                 ctx,
@@ -285,7 +293,7 @@ def _render_effect_assets(ctx, references, widget_prefix: str) -> None:
 def _render_effect_slot_parameters(ctx, reference, widget_prefix: str) -> None:
     """Render one slot's shared asset parameters directly below that slot."""
     from infernux.renderstack.render_effect_compiler import expand_render_effect_reference
-    from .render_effect_inspector import render_render_effect_parameters
+    from .render_effect_inspector import render_render_effect_parameters, render_render_effect_header
 
     try:
         effects = tuple(expand_render_effect_reference(reference))
@@ -296,11 +304,7 @@ def _render_effect_slot_parameters(ctx, reference, widget_prefix: str) -> None:
         bind_group_controller = getattr(effect, "bind_group_document_controller", None)
         if group_controller is not None and callable(bind_group_controller):
             bind_group_controller(group_controller)
-        if len(effects) > 1 and not render_compact_section_header(
-            ctx,
-            f"{effect.name}##{widget_prefix}_{effect_index}",
-            level="tertiary",
-        ):
+        if len(effects) > 1 and not render_render_effect_header(ctx, effect, f"{widget_prefix}_{effect_index}"):
             continue
         render_render_effect_parameters(
             ctx,
@@ -361,4 +365,5 @@ def _resolve_effect_document_controller(effect):
 
 
 register_inline_asset_renderer("RenderEffect", _render_effect_assets)
-register_inspector_model_provider("RenderStack", build_renderstack_inspector_model)
+from .inspector_renderstack_view import render_renderstack_inspector
+register_inspector_model_provider("RenderStack", build_renderstack_inspector_model, presenter=render_renderstack_inspector)

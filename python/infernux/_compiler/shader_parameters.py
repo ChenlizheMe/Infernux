@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass
 
 from .shader_library import ShaderEmitter
@@ -141,9 +142,14 @@ class ParameterAuthor(ShaderEmitter):
             self.error(node, f"Default of {field.name!r} must match its declared {kind} type and shape", code="author.parameter")
         if field.range is not None:
             valid = (kind in {"float", "int", "uint"} and isinstance(field.range, (tuple, list))
-                     and len(field.range) == 2 and all(map(numeric, field.range)) and field.range[0] <= field.range[1])
+                     and len(field.range) == 2 and all(map(numeric, field.range))
+                     and all(math.isfinite(bound) for bound in field.range) and field.range[0] < field.range[1])
             if not valid:
                 self.error(node, "A slider range is an ordered pair for a scalar numeric parameter", code="author.parameter")
+            if kind in {"int", "uint"} and not all(
+                type(bound) is int and minimum <= bound <= maximum for bound in field.range
+            ):
+                self.error(node, "Integer slider bounds must be integers within the declared type", code="author.parameter")
 
     def visit_Attribute(self, node):
         if isinstance(node.value, ast.Name) and node.value.id == "self":

@@ -138,7 +138,7 @@ def _particle_fragment_shader_catalog():
         }
         return choices, properties
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        return (("Particle Unlit", "Particle Unlit"),), {"Particle Unlit": ()}
+        return (("infernux/particle/unlit", "infernux/particle/unlit"),), {"infernux/particle/unlit": ()}
 
 
 def _shader_property_default(item: Mapping[str, Any], value_type: TypeRef):
@@ -388,7 +388,7 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
             if base is None:
                 continue
             shader_id = str(
-                node.properties.get("shader", "Particle Unlit")
+                node.properties.get("shader", "infernux/particle/unlit")
             ).strip()
             digest = hashlib.sha256(
                 f"{emitter.stable_id}:{node.uid}:{shader_id}".encode("utf-8")
@@ -1183,7 +1183,7 @@ PARTICLE_NODE_DEFINITIONS = (
         "Sprite Output",
         (_exec("in", PortDirection.INPUT),),
         (
-            PropertyDef("shader", TypeRef(ValueType.STRING), "Particle Unlit"),
+            PropertyDef("shader", TypeRef(ValueType.STRING), "infernux/particle/unlit"),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
             PropertyDef("soft_particles", TypeRef(ValueType.BOOL), False),
@@ -1211,7 +1211,7 @@ PARTICLE_NODE_DEFINITIONS = (
             ),
         ),
         (
-            PropertyDef("shader", TypeRef(ValueType.STRING), "Particle Unlit"),
+            PropertyDef("shader", TypeRef(ValueType.STRING), "infernux/particle/unlit"),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
             PropertyDef("cast_shadows", TypeRef(ValueType.BOOL), False),
@@ -1224,7 +1224,7 @@ PARTICLE_NODE_DEFINITIONS = (
         "Ribbon Output",
         (_exec("in", PortDirection.INPUT),),
         (
-            PropertyDef("shader", TypeRef(ValueType.STRING), "Particle Unlit"),
+            PropertyDef("shader", TypeRef(ValueType.STRING), "infernux/particle/unlit"),
             PropertyDef("receive_scene_lighting", TypeRef(ValueType.BOOL), False),
             PropertyDef("receive_shadows", TypeRef(ValueType.BOOL), False),
             PropertyDef("soft_particles", TypeRef(ValueType.BOOL), False),

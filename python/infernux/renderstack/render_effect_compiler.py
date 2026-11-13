@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, Mapping, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
+from infernux._source_kinds import source_extension
+
 from infernux.core.asset_ref import RenderEffectRef
 from infernux.engine.path_utils import path_key, resolved_path
 from infernux.renderstack.render_effect import RenderEffect
@@ -153,7 +155,7 @@ def _prepare_runtime_dependencies(source: RenderEffect) -> None:
         if not os.path.isabs(path):
             path = os.path.join(project_root, path) if project_root else path
         path = resolved_path(path) if path else ""
-        if not path or os.path.splitext(path)[1].lower() not in SHADER_EXTENSIONS:
+        if not path or source_extension(path) not in SHADER_EXTENSIONS:
             continue
         try:
             stat = os.stat(path)

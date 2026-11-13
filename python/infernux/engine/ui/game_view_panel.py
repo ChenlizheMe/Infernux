@@ -16,7 +16,7 @@ from infernux.engine.interaction import (
     ViewCommandService,
 )
 from infernux.input import Input
-from infernux.engine.play_mode import PlayModeManager
+from infernux.engine.play_mode import PlayModeManager, PlayModeState
 from infernux.engine.project_context import get_project_root
 from infernux.engine.build_settings import BUILD_SETTINGS_DEFAULTS
 from infernux.engine.project_view_settings import (
@@ -38,6 +38,7 @@ from .runtime_canvas_snapshot import (
 )
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
+from .igui import IGUI
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiStyleVar
 from .viewport_utils import capture_viewport_info
@@ -622,7 +623,7 @@ class GameViewPanel(EditorPanel):
                 description="Change Game View Width",
             )
             ctx.same_line(0, 2.0 * dpi)
-            ctx.label(Theme.ICON_REMOVE)
+            ctx.label("\u00d7")  # dimension separator (not the remove glyph)
             ctx.same_line(0, 2.0 * dpi)
             height_before = self._capture_view_state()
             ctx.set_next_item_width(56.0 * dpi)
@@ -688,7 +689,7 @@ class GameViewPanel(EditorPanel):
         ctx.set_next_item_width(compact_slider)
         scale_before = self._capture_view_state()
         old_scale = self._display_scale
-        new_scale = round(ctx.float_slider("##Scale", old_scale, 0.10, 2.0), 3)
+        new_scale = round(IGUI.slider_float(ctx, "##Scale", old_scale, 0.10, 2.0, format="%.2f"), 3)
         scale_changed = abs(old_scale - new_scale) > 0.001
         self._display_scale = new_scale
         if scale_changed:
@@ -896,6 +897,13 @@ class GameViewPanel(EditorPanel):
 
                 self._render_screen_ui(ctx, vp.image_min_x, vp.image_min_y,
                                        float(draw_w), float(draw_h))
+                play_mode = PlayModeManager.instance()
+                if play_mode is not None and not play_mode.is_edit_mode:
+                    border = Theme.BORDER_PAUSE if play_mode.state == PlayModeState.PAUSED else Theme.BORDER_PLAY
+                    inset = ctx.get_dpi_scale()
+                    ctx.draw_rect(vp.image_min_x + inset, vp.image_min_y + inset,
+                                  vp.image_min_x + draw_w - inset, vp.image_min_y + draw_h - inset,
+                                  *border, 2.0 * inset, 0.0)
 
             else:
                 Input.set_game_viewport_origin(0.0, 0.0)

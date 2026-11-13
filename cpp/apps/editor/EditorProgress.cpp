@@ -18,15 +18,16 @@
 // Python GIL is occupied. EOF also closes the window if the Editor exits.
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        std::fprintf(stderr, "Usage: InfernuxEditorProgress <editor-font> <editor-theme>\n");
+    if (argc != 5) {
+        std::fprintf(stderr, "Usage: InfernuxEditorProgress <editor-font> <editor-cjk-font> <editor-theme> <locale>\n");
         return 1;
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::fprintf(stderr, "%s\n", SDL_GetError());
         return 1;
     }
-    constexpr char title[] = "Entering Play Mode";
+    const bool chinese = std::string(argv[4]) == "zh";
+    const char *title = chinese ? "INFERNUX · 正在准备场景" : "INFERNUX · Preparing scene";
     SDL_Window *window = SDL_CreateWindow(title, 560, 205,
                                           SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_ALWAYS_ON_TOP |
                                               SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -50,15 +51,17 @@ int main(int argc, char **argv)
     io.LogFilename = nullptr;
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
-    infernux::EditorThemeRegistry::SetActiveTheme(argv[2]);
+    infernux::EditorThemeRegistry::SetActiveTheme(argv[3]);
     infernux::EditorThemeRegistry::ApplyImGuiColors();
     ImGuiStyle &style = ImGui::GetStyle();
     infernux::EditorThemeRegistry::ConfigureImGuiDimensions(style);
     style.ScaleAllSizes(dpi);
-    style.FontSizeBase = 18.0f * dpi;
+    style.FontSizeBase = infernux::EditorThemeRegistry::Float("EDITOR_FONT_SIZE") * dpi;
     io.FontDefault = io.Fonts->AddFontFromFileTTF(argv[1], style.FontSizeBase);
-    if (io.FontDefault == nullptr) {
-        std::fprintf(stderr, "Could not load the editor font: %s\n", argv[1]);
+    ImFontConfig cjkConfig;
+    cjkConfig.MergeMode = true;
+    if (io.FontDefault == nullptr || io.Fonts->AddFontFromFileTTF(argv[2], style.FontSizeBase, &cjkConfig) == nullptr) {
+        std::fprintf(stderr, "Could not load the editor fonts: %s + %s\n", argv[1], argv[2]);
         ImGui_ImplSDLRenderer3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
@@ -71,7 +74,7 @@ int main(int argc, char **argv)
     std::atomic<bool> done{false};
     std::mutex mutex;
     float progress = 0.0f;
-    std::string message = "Preparing Play mode...";
+    std::string message = chinese ? "正在准备运行模式…" : "Preparing Play mode…";
     std::thread input([&] {
         char line[512];
         while (std::fgets(line, sizeof(line), stdin)) {
@@ -120,8 +123,21 @@ int main(int argc, char **argv)
             ImGui::TextWrapped("%s", label.c_str());
             ImGui::Spacing();
             ImGui::ProgressBar(value, ImVec2(-1.0f, 22.0f * dpi), "");
+            const ImVec2 progressLo = ImGui::GetItemRectMin();
+            const ImVec2 progressHi = ImGui::GetItemRectMax();
+            auto *draw = ImGui::GetWindowDrawList();
+            ImVec4 stripe = infernux::EditorThemeRegistry::Color("ROLE_TEXT");
+            stripe.w = 0.12f;
+            draw->PushClipRect(progressLo, ImVec2(progressLo.x + (progressHi.x - progressLo.x) * value, progressHi.y),
+                               true);
+            const float phase = std::fmod(static_cast<float>(elapsed) * 0.025f, 16.0f) * dpi;
+            for (float x = progressLo.x - 22.0f * dpi + phase; x < progressHi.x; x += 16.0f * dpi)
+                draw->AddLine(ImVec2(x, progressHi.y), ImVec2(x + 22.0f * dpi, progressLo.y),
+                              ImGui::GetColorU32(stripe), 4.0f * dpi);
+            draw->PopClipRect();
             ImGui::Spacing();
-            ImGui::TextWrapped("The editor is temporarily locked while the scene is prepared.");
+            ImGui::TextWrapped("%s", chinese ? "正在准备场景，编辑器稍后即可继续操作。"
+                                             : "The editor will resume when scene preparation finishes.");
 
             const float activityY = io.DisplaySize.y - 18.0f * dpi;
             ImVec4 accent = infernux::EditorThemeRegistry::Color("ROLE_ACCENT");
@@ -129,7 +145,7 @@ int main(int argc, char **argv)
             ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(14.0f * dpi, activityY), 3.0f * dpi,
                                                         ImGui::ColorConvertFloat4ToU32(accent));
             ImGui::SetCursorPos(ImVec2(26.0f * dpi, activityY - ImGui::GetFontSize() * 0.5f));
-            ImGui::TextDisabled("Preparing scene resources...");
+            ImGui::TextDisabled("%s", chinese ? "正在准备场景资源…" : "Preparing scene resources…");
             ImGui::End();
             ImGui::PopStyleColor();
             ImGui::Render();

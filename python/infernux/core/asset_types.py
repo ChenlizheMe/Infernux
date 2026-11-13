@@ -17,6 +17,8 @@ from enum import IntEnum
 from functools import cache
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from infernux._source_kinds import SHADER_SOURCE_KINDS, source_extension
+
 if TYPE_CHECKING:
     from concurrent.futures import Future
     _MetaWriteFuture = Future[bool]
@@ -386,7 +388,7 @@ class TextureImportSettings:
 
 @dataclass
 class ShaderAssetInfo:
-    """Minimal shader asset model — currently supports path viewing/editing only."""
+    """Imported shader source identity and author stage."""
 
     guid: str = ""
     source_path: str = ""
@@ -394,9 +396,10 @@ class ShaderAssetInfo:
 
     @classmethod
     def from_path(cls, path: str, guid: str = "") -> "ShaderAssetInfo":
-        ext = os.path.splitext(path)[1].lower()
-        _type_map = {".vert": "vertex", ".frag": "fragment"}
-        return cls(guid=guid, source_path=path, shader_type=_type_map.get(ext, "unknown"))
+        ext = source_extension(path)
+        kind = SHADER_SOURCE_KINDS.get(ext)
+        shader_type = kind[0] if kind else {".vert": "vertex", ".frag": "fragment"}.get(ext, "unknown")
+        return cls(guid=guid, source_path=path, shader_type=shader_type)
 
 
 @dataclass
@@ -982,12 +985,18 @@ IMAGE_EXTENSIONS = frozenset({
     ".inxvfield", ".inxsdf", ".svg",
 })
 
-# Shader extensions supported by ShaderImporter
-SHADER_EXTENSIONS = frozenset({
-    ".vert", ".frag",
-})
-SHADER_DEPENDENCY_EXTENSIONS = frozenset({".glsl", ".shadingmodel"})
-SHADER_SOURCE_EXTENSIONS = SHADER_EXTENSIONS | SHADER_DEPENDENCY_EXTENSIONS
+# Shader import, reference fields and cook use the native source classification.
+SHADER_VERTEX_EXTENSIONS = frozenset({".vert"}) | frozenset(
+    suffix for suffix, kind in SHADER_SOURCE_KINDS.items() if kind[0] == "vertex"
+)
+SHADER_FRAGMENT_EXTENSIONS = frozenset({".frag"}) | frozenset(
+    suffix for suffix, kind in SHADER_SOURCE_KINDS.items() if kind[0] == "fragment"
+)
+SHADER_EXTENSIONS = SHADER_VERTEX_EXTENSIONS | SHADER_FRAGMENT_EXTENSIONS
+SHADER_DEPENDENCY_EXTENSIONS = frozenset({".glsl", ".shadingmodel"}) | frozenset(
+    suffix for suffix, kind in SHADER_SOURCE_KINDS.items() if kind[0] in {"library", "shadingmodel"}
+)
+SHADER_SOURCE_EXTENSIONS = SHADER_EXTENSIONS | SHADER_DEPENDENCY_EXTENSIONS | frozenset(SHADER_SOURCE_KINDS)
 
 # Material extension
 MATERIAL_EXTENSIONS = frozenset({".mat"})
@@ -1045,7 +1054,7 @@ def asset_category_from_extension(ext: str) -> Optional[str]:
         return "data_asset"
     if ext in IMAGE_EXTENSIONS:
         return "texture"
-    if ext in SHADER_EXTENSIONS:
+    if ext in SHADER_SOURCE_EXTENSIONS:
         return "shader"
     if ext in AUDIO_EXTENSIONS:
         return "audio"

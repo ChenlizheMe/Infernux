@@ -2748,13 +2748,12 @@ void InxRenderer::CancelClose()
     }
 }
 
-void InxRenderer::SetGUIFont(const char *fontPath, float fontSize)
+void InxRenderer::SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath,
+                              const std::string &monoFontPath, float fontSize)
 {
-    if (m_gui) {
-        m_gui->SetGUIFont(fontPath, fontSize);
-    } else {
-        INXLOG_ERROR("InxGUI is not initialized.");
-    }
+    if (!m_gui)
+        throw std::logic_error("InxRenderer::SetGUIFonts(): InxGUI is not initialized");
+    m_gui->SetGUIFonts(uiFontPath, uiCjkFontPath, monoFontPath, fontSize);
 }
 
 void InxRenderer::InvalidateGUIFontAsset(const std::string &path)
@@ -2957,6 +2956,16 @@ bool InxRenderer::HasImGuiTexture(const std::string &name) const
         return m_gui->HasImGuiTexture(name);
     }
     return false;
+}
+
+void InxRenderer::SetEditorIconsDirectory(const std::string &path)
+{
+    m_gui->SetEditorIconsDirectory(path);
+}
+
+uint64_t InxRenderer::GetEditorIconId(const std::string &name) const
+{
+    return m_gui->GetEditorIconId(name);
 }
 
 uint64_t InxRenderer::GetImGuiTextureId(const std::string &name) const
@@ -4386,6 +4395,7 @@ std::shared_ptr<rhi::RenderTexture> InxRenderer::GetCameraOutputTexture(Camera &
         description.height = size.y;
         description.colorFormat = rhi::PixelFormat::RGBA32SFloat;
         description.depthFormat = rhi::PixelFormat::D32SFloat;
+        description.sampledDepth = true;
         texture = CreateRenderTexture(description);
     } else {
         const auto generation = texture->Acquire();

@@ -48,12 +48,19 @@ def render_animation_transport(ctx, transport, duration):
     from infernux.engine.i18n import t
     transport.advance(time.perf_counter(), duration)
 
-    label = t("animclip_editor.pause" if transport.playing else "animclip_editor.play")
-    if ctx.button(label + "###model_preview_play"):
+    from .preview_transport import render_preview_transport
+
+    def toggle():
         transport.playing = not transport.playing and duration > 0.0
-    ctx.record_semantic_item("button", label, duration > 0.0, "asset.mesh.preview.play",
-                             bool_value=transport.playing)
-    ctx.same_line()
+
+    frame, total = transport.frame(duration)
+    render_preview_transport(
+        ctx, "asset.mesh.preview", playing=transport.playing,
+        seconds=transport.seconds, duration=duration, frame=frame, frame_count=total,
+        on_toggle=toggle, on_stop=lambda: transport.seek(0.0, duration),
+        on_step=lambda direction: transport.seek_frame(frame + direction, duration),
+        on_seek=lambda seconds: transport.seek(seconds, duration), enabled=duration > 0.0,
+    )
     transport.speed = ctx.drag_float(t("asset.animation_preview_speed") + "##model_preview_speed",
                                      transport.speed, .05, .05, 4.0)
     ctx.record_semantic_item("drag_float", t("asset.animation_preview_speed"), True, "asset.mesh.preview.speed",
@@ -65,7 +72,6 @@ def render_animation_transport(ctx, transport, duration):
         transport.seek(seconds, duration)
     ctx.record_semantic_item("drag_float", t("asset.animation_preview_time"), True, "asset.mesh.preview.time",
                              numeric_value=transport.seconds)
-    ctx.label(f"{transport.seconds:.3f} / {duration:.3f} s")
     transport.frame_rate = ctx.drag_int(t("asset.animation_preview_fps") + "##model_preview_fps",
                                         transport.frame_rate, 1.0, 1, 240)
     ctx.record_semantic_item("drag_int", t("asset.animation_preview_fps"), True, "asset.mesh.preview.fps",

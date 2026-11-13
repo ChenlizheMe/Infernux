@@ -795,7 +795,7 @@ class RuntimeExecutionScheduler:
                         try:
                             invoke(component, delta_time)
                         except Exception as exc:
-                            self._report_phase_error(component, exc)
+                            self._report_phase_error(component, exc, phase)
                 if simulation_state() != admitted_state:
                     return
                 if tick_coroutines and not component._is_destroyed and component._runtime_active_in_hierarchy:
@@ -812,7 +812,7 @@ class RuntimeExecutionScheduler:
                             else:
                                 scheduler.tick_late_update(delta_time, epoch=frame.epoch)
                         except Exception as exc:
-                            self._report_phase_error(component, exc)
+                            self._report_phase_error(component, exc, "coroutine." + phase)
                 cursor[0] += 1
                 cursor[1] = 0
                 cursor[3] = None
@@ -822,13 +822,13 @@ class RuntimeExecutionScheduler:
                 cursor[2] += 1
                 _dispatch_updates((registration,), delta_time, unscaled_delta)
 
-    def _report_phase_error(self, component: Any, exc: Exception) -> None:
+    def _report_phase_error(self, component: Any, exc: Exception, phase: str) -> None:
         """Route one phase failure; only the error path pays for the fallback."""
         reporter = getattr(component, "_report_lifecycle_exception", None)
         if reporter is None:
             self._counters["phase_errors"] += 1
         else:
-            reporter(exc)
+            reporter(exc, phase)
 
     def execute_frame(
         self,
@@ -1245,29 +1245,29 @@ class ComponentLifecycleMixin:
                 )
             with component_execution(self), execution_phase(), lifecycle_step_execution():
                 callback(*args)
+            if self.__dict__.get("_failed_lifecycle_callbacks"):
+                self._resolve_lifecycle_exception(method_name)
             return True
         except Exception as exc:
-            try:
-                from infernux.debug import Debug
-                Debug.report_script_error(
-                    exc,
-                    f"{type(self).__name__}.{method_name}",
-                    self,
-                )
-            except (ImportError, RuntimeError):
-                # Absolute fallback if debug itself cannot be imported.
-                import traceback
-                traceback.print_exc()
+            self._report_lifecycle_exception(exc, method_name)
             return False
 
-    def _report_lifecycle_exception(self, exc: Exception) -> None:
-        """Route a phase exception without adding work to the success path."""
-        try:
+    def _report_lifecycle_exception(self, exc: Exception, method_name: str = "lifecycle") -> None:
+        """One failed callback owns one problem, independent of other instances and phases."""
+        from infernux.debug import Debug
+        self.__dict__.setdefault("_failed_lifecycle_callbacks", set()).add(method_name)
+        Debug.report_script_error(exc, f"{type(self).__name__}.{method_name}", self)
+
+    def _resolve_lifecycle_exception(self, method_name: str) -> None:
+        failures = self.__dict__.get("_failed_lifecycle_callbacks")
+        if failures and method_name in failures:
             from infernux.debug import Debug
-            Debug.report_script_error(exc, f"{type(self).__name__}.lifecycle", self)
-        except (ImportError, RuntimeError):
-            import traceback
-            traceback.print_exc()
+            Debug.resolve_script_error(f"{type(self).__name__}.{method_name}", self)
+            failures.remove(method_name)
+
+    def _retire_lifecycle_diagnostics(self) -> None:
+        for method_name in tuple(self.__dict__.get("_failed_lifecycle_callbacks", ())):
+            self._resolve_lifecycle_exception(method_name)
 
     def _disable_after_awake_exception(self):
         """Unity disables a script component if its Awake throws."""
@@ -1310,7 +1310,7 @@ class ComponentLifecycleMixin:
             invokers = _runtime_phase_invokers(self)
             invokers[0](self, delta_time)
         except Exception as exc:
-            self._report_lifecycle_exception(exc)
+            self._report_lifecycle_exception(exc, "update")
         # Tick coroutines after user update (matching Unity order).  Keep the
         # scheduler local so the phase does not perform another attribute
         # lookup or call a second wrapper method.
@@ -1326,7 +1326,7 @@ class ComponentLifecycleMixin:
             invokers = _runtime_phase_invokers(self)
             invokers[1](self, fixed_delta_time)
         except Exception as exc:
-            self._report_lifecycle_exception(exc)
+            self._report_lifecycle_exception(exc, "fixed_update")
         scheduler = self.__dict__.get("_runtime_coroutine_scheduler")
         if scheduler is not None:
             scheduler.tick_fixed_update(fixed_delta_time)
@@ -1339,7 +1339,7 @@ class ComponentLifecycleMixin:
             invokers = _runtime_phase_invokers(self)
             invokers[2](self, delta_time)
         except Exception as exc:
-            self._report_lifecycle_exception(exc)
+            self._report_lifecycle_exception(exc, "late_update")
         scheduler = self.__dict__.get("_runtime_coroutine_scheduler")
         if scheduler is not None:
             scheduler.tick_late_update(delta_time)
@@ -1352,6 +1352,7 @@ class ComponentLifecycleMixin:
         # flag prevents reentrant destruction while disabled/removed membership
         # prevents any further runtime phase from scheduling this component.
         self.__dict__["_is_destroying"] = True
+        self._retire_lifecycle_diagnostics()
         close_component_execution(self)
         self._enabled = False
         try:

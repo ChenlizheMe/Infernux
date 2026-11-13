@@ -30,12 +30,17 @@ def info_field(statement):
 
 
 def read_shader_info(source, source_path):
-    from infernux._source_kinds import source_extension
+    from infernux._source_kinds import SHADER_SOURCE_KINDS, source_extension
 
     suffix = source_extension(source_path)
     result = dict(INFO_DEFAULTS, shader_id=Path(source_path).name[:-len(suffix)])
     owner = SlangEmitter(source, source_path)
     classes = [node for node in parse_gpu_module(source, source_path).body if isinstance(node, ast.ClassDef)]
+    result["domain"] = SHADER_SOURCE_KINDS[suffix][0]
+    if suffix == ".frag.py":
+        bases = classes[0].bases if classes else ()
+        base = qualified(bases[0]).rsplit(".", 1)[-1] if len(bases) == 1 else ""
+        result["domain"] = {"frag": "mesh", "surface": "mesh", "fullscreen": "fullscreen"}.get(base, "")
     declared = set()
     for declaration in classes:
         for statement in declaration.body:

@@ -12,11 +12,12 @@ import time as _time
 from infernux.components.component import InxComponent
 from infernux.debug import Debug
 from infernux.lib import InxGUIContext
-from infernux.engine.i18n import t
+from infernux.engine.i18n import t, get_locale
 from . import inspector_support as _inspector_support
+from .field_draw import draw_field
 from .inspector_utils import (
     max_label_w, field_label, render_serialized_field, has_field_changed,
-    render_compact_section_header, render_info_text, pretty_field_name,
+    render_compact_section_header, render_info_text, pretty_field_name, render_section_kicker,
     float_close as _float_close,
     get_enum_members as _get_enum_members,
     find_enum_index as _find_enum_index,
@@ -138,6 +139,8 @@ def _begin_component_value_cache(kind: str, comp):
     native_generation = int(getattr(comp, "_native_generation", 0) or 0)
     entry = _COMPONENT_VALUE_CACHE.get(key)
     missing = entry is None
+    locale = get_locale()
+    locale_changed = not missing and entry.get("locale") != locale
     schema_changed = (
         not missing
         and entry.get("schema_revision", -1) != snapshot.schema_revision
@@ -194,9 +197,10 @@ def _begin_component_value_cache(kind: str, comp):
         _record_profile_count(f"{kind}Cache_hit_count")
 
     rebuild_plan = (
-        missing or schema_changed or wrapper_changed or value_changed or runtime_poll
+        missing or schema_changed or wrapper_changed or value_changed or runtime_poll or locale_changed
     )
     refresh_all_values = missing or schema_changed or wrapper_changed or runtime_poll
+    entry["locale"] = locale
     entry["schema_revision"] = snapshot.schema_revision
     entry["value_revision"] = snapshot.value_revision
     entry["wrapper_token"] = wrapper_token
@@ -312,6 +316,7 @@ def _build_builtin_cached_plan(
     batch_descs = []
     batch_info = []
     capture_semantics = semantic_capture_enabled(ctx)
+    current_header = ""
 
     def _flush_batch():
         nonlocal batch_descs, batch_info
@@ -352,12 +357,11 @@ def _build_builtin_cached_plan(
             lambda _attr=cpp_attr: getattr(comp, _attr),
         )
 
-        if meta.readonly:
+        if meta.readonly and meta.field_type in (FieldType.ASSET, FieldType.COMPONENT, FieldType.LIST):
             _flush_batch()
             ops.append({
-                "kind": "readonly",
-                "py_name": py_name,
-                "current": current,
+                "kind": "readonly", "py_name": py_name, "cpp_attr": cpp_attr,
+                "meta": meta, "current": current,
             })
             continue
 
@@ -409,7 +413,9 @@ def _build_builtin_cached_plan(
             })
             continue
 
-        hdr = meta.header or ""
+        hdr = t(meta.header) if meta.header and meta.header != current_header else ""
+        if meta.header:
+            current_header = meta.header
         spc = meta.space if meta.space and meta.space > 0 else 0.0
         desc = build_scalar_desc(
             f"##{py_name}", _serialized_field_label(py_name, meta), meta, current,
@@ -453,7 +459,7 @@ def _build_builtin_cached_plan(
 
 def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entry) -> bool:
     """Replay a cached BuiltinComponent render plan. Returns True if edited."""
-    lw = plan["lw"]
+    lw = ctx.inspector_label_width()
     edited = False
 
     for op in plan["ops"]:
@@ -492,7 +498,7 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
                 op.get("cpp_attr", op["py_name"]),
                 lambda _attr=op.get("cpp_attr", op["py_name"]): getattr(comp, _attr, op["current"]),
             )
-            ctx.label(f"{op['py_name']}: {current}")
+            draw_field(ctx, op["meta"], current, label_width=lw, component=comp, on_change=lambda value: None)
             continue
 
         if kind == "asset_clip":
@@ -573,8 +579,7 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
 
         if kind == "fallback_scalar":
             if op["header"]:
-                ctx.separator()
-                ctx.label(op["header"])
+                render_section_kicker(ctx, t(op["header"]))
             if op["space"] > 0:
                 ctx.dummy(0, op["space"])
             current = _get_cached_component_value(
@@ -823,7 +828,7 @@ def _render_multi_rows(ctx: InxGUIContext, rows):
     lw = max_label_w(ctx, [label for label, _value in rows])
     for label, value in rows:
         field_label(ctx, label, lw)
-        ctx.label(value)
+        ctx.readonly_field(f"##multi_readonly_{label}", "—" if value == "--" else value)
 
 
 def _multi_enum_members(metadata):
@@ -1138,38 +1143,6 @@ def render_multi_component(ctx: InxGUIContext, comps, *, is_native: bool):
 # ============================================================================
 
 
-def render_transform_component(ctx: InxGUIContext, trans):
-    """Render Transform component fields (Position, Rotation, Scale).
-    
-    Displays LOCAL values in the inspector (matching Unity convention where
-    the Inspector shows localPosition / localEulerAngles / localScale).
-    Uses a dedicated C++ function to render all 3 vector3 controls in one
-    bridge call — no tuple/descriptor overhead.
-    """
-    from infernux.lib import Vector3
-    lw = max_label_w(ctx, ["Position", "Rotation", "Scale"])
-
-    pos = trans.local_position
-    px, py, pz = pos[0], pos[1], pos[2]
-    rot = trans.local_euler_angles
-    rx, ry, rz = rot[0], rot[1], rot[2]
-    scl = trans.local_scale
-    sx, sy, sz = scl[0], scl[1], scl[2]
-
-    r = ctx.render_transform_fields(
-        px, py, pz, rx, ry, rz, sx, sy, sz,
-        DRAG_SPEED_DEFAULT, DRAG_SPEED_DEFAULT, DRAG_SPEED_FINE, lw,
-    )
-    npx, npy, npz = r[0], r[1], r[2]
-    nrx, nry, nrz = r[3], r[4], r[5]
-    nsx, nsy, nsz = r[6], r[7], r[8]
-
-    if any(not _float_close(a, b) for a, b in [(npx, px), (npy, py), (npz, pz)]):
-        _record_property(trans, "local_position", pos, Vector3(npx, npy, npz), "Set Position")
-    if any(not _float_close(a, b) for a, b in [(nrx, rx), (nry, ry), (nrz, rz)]):
-        _record_property(trans, "local_euler_angles", rot, Vector3(nrx, nry, nrz), "Set Rotation")
-    if any(not _float_close(a, b) for a, b in [(nsx, sx), (nsy, sy), (nsz, sz)]):
-        _record_property(trans, "local_scale", scl, Vector3(nsx, nsy, nsz), "Set Scale")
 
 
 # ============================================================================
@@ -1307,18 +1280,6 @@ def _apply_batch_changes_builtin(comp, changes: dict, batch_info: list):
         _record_builtin_property(comp, cpp_attr, old_value, new_value, f"Set {py_name}")
 
 
-def _apply_batch_changes_py(py_comp, changes: dict, batch_info: list):
-    """Apply changes from C++ batch renderer to a Python InxComponent."""
-    for idx_key, raw_value in changes.items():
-        idx = int(idx_key)
-        field_name, meta, old_value, enum_members = batch_info[idx]
-        new_value = _convert_batch_value(meta.field_type, raw_value, enum_members)
-        if has_field_changed(meta.field_type, old_value, new_value) and not meta.readonly:
-            _commit_python_component_field(
-                (py_comp,), field_name, meta, new_value
-            )
-
-
 def render_cpp_component_generic(ctx: InxGUIContext, comp):
     """Render only fields declared by the native semantic catalog."""
     declared = _declared_native_fields(comp)
@@ -1329,9 +1290,6 @@ def render_cpp_component_generic(ctx: InxGUIContext, comp):
     changed = False
     lw = max_label_w(ctx, [pretty_field_name(name) for name, *_rest in declared])
     for key, schema, metadata, value in declared:
-        if schema.read_only:
-            ctx.label(f"{pretty_field_name(key)}: {_format_multi_value(value)}")
-            continue
         new_value = render_serialized_field(
             ctx, f"##{key}", pretty_field_name(key), metadata, value, lw
         )
@@ -1384,44 +1342,24 @@ def _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_valu
         return metadata.default
 
 
-def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw, flush_fn):
-    """Render a non-scalar field (list, serializable object, component ref, etc.). Returns True if handled."""
+def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw):
+    """Render a LIST or SERIALIZABLE_OBJECT field. Returns True if handled."""
     from infernux.components.fields import FieldType
     ft = metadata.field_type
-    if ft not in (
-        FieldType.LIST, FieldType.SERIALIZABLE_OBJECT, FieldType.COMPONENT,
-        FieldType.GAME_OBJECT, FieldType.ASSET,
-    ) and ft not in _get_asset_ref_config():
+    if ft not in (FieldType.LIST, FieldType.SERIALIZABLE_OBJECT):
         return False
-    flush_fn()
     if metadata.header:
-        ctx.separator()
-        ctx.label(metadata.header)
+        render_section_kicker(ctx, t(metadata.header))
     if metadata.space and metadata.space > 0:
         ctx.dummy(0, metadata.space)
     if ft == FieldType.LIST:
         from infernux.components.fields import get_raw_field_value
         _raw_list = get_raw_field_value(py_comp, field_name)
         _render_list_field(ctx, py_comp, field_name, metadata, _raw_list, lw)
-        _tooltip_and_info(ctx, metadata)
-        return True
-    if ft == FieldType.SERIALIZABLE_OBJECT:
+    else:
         _render_serializable_object_field(ctx, py_comp, field_name, metadata, current_value, lw)
-        _tooltip_and_info(ctx, metadata)
-        return True
-    if ft == FieldType.COMPONENT:
-        _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw)
-        _tooltip_and_info(ctx, metadata)
-        return True
-    if ft == FieldType.GAME_OBJECT:
-        _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
-        _tooltip_and_info(ctx, metadata)
-        return True
-    if ft == FieldType.ASSET or ft in _get_asset_ref_config():
-        _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
-        _tooltip_and_info(ctx, metadata)
-        return True
-    return False
+    _tooltip_and_info(ctx, metadata)
+    return True
 
 
 def render_py_component(ctx: InxGUIContext, py_comp):
@@ -1457,37 +1395,9 @@ def render_py_component_fields(ctx: InxGUIContext, py_comp, field_names=None, *,
         _PY_FIELDS_CACHE[fields_key] = fields
     if field_names is not None:
         fields = {name: fields[name] for name in field_names}
-    layout = cache_entry.get("py_layout")
-    layout_key = tuple(fields)
-    if rebuild_plan or layout is None or cache_entry.get("py_layout_fields") != layout_key:
-        layout = {
-            "label_width": max_label_w(
-                ctx,
-                [_serialized_field_label(name, metadata) for name, metadata in fields.items()],
-            ) if fields else 0.0,
-        }
-        cache_entry["py_layout"] = layout
-        cache_entry["py_layout_fields"] = layout_key
-    lw = layout["label_width"]
-    capture_semantics = semantic_capture_enabled(ctx)
+    lw = ctx.inspector_label_width()
     _record_profile_count("bodyPyGenericTotal_count")
     _py_generic_t0 = _profile_start()
-
-    batch_descs = []
-    batch_info = []
-
-    def _flush():
-        nonlocal batch_descs, batch_info, refresh_values
-        if not batch_descs:
-            return
-        _record_profile_count("bodyPyGenericBatch_count")
-        _batch_t0 = _profile_start()
-        changes = ctx.render_property_batch(batch_descs, lw)
-        _record_profile_timing("bodyPyGenericBatch", _batch_t0)
-        if changes:
-            _apply_batch_changes_py(py_comp, changes, batch_info)
-        batch_descs = []
-        batch_info = []
 
     _current_group: str = ""
     _group_visible: bool = True
@@ -1499,7 +1409,6 @@ def render_py_component_fields(ctx: InxGUIContext, py_comp, field_names=None, *,
     for field_name, metadata in fields.items():
         field_group = metadata.group or ""
         if field_group != _current_group:
-            _flush()
             _current_group = field_group
             if field_group:
                 _group_visible = render_compact_section_header(
@@ -1518,60 +1427,16 @@ def render_py_component_fields(ctx: InxGUIContext, py_comp, field_names=None, *,
 
         current_value = _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_values, _REF_TYPES)
 
-        if metadata.readonly and metadata.field_type in (FieldType.INT, FieldType.FLOAT, FieldType.STRING, FieldType.BOOL):
-            _flush()
-            field_label(ctx, _serialized_field_label(field_name, metadata), lw)
-            ctx.label(f"{current_value}")
-            _tooltip_and_info(ctx, metadata)
+        if _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw):
             continue
 
-        if _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value, lw, _flush):
-            continue
-
-        # ── Scalar field → try batch ──
-        hdr = metadata.header or ""
-        spc = metadata.space if metadata.space and metadata.space > 0 else 0.0
-
-        desc = build_scalar_desc(
-            f"##{field_name}", _serialized_field_label(field_name, metadata), metadata, current_value,
-            header_text=hdr, space_before=spc,
-            semantic_id=(inspector_component_semantic_id(py_comp, field_name)
-                         if capture_semantics else ""),
+        draw_field(
+            ctx, metadata, current_value, label_width=lw, component=py_comp,
+            on_change=lambda new_value, _name=field_name, _meta=metadata: _commit_python_component_field(
+                (py_comp,), _name, _meta, new_value,
+            ),
         )
-        if desc is not None:
-            enum_members = None
-            if metadata.field_type == FieldType.ENUM:
-                enum_cls = metadata.enum_type
-                if isinstance(enum_cls, str):
-                    import infernux.lib as _lib
-                    enum_cls = getattr(_lib, enum_cls, None)
-                if enum_cls is not None:
-                    enum_members = _get_enum_members(enum_cls)
-            batch_descs.append(desc)
-            batch_info.append((field_name, metadata, current_value, enum_members))
-        else:
-            _flush()
-            if hdr:
-                ctx.separator()
-                ctx.label(hdr)
-            if spc > 0:
-                ctx.dummy(0, spc)
-            new_value = render_serialized_field(
-                ctx, f"##{field_name}", _serialized_field_label(field_name, metadata), metadata, current_value, lw,
-            )
-            record_inspector_component_item(
-                ctx, py_comp, field_name, "inspector_field", _serialized_field_label(field_name, metadata),
-            )
-            if has_field_changed(metadata.field_type, current_value, new_value) and not metadata.readonly:
-                _commit_python_component_field(
-                    (py_comp,), field_name, metadata, new_value
-                )
-            _tooltip_and_info(ctx, metadata)
 
-        if desc is not None and metadata.info_text:
-            _render_info_text(ctx, metadata.info_text)
-
-    _flush()
     extra_renderer = _PY_COMPONENT_EXTRA_RENDERERS.get(py_comp.type_name)
     if render_extra and extra_renderer is not None:
         extra_renderer(ctx, py_comp)
@@ -1581,7 +1446,23 @@ def render_py_component_fields(ctx: InxGUIContext, py_comp, field_names=None, *,
 # ============================================================================
 # Auto-register built-in component renderers
 # ============================================================================
-register_component_renderer("Transform", render_transform_component)
+def _render_animator_runtime(ctx, component):
+    if not _is_in_play_mode():
+        return
+    from .inspector_utils import render_section_kicker
+    render_section_kicker(ctx, t("animfsm_editor.live_state"))
+    for key, value in (("animfsm_editor.live_state", component.current_state),
+                       ("animfsm_editor.live_time", f"{component.normalized_time:.3f}")):
+        field_label(ctx, t(key))
+        ctx.readonly_field(f"##runtime_{key}", value)
+    if component._fsm is not None:
+        for parameter in component._fsm.parameters:
+            field_label(ctx, parameter.name)
+            ctx.readonly_field(f"##runtime_param_{parameter.stable_id}", str(component.get_parameter(parameter.name)))
+
+
+register_py_component_extra_renderer("SpriteAnimator", _render_animator_runtime)
+register_py_component_extra_renderer("SkeletalAnimator", _render_animator_runtime)
 register_component_extra_renderer("AudioSource", _render_audio_source_extra)
 register_component_extra_renderer("MeshRenderer", _render_mesh_renderer_materials)
 register_component_extra_renderer("SkinnedMeshRenderer", _render_mesh_renderer_materials)

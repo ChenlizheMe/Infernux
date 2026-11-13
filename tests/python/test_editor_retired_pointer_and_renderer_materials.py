@@ -79,7 +79,7 @@ def test_runtime_inline_material_shader_refresh_is_read_only(monkeypatch):
     state = ui._build_inline_state(panel, material)
     readonly = []
     for name in ("_native_mat", "_cached_data", "_shader_cache"):
-        monkeypatch.setattr(ui, name, getattr(ui, name))
+        monkeypatch.setattr(ui, name, getattr(ui, name, None), raising=False)
     monkeypatch.setattr(ui, "_sync_shader_annotations", lambda *args: (True, True))
     monkeypatch.setattr(
         ui,
@@ -98,3 +98,37 @@ def test_runtime_inline_material_shader_refresh_is_read_only(monkeypatch):
     context = SimpleNamespace(separator=lambda: None, is_any_item_active=lambda: False, want_text_input=lambda: False)
     ui._render_material_body_impl(context, panel, state)
     assert readonly == [True]
+
+
+def test_editable_material_refresh_without_journal_does_not_publish_an_edit(monkeypatch):
+    from infernux.core.material import Material
+    from infernux.engine.undo import UndoManager
+    from infernux.engine.ui import inspector_material as ui
+
+    native = Material.create_unlit().native
+    state = SimpleNamespace(
+        file_path="Assets/Editable.mat", exec_layer=None,
+        extra={"native_mat": native, "cached_data": native.serialize_document(), "shader_cache": {}},
+    )
+    monkeypatch.setattr(UndoManager, "_instance", None)
+    for name in ("_native_mat", "_cached_data", "_shader_cache"):
+        monkeypatch.setattr(ui, name, getattr(ui, name, None), raising=False)
+
+    def new_annotations(data, _state):
+        data["properties"]["new_shader_field"] = {"type": 0, "value": 0.1}
+        return True, True
+
+    monkeypatch.setattr(ui, "_sync_shader_annotations", new_annotations)
+    monkeypatch.setattr(ui, "_render_material_top", lambda *args: (False, False, False, "", False, False))
+    monkeypatch.setattr(ui, "_render_virtualized_material_block", lambda *args: (False, "", False))
+    monkeypatch.setattr(ui, "_flush_deferred_undo", lambda *args, **kwargs: None)
+
+    def no_user_edit(*args, **kwargs):
+        raise AssertionError("A material view refresh entered authoring")
+
+    monkeypatch.setattr(ui, "_apply_material_changes", no_user_edit)
+    context = SimpleNamespace(separator=lambda: None, is_any_item_active=lambda: False, want_text_input=lambda: False)
+    before = native.serialize_document()
+    ui._render_material_body_impl(context, None, state)
+    assert native.serialize_document() == before
+    assert "new_shader_field" in state.extra["cached_data"]["properties"]

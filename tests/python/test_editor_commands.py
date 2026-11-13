@@ -55,7 +55,8 @@ expected = {
     "inxpackage_import": "", "preferences": "", "physics_settings": "",
     "toolbar": "", "console": "Window", "game_view": "Window",
     "hierarchy": "Window", "history": "Window", "inspector": "Window",
-    "project": "Window", "scene_view": "Window", "tag_layer_settings": "Window",
+    "project": "Window", "scene_view": "Window", "tag_layer_settings": "",
+    "project_settings": "",
     "ui_editor": "Window",
 }
 actual = {key: info.menu_path for key, info in bootstrap.window_manager.get_registered_types().items()}
@@ -613,7 +614,7 @@ def test_console_copy_shortcut_routes_through_the_focused_panel_adapter():
         "error_pause": False,
         "follow": True,
     }
-    view = {"search": "", "detail_height": 90.0}
+    view = {"search": ""}
 
     def _clear():
         calls.append("clear")
@@ -631,8 +632,6 @@ def test_console_copy_shortcut_routes_through_the_focused_panel_adapter():
         set_view_option=lambda option, enabled: options.__setitem__(option, bool(enabled)),
         get_search_query=lambda: view["search"],
         set_search_query=lambda value: view.__setitem__("search", str(value)),
-        get_detail_height=lambda: view["detail_height"],
-        set_detail_height=lambda value: view.__setitem__("detail_height", float(value)),
         request_search_focus=lambda: calls.append("focus_search"),
     )
     bootstrap = BootstrapHarness()

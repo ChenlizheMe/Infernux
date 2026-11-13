@@ -63,6 +63,55 @@ def _publish(component_type, instance):
     return publication
 
 
+@pytest.mark.parametrize("scheduled", [False, True])
+def test_callback_diagnostic_resolves_only_after_that_phase_succeeds(monkeypatch, scheduled):
+    from infernux.debug import Debug, DebugConsole
+
+    monkeypatch.setattr(DebugConsole, "_instance", None)
+    console = DebugConsole.instance()
+
+    class RecoveryProbe(_EpochProbe):
+        broken_update = True
+        broken_fixed = True
+
+        def update(self, _delta_time):
+            if self.broken_update:
+                raise ValueError("update failed")
+
+        def fixed_update(self, _delta_time):
+            if self.broken_fixed:
+                raise ValueError("fixed failed")
+
+    probe = RecoveryProbe()
+    scheduler = RuntimeExecutionScheduler()
+    scheduler.register_component(probe)
+    frame = scheduler.begin_frame()
+
+    def invoke(phase):
+        if scheduled:
+            frame.execute_phase(phase, 0.016)
+        else:
+            getattr(probe, "_call_" + phase)(0.016)
+
+    try:
+        Debug.log_error("unrelated history")
+        invoke("update")
+        invoke("fixed_update")
+        assert console.error_count == 3
+        probe.broken_update = False
+        invoke("update")
+        assert console.error_count == 2
+        assert [entry.message for entry in console.get_entries() if entry.diagnostic_owner] == [
+            "[Script @ RecoveryProbe.fixed_update] ValueError: fixed failed"
+        ]
+        probe.broken_fixed = False
+        invoke("fixed_update")
+        assert [entry.message for entry in console.get_entries()] == ["unrelated history"]
+    finally:
+        frame.close()
+        scheduler.unregister_component(probe)
+
+
 def test_one_frame_uses_one_epoch_for_fixed_update_update_and_late_update():
     scheduler = RuntimeExecutionScheduler()
     probe = _EpochProbe()

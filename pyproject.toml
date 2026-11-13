@@ -14,6 +14,8 @@ license-files = [
     "LICENSE",
     "licenses/utf8proc/*.md",
     "python/infernux/resources/fonts/MapleMono-LICENSE.txt",
+    "python/infernux/resources/fonts/Inter-LICENSE.txt",
+    "python/infernux/resources/fonts/NotoSansSC-LICENSE.txt",
 ]
 keywords = ["game-engine", "vulkan", "python", "rendergraph", "editor"]
 classifiers = [

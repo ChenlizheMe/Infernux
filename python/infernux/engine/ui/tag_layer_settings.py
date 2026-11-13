@@ -16,6 +16,7 @@ from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol
 from .igui import IGUI
+from .inspector_utils import field_label, render_section_kicker
 
 
 def _metric(ctx, value: float) -> float:
@@ -25,6 +26,7 @@ def _metric(ctx, value: float) -> float:
     "Tags & Layers",
     type_id="tag_layer_settings",
     title_key="panel.tags_layers",
+    menu_path="",
     interaction=PanelInteractionDescriptor(document_backed=True),
 )
 class TagLayerSettingsPanel(EditorPanel):
@@ -118,17 +120,20 @@ class TagLayerSettingsPanel(EditorPanel):
             for i, tag in enumerate(all_tags):
                 is_builtin = mgr.is_builtin_tag(tag)
                 ctx.push_id_str(f"tag_{i}")
+                row_right = ctx.get_cursor_pos_x() + ctx.get_content_region_avail_width()
 
                 if is_builtin:
                     ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
                     ctx.label(f"  {tag}")
-                    ctx.same_line(ctx.get_window_width() - _metric(ctx, 80.0))
-                    ctx.label("(built-in)")
+                    ctx.same_line(row_right - _metric(ctx, 80.0))
+                    ctx.label(t("tags.built_in"))
                     ctx.pop_style_color(1)
                 else:
                     ctx.label(f"  {tag}")
-                    ctx.same_line(ctx.get_window_width() - _metric(ctx, 30.0))
-                    if IGUI._mini_icon_button(ctx, "##rm", Theme.ICON_IMG_REMOVE, Theme.ICON_REMOVE):
+                    ctx.same_line(row_right - _metric(ctx, 24.0))
+                    if IGUI.icon_button(
+                        ctx, "##rm", Theme.ICON_IMG_REMOVE, tooltip=t("tags.remove_tag"), kind="ghost"
+                    ):
                         self._do_remove_tag(tag)
 
                 ctx.pop_id()
@@ -141,7 +146,7 @@ class TagLayerSettingsPanel(EditorPanel):
             )
             self._new_tag_name = ctx.text_input("##new_tag", self._new_tag_name, 128)
             ctx.same_line()
-            if IGUI._mini_icon_button(ctx, "##add_tag", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS):
+            if IGUI.icon_button(ctx, "##add_tag", Theme.ICON_IMG_PLUS, tooltip=t("tags.add_tag_button")):
                 self._do_add_tag()
             ctx.spacing()
 
@@ -155,14 +160,16 @@ class TagLayerSettingsPanel(EditorPanel):
                 name = all_layers[i] if i < len(all_layers) else ""
                 is_builtin = mgr.is_builtin_layer(i)
                 ctx.push_id_str(f"layer_{i}")
+                row_left = ctx.get_cursor_pos_x()
+                row_right = row_left + ctx.get_content_region_avail_width()
 
                 ctx.label(f"{i:2d}:")
-                ctx.same_line(_metric(ctx, 36.0))
+                ctx.same_line(row_left + _metric(ctx, 40.0))
 
                 if is_builtin:
                     ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
                     ctx.label(name if name else "---")
-                    ctx.same_line(ctx.get_window_width() - _metric(ctx, 80.0))
+                    ctx.same_line(row_right - _metric(ctx, 80.0))
                     ctx.label(t("tags.built_in"))
                     ctx.pop_style_color(1)
                     if capture_semantics:
@@ -450,7 +457,7 @@ class PhysicsLayerMatrixPanel(EditorPanel):
         cell_w = _metric(ctx, 32.0)
         header_h = _metric(ctx, 24.0)
 
-        if ctx.begin_child("##physics_matrix_scroll", 0, 0, True):
+        if ctx.begin_child("##physics_matrix_scroll", 0, 0, False, padding=True):
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
             ctx.begin_child("##physics_matrix_spacer", name_col_w, header_h, False)
             ctx.end_child()
@@ -509,10 +516,11 @@ class PhysicsLayerMatrixPanel(EditorPanel):
         ctx.end_child()
 
     def _render_settings_section(self, ctx: InxGUIContext):
-        ctx.label(t("physics.simulation"))
+        render_section_kicker(ctx, t("physics.simulation"))
 
         hz = 1.0 / max(self._fixed_delta_time, 0.001)
-        new_hz = ctx.drag_float(t("physics.iteration_rate"), hz, 0.5, 1.0, 1000.0)
+        field_label(ctx, t("physics.iteration_rate"), ctx.inspector_label_width())
+        new_hz = ctx.drag_float("##physics_iteration_rate", hz, 0.5, 1.0, 1000.0)
         if abs(new_hz - hz) > 1e-6:
             self._fixed_delta_time = max(0.001, 1.0 / max(new_hz, 1.0))
             self._max_fixed_delta_time = max(self._max_fixed_delta_time, self._fixed_delta_time)
@@ -521,7 +529,8 @@ class PhysicsLayerMatrixPanel(EditorPanel):
                 description="Set Physics Iteration Rate",
             )
 
-        new_fixed_dt = ctx.input_float(t("physics.fixed_time_step"), self._fixed_delta_time, 0.001, 0.01, 0)
+        field_label(ctx, t("physics.fixed_time_step"), ctx.inspector_label_width())
+        new_fixed_dt = ctx.input_float("##physics_fixed_dt", self._fixed_delta_time, 0.001, 0.01, 0)
         if abs(new_fixed_dt - self._fixed_delta_time) > 1e-6:
             self._fixed_delta_time = max(0.001, float(new_fixed_dt))
             self._max_fixed_delta_time = max(self._max_fixed_delta_time, self._fixed_delta_time)
@@ -530,7 +539,8 @@ class PhysicsLayerMatrixPanel(EditorPanel):
                 description="Set Physics Fixed Time Step",
             )
 
-        new_max_dt = ctx.input_float(t("physics.max_catchup_delta"), self._max_fixed_delta_time, 0.01, 0.05, 0)
+        field_label(ctx, t("physics.max_catchup_delta"), ctx.inspector_label_width())
+        new_max_dt = ctx.input_float("##physics_max_dt", self._max_fixed_delta_time, 0.01, 0.05, 0)
         if abs(new_max_dt - self._max_fixed_delta_time) > 1e-6:
             self._max_fixed_delta_time = max(self._fixed_delta_time, float(new_max_dt))
             self._commit_physics_settings(
@@ -539,10 +549,7 @@ class PhysicsLayerMatrixPanel(EditorPanel):
             )
 
         ctx.spacing()
-        ctx.label(t("physics.gravity"))
-        gx = ctx.input_float("Gravity X", float(self._gravity[0]), 0.1, 1.0, 0)
-        gy = ctx.input_float("Gravity Y", float(self._gravity[1]), 0.1, 1.0, 0)
-        gz = ctx.input_float("Gravity Z", float(self._gravity[2]), 0.1, 1.0, 0)
+        gx, gy, gz = ctx.vector3(t("physics.gravity"), *self._gravity, 0.1, ctx.inspector_label_width())
         if abs(gx - self._gravity[0]) > 1e-6 or abs(gy - self._gravity[1]) > 1e-6 or abs(gz - self._gravity[2]) > 1e-6:
             self._gravity = [float(gx), float(gy), float(gz)]
             self._commit_physics_settings(
@@ -616,7 +623,8 @@ class PhysicsLayerMatrixPanel(EditorPanel):
         self, ctx: InxGUIContext, field: str, label_key: str, minimum: int, maximum: int
     ):
         current = int(self._physics_settings[field])
-        value = ctx.input_int(f"{t(label_key)}##{field}", current, 1, 4)
+        field_label(ctx, t(label_key), ctx.inspector_label_width())
+        value = ctx.input_int(f"##{field}", current, 1, 4)
         value = max(minimum, min(maximum, int(value)))
         if value != current:
             self._physics_settings[field] = value
@@ -635,7 +643,8 @@ class PhysicsLayerMatrixPanel(EditorPanel):
         step: float,
     ):
         current = float(self._physics_settings[field])
-        value = ctx.input_float(f"{t(label_key)}##{field}", current, step, step * 10.0, 0)
+        field_label(ctx, t(label_key), ctx.inspector_label_width())
+        value = ctx.input_float(f"##{field}", current, step, step * 10.0, 0)
         value = max(minimum, min(maximum, float(value)))
         if abs(value - current) > 1e-9:
             self._physics_settings[field] = value

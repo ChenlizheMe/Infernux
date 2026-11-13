@@ -152,16 +152,19 @@ class RuntimeTypeDispatchDescriptor:
         )
         dispatch = []
         invokers = []
-        for method in self.phase_methods:
+        for phase, method in zip(RUNTIME_PHASE_NAMES, self.phase_methods):
             if method is None:
                 dispatch.append((_missing_runtime_phase, True))
                 invokers.append(_missing_runtime_phase)
                 continue
 
             dispatch.append((method.raw, method.bind_instance))
-            def invoke(instance: Any, value: Any, _raw=method.raw, _bind=method.bind_instance) -> Any:
+            def invoke(instance: Any, value: Any, _raw=method.raw, _bind=method.bind_instance, _phase=phase) -> Any:
                 with component_execution(instance):
-                    return _raw(instance, value) if _bind else _raw(value)
+                    result = _raw(instance, value) if _bind else _raw(value)
+                if instance.__dict__.get("_failed_lifecycle_callbacks"):
+                    instance._resolve_lifecycle_exception(_phase)
+                return result
 
             invokers.append(invoke)
         object.__setattr__(self, "_phase_dispatch", tuple(dispatch))

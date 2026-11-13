@@ -280,6 +280,57 @@ def _player_gui_for_play_gate(session):
     return player
 
 
+@pytest.mark.parametrize("reason", ("control", "window"))
+def test_player_close_stops_before_gui_or_scene_work(monkeypatch, reason):
+    closed = []
+    monkeypatch.setattr(Input, "set_game_focused", lambda _focused: None)
+    native = SimpleNamespace(
+        is_close_requested=lambda: reason == "window",
+        confirm_close=lambda: closed.append("window"),
+    )
+    player = PlayerGUI.__new__(PlayerGUI)
+    player._engine = SimpleNamespace(
+        get_native_engine=lambda: native,
+        request_exit=lambda: closed.append("control"),
+    )
+    player._control = SimpleNamespace(poll=lambda _engine: "shutdown" if reason == "control" else None)
+    player._profile_frames = False
+    # A closing frame must not ask for a viewport, push an ImGui window, or
+    # perform game input raycasts after request_exit suspends the driver.
+    player.on_render(object())
+    assert closed == [reason]
+
+
+def test_player_profile_wait_keeps_rendering(monkeypatch):
+    calls = []
+    monkeypatch.setattr(Input, "set_game_focused", lambda _focused: None)
+    player = PlayerGUI.__new__(PlayerGUI)
+    player._engine = SimpleNamespace(
+        get_native_engine=lambda: SimpleNamespace(is_close_requested=lambda: False),
+        get_runtime_execution_scheduler=lambda: object(),
+    )
+    player._control = None
+    player._profile_frames = True
+    player._profile_window = SimpleNamespace(sample=lambda *_args: calls.append("profile"))
+    player._next_profile_time = float("inf")
+    player._splash = None
+    player._prepare_game_target = lambda *_args: None
+    player.begin_play_when_ready = lambda: True
+    player._render_game = lambda *_args: calls.append("game")
+    context = SimpleNamespace(
+        get_main_viewport_bounds=lambda: (0, 0, 1280, 720),
+        set_next_window_pos=lambda *_args: None,
+        set_next_window_size=lambda *_args: None,
+        push_style_var_vec2=lambda *_args: None,
+        push_style_var_float=lambda *_args: None,
+        begin_window=lambda *_args: calls.append("begin") or True,
+        end_window=lambda: calls.append("end"),
+        pop_style_var=lambda count: calls.append(("pop", count)),
+    )
+    player.on_render(context)
+    assert calls == ["profile", "begin", "game", "end", ("pop", 2)]
+
+
 def test_player_control_observation_is_token_authenticated(tmp_path, monkeypatch):
     request, response, channel = _configure(tmp_path, monkeypatch)
     engine = _Engine()

@@ -91,6 +91,11 @@ def test_inspector_classifies_public_builtin_proxy_as_native_component(scene):
     assert records[script.component_id].is_script
     assert ctx.resolve_component(owner.id, collider.component_id, True) is collider
     assert ctx.resolve_component(owner.id, script.component_id, False) is script
+    transform = owner.get_transform()
+    assert transform.component_id not in records
+    resolved_transform = ctx.resolve_component(owner.id, transform.component_id, True)
+    assert resolved_transform.component_id == transform.component_id
+    assert resolved_transform.game_object.id == owner.id
 
 
 def test_undo_snapshot_resolves_exact_builtin_proxy_ordinal(scene):
@@ -104,3 +109,18 @@ def test_undo_snapshot_resolves_exact_builtin_proxy_ordinal(scene):
     received = _get_nth_live_native_component(owner.id, 'BoxCollider', 1)
     assert received is second
     assert received.serialize_document()['size'] == [2, 3, 4]
+
+
+def test_inspector_removal_availability_query_does_not_log(scene, monkeypatch):
+    from infernux.debug import Debug
+    from infernux.engine.bootstrap_inspector._helpers import _can_remove_component
+
+    def unexpected_warning(_message):
+        pytest.fail("Menu availability queries must not write warning logs")
+
+    monkeypatch.setattr(Debug, 'log_warning', unexpected_warning)
+    owner = scene.create_game_object('RemovalAvailability')
+    collider = owner.add_component(inx.BoxCollider)
+    for _ in range(3):
+        assert not _can_remove_component(owner, owner.get_transform(), 'Transform', True)
+    assert _can_remove_component(owner, collider, 'BoxCollider', True)

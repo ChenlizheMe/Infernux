@@ -840,6 +840,11 @@ std::string ShaderPathIndexKey(const InxResourceMeta &metadata)
     return type + ":" + metadata.GetDataAs<std::string>("shader_id");
 }
 
+bool HasCurrentShaderSourceMetadata(const InxResourceMeta &metadata, const std::string &path)
+{
+    return !asset_formats::FindShaderSourceKind(path) || metadata.HasKey("shader_domain");
+}
+
 std::ifstream OpenRuntimeCatalogDocument(const std::filesystem::path &path)
 {
     std::ifstream stream(NativeFilePath(path), std::ios::binary);
@@ -3295,6 +3300,7 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             pathMapping->second != indexed->guid || fileState == m_fileStates.end() ||
             fileState->second.source != file.source || fileState->second.meta != file.meta ||
             fileState->second.readOnly != file.readOnly ||
+            !HasCurrentShaderSourceMetadata(indexed->metadata, file.path) ||
             !HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) ||
             !HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             unchanged = false;
@@ -3355,7 +3361,7 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
         if (indexed && indexed->resourceType == type && indexed->source == file.source && indexed->meta == file.meta &&
             indexed->readOnly == file.readOnly && indexed->importSucceeded &&
             HasReusableRuntimeArtifact(*indexed, type, ToFsPath(m_projectRoot)) &&
-            (file.readOnly || file.meta.size > 0) &&
+            (file.readOnly || file.meta.size > 0) && HasCurrentShaderSourceMetadata(indexed->metadata, file.path) &&
             HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) &&
             HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             m_metas[indexed->guid] = std::make_shared<InxResourceMeta>(indexed->metadata);
@@ -3934,7 +3940,7 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
         } catch (const std::exception &exception) {
             const auto error = Utf8Diagnostic(exception.what());
             workingSet.importResults[asset.guid] = {false, error};
-            INXLOG_ERROR("Asset import failed for '", asset.path, "': ", error);
+            INXLOG_ERROR_INTERNAL("Asset import failed for '", asset.path, "': ", error);
         }
         ++processed;
     }
@@ -5079,7 +5085,7 @@ bool AssetDatabase::AdvanceWatcherImport(bool managed)
     if (pending->outcome.empty())
         pending->outcome = result.succeeded ? "published" : "failed";
     if (pending->outcome == "failed")
-        INXLOG_ERROR("External asset import failed for '", result.path, "': ", result.error);
+        INXLOG_ERROR_INTERNAL("External asset import failed for '", result.path, "': ", result.error);
     pending->writeScope.Close();
     pending->worker.artifact.reset();
     pending->textureSource.source.reset();
@@ -6233,7 +6239,7 @@ std::optional<std::string> AssetDatabase::RunImporter(const std::string &guid, c
     } catch (...) {
         error = "Importer raised a non-standard exception";
     }
-    INXLOG_ERROR("Asset import failed for '", path, "': ", error);
+    INXLOG_ERROR_INTERNAL("Asset import failed for '", path, "': ", error);
     return error;
 }
 

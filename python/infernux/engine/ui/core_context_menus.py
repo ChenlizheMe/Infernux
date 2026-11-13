@@ -382,11 +382,11 @@ def project_context_menu(
             separator_before=True,
         ),
         _asset_create(
-            translate, "project.create_vert_shader", "shader", "NewShader", ".vert", "vert",
+            translate, "project.create_vert_shader", "shader", "new_vertex_shader", ".vert.py", "vert",
             separator_before=True,
         ),
         _asset_create(
-            translate, "project.create_frag_shader", "shader", "NewShader", ".frag", "frag",
+            translate, "project.create_frag_shader", "shader", "new_fragment_shader", ".frag.py", "frag",
         ),
         _asset_create(
             translate, "project.create_material", "material", "NewMaterial", ".mat",

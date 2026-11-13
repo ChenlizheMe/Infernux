@@ -146,6 +146,24 @@ class SectionSink:
     def get_dpi_scale(self):
         return 1.0
 
+    def push_mono_font(self):
+        pass
+
+    def pop_font(self):
+        pass
+
+    def get_item_rect_min_x(self):
+        return 0.0
+
+    def get_item_rect_max_x(self):
+        return 300.0
+
+    def get_item_rect_max_y(self):
+        return 24.0
+
+    def draw_line(self, *args):
+        pass
+
     def render_compact_section_header(self, *args):
         self.headers += 1
         if self.headers == 2:

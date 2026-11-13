@@ -60,20 +60,13 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, Asset
 
 } // namespace
 
-bool MaterialLoader::PrepareDocument(InxMaterial &staged, const std::string &filePath, AssetDatabase *adb)
+void MaterialLoader::PrepareDocument(InxMaterial &staged, const std::string &filePath, AssetDatabase *adb)
 {
-    try {
-        if (!staged.ApplyDocument(ReadAssetDocument(filePath)))
-            return false;
-        // Resolve on the unpublished candidate. Public shader setters would
-        // notify routing and reset authorship before the complete edit is valid.
-        staged.m_vertexShader = EnrichShaderReference(staged.m_vertexShader, adb, "vertex");
-        staged.m_fragmentShader = EnrichShaderReference(staged.m_fragmentShader, adb, "fragment");
-        return true;
-    } catch (const std::exception &error) {
-        INXLOG_ERROR("MaterialLoader: invalid document '", filePath, "': ", error.what());
-        return false;
-    }
+    staged.ApplyDocument(ReadAssetDocument(filePath));
+    // Resolve on the unpublished candidate. Public shader setters would
+    // notify routing and reset authorship before the complete edit is valid.
+    staged.m_vertexShader = EnrichShaderReference(staged.m_vertexShader, adb, "vertex");
+    staged.m_fragmentShader = EnrichShaderReference(staged.m_fragmentShader, adb, "fragment");
 }
 
 // =============================================================================
@@ -91,8 +84,7 @@ RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std:
     // Disk identity is known before publication, including on a worker. It must
     // never be enrolled in the owner-thread-only runtime material registry.
     material->SetGuid(guid);
-    if (!PrepareDocument(*material, filePath, adb))
-        return nullptr;
+    PrepareDocument(*material, filePath, adb);
 
     // Identity — authoritative source is .meta / AssetDatabase, NOT JSON
     material->SetFilePath(filePath);
@@ -116,8 +108,7 @@ bool MaterialLoader::Reload(const RuntimeAssetPayload &existing, const std::stri
     }
 
     InxMaterial staged(*mat);
-    if (!PrepareDocument(staged, filePath, adb))
-        return false;
+    PrepareDocument(staged, filePath, adb);
     staged.PrepareShaderDefaults();
     staged.m_name = mat->GetName();
     mat->PublishDocument(std::move(staged));
@@ -143,8 +134,7 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
 
     // Temporary material just for parsing — lightweight, no GPU resources
     InxMaterial tmp;
-    if (!PrepareDocument(tmp, filePath, nullptr))
-        return deps;
+    PrepareDocument(tmp, filePath, nullptr);
 
     // Texture GUIDs
     for (const auto &[propName, prop] : tmp.GetAllProperties()) {

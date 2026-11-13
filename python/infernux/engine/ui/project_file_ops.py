@@ -60,11 +60,16 @@ FRAGMENT_SHADER_TEMPLATE = '''import infernux.shader as shader
 class {shader_id}(shader.surface):
     shader_id = "project/{file_stem}"
     base_color = shader.material.color(label="颜色")
+    metallic = shader.material.float(range=(0.0, 1.0), label="金属度")
+    smoothness = shader.material.float(default=0.5, range=(0.0, 1.0), label="光滑度")
     albedo_map = shader.material.texture_2d()
+    albedo_map_st = shader.material.vec4(default=(1.0, 1.0, 0.0, 0.0))
 
     def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
-        base = shader.sample(self.albedo_map, ctx.uv0)
+        uv = ctx.uv0 * self.albedo_map_st.xy + self.albedo_map_st.zw
+        base = shader.sample(self.albedo_map, uv)
         return shader.SurfaceData(albedo=base.rgb * ctx.color * self.base_color.rgb,
+                                  metallic=self.metallic, smoothness=self.smoothness,
                                   alpha=base.a * self.base_color.a)
 '''
 
@@ -705,10 +710,9 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
     if shader_type not in {"vert", "frag"}:
         return AssetCreationResult(False, "Shader type must be 'vert' or 'frag'; GPU kernels use infernux.compute.kernel.")
 
-    for ext in ['.frag.py', '.vert.py', '.vert', '.frag']:
-        if shader_name.endswith(ext):
-            shader_name = shader_name[:-len(ext)]
-            break
+    extension = f'.{shader_type}.py'
+    if shader_name.lower().endswith(extension):
+        shader_name = shader_name[:-len(extension)]
 
     words = re.split(r'[\s_\-]+', shader_name)
     shader_id = ''.join(word[:1].upper() + word[1:] for word in words if word)

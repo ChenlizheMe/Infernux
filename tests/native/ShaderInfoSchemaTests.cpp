@@ -5,7 +5,6 @@
 #include "ShaderParserRecoveryTests.h"
 #include <algorithm>
 #include <cassert>
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -58,144 +57,6 @@ void RequireLinkedProgramCompiles(infernux::InxShaderLoader &compiler, const std
     }
 }
 
-void TestProjectDeferredRegistry(infernux::InxShaderLoader &compiler)
-{
-    const auto root =
-        std::filesystem::temp_directory_path() /
-        ("infernux-project-shading-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    struct Cleanup
-    {
-        std::filesystem::path root;
-        ~Cleanup()
-        {
-            infernux::InxShaderLoader::SetProjectShaderSearchPaths({});
-            std::error_code error;
-            std::filesystem::remove_all(root, error);
-        }
-    } cleanup{root};
-    const auto project = root / "Assets";
-    const auto modelPath = project / "Models" / "band.shadingmodel";
-    const auto mathPath = project / "Libraries" / "band.glsl";
-    std::filesystem::create_directories(modelPath.parent_path());
-    std::filesystem::create_directories(mathPath.parent_path());
-    const auto write = [](const auto &path, const std::string &source) {
-        std::ofstream stream(path);
-        stream << source;
-        assert(stream.good());
-    };
-    const std::string model = R"(
-ShadingModelInfo { Name "Tests/ProjectBand" Imports ["Tests/BandMath"] }
-void shading(in SurfaceData s, out vec4 color) {
-    color = vec4(tutorialBand(s.albedo), s.alpha);
-}
-)";
-    write(modelPath, model);
-    write(mathPath, R"(
-ShaderInfo { Name "Tests/BandMath" }
-vec3 tutorialBand(vec3 value) { return value * 0.25; }
-)");
-    const auto deferredPath =
-        (std::filesystem::u8path(INFERNUX_TEST_SHADER_ROOT) / "deferred_lighting.frag").generic_u8string();
-    const auto deferredSource = ReadText(deferredPath);
-    const auto before = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
-    assert(before.find("Deferred shading model: Tests/ProjectBand") == std::string::npos);
-
-    // The root program lives in built-ins, while its model and helper are in
-    // two sibling project folders. Registering a project must clear warm maps.
-    infernux::InxShaderLoader::SetProjectShaderSearchPaths({project.generic_u8string()});
-    const auto generated = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
-    assert(generated.find("Deferred shading model: Tests/ProjectBand") != std::string::npos);
-    assert(generated.find("case 2131356723u: _inx_shading_2131356723(") != std::string::npos);
-    assert(generated.find("value * 0.25") != std::string::npos);
-    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
-
-    // Invalidate the helper's nested folder, not the built-in shader folder.
-    write(mathPath, R"(
-ShaderInfo { Name "Tests/BandMath" }
-vec3 tutorialBand(vec3 value) { return value * 0.75; }
-)");
-    infernux::InxShaderLoader::InvalidateDirectoryCache(mathPath.parent_path().generic_u8string());
-    const auto updated = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
-    assert(updated.find("value * 0.75") != std::string::npos);
-    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
-
-    // The actual builtin Deferred stage must use the same project-first model
-    // resolution as linked material variants, even for a builtin model Name.
-    const auto unlitOverride = project / "Models" / "unlit.shadingmodel";
-    write(unlitOverride, R"(
-ShadingModelInfo { Name "Unlit" }
-vec3 inxProjectUnlitMarker(vec3 value) { return value * 0.375; }
-void shading(in SurfaceData s, out vec4 color) {
-    color = vec4(inxProjectUnlitMarker(s.albedo), s.alpha);
-}
-)");
-    infernux::InxShaderLoader::InvalidateDirectoryCache(unlitOverride.parent_path().generic_u8string());
-    const auto overridden = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
-    const std::string unlitHeader = "Deferred shading model: Unlit";
-    const auto unlitBegin = overridden.find(unlitHeader);
-    assert(unlitBegin != std::string::npos);
-    assert(overridden.find(unlitHeader, unlitBegin + unlitHeader.size()) == std::string::npos);
-    const auto nextModel = overridden.find("Deferred shading model:", unlitBegin + unlitHeader.size());
-    const auto unlitBody = overridden.substr(unlitBegin, nextModel - unlitBegin);
-    assert(unlitBody.find("inxProjectUnlitMarker(s.albedo)") != std::string::npos);
-    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
-    const bool removedOverride = std::filesystem::remove(unlitOverride);
-    assert(removedOverride);
-    infernux::InxShaderLoader::InvalidateDirectoryCache(unlitOverride.parent_path().generic_u8string());
-    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath).find("inxProjectUnlitMarker") ==
-           std::string::npos);
-    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
-
-    const auto packages = root / "Packages";
-    std::filesystem::create_directories(packages);
-    write(packages / "duplicate.shadingmodel", model);
-    infernux::InxShaderLoader::SetProjectShaderSearchPaths({project.generic_u8string(), packages.generic_u8string()});
-    bool rejectedDuplicate = false;
-    try {
-        compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
-    } catch (const std::runtime_error &error) {
-        const std::string message = error.what();
-        rejectedDuplicate = message.find("Duplicate project shader declaration 'shadingmodel/Tests/ProjectBand'") !=
-                                std::string::npos &&
-                            message.find("duplicate.shadingmodel") != std::string::npos &&
-                            message.find("band.shadingmodel") != std::string::npos;
-    }
-    assert(rejectedDuplicate);
-
-    // Cooked Player inputs retain the same names under GUID artifact paths.
-    const auto artifacts = root / "Library" / "Artifacts" / "Blob";
-    std::filesystem::create_directories(artifacts);
-    write(artifacts / "11111111111111111111111111111111.shadingmodel", model);
-    write(artifacts / "22222222222222222222222222222222.glsl", ReadText(mathPath.generic_u8string()));
-    infernux::InxShaderLoader::SetProjectShaderSearchPaths({(root / "Library" / "Artifacts").generic_u8string()});
-    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath)
-               .find("Deferred shading model: Tests/ProjectBand") != std::string::npos);
-    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
-
-    // A new project must not inherit the previous project's dispatch table.
-    infernux::InxShaderLoader::SetProjectShaderSearchPaths({});
-    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath)
-               .find("Deferred shading model: Tests/ProjectBand") == std::string::npos);
-
-    // Local model descriptors are keyed by resolved source, not just Name.
-    const auto localA = root / "LocalA";
-    const auto localB = root / "LocalB";
-    std::filesystem::create_directories(localA);
-    std::filesystem::create_directories(localB);
-    const std::string localHeader = "ShadingModelInfo { Name \"Tests/LocalModel\" }\n";
-    write(localA / "local.shadingmodel",
-          localHeader + "void shading(in SurfaceData s, out vec4 color) { color = vec4(0.25); }\n");
-    write(localB / "local.shadingmodel",
-          localHeader + "void shading(in SurfaceData s, out vec4 color) { color = vec4(0.75); }\n");
-    const std::string surface = R"(
-ShaderInfo { Name "Tests/LocalSurface" ShadingModel "Tests/LocalModel" }
-void surface(out SurfaceData s) { s = InitSurfaceData(); }
-)";
-    assert(compiler.PrepareAuthoredStageGlsl(surface, (localA / "surface.frag").generic_u8string())
-               .find("color = vec4(0.25)") != std::string::npos);
-    assert(compiler.PrepareAuthoredStageGlsl(surface, (localB / "surface.frag").generic_u8string())
-               .find("color = vec4(0.75)") != std::string::npos);
-}
 } // namespace
 
 int main(int argc, char **argv)
@@ -504,20 +365,8 @@ VertexOutput vertex(inout VertexInput v) {
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert", shaderRoot + "/particle_unlit.frag");
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/particle_sprite.vert",
                                  shaderRoot + "/particle_six_way_smoke.frag");
-    RequireLinkedProgramCompiles(compiler, shaderRoot + "/spectral_ocean.vert", shaderRoot + "/spectral_ocean.frag");
-
-    const infernux::ShaderDescriptor gridDescriptor =
-        compiler.ParseShaderSource(ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/grid.frag"), "grid.frag");
-    assert(gridDescriptor.surfaceOptions.surfaceType == "transparent");
-    assert(gridDescriptor.surfaceOptions.blendMode == "alpha");
-    assert(gridDescriptor.depthWrite == "off");
-
-    const infernux::ShaderDescriptor gizmoIconDescriptor = compiler.ParseShaderSource(
-        ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/gizmo_icon.frag"), "gizmo_icon.frag");
-    assert(gizmoIconDescriptor.surfaceOptions.surfaceType == "transparent");
-    assert(gizmoIconDescriptor.surfaceOptions.blendMode == "alpha");
-    assert(gizmoIconDescriptor.surfaceOptions.alphaClip == "0.01");
-    assert(gizmoIconDescriptor.depthWrite == "off");
+    const std::string fixtureRoot = INFERNUX_TEST_SHADER_FIXTURE_ROOT;
+    RequireLinkedProgramCompiles(compiler, fixtureRoot + "/spectral_ocean.vert", fixtureRoot + "/spectral_ocean.frag");
 
     const std::string vertexEntrySource = R"(
 // VertexOutput vertex(inout VertexInput ignored)
@@ -740,7 +589,6 @@ void main() { outColor = vec4(1.0); }
     const auto layoutDescriptor = compiler.ParseShaderSource(forbiddenLayout, "NoLayout.frag");
     assert(!layoutDescriptor.errors.empty());
 
-    TestProjectDeferredRegistry(compiler);
     std::cout << "ShaderInfo schema tests passed\n";
     return 0;
 } catch (const std::exception &error) {

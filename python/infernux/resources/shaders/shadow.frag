@@ -1,7 +1,7 @@
 #version 450
 
 ShaderInfo {
-    Name "Shadow"
+    Name "infernux/internal/shadow"
     Hidden On
     PassTag Shadow
     Capabilities [Standalone]

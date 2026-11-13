@@ -51,3 +51,29 @@ def test_debounced_asset_save_writes_latest_resource(tmp_path, monkeypatch, mode
     assert AssetManager.flush_scheduled_saves(str(path), force=mode != "next_flush")
     assert AnimationTimeline.load(str(path)).duration == 7.0
     assert not AssetManager.flush_scheduled_saves(str(path), force=True)
+
+
+def test_idle_asset_inspector_does_not_resolve_filesystem_paths(monkeypatch):
+    import infernux.core.assets as assets_module
+
+    monkeypatch.setattr(AssetManager, "_scheduled_saves", {})
+    monkeypatch.setattr(AssetManager, "_pending_document_write_records", {})
+
+    def resolve_unexpectedly(_path):
+        pytest.fail("An idle Inspector must not issue filesystem path queries")
+
+    monkeypatch.setattr(assets_module, "path_key", resolve_unexpectedly)
+    assert AssetManager.flush_scheduled_saves("Assets/Idle.mat") is False
+
+
+def test_inspector_flush_retains_the_exact_pending_write_receipt(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from infernux.engine.path_utils import path_key
+
+    path = str(tmp_path / "Pending.mat")
+    ticket = object()
+    monkeypatch.setattr(AssetManager, "_scheduled_saves", {})
+    monkeypatch.setattr(AssetManager, "_pending_document_write_records", {
+        path_key(path): [SimpleNamespace(ticket=ticket)],
+    })
+    assert AssetManager.flush_scheduled_saves(path) is ticket

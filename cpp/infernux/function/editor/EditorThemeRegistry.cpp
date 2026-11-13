@@ -27,17 +27,39 @@ ThemeData BuildBaseTheme()
     return t;
 }
 
+inline ImVec4 Mix(const ImVec4 &a, const ImVec4 &b, float t)
+{
+    return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
+}
+
+inline ImVec4 Alpha(const ImVec4 &c, float a)
+{
+    return ImVec4(c.x, c.y, c.z, a);
+}
+
 // A theme is fully described by a small set of semantic ROLE_* colors; the
 // ImGui global palette is composed from them (see ApplyImGuiColors). Switching
-// themes therefore only needs to override these roles.
+// themes therefore only needs to override these roles. Semantic colors
+// (LOG_ERROR, PREFAB_TEXT, ...) and the canonical focus SELECTION_BG are
+// intentionally not accent-driven.
 ThemeData MakeAccentVariant(const ThemeData &base, const ImVec4 &accent)
 {
     ThemeData v = base;
     v.colors["ROLE_ACCENT"] = accent;
-    v.colors["APPLY_BUTTON"] = accent; // keep custom-drawn accent in sync
-    v.colors["LOG_ERROR"] = accent;
-    v.colors["PREFAB_TEXT"] = accent;
+    v.colors["SELECTION_BG"] = accent;
+    v.colors["ROW_SELECTED"] = Alpha(accent, 0.16f);
+    v.colors["APPLY_BUTTON"] = accent;
     v.colors["STATUS_PROGRESS_CLR"] = accent;
+    v.colors["BTN_SELECTED"] = Alpha(accent, base.colors.at("BTN_SELECTED").w);
+    v.colors["UI_EDITOR_ELEMENT_SELECT"] = accent;
+    v.colors["BORDER_PLAY"] = accent;
+    v.colors["PLAY_ACTIVE"] = Mix(base.colors.at("ROLE_BG_SURFACE"), accent, 0.65f);
+    for (const char *key :
+         {"HEADER_ACTIVE", "HEADER_HOVERED", "FRAME_BG_ACTIVE", "HIERARCHY_ROW_SELECTED", "INSPECTOR_HEADER_SELECTED",
+          "INSPECTOR_HEADER_SELECTED_ACTIVE", "INSPECTOR_HEADER_SELECTED_HOVERED"}) {
+        v.colors[key] = Mix(base.colors.at("ROLE_BG_SURFACE"), accent, 0.22f);
+    }
+
     return v;
 }
 
@@ -51,7 +73,8 @@ struct Registry
     Registry()
     {
         ThemeData base = BuildBaseTheme();
-        Add("infernux", base);                                                       // theme red (default)
+        Add("infernux", base);                                                       // Mission Control (default)
+        Add("mission_control", base);                                                // alias of the default
         Add("graphite", MakeAccentVariant(base, ImVec4(0.30f, 0.56f, 0.86f, 1.0f))); // steel blue
         Add("amber", MakeAccentVariant(base, ImVec4(0.92f, 0.62f, 0.22f, 1.0f)));    // instrument amber
         active = "infernux";
@@ -75,16 +98,6 @@ Registry &Reg()
     // Engine-lifetime singleton (intentionally leaked, like SceneManager).
     static Registry *r = new Registry();
     return *r;
-}
-
-inline ImVec4 Mix(const ImVec4 &a, const ImVec4 &b, float t)
-{
-    return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
-}
-
-inline ImVec4 Alpha(const ImVec4 &c, float a)
-{
-    return ImVec4(c.x, c.y, c.z, a);
 }
 
 } // namespace
@@ -157,14 +170,17 @@ unsigned long EditorThemeRegistry::Generation()
 
 void EditorThemeRegistry::ConfigureImGuiDimensions(ImGuiStyle &style)
 {
-    style.WindowPadding = ImVec2(10.0f, 10.0f);
-    style.FramePadding = ImVec2(8.0f, 3.0f);
+    style.WindowPadding = Vec2("PANEL_PADDING");
+    // Window titles and docking tabs use the outer style. Panel contents
+    // apply FIELD_PADDING after Begin independently of title typography.
+    style.FramePadding =
+        ImVec2(Vec2("FIELD_PADDING").x, (Float("EDITOR_TAB_HEIGHT") - Float("EDITOR_TITLE_FONT_SIZE")) * 0.5f);
     style.CellPadding = ImVec2(4.0f, 4.0f);
-    style.ItemSpacing = ImVec2(8.0f, 6.0f);
+    style.ItemSpacing = Vec2("CONTENT_SPACING");
     style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
     style.IndentSpacing = 18.0f;
     style.ScrollbarSize = 8.0f;
-    style.GrabMinSize = 6.0f;
+    style.GrabMinSize = 8.0f;
 
     style.WindowBorderSize = 1.0f;
     style.ChildBorderSize = 1.0f;
@@ -172,6 +188,10 @@ void EditorThemeRegistry::ConfigureImGuiDimensions(ImGuiStyle &style)
     style.FrameBorderSize = 1.0f;
     style.TabBorderSize = 0.0f;
     style.TabBarBorderSize = 1.0f;
+    style.TabBarOverlineSize = 2.0f;
+    style.TabCloseButtonMinWidthSelected = -1.0f;
+    style.TabCloseButtonMinWidthUnselected = 0.0f;
+    style.WindowMenuButtonPosition = ImGuiDir_Right;
 
     style.WindowRounding = 0.0f;
     style.ChildRounding = 0.0f;
@@ -198,28 +218,29 @@ void EditorThemeRegistry::ApplyImGuiColors()
     const ImVec4 text = Color("ROLE_TEXT");
     const ImVec4 dim = Color("ROLE_TEXT_DIM");
     const ImVec4 border = Color("ROLE_BORDER");
+    const ImVec4 field = Color("FRAME_BG");
     const ImVec4 panelFocus = Color("SELECTION_BG");
 
     const ImVec4 transparent(0.0f, 0.0f, 0.0f, 0.0f);
 
     // Text
     c[ImGuiCol_Text] = text;
-    c[ImGuiCol_TextDisabled] = Mix(text, bg, 0.62f);
+    c[ImGuiCol_TextDisabled] = Color("TEXT_DISABLED");
     c[ImGuiCol_TextSelectedBg] = Alpha(accent, 0.35f);
 
     // Backgrounds
     c[ImGuiCol_WindowBg] = bg;
     c[ImGuiCol_ChildBg] = surf;
-    c[ImGuiCol_PopupBg] = Alpha(raised, 0.98f);
-    c[ImGuiCol_FrameBg] = surf;
-    c[ImGuiCol_FrameBgHovered] = Mix(hover, accent, 0.12f);
-    c[ImGuiCol_FrameBgActive] = Mix(surf, accent, 0.22f);
+    c[ImGuiCol_PopupBg] = surf;
+    c[ImGuiCol_FrameBg] = field;
+    c[ImGuiCol_FrameBgHovered] = Color("FRAME_BG_HOVERED");
+    c[ImGuiCol_FrameBgActive] = Mix(field, accent, 0.18f);
 
     // Title / menu
     c[ImGuiCol_TitleBg] = bg;
     c[ImGuiCol_TitleBgActive] = bg;
     c[ImGuiCol_TitleBgCollapsed] = Alpha(bg, 0.75f);
-    c[ImGuiCol_MenuBarBg] = bg;
+    c[ImGuiCol_MenuBarBg] = Color("MENU_BAR_BG");
 
     // Scrollbar
     c[ImGuiCol_ScrollbarBg] = transparent;
@@ -229,20 +250,21 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     // Accent widgets
     c[ImGuiCol_CheckMark] = accent;
-    c[ImGuiCol_SliderGrab] = Alpha(accent, 0.88f);
-    c[ImGuiCol_SliderGrabActive] = accent;
+    // Slider grabs are warm-white plates; the accent belongs to the filled track.
+    c[ImGuiCol_SliderGrab] = text;
+    c[ImGuiCol_SliderGrabActive] = Mix(text, accent, 0.35f);
     c[ImGuiCol_NavHighlight] = transparent;
 
-    // Buttons — surface with an accent-tinted hover/active for clear feedback.
-    c[ImGuiCol_Button] = surf;
-    c[ImGuiCol_ButtonHovered] = Mix(surf, accent, 0.26f);
-    c[ImGuiCol_ButtonActive] = Mix(surf, accent, 0.40f);
+    // Buttons — raised plate, hover lifts with a faint accent, press commits.
+    c[ImGuiCol_Button] = raised;
+    c[ImGuiCol_ButtonHovered] = Mix(hover, accent, 0.12f);
+    c[ImGuiCol_ButtonActive] = Mix(raised, accent, 0.30f);
 
     // Headers / selectables — the primary "pick an item" feedback across the
     // editor (Hierarchy tree, Inspector headers, lists), so keep it clearly read.
-    c[ImGuiCol_Header] = hover;
-    c[ImGuiCol_HeaderHovered] = Mix(hover, accent, 0.28f);
-    c[ImGuiCol_HeaderActive] = Mix(hover, accent, 0.42f);
+    c[ImGuiCol_Header] = surf;
+    c[ImGuiCol_HeaderHovered] = hover;
+    c[ImGuiCol_HeaderActive] = hover;
 
     // Borders / separators
     c[ImGuiCol_Border] = border;
@@ -257,15 +279,15 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_ResizeGripActive] = Alpha(accent, 0.50f);
 
     // Tabs
-    c[ImGuiCol_Tab] = bg;
+    c[ImGuiCol_Tab] = Color("MENU_BAR_BG");
     c[ImGuiCol_TabHovered] = hover;
-    c[ImGuiCol_TabSelected] = surf;
+    c[ImGuiCol_TabSelected] = bg;
     // A focused editor panel uses the canonical Infernux selection red at
     // full opacity. The dimmed overline below intentionally keeps its current
     // subdued accent treatment for visible but unfocused dock tabs.
     c[ImGuiCol_TabSelectedOverline] = Alpha(panelFocus, 1.0f);
-    c[ImGuiCol_TabDimmed] = bg;
-    c[ImGuiCol_TabDimmedSelected] = surf;
+    c[ImGuiCol_TabDimmed] = Color("MENU_BAR_BG");
+    c[ImGuiCol_TabDimmedSelected] = bg;
     c[ImGuiCol_TabDimmedSelectedOverline] = Alpha(accent, 0.60f);
 
     // Docking
@@ -274,7 +296,7 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     // Plots
     c[ImGuiCol_PlotLines] = Mix(surf, text, 0.45f);
-    c[ImGuiCol_PlotHistogram] = text;
+    c[ImGuiCol_PlotHistogram] = accent;
 
     // Drag-drop
     c[ImGuiCol_DragDropTarget] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);

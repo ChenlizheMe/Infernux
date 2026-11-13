@@ -458,7 +458,7 @@ def stage_compute_artifacts(
 
     root = Path(resolved_path(Path(project_root).expanduser()))
     paths = {Path(resolved_path(Path(path).expanduser())) for path in source_paths
-             if Path(path).suffix.casefold() == ".py"}
+             if is_host_python_source(path)}
     if source_snapshots is None:
         snapshots = {path: path.read_text(encoding="utf-8") for path in sorted(paths)}
     else:

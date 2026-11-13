@@ -57,6 +57,9 @@ struct PropertyDesc
     bool slider = false;
     bool multiline = false;
     bool mixed = false;
+    bool readonly = false;
+    std::string readonlyText;
+    std::string infoText;
     bool fieldLabel = false; // Render Bool as a label + checkbox field.
     std::vector<std::string> enumNames;
     std::string header;  // Section header text above this field (empty = none)
@@ -103,6 +106,32 @@ class InxGUIContext
     /* Authored UI units -> SDL window units, maintained by InxGUI. */
     static float s_dpiScale;
     float GetDpiScale() const;
+    float InspectorLabelWidth() const;
+    void InspectorFieldLabel(const std::string &text, float valueColumn = 0.0f);
+    void InspectorFieldInfo(const std::string &text, float valueColumn = 0.0f);
+    float TextLineHeightWithSpacing() const;
+    void ReadonlyField(const std::string &id, const std::string &text);
+    void EmptyState(const std::string &id, const std::string &icon, const std::string &title, const std::string &hint,
+                    float height = 0.0f, bool interactive = true);
+    void DrawGradientRect(float x0, float y0, float x1, float y1, const std::array<float, 4> &left,
+                          const std::array<float, 4> &right);
+    void DrawTriangleFilled(const std::array<float, 2> &a, const std::array<float, 2> &b, const std::array<float, 2> &c,
+                            const std::array<float, 4> &color);
+    void DrawPolyline(const std::vector<std::array<float, 2>> &points, const std::array<float, 4> &color,
+                      float thickness = 1.0f, bool closed = false);
+
+    /* Monospace face for numbers, paths and code, maintained by InxGUI. The
+       default ImGui font is the `ui` face; pair every push with PopFont(). */
+    static ImFont *s_monoFont;
+    void PushUIFont(float fontSize);
+    void PushMonoFont();
+    void PopFont();
+
+    /// All editor surfaces resolve pinned icons through their owning GUI.
+    std::function<uint64_t(const std::string &)> resolveEditorIcon;
+    uint64_t EditorIcon(const std::string &name) const;
+    bool IconButton(const std::string &id, const std::string &icon, const std::string &tooltip, float width,
+                    float height);
 
     /// True only while ImGui is inside a frame with an active window.
     /// Native batch renderers use this to avoid entering widgets from
@@ -154,6 +183,8 @@ class InxGUIContext
                     const std::string &semanticId = "");
 
     void ColorEdit(const std::string &label, float color[4], bool hdr = false);
+    bool ColorSwatch(const std::string &id, const std::array<float, 4> &color, float width = 0, float height = 0,
+                     bool hdr = false);
     bool ColorPicker(const std::string &label, float color[4], int flags = 0);
     void Vector2Control(const std::string &label, float value[2], float speed = 0.1f, float labelWidth = 0.0f,
                         const std::string &axisSemanticBase = "");
@@ -166,6 +197,11 @@ class InxGUIContext
     }
 
     /* combo & lists */
+    /// Editor dropdown: flat field frame + chevron, shared popup chrome. The
+    /// popup may hold any content; call EndCombo() only when this returns true.
+    /// flags: ImGuiComboFlags (WidthFitPreview sizes the frame to the preview).
+    bool BeginCombo(const std::string &label, const std::string &preview, int flags = 0);
+    void EndCombo();
     bool Combo(const std::string &label, int *currentItem, const std::vector<std::string> &items,
                int popupMaxHeightInItems = -1);
     uint64_t FlagsCombo(const std::string &label, uint64_t value, const std::vector<std::string> &items,
@@ -242,12 +278,13 @@ class InxGUIContext
                   bool enabled = true);
 
     /* child regions & windows */
-    bool BeginChild(const std::string &id, float width = 0.0f, float height = 0.0f, bool border = false, int flags = 0);
+    bool BeginChild(const std::string &id, float width = 0.0f, float height = 0.0f, bool border = false, int flags = 0,
+                    bool padding = false);
     void EndChild();
 
     /* pop-ups & tooltips */
     void OpenPopup(const std::string &id);
-    bool BeginPopup(const std::string &id);
+    bool BeginPopup(const std::string &id, bool resizable = false);
     bool BeginPopupModal(const std::string &title, int flags = 0);
     bool BeginPopupContextItem(const std::string &id = "", int mouseButton = 1);
     bool BeginPopupContextWindow(const std::string &id = "", int mouseButton = 1, bool noOpenOverItems = false);
@@ -470,12 +507,11 @@ class InxGUIContext
                                      const std::string &typeHint, bool selected, bool clickable, bool hasPicker,
                                      uint64_t pickerTextureId, const std::string &semanticId = "",
                                      float fixedWidth = 0.0f);
-    std::vector<ObjectFieldInteraction> RenderMeshRendererInspectorFields(const std::string &meshFieldId,
-                                                                          const std::string &meshLabel,
-                                                                          const std::string &meshDisplay,
-                                                                          const std::vector<std::string> &slotLabels,
-                                                                          const std::vector<std::string> &slotDisplays,
-                                                                          uint64_t pickerTextureId, float labelWidth);
+    std::vector<ObjectFieldInteraction>
+    RenderMeshRendererInspectorFields(const std::string &meshFieldId, const std::string &meshLabel,
+                                      const std::string &meshDisplay, const std::vector<std::string> &slotLabels,
+                                      const std::vector<std::string> &slotDisplays, uint64_t pickerTextureId,
+                                      float labelWidth, const std::string &materialsLabel = "Materials");
 
   private:
     struct FramedGroup
@@ -483,6 +519,8 @@ class InxGUIContext
         ImDrawListSplitter splitter;
         ImDrawList *drawList = nullptr;
         float paddingX = 0, paddingY = 0, width = 0, rounding = 0;
+        ImVec2 origin;
+        float workMaxX = 0, contentMaxX = 0;
         ImU32 background = 0, border = 0;
     };
     std::deque<FramedGroup> m_framedGroups;

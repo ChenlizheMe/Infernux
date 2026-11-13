@@ -47,6 +47,7 @@ from infernux.core.animation_timeline import (
 from .editor_panel import EditorPanel
 from .asset_save_dialog import AssetSaveAsDialog
 from .panel_registry import editor_panel
+from .inspector_utils import field_label
 from .theme import ImGuiCol, ImGuiMouseCursor, Theme
 
 
@@ -55,10 +56,9 @@ _INTERP_LABEL_KEYS = ("interp_constant", "interp_linear", "interp_ease_in", "int
 _APPLY_LABEL_KEYS = ("apply_additive", "apply_absolute")
 _BAR_H = 54.0
 _BAR_EDGE_PAD = 14.0  # inset track so t=0 / t=dur keyframes stay inside the bar
-_TRACK_HEADER_W = 104.0
+_TRACK_HEADER_W = 190.0
 _RULER_H = 27.0
 _PREVIEW_H = 196.0  # 3D preview height reserved at the bottom of the right (keyframe) panel
-_KF_LABEL_W = 78.0  # fixed label column width so inline label+field rows align
 _DRAG_THRESHOLD = 4.0  # px the mouse must move before a keyframe starts dragging (Blender-like)
 _PREVIEW_RENDER_PX = 240  # fixed offscreen render size (stable → no per-frame framebuffer churn)
 
@@ -981,7 +981,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         left_w = max(240.0, avail_w - right_w - 8.0)
 
         # LEFT: transport + the full-height timeline scrubber (the main authoring area).
-        if ctx.begin_child("##tl_left", left_w, avail_h, False):
+        if ctx.begin_child("##tl_left", left_w, avail_h, padding=True):
             self._render_transport(ctx)
             ctx.dummy(0, 4)
             self._render_timeline_bar(ctx)
@@ -989,11 +989,11 @@ class AnimTimelineEditorPanel(EditorPanel):
         ctx.same_line()
         # RIGHT: keyframe inspector (top) + the 3D preview viewport (bottom-right),
         # both sharing this panel.
-        if ctx.begin_child("##tl_right", right_w, avail_h, True):
+        if ctx.begin_child("##tl_right", right_w, avail_h, padding=True):
             inner_w = ctx.get_content_region_avail_width()
             inner_h = ctx.get_content_region_avail_height()
             insp_h = max(80.0, inner_h - _PREVIEW_H - 8.0)
-            if ctx.begin_child("##tl_kf", inner_w, insp_h, False):
+            if ctx.begin_child("##tl_kf", inner_w, insp_h, padding=True):
                 self._render_keyframe_inspector(ctx)
             ctx.end_child()
             ctx.separator()
@@ -1075,24 +1075,19 @@ class AnimTimelineEditorPanel(EditorPanel):
 
     def _render_toolbar(self, ctx: InxGUIContext):
         capture_semantics = _semantic_capture_enabled(ctx)
-        new_label = t("animtimeline_editor.new")
-        if ctx.button(new_label):
-            self._execute_timeline_command("timeline.new")
-        if capture_semantics:
-            ctx.record_semantic_item("button", new_label, True, "animtimeline.toolbar.new")
-        ctx.same_line()
-        save_label = t("animtimeline_editor.save")
-        if ctx.button(save_label):
-            self._execute_timeline_command("file.save")
-        if capture_semantics:
-            ctx.record_semantic_item("button", save_label, True, "animtimeline.toolbar.save")
-        ctx.same_line()
-        save_as_label = t("animtimeline_editor.save_as")
-        if ctx.button(save_as_label):
-            self._execute_timeline_command("file.save_as")
-        if capture_semantics:
-            ctx.record_semantic_item("button", save_as_label, True, "animtimeline.toolbar.save_as")
-        ctx.same_line()
+        from .asset_toolbar import render_asset_toolbar
+
+        render_asset_toolbar(
+            ctx, self, icon="timeline", name=self._timeline.name,
+            path=self._file_path, dirty=self._document_is_dirty(),
+            on_save=lambda: self._execute_timeline_command("file.save"),
+            semantic_prefix="animtimeline.toolbar", actions=(
+                ("new", t("animtimeline_editor.new"), True,
+                 lambda: self._execute_timeline_command("timeline.new")),
+                ("save_as", t("animtimeline_editor.save_as"), True,
+                 lambda: self._execute_timeline_command("file.save_as")),
+            ),
+        )
         ctx.label(f"{t('animtimeline_editor.name')}:")
         ctx.same_line()
         ctx.set_next_item_width(150.0)
@@ -1152,45 +1147,27 @@ class AnimTimelineEditorPanel(EditorPanel):
             )
 
     def _render_transport(self, ctx: InxGUIContext):
-        capture_semantics = _semantic_capture_enabled(ctx)
-        play_label = t("animtimeline_editor.pause") if self._playing else t("animtimeline_editor.play")
-        if ctx.button(play_label):
-            self._execute_timeline_command("timeline.play_pause")
-        if capture_semantics:
-            ctx.record_semantic_item(
-                "button", play_label, True, "animtimeline.transport.play_pause"
-            )
-        ctx.same_line()
-        stop_label = t("animtimeline_editor.stop")
-        if ctx.button(stop_label):
-            self._execute_timeline_command("timeline.stop")
-        if capture_semantics:
-            ctx.record_semantic_item("button", stop_label, True, "animtimeline.transport.stop")
-        ctx.same_line()
-        add_key_label = t("animtimeline_editor.add_key")
-        if ctx.button(add_key_label):
-            self._execute_timeline_command("timeline.add_keyframe")
-        if capture_semantics:
-            ctx.record_semantic_item(
-                "button", add_key_label, True, "animtimeline.transport.add_key"
-            )
-        ctx.same_line()
-        delete_key_label = t("animtimeline_editor.delete_key")
-        if ctx.button(delete_key_label):
-            self._execute_timeline_command("edit.delete")
-        if capture_semantics:
-            ctx.record_semantic_item(
-                "button", delete_key_label, True, "animtimeline.transport.delete_key"
-            )
-        ctx.same_line()
-        ctx.label(f"{self._playhead:.2f} / {self._timeline.duration:.2f}s")
+        from .preview_transport import render_preview_transport
+        render_preview_transport(
+            ctx, "animtimeline.transport", playing=self._playing,
+            seconds=self._playhead, duration=self._timeline.duration,
+            on_toggle=lambda: self._execute_timeline_command("timeline.play_pause"),
+            on_stop=lambda: self._execute_timeline_command("timeline.stop"),
+            actions=(
+                ("add_key", "key_add", t("animtimeline_editor.add_key"), True,
+                 lambda: self._execute_timeline_command("timeline.add_keyframe")),
+                ("delete_key", "key_del", t("animtimeline_editor.delete_key"), self.can_delete_selected_keyframe(),
+                 lambda: self._execute_timeline_command("edit.delete")),
+            ),
+        )
 
     def _render_timeline_bar(self, ctx: InxGUIContext):
         dur = max(1e-6, float(self._timeline.duration))
         # Leave the same small horizontal breathing room used by the child
         # content so the ruler does not protrude past the toolbar above it.
         bar_w = max(80.0, ctx.get_content_region_avail_width() - 2.0)
-        ctx.invisible_button("##tl_bar", bar_w, _BAR_H)
+        dpi = ctx.get_dpi_scale()
+        ctx.invisible_button("##tl_bar", bar_w, _BAR_H * dpi)
         if _semantic_capture_enabled(ctx):
             ctx.record_semantic_item(
                 "button", "Timeline scrubber", True, "animtimeline.scrubber"
@@ -1204,14 +1181,14 @@ class AnimTimelineEditorPanel(EditorPanel):
         mx = ctx.get_mouse_pos_x()
 
         c = _tl_colors()
-        ruler_y = y0 + _RULER_H
+        ruler_y = y0 + _RULER_H * dpi
         lane_y = (ruler_y + y1) * 0.5
-        ks = 6.5  # keyframe half-size (square)
+        ks = 3.0 * dpi
 
         # A dedicated fixed-width track header keeps the title out of the time
         # ruler and leaves t=0 available for a real keyframe.
-        header_x1 = min(x1 - 80.0, x0 + _TRACK_HEADER_W)
-        pad = _BAR_EDGE_PAD
+        header_x1 = min(x1 - 80.0 * dpi, x0 + _TRACK_HEADER_W * dpi)
+        pad = _BAR_EDGE_PAD * dpi
         tx0 = header_x1 + pad
         tx1 = x1 - pad
         tw = max(1.0, tx1 - tx0)
@@ -1230,6 +1207,11 @@ class AnimTimelineEditorPanel(EditorPanel):
         ctx.draw_line(x0, ruler_y, x1, ruler_y, *c["tick"], 1.0)
         ctx.draw_line(header_x1, y0, header_x1, y1, *c["tick"], 1.0)
         ctx.draw_line(tx0, lane_y, tx1, lane_y, *c["lane"], 2.0)
+        ctx.draw_filled_rect(x0, ruler_y, x0 + 3 * dpi, y1, *Theme.DOMAIN_ANIMATION)
+        icon = ctx.editor_icon("components/component_transform")
+        if icon:
+            ctx.draw_image_rect(icon, x0 + 10 * dpi, lane_y - 8 * dpi,
+                                x0 + 26 * dpi, lane_y + 8 * dpi)
         ctx.draw_text_aligned(
             x0 + 10.0,
             y0,
@@ -1243,7 +1225,7 @@ class AnimTimelineEditorPanel(EditorPanel):
             True,
         )
         ctx.draw_text_aligned(
-            x0 + 10.0,
+            x0 + 34 * dpi,
             ruler_y,
             header_x1 - 8.0,
             y1,
@@ -1289,15 +1271,19 @@ class AnimTimelineEditorPanel(EditorPanel):
                     best_dx = abs(time_to_x(k.time) - mx)
                     hover_key = k
 
-        # Keyframe markers: gray squares; selection draws an outer border (no rotate/scale).
+        # One diamond notation for keys in every animation surface.
         sel = self._current_sel_key()
         for k in self._timeline.keyframes:
             kx = time_to_x(k.time)
             col = c["key_hi"] if (k is hover_key or k is sel) else c["key"]
-            ctx.draw_filled_rect(kx - ks, lane_y - ks, kx + ks, lane_y + ks, *col, 2.0)
+            top, right = (kx, lane_y - ks), (kx + ks, lane_y)
+            bottom, left = (kx, lane_y + ks), (kx - ks, lane_y)
+            ctx.draw_triangle_filled(top, right, bottom, col)
+            ctx.draw_triangle_filled(top, bottom, left, col)
             if k is sel:
                 b = ks + 3.0
-                ctx.draw_rect(kx - b, lane_y - b, kx + b, lane_y + b, *c["accent"], 1.6, 2.0)
+                ctx.draw_polyline([(kx, lane_y - b), (kx + b, lane_y),
+                                    (kx, lane_y + b), (kx - b, lane_y)], c["accent"], 1.0, True)
             if _semantic_capture_enabled(ctx):
                 ctx.record_semantic_rect(
                     "timeline_keyframe",
@@ -1316,8 +1302,9 @@ class AnimTimelineEditorPanel(EditorPanel):
 
         # Playhead (line + top handle, theme accent)
         px = time_to_x(self._playhead)
-        ctx.draw_line(px, y0, px, y1, *c["accent"], 2.0)
-        ctx.draw_filled_rect(px - 4.0, y0, px + 4.0, y0 + 7.0, *c["accent"], 1.0)
+        ctx.draw_line(px, y0, px, y1, *c["accent"], 2 * dpi)
+        ctx.draw_triangle_filled((px - 4 * dpi, y0), (px + 4 * dpi, y0),
+                                 (px, y0 + 6 * dpi), c["accent"])
 
         # ── Interaction: grab a keyframe to drag (after a threshold); empty area scrubs ──
         press_started = active and not self._bar_was_active
@@ -1475,8 +1462,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         capture_semantics = _semantic_capture_enabled(ctx)
 
         # Time — inline label + field.
-        ctx.label(t("animtimeline_editor.key_time"))
-        ctx.same_line(_KF_LABEL_W)
+        field_label(ctx, t("animtimeline_editor.key_time"), ctx.inspector_label_width())
         ctx.set_next_item_width(-1)
         nt = ctx.drag_float("##k_time", float(k.time), 0.01, 0.0, float(self._timeline.duration))
         if capture_semantics:
@@ -1491,8 +1477,7 @@ class AnimTimelineEditorPanel(EditorPanel):
         )
 
         # Transition — inline label + combo.
-        ctx.label(t("animtimeline_editor.transition"))
-        ctx.same_line(_KF_LABEL_W)
+        field_label(ctx, t("animtimeline_editor.transition"), ctx.inspector_label_width())
         ctx.set_next_item_width(-1)
         interp_labels = _interp_labels()
         idx = INTERP_MODES.index(k.interp) if k.interp in INTERP_MODES else 1
@@ -1564,11 +1549,11 @@ class AnimTimelineEditorPanel(EditorPanel):
         capture_semantics: bool = True,
     ) -> bool:
         """Render a single-line ``label  [X][Y][Z]`` drag row."""
-        ctx.label(label)
-        ctx.same_line(_KF_LABEL_W)  # fixed column so all rows' fields align
+        field_label(ctx, label, ctx.inspector_label_width())
         changed = False
         avail = ctx.get_content_region_avail_width()
-        field_w = max(28.0, (avail - 12.0) / 3.0)
+        gap = 4 * ctx.get_dpi_scale()
+        field_w = max(1.0, (avail - gap * 2) / 3.0)
         for i, axis in enumerate(("X", "Y", "Z")):
             values = getattr(self._timeline_edit_target(target_id), field_name)
             ctx.set_next_item_width(field_w)
@@ -1594,5 +1579,5 @@ class AnimTimelineEditorPanel(EditorPanel):
                 f"timeline.keyframe.{target_id}.{field_name}.{axis.lower()}",
             )
             if i < 2:
-                ctx.same_line(0, 6)
+                ctx.same_line(0, gap)
         return changed

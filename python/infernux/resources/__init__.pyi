@@ -16,7 +16,13 @@ icon_path: str
 """Absolute path to the engine window icon (``resources/icons/icon.png``)."""
 
 engine_font_path: str
-"""Absolute path to the bundled CJK monospace font (``MapleMono-CN-Regular.ttf``)."""
+"""Absolute path to the UI sans-serif face (``Inter-VF.ttf``); CJK is merged from ``engine_font_cjk_path``."""
+
+engine_font_cjk_path: str
+"""Absolute path to the CJK face merged into the UI font (``NotoSansSC-Regular.ttf``)."""
+
+engine_mono_font_path: str
+"""Absolute path to the monospace face for numbers, paths and code (``MapleMono-CN-Regular.ttf``)."""
 
 engine_lib_path: str
 """Absolute path to the native library directory (``lib/``)."""
@@ -33,6 +39,8 @@ component_icons_dir: str
 __all__ = [
     "icon_path",
     "engine_font_path",
+    "engine_font_cjk_path",
+    "engine_mono_font_path",
     "engine_lib_path",
     "resources_path",
     "file_type_icons_dir",

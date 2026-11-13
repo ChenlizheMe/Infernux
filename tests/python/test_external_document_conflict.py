@@ -419,7 +419,22 @@ class _ConflictModalContext:
     def end_disabled(self):
         return None
 
-    def same_line(self):
+    def same_line(self, *_args):
+        return None
+
+    def calc_text_width(self, text):
+        return 7.0 * len(text)
+
+    def push_style_color(self, *_args):
+        return None
+
+    def pop_style_color(self, _count=1):
+        return None
+
+    def push_style_var_float(self, *_args):
+        return None
+
+    def pop_style_var(self, _count=1):
         return None
 
     def end_popup(self):

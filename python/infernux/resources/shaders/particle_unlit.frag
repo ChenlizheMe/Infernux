@@ -1,7 +1,7 @@
 #version 450
 
 ShaderInfo {
-    Name "Particle Unlit"
+    Name "infernux/particle/unlit"
     ShadingModel Unlit
     Queue 3000
     Cull None

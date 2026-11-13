@@ -419,6 +419,11 @@ def test_generated_diagnostics_keep_author_path_and_line():
     ("import numpy as np\n" + SOURCE, "author.import"),
     (SOURCE.replace("parameter.float(default=0.5", "parameter.int(default=0.5"), "author.parameter"),
     (SOURCE.replace("parameter.bool(default=True)", "parameter.bool(default=1)"), "author.parameter"),
+    (SOURCE.replace("parameter.float(default=0.5, range=(0.0, 1.0)",
+                    "parameter.int(default=0, range=(0.0, 1.0)"), "author.parameter"),
+    (SOURCE.replace("parameter.float(default=0.5, range=(0.0, 1.0)",
+                    "parameter.uint(default=0, range=(-1, 1)"), "author.parameter"),
+    (SOURCE.replace("range=(0.0, 1.0)", "range=(1.0, 1.0)"), "author.parameter"),
 ])
 def test_author_diagnostics_are_structured_before_native_compilation(source, code):
     with pytest.raises(SyntaxError) as failure:
@@ -724,3 +729,34 @@ class Grayscale(shader.fullscreen):
         offset, strength = parameters["value"]["fields"]
         assert (offset["name"], offset["columns"], offset["offset"]) == ("offset", 2, 0)
         assert (strength["name"], strength["offset"]) == ("strength", 8)
+
+
+def test_builtin_lit_sliders_do_not_change_gpu_program_source():
+    from pathlib import Path
+    import re
+
+    path = Path(__file__).resolve().parents[2] / "python/infernux/resources/shaders/lit.frag.py"
+    source = path.read_text(encoding="utf-8")
+    definition = parse_shader(source, str(path), "builtin_lit")
+    fields = {field.name: field for field in definition.parameters}
+    assert fields["smoothness"].range == (0.0, 1.0) and fields["smoothness"].default == 0.5
+    assert fields["metallic"].range == (0.0, 1.0)
+    assert fields["normal_scale"].range == (0.0, 2.0)
+    assert fields["base_color_uv_set"].range == (0, 1)
+    without_ranges = re.sub(r"(?:, )?range=\([^)]*\)", "", source)
+    assert definition.generated_source == parse_shader(without_ranges, str(path), "builtin_lit").generated_source
+
+
+def test_created_fragment_template_declares_its_material_inputs_and_sliders(tmp_path):
+    from infernux.engine.ui.project_file_ops import FRAGMENT_SHADER_TEMPLATE
+
+    source = FRAGMENT_SHADER_TEMPLATE.format(shader_id="Paint", file_stem="paint")
+    definition = parse_shader(source, str(tmp_path / "paint.frag.py"), "created_paint")
+    fields = {field.name: field for field in definition.parameters}
+    assert fields["smoothness"].range == (0.0, 1.0)
+    assert fields["metallic"].range == (0.0, 1.0)
+    assert fields["albedo_map"].kind == "texture_2d"
+    assert fields["albedo_map_st"].default == (1.0, 1.0, 0.0, 0.0)
+    for target in definition.compile()["targets"]:
+        entries = {entry["name"] for entry in target["entries"]}
+        assert {"vertex_main", "fragment_main", "fragment_gbuffer", "fragment_depth"} <= entries

@@ -3,8 +3,8 @@ Infernux Infernux Editor Theme
 ==============================================
 
 
-This is the **single theme configuration file** for the Infernux Editor.
-Change colors and sizes here to restyle the entire editor.
+Python presentation helpers for the Infernux Editor.
+Colors and dimensions are supplied by the native EditorThemeTable.inl registry.
 
 Structure:
 
@@ -50,6 +50,11 @@ def hex_to_linear(hex_r: int, hex_g: int, hex_b: int, a: float = 1.0) -> RGBA:
     """
     Convert 0-255 sRGB hex components to linear RGBA tuple."""
     return srgb3(hex_r / 255.0, hex_g / 255.0, hex_b / 255.0, a)
+
+
+def _mix_rgba(a: RGBA, b: RGBA, t: float) -> RGBA:
+    """Blend RGB of *a* toward *b* by *t*; keeps *a*'s alpha."""
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3])
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -189,40 +194,44 @@ class Theme:
     """
 
     # ══════════════════════════════════════════════════════════════════════
-    #  Base Palette (Unity-style neutral dark theme)
-    #  Neutral grays + red accent (#EB5757)
+    #  Base Palette (Mission Control — NASA-punk)
+    #  Near-black instrument surfaces, warm-white text, accent #D8434F
     # ══════════════════════════════════════════════════════════════════════
 
+    # -- Role colors (rewritten natively on theme switch) ---------------
+    ROLE_ACCENT       : RGBA = (0.847, 0.263, 0.310, 1.0)  # Accent #D8434F
+    ROLE_TEXT         : RGBA = (0.914, 0.894, 0.855, 1.0)  # Warm white #E9E4DA
+
     # -- Text Colors ------------------------------------------------
-    TEXT              : RGBA = (0.84,  0.84,  0.84,  1.0)  # Primary text (neutral light gray)
-    TEXT_DISABLED     : RGBA = (0.40,  0.40,  0.40,  1.0)  # Disabled text
-    TEXT_DIM          : RGBA = (0.55,  0.55,  0.55,  1.0)  # Secondary/dim text
+    TEXT              : RGBA = (0.914, 0.894, 0.855, 1.0)  # Primary text (warm white #E9E4DA)
+    TEXT_DISABLED     : RGBA = (0.435, 0.424, 0.400, 1.0)  # Disabled text (#6F6C66)
+    TEXT_DIM          : RGBA = (0.663, 0.647, 0.616, 1.0)  # Secondary/dim text (#A9A59D)
 
     # -- Background Colors -------------------------------------------
-    WINDOW_BG         : RGBA = (0.22,  0.22,  0.22,  1.0)  # Window background (Unity #383838)
+    WINDOW_BG         : RGBA = (0.086, 0.090, 0.094, 1.0)  # Window background (#161718)
     CHILD_BG          : RGBA = (0.0, 0.0, 0.0, 0.0)  # Child window bg (transparent)
-    POPUP_BG          : RGBA = (0.24,  0.24,  0.24,  0.96)  # Popup background (Unity #3E3E3E)
-    MENU_BAR_BG       : RGBA = (0.16,  0.16,  0.16,  1.0)  # Menu bar background (#292929)
-    STATUS_BAR_BG     : RGBA = (0.13,  0.13,  0.13,  1.0)  # Status bar background (Unity #212121)
+    POPUP_BG          : RGBA = (0.110, 0.114, 0.122, 1.0)  # Popup background (surface #1C1D1F)
+    MENU_BAR_BG       : RGBA = (0.039, 0.043, 0.047, 1.0)  # Menu bar background (#0A0B0C)
+    STATUS_BAR_BG     : RGBA = (0.039, 0.043, 0.047, 1.0)  # Status bar background (#0A0B0C)
 
     # -- Border Colors ------------------------------------------------
-    BORDER            : RGBA = (0.10,  0.10,  0.10,  1.0)  # Standard border (Unity #1A1A1A)
+    BORDER            : RGBA = (0.149, 0.153, 0.165, 1.0)  # Hairline border (#26272A)
     BORDER_TRANSPARENT: RGBA = (0.0, 0.0, 0.0, 0.0)  # Transparent border
     BORDER_SHADOW     : RGBA = (0.0, 0.0, 0.0, 0.0)  # Border shadow
 
     # -- Frame Colors (input fields, sliders) ------------------
-    FRAME_BG          : RGBA = (0.165, 0.165, 0.165, 1.0)  # Default background (Unity #2A2A2A)
-    FRAME_BG_HOVERED  : RGBA = (0.20,  0.20,  0.20,  1.0)  # On hover
-    FRAME_BG_ACTIVE   : RGBA = (0.24,  0.17,  0.17,  1.0)  # On active (red tint)
+    FRAME_BG          : RGBA = (0.067, 0.071, 0.075, 1.0)  # Field background (#111213)
+    FRAME_BG_HOVERED  : RGBA = (0.110, 0.114, 0.122, 1.0)  # On hover (surface)
+    FRAME_BG_ACTIVE   : RGBA = (0.207, 0.106, 0.117, 1.0)  # On active (field + 18% accent)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Button Colors
     # ══════════════════════════════════════════════════════════════════════
 
     # -- Regular Button -----------------------------------------------
-    BTN_NORMAL        : RGBA = (0.25,  0.25,  0.25,  1.0)  # Normal (Unity #404040)
-    BTN_HOVERED       : RGBA = (0.30,  0.25,  0.25,  1.0)  # Hovered (red tint)
-    BTN_ACTIVE        : RGBA = (0.35,  0.22,  0.22,  1.0)  # Active (deeper red)
+    BTN_NORMAL        : RGBA = (0.137, 0.141, 0.153, 1.0)  # Normal (raised #232427)
+    BTN_HOVERED       : RGBA = (0.247, 0.180, 0.196, 1.0)  # Hovered (hover + 12% accent)
+    BTN_ACTIVE        : RGBA = (0.350, 0.178, 0.200, 1.0)  # Active (raised + 30% accent)
 
     # -- Ghost Button ( )
     #    Transparent background, used in toolbar and status bar
@@ -231,47 +240,47 @@ class Theme:
     BTN_GHOST_ACTIVE  : RGBA = (0.32, 0.25, 0.25, 1.0)  # Active (deeper red)
 
     # -- Status Bar Ghost Button ( )
-    BTN_SB_HOVERED    : RGBA = (0.20, 0.18, 0.18, 1.0)  # Hovered (subtle red)
-    BTN_SB_ACTIVE     : RGBA = (0.24, 0.20, 0.20, 1.0)  # Active
+    BTN_SB_HOVERED    : RGBA = (0.165, 0.169, 0.180, 0.6)  # Hovered (hover plate)
+    BTN_SB_ACTIVE     : RGBA = (0.301, 0.188, 0.206, 0.8)  # Active (hover + 20% accent)
 
     # -- Selection Highlight ( )
-    BTN_SELECTED      : RGBA = (0.922, 0.341, 0.341, 0.55)  # Selected state (theme red, semi-transparent overlay)
-    BTN_SUBTLE_HOVER  : RGBA = (0.20, 0.18, 0.18, 1.0)  # Subtle hover on icons
+    BTN_SELECTED      : RGBA = (0.847, 0.263, 0.310, 0.55)  # Selected state (accent, semi-transparent overlay)
+    BTN_SUBTLE_HOVER  : RGBA = (0.165, 0.169, 0.180, 1.0)  # Subtle hover on icons
 
     # -- Toolbar Play-Mode Buttons
-    PLAY_ACTIVE       : RGBA = (0.20, 0.45, 0.30, 1.0)  # Playing (green tint)
-    PAUSE_ACTIVE      : RGBA = (0.50, 0.40, 0.15, 1.0)  # Paused (amber tint)
-    BTN_IDLE          : RGBA = (0.18, 0.18, 0.18, 1.0)  # Idle state (neutral dark)
-    BTN_DISABLED      : RGBA = (0.15, 0.15, 0.15, 0.4)  # Disabled state
+    PLAY_ACTIVE       : RGBA = (0.457, 0.196, 0.224, 1.0)  # Playing (LIVE red tint)
+    PAUSE_ACTIVE      : RGBA = (0.502, 0.397, 0.204, 1.0)  # Paused (amber tint)
+    BTN_IDLE          : RGBA = (0.110, 0.114, 0.122, 1.0)  # Idle state (surface)
+    BTN_DISABLED      : RGBA = (0.137, 0.141, 0.153, 0.4)  # Disabled state
 
     # -- Accent Button
-    APPLY_BUTTON      : RGBA = (0.922, 0.341, 0.341, 1.0)  # Apply/Confirm (theme red #EB5757)
+    APPLY_BUTTON      : RGBA = (0.847, 0.263, 0.310, 1.0)  # Apply/Confirm (accent #D8434F)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Headers, Tree Nodes, Selectables
     # ══════════════════════════════════════════════════════════════════════
 
-    HEADER            : RGBA = (0.235, 0.235, 0.235, 1.0)  # Normal (Unity #3C3C3C)
-    HEADER_HOVERED    : RGBA = (0.28,  0.24,  0.24,  1.0)  # Hovered (red tint)
-    HEADER_ACTIVE     : RGBA = (0.32,  0.25,  0.25,  1.0)  # Active (deeper red)
-    SELECTION_BG      : RGBA = (0.922, 0.341, 0.341, 1.0)  # Selection bg (theme accent #EB5757)
-    HIERARCHY_ROW_HOVER    : RGBA = (0.28, 0.28, 0.28, 1.0)  # Neutral Unity-style hover
+    HEADER            : RGBA = (0.137, 0.141, 0.153, 1.0)  # Normal (raised)
+    HEADER_HOVERED    : RGBA = (0.288, 0.186, 0.203, 1.0)  # Hovered (hover + 18% accent)
+    HEADER_ACTIVE     : RGBA = (0.370, 0.197, 0.219, 1.0)  # Active (hover + 30% accent)
+    SELECTION_BG      : RGBA = (0.847, 0.263, 0.310, 1.0)  # Selection bg (accent #D8434F)
+    HIERARCHY_ROW_HOVER    : RGBA = (0.165, 0.169, 0.180, 1.0)  # Neutral hover plate
     # Exact same low-brightness accent overlay used by Project/FileManager selected icons.
-    HIERARCHY_ROW_SELECTED : RGBA = (0.922, 0.341, 0.341, 0.22)
+    HIERARCHY_ROW_SELECTED : RGBA = (0.847, 0.263, 0.310, 0.22)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Splitter Colors
     # ══════════════════════════════════════════════════════════════════════
 
-    SPLITTER_HOVER    : RGBA = (0.35, 0.25, 0.25, 0.6)  # Hovered (red tint)
-    SPLITTER_ACTIVE   : RGBA = (0.40, 0.28, 0.28, 0.8)  # Active
+    SPLITTER_HOVER    : RGBA = (0.288, 0.186, 0.203, 0.6)  # Hovered (accent tint)
+    SPLITTER_ACTIVE   : RGBA = (0.370, 0.197, 0.219, 0.8)  # Active
 
     # ══════════════════════════════════════════════════════════════════════
     #  Drag & Drop
     # ══════════════════════════════════════════════════════════════════════
 
     DRAG_DROP_TARGET        : RGBA = (0.0, 0.0, 0.0, 0.0)  # Drop target highlight
-    DND_DROP_OUTLINE        : RGBA = (1.0, 1.0, 1.0, 0.85)  # Drop outline color
+    DND_DROP_OUTLINE        : RGBA = (0.957, 0.918, 0.859, 0.75)  # Drop outline color (warm white)
     DND_DROP_OUTLINE_THICKNESS: float = 1.5  # Outline thickness (px)
     DND_REORDER_LINE        : RGBA = (1.0, 1.0, 1.0, 1.0)  # One solid-white reorder line
     DND_REORDER_LINE_THICKNESS: float = 1.0  # Crisp line; no anti-aliased gray fringe
@@ -282,24 +291,24 @@ class Theme:
     #  Console & Log Colors
     # ══════════════════════════════════════════════════════════════════════
 
-    LOG_INFO          : RGBA = (0.82,  0.82,  0.85,  1.0)  # Info log
-    LOG_WARNING       : RGBA = (0.890, 0.710, 0.300, 1.0)  # Warning log (yellow)
-    LOG_ERROR         : RGBA = (0.922, 0.341, 0.341, 1.0)  # Error log (red)
-    LOG_TRACE         : RGBA = (0.50,  0.50,  0.50,  1.0)  # Trace log (gray)
-    LOG_BADGE         : RGBA = (0.55,  0.55,  0.55,  1.0)  # Log badge (count)
+    LOG_INFO          : RGBA = (0.914, 0.894, 0.855, 1.0)  # Info log (warm white)
+    LOG_WARNING       : RGBA = (0.949, 0.710, 0.267, 1.0)  # Warning log (#F2B544)
+    LOG_ERROR         : RGBA = (1.0,   0.420, 0.420, 1.0)  # Error log (#FF6B6B)
+    LOG_TRACE         : RGBA = (0.663, 0.647, 0.616, 1.0)  # Trace log (dim)
+    LOG_BADGE         : RGBA = (0.663, 0.647, 0.616, 1.0)  # Log badge (count)
     LOG_DIM           : RGBA = (0.133, 0.133, 0.133, 0.6)  # Dimmed log row
 
-    META_TEXT         : RGBA = (1.0, 1.0, 1.0, 1.0)  # Meta text (white)
-    SUCCESS_TEXT      : RGBA = (0.70,  0.80,  0.70,  1.0)  # Success text (green)
-    WARNING_TEXT      : RGBA = (0.90,  0.60,  0.20,  1.0)  # Warning text (orange)
-    ERROR_TEXT        : RGBA = (0.90,  0.30,  0.30,  1.0)  # Error text (red)
-    PREFAB_TEXT       : RGBA = (235/255, 87/255, 87/255, 1.0)  # Prefab instance text (theme red)
-    PREFAB_HEADER_BG  : RGBA = (0.235, 0.235, 0.235, 1.0)  # Prefab header bg (matches HEADER)
+    META_TEXT         : RGBA = (0.435, 0.424, 0.400, 1.0)  # Meta text (= TEXT_DISABLED)
+    SUCCESS_TEXT      : RGBA = (0.298, 0.765, 0.541, 1.0)  # Success text (#4CC38A)
+    WARNING_TEXT      : RGBA = (0.949, 0.710, 0.267, 1.0)  # Warning text (#F2B544)
+    ERROR_TEXT        : RGBA = (1.0,   0.420, 0.420, 1.0)  # Error text (#FF6B6B)
+    PREFAB_TEXT       : RGBA = (0.949, 0.635, 0.608, 1.0)  # Prefab instance text (World light #F2A29B)
+    PREFAB_HEADER_BG  : RGBA = (0.110, 0.114, 0.122, 1.0)  # Prefab header bg (surface)
     PREFAB_HEADER_H   : float = 28.0  # Prefab header row height
     PREFAB_HEADER_BTN_GAP : float = 4.0  # Prefab header button gap
-    PREFAB_BTN_NORMAL : RGBA = (235.0 / 255.0, 87.0 / 255.0, 87.0 / 255.0, 0.95)  # Prefab button normal (theme red)
-    PREFAB_BTN_HOVERED: RGBA = (1.0, 107.0 / 255.0, 107.0 / 255.0, 1.0)  # Prefab button hovered (lighter red)
-    PREFAB_BTN_ACTIVE : RGBA = (220.0 / 255.0, 67.0 / 255.0, 67.0 / 255.0, 1.0)  # Prefab button active (deeper red)
+    PREFAB_BTN_NORMAL : RGBA = (0.847, 0.263, 0.310, 0.95)  # Prefab button normal (accent)
+    PREFAB_BTN_HOVERED: RGBA = (0.878, 0.410, 0.448, 1.0)  # Prefab button hovered (lighter accent)
+    PREFAB_BTN_ACTIVE : RGBA = (0.745, 0.231, 0.273, 1.0)  # Prefab button active (deeper accent)
 
     # -- Console Alternating Row Background
     ROW_ALT           : RGBA = (0.0, 0.0, 0.0, 0.06)  # Alternate row bg (subtle)
@@ -309,8 +318,8 @@ class Theme:
     #  Play-Mode Viewport Border
     # ══════════════════════════════════════════════════════════════════════
 
-    BORDER_PLAY       : RGBA = (0.012, 0.871, 0.427, 1.0)  # Playing border (green #03DE6D)
-    BORDER_PAUSE      : RGBA = (1.0,   0.718, 0.302, 1.0)  # Paused border (amber #FFB74D)
+    BORDER_PLAY       : RGBA = (0.847, 0.263, 0.310, 1.0)  # Playing border (LIVE red #D8434F)
+    BORDER_PAUSE      : RGBA = (0.949, 0.710, 0.267, 1.0)  # Paused border (warn #F2B544)
     BORDER_THICKNESS  : float = 2.0  # Border thickness (px)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -325,7 +334,7 @@ class Theme:
     INSPECTOR_DEFAULT_RATIO    = 0.4  # Properties ratio
     INSPECTOR_LABEL_PAD        = 12.0  # Label padding
     INSPECTOR_MIN_LABEL_WIDTH  = 132.0  # Min label width
-    INSPECTOR_FRAME_PAD        = (4.0, 2.0)  # Frame padding
+    INSPECTOR_FRAME_PAD        = (6.0, 4.5)  # Mirrored from native theme registry
     # Left text inset for object/reference fields so the label vertically and
     # horizontally aligns with neighbouring scalar widgets (Unity ObjectField).
     OBJECT_FIELD_TEXT_INSET_X  : float = 12.0
@@ -349,7 +358,7 @@ class Theme:
     INSPECTOR_ACTION_ALIGN_X    = 0.0  # Action button alignment
     INSPECTOR_HEADER_CONTENT_INDENT = 28.0  # Header content indent (px)
     ADD_COMP_SEARCH_W          = 240  # "Search components" input width
-    COMPONENT_ICON_SIZE        = 16  # Component icon size (px)
+    COMPONENT_ICON_SIZE        = 18.0  # Component icon size (px)
     COMP_ENABLED_CB_OFFSET     = 34  # Enabled checkbox right offset (matches 75% checkbox)
 
     # -- Checkbox Style (square at 75%; label text stays ambient size)
@@ -359,41 +368,41 @@ class Theme:
     INSPECTOR_CHECKBOX_BOX_PX    = 14.0  # Fixed square side length (one size everywhere)
 
     # -- Inspector Header Colors
-    INSPECTOR_HEADER_PRIMARY    : RGBA = (0.235, 0.235, 0.235, 1.0)  # Primary (Unity gray)
-    INSPECTOR_HEADER_PRIMARY_HOVERED : RGBA = (0.28,  0.24,  0.24,  1.0)  # Primary hovered (red tint)
-    INSPECTOR_HEADER_PRIMARY_ACTIVE  : RGBA = (0.32,  0.25,  0.25,  1.0)  # Primary active
-    INSPECTOR_HEADER_SELECTED   : RGBA = (0.40,  0.22,  0.22,  1.0)  # Selected component header (theme red tint)
-    INSPECTOR_HEADER_SELECTED_HOVERED : RGBA = (0.46,  0.24,  0.24,  1.0)
-    INSPECTOR_HEADER_SELECTED_ACTIVE  : RGBA = (0.50,  0.26,  0.26,  1.0)
-    INSPECTOR_HEADER_SECONDARY  : RGBA = (0.18,  0.18,  0.18,  1.0)  # Secondary (same scale, darker tone)
-    INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.22,  0.20,  0.20,  1.0)
-    INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.26,  0.22,  0.22,  1.0)
-    INSPECTOR_HEADER_TERTIARY  : RGBA = (0.125, 0.125, 0.125, 1.0)
-    INSPECTOR_HEADER_TERTIARY_HOVERED : RGBA = (0.18, 0.16, 0.16, 1.0)
-    INSPECTOR_HEADER_TERTIARY_ACTIVE  : RGBA = (0.22, 0.18, 0.18, 1.0)
-    INSPECTOR_HEADER_LIST       : RGBA = (0.16,  0.16,  0.16,  1.0)  # List header (distinct from component header)
-    INSPECTOR_HEADER_LIST_HOVERED : RGBA = (0.20,  0.18,  0.18,  1.0)
-    INSPECTOR_HEADER_LIST_ACTIVE  : RGBA = (0.24,  0.20,  0.20,  1.0)
+    INSPECTOR_HEADER_PRIMARY    : RGBA = (0.110, 0.114, 0.122, 1.0)  # Primary (surface #1C1D1F)
+    INSPECTOR_HEADER_PRIMARY_HOVERED : RGBA = (0.165, 0.169, 0.180, 1.0)  # Primary hovered (hover plate)
+    INSPECTOR_HEADER_PRIMARY_ACTIVE  : RGBA = (0.288, 0.186, 0.203, 1.0)  # Primary active (accent tint)
+    INSPECTOR_HEADER_SELECTED   : RGBA = (0.228, 0.138, 0.152, 1.0)  # Selected component header (surface + 16% accent)
+    INSPECTOR_HEADER_SELECTED_HOVERED : RGBA = (0.272, 0.147, 0.163, 1.0)
+    INSPECTOR_HEADER_SELECTED_ACTIVE  : RGBA = (0.316, 0.156, 0.175, 1.0)
+    INSPECTOR_HEADER_SECONDARY  : RGBA = (0.098, 0.102, 0.108, 1.0)  # Secondary (same scale, darker tone)
+    INSPECTOR_HEADER_SECONDARY_HOVERED : RGBA = (0.137, 0.141, 0.153, 1.0)
+    INSPECTOR_HEADER_SECONDARY_ACTIVE  : RGBA = (0.165, 0.169, 0.180, 1.0)
+    INSPECTOR_HEADER_TERTIARY  : RGBA = (0.086, 0.090, 0.094, 1.0)
+    INSPECTOR_HEADER_TERTIARY_HOVERED : RGBA = (0.137, 0.141, 0.153, 1.0)
+    INSPECTOR_HEADER_TERTIARY_ACTIVE  : RGBA = (0.165, 0.169, 0.180, 1.0)
+    INSPECTOR_HEADER_LIST       : RGBA = (0.098, 0.102, 0.108, 1.0)  # List header (distinct from component header)
+    INSPECTOR_HEADER_LIST_HOVERED : RGBA = (0.137, 0.141, 0.153, 1.0)
+    INSPECTOR_HEADER_LIST_ACTIVE  : RGBA = (0.165, 0.169, 0.180, 1.0)
 
     # -- Inspector Inline Buttons
-    INSPECTOR_INLINE_BTN_IDLE  : RGBA = (0.20,  0.20,  0.20,  1.0)  # Idle
-    INSPECTOR_INLINE_BTN_HOVER : RGBA = (0.28,  0.24,  0.24,  1.0)  # Hover (red tint)
-    INSPECTOR_INLINE_BTN_ACTIVE: RGBA = (0.922, 0.341, 0.341, 1.0)  # Active (theme red #EB5757)
-    INSPECTOR_INLINE_BTN_ON    : RGBA = (0.80,  0.30,  0.30,  1.0)  # Active (dimmer red)
+    INSPECTOR_INLINE_BTN_IDLE  : RGBA = (0.137, 0.141, 0.153, 1.0)  # Idle (raised)
+    INSPECTOR_INLINE_BTN_HOVER : RGBA = (0.247, 0.180, 0.196, 1.0)  # Hover (accent tint)
+    INSPECTOR_INLINE_BTN_ACTIVE: RGBA = (0.847, 0.263, 0.310, 1.0)  # Active (accent #D8434F)
+    INSPECTOR_INLINE_BTN_ON    : RGBA = (0.705, 0.239, 0.279, 1.0)  # Toggled on (dimmer accent)
     INSPECTOR_INLINE_BTN_GAP   : float = 4.0  # Button gap
     INSPECTOR_INLINE_BTN_H     : float = 0.0  # Button height (0=auto)
 
     # -- List Body (Unity-style boxed area)
-    INSPECTOR_LIST_BODY_BG      : RGBA = (0.10,  0.10,  0.10,  0.82)  # Distinct dark bg behind list items
-    INSPECTOR_LIST_BODY_BORDER  : RGBA = (0.22,  0.22,  0.22,  1.0)  # Border separating list body from component bg
+    INSPECTOR_LIST_BODY_BG      : RGBA = (0.078, 0.082, 0.086, 1.0)  # Distinct dark bg behind list items
+    INSPECTOR_LIST_BODY_BORDER  : RGBA = (0.149, 0.153, 0.165, 1.0)  # Hairline separating list body from component bg
 
     # -- Curve editor -------------------------------------------------
-    CURVE_EDITOR_BG             : RGBA = (0.13, 0.13, 0.13, 1.0)
-    CURVE_EDITOR_GRID           : RGBA = (0.28, 0.28, 0.28, 0.55)
-    CURVE_EDITOR_AXIS           : RGBA = (0.48, 0.48, 0.48, 0.72)
-    CURVE_EDITOR_LINE           : RGBA = (0.922, 0.341, 0.341, 1.0)
-    CURVE_EDITOR_KEY            : RGBA = (0.94, 0.94, 0.94, 1.0)
-    CURVE_EDITOR_KEY_SELECTED   : RGBA = (0.922, 0.341, 0.341, 1.0)
+    CURVE_EDITOR_BG             : RGBA = (0.067, 0.071, 0.075, 1.0)
+    CURVE_EDITOR_GRID           : RGBA = (0.165, 0.169, 0.180, 0.55)
+    CURVE_EDITOR_AXIS           : RGBA = (0.435, 0.424, 0.400, 0.72)
+    CURVE_EDITOR_LINE           : RGBA = (0.847, 0.263, 0.310, 1.0)
+    CURVE_EDITOR_KEY            : RGBA = (0.914, 0.894, 0.855, 1.0)
+    CURVE_EDITOR_KEY_SELECTED   : RGBA = (0.847, 0.263, 0.310, 1.0)
     CURVE_EDITOR_TANGENT        : RGBA = (0.72, 0.54, 0.54, 0.90)
     CURVE_EDITOR_PREVIEW_H      : float = 46.0
     CURVE_EDITOR_CANVAS_H       : float = 220.0
@@ -436,7 +445,7 @@ class Theme:
     TREE_FRAME_PAD    = (2.0, 2.0)  # Tree frame padding (Unity-compact)
     TREE_INDENT       : float = 14.0  # Tree indent per level (Unity: ~14px)
     TREE_ROW_ALT_BG   : RGBA = (0.0, 0.0, 0.0, 0.08)  # Alternating row tint
-    TREE_DND_LINE_CLR : RGBA = (0.922, 0.341, 0.341, 1.0)  # Drag insertion line (theme red)
+    TREE_DND_LINE_CLR : RGBA = (0.847, 0.263, 0.310, 1.0)  # Drag insertion line (accent)
     PREFAB_ICON       : str  = "\u25C6"  # Prefab icon (diamond)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -457,9 +466,9 @@ class Theme:
     # -- Status/Progress Indicator ( )
     STATUS_PROGRESS_FRACTION : float = 0.25  # Right fraction (1/4)
     STATUS_PROGRESS_H        : float = 4.0  # Progress bar height
-    STATUS_PROGRESS_CLR      : RGBA = (235/255, 87/255, 87/255, 1.0)  # Progress color (theme red)
-    STATUS_PROGRESS_BG       : RGBA = (0.10, 0.10, 0.10, 1.0)  # Progress bg
-    STATUS_PROGRESS_LABEL_CLR: RGBA = (0.65, 0.65, 0.65, 1.0)  # Progress label color
+    STATUS_PROGRESS_CLR      : RGBA = (0.847, 0.263, 0.310, 1.0)  # Progress color (accent)
+    STATUS_PROGRESS_BG       : RGBA = (0.067, 0.071, 0.075, 1.0)  # Progress bg (field)
+    STATUS_PROGRESS_LABEL_CLR: RGBA = (0.663, 0.647, 0.616, 1.0)  # Progress label color (dim)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Project Panel
@@ -485,14 +494,14 @@ class Theme:
     SCENE_ORIENT_AXIS_LEN     : float = 30.0  # Axis line length
     SCENE_ORIENT_END_RADIUS   : float = 7.0  # Axis end circle radius
     SCENE_ORIENT_NEG_RADIUS   : float = 4.0  # Negative axis circle radius
-    SCENE_ORIENT_BG           : RGBA = (0.10, 0.10, 0.10, 0.6)  # Background (neutral dark)
+    SCENE_ORIENT_BG           : RGBA = (0.086, 0.090, 0.094, 0.6)  # Background (base)
     SCENE_ORIENT_FLY_DURATION : float = 0.3  # Fly animation duration (s)
 
     # -- Scene Overlay Dropdown
-    SCENE_OVERLAY_COMBO_BG    : RGBA = (0.14, 0.14, 0.14, 0.85)  # Background (neutral dark)
-    SCENE_OVERLAY_COMBO_HOVER : RGBA = (0.22, 0.19, 0.19, 0.90)  # Hover (red tint)
-    SCENE_OVERLAY_COMBO_ACTIVE: RGBA = (0.18, 0.16, 0.16, 0.95)  # Active (red tint)
-    SCENE_OVERLAY_ROUNDING    : float = 4.0  # Rounding
+    SCENE_OVERLAY_COMBO_BG    : RGBA = (0.110, 0.114, 0.122, 0.85)  # Background (surface)
+    SCENE_OVERLAY_COMBO_HOVER : RGBA = (0.247, 0.180, 0.196, 0.90)  # Hover (accent tint)
+    SCENE_OVERLAY_COMBO_ACTIVE: RGBA = (0.208, 0.153, 0.169, 0.95)  # Active (accent tint)
+    SCENE_OVERLAY_ROUNDING    : float = 0.0  # Rounding (zero-rounding rule)
     SCENE_OVERLAY_BORDER_SIZE : float = 0.0  # Border size
 
     # ══════════════════════════════════════════════════════════════════════
@@ -500,20 +509,20 @@ class Theme:
     # ══════════════════════════════════════════════════════════════════════
 
     # -- Canvas
-    UI_EDITOR_CANVAS_BG       : RGBA = (0.12, 0.12, 0.12, 1.0)  # Canvas background (neutral dark)
+    UI_EDITOR_CANVAS_BG       : RGBA = (0.110, 0.114, 0.122, 1.0)  # Canvas background (surface)
     UI_EDITOR_CANVAS_BORDER   : RGBA = (0.30, 0.30, 0.30, 1.0)  # Canvas border (neutral gray)
 
     # -- Multi-Canvas Layout
     UI_EDITOR_CANVAS_HEADER_H      : float = 22.0   # Canvas header bar height (screen px)
-    UI_EDITOR_CANVAS_HEADER_BG     : RGBA = (0.18, 0.18, 0.18, 1.0)
-    UI_EDITOR_CANVAS_HEADER_BG_FOC : RGBA = (0.35, 0.22, 0.22, 1.0)  # Focused canvas header (theme red tint)
-    UI_EDITOR_CANVAS_HEADER_TEXT   : RGBA = (0.85, 0.85, 0.85, 1.0)
+    UI_EDITOR_CANVAS_HEADER_BG     : RGBA = (0.137, 0.141, 0.153, 1.0)
+    UI_EDITOR_CANVAS_HEADER_BG_FOC : RGBA = (0.350, 0.178, 0.200, 1.0)  # Focused canvas header (accent tint)
+    UI_EDITOR_CANVAS_HEADER_TEXT   : RGBA = (0.914, 0.894, 0.855, 1.0)
     UI_EDITOR_CANVAS_SPACING       : float = 60.0   # Auto-layout gap between canvases (workspace px)
     UI_EDITOR_CANVAS_INACTIVE_ALPHA: float = 0.35    # Alpha multiplier for inactive canvases
 
     # -- Element Interaction
-    UI_EDITOR_ELEMENT_HOVER   : RGBA = (0.922, 0.341, 0.341, 0.12)  # Element hover (red glow)
-    UI_EDITOR_ELEMENT_SELECT  : RGBA = (0.922, 0.341, 0.341, 1.0)  # Element selected (theme red)
+    UI_EDITOR_ELEMENT_HOVER   : RGBA = (0.847, 0.263, 0.310, 0.12)  # Element hover (accent glow)
+    UI_EDITOR_ELEMENT_SELECT  : RGBA = (0.847, 0.263, 0.310, 1.0)  # Element selected (accent)
 
     # -- Handles
     UI_EDITOR_HANDLE_COLOR    : RGBA = (1.0, 1.0, 1.0, 1.0)  # Handle color
@@ -527,7 +536,7 @@ class Theme:
 
     # -- Labels
     UI_EDITOR_LABEL_OFFSET    : float = 16.0  # Canvas top label offset (px)
-    UI_EDITOR_LABEL_COLOR     : RGBA = (0.6, 0.6, 0.6, 0.7)  # Label color
+    UI_EDITOR_LABEL_COLOR     : RGBA = (0.663, 0.647, 0.616, 0.7)  # Label color
 
     # -- Rotation Handle
     UI_EDITOR_ROTATE_DISTANCE : float = 22.0  # Offset from top-mid (px)
@@ -541,7 +550,7 @@ class Theme:
     # -- Placeholder
     UI_EDITOR_PLACEHOLDER_TINT : float = 0.3  # Placeholder tint multiplier
     UI_EDITOR_PLACEHOLDER_ALPHA: float = 0.5  # Placeholder alpha
-    UI_EDITOR_FALLBACK_TEXT   : RGBA = (0.7, 0.7, 0.7, 1.0)  # Fallback text color
+    UI_EDITOR_FALLBACK_TEXT   : RGBA = (0.663, 0.647, 0.616, 1.0)  # Fallback text color
 
     # -- Window & Toolbar Layout
     UI_EDITOR_INIT_WINDOW_W   : float = 800.0  # Initial window width
@@ -571,8 +580,8 @@ class Theme:
     UI_EDITOR_SNAP_DEFAULT    : int = 100  # Step at smallest zoom
 
     # -- Alignment Guides
-    UI_EDITOR_ALIGN_GUIDE     : RGBA = (0.922, 0.341, 0.341, 0.95)  # Guide line color
-    UI_EDITOR_ALIGN_GUIDE_FAINT: RGBA = (0.922, 0.341, 0.341, 0.30)  # Faint guide color
+    UI_EDITOR_ALIGN_GUIDE     : RGBA = (0.847, 0.263, 0.310, 0.95)  # Guide line color
+    UI_EDITOR_ALIGN_GUIDE_FAINT: RGBA = (0.847, 0.263, 0.310, 0.30)  # Faint guide color
     UI_EDITOR_ALIGN_GUIDE_W   : float = 1.5  # Guide line width
     UI_EDITOR_ALIGN_SNAP_PX   : float = 8.0  # Snap threshold (px)
     UI_EDITOR_ALIGN_BTN_W     : float = 34.0  # Align button width
@@ -639,9 +648,10 @@ class Theme:
     # ══════════════════════════════════════════════════════════════════════
 
     # -- Text Icons (Unicode )
-    ICON_PLUS          : str = "+"
-    ICON_MINUS         : str = "-"
-    ICON_REMOVE        : str = "\u00d7"  # Multiplication sign
+    # Deprecated text glyphs — do not use for buttons. Prefer EditorIcons / IGUI.icon_button.
+    ICON_PLUS          : str = "plus"
+    ICON_MINUS         : str = "minus"
+    ICON_REMOVE        : str = "remove"
     ICON_PICKER        : str = "\u2299"  # Circled dot
     ICON_WARNING       : str = "\u25b2"  # Triangle
     ICON_ERROR         : str = "\u25cf"  # Filled circle
@@ -674,6 +684,44 @@ class Theme:
         ctx.push_style_color(ImGuiCol.ButtonHovered,  *Theme.BTN_GHOST_HOVERED)
         ctx.push_style_color(ImGuiCol.ButtonActive,   *Theme.BTN_GHOST_ACTIVE)
         return 3
+
+    @staticmethod
+    def push_button_kind_style(ctx, kind: str) -> tuple[int, int]:
+        """Push action-button colors for *kind*. Returns ``(colors, vars)``.
+
+        ``primary`` solid accent · ``secondary`` default raised button ·
+        ``ghost`` transparent until hovered · ``danger`` transparent with an
+        error outline and error text. Pop with :meth:`pop_button_kind_style`.
+        """
+        if kind == "primary":
+            accent = Theme.ROLE_ACCENT
+            ctx.push_style_color(ImGuiCol.Button, *accent)
+            ctx.push_style_color(ImGuiCol.ButtonHovered, *_mix_rgba(accent, Theme.ROLE_TEXT, 0.15))
+            ctx.push_style_color(ImGuiCol.ButtonActive, *_mix_rgba(accent, (0.0, 0.0, 0.0, 1.0), 0.15))
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ROLE_TEXT)
+            return 4, 0
+        if kind == "ghost":
+            return Theme.push_ghost_button_style(ctx), 0
+        if kind == "danger":
+            r, g, b, _ = Theme.ERROR_TEXT
+            ctx.push_style_color(ImGuiCol.Button, 0.0, 0.0, 0.0, 0.0)
+            ctx.push_style_color(ImGuiCol.ButtonHovered, r, g, b, 0.18)
+            ctx.push_style_color(ImGuiCol.ButtonActive, r, g, b, 0.30)
+            ctx.push_style_color(ImGuiCol.Border, r, g, b, 0.55)
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
+            ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 1.0)
+            return 5, 1
+        if kind == "secondary":
+            return 0, 0
+        raise ValueError(f"unknown button kind: {kind!r}")
+
+    @staticmethod
+    def pop_button_kind_style(ctx, pushed: tuple[int, int]) -> None:
+        colors, style_vars = pushed
+        if style_vars:
+            ctx.pop_style_var(style_vars)
+        if colors:
+            ctx.pop_style_color(colors)
 
     @staticmethod
     def push_flat_button_style(ctx, r: float, g: float, b: float, a: float = 1.0) -> int:
@@ -842,17 +890,14 @@ def _apply_native_theme_overrides() -> None:
 
     applied = 0
     for name, value in get_editor_theme_colors().items():
-        if hasattr(Theme, name):
-            setattr(Theme, name, tuple(value))
-            applied += 1
+        setattr(Theme, name, tuple(value))
+        applied += 1
     for name, value in get_editor_theme_vec2s().items():
-        if hasattr(Theme, name):
-            setattr(Theme, name, tuple(value))
-            applied += 1
+        setattr(Theme, name, tuple(value))
+        applied += 1
     for name, value in get_editor_theme_floats().items():
-        if hasattr(Theme, name):
-            setattr(Theme, name, float(value))
-            applied += 1
+        setattr(Theme, name, float(value))
+        applied += 1
     Theme._NATIVE_OVERRIDES_APPLIED = applied
 
 
@@ -902,3 +947,23 @@ Theme._NATIVE_OVERRIDES_APPLIED = 0
 Theme._NATIVE_THEME_GENERATION = 0
 _apply_native_theme_overrides()
 Theme._NATIVE_THEME_GENERATION = _native_theme_generation()
+
+
+_PIN_COLOR_TOKENS = {
+    "bool": "PIN_BOOL", "float": "PIN_FLOAT", "f32": "PIN_FLOAT",
+    "int": "PIN_INT", "i32": "PIN_INT", "u32": "PIN_INT",
+    "vec2": "PIN_VECTOR", "vec3": "PIN_VECTOR", "vec4": "PIN_VECTOR",
+    "mat3": "PIN_VECTOR", "mat4": "PIN_VECTOR", "color": "PIN_COLOR",
+    "gradient": "PIN_COLOR", "curve": "DOMAIN_ANIMATION",
+    "mesh": "PIN_VECTOR", "texture2d": "PIN_COLOR", "asset_ref": "TEXT_DIM",
+    "exec": "PIN_TRIGGER", "event": "PIN_TRIGGER", "trigger": "PIN_TRIGGER",
+}
+
+
+def pin_color(value_type):
+    """One data-type palette for ports, edges and parameter rows."""
+    key = value_type.value if hasattr(value_type, "value") else value_type
+    return getattr(Theme, _PIN_COLOR_TOKENS.get(key, "PIN_TRIGGER"))
+
+
+Theme.pin_color = staticmethod(pin_color)

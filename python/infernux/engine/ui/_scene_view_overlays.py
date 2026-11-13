@@ -9,6 +9,7 @@ from infernux.engine.i18n import t
 from .theme import Theme, ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar
 from .viewport_utils import ViewportInfo
 from .editor_icons import EditorIcons
+from .igui import IGUI
 from .dpi import editor_dpi_scale
 
 # Tool mode constants — imported from scene_view_panel
@@ -52,7 +53,7 @@ class SceneViewOverlaysMixin:
         dpi = editor_dpi_scale(ctx)
         ctx.set_cursor_pos_x(cursor_start_x + 8.0 * dpi)
         ctx.set_cursor_pos_y(cursor_start_y + 8.0 * dpi)
-        overlay_hovered = self._draw_gizmo_overlay(ctx)
+        overlay_hovered = self._draw_gizmo_overlay(ctx, vp)
 
         # Prefab mode overlay banner
         from infernux.engine.scene_manager import SceneFileManager
@@ -417,7 +418,7 @@ class SceneViewOverlaysMixin:
             0.97,
         )
         ctx.push_style_color(ImGuiCol.Border, *Theme.BORDER)
-        ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, 5.0 * dpi)
+        ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, 0.0)
         visible = ctx.begin_child("##particle_preview_controls", width, height, True)
         try:
             hovered = bool(ctx.is_window_hovered())
@@ -457,11 +458,13 @@ class SceneViewOverlaysMixin:
             ctx.same_line(96.0 * dpi)
             ctx.set_next_item_width(-1)
             speed = float(
-                ctx.float_slider(
+                IGUI.slider_float(
+                    ctx,
                     "##particle_preview_speed",
                     self._particle_preview_speed,
                     0.05,
                     4.0,
+                    format="%.2f",
                 )
             )
             self._particle_preview_speed = min(4.0, max(0.05, speed))
@@ -511,64 +514,26 @@ class SceneViewOverlaysMixin:
                     )
                 except (AttributeError, ReferenceError, RuntimeError, ValueError):
                     self._particle_preview_prepared = False
-            if self._particle_preview_playing:
-                pause_label = t("particle_preview.pause")
-                ctx.push_style_color(ImGuiCol.Button, *Theme.PLAY_ACTIVE)
-                pause_clicked = ctx.button(pause_label, width=72.0 * dpi)
-                ctx.pop_style_color(1)
-                if semantic_capture and callable(record_item):
-                    record_item(
-                        "button",
-                        pause_label,
-                        True,
-                        "scene_view.particle_preview.pause",
-                    )
-                if pause_clicked and self._can_control_particle_preview(component):
-                    try:
-                        component.editor_preview_pause()
-                    finally:
-                        self._particle_preview_playing = False
-            else:
-                play_label = t("particle_preview.play")
-                play_clicked = ctx.button(play_label, width=72.0 * dpi)
-                if semantic_capture and callable(record_item):
-                    record_item(
-                        "button",
-                        play_label,
-                        True,
-                        "scene_view.particle_preview.play",
-                    )
-                if play_clicked and self._can_control_particle_preview(component):
-                    try:
-                        self._particle_preview_prepared = bool(
-                            component.editor_preview_play()
-                        )
-                        is_playing = getattr(
-                            component, "editor_preview_is_playing", None
-                        )
-                        self._particle_preview_playing = (
-                            bool(is_playing())
-                            if callable(is_playing)
-                            else self._particle_preview_prepared
-                        )
-                    except (AttributeError, ReferenceError, RuntimeError):
-                        self._particle_preview_prepared = False
-            ctx.same_line(0, 8.0 * dpi)
-            stop_label = t("particle_preview.stop")
-            stop_clicked = ctx.button(stop_label, width=72.0 * dpi)
-            if semantic_capture and callable(record_item):
-                record_item(
-                    "button",
-                    stop_label,
-                    True,
-                    "scene_view.particle_preview.stop",
-                )
-            if stop_clicked and self._can_control_particle_preview(component):
-                try:
-                    component.editor_preview_stop()
-                finally:
+            from .preview_transport import render_preview_transport
+
+            def toggle_preview():
+                if self._particle_preview_playing:
+                    component.editor_preview_pause()
                     self._particle_preview_playing = False
-                    self._particle_preview_prepared = False
+                else:
+                    self._particle_preview_prepared = bool(component.editor_preview_play())
+                    self._particle_preview_playing = bool(component.editor_preview_is_playing())
+
+            def stop_preview():
+                component.editor_preview_stop()
+                self._particle_preview_playing = False
+                self._particle_preview_prepared = False
+
+            render_preview_transport(
+                ctx, "scene_view.particle_preview", playing=self._particle_preview_playing,
+                seconds=current_time, duration=duration, on_toggle=toggle_preview, on_stop=stop_preview,
+                enabled=self._can_control_particle_preview(component),
+            )
             for emitter in emitter_states:
                 index = int(emitter["index"])
                 ctx.separator()
@@ -617,8 +582,14 @@ class SceneViewOverlaysMixin:
                 ):
                     component.editor_preview_set_emitter_solo(index, solo)
                 ctx.same_line(0, 8.0 * dpi)
-                restarted = ctx.button(
-                    f"{t('particle_preview.restart')}##particle_preview_restart_{index}"
+                restarted = IGUI.icon_button(
+                    ctx,
+                    f"##particle_preview_restart_{index}",
+                    "reset",
+                    tooltip=t("particle_preview.restart"),
+                    kind="ghost",
+                    width=26.0,
+                    height=22.0,
                 )
                 if semantic_capture and callable(record_item):
                     record_item(
@@ -645,13 +616,36 @@ class SceneViewOverlaysMixin:
             ctx.pop_style_var()
             ctx.pop_style_color(2)
 
-    def _draw_gizmo_overlay(self, ctx: InxGUIContext) -> bool:
-        """Draw the top-left gizmo controls and return whether they are hovered."""
+    def _draw_gizmo_overlay(self, ctx: InxGUIContext, vp: ViewportInfo) -> bool:
+        """Keep scene tools left and viewport settings right, clear of the axes."""
+        dpi = editor_dpi_scale(ctx)
+        ctx.begin_group()
         hovered = self._draw_coord_space_dropdown(ctx)
         # Measure the combo height so tool buttons match exactly
         combo_h = ctx.get_item_rect_max_y() - ctx.get_item_rect_min_y()
         ctx.same_line(0, Theme.SCENE_GIZMO_TOOL_BTN_GAP * editor_dpi_scale(ctx))
         hovered = self._draw_tool_mode_buttons(ctx, combo_h) or hovered
+        ctx.end_group()
+        tools_right = ctx.get_item_rect_max_x()
+        tools_top = ctx.get_item_rect_min_y()
+        self._viewport_overlay_rows = 1
+        from .editor_services import EditorServices
+        controls = EditorServices.instance().editor_controls
+        if controls is not None:
+            settings_width = (ctx.calc_text_width(t("toolbar.gizmos"))
+                              + ctx.calc_text_width(t("toolbar.camera"))
+                              + 2 * (Theme.FIELD_PADDING[0] * dpi + combo_h) + 4 * dpi)
+            settings_left = max(vp.image_min_x + 8 * dpi, vp.image_max_x - 8 * dpi - settings_width)
+            settings_top = tools_top
+            if settings_left < tools_right + 12 * dpi:
+                settings_top += combo_h + 8 * dpi
+                self._viewport_overlay_rows = 2
+            ctx.draw_filled_rect(settings_left - 4 * dpi, settings_top - 3 * dpi,
+                                 settings_left + settings_width + 4 * dpi, settings_top + combo_h + 3 * dpi,
+                                 *Theme.SCENE_OVERLAY_COMBO_BG)
+            ctx.set_cursor_screen_pos(settings_left, settings_top)
+            controls.render_viewport_controls(ctx)
+            hovered = ctx.is_item_hovered() or hovered
         return hovered
 
     def _draw_coord_space_dropdown(self, ctx: InxGUIContext) -> bool:
@@ -691,7 +685,7 @@ class SceneViewOverlaysMixin:
 
     def _ensure_tool_icons(self):
         """Lazily resolve pinned tool icon textures via EditorIcons."""
-        if not self._engine:
+        if self._tool_icons_loaded or not self._engine:
             return
         native = self._engine.get_native_engine() if hasattr(self._engine, 'get_native_engine') else self._engine
         if native is None:
@@ -705,8 +699,7 @@ class SceneViewOverlaysMixin:
         }
         all_ready = True
         for mode, name in _ICON_MAP.items():
-            # Re-resolve every frame until upload completes; never keep a
-            # stale unpinned preview descriptor across frames.
+            # Resolve only until upload completes; these icons are pinned by the GUI.
             tid = EditorIcons.get(native, name)
             self._tool_icon_ids[mode] = tid
             if tid == 0:
@@ -714,7 +707,11 @@ class SceneViewOverlaysMixin:
         self._tool_icons_loaded = all_ready
 
     def _draw_tool_mode_buttons(self, ctx: InxGUIContext, combo_h: float = 20.0) -> bool:
-        """Draw horizontally aligned gizmo-tool icon buttons matching the combo height."""
+        """Draw horizontally aligned gizmo-tool icon buttons matching the combo height.
+
+        Icons are required — there is no text fallback. Until the pinned
+        textures finish uploading, reserve empty slots so layout stays stable.
+        """
         self._ensure_tool_icons()
         dpi = editor_dpi_scale(ctx)
         items = [
@@ -727,6 +724,12 @@ class SceneViewOverlaysMixin:
         pad = tuple(value * dpi for value in Theme.SCENE_GIZMO_TOOL_BTN_PAD)
         icon_size = max(combo_h - pad[1] * 2, 8.0 * dpi)
         gap = Theme.SCENE_GIZMO_TOOL_BTN_GAP * dpi
+        if not self._tool_icons_loaded:
+            for i, _ in enumerate(items):
+                if i:
+                    ctx.same_line(0, gap)
+                ctx.dummy(combo_h, combo_h)
+            return False
         hovered = False
         ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *pad)
         ctx.push_style_var_float(ImGuiStyleVar.FrameRounding, Theme.SCENE_OVERLAY_ROUNDING * dpi)
@@ -735,19 +738,14 @@ class SceneViewOverlaysMixin:
                 ctx.same_line(0, gap)
             active = (self._gizmo_tool_mode == mode)
             if active:
-                ctx.push_style_color(ImGuiCol.Button, 235.0 / 255.0, 87.0 / 255.0, 87.0 / 255.0, 0.95)
-                ctx.push_style_color(ImGuiCol.ButtonHovered, 1.0, 107.0 / 255.0, 107.0 / 255.0, 1.0)
-                ctx.push_style_color(ImGuiCol.ButtonActive, 220.0 / 255.0, 67.0 / 255.0, 67.0 / 255.0, 1.0)
+                ctx.push_style_color(ImGuiCol.Button, *Theme.ROLE_ACCENT)
+                ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.HEADER_HOVERED)
+                ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.HEADER_ACTIVE)
             else:
                 ctx.push_style_color(ImGuiCol.Button, *Theme.SCENE_OVERLAY_COMBO_BG)
                 ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.SCENE_OVERLAY_COMBO_HOVER)
                 ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.SCENE_OVERLAY_COMBO_ACTIVE)
-            tex_id = self._tool_icon_ids.get(mode, 0)
-            clicked = False
-            if tex_id != 0:
-                clicked = ctx.image_button(btn_id, tex_id, icon_size, icon_size)
-            else:
-                clicked = ctx.button(label, width=combo_h, height=combo_h)
+            clicked = ctx.image_button(btn_id, self._tool_icon_ids[mode], icon_size, icon_size)
             if clicked:
                 self._execute_scene_command(command_id)
             hovered = ctx.is_item_hovered() or hovered
@@ -788,7 +786,7 @@ class SceneViewOverlaysMixin:
         margin = Theme.SCENE_ORIENT_MARGIN * dpi
         # Use screen-absolute coordinates from the viewport info
         cx = vp.image_max_x - r - margin
-        cy = vp.image_min_y + r + margin
+        cy = vp.image_min_y + r + margin + 30 * dpi * self._viewport_overlay_rows
 
         # Project world axis to 2D screen position
         axis_len = Theme.SCENE_ORIENT_AXIS_LEN * dpi

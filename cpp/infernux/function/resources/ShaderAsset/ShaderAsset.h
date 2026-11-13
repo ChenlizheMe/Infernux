@@ -16,6 +16,7 @@
 
 namespace infernux
 {
+inline constexpr char kStandardVertexShaderId[] = "infernux/standard";
 
 struct ShaderAsset;
 

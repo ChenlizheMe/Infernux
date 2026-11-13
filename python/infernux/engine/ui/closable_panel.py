@@ -538,10 +538,6 @@ class ClosablePanel(InxGUIRenderable):
 
         return FocusService.instance().snapshot.active_view_id or None
 
-    def _window_title_suffix(self) -> str:
-        """Project only this View's contribution to document dirty state."""
-        return " *" if self._document_is_dirty() else ""
-
     @classmethod
     def focus_panel_by_id(cls, panel_id: str):
         """Mark *panel_id* as active (used by undo replay to set focus target)."""
@@ -569,7 +565,9 @@ class ClosablePanel(InxGUIRenderable):
 
         self._sync_dirty_registry()
 
-        display += self._window_title_suffix()
+        if self._document_is_dirty():
+            from .theme import ImGuiWindowFlags
+            flags |= ImGuiWindowFlags.UnsavedDocument
         safe_title = str(display).replace('\x00', '�').encode('utf-8', errors='replace').decode('utf-8', errors='replace')
         # Use ### to keep a stable ImGui window ID independent of the
         # displayed title so docking layout survives locale changes.

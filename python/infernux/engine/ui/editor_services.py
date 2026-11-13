@@ -42,6 +42,7 @@ class EditorServices:
         self._window_manager: Optional[WindowManager] = None
         self._interaction_core: Optional[EditorInteractionCore] = None
         self._asset_database = None  # C++ AssetDatabase
+        self.editor_controls = None  # Native controls shared by the top bar and Scene View
         self._project_path: Optional[str] = None
         EditorServices._instance = self
 

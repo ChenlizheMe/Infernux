@@ -159,7 +159,8 @@ class PlayerGUI(InxGUIRenderable):
     # ------------------------------------------------------------------
 
     def on_render(self, ctx: InxGUIContext):
-        self._tick(ctx)
+        if self._tick(ctx):
+            return
 
         # Full main viewport
         x0, y0, vp_w, vp_h = ctx.get_main_viewport_bounds()
@@ -237,11 +238,12 @@ class PlayerGUI(InxGUIRenderable):
         self._play_started = True
         return True
 
-    def _tick(self, ctx):
+    def _tick(self, ctx) -> bool:
         """Handle Player window input and debug-control polling.
 
         Play timing is owned by the native SceneManager. This must not start
         the session before an optional project splash has finished.
+        Return True when closing, before any GUI or scene work is opened.
         """
         # Standalone Players have no competing Editor viewport.  Establish the
         # gameplay-input contract before any early return caused by splash,
@@ -254,14 +256,14 @@ class PlayerGUI(InxGUIRenderable):
                 and self._control.poll(self._engine) == "shutdown"
             ):
                 self._engine.request_exit()
-                return
+                return True
 
             # In player mode there's no MenuBarPanel, so we must handle
             # close requests (Alt+F4 / window X) directly.
             native = self._engine.get_native_engine()
             if native and native.is_close_requested():
                 native.confirm_close()
-                return
+                return True
 
             if self._profile_frames:
                 try:
@@ -271,7 +273,7 @@ class PlayerGUI(InxGUIRenderable):
                     scheduler = self._engine.get_runtime_execution_scheduler()
                     self._profile_window.sample(scene_manager, scheduler)
                     if time.monotonic() < self._next_profile_time:
-                        return
+                        return False
                     self._next_profile_time = time.monotonic() + 2.0
                     from infernux.engine.player_bootstrap import _plog
 
@@ -280,6 +282,7 @@ class PlayerGUI(InxGUIRenderable):
                     _plog(f"[FrameProfile] {snapshot}")
                 except Exception as exc:
                     Debug.log_suppressed("player_gui.frame_profile", exc)
+        return False
 
     def _prepare_game_target(self, vp_w: float, vp_h: float):
         display_w = max(1, int(vp_w))

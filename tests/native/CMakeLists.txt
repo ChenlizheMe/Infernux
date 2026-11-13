@@ -213,6 +213,12 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_selectable_row_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.selectable_row COMMAND infernux_selectable_row_tests)
 
+    infernux_add_native_test(infernux_inspector_selection_lifetime_tests tests/native/InspectorSelectionLifetimeTests.cpp)
+    target_include_directories(infernux_inspector_selection_lifetime_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux)
+    target_link_libraries(infernux_inspector_selection_lifetime_tests PRIVATE infernux_runtime_test_support)
+    add_test(NAME infernux.inspector_selection_lifetime COMMAND infernux_inspector_selection_lifetime_tests)
+
     infernux_add_native_test(infernux_editor_window_bounds_tests tests/native/EditorWindowBoundsTests.cpp)
     target_include_directories(infernux_editor_window_bounds_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
@@ -896,6 +902,7 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_shader_info_schema_tests PRIVATE infernux_runtime_test_support)
     target_compile_definitions(infernux_shader_info_schema_tests PRIVATE
         INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/infernux/resources/shaders"
+        INFERNUX_TEST_SHADER_FIXTURE_ROOT="${CMAKE_SOURCE_DIR}/tests/native/shaders"
     )
     add_test(NAME infernux.shader_info_schema COMMAND infernux_shader_info_schema_tests)
 

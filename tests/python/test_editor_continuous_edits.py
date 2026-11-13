@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from infernux.engine.interaction import (
     ContinuousEditService,
     DocumentKind,
@@ -102,7 +104,8 @@ def test_interaction_core_commits_edits_on_selection_and_panel_transitions():
         core.shutdown()
 
 
-def test_material_continuous_edit_publishes_one_document_command(tmp_path):
+@pytest.mark.parametrize("explicit_commit", [True, False])
+def test_material_continuous_edit_publishes_one_document_command(tmp_path, explicit_commit):
     from infernux.engine.ui.inspector_material import _update_material_edit_session
     from infernux.engine.undo import UndoManager
 
@@ -157,11 +160,12 @@ def test_material_continuous_edit_publishes_one_document_command(tmp_path):
             "property.roughness",
         )
         assert manager.action_journal.entries == ()
-        assert edits.commit_owner("inspector") == 1
-        assert len(manager.action_journal.entries) == 1
-        assert registry.require(controller.document_id).revision == 1
-
+        if explicit_commit:
+            assert edits.commit_owner("inspector") == 1
+            assert registry.require(controller.document_id).revision == 1
         manager.undo()
+        assert len(manager.action_journal.entries) == 1
+        assert edits.active_count == 0
         assert material.document == old_document
         manager.redo()
         assert material.document == new_document

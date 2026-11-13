@@ -46,6 +46,7 @@ from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
 from .igui import IGUI
 from .panel_registry import editor_panel
+from .dpi import editor_dpi_scale
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 
 
@@ -89,10 +90,6 @@ _FRAME_IMAGE_PAD = 5.0
 _FRAME_LABEL_H = 18.0
 _CONTENT_PAD_X = 16.0
 _CONTENT_PAD_Y = 12.0
-_FRAME_SELECTED_FILL = (0.36, 0.20, 0.20, 0.74)
-_FRAME_HOVER_FILL = (0.27, 0.22, 0.22, 0.72)
-_FRAME_IDLE_FILL = (0.18, 0.18, 0.18, 0.78)
-_FRAME_IDLE_BORDER = (0.32, 0.32, 0.32, 1.0)
 
 _PLAYBACK_STOPPED = 0
 _PLAYBACK_PLAYING = 1
@@ -942,6 +939,11 @@ class AnimClip2DEditorPanel(EditorPanel):
                                 ctx.get_content_region_avail_width(),
                             ),
                         )
+                    else:
+                        self._render_empty_state(
+                            ctx,
+                            title=t("animclip_editor.empty_title"),
+                        )
             finally:
                 ctx.end_child()
             IGUI.drop_target(
@@ -1002,7 +1004,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         try:
             ctx.begin_child(
                 "##animclip_preview", preview_w, row_h if wide else header_h + 160.0,
-                True,
+                True, padding=True,
             )
             try:
                 self._render_preview(ctx, clip, ctx.get_content_region_avail_width())
@@ -1012,7 +1014,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                 ctx.same_line(0, 8.0)
             ctx.begin_child(
                 "##animclip_sequence", seq_w, row_h if wide else header_h + seq_grid_h,
-                True,
+                True, padding=True,
             )
             try:
                 self._render_sequence_content(ctx, clip)
@@ -1082,41 +1084,22 @@ class AnimClip2DEditorPanel(EditorPanel):
         )
 
     def _render_document_toolbar(self, ctx: InxGUIContext, clip: _ClipState) -> None:
-        new_label = t("animtimeline_editor.new")
-        if ctx.button(new_label + "##animclip_new"):
-            self._execute_document_command("animclip2d.new")
-        ctx.record_semantic_item(
-            "button",
-            new_label,
-            self.can_new_clip_document(),
-            "animclip2d.toolbar.new",
-        )
-
-        ctx.same_line(0, 4)
-        save_label = t("animclip_editor.save_clip")
-        can_save = self._tex is not None and bool(clip.frames)
-        if not can_save:
-            ctx.begin_disabled(True)
-        if ctx.button(save_label + "##animclip_save"):
-            self._execute_document_command("file.save")
-        ctx.record_semantic_item("button", save_label, can_save, "animclip2d.toolbar.save")
-        ctx.same_line(0, 4)
-        save_as_label = t("animclip_editor.save_as")
-        if ctx.button(save_as_label + "##animclip_save_as"):
-            self._execute_document_command("file.save_as")
-        ctx.record_semantic_item(
-            "button", save_as_label, can_save, "animclip2d.toolbar.save_as"
-        )
-        if not can_save:
-            ctx.end_disabled()
+        from .asset_toolbar import render_asset_toolbar
 
         document = self._animclip_document()
-        resource_path = document.resource_path if document is not None else ""
-        if resource_path:
-            ctx.same_line(0, 12)
-            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-            ctx.label(os.path.basename(resource_path))
-            ctx.pop_style_color(1)
+        path = document.resource_path if document is not None else ""
+        can_save = self._tex is not None and bool(clip.frames)
+        render_asset_toolbar(
+            ctx, self, icon="animclip2d", name=clip.name, path=path,
+            dirty=self._document_is_dirty(), can_save=can_save,
+            on_save=lambda: self._execute_document_command("file.save"),
+            semantic_prefix="animclip2d.toolbar", actions=(
+                ("new", t("animtimeline_editor.new"), self.can_new_clip_document(),
+                 lambda: self._execute_document_command("animclip2d.new")),
+                ("save_as", t("animclip_editor.save_as"), can_save,
+                 lambda: self._execute_document_command("file.save_as")),
+            ),
+        )
 
     def _new_clip_document_immediate(self) -> bool:
         self._cancel_pending_save_as()
@@ -1143,7 +1126,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         fps_label = t("animclip_editor.clip_fps")
         loop_label = t("animclip_editor.clip_loop")
         fc = len(clip.frames)
-        summary = f"{fc} frames   {fc / max(clip.fps, 0.1):.2f}s"
+        summary = t("animclip_editor.frame_summary").format(count=fc, duration=fc / max(clip.fps, 0.1))
         compact = avail_w >= _WIDE_LAYOUT_MIN_W
         name_width = avail_w - ctx.calc_text_width(name_label) - 4.0
         if compact:
@@ -1207,7 +1190,8 @@ class AnimClip2DEditorPanel(EditorPanel):
         ctx.same_line(0, 16)
         ctx.align_text_to_frame_padding()
         ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label(summary)
+        with IGUI.mono_font(ctx):
+            ctx.label(summary)
         ctx.pop_style_color(1)
         return fps_height
 
@@ -1220,58 +1204,17 @@ class AnimClip2DEditorPanel(EditorPanel):
         if tex is None:
             return
 
+        from .preview_transport import render_preview_transport
         fc = len(clip.frames)
-        play_label = t("animclip_editor.pause") if self._playback == _PLAYBACK_PLAYING else t("animclip_editor.play")
-        stop_label = t("animclip_editor.stop")
-        counter = f"{self._preview_frame_idx + 1}/{fc}" if fc else ""
-        widths = [ctx.calc_text_width(label) + 12.0 for label in (play_label, stop_label, "|<", ">|")]
-        controls_w = sum(widths) + 14.0 + (12.0 + ctx.calc_text_width(counter) if counter else 0.0)
-        ctx.align_text_to_frame_padding()
-        ctx.label(t("animclip_editor.preview"))
-        ctx.same_line(0, 8)
-        ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + max(0.0, ctx.get_content_region_avail_width() - controls_w))
-        if not fc:
-            ctx.begin_disabled(True)
-
-        play_clicked = ctx.button(play_label + "##transport", width=widths[0])
-        ctx.record_semantic_item(
-            "button", play_label, bool(fc), "animclip2d.transport.play_pause",
+        render_preview_transport(
+            ctx, "animclip2d.transport", playing=self._playback == _PLAYBACK_PLAYING,
+            seconds=self._preview_time, duration=fc / clip.fps if fc else 0.0,
+            frame=self._preview_frame_idx + 1 if fc else 0, frame_count=fc, enabled=bool(fc),
+            on_toggle=lambda: self._execute_animclip_command("animclip2d.play_pause"),
+            on_stop=lambda: self._execute_animclip_command("animclip2d.stop"),
+            on_step=lambda direction: self._execute_animclip_command(
+                "animclip2d.previous_frame" if direction < 0 else "animclip2d.next_frame"),
         )
-        if play_clicked:
-            self._execute_animclip_command("animclip2d.play_pause")
-
-        ctx.same_line(0, 4)
-        stop_clicked = ctx.button(stop_label + "##transport", width=widths[1])
-        ctx.record_semantic_item(
-            "button", stop_label, bool(fc), "animclip2d.transport.stop",
-        )
-        if stop_clicked:
-            self._execute_animclip_command("animclip2d.stop")
-
-        ctx.same_line(0, 8)
-        step_back_clicked = ctx.button("|<##step_back", width=widths[2])
-        ctx.record_semantic_item(
-            "button", "Previous Frame", bool(fc), "animclip2d.transport.previous",
-        )
-        if step_back_clicked:
-            self._execute_animclip_command("animclip2d.previous_frame")
-        ctx.same_line(0, 2)
-        step_forward_clicked = ctx.button(">|##step_fwd", width=widths[3])
-        ctx.record_semantic_item(
-            "button", "Next Frame", bool(fc), "animclip2d.transport.next",
-        )
-        if step_forward_clicked:
-            self._execute_animclip_command("animclip2d.next_frame")
-
-        if counter:
-            ctx.same_line(0, 12)
-            ctx.align_text_to_frame_padding()
-            ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-            ctx.label(counter)
-            ctx.pop_style_color(1)
-
-        if not fc:
-            ctx.end_disabled()
         ctx.separator()
 
         # Preview area
@@ -1314,7 +1257,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                     scale = min(
                         max(8.0, child_w - 16.0) / frame.w,
                         max(8.0, child_h - 16.0) / frame.h,
-                        _PREVIEW_MAX_SIZE / max(frame.w, frame.h),
+                        _PREVIEW_MAX_SIZE * editor_dpi_scale(ctx) / max(frame.w, frame.h),
                     )
                     pw, ph = frame.w * scale, frame.h * scale
 
@@ -1371,15 +1314,15 @@ class AnimClip2DEditorPanel(EditorPanel):
         )
 
         fill = (
-            _FRAME_SELECTED_FILL
+            Theme.HIERARCHY_ROW_SELECTED
             if selected
-            else (_FRAME_HOVER_FILL if hovered else _FRAME_IDLE_FILL)
+            else (Theme.ROLE_BG_HOVER if hovered else Theme.ROLE_BG_SURFACE)
         )
         border = Theme.APPLY_BUTTON if selected else (
-            Theme.BTN_HOVERED if hovered else _FRAME_IDLE_BORDER
+            Theme.BTN_HOVERED if hovered else Theme.BORDER
         )
         ctx.draw_filled_rect(x0, y0, x1, y1, *fill, 3.0)
-        ctx.draw_rect(x0, y0, x1, y1, *border, 2.0 if selected else 1.0, 3.0)
+        ctx.draw_rect(x0, y0, x1, y1, *border, 2.0 if selected else 1.0, 0.0)
 
         image_side = max(1.0, thumb - _FRAME_IMAGE_PAD * 2.0)
         scale = min(image_side / max(image_w, 1.0), image_side / max(image_h, 1.0))
@@ -1518,8 +1461,8 @@ class AnimClip2DEditorPanel(EditorPanel):
                                 record_history=True,
                             )
                     else:
-                        missing_clicked = ctx.button(
-                            f"?##seq_{seq_i}", width=thumb, height=thumb
+                        missing_clicked = ctx.icon_button(
+                            f"##seq_{seq_i}", "glyphs/warn", t("animclip_editor.missing_frame"), thumb, thumb,
                         )
                         ctx.record_semantic_item(
                             "button", f"Sequence {seq_i}: Missing Frame {frame_id}", True,

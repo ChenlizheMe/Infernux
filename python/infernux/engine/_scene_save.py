@@ -16,6 +16,8 @@ This module orchestrates those primitives into a complete workflow.
 """
 from __future__ import annotations
 
+from infernux.engine.i18n import t
+
 import json
 import os
 import copy
@@ -400,7 +402,7 @@ class SceneSaveMixin:
                 message=str(exc),
             )
             Debug.log_error(f"Failed to save Scene '{target}': {exc}")
-            EngineStatus.flash("保存失败 Save Failed", 0.0, duration=2.0)
+            EngineStatus.flash(t("editor.status.save_failed"), 0.0, duration=2.0)
             return False
 
         if binding is not None:
@@ -417,7 +419,7 @@ class SceneSaveMixin:
                     persist(target)
                 except Exception as exc:
                     Debug.log_warning(f"Scene saved, but Editor {label} was not recorded: {exc}")
-        EngineStatus.flash("保存完成 Saved", 1.0, duration=1.5)
+        EngineStatus.flash(t("editor.status.saved"), 1.0, duration=1.5)
         return True
 
     def _persist_scene_document(self, path: str, payload: dict, ticket):
@@ -575,8 +577,8 @@ class SceneSaveMixin:
         render_editor_modal_actions(
             ctx,
             [
-                EditorModalAction("Save", "confirm", _save),
-                EditorModalAction("Cancel", "cancel", _cancel),
+                EditorModalAction("Cancel", "cancel", _cancel, kind="ghost"),
+                EditorModalAction("Save", "confirm", _save, kind="primary"),
             ],
             semantic_prefix="scene.save_as",
         )

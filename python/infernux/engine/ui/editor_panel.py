@@ -269,63 +269,25 @@ class EditorPanel(ClosablePanel):
         ctx: InxGUIContext,
         hint: Optional[str] = None,
         *,
+        title: Optional[str] = None,
         drop_types: Optional[List[str]] = None,
         on_drop=None,
         min_height: float = 220.0,
     ) -> None:
-        """Draw a centered bordered hint box — the standard "nothing loaded" UI.
+        """Draw a centered empty-state block — the standard "nothing here" UI.
 
-        This is the canonical empty-state rendering that all panels should
-        use so every editor window has a consistent look.
-
-        Args:
-            ctx: The ImGui context.
-            hint: Text shown inside the drop zone.  Falls back to
-                ``_empty_state_hint()``.
-            drop_types: Accepted drag-and-drop payload types.
-                Falls back to ``_empty_state_drop_types()``.
-            on_drop: Callback ``(payload_type, payload)`` when a drop is
-                accepted.  Falls back to ``_on_empty_state_drop``.
-            min_height: Minimum height of the empty-state region.
+        Layout: optional title + hint (text-disabled), inside a hard-edge hairline box.
         """
         from .igui import IGUI
-
         hint = hint or self._empty_state_hint()
         drop_types = drop_types if drop_types is not None else self._empty_state_drop_types()
-        on_drop = on_drop or getattr(self, '_on_empty_state_drop', None)
-
-        avail_w = ctx.get_content_region_avail_width()
-        empty_h = max(ctx.get_content_region_avail_height(), min_height)
-
-        ctx.begin_child(f"##{self._window_id}_empty_state", avail_w, empty_h, True)
-        try:
-            region_w = ctx.get_content_region_avail_width()
-            region_h = ctx.get_content_region_avail_height()
-            zone_w = min(max(region_w - 28.0, 220.0), 460.0)
-            zone_h = min(max(region_h - 36.0, 140.0), 250.0)
-            start_x = ctx.get_cursor_pos_x() + (region_w - zone_w) * 0.5
-            start_y = ctx.get_cursor_pos_y() + (region_h - zone_h) * 0.5
-
-            ctx.set_cursor_pos_x(start_x)
-            ctx.set_cursor_pos_y(start_y)
-            ctx.invisible_button(f"##{self._window_id}_drop_zone", zone_w, zone_h)
-
-            bx0 = ctx.get_item_rect_min_x()
-            by0 = ctx.get_item_rect_min_y()
-            bx1 = ctx.get_item_rect_max_x()
-            by1 = ctx.get_item_rect_max_y()
-            ctx.draw_rect(bx0, by0, bx1, by1, 0.55, 0.55, 0.55, 0.55, 2.0, 8.0)
-            ctx.draw_text_aligned(
-                bx0, by0, bx1, by1,
-                hint,
-                0.72, 0.72, 0.72, 0.95,
-                0.5, 0.5,
-            )
-
-            if drop_types and on_drop:
-                IGUI.multi_drop_target(ctx, drop_types, on_drop, outline=True)
-        finally:
-            ctx.end_child()
+        on_drop = on_drop or getattr(self, "_on_empty_state_drop", None)
+        from .dpi import editor_dpi_scale
+        ctx.empty_state(f"##{self._window_id}_empty", "glyphs/cube", title or hint,
+                        hint if title else "", max(min_height * editor_dpi_scale(ctx),
+                                                   ctx.get_content_region_avail_height()))
+        if drop_types and on_drop is not None:
+            IGUI.multi_drop_target(ctx, drop_types, on_drop)
 
     def _empty_state_hint(self) -> str:
         """Return the hint text for the default empty state.
@@ -444,6 +406,13 @@ class EditorPanel(ClosablePanel):
             init_size = self._scaled_initial_size(ctx)
             if init_size is not None:
                 from .theme import Theme
+                x, y, width, height = ctx.get_main_viewport_bounds()
+                # Apply only to windows without a saved ImGui position.
+                offset = (sum(self.window_id.encode("utf-8")) % 4) * 24 * ctx.get_dpi_scale()
+                ctx.set_next_window_pos(
+                    x + width * 0.5 + offset, y + height * 0.5 + offset,
+                    Theme.COND_FIRST_USE_EVER, 0.5, 0.5,
+                )
                 ctx.set_next_window_size(
                     init_size[0], init_size[1], Theme.COND_FIRST_USE_EVER,
                 )
@@ -453,13 +422,22 @@ class EditorPanel(ClosablePanel):
         self._pre_render(ctx)
 
         # Push window styles.
+        from .theme import Theme
         self._push_window_style(ctx)
+        ctx.push_ui_font(Theme.EDITOR_TITLE_FONT_SIZE)
         try:
             self._content_visible_previous_frame = bool(self._content_was_visible)
             visible = self._begin_closable_window(ctx, self._window_flags())
             try:
                 if visible:
                     self._on_visible_pre(ctx)
+                    from .theme import Theme, ImGuiStyleVar
+                    dpi = ctx.get_dpi_scale()
+                    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding,
+                                           Theme.FIELD_PADDING[0] * dpi, Theme.FIELD_PADDING[1] * dpi)
+                    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing,
+                                           Theme.CONTENT_SPACING[0] * dpi, Theme.CONTENT_SPACING[1] * dpi)
+                    ctx.push_ui_font(Theme.EDITOR_FONT_SIZE)
                     try:
                         with read_model_frame():
                             self.on_render_content(ctx)
@@ -476,6 +454,9 @@ class EditorPanel(ClosablePanel):
                         Debug.report_internal_error(
                             exc, f"Panel '{self.panel_type_id}'", self
                         )
+                    finally:
+                        ctx.pop_font()
+                        ctx.pop_style_var(2)
                 else:
                     if self._content_was_visible is not False:
                         self._on_not_visible(ctx)
@@ -501,6 +482,7 @@ class EditorPanel(ClosablePanel):
                 ctx.end_window()
         finally:
             # Keep the ImGui style stack balanced even when panel code fails.
+            ctx.pop_font()
             self._pop_window_style(ctx)
 
         # Fire the close hook when the panel is closed.

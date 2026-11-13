@@ -2155,7 +2155,7 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
     if (type == "fragment") {
         if (sourceDescriptor.hasSurfaceFunc && !sourceDescriptor.hasMainFunc) {
             if (sourceDescriptor.surfaceOptions.castShadows)
-                CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "Shadow");
+                CompileVariant(content, filePath, ShaderCompileTarget::Shadow, "infernux/internal/shadow");
 
             // ParticleSprite programs are forward-domain outputs. Their
             // lighting contract intentionally depends on particle varyings and

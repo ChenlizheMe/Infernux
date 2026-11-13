@@ -1,5 +1,5 @@
 ShaderInfo
 {
-    Name "Particle Sprite"
+    Name "infernux/particle/vertex"
     Capabilities [ParticleSprite]
 }

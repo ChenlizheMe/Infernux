@@ -4,7 +4,7 @@ with a :class:`~infernux.core.node_graph.NodeGraph`.
 
 Handles:
 - Background grid (scales with zoom)
-- Node rendering (header + body + pins) with shadows
+- Node rendering (header + body + pins)
 - Curved connection lines (cubic bezier) with arrow heads
 - Canvas panning (middle-mouse drag)
 - Scroll-wheel zoom (centred on cursor)
@@ -55,25 +55,23 @@ if TYPE_CHECKING:
 # Visual constants (at zoom = 1.0)
 # ═══════════════════════════════════════════════════════════════════════════
 
-_GRID_SIZE = 20.0
-_GRID_COLOR = (0.13, 0.13, 0.14, 1.0)
-_GRID_COLOR2 = (0.18, 0.18, 0.19, 1.0)
+_GRID_SIZE = 24.0
 
-_NODE_ROUNDING = 5.0
+_NODE_ROUNDING = 0.0
 _NODE_BORDER_THICKNESS = 1.0
 # Titles lead the hierarchy; ports and metadata remain visually subordinate.
 _NODE_FONT = 18.0
-_PIN_FONT = 15.0
-_SUBTITLE_FONT = 13.0
-_NODE_HEADER_H = 34.0
-_CONTEXT_HEADER_H = 34.0
-_NODE_SUBTITLE_H = 22.0
+_PIN_FONT = 16.0
+_SUBTITLE_FONT = 14.0
+_NODE_HEADER_H = 30.0
+_CONTEXT_HEADER_H = 30.0
+_NODE_SUBTITLE_H = 26.0
 _NODE_PIN_ROW_H = 28.0
 _NODE_PAD_X = 12.0
 _NODE_BODY_MIN_H = 12.0
 _CONTEXT_BODY_MIN_H = 32.0
 _DETACHED_FIELD_ROW_H = 28.0
-_PIN_RADIUS = 5.0
+_PIN_RADIUS = 4.0
 _PIN_HIT_RADIUS = 12.0
 # Compact inline value box hugging an unconnected input pin (Unity style):
 # keeps numeric inputs from inflating the node body width.
@@ -86,34 +84,20 @@ _PIN_ASSET_HUG_W = 180.0
 _PIN_VEC_COMPONENT_GAP = 6.0
 # Unified background for the whole pin value box (vector components share one
 # capsule instead of three separate frames).
-_PIN_VALUE_BG = (0.11, 0.11, 0.12, 0.92)
-_PIN_VALUE_BG_ROUNDING = 3.0
+_PIN_VALUE_BG_ROUNDING = 0.0
 # Vertical inset of the value box against the pin row height; smaller = taller.
 _PIN_VALUE_BOX_INSET = 3.0
 # Font scale for the compact pin value widgets (relative to the node font).
-_PIN_VALUE_FONT_SCALE = 0.82
+_PIN_VALUE_FONT_SCALE = 14.0 / _NODE_FONT
 _HEADER_COLOR_SWATCH_SIZE = 16.0
 _HEADER_COLOR_SWATCH_PAD = 8.0
-_HEADER_COLOR_SWATCH_OUTLINE = (0.88, 0.89, 0.91, 0.92)
 
 _LINK_THICKNESS = 2.0
 _LINK_SEGMENTS = 28
 
 # NASA-style: near-black panels, neutral gray; selection uses editor theme red
-_BG_COLOR = (0.07, 0.07, 0.08, 1.0)
-_NODE_BODY_COLOR = (0.13, 0.13, 0.14, 1.0)
-_GRAPH_NODE_BODY_COLOR = (0.10, 0.10, 0.115, 1.0)
-_GRAPH_NODE_HEADER_COLOR = (0.15, 0.15, 0.17, 1.0)
 # Unity VFX-style context: saturated header, recessed body slot.
-_GRAPH_NODE_CONTEXT_BODY = (0.055, 0.055, 0.058, 0.98)
-_GRAPH_NODE_CONTEXT_SLOT = (0.085, 0.085, 0.090, 0.95)
-_NODE_SHADOW_COLOR = (0.0, 0.0, 0.0, 0.5)
-_NODE_BORDER_COLOR = (0.28, 0.28, 0.30, 1.0)
-_PIN_HOVER_COLOR = (0.88, 0.88, 0.90, 0.75)
 
-_LINK_DEFAULT_COLOR = (0.58, 0.59, 0.63, 1.0)
-_LINK_HOVER_COLOR = (0.85, 0.86, 0.90, 1.0)
-_PENDING_LINK_COLOR = (0.65, 0.65, 0.68, 0.5)
 
 _NODE_GRAPH_EDIT_CONTEXT_MENU = (
     ContextMenuCommand("edit.copy", semantic_id="context.edit.copy"),
@@ -133,9 +117,6 @@ _NODE_GRAPH_EDIT_CONTEXT_MENU = (
 )
 _NODE_GRAPH_CONTEXT_MENU_BUILDER = ContextMenuBuilder()
 
-_TEXT_COLOR = (0.90, 0.91, 0.92, 1.0)
-_TEXT_DIM_COLOR = (0.76, 0.77, 0.80, 1.0)
-_TEXT_BODY_COLOR = (0.64, 0.66, 0.70, 1.0)
 
 _ZOOM_MIN = 0.3
 _ZOOM_MAX = 2.5
@@ -149,7 +130,7 @@ _CANVAS_WINDOW_FLAGS = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollW
 
 # Inline ImGui widgets share the same 18px face as draw-list node text.
 _INLINE_BASE_FONT = _NODE_FONT
-_INLINE_FONT_SCALE = 1.0
+_INLINE_FONT_SCALE = _NODE_FONT / 16.0
 
 # Absolute floor for draw-list / widget text so glyphs never collapse to nothing.
 # Kept small on purpose: node text must stay proportional to the node box.
@@ -157,8 +138,6 @@ _TEXT_MIN_FONT = 5.0
 
 _MINIMAP_SIZE = 120.0
 _MINIMAP_PAD = 8.0
-_MINIMAP_BG = (0.06, 0.06, 0.07, 0.75)
-_MINIMAP_NODE = (0.38, 0.38, 0.40, 0.65)
 # ImGuiKey constants (see imgui_keys.py)
 # ═══════════════════════════════════════════════════════════════════════════
 # Bezier helper
@@ -244,6 +223,10 @@ class NodeGraphView:
 
     def __init__(self) -> None:
         self.graph: Optional[NodeGraph] = None
+        self.default_node_id = ""
+        self.domain_header_nodes: set[str] = set()
+        self.runtime_nodes: dict[str, float] = {}
+        self.node_subtitles: dict[str, str] = {}
         # Hosts set this to a stable editor-specific namespace (for example
         # ``animfsm.graph``). It keeps generic canvas semantics unambiguous
         # when several graph editors are open in one Editor session.
@@ -588,10 +571,13 @@ class NodeGraphView:
     def _pin_area_top(self, node: GraphNode, typedef: NodeTypeDef) -> float:
         subtitle_height = (
             _NODE_SUBTITLE_H
-            if not self._is_context_style(typedef) and node.data.get("subtitle")
+            if not self._is_context_style(typedef) and self._subtitle(node)
             else 0.0
         )
         return self._header_height(typedef) + subtitle_height
+
+    def _subtitle(self, node):
+        return self.node_subtitles.get(node.uid, node.data.get("subtitle", ""))
 
     def _pin_area_bottom(self, node: GraphNode, typedef: NodeTypeDef) -> float:
         rows = max(len(typedef.input_pins()), len(typedef.output_pins()), 1)
@@ -697,10 +683,18 @@ class NodeGraphView:
             clip_rect_pushed = True
 
         # Background
-            ctx.draw_filled_rect(clip_x0, clip_y0, clip_x1, clip_y1, *_BG_COLOR)
+            ctx.draw_filled_rect(clip_x0, clip_y0, clip_x1, clip_y1, *Theme.ROLE_BG_BASE)
 
         # Grid
             self._draw_grid(ctx, clip_x0, clip_y0, clip_x1, clip_y1)
+
+            if not self.graph.nodes:
+                restore_x, restore_y = ctx.get_cursor_pos_x(), ctx.get_cursor_pos_y()
+                ctx.set_cursor_screen_pos(clip_x0, clip_y0)
+                ctx.empty_state("##empty_graph", "particle_graph", t("graph.empty_title"),
+                                t("graph.empty_hint"), canvas_h, False)
+                ctx.set_cursor_pos_x(restore_x)
+                ctx.set_cursor_pos_y(restore_y)
 
         # Compute node layouts
             self._layout_measure_context = ctx
@@ -740,7 +734,7 @@ class NodeGraphView:
             if abs(self.zoom - 1.0) > 0.01:
                 ctx.draw_text(
                     clip_x0 + 8, clip_y1 - 22,
-                    f"{self.zoom * 100:.0f}%", 0.55, 0.55, 0.58, 0.8, 0.0,
+                    f"{self.zoom * 100:.0f}%", *Theme.TEXT_DISABLED, 0.0,
                 )
 
             ctx.pop_draw_list_clip_rect()
@@ -802,7 +796,7 @@ class NodeGraphView:
         oy = self.pan_y % step
 
         alpha = min(1.0, self.zoom)
-        col = (_GRID_COLOR[0], _GRID_COLOR[1], _GRID_COLOR[2], _GRID_COLOR[3] * alpha)
+        col = (Theme.GRAPH_GRID[0], Theme.GRAPH_GRID[1], Theme.GRAPH_GRID[2], Theme.GRAPH_GRID[3] * alpha)
         x = x0 + ox
         while x < x1:
             ctx.draw_line(x, y0, x, y1, *col, 0.5)
@@ -817,11 +811,11 @@ class NodeGraphView:
         big_oy = self.pan_y % big_step
         x = x0 + big_ox
         while x < x1:
-            ctx.draw_line(x, y0, x, y1, *_GRID_COLOR2, 1.0)
+            ctx.draw_line(x, y0, x, y1, *Theme.GRAPH_GRID_MAJOR, 1.0)
             x += big_step
         y = y0 + big_oy
         while y < y1:
-            ctx.draw_line(x0, y, x1, y, *_GRID_COLOR2, 1.0)
+            ctx.draw_line(x0, y, x1, y, *Theme.GRAPH_GRID_MAJOR, 1.0)
             y += big_step
 
     # ── Layout ────────────────────────────────────────────────────────
@@ -1065,38 +1059,22 @@ class NodeGraphView:
         pad_x = _NODE_PAD_X * z
         modern_graph = layout.typedef.visual_style in {"graph", "context"}
 
-        # Shadow
-        sh = 3.0 * z
-        ctx.draw_filled_rect(
-            sx + sh, sy + sh, sx + w + sh, sy + h + sh,
-            *_NODE_SHADOW_COLOR, rounding,
-        )
-
         # Body
-        if is_context:
-            body_color = _GRAPH_NODE_CONTEXT_BODY
-        elif modern_graph:
-            body_color = _GRAPH_NODE_BODY_COLOR
-        else:
-            body_color = _NODE_BODY_COLOR
+        body_color = Theme.FRAME_BG if is_context else Theme.GRAPH_NODE_BG
         ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *body_color, rounding)
 
         # Header — Unity VFX contexts use a solid coloured title bar.
         accent = self._resolve_node_header_color(layout)
-        if is_context:
+        is_domain_header = is_context or layout.node.uid in self.domain_header_nodes
+        if is_domain_header:
             hdr = accent
         elif modern_graph:
-            hdr = _GRAPH_NODE_HEADER_COLOR
+            hdr = Theme.GRAPH_HEADER_MATH
         else:
             hdr = accent
         ctx.draw_filled_rect(sx, sy, sx + w, sy + hdr_h, *hdr, rounding)
         flat_h = min(rounding, hdr_h * 0.5)
         ctx.draw_filled_rect(sx, sy + hdr_h - flat_h, sx + w, sy + hdr_h, *hdr, 0)
-        if modern_graph and not is_context:
-            accent_h = max(2.0, 3.0 * z)
-            ctx.draw_filled_rect(
-                sx, sy, sx + w, sy + accent_h, *accent, min(rounding, 3.0 * z)
-            )
 
         # Recessed block-slot area for context nodes (Unity VFX Context look).
         if is_context:
@@ -1109,8 +1087,8 @@ class NodeGraphView:
                     slot_top,
                     sx + w - slot_pad,
                     slot_bottom,
-                    *_GRAPH_NODE_CONTEXT_SLOT,
-                    max(2.0, 3.0 * z),
+                    *Theme.ROLE_BG_BASE,
+                    0.0,
                 )
 
         # Header label — node name only (no category chips / Particle subtitle).
@@ -1122,12 +1100,15 @@ class NodeGraphView:
             if layout.typedef.show_header_color_swatch
             else sx + w - pad_x
         )
+        if layout.node.uid == self.default_node_id:
+            badge_width = 42.0 * z
+            ctx.draw_text_aligned(sx + w - badge_width - pad_x, sy, sx + w - pad_x, sy + hdr_h,
+                                  t("animfsm_editor.default_badge"), *(Theme.ROLE_BG_BASE if is_domain_header else Theme.TEXT_DIM),
+                                  1.0, 0.5, self._zoom_font(_SUBTITLE_FONT), True)
+            label_right -= badge_width
         # Title: optically center in header; modern graph nodes exclude the
         # top accent strip. Inset the text box ~1px (at zoom 1) top/bottom.
-        if modern_graph and not is_context:
-            title_top = sy + max(2.0, 3.0 * z)
-        else:
-            title_top = sy
+        title_top = sy
         title_inset = 1.0 * z
         ctx.draw_text_aligned(
             sx + pad_x,
@@ -1135,7 +1116,7 @@ class NodeGraphView:
             max(sx + pad_x + 1.0, label_right),
             sy + hdr_h - title_inset,
             label,
-            *_TEXT_COLOR,
+            *(Theme.ROLE_BG_BASE if is_domain_header else Theme.TEXT),
             0.0,
             0.5,
             font_sz,
@@ -1143,19 +1124,19 @@ class NodeGraphView:
         )
 
         if layout.typedef.show_header_color_swatch:
-            ctx.draw_filled_rect(sw_x1, sw_y1, sw_x2, sw_y2, *accent, 2.0 * z)
+            ctx.draw_filled_rect(sw_x1, sw_y1, sw_x2, sw_y2, *accent, 0.0)
             ctx.draw_rect(
                 sw_x1,
                 sw_y1,
                 sw_x2,
                 sw_y2,
-                *_HEADER_COLOR_SWATCH_OUTLINE,
+                *Theme.TEXT_DISABLED,
                 max(1.0, 1.15 * z),
                 2.0 * z,
             )
 
         # Metadata has its own row above the ports.
-        subtitle = "" if is_context else layout.node.data.get("subtitle", "")
+        subtitle = "" if is_context else self._subtitle(layout.node)
         if subtitle:
             body_top = sy + hdr_h
             sub_inset = 1.0 * z
@@ -1165,12 +1146,20 @@ class NodeGraphView:
                 sx + w - pad_x,
                 body_top + _NODE_SUBTITLE_H * z - sub_inset,
                 subtitle,
-                *_TEXT_BODY_COLOR,
+                *Theme.TEXT_DISABLED,
                 0.0,
                 0.5,
                 self._zoom_font(_SUBTITLE_FONT),
                 True,
             )
+
+        if layout.node.uid in self.runtime_nodes:
+            progress = min(1.0, max(0.0, self.runtime_nodes[layout.node.uid]))
+            color = Theme.DOMAIN_ANIMATION
+            ctx.draw_rect(sx - 2.0 * z, sy - 2.0 * z, sx + w + 2.0 * z, sy + h + 2.0 * z,
+                          *color[:3], 0.22, 4.0 * z, 0.0)
+            ctx.draw_rect(sx, sy, sx + w, sy + h, *color, 1.5 * z, 0.0)
+            ctx.draw_line(sx, sy + hdr_h, sx + w * progress, sy + hdr_h, *color, 2.0 * z)
 
         # Border — instant hover/selection feedback (no per-frame easing; cheap).
         if is_selected:
@@ -1180,7 +1169,7 @@ class NodeGraphView:
             my = ctx.get_mouse_pos_y()
             hovered = (sx <= mx <= sx + w) and (sy <= my <= sy + h)
             if hovered:
-                base = _NODE_BORDER_COLOR
+                base = Theme.ROLE_BORDER
                 acc = Theme.APPLY_BUTTON
                 bcol = (
                     base[0] + (acc[0] - base[0]) * 0.5,
@@ -1190,7 +1179,7 @@ class NodeGraphView:
                 )
                 ctx.draw_rect(sx, sy, sx + w, sy + h, *bcol, _NODE_BORDER_THICKNESS * z, rounding)
             else:
-                ctx.draw_rect(sx, sy, sx + w, sy + h, *_NODE_BORDER_COLOR, _NODE_BORDER_THICKNESS * z, rounding)
+                ctx.draw_rect(sx, sy, sx + w, sy + h, *Theme.ROLE_BORDER, _NODE_BORDER_THICKNESS * z, rounding)
 
         # Pins
         pin_r = _PIN_RADIUS * z
@@ -1209,13 +1198,13 @@ class NodeGraphView:
             ctx.draw_text_aligned(
                 pl.cx + pin_r + 4 * z, pl.cy - label_half,
                 pl.cx + w * 0.45, pl.cy + label_half,
-                t(pl.pin_def.label), *_TEXT_DIM_COLOR, 0.0, 0.5, dim_font, True,
+                t(pl.pin_def.label), *Theme.TEXT_DIM, 0.0, 0.5, dim_font, True,
             )
         for pl in layout.output_pins:
             ctx.draw_text_aligned(
                 sx + w * 0.55, pl.cy - label_half,
                 pl.cx - pin_r - 4 * z, pl.cy + label_half,
-                t(pl.pin_def.label), *_TEXT_DIM_COLOR, 1.0, 0.5, dim_font, True,
+                t(pl.pin_def.label), *Theme.TEXT_DIM, 1.0, 0.5, dim_font, True,
             )
 
         # Custom body renderer
@@ -1366,7 +1355,7 @@ class NodeGraphView:
                 layout.sx + layout.w * 0.40,
                 row_y + label_half,
                 str(field_def.label),
-                *_TEXT_DIM_COLOR,
+                *Theme.TEXT_DIM,
                 0.0,
                 0.5,
                 self._zoom_font(_PIN_FONT),
@@ -1393,10 +1382,10 @@ class NodeGraphView:
                 box_x0 <= mpx <= box_x1 and box_top_y <= mpy <= box_bot_y
             )
             bg = (
-                (min(1.0, _PIN_VALUE_BG[0] + 0.06), min(1.0, _PIN_VALUE_BG[1] + 0.06),
-                 min(1.0, _PIN_VALUE_BG[2] + 0.06), 1.0)
+                (min(1.0, Theme.FRAME_BG[0] + 0.06), min(1.0, Theme.FRAME_BG[1] + 0.06),
+                 min(1.0, Theme.FRAME_BG[2] + 0.06), 1.0)
                 if box_hovered
-                else _PIN_VALUE_BG
+                else Theme.FRAME_BG
             )
             ctx.draw_filled_rect(
                 box_x0,
@@ -1505,7 +1494,7 @@ class NodeGraphView:
                         self._origin_x + slot_x + axis_w,
                         row_y + axis_half,
                         "XYZW"[index],
-                        *_TEXT_DIM_COLOR,
+                        *Theme.TEXT_DIM,
                         0.0,
                         0.5,
                         self._zoom_font(_NODE_FONT) * _PIN_VALUE_FONT_SCALE,
@@ -1775,19 +1764,22 @@ class NodeGraphView:
         color = pl.pin_def.color
         z = self.zoom
         connected = self._is_pin_connected(node_uid, pl.pin_def.id, kind == PinKind.OUTPUT)
-        # Crisp dot: dark outline (matches the dark theme) + filled/hollow core.
-        ctx.draw_filled_circle(pl.cx, pl.cy, radius + 1.2 * z, 0.08, 0.08, 0.09, 1.0)
+        # Ports share the instrument panel's square, filled/hollow notation.
+        ctx.draw_filled_rect(pl.cx - radius - z, pl.cy - radius - z,
+                             pl.cx + radius + z, pl.cy + radius + z, *Theme.ROLE_BG_BASE)
         if connected:
-            ctx.draw_filled_circle(pl.cx, pl.cy, radius, *color)
+            ctx.draw_filled_rect(pl.cx - radius, pl.cy - radius, pl.cx + radius, pl.cy + radius, *color)
         else:
-            ctx.draw_filled_circle(pl.cx, pl.cy, radius, 0.17, 0.17, 0.18, 1.0)
-            ctx.draw_circle(pl.cx, pl.cy, radius, *color, 1.6 * z)
+            ctx.draw_filled_rect(pl.cx - radius, pl.cy - radius,
+                                 pl.cx + radius, pl.cy + radius, *Theme.ROLE_BG_SURFACE)
+            ctx.draw_rect(pl.cx - radius, pl.cy - radius, pl.cx + radius, pl.cy + radius, *color, 1.2 * z)
         # Hover / drag-target highlight ring
         hp_node, hp_pin, hp_kind = self._hovered_pin
         if (hp_pin and hp_pin == pl.pin_def.id and hp_kind == kind
                 and hp_node == node_uid):
-            ctx.draw_circle(pl.cx, pl.cy, radius + 3.0 * self.zoom,
-                            *_PIN_HOVER_COLOR, 1.8 * self.zoom)
+            outer = radius + 3.0 * z
+            ctx.draw_rect(pl.cx - outer, pl.cy - outer, pl.cx + outer, pl.cy + outer,
+                          *Theme.TEXT, 1.0 * z)
 
     def _is_pin_connected(self, node_uid: str, pin_id: str, is_output: bool) -> bool:
         if self.graph is None:
@@ -1831,9 +1823,11 @@ class NodeGraphView:
             if is_sel:
                 color, thick = Theme.APPLY_BUTTON, 3.0 * self.zoom
             elif is_hov:
-                color, thick = _LINK_HOVER_COLOR, 2.6 * self.zoom
+                color, thick = Theme.TEXT, 2.6 * self.zoom
             else:
-                color, thick = _LINK_DEFAULT_COLOR, _LINK_THICKNESS * self.zoom
+                pin = next((pin for pin in src_l.output_pins if pin.pin_def.id == lk.source_pin), None)
+                color = pin.pin_def.color if pin is not None else Theme.TEXT_DISABLED
+                thick = _LINK_THICKNESS * self.zoom
 
             self._draw_link_with_arrow(ctx, sx2, sy2, ex2, ey2, color, thick)
             if not self._semantic_capture_active:
@@ -1881,7 +1875,7 @@ class NodeGraphView:
             return
         self._draw_bezier(
             ctx, sx2, sy2, self._drag_end_x, self._drag_end_y,
-            _PENDING_LINK_COLOR, 2.0 * self.zoom,
+            Theme.TEXT_DIM, 2.0 * self.zoom,
         )
 
     def _draw_bezier(self, ctx, x1, y1, x2, y2, color, thickness):
@@ -1946,20 +1940,12 @@ class NodeGraphView:
 
     @staticmethod
     def _draw_filled_arrow(ctx, tipx, tipy, basex, basey, half_w, color):
-        """Fill a triangle (tip→base) with perpendicular scanlines (no native tri prim)."""
-        dx = tipx - basex
-        dy = tipy - basey
+        """One native triangle replaces per-pixel Python draw calls."""
+        dx, dy = tipx - basex, tipy - basey
         length = math.hypot(dx, dy) or 1.0
-        ux, uy = dx / length, dy / length
-        perx, pery = -uy, ux
-        steps = max(6, int(length))
-        for i in range(steps + 1):
-            f = i / steps
-            cx = basex + ux * length * f
-            cy = basey + uy * length * f
-            hw = half_w * (1.0 - f)
-            ctx.draw_line(cx + perx * hw, cy + pery * hw,
-                          cx - perx * hw, cy - pery * hw, *color, 2.0)
+        px, py = -dy / length * half_w, dx / length * half_w
+        ctx.draw_triangle_filled((tipx, tipy), (basex + px, basey + py), (basex - px, basey - py), color)
+
     def _resolve_node_header_color(self, layout: _NodeLayout) -> Tuple[float, float, float, float]:
         raw = layout.node.data.get("header_color", layout.typedef.header_color)
         return self._coerce_rgba(raw, layout.typedef.header_color)
@@ -1977,7 +1963,7 @@ class NodeGraphView:
         if isinstance(fallback, (list, tuple)) and len(fallback) >= 3:
             a = float(fallback[3]) if len(fallback) >= 4 else 1.0
             return (float(fallback[0]), float(fallback[1]), float(fallback[2]), a)
-        return (0.3, 0.3, 0.3, 1.0)
+        return Theme.ROLE_BG_RAISED
 
     def _node_header_swatch_rect(self, layout: _NodeLayout) -> Tuple[float, float, float, float]:
         z = self.zoom
@@ -2085,7 +2071,8 @@ class NodeGraphView:
 
         # Background
         ctx.draw_filled_rect(mm_x, mm_y, mm_x + mm_w, mm_y + mm_h,
-                             *_MINIMAP_BG, 4.0)
+                             *Theme.GRAPH_MINIMAP_BG, 0.0)
+        ctx.draw_rect(mm_x, mm_y, mm_x + mm_w, mm_y + mm_h, *Theme.BORDER, 1.0, 0.0)
 
         # Clip minimap contents to its bounds
         ctx.push_draw_list_clip_rect(mm_x, mm_y, mm_x + mm_w, mm_y + mm_h)
@@ -2105,16 +2092,16 @@ class NodeGraphView:
             ny = off_y + (layout.sy - total_y0) * s
             nw = layout.w * s
             nh = layout.h * s
-            ctx.draw_filled_rect(nx, ny, nx + nw, ny + nh, *_MINIMAP_NODE, 1.0)
+            ctx.draw_filled_rect(nx, ny, nx + nw, ny + nh, *Theme.GRAPH_MINIMAP_NODE, 0.0)
             if layout.node.uid in self.selected_nodes:
-                ctx.draw_rect(nx, ny, nx + nw, ny + nh, *_TEXT_COLOR, 1.5, 1.0)
+                ctx.draw_rect(nx, ny, nx + nw, ny + nh, *Theme.TEXT, 1.5, 0.0)
 
         # Draw viewport rectangle
         vx0 = off_x + (cx0 - total_x0) * s
         vy0 = off_y + (cy0 - total_y0) * s
         vx1 = off_x + (cx1 - total_x0) * s
         vy1 = off_y + (cy1 - total_y0) * s
-        accent = Theme.APPLY_BUTTON
+        accent = Theme.TEXT
         ctx.draw_rect(
             vx0,
             vy0,
@@ -2125,7 +2112,7 @@ class NodeGraphView:
             accent[2],
             0.45,
             1.0,
-            2.0,
+            0.0,
         )
 
         ctx.pop_draw_list_clip_rect()

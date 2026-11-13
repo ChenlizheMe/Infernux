@@ -8,11 +8,11 @@ Unified error policy
 --------------------
 Every caught exception belongs to exactly one tier:
 
-* ``Debug.report_script_error`` - a user script callback failed. The first
-  occurrence carries the real traceback; repeats are counted and shown at
-  10/100/1000 instead of flooding the Console.
-* ``Debug.report_internal_error`` - an engine or editor failure. Same
-  visibility contract, labelled ``Internal``.
+* ``Debug.report_script_error`` - a user script callback failed. One owned
+  diagnostic retains its traceback and repeat count until that callback
+  succeeds or its owner is retired.
+* ``Debug.report_internal_error`` - an engine or editor failure. Historical
+  reports retain the first traceback and periodic repeat counts.
 * ``Debug.report_recovered`` / ``Debug.log_suppressed`` - a deliberately
   recovered failure (optional feature, best-effort tooling). Visible as a
   warning with the first traceback, then counted.
@@ -35,6 +35,7 @@ Usage:
 import traceback
 import os
 import weakref
+from copy import copy
 from collections import deque
 from datetime import datetime
 from enum import Enum, auto
@@ -99,6 +100,9 @@ class LogEntry:
     internal: bool = False
     source_file: str = ""
     source_line: int = 0
+    diagnostic_owner: str = ""
+    diagnostic_key: str = ""
+    occurrences: int = 1
     
     def get_formatted_time(self) -> str:
         """Get formatted timestamp string."""
@@ -165,9 +169,9 @@ class DebugConsole:
         self._project_root = ""
         self._native_bridge_lock = RLock()
         self._pending_native_entries = deque()
-        # Unified error reporting: one count per (category, site, type,
-        # message). Repeats are counted, not silently dropped; the first and
-        # every 10th/100th/1000th occurrence reach the Console.
+        self._diagnostics: dict[tuple[str, str], LogEntry] = {}
+        # Scripts count one owned callback operation. Unowned internal and
+        # recovered exceptions retain the first and periodic history entries.
         self._report_counts: dict[tuple[str, str, str, str], int] = {}
 
         # Counters for quick filtering
@@ -200,10 +204,19 @@ class DebugConsole:
                 while self._pending_native_entries:
                     self._forward_native_entry(self._pending_native_entries[0])
                     self._pending_native_entries.popleft()
+                for entry in self._diagnostics.values():
+                    self._forward_native_entry(entry)
 
     def _forward_native_entry(self, entry: LogEntry):
         level = self._get_level_map().get(entry.log_type)
         if level is not None:
+            if entry.diagnostic_owner:
+                self._native_console.set_diagnostic(
+                    entry.diagnostic_owner, entry.diagnostic_key, level, entry.message,
+                    entry.stack_trace, entry.source_file, entry.source_line,
+                    entry.__dict__["_context_handle"], entry.occurrences,
+                )
+                return
             self._native_console.log_from_python(
                 level, entry.message, entry.stack_trace or "",
                 entry.source_file or "", entry.source_line, entry.__dict__["_context_handle"],
@@ -241,33 +254,95 @@ class DebugConsole:
                 DebugConsole._LOGTYPE_TO_LOGLEVEL = {}
         return DebugConsole._LOGTYPE_TO_LOGLEVEL
     
+    def _retain_entry(self, entry: LogEntry) -> None:
+        if len(self._entries) >= self._max_entries:
+            # Unresolved problems outlive the bounded ordinary log history.
+            removed = next((item for item in self._entries if not item.diagnostic_owner), None)
+            if removed is not None:
+                self._entries.remove(removed)
+                self._update_counters(removed.log_type, -1)
+                self._pending_native_entries = deque(
+                    item for item in self._pending_native_entries if item is not removed
+                )
+        self._entries.append(entry)
+        self._update_counters(entry.log_type, 1)
+        if self._native_console is None:
+            self._pending_native_entries.append(entry)
+        else:
+            self._forward_native_entry(entry)
+
     def log(self, entry: LogEntry):
         """Add a log entry."""
         if entry.internal:
             self._write_internal_entry(entry)
             return
+        if entry.diagnostic_owner:
+            self.set_diagnostic(entry.diagnostic_owner, entry.diagnostic_key, entry)
+            return
 
         # Retention and native publication share one order, including worker
         # logs emitted while the Editor is attaching its Console panel.
         with self._native_bridge_lock:
-            if len(self._entries) >= self._max_entries:
-                removed = self._entries.popleft()
-                self._update_counters(removed.log_type, -1)
-                if self._pending_native_entries and self._pending_native_entries[0] is removed:
-                    self._pending_native_entries.popleft()
-
-            self._entries.append(entry)
-            self._update_counters(entry.log_type, 1)
-            if self._native_console is None:
-                self._pending_native_entries.append(entry)
-            else:
-                self._forward_native_entry(entry)
+            self._retain_entry(entry)
         
         # Notify listeners
         self._listener_registry.invoke(entry, propagate_exceptions=True)
         
         # Also print to stdout/stderr for development
         self._print_entry(entry)
+
+    def set_diagnostic(self, owner: str, key: str, entry: LogEntry) -> None:
+        """Publish the current problem at one stable operation, replacing its previous result."""
+        identity = (owner, key)
+        entry.diagnostic_owner, entry.diagnostic_key = identity
+        with self._native_bridge_lock:
+            previous = self._diagnostics.get(identity)
+            if previous is None:
+                self._diagnostics[identity] = entry
+                self._retain_entry(entry)
+            else:
+                fields = ("message", "log_type", "stack_trace", "source_file", "source_line", "occurrences")
+                if (all(getattr(previous, name) == getattr(entry, name) for name in fields)
+                        and previous.__dict__["_context_handle"] == entry.__dict__["_context_handle"]):
+                    return
+                self._update_counters(previous.log_type, -1)
+                first_seen = previous.timestamp
+                previous.__dict__.update(entry.__dict__)
+                previous.timestamp = first_seen
+                self._update_counters(previous.log_type, 1)
+                entry = previous
+                if self._native_console is not None:
+                    self._forward_native_entry(entry)
+        self._listener_registry.invoke(entry, propagate_exceptions=True)
+        if previous is None:
+            self._print_entry(entry)
+
+    def resolve_diagnostic(self, owner: str, key: str) -> bool:
+        """Retire exactly one confirmed problem without clearing unrelated history."""
+        with self._native_bridge_lock:
+            entry = self._diagnostics.pop((owner, key), None)
+            if entry is not None:
+                self._entries.remove(entry)
+                self._update_counters(entry.log_type, -1)
+                self._pending_native_entries = deque(
+                    item for item in self._pending_native_entries if item is not entry
+                )
+            native_removed = (self._native_console.resolve_diagnostic(owner, key)
+                              if self._native_console is not None else False)
+            return entry is not None or native_removed
+
+    def resolve_source_diagnostics(self, source_file: str, owner: str = "") -> int:
+        """Resolve tracked operations for a source, leaving ordinary log history intact."""
+        source = self._source_key(source_file)
+        with self._native_bridge_lock:
+            identities = [identity for identity, entry in self._diagnostics.items()
+                          if (not owner or identity[0] == owner) and self._source_key(entry.source_file) == source]
+            return sum(self.resolve_diagnostic(*identity) for identity in identities)
+
+    def get_diagnostics(self, owner: str = "") -> tuple[LogEntry, ...]:
+        """Read current problems without walking ordinary Console history."""
+        with self._native_bridge_lock:
+            return tuple(entry for identity, entry in self._diagnostics.items() if not owner or identity[0] == owner)
     
     def _update_counters(self, log_type: LogType, delta: int):
         """Update log type counters."""
@@ -321,6 +396,7 @@ class DebugConsole:
             self._entries.clear()
             self._pending_native_entries.clear()
             self._report_counts.clear()
+            self._diagnostics.clear()
             self._log_count = 0
             self._warning_count = 0
             self._error_count = 0
@@ -370,6 +446,9 @@ class DebugConsole:
         removed = len(self._entries) - len(retained)
         if removed:
             self._entries = deque(retained)
+            self._diagnostics = {identity: entry for identity, entry in self._diagnostics.items()
+                                 if self._source_key(entry.source_file) != source_key
+                                 or not entry.message.startswith(message_prefix)}
             self._pending_native_entries = deque(
                 entry for entry in self._pending_native_entries
                 if self._source_key(entry.source_file) != source_key or not entry.message.startswith(message_prefix)
@@ -380,16 +459,7 @@ class DebugConsole:
             for entry in retained:
                 self._update_counters(entry.log_type, 1)
         if self._native_console is not None:
-            remove_native = getattr(
-                self._native_console,
-                "remove_entries_from_source",
-                None,
-            )
-            if callable(remove_native):
-                if message_prefix:
-                    remove_native(source_file, message_prefix)
-                else:
-                    remove_native(source_file)
+            self._native_console.remove_entries_from_source(source_file, message_prefix)
         return removed
     
     @property
@@ -547,6 +617,8 @@ class Debug:
         if location:
             source_file = _sanitize_text(location.tb_frame.f_code.co_filename)
             source_line = location.tb_lineno
+        if isinstance(exception, SyntaxError) and exception.filename:
+            source_file, source_line = exception.filename, exception.lineno or 0
         return LogEntry(
             message=message,
             log_type=log_type,
@@ -580,23 +652,67 @@ class Debug:
     @staticmethod
     def _report_exception(category: str, site: str, exception: BaseException,
                           context: Any, *, log_type: LogType, label: str) -> None:
-        """Count one failure and emit the first plus periodic occurrences."""
-        count = DebugConsole.instance()._record_report(
-            (category, str(site), type(exception).__name__, str(exception))
-        )
-        if not Debug._should_emit_report(count):
-            return
+        """Track script failures; retain periodic history for unowned exceptions."""
+        console = DebugConsole.instance()
+        key = Debug._script_diagnostic_key(site, context) if category == "script" else str(site)
+        signature = ("", "") if category == "script" else (type(exception).__name__, str(exception))
+        count = console._record_report((category, key, *signature))
         prefix = f"[{label} @ {site}]" if site else f"[{label}]"
+        if category == "script" and count > 1:
+            previous = console._diagnostics.get(("script.runtime", key))
+            message = _sanitize_text(f"{prefix} {type(exception).__name__}: {exception}")
+            if previous is not None and previous.message == message:
+                entry = copy(previous)
+                entry.occurrences = count
+                console.set_diagnostic("script.runtime", key, entry)
+                return
+        if category != "script" and not Debug._should_emit_report(count):
+            return
         entry = Debug._exception_entry(exception, log_type=log_type, prefix=prefix, context=context)
-        if count > 1:
+        if category == "script":
+            entry.occurrences = count
+            console.set_diagnostic("script.runtime", key, entry)
+        elif count > 1:
             entry.message = f"{entry.message}{Debug._report_suffix(count)}"
             # The full traceback for this failure is already in the Console.
             entry.stack_trace = ""
-        DebugConsole.instance().log(entry)
+            console.log(entry)
+        else:
+            console.log(entry)
+
+    @staticmethod
+    def _script_diagnostic_key(site: str, context: Any = None) -> str:
+        return str(site) if context is None else f"{site}@{id(context)}"
+
+    @staticmethod
+    def resolve_script_error(site: str, context: Any = None) -> bool:
+        """Confirm that the same component callback now executes successfully."""
+        console = DebugConsole.instance()
+        key = Debug._script_diagnostic_key(site, context)
+        removed = console.resolve_diagnostic("script.runtime", key)
+        with console._native_bridge_lock:
+            console._report_counts = {identity: count for identity, count in console._report_counts.items()
+                                      if identity[:2] != ("script", key)}
+        return removed
+
+    @staticmethod
+    def set_diagnostic(owner: str, key: str, message: str, context: Any = None, *,
+                       source_file: str = "", source_line: int = 0, details: str = "",
+                       log_type: LogType = LogType.ERROR) -> None:
+        """Publish a recoverable operation's current problem with a stable identity."""
+        DebugConsole.instance().set_diagnostic(owner, key, LogEntry(
+            message=_sanitize_text(message), log_type=log_type, timestamp=datetime.now(),
+            stack_trace=_sanitize_text(details), context=context,
+            source_file=source_file, source_line=source_line,
+        ))
+
+    @staticmethod
+    def resolve_diagnostic(owner: str, key: str) -> bool:
+        return DebugConsole.instance().resolve_diagnostic(owner, key)
 
     @staticmethod
     def report_script_error(exception: BaseException, site: str = "", context: Any = None):
-        """Report a user-script callback failure without flooding per frame."""
+        """Update one user-script callback problem without appending per-frame logs."""
         Debug._report_exception(
             "script", site, exception, context,
             log_type=LogType.EXCEPTION, label="Script",

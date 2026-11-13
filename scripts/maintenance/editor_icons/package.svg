@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64">
+  <!-- Square module, drawn with filled shapes and knockouts for small sizes. -->
+  <g fill="#A9A59D">
+    <path d="M24 2h6v8h-6zm10 0h6v8h-6zM24 54h6v8h-6zm10 0h6v8h-6zM2 24h8v6H2zm0 10h8v6H2zM54 24h8v6h-8zm0 10h8v6h-8z"/>
+    <path fill-rule="evenodd" d="M8 8h48v48H8zM14 14v36h36V14z"/>
+    <path d="M29 13h6v10h-6zm0 28h6v10h-6zM13 29h10v6H13zm28 0h10v6H41z"/>
+  </g>
+  <path fill="#E9E4DA" fill-rule="evenodd" d="M22 22h20v20H22zM28 28v8h8v-8z"/>
+</svg>

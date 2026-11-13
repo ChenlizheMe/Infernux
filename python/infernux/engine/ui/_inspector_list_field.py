@@ -270,6 +270,11 @@ def _render_serializable_list_item(
     *,
     item_label=None,
     item_renderer=None,
+    item_icon="",
+    item_domain="",
+    item_toggle="",
+    on_remove=None,
+    reorder_identity=(),
 ):
     """Render a single SERIALIZABLE_OBJECT list element with nested fields.
 
@@ -282,14 +287,59 @@ def _render_serializable_list_item(
         if item_label is not None
         else f"[{index}]" + (f" ({so_class.__name__})" if so_class else "")
     )
-    if not render_compact_section_header(ctx, so_label, level="tertiary"):
-        return False
+    from .dpi import editor_dpi_scale
+    from .igui import IGUI
+    from infernux.engine.i18n import t
+
+    header_open = render_compact_section_header(
+        ctx, so_label, level="tertiary", icon_id=ctx.editor_icon(item_icon) if item_icon else 0,
+        allow_overlap=True, header_id=f"{field_name}_{index}",
+    )
+    saved_x, saved_y = ctx.get_cursor_pos_x(), ctx.get_cursor_pos_y()
+    left, top = ctx.get_item_rect_min_x(), ctx.get_item_rect_min_y()
+    right, bottom = ctx.get_item_rect_max_x(), ctx.get_item_rect_max_y()
+    dpi = editor_dpi_scale(ctx)
+    if item_domain:
+        ctx.draw_filled_rect(left, top, left + 3 * dpi, bottom, *getattr(Theme, item_domain), 0.0)
+    elem_changes = {}
+    controls = int(bool(on_remove)) + int(bool(item_toggle and item is not None)) + int(not metadata.readonly)
+    control_x = right - controls * 24 * dpi
+    ctx.draw_filled_rect(control_x - 4 * dpi, top + dpi, right, bottom - dpi, *Theme.INSPECTOR_HEADER_TERTIARY, 0.0)
+    y = top + max(0.0, (bottom - top - 22 * dpi) * 0.5)
+    if not metadata.readonly:
+        ctx.set_cursor_screen_pos(control_x, y)
+        IGUI.icon_button(ctx, f"##grip_{index}", "grip", tooltip=t("igui.reorder"), kind="ghost", width=24, height=22)
+        if ctx.begin_drag_drop_source(0):
+            ctx.set_drag_drop_payload_str(_LIST_REORDER_TYPE, json.dumps(reorder_identity, separators=(",", ":")))
+            ctx.label(so_label)
+            ctx.end_drag_drop_source()
+        control_x += 24 * dpi
+    if item_toggle and item is not None:
+        ctx.set_cursor_screen_pos(control_x + 4 * dpi, top + (bottom - top - ctx.calc_text_size("M")[1]) * 0.5)
+        if metadata.readonly:
+            ctx.begin_disabled(True)
+        current_toggle = bool(getattr(item, item_toggle))
+        next_toggle = ctx.checkbox(f"##item_toggle_{index}", current_toggle)
+        if metadata.readonly:
+            ctx.end_disabled()
+        if next_toggle != current_toggle:
+            elem_changes[item_toggle] = next_toggle
+        control_x += 24 * dpi
+    if on_remove:
+        ctx.set_cursor_screen_pos(control_x, y)
+        if IGUI.icon_button(ctx, f"##remove_{index}", "close", tooltip=t("igui.remove"), kind="ghost", width=24, height=22):
+            on_remove()
+    ctx.set_cursor_pos_x(saved_x)
+    ctx.set_cursor_pos_y(saved_y)
     if not so_class or item is None:
         return False
-    elem_changes = _render_serializable_members(
-        ctx, f"{field_name}_{index}", item, readonly=metadata.readonly,
-        value_renderer=_render_serializable_list_value,
-    )
+    if header_open:
+        ctx.dummy(0, 4 * dpi)
+        elem_changes.update(_render_serializable_members(
+            ctx, f"{field_name}_{index}", item, readonly=metadata.readonly,
+            value_renderer=_render_serializable_list_value,
+            skip_fields=(item_toggle,) if item_toggle else (),
+        ))
     changed = bool(elem_changes)
     if changed:
         edited = _copy.deepcopy(item)
@@ -297,7 +347,7 @@ def _render_serializable_list_item(
             setattr(edited, fn, fv)
         items[index] = edited
         item = edited
-    if item_renderer is not None:
+    if header_open and item_renderer is not None:
         item_renderer(ctx, item, index, f"{field_name}_{index}")
     return changed
 
@@ -398,6 +448,9 @@ def _render_list_items_body(
     *,
     item_label=None,
     item_renderer=None,
+    item_icon="",
+    item_domain="",
+    item_toggle="",
 ):
     """Render list item rows, reorder separators, and bottom drop zone. Returns True if changed."""
     from .igui import IGUI
@@ -432,60 +485,69 @@ def _render_list_items_body(
 
         for index, item in enumerate(items):
             ctx.push_id_str(f"{field_name}_{index}")
-            remove_clicked = False
-            if not metadata.readonly:
-                remove_clicked = IGUI.list_item_remove_button(ctx, f"{field_name}_{index}")
-                ctx.same_line(0, button_spacing)
+            try:
+                remove_clicked = False
+                if not metadata.readonly and element_type != FieldType.SERIALIZABLE_OBJECT:
+                    remove_clicked = IGUI.list_item_remove_button(ctx, f"{field_name}_{index}")
+                    ctx.same_line(0, button_spacing)
 
-            if not metadata.readonly and ctx.begin_drag_drop_source(0):
-                ctx.set_drag_drop_payload_str(
-                    _LIST_REORDER_TYPE,
-                    json.dumps((id(comp), field_name, index), separators=(",", ":")),
-                )
-                ctx.label(f"[{index}]")
-                ctx.end_drag_drop_source()
-
-            if element_type in reference_types:
-                if metadata.readonly:
-                    ctx.begin_disabled(True)
-                try:
-                    reference_changed = _render_reference_list_item(
-                        ctx, field_name, index, item, items, metadata, element_type, comp=comp,
+                if not metadata.readonly and element_type != FieldType.SERIALIZABLE_OBJECT and ctx.begin_drag_drop_source(0):
+                    ctx.set_drag_drop_payload_str(
+                        _LIST_REORDER_TYPE,
+                        json.dumps((id(comp), field_name, index), separators=(",", ":")),
                     )
-                finally:
-                    if metadata.readonly:
-                        ctx.end_disabled()
-                if reference_changed and not metadata.readonly:
-                    changed = True
-            elif element_type == FieldType.SERIALIZABLE_OBJECT:
-                if _render_serializable_list_item(
-                    ctx,
-                    field_name,
-                    index,
-                    item,
-                    items,
-                    metadata,
-                    item_label=item_label,
-                    item_renderer=item_renderer,
-                ):
-                    changed = True
-            else:
-                if metadata.readonly:
-                    ctx.begin_disabled(True)
-                try:
-                    new_item = render_serialized_field(
-                        ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
-                    )
-                finally:
-                    if metadata.readonly:
-                        ctx.end_disabled()
-                if not metadata.readonly and has_field_changed(element_type, item, new_item):
-                    items[index] = new_item
-                    changed = True
+                    ctx.label(f"[{index}]")
+                    ctx.end_drag_drop_source()
 
-            if remove_clicked:
-                remove_index = index
-            ctx.pop_id()
+                if element_type in reference_types:
+                    if metadata.readonly:
+                        ctx.begin_disabled(True)
+                    try:
+                        reference_changed = _render_reference_list_item(
+                            ctx, field_name, index, item, items, metadata, element_type, comp=comp,
+                        )
+                    finally:
+                        if metadata.readonly:
+                            ctx.end_disabled()
+                    if reference_changed and not metadata.readonly:
+                        changed = True
+                elif element_type == FieldType.SERIALIZABLE_OBJECT:
+                    def remove_item(_index=index):
+                        nonlocal remove_index
+                        remove_index = _index
+
+                    if _render_serializable_list_item(
+                        ctx,
+                        field_name,
+                        index,
+                        item,
+                        items,
+                        metadata,
+                        item_label=item_label,
+                        item_renderer=item_renderer,
+                        item_icon=item_icon, item_domain=item_domain, item_toggle=item_toggle,
+                        on_remove=remove_item if not metadata.readonly else None,
+                        reorder_identity=(id(comp), field_name, index),
+                    ):
+                        changed = True
+                else:
+                    if metadata.readonly:
+                        ctx.begin_disabled(True)
+                    try:
+                        new_item = render_serialized_field(
+                            ctx, f"##{field_name}_{index}", "", element_meta, item, 0.0,
+                        )
+                    finally:
+                        if metadata.readonly:
+                            ctx.end_disabled()
+                    if not metadata.readonly and has_field_changed(element_type, item, new_item):
+                        items[index] = new_item
+                        changed = True
+
+                if remove_clicked:
+                    remove_index = index
+            finally:
+                ctx.pop_id()
             if not metadata.readonly:
                 IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _LIST_REORDER_TYPE, _make_reorder_cb(index + 1))
 
@@ -518,6 +580,9 @@ def _render_list_field(
     header_drop_factory=None,
     item_label=None,
     item_renderer=None,
+    item_icon="",
+    item_domain="",
+    item_toggle="",
     on_change=None,
     expanded: bool | None = None,
     on_expanded_change=None,
@@ -616,6 +681,7 @@ def _render_list_field(
         current_value,
         item_label=item_label,
         item_renderer=item_renderer,
+        item_icon=item_icon, item_domain=item_domain, item_toggle=item_toggle,
     ):
         changed = True
 

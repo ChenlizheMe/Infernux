@@ -6,7 +6,6 @@ import os
 from enum import Enum
 from typing import Any, Iterable
 
-from infernux.debug import DebugConsole
 from infernux.engine.path_utils import resolved_path
 
 from .operations import OperationError
@@ -388,55 +387,22 @@ class EditorAutomationHost:
     ) -> dict[str, object]:
         allowed = {self._canonical_level(level) for level in levels}
         panel = self._native_console()
-        reader = getattr(panel, "_get_visible_log_snapshot", None)
-        if callable(reader):
-            entries = [dict(item) for item in reader(max(1, int(limit)))]
-            entries = [
-                item
-                for item in entries
-                if not allowed
-                or self._canonical_level(item.get("level", "")) in allowed
-            ]
-            status_bar = None
-            try:
-                message, level, info, warnings, errors, uid = panel._get_status_snapshot()
-                status_bar = {
-                    "surface": "status_bar",
-                    "message": message,
-                    "level": self._canonical_level(level),
-                    "counts": {
-                        "info": info,
-                        "warnings": warnings,
-                        "errors": errors,
-                    },
-                    "mirrors_console_uid": uid or None,
-                }
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                pass
-            return {
-                "entries": entries,
-                "source": "native_console",
-                "surface": "console",
-                "status_bar": status_bar,
-            }
-        entries = []
-        for entry in DebugConsole.instance().get_entries()[-max(1, int(limit)) :]:
-            value = {
-                "time": entry.get_formatted_time(),
-                "level": self._canonical_level(entry.log_type),
-                "message": entry.message,
-                "source_file": entry.source_file,
-                "source_line": entry.source_line,
-                "stack_trace": entry.stack_trace,
-                "count": 1,
-            }
-            if not allowed or value["level"] in allowed:
-                entries.append(value)
+        if panel is None:
+            raise OperationError("editor.unavailable", "The Editor Console is unavailable.")
+        entries = [dict(item) for item in panel._get_visible_log_snapshot(max(1, int(limit)))]
+        entries = [item for item in entries if not allowed or self._canonical_level(item["level"]) in allowed]
+        message, level, info, warnings, errors, uid = panel._get_status_snapshot()
         return {
             "entries": entries,
-            "source": "python_debug_fallback",
+            "source": "native_console",
             "surface": "console",
-            "status_bar": None,
+            "status_bar": {
+                "surface": "status_bar",
+                "message": message,
+                "level": self._canonical_level(level),
+                "counts": {"info": info, "warnings": warnings, "errors": errors},
+                "mirrors_console_uid": uid or None,
+            },
         }
 
     def create_project_asset(
@@ -1561,13 +1527,9 @@ class EditorAutomationHost:
 
     @staticmethod
     def _native_console():
-        try:
-            from infernux.engine.bootstrap import EditorBootstrap
-
-            bootstrap = EditorBootstrap.instance()
-            return getattr(bootstrap, "console", None) if bootstrap else None
-        except (AttributeError, ImportError, RuntimeError):
-            return None
+        from infernux.engine.bootstrap import EditorBootstrap
+        bootstrap = EditorBootstrap.instance()
+        return bootstrap.console if bootstrap is not None else None
 
     @staticmethod
     def _native_engine():

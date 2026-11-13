@@ -128,7 +128,7 @@ class Light(BuiltinComponent):
         "color",
         FieldType.COLOR,
         default=None,
-        tooltip="Authored sRGB color; a filter when using color temperature",
+        tooltip="light.tooltip.color",
         get_converter=_rgb_to_rgba,
         set_converter=_rgba_to_vec3,
     )
@@ -196,14 +196,16 @@ class Light(BuiltinComponent):
         "affect_geometry",
         FieldType.BOOL,
         default=True,
-        header="Influence",
-        tooltip="Allow this light to illuminate geometry renderers",
+        display_name_key="light.affect_geometry",
+        header="light.section.influence",
+        tooltip="light.tooltip.affect_geometry",
     )
     affect_particles = CppProperty(
         "affect_particles",
         FieldType.BOOL,
         default=True,
-        tooltip="Allow this light to illuminate particle renderers",
+        display_name_key="light.affect_particles",
+        tooltip="light.tooltip.affect_particles",
     )
 
     @property

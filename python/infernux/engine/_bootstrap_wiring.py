@@ -1092,10 +1092,6 @@ class BootstrapWiringMixin:
                 'console.set_search', 'Search Console', 'Console',
                 target='console',
             ),
-            _panel_entry(
-                'console.set_detail_height', 'Resize Console Details', 'Console',
-                target='console',
-            ),
         )
         for command in commands:
             registry.register(command, replace=True)
@@ -1311,9 +1307,23 @@ class BootstrapWiringMixin:
         if native:
             mb.is_close_requested = lambda: native.is_close_requested()
 
-        # Utility settings are normal WindowManager-owned panel surfaces. The
-        # project menu only dispatches commands; it never owns their instances
-        # or renders a parallel panel list.
+        # Settings commands reveal one owned window; clicking an entry again
+        # focuses its page rather than closing it or opening another window.
+        for panel_id, display_name in (
+            ("project_settings", "Project Settings"),
+            ("build_settings", "Player Settings"),
+            ("preferences", "Preferences"),
+        ):
+            command_registry.register(
+                EditorCommand(
+                    f"window.open.{panel_id}",
+                    lambda _context, target=panel_id: wm.open_window_from_user(target),
+                    display_name=display_name,
+                    category="Window",
+                ),
+                replace=True,
+            )
+
         for command_id, display_name, panel_id in (
             ("window.toggle.build_settings", "Build Settings", "build_settings"),
             ("window.toggle.preferences", "Preferences", "preferences"),
@@ -1371,11 +1381,14 @@ class BootstrapWiringMixin:
         )
         from infernux.engine.ui.modal_portal import ModalPortal
         _modal_portal = ModalPortal(self.interaction_core.modals)
+        from infernux.engine.ui.editor_toasts import EditorToasts
+        _toasts = EditorToasts()
 
         class _EditorGlobalOverlays(InxGUIRenderable):
             def on_render(self, ctx: InxGUIContext):
                 _external_conflicts.poll()
                 _asset_load_errors.poll()
+                _toasts.render(ctx)
                 _modal_portal.on_render(ctx)
 
         self._editor_global_overlays = _EditorGlobalOverlays()
@@ -1444,6 +1457,7 @@ class BootstrapWiringMixin:
         """Wire C++ InspectorPanel callbacks to Python managers."""
         from infernux.engine.bootstrap_inspector import wire_inspector_callbacks
         wire_inspector_callbacks(self)
+        self.inspector_panel.render_diagnostic_inspector = lambda ctx: self.console.render_selection_inspector(ctx)
         self._wire_native_transient_interactions(self.inspector_panel, "inspector")
 
     def _wire_ui_editor(self):

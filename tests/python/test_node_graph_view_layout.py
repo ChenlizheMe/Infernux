@@ -60,7 +60,7 @@ def test_subtitle_ports_and_body_share_the_rendered_geometry(engine, zoom, style
                     view._draw_one_node(ctx, right)
                     view._draw_minimap(ctx, 0.0, 0.0, 64.0, 64.0)
                     title_width = ctx.calc_text_size(definition.label, view._zoom_font(18.0))[0]
-                    pin_width = ctx.calc_text_size(definition.pins[0].label, view._zoom_font(15.0))[0]
+                    pin_width = ctx.calc_text_size(definition.pins[0].label, view._zoom_font(16.0))[0]
                     samples.append((left, right, title_width, pin_width))
             except Exception as error:
                 errors.append(error)
@@ -80,7 +80,7 @@ def test_subtitle_ports_and_body_share_the_rendered_geometry(engine, zoom, style
     assert not errors, errors
     assert samples
     for left, right, title_width, pin_width in samples:
-        assert right.h - left.h == pytest.approx(22.0 * zoom if style == "graph" else 0.0)
+        assert right.h - left.h == pytest.approx(26.0 * zoom if style == "graph" else 0.0)
         assert right.input_pins[0].cy - left.input_pins[0].cy == pytest.approx(right.h - left.h)
         assert right.input_pins[0].cy == pytest.approx(right.output_pins[0].cy)
         assert left.w - 42.0 * zoom >= title_width - 0.01

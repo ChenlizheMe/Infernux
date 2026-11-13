@@ -35,9 +35,9 @@ def previews(engine, monkeypatch):
 
 
 def test_preview_restores_transform_ui_and_existing_character_state(scene, previews, engine):
-    from infernux.resources import engine_font_path
+    from infernux.resources import engine_font_cjk_path, engine_font_path, engine_mono_font_path
 
-    engine.set_gui_font(engine_font_path, 18)
+    engine.set_gui_fonts(engine_font_path, engine_font_cjk_path, engine_mono_font_path, 18)
     owner = scene.create_game_object("Preview target")
     text = owner.add_component(UIText)
     text.text = "A中"

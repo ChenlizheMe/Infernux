@@ -39,6 +39,9 @@ struct TextLayoutParams
     float letterSpacing = 0.0f;
     std::vector<std::string> fallbackFontPaths;
     bool richText = false;
+    // Editor draw-list labels inherit the active UI/mono font stack. Runtime
+    // text keeps resolving authored font paths through the resource cache.
+    ImFont *fontOverride = nullptr;
 };
 
 struct TextLine
@@ -227,6 +230,15 @@ inline std::unordered_set<ImFont *> &GetRetiredFonts()
     return fonts;
 }
 
+// Faces installed by the GUI bootstrap. Font-asset invalidation must never
+// retire them: the GUI, DefaultFont() and pushed font stacks hold the pointers.
+inline std::unordered_set<ImFont *> &GetEngineFonts()
+{
+    detail::AssertMainThread();
+    static std::unordered_set<ImFont *> fonts;
+    return fonts;
+}
+
 // Remove path aliases immediately, but keep atlas-owned font storage alive
 // until the GUI's next frame boundary has drained its submitted GPU work.
 inline bool InvalidateFontPath(const std::string &path)
@@ -241,7 +253,7 @@ inline bool InvalidateFontPath(const std::string &path)
         if (key.empty())
             continue;
         changed = missing.erase(key) != 0 || changed;
-        if (const auto found = cache.find(key); found != cache.end()) {
+        if (const auto found = cache.find(key); found != cache.end() && !GetEngineFonts().count(found->second)) {
             retired.insert(found->second);
             changed = true;
         }
@@ -288,6 +300,7 @@ inline void ClearFontCache()
     GetMissingFonts().clear();
     // Atlas Clear/Destroy owns these objects when the entire GUI is reset.
     GetRetiredFonts().clear();
+    GetEngineFonts().clear();
     ++FontCacheGeneration();
 }
 
@@ -360,6 +373,50 @@ inline ImFont *ResolveFont(const std::string &fontPath)
 
     fontCache[pathKey] = font;
     fontCache[requestKey] = font;
+    return font;
+}
+
+// Load an engine face from `path` and merge every `mergePaths` face into the
+// same ImFont (MergeMode). The result is published under `path`, so UIText
+// that names the engine font path resolves to the merged face rather than a
+// second, CJK-less copy of the primary file. Returns nullptr after logging if
+// any face fails; nothing is left in the atlas in that case.
+inline ImFont *LoadEngineFont(const std::string &path, const std::vector<std::string> &mergePaths, float sizePixels)
+{
+    ImFontAtlas *atlas = ImGui::GetIO().Fonts;
+    ImFontConfig config{};
+    // World-space UIText can be magnified by a camera. Keep enough atlas
+    // coverage for that path while retaining ImGui's dynamic size baking.
+    config.OversampleH = 2;
+    config.OversampleV = 2;
+    config.Flags |= ImFontFlags_NoLoadError;
+
+    const std::string normalizedPath = NormalizeFontPath(path);
+    ImFont *font =
+        normalizedPath.empty() ? nullptr : atlas->AddFontFromFileTTF(normalizedPath.c_str(), sizePixels, &config);
+    if (font == nullptr) {
+        INXLOG_ERROR("Engine font could not be loaded: '", path, "'");
+        return nullptr;
+    }
+
+    // ImGui 1.92 bakes glyphs on demand, so merged CJK sources cost nothing
+    // until a codepoint is requested.
+    config.MergeMode = true;
+    config.DstFont = font;
+    for (const std::string &mergePath : mergePaths) {
+        const std::string normalizedMerge = NormalizeFontPath(mergePath);
+        if (normalizedMerge.empty() ||
+            atlas->AddFontFromFileTTF(normalizedMerge.c_str(), sizePixels, &config) == nullptr) {
+            INXLOG_ERROR("Engine font merge source could not be loaded: '", mergePath, "' (into '", path, "')");
+            atlas->RemoveFont(font);
+            return nullptr;
+        }
+    }
+
+    auto &fontCache = GetFontCache();
+    fontCache[LexicalFilesystemPathKey(path)] = font;
+    fontCache[FoldFilesystemPathCase(normalizedPath)] = font;
+    GetEngineFonts().insert(font);
     return font;
 }
 

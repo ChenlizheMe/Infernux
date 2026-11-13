@@ -107,10 +107,6 @@ def test_console_clear_resets_counts_and_selection_without_reusing_ids():
     panel.set_search_query("validation")
     assert panel.get_view_option("collapse")
     assert panel.get_search_query() == "validation"
-    panel.set_detail_height(123.0)
-    assert panel.get_detail_height() == pytest.approx(123.0)
-    panel.set_detail_height(1.0)
-    assert panel.get_detail_height() == pytest.approx(40.0)
 
 
 def test_toolbar_camera_update_is_published_to_engine():

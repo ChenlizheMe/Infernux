@@ -855,7 +855,9 @@ def _render_canvas_inspector(ctx, canvas: UICanvas):
 
             if canvas.screen_match_mode == ScreenMatchMode.MatchWidthOrHeight:
                 field_label(ctx, t("ui_comp.match"), lw)
-                new_match = ctx.float_slider("##canvas_match_val", float(canvas.match_width_or_height), 0.0, 1.0)
+                new_match = _igui().slider_float(
+                    ctx, "##canvas_match_val", float(canvas.match_width_or_height), 0.0, 1.0, format="%.2f"
+                )
                 _record_field(ctx, canvas, "match_width_or_height", "float_slider", t("ui_comp.match"))
                 if abs(float(new_match) - float(canvas.match_width_or_height)) > 1e-5:
                     _apply_if_changed(canvas, "match_width_or_height", canvas.match_width_or_height, float(new_match))

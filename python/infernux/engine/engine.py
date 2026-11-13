@@ -1161,8 +1161,14 @@ class Engine(WorkRuntime):
             Debug.log_suppressed("Engine._confirm_dirty_panels_before_exit", exc)
             return True
 
-    def set_gui_font(self, font_path, font_size=18):
-        self._engine.set_gui_font(_safe_path(font_path), font_size)
+    def set_gui_fonts(self, ui_font_path, ui_cjk_font_path, mono_font_path, font_size=18):
+        """Install ``ui`` (ui face + merged CJK face) as the default font and ``mono`` for numbers/code."""
+        self._engine.set_gui_fonts(
+            _safe_path(ui_font_path),
+            _safe_path(ui_cjk_font_path),
+            _safe_path(mono_font_path),
+            font_size,
+        )
 
     def set_gui_player_mode(self, enabled: bool):
         """Skip DockSpace/layout overhead in standalone player builds."""

@@ -24,7 +24,7 @@ class MaterialLoader final : public IAssetLoader
     void CreateMeta(AssetSource &source, InxResourceMeta &metaData) const override;
 
   private:
-    static bool PrepareDocument(class InxMaterial &staged, const std::string &filePath, AssetDatabase *adb);
+    static void PrepareDocument(class InxMaterial &staged, const std::string &filePath, AssetDatabase *adb);
 };
 
 } // namespace infernux

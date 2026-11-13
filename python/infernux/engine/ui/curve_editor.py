@@ -10,13 +10,16 @@ from infernux._animation_curve import Keyframe, WeightedMode, _decode_number
 from infernux.graph.ramp import CURVE_WRAP_MODES, AnimationCurve
 
 from .dpi import editor_dpi_scale
-from .theme import Theme
+from .theme import Theme, ImGuiStyleVar
+from .igui import IGUI
+from infernux.engine.i18n import t
 
 
 @dataclass
 class _CurveEditorState:
     selected: int = 0
     dragging: str = ""
+    opening_curve: dict | None = None
 
 
 _STATES: dict[str, _CurveEditorState] = {}
@@ -28,7 +31,7 @@ def _edit_key_number(ctx, widget_id, value, speed, minimum, maximum):
     if not isfinite(number):
         ctx.label(str(number))
         ctx.same_line()
-        return 0.0 if ctx.button(f"Reset##{widget_id}") else value
+        return 0.0 if IGUI.icon_button(ctx, f"##reset_{widget_id}", "reset", tooltip=t("curve.reset")) else value
     updated = float(ctx.drag_float(widget_id, number, speed, minimum, maximum))
     return updated if ctx.is_item_edited() else value
 
@@ -36,9 +39,9 @@ def _edit_key_number(ctx, widget_id, value, speed, minimum, maximum):
 def _edit_tangent(ctx, widget_id, value):
     number = _decode_number(value)
     if not isfinite(number):
-        ctx.label("NaN" if number != number else "Step")
+        ctx.label("NaN" if number != number else t("curve.step"))
         ctx.same_line()
-        return 0.0 if ctx.button(f"Slope##{widget_id}") else value
+        return 0.0 if ctx.button(f"{t('curve.slope')}##{widget_id}") else value
     return _edit_key_number(ctx, f"##{widget_id}", value, .02, -1.0e7, 1.0e7)
 
 
@@ -132,7 +135,11 @@ def _draw_curve(
         point = to_screen(time, value)
         color = Theme.CURVE_EDITOR_KEY_SELECTED if index == selected else Theme.CURVE_EDITOR_KEY
         radius = (5.0 if index == selected else 4.0) * dpi_scale
-        ctx.draw_filled_circle(*point, radius, *color, 16)
+        px, py = point
+        top, right = (px, py - radius), (px + radius, py)
+        bottom, left = (px, py + radius), (px - radius, py)
+        ctx.draw_triangle_filled(top, right, bottom, color)
+        ctx.draw_triangle_filled(top, bottom, left, color)
         if index == selected:
             handles["key"] = point
 
@@ -221,7 +228,7 @@ def render_curve_property(
     )
     if ctx.is_item_hovered():
         ctx.set_mouse_cursor(7)
-        ctx.set_tooltip("Click to edit curve")
+        ctx.set_tooltip(t("curve.click_to_edit"))
     ctx.record_semantic_rect(
         "curve",
         "AnimationCurve",
@@ -235,37 +242,57 @@ def render_curve_property(
 
     popup_id = f"##{widget_id}_curve_editor"
     if clicked:
+        state.opening_curve = curve.to_dict()
         ctx.open_popup(popup_id)
-    ctx.set_next_window_size(440.0 * dpi, 570.0 * dpi, Theme.COND_ALWAYS)
-    if not ctx.begin_popup(popup_id):
+    ctx.set_next_window_size(440.0 * dpi, 570.0 * dpi, Theme.COND_FIRST_USE_EVER)
+    ctx.push_style_var_vec2(ImGuiStyleVar.WindowMinSize, 440.0 * dpi, 220.0 * dpi)
+    opened = ctx.begin_popup(popup_id, resizable=True)
+    ctx.pop_style_var(1)
+    if not opened:
         return curve.to_dict()
 
     try:
+        ctx.set_next_item_width(220.0 * dpi)
+        preset = ctx.combo(f"##{widget_id}_preset", 0,
+                           [t(f"curve.preset_{name}") for name in ("choose", "linear", "smooth", "zero", "one")], -1)
+        ctx.same_line()
+        reset = IGUI.icon_button(ctx, f"##{widget_id}_reset", "reset", tooltip=t("curve.reset"))
+        if preset:
+            curve = (AnimationCurve.linear(0, 0, 1, 1) if preset == 1 else
+                     AnimationCurve.ease_in_out(0, 0, 1, 1) if preset == 2 else
+                     AnimationCurve.constant(0, 1, 0 if preset == 3 else 1))
+        elif reset:
+            curve = AnimationCurve.from_dict(state.opening_curve)
+        if preset or reset:
+            keys = [item.to_dict() for item in curve.keys]
+            state.selected = 0
+            state.dragging = ""
+        ctx.separator()
         ctx.align_text_to_frame_padding()
-        ctx.label("Pre Wrap")
+        ctx.label(t("curve.pre_wrap"))
         ctx.same_line(72.0 * dpi)
         ctx.set_next_item_width(120.0 * dpi)
         pre_index = ctx.combo(
             f"##{widget_id}_pre",
             CURVE_WRAP_MODES.index(curve.pre_wrap),
-            list(CURVE_WRAP_MODES),
+            [t(f"curve.wrap_{mode}") for mode in CURVE_WRAP_MODES],
             -1,
         )
         ctx.same_line(218.0 * dpi)
         ctx.align_text_to_frame_padding()
-        ctx.label("Post Wrap")
+        ctx.label(t("curve.post_wrap"))
         ctx.same_line(294.0 * dpi)
         ctx.set_next_item_width(-1.0)
         post_index = ctx.combo(
             f"##{widget_id}_post",
             CURVE_WRAP_MODES.index(curve.post_wrap),
-            list(CURVE_WRAP_MODES),
+            [t(f"curve.wrap_{mode}") for mode in CURVE_WRAP_MODES],
             -1,
         )
 
         if not keys:
-            ctx.label("Empty curve (value = 0)")
-            if ctx.button(f"Add Key##{widget_id}_empty_add"):
+            ctx.label(t("curve.empty"))
+            if IGUI.icon_button(ctx, f"##{widget_id}_empty_add", "plus", tooltip=t("curve.add_key")):
                 keys.append(Keyframe().to_dict())
             else:
                 return AnimationCurve(keys=keys, pre_wrap=CURVE_WRAP_MODES[pre_index],
@@ -377,36 +404,37 @@ def render_curve_property(
         second_label_x = 218.0 * dpi
         second_input_x = 294.0 * dpi
         ctx.align_text_to_frame_padding()
-        ctx.label("Time")
+        ctx.label(t("curve.time"))
         ctx.same_line(first_input_x)
         ctx.set_next_item_width(110.0 * dpi)
         selected["time"] = _edit_key_number(
             ctx, f"##{widget_id}_time", selected["time"], 0.01, minimum, maximum)
         ctx.same_line(second_label_x)
-        ctx.label("Value")
+        ctx.label(t("curve.value"))
         ctx.same_line(second_input_x)
         ctx.set_next_item_width(-1.0)
         selected["value"] = _edit_key_number(
             ctx, f"##{widget_id}_value", selected["value"], 0.01,
             0.0 if non_negative else -1.0e7, 1.0e7)
         ctx.align_text_to_frame_padding()
-        ctx.label("In Tangent")
+        ctx.label(t("curve.in_tangent"))
         ctx.same_line(first_input_x)
         ctx.set_next_item_width(110.0 * dpi)
         selected["in_tangent"] = _edit_tangent(ctx, f"{widget_id}_in", selected["in_tangent"])
         ctx.same_line(second_label_x)
-        ctx.label("Out Tangent")
+        ctx.label(t("curve.out_tangent"))
         ctx.same_line(second_input_x)
         ctx.set_next_item_width(-1.0)
         selected["out_tangent"] = _edit_tangent(ctx, f"{widget_id}_out", selected["out_tangent"])
-        ctx.label("Weighted Mode")
+        ctx.label(t("curve.weighted_mode"))
         ctx.same_line(140.0 * dpi)
         ctx.set_next_item_width(-1.0)
         original_mode = int(selected["weighted_mode"])
-        mode = ctx.combo(f"##{widget_id}_weighted", original_mode & 3, ["None", "In", "Out", "Both"], -1)
+        mode = ctx.combo(f"##{widget_id}_weighted", original_mode & 3,
+                         [t(f"curve.weight_{name}") for name in ("none", "in", "out", "both")], -1)
         selected["weighted_mode"] = (original_mode & ~3) | mode
         for side in ("in", "out"):
-            ctx.label(f"{side.title()} Weight")
+            ctx.label(t(f"curve.{side}_weight"))
             ctx.same_line(140.0 * dpi)
             ctx.set_next_item_width(-1.0)
             selected[f"{side}_weight"] = _edit_key_number(
@@ -414,10 +442,10 @@ def render_curve_property(
         for side in ("in", "out"):
             if side == "out":
                 ctx.same_line()
-            if ctx.button(f"Step {side.title()}##{widget_id}_step_{side}"):
+            if ctx.button(f"{t(f'curve.step_{side}')}##{widget_id}_step_{side}"):
                 selected[f"{side}_tangent"] = "infinity"
 
-        if ctx.button(f"Add Key##{widget_id}_add"):
+        if IGUI.icon_button(ctx, f"##{widget_id}_add", "plus", tooltip=t("curve.add_key")):
             if len(keys) == 1:
                 insertion_index = 1
                 new_time = _decode_number(keys[0]["time"]) + 1.0
@@ -444,7 +472,7 @@ def render_curve_property(
             state.selected = insertion_index
         if keys:
             ctx.same_line(0, 8.0 * dpi)
-            if ctx.button(f"Remove Key##{widget_id}_remove"):
+            if IGUI.icon_button(ctx, f"##{widget_id}_remove", "minus", tooltip=t("curve.remove_key")):
                 del keys[state.selected]
                 state.selected = min(state.selected, len(keys) - 1)
 

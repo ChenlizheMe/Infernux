@@ -270,7 +270,7 @@ class ParticleStream:
     def sprite(
         self,
         *,
-        shader: str = "Particle Unlit",
+        shader: str = "infernux/particle/unlit",
         properties: dict[str, Any] | None = None,
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,
@@ -286,7 +286,7 @@ class ParticleStream:
         self,
         *,
         mesh: AssetReference,
-        shader: str = "Particle Unlit",
+        shader: str = "infernux/particle/unlit",
         properties: dict[str, Any] | None = None,
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,
@@ -296,7 +296,7 @@ class ParticleStream:
     def ribbon(
         self,
         *,
-        shader: str = "Particle Unlit",
+        shader: str = "infernux/particle/unlit",
         properties: dict[str, Any] | None = None,
         receive_scene_lighting: bool = False,
         receive_shadows: bool = False,

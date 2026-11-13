@@ -18,6 +18,7 @@ inline void CreateShaderAuthorMetadata(AssetSource &source, InxResourceMeta &met
     metadata.AddMetadata("type", std::string(kind->stage));
     metadata.AddMetadata("file_extension", std::string(kind->suffix));
     metadata.AddMetadata("shader_source_kind", std::string(kind->stage));
+    metadata.AddMetadata("shader_domain", info.at("domain").get<std::string>());
     metadata.AddMetadata("shader_id", info.at("shader_id").get<std::string>());
     metadata.AddMetadata("shader_hidden", info.at("hidden").get<bool>());
     metadata.AddMetadata("shader_surface_type", info.at("surface_type").get<std::string>());

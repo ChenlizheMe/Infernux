@@ -465,7 +465,12 @@ class PlayerBootstrap:
         # single full-screen renderable, so the editor docking system is waste.
         self.engine.set_gui_player_mode(True)
 
-        self.engine.set_gui_font(_resources.engine_font_path, 18)
+        self.engine.set_gui_fonts(
+            _resources.engine_font_path,
+            _resources.engine_font_cjk_path,
+            _resources.engine_mono_font_path,
+            18,
+        )
         self._pump_startup_events()
 
     def _pump_startup_events(self) -> None:

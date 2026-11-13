@@ -28,8 +28,8 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
     try {
         if (!fragment->materialProgram)
             throw std::invalid_argument("Material fragment must declare a mesh shader: " + fragment->filePath);
-        const bool standard =
-            stages.vertexKey == "Standard" || (vertex && vertex->shaderId == "Standard" && !vertex->program);
+        const bool standard = stages.vertexKey == infernux::kStandardVertexShaderId ||
+                              (vertex && vertex->shaderId == infernux::kStandardVertexShaderId);
         if (standard) {
             if (fragment->materialProgram->key.stages == stages)
                 result->program = fragment->materialProgram;
@@ -40,7 +40,7 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
             }
         } else {
             if (!vertex || vertex->shaderType != "vertex" || !vertex->program)
-                throw std::invalid_argument("Select a Python vertex shader or the built-in Standard vertex for " +
+                throw std::invalid_argument("Select a Python vertex shader or infernux/standard for " +
                                             fragment->filePath);
             auto &compiler = SlangCompiler::Get();
             const auto prepared = compiler.PrepareAuthorSource(
@@ -161,7 +161,7 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->program = std::move(program);
         if (schema.at("domain") == "mesh") {
             asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(
-                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema, "Standard"));
+                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema, infernux::kStandardVertexShaderId));
         }
         return asset;
     }

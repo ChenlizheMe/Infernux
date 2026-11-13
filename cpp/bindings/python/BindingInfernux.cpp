@@ -1658,13 +1658,15 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 return renderer->TrimGpuResidencyBudget();
             })
         .def(
-            "set_gui_font",
-            [](Infernux &self, const std::string &fontPath, float fontSize) {
+            "set_gui_fonts",
+            [](Infernux &self, const std::string &uiFontPath, const std::string &uiCjkFontPath,
+               const std::string &monoFontPath, float fontSize) {
                 auto *r = self.GetRenderer();
-                if (r)
-                    r->SetGUIFont(fontPath.c_str(), fontSize);
+                if (!r)
+                    throw std::logic_error("Cannot install GUI fonts without an initialized renderer");
+                r->SetGUIFonts(uiFontPath, uiCjkFontPath, monoFontPath, fontSize);
             },
-            py::arg("font_path"), py::arg("font_size"))
+            py::arg("ui_font_path"), py::arg("ui_cjk_font_path"), py::arg("mono_font_path"), py::arg("font_size"))
         .def(
             "invalidate_ui_font_asset",
             [](Infernux &self, const std::string &path) {
@@ -1994,6 +1996,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     r->RemoveImGuiTexture(name);
             },
             py::arg("name"), "Remove a previously uploaded ImGui texture")
+        .def(
+            "get_editor_icon_id",
+            [](Infernux &self, const std::string &name) { return self.GetRenderer()->GetEditorIconId(name); },
+            py::arg("name"), "Resolve a pinned editor icon through the GUI-owned icon registry")
         .def(
             "has_imgui_texture",
             [](Infernux &self, const std::string &name) -> bool {

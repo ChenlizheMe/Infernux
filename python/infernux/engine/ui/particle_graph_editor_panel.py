@@ -154,22 +154,6 @@ _PARAMETER_CREATE_TYPES = (
     ValueType.TEXTURE2D,
     ValueType.MESH,
 )
-_PARAMETER_TYPE_COLORS = {
-    ValueType.BOOL: (0.78, 0.25, 0.31, 1.0),
-    ValueType.F32: (0.34, 0.72, 0.42, 1.0),
-    ValueType.I32: (0.30, 0.68, 0.52, 1.0),
-    ValueType.U32: (0.30, 0.68, 0.52, 1.0),
-    ValueType.VEC2: (0.30, 0.70, 0.86, 1.0),
-    ValueType.VEC3: (0.90, 0.58, 0.24, 1.0),
-    ValueType.VEC4: (0.72, 0.45, 0.88, 1.0),
-    ValueType.COLOR: (0.88, 0.78, 0.28, 1.0),
-    ValueType.CURVE: (0.42, 0.78, 0.62, 1.0),
-    ValueType.GRADIENT: (0.86, 0.48, 0.68, 1.0),
-    ValueType.TEXTURE2D: (0.62, 0.48, 0.86, 1.0),
-    ValueType.MESH: (0.32, 0.66, 0.78, 1.0),
-    ValueType.MAT3: (0.44, 0.62, 0.84, 1.0),
-    ValueType.MAT4: (0.36, 0.54, 0.78, 1.0),
-}
 _PARAMETER_DRAG_PAYLOAD = "PARTICLE_PARAMETER"
 _EVENT_DRAG_PAYLOAD = "PARTICLE_EVENT"
 
@@ -2811,7 +2795,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 t(
                     f"particle_graph_editor.type_{parameter.value_type.value_type.value}"
                 ),
-                _PARAMETER_TYPE_COLORS[parameter.value_type.value_type],
+                Theme.pin_color(parameter.value_type.value_type),
                 semantic_kind="particle_parameter",
                 semantic_id=f"particle_graph.parameter.{parameter.stable_id}",
                 semantic_string_value=parameter.value_type.value_type.value,
@@ -3906,17 +3890,21 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         self._refresh_shader_definitions_if_needed()
 
     def _render_node_graph_toolbar(self, ctx: InxGUIContext) -> None:
-        save_label = t("particle_graph_editor.save")
-        if ctx.button(save_label):
-            from infernux.engine.interaction import CommandSource
+        from .asset_toolbar import render_asset_toolbar
+        from infernux.engine.interaction import CommandSource
 
-            self._execute_node_graph_command("file.save", source=CommandSource.TOOLBAR)
-        if bool(getattr(ctx, "semantic_capture_enabled", True)):
-            ctx.record_semantic_item("button", save_label, True, "particle_graph.toolbar.save")
-        ctx.same_line(0, 12)
-        ctx.label(self._asset.name)
+        def command(name):
+            return self._execute_node_graph_command(name, source=CommandSource.TOOLBAR)
+
+        render_asset_toolbar(
+            ctx, self, icon="particle_graph", name=self._asset.name,
+            path=self._file_path, dirty=self._document_is_dirty(),
+            on_save=lambda: command("file.save"),
+            semantic_prefix="particle_graph.toolbar", actions=(
+                ("save_as", t("asset_toolbar.save_as"), True, lambda: command("file.save_as")),
+            ),
+        )
         if self._draft_compile_error:
-            ctx.same_line(0, 12)
             ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.label(t("particle_graph_editor.save_failed"))
             ctx.pop_style_color()
@@ -3925,7 +3913,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             ctx.same_line(0, 8)
             preview = " ".join(self._draft_compile_error.split())
             if len(preview) > 140:
-                preview = preview[:137] + "..."
+                preview = preview[:139] + "…"
             ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.label(preview)
             ctx.pop_style_color()

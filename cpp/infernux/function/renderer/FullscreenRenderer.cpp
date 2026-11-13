@@ -228,7 +228,8 @@ struct FullscreenPipelineCache::Impl
         if (globalsLayout.IsValid())
             desc.bindingLayouts[desc.bindingLayoutCount++] = globalsLayout;
 
-        desc.vertexShader = host->AcquireShaderModule("Fullscreen Triangle", rhi::ShaderStage::Vertex, 0, 0);
+        desc.vertexShader =
+            host->AcquireShaderModule("infernux/internal/fullscreen_triangle", rhi::ShaderStage::Vertex, 0, 0);
         desc.fragmentShader = host->AcquireShaderModule(key.shaderName, rhi::ShaderStage::Fragment,
                                                         key.inputResourceCount, key.inputBufferMask);
         if (!desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid()) {
@@ -447,7 +448,8 @@ void FullscreenPipelineCache::InvalidateShader(const std::string &shaderName)
     size_t retired = 0;
     for (auto entry = m_impl->pipelines.begin(); entry != m_impl->pipelines.end();) {
         const bool authorAsset = entry->first.program && entry->first.program->assetGuid == shaderName;
-        if (!authorAsset && entry->first.shaderName != shaderName && shaderName != "Fullscreen Triangle") {
+        if (!authorAsset && entry->first.shaderName != shaderName &&
+            shaderName != "infernux/internal/fullscreen_triangle") {
             ++entry;
             continue;
         }

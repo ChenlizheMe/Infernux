@@ -1817,13 +1817,10 @@ def _record_script_error(file_path: str, exc: Exception) -> None:
     norm = _normalize_script_path(file_path)
     tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     _set_script_error_key(norm, tb_str)
-    # Also log to Console so the user sees it
-    try:
-        from infernux.debug import Debug
-        Debug.log_error(tb_str, source_file=file_path, source_line=0)
-    except ImportError:
-        import sys
-        print(tb_str, file=sys.stderr)
+    from infernux.debug import Debug, DebugConsole
+    entry = Debug._exception_entry(exc)
+    entry.source_file = file_path
+    DebugConsole.instance().set_diagnostic("script.compile", norm, entry)
 
 
 def _load_script_module(
@@ -1928,7 +1925,10 @@ def set_script_error(file_path: str, message: str) -> None:
 
 def _clear_script_error(file_path: str) -> None:
     """Clear any previously recorded error for *file_path*."""
-    _set_script_error_key(_normalize_script_path(file_path), None)
+    norm = _normalize_script_path(file_path)
+    _set_script_error_key(norm, None)
+    from infernux.debug import Debug
+    Debug.resolve_diagnostic("script.compile", norm)
 
 
 def clear_deleted_script_errors(path: str) -> list[str]:

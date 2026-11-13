@@ -450,6 +450,7 @@ def _render_audio_source_extra(ctx: InxGUIContext, comp):
     dynamic per-track section that cannot be expressed as CppProperty.
     """
     from infernux.engine.play_mode import PlayModeManager, PlayModeState
+    from .igui import IGUI
 
     track_count = comp.track_count
 
@@ -502,25 +503,42 @@ def _render_audio_source_extra(ctx: InxGUIContext, comp):
             # Track volume
             tv = comp.get_track_volume(i)
             field_label(ctx, "Volume", track_lw)
-            new_tv = ctx.float_slider(f"##track_vol_{i}", float(tv), 0.0, 1.0)
+            new_tv = IGUI.slider_float(ctx, f"##track_vol_{i}", float(tv), 0.0, 1.0, format="%.2f")
             if not _float_close(float(new_tv), float(tv)):
                 _record_track_volume(comp, i, float(tv), float(new_tv))
 
-            # Play / Stop buttons (only in play mode for feedback)
+            # Play / Stop (play mode only — transport glyphs, no text buttons)
             pm = PlayModeManager.instance()
             if pm and pm.state != PlayModeState.EDIT:
+                from infernux.engine.i18n import t
                 is_playing = comp.is_track_playing(i)
                 if is_playing:
-                    if ctx.button(f"Stop##track_stop_{i}"):
+                    if IGUI.icon_button(
+                        ctx, f"##track_stop_{i}", "stop",
+                        tooltip=t("transport.stop"), kind="ghost", width=26.0, height=22.0,
+                    ):
                         comp.stop(i)
-                    record_inspector_component_item(ctx, comp, f"track_{i}.stop", "button", "Stop")
+                    record_inspector_component_item(
+                        ctx, comp, f"track_{i}.stop", "button", t("transport.stop")
+                    )
                 else:
-                    if ctx.button(f"Play##track_play_{i}"):
+                    if IGUI.icon_button(
+                        ctx, f"##track_play_{i}", "play",
+                        tooltip=t("transport.play"), kind="ghost", width=26.0, height=22.0,
+                    ):
                         comp.play(i)
-                    record_inspector_component_item(ctx, comp, f"track_{i}.play", "button", "Play")
+                    record_inspector_component_item(
+                        ctx, comp, f"track_{i}.play", "button", t("transport.play")
+                    )
                 ctx.same_line()
-                status = "Playing" if is_playing else ("Paused" if comp.is_track_paused(i) else "Stopped")
-                ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
+                if is_playing:
+                    status_key = "audio_source.track_playing"
+                elif comp.is_track_paused(i):
+                    status_key = "audio_source.track_paused"
+                else:
+                    status_key = "audio_source.track_stopped"
+                status = t(status_key)
+                ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
                 ctx.label(status)
                 record_inspector_component_item(
                     ctx, comp, f"track_{i}.status", "audio_track_status", status, enabled=False
@@ -862,7 +880,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             return
 
     ctx.separator()
-    labels = [t("inspector.mesh"), "Materials", "Element 0"]
+    labels = [t("inspector.mesh"), t("inspector.materials"), t("inspector.material_slot").format(index=0)]
     lw = max_label_w(ctx, labels)
 
     mesh_field_id = f"mesh_field_{getattr(comp, 'component_id', id(comp))}"
@@ -879,9 +897,9 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
     for slot_idx in range(mat_count):
         # Determine slot label
         if slot_idx < len(slot_names) and slot_names[slot_idx]:
-            slot_label = f"{slot_names[slot_idx]} (Slot {slot_idx})"
+            slot_label = f"{slot_names[slot_idx]} · {slot_idx}"
         else:
-            slot_label = f"Element {slot_idx}"
+            slot_label = t("inspector.material_slot").format(index=slot_idx)
 
         # Determine display name
         mat = None
@@ -894,7 +912,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
         is_embedded = isinstance(mat_path, str) and "::submat:" in mat_path
         is_default = ((slot_idx >= len(material_guids)) or (not material_guids[slot_idx])) and not is_embedded
         mat_name = getattr(mat, 'name', 'None') if mat else 'None'
-        display_name = mat_name + (" (Default)" if is_default else "")
+        display_name = mat_name + (" · " + t("inspector.default_material") if is_default else "")
         slot_rows.append((slot_label, display_name))
         if is_default or not mat_path:
             slot_paths.append("")
@@ -917,6 +935,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             [row[1] for row in slot_rows],
             int(picker_texture or 0),
             lw,
+            t("inspector.materials_kicker"),
         )
         for interaction in interactions:
             slot_idx = int(interaction.get("index", -1))

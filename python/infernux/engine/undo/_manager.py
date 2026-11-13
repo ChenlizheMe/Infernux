@@ -349,6 +349,11 @@ class UndoManager:
         """Request replay; GUI callers defer it to the owner-thread safe point."""
         if self._pending_replay is not None:
             return
+        from infernux.engine.interaction import ContinuousEditService
+
+        # A drag/text gesture owns a live preview until it is journaled. Commit
+        # it before choosing the entry to undo, while authoring is still open.
+        ContinuousEditService.instance().commit_all()
         entry = self._journal.peek_undo()
         if entry is None:
             return
@@ -359,6 +364,9 @@ class UndoManager:
     def redo(self, *, defer: bool = False) -> None:
         if self._pending_replay is not None:
             return
+        from infernux.engine.interaction import ContinuousEditService
+
+        ContinuousEditService.instance().commit_all()
         entry = self._journal.peek_redo()
         if entry is None:
             return

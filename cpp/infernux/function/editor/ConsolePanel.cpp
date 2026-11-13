@@ -1,4 +1,5 @@
 #include "ConsolePanel.h"
+#include "EditorThemeRegistry.h"
 
 #include <function/scene/GameObject.h>
 #include <function/scene/Scene.h>
@@ -7,9 +8,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <imgui_internal.h>
 #include <iomanip>
 #include <sstream>
 
@@ -33,6 +37,16 @@ ConsolePanel::ConsolePanel(const std::string &projectRoot)
 ConsolePanel::~ConsolePanel()
 {
     InxLog::GetInstance().RemoveSink(m_sinkId);
+}
+
+void ConsolePanel::CacheDisplayFields(LogEntry &entry) const
+{
+    entry.displayLine = entry.message.substr(0, entry.message.find('\n'));
+    if (!entry.sourceFile.empty()) {
+        entry.sourceLabel = FromFsPath(ToFsPath(NormalizePortablePath(entry.sourceFile)).filename());
+        if (entry.sourceLine > 0)
+            entry.sourceLabel += ":" + std::to_string(entry.sourceLine);
+    }
 }
 
 std::unordered_map<std::string, double> ConsolePanel::ConsumeSubTimings()
@@ -64,6 +78,7 @@ void ConsolePanel::OnLogMessage(LogLevel level, const char *file, int line, cons
     auto nl = entry.message.find('\n');
     entry.firstLine =
         FormatDiagnosticMessage(level, entry.sourceFile, line, entry.message.substr(0, nl), m_projectRoot);
+    CacheDisplayFields(entry);
 
     {
         std::lock_guard<std::mutex> lock(m_logMutex);
@@ -104,6 +119,7 @@ void ConsolePanel::LogFromPython(LogLevel level, const std::string &message, con
     auto nl = entry.message.find('\n');
     entry.firstLine =
         FormatDiagnosticMessage(level, sourceFile, sourceLine, entry.message.substr(0, nl), m_projectRoot);
+    CacheDisplayFields(entry);
 
     {
         std::lock_guard<std::mutex> lock(m_logMutex);
@@ -125,6 +141,66 @@ void ConsolePanel::LogFromPython(LogLevel level, const std::string &message, con
     }
 }
 
+void ConsolePanel::UpdateCounts(LogLevel level, int delta)
+{
+    if (level == LOG_WARN)
+        m_warnCount += delta;
+    else if (level == LOG_ERROR || level == LOG_FATAL)
+        m_errorCount += delta;
+    else
+        m_infoCount += delta;
+}
+
+void ConsolePanel::SetDiagnostic(const std::string &owner, const std::string &key, LogLevel level,
+                                 const std::string &message, const std::string &stackTrace,
+                                 const std::string &sourceFile, int sourceLine, const ObjectHandle &contextHandle,
+                                 int occurrences)
+{
+    const std::string identity = owner + '\0' + key;
+    std::lock_guard lock(m_logMutex);
+    auto found = m_diagnostics.find(identity);
+    if (found != m_diagnostics.end()) {
+        const auto &previous = found->second;
+        if (previous.level == level && previous.message == message && previous.stackTrace == stackTrace &&
+            previous.sourceFile == sourceFile && previous.sourceLine == sourceLine &&
+            previous.contextHandle == contextHandle && previous.occurrences == occurrences)
+            return;
+        UpdateCounts(previous.level, -1);
+    }
+    LogEntry entry;
+    entry.level = level;
+    entry.message = message;
+    entry.stackTrace = stackTrace;
+    entry.sourceFile = sourceFile;
+    entry.sourceLine = sourceLine;
+    entry.contextHandle = contextHandle;
+    entry.diagnosticOwner = owner;
+    entry.diagnosticKey = key;
+    entry.occurrences = occurrences;
+    entry.uid = found == m_diagnostics.end() ? m_nextUid++ : found->second.uid;
+    entry.timestamp = found == m_diagnostics.end() ? CurrentTimestamp() : found->second.timestamp;
+    entry.firstLine =
+        FormatDiagnosticMessage(level, sourceFile, sourceLine, message.substr(0, message.find('\n')), m_projectRoot);
+    CacheDisplayFields(entry);
+    UpdateCounts(level, 1);
+    m_pendingDiagnosticChanges[entry.uid] = entry;
+    m_diagnostics[identity] = std::move(entry);
+    m_revision.fetch_add(1, std::memory_order_release);
+}
+
+bool ConsolePanel::ResolveDiagnostic(const std::string &owner, const std::string &key)
+{
+    std::lock_guard lock(m_logMutex);
+    const auto found = m_diagnostics.find(owner + '\0' + key);
+    if (found == m_diagnostics.end())
+        return false;
+    UpdateCounts(found->second.level, -1);
+    m_pendingDiagnosticChanges[found->second.uid] = std::nullopt;
+    m_diagnostics.erase(found);
+    m_revision.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
 uint64_t ConsolePanel::GetEntryContextObjectId(uint64_t uid)
 {
     const auto entry =
@@ -143,6 +219,9 @@ void ConsolePanel::Clear()
         std::lock_guard<std::mutex> lock(m_logMutex);
         m_logs.clear();
         m_pendingLogs.clear();
+        m_diagnostics.clear();
+        m_pendingDiagnosticChanges.clear();
+        m_inspectorDirty = true;
         m_infoCount = 0;
         m_warnCount = 0;
         m_errorCount = 0;
@@ -167,6 +246,7 @@ void ConsolePanel::Clear()
 
 size_t ConsolePanel::RemoveEntriesFromSource(const std::string &sourceFile, const std::string &messagePrefix)
 {
+    FlushPendingLogs();
     const std::string sourceKey = FilesystemPathKey(sourceFile);
     if (sourceKey.empty())
         return 0;
@@ -192,6 +272,14 @@ size_t ConsolePanel::RemoveEntriesFromSource(const std::string &sourceFile, cons
         m_pendingLogs.erase(std::remove_if(m_pendingLogs.begin(), m_pendingLogs.end(), matchesSource),
                             m_pendingLogs.end());
         removed += pendingCountBefore - m_pendingLogs.size();
+        for (auto entry = m_diagnostics.begin(); entry != m_diagnostics.end();) {
+            if (matchesSource(entry->second)) {
+                m_pendingDiagnosticChanges.erase(entry->second.uid);
+                entry = m_diagnostics.erase(entry);
+            } else {
+                ++entry;
+            }
+        }
         if (removed == 0)
             return 0;
 
@@ -207,8 +295,11 @@ size_t ConsolePanel::RemoveEntriesFromSource(const std::string &sourceFile, cons
                 ++infoCount;
         };
         for (const LogEntry &entry : m_logs)
-            countEntry(entry);
+            if (entry.diagnosticOwner.empty())
+                countEntry(entry);
         for (const LogEntry &entry : m_pendingLogs)
+            countEntry(entry);
+        for (const auto &[identity, entry] : m_diagnostics)
             countEntry(entry);
         m_infoCount = infoCount;
         m_warnCount = warnCount;
@@ -226,6 +317,7 @@ size_t ConsolePanel::RemoveEntriesFromSource(const std::string &sourceFile, cons
         }
         m_resetScrollToTop = true;
         m_cacheDirty = true;
+        m_inspectorDirty = true;
         m_filterDirty = true;
         m_visible.clear();
         m_collapseLookup.clear();
@@ -386,6 +478,9 @@ std::vector<ConsolePanel::VisibleLogSnapshot> ConsolePanel::GetVisibleLogSnapsho
         snapshot.uid = visible.uid;
         snapshot.latestUid = visible.latestUid;
         snapshot.count = visible.count;
+        snapshot.diagnosticOwner = entry.diagnosticOwner;
+        snapshot.diagnosticKey = entry.diagnosticKey;
+        snapshot.occurrences = entry.occurrences;
         result.push_back(std::move(snapshot));
     }
     return result;
@@ -393,25 +488,198 @@ std::vector<ConsolePanel::VisibleLogSnapshot> ConsolePanel::GetVisibleLogSnapsho
 
 bool ConsolePanel::CopySelectedEntry()
 {
-    FlushPendingLogs();
-    EnsureCache();
-    const std::vector<int> selectedIndices = SelectedVisibleIndices();
-    if (selectedIndices.empty())
+    UpdateSelectionInspector();
+    if (m_inspectorText.empty())
         return false;
-    std::string copyText;
-    for (int selectedIndex : selectedIndices) {
-        const auto &visibleEntry = m_visible[static_cast<size_t>(selectedIndex)];
-        if (visibleEntry.logIndex >= m_logs.size())
-            continue;
-        const auto &log = m_logs[visibleEntry.logIndex];
-        if (!copyText.empty())
-            copyText += "\n\n----------------------------------------\n\n";
-        copyText += FormatDiagnosticMessage(log.level, log.sourceFile, log.sourceLine, log.message, m_projectRoot);
-    }
-    if (copyText.empty())
-        return false;
-    ImGui::SetClipboardText(copyText.c_str());
+    ImGui::SetClipboardText(m_inspectorText.c_str());
     return true;
+}
+
+void ConsolePanel::UpdateSelectionInspector()
+{
+    FlushPendingLogs();
+    if (!m_inspectorDirty && m_inspectorUids == m_selectedUids && m_inspectorPrimaryUid == m_selectedUid)
+        return;
+    m_inspectorDirty = false;
+    m_inspectorUids = m_selectedUids;
+    m_inspectorPrimaryUid = m_selectedUid;
+    m_inspectorText.clear();
+    m_inspectorEntries.clear();
+    // Only selected diagnostic updates invalidate this projection. Unrelated
+    // messages do not rebuild a selected stack, and filters do not own selection.
+    for (const auto &log : m_logs) {
+        if (!IsUidSelected(log.uid))
+            continue;
+        if (!m_inspectorText.empty())
+            m_inspectorText += "\n\n----------------------------------------\n\n";
+        m_inspectorText +=
+            FormatDiagnosticMessage(log.level, log.sourceFile, log.sourceLine, log.message, m_projectRoot);
+        if (!log.stackTrace.empty())
+            m_inspectorText += "\n\n" + log.stackTrace;
+        InspectorEntry view{log.uid, log.level, log.timestamp, log.message, log.sourceFile, log.sourceLine, {}};
+        std::istringstream stack(log.stackTrace);
+        for (std::string line; std::getline(stack, line);)
+            view.stack.push_back(ParseInspectorStackLine(std::move(line)));
+        m_inspectorEntries.push_back(std::move(view));
+    }
+}
+
+ConsolePanel::InspectorStackLine ConsolePanel::ParseInspectorStackLine(std::string text)
+{
+    InspectorStackLine line{std::move(text), {}, 0};
+    const auto begin = line.text.find("File \"");
+    if (begin == std::string::npos)
+        return line;
+    const auto end = line.text.find("\", line ", begin + 6);
+    if (end == std::string::npos)
+        return line;
+    const char *number = line.text.data() + end + 8;
+    const auto parsed = std::from_chars(number, line.text.data() + line.text.size(), line.sourceLine);
+    if (parsed.ec != std::errc{})
+        return line;
+    line.sourceFile = line.text.substr(begin + 6, end - begin - 6);
+    line.text = line.sourceFile + ":" + std::to_string(line.sourceLine) +
+                std::string(parsed.ptr, line.text.c_str() + line.text.size());
+    return line;
+}
+
+void ConsolePanel::RenderSelectionInspector(InxGUIContext *ctx)
+{
+    UpdateSelectionInspector();
+    if (m_inspectorEntries.empty()) {
+        ctx->EmptyState("##diagnostic_empty", "glyphs/info", translate("console.empty"),
+                        translate("console.empty_hint"));
+        return;
+    }
+    const float dpi = ctx->GetDpiScale();
+    const float smallSize = EditorThemeRegistry::Float("EDITOR_SMALL_FONT_SIZE") * dpi;
+    const auto muted = EditorThemeRegistry::Color("ROLE_TEXT_DIM");
+    const auto surface = EditorThemeRegistry::Color("ROLE_BG_SURFACE");
+    ImGui::BeginGroup();
+    const float available = ImGui::GetContentRegionAvail().x;
+    const std::string copyLabel = translate("console.copy_details");
+    const float copyWidth = ImGui::CalcTextSize(copyLabel.c_str()).x + 20 * dpi;
+    const ImVec2 titleOrigin = ImGui::GetCursorScreenPos();
+    ctx->PushUIFont(EditorThemeRegistry::Float("EDITOR_TITLE_FONT_SIZE"));
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(translate("console.details").c_str());
+    ctx->PopFont();
+    if (available > ImGui::GetItemRectSize().x + copyWidth + 12 * dpi) {
+        ImGui::SameLine();
+        ImGui::SetCursorScreenPos(ImVec2(titleOrigin.x + available - copyWidth, titleOrigin.y));
+    }
+    if (ImGui::Button(copyLabel.c_str(), ImVec2(copyWidth, 28 * dpi)))
+        CopySelectedEntry();
+    ctx->RecordSemanticItem("button", copyLabel, true, "console.detail.copy");
+    ImGui::Dummy(ImVec2(0, 4 * dpi));
+    ImGui::Separator();
+
+    // Source links use the same wrapped text bounds as the text itself. A
+    // path never creates a horizontal scroll region or a one-line clip.
+    auto sourceLink = [&](const std::string &label, const std::string &path, int line, const std::string &id) {
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImGui::PushStyleColor(ImGuiCol_Text, muted);
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextUnformatted(label.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        const ImVec2 size = ImGui::GetItemRectSize();
+        const ImVec2 next = ImGui::GetCursorScreenPos();
+        const bool isFile = !path.empty() && path.front() != '<';
+        if (isFile) {
+            ImGui::SetCursorScreenPos(origin);
+            const bool open = ImGui::InvisibleButton(id.c_str(), size, ImGuiButtonFlags_EnableNav);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(origin.x, origin.y + size.y),
+                                                    ImVec2(origin.x + size.x, origin.y + size.y),
+                                                    ImGui::GetColorU32(muted));
+            }
+            ctx->RecordSemanticItem("source_link", label, true, id, std::nullopt, std::nullopt, path);
+            if (open)
+                ExecuteEditorCommand("console.open_source", "pointer", path + "\t" + std::to_string(line));
+            ImGui::SetCursorScreenPos(next);
+        } else {
+            ctx->RecordSemanticItem("source_label", label, true, id);
+        }
+    };
+
+    for (size_t index = 0; index < m_inspectorEntries.size(); ++index) {
+        const auto &entry = m_inspectorEntries[index];
+        ImGui::PushID(static_cast<int>(entry.uid));
+        const std::string id = "console.detail." + std::to_string(entry.uid);
+        const bool error = entry.level == LOG_ERROR || entry.level == LOG_FATAL;
+        const bool warning = entry.level == LOG_WARN;
+        const auto statusColor = EditorThemeRegistry::Color(error ? "LOG_ERROR" : warning ? "LOG_WARNING" : "LOG_INFO");
+        ctx->BeginFramedGroup(12, 12, 0, {surface.x, surface.y, surface.z, surface.w}, {0, 0, 0, 0});
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(14 * dpi, 16 * dpi));
+        const auto glyph = ctx->EditorIcon(error ? "glyphs/error" : warning ? "glyphs/warn" : "glyphs/info");
+        if (glyph)
+            ImGui::GetWindowDrawList()->AddImage(ImTextureRef(static_cast<ImTextureID>(glyph)), origin,
+                                                 ImVec2(origin.x + 14 * dpi, origin.y + 14 * dpi), ImVec2(0, 0),
+                                                 ImVec2(1, 1), ImGui::GetColorU32(statusColor));
+        ImGui::SameLine(0, 8 * dpi);
+        ctx->PushUIFont(EditorThemeRegistry::Float("EDITOR_SMALL_FONT_SIZE"));
+        ImGui::TextColored(statusColor, "%s",
+                           translate(error     ? "console.level_error"
+                                     : warning ? "console.level_warning"
+                                               : "console.level_info")
+                               .c_str());
+        ctx->PopFont();
+        ImGui::SameLine(0, 12 * dpi);
+        ctx->PushMonoFont();
+        ImGui::PushFont(ImGui::GetFont(), smallSize);
+        ImGui::TextColored(muted, "%s", entry.timestamp.c_str());
+        ImGui::PopFont();
+        ctx->PopFont();
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextUnformatted(entry.message.c_str());
+        ImGui::PopTextWrapPos();
+        ctx->RecordSemanticItem("diagnostic_message", entry.message, true, id + ".message");
+        if (!entry.sourceFile.empty()) {
+            ImGui::Dummy(ImVec2(0, 2 * dpi));
+            ctx->PushMonoFont();
+            ImGui::PushFont(ImGui::GetFont(), smallSize);
+            const std::string label =
+                entry.sourceFile + (entry.sourceLine > 0 ? ":" + std::to_string(entry.sourceLine) : "");
+            sourceLink(label, entry.sourceFile, entry.sourceLine,
+                       index == 0 ? "console.detail.source" : id + ".source");
+            ImGui::PopFont();
+            ctx->PopFont();
+        }
+        ctx->EndFramedGroup();
+        if (!entry.stack.empty()) {
+            ctx->PushMonoFont();
+            ImGui::PushFont(ImGui::GetFont(), smallSize);
+            ImGui::PushStyleColor(ImGuiCol_Text, muted);
+            ImGui::SeparatorText(translate("console.stack_trace").c_str());
+            ImGui::PopStyleColor();
+            ImGui::Indent(12 * dpi);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 4 * dpi));
+            for (size_t row = 0; row < entry.stack.size(); ++row) {
+                const auto &line = entry.stack[row];
+                if (!line.sourceFile.empty()) {
+                    sourceLink(line.text, line.sourceFile, line.sourceLine, id + ".stack." + std::to_string(row));
+                } else {
+                    ImGui::PushTextWrapPos(0);
+                    ImGui::TextUnformatted(line.text.c_str());
+                    ImGui::PopTextWrapPos();
+                    ctx->RecordSemanticItem("diagnostic_code", line.text, true, id + ".stack." + std::to_string(row));
+                }
+            }
+            ImGui::PopStyleVar();
+            ImGui::Unindent(12 * dpi);
+            ImGui::PopFont();
+            ctx->PopFont();
+        }
+        if (index + 1 < m_inspectorEntries.size())
+            ImGui::Separator();
+        ImGui::PopID();
+    }
+    ImGui::EndGroup();
+    ctx->RecordSemanticItem("console_detail", translate("console.details"), true, "console.detail", std::nullopt,
+                            static_cast<double>(m_inspectorUids.size()), m_inspectorText);
 }
 
 bool ConsolePanel::HasViewOption(const std::string &option) const noexcept
@@ -477,17 +745,6 @@ void ConsolePanel::SetSearchQuery(const std::string &query)
     m_resetScrollToTop = true;
 }
 
-float ConsolePanel::GetDetailHeight() const noexcept
-{
-    return m_detailHeight;
-}
-
-void ConsolePanel::SetDetailHeight(float height) noexcept
-{
-    if (std::isfinite(height))
-        m_detailHeight = (std::max)(40.0f, height);
-}
-
 // ════════════════════════════════════════════════════════════════════
 // Render
 // ════════════════════════════════════════════════════════════════════
@@ -498,7 +755,8 @@ void ConsolePanel::OnRenderContent(InxGUIContext *ctx)
     if (std::abs(dpi - m_lastDpiScale) >= 0.01f) {
         m_lastDpiScale = dpi;
         m_rowHeightMeasured = false;
-        m_rowHeight = 22.0f * dpi;
+        m_rowHeight =
+            (EditorThemeRegistry::Float("CONSOLE_ROW_HEIGHT") + EditorThemeRegistry::Vec2("CONTENT_SPACING").y) * dpi;
     }
     const auto toolbarStart = std::chrono::steady_clock::now();
     RenderToolbar(ctx);
@@ -528,15 +786,49 @@ void ConsolePanel::PreRender(InxGUIContext * /*ctx*/)
 // Flush pending logs (main thread only)
 // ════════════════════════════════════════════════════════════════════
 
+void ConsolePanel::ApplyDiagnosticChanges(std::unordered_map<uint64_t, std::optional<LogEntry>> &changes,
+                                          std::vector<LogEntry> &incoming)
+{
+    if (changes.empty())
+        return;
+    const auto previousSelection = m_selectedUids;
+    for (auto &[uid, candidate] : changes) {
+        const auto current =
+            std::find_if(m_logs.begin(), m_logs.end(), [uid](const LogEntry &entry) { return entry.uid == uid; });
+        if (IsUidSelected(uid))
+            m_inspectorDirty = true;
+        if (candidate) {
+            if (current == m_logs.end())
+                incoming.push_back(std::move(*candidate));
+            else
+                *current = std::move(*candidate);
+        } else if (current != m_logs.end()) {
+            m_logs.erase(current);
+        }
+    }
+    std::sort(incoming.begin(), incoming.end(), [](const LogEntry &a, const LogEntry &b) { return a.uid < b.uid; });
+    PruneLocalSelection();
+    if (previousSelection != m_selectedUids) {
+        if (!IsUidSelected(m_selectedUid))
+            m_selectedUid = m_selectedUids.empty() ? 0 : m_selectedUids.back();
+        m_requestedUid = m_selectedUid;
+        PublishSelection(m_selectedUid, false);
+    }
+    m_cacheDirty = true;
+}
+
 void ConsolePanel::FlushPendingLogs()
 {
     std::vector<LogEntry> incoming;
+    std::unordered_map<uint64_t, std::optional<LogEntry>> diagnosticChanges;
     {
         std::lock_guard<std::mutex> lock(m_logMutex);
-        if (m_pendingLogs.empty())
+        if (m_pendingLogs.empty() && m_pendingDiagnosticChanges.empty())
             return;
         incoming.swap(m_pendingLogs);
+        diagnosticChanges.swap(m_pendingDiagnosticChanges);
     }
+    ApplyDiagnosticChanges(diagnosticChanges, incoming);
 
     DetectFilterChange();
     const bool appendToVisible = !m_cacheDirty && !m_filterDirty;
@@ -549,14 +841,14 @@ void ConsolePanel::FlushPendingLogs()
                 const auto it = m_collapseLookup.find(key);
                 if (it != m_collapseLookup.end()) {
                     VisibleEntry &visible = m_visible[it->second];
-                    ++visible.count;
+                    visible.count += entry.occurrences;
                     visible.latestUid = entry.uid;
                 } else {
                     m_collapseLookup.emplace(key, m_visible.size());
-                    m_visible.push_back({logIndex, 1, entry.uid, entry.uid});
+                    m_visible.push_back({logIndex, entry.occurrences, entry.uid, entry.uid});
                 }
             } else {
-                m_visible.push_back({logIndex, 1, entry.uid, entry.uid});
+                m_visible.push_back({logIndex, entry.occurrences, entry.uid, entry.uid});
             }
         }
         switch (entry.level) {
@@ -577,19 +869,12 @@ void ConsolePanel::FlushPendingLogs()
 
     bool trimmed = false;
     while (m_logs.size() > MAX_LOGS) {
-        switch (m_logs.front().level) {
-        case LOG_WARN:
-            --m_warnCount;
+        const auto oldest = std::find_if(m_logs.begin(), m_logs.end(),
+                                         [](const LogEntry &entry) { return entry.diagnosticOwner.empty(); });
+        if (oldest == m_logs.end())
             break;
-        case LOG_ERROR:
-        case LOG_FATAL:
-            --m_errorCount;
-            break;
-        default:
-            --m_infoCount;
-            break;
-        }
-        m_logs.pop_front();
+        UpdateCounts(oldest->level, -1);
+        m_logs.erase(oldest);
         trimmed = true;
     }
 
@@ -670,6 +955,8 @@ bool ConsolePanel::MatchesCurrentFilters(const LogEntry &entry) const
 
 std::string ConsolePanel::CollapseKey(const LogEntry &entry) const
 {
+    if (!entry.diagnosticOwner.empty())
+        return "diagnostic:" + entry.diagnosticOwner + '\0' + entry.diagnosticKey;
     return std::to_string(static_cast<int>(entry.level)) + "|" + entry.sourceFile + ":" +
            std::to_string(entry.sourceLine) + "|" + std::to_string(entry.contextHandle.id) + ":" +
            std::to_string(entry.contextHandle.generation) + ":" + std::to_string(entry.contextHandle.worldId) + "|" +
@@ -745,19 +1032,6 @@ void ConsolePanel::PruneLocalSelection()
                          m_selectedUids.end());
 }
 
-std::vector<int> ConsolePanel::SelectedVisibleIndices() const
-{
-    std::vector<int> result;
-    result.reserve(m_selectedUids.size());
-    for (uint64_t uid : m_selectedUids) {
-        const int index = FindVisibleIndexByUid(uid);
-        if (index >= 0 && std::find(result.begin(), result.end(), index) == result.end())
-            result.push_back(index);
-    }
-    std::sort(result.begin(), result.end());
-    return result;
-}
-
 void ConsolePanel::SelectUid(uint64_t uid, bool focusWindow, bool publishSelection, bool recordHistory)
 {
     const bool selectionChanged = m_selectedUid != uid;
@@ -825,7 +1099,7 @@ void ConsolePanel::EnsureCache()
             const std::string key = CollapseKey(log);
             auto it = m_collapseLookup.find(key);
             if (it != m_collapseLookup.end()) {
-                m_visible[it->second].count++;
+                m_visible[it->second].count += log.occurrences;
                 m_visible[it->second].latestUid = log.uid;
                 continue;
             }
@@ -834,7 +1108,7 @@ void ConsolePanel::EnsureCache()
 
         VisibleEntry ve;
         ve.logIndex = i;
-        ve.count = 1;
+        ve.count = log.occurrences;
         ve.uid = log.uid;
         ve.latestUid = log.uid;
         m_visible.push_back(ve);
@@ -851,65 +1125,59 @@ void ConsolePanel::EnsureCache()
 void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
 {
     const float dpi = ctx->GetDpiScale();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(EditorTheme::CONSOLE_FRAME_PAD_X * dpi, EditorTheme::CONSOLE_FRAME_PAD_Y * dpi));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2(EditorTheme::CONSOLE_ITEM_SPC_X * dpi, EditorTheme::CONSOLE_ITEM_SPC_Y * dpi));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD * dpi);
-
-    const float availableWidth = ImGui::GetContentRegionAvail().x;
-    const bool wrapOptions = availableWidth < 500.0f * dpi;
-
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float gap = 4.0f * dpi;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * dpi, 4.5f * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, gap));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    float used = 0;
+    auto nextControl = [&](float width) {
+        if (used > 0 && used + gap + width <= available) {
+            ImGui::SameLine(0, gap);
+            used += gap + width;
+        } else {
+            used = width;
+        }
+    };
     const bool canClear = CanExecuteEditorCommand("console.clear");
+    nextControl(54.0f * dpi);
     ImGui::BeginDisabled(!canClear);
-    if (ImGui::Button("Clear", ImVec2(54.0f * dpi, 0.0f)))
+    if (ImGui::Button(translate("console.clear").c_str(), ImVec2(54.0f * dpi, 24.0f * dpi)))
         ExecuteEditorCommand("console.clear", "pointer");
     ImGui::EndDisabled();
-    ctx->RecordSemanticItem("console_action", "Clear", canClear, "console.clear");
+    ctx->RecordSemanticItem("console_action", translate("console.clear"), canClear, "console.clear");
 
-    auto optionCheckbox = [&](const char *label, const char *option, const char *semanticId) {
-        bool value = GetViewOption(option);
-        if (ctx->Checkbox(label, &value))
-            ExecuteEditorCommand("console.set_option", "pointer", std::string(option) + "\t" + (value ? "1" : "0"));
-        ctx->RecordSemanticItem("checkbox", label, true, semanticId, GetViewOption(option));
+    auto option = [&](const char *labelKey, const char *key, const char *semanticId) {
+        const std::string label = translate(labelKey);
+        const bool active = GetViewOption(key);
+        const float width = ImGui::CalcTextSize(label.c_str()).x + 18.0f * dpi;
+        nextControl(width);
+        ImGui::PushStyleColor(ImGuiCol_Button, EditorThemeRegistry::Color(active ? "ROLE_BG_RAISED" : "BTN_GHOST"));
+        if (ImGui::Button((label + "##" + key).c_str(), ImVec2(width, 24.0f * dpi)))
+            ExecuteEditorCommand("console.set_option", "pointer", std::string(key) + "\t" + (active ? "0" : "1"));
+        if (active) {
+            const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(lo.x, hi.y - 2 * dpi), hi,
+                                                      ImGui::GetColorU32(EditorThemeRegistry::Color("ROLE_ACCENT")));
+        }
+        ctx->RecordSemanticItem("checkbox", label, true, semanticId, GetViewOption(key));
+        ImGui::PopStyleColor();
     };
+    option("console.collapse", "collapse", "console.collapse");
+    option("console.clear_on_play", "clear_on_play", "console.clear_on_play");
+    option("console.error_pause", "error_pause", "console.error_pause");
+    option("console.follow", "follow", "console.follow");
 
-    ImGui::SameLine();
-    optionCheckbox("Collapse", "collapse", "console.collapse");
-
-    // Without SameLine ImGui already advances to the next row. Calling
-    // NewLine here advanced once more and left a conspicuous empty toolbar
-    // row at high DPI.
-    if (!wrapOptions)
-        ImGui::SameLine();
-    optionCheckbox("Clear on Play", "clear_on_play", "console.clear_on_play");
-
-    ImGui::SameLine();
-    optionCheckbox("Error Pause", "error_pause", "console.error_pause");
-
-    ImGui::SameLine();
-    bool follow = GetViewOption("follow");
-    if (ctx->Checkbox("Follow", &follow))
-        ExecuteEditorCommand("console.set_option", "pointer", std::string("follow\t") + (follow ? "1" : "0"));
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Keep the view pinned to incoming messages");
-    ctx->RecordSemanticItem("checkbox", "Follow", true, "console.follow", follow);
-
-    // Search and severity filters use the immediately following row. The
-    // previous item has already advanced the cursor there.
-    const float segmentWidth = 78.0f * dpi;
-    const float segmentGap = 3.0f * dpi;
-    const float severityWidth = segmentWidth * 3.0f + segmentGap * 2.0f;
-    const bool stackSeverity = availableWidth < severityWidth + 120.0f * dpi;
-    const float searchWidth =
-        stackSeverity ? availableWidth : (std::max)(100.0f * dpi, availableWidth - severityWidth - 8.0f * dpi);
-    ImGui::SetNextItemWidth(searchWidth);
+    const float segmentWidth = 60.0f * dpi;
+    const float severityWidth = segmentWidth * 3 + gap * 2;
+    const bool stacked = available < severityWidth + 140.0f * dpi;
+    ImGui::SetNextItemWidth(stacked ? -1.0f : available - severityWidth - gap);
     if (m_focusSearchNextFrame) {
         ImGui::SetKeyboardFocusHere();
         m_focusSearchNextFrame = false;
     }
-    ImGui::InputTextWithHint("##ConsoleSearch", "Search messages, files, and stack traces", m_search.data(),
-                             m_search.size());
+    const std::string searchHint = translate("console.search_hint");
+    ImGui::InputTextWithHint("##ConsoleSearch", searchHint.c_str(), m_search.data(), m_search.size());
     if (ImGui::IsItemActivated())
         m_searchEditStart = m_search.data();
     if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -919,69 +1187,59 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
             SetSearchQuery(m_searchEditStart);
         m_searchEditStart.clear();
     }
-    ctx->RecordSemanticItem("text_input", "Search messages, files, and stack traces", true, "console.search",
-                            std::nullopt, std::nullopt, std::string(m_search.data()));
+    ctx->RecordSemanticItem("text_input", searchHint, true, "console.search", std::nullopt, std::nullopt,
+                            std::string(m_search.data()));
     if (ImGui::IsItemEdited())
         m_followTail = false;
 
-    auto severitySegment = [&](const char *id, const char *name, const char *option, int count, const ImVec4 &color) {
-        const bool enabled = GetViewOption(option);
-        char label[64];
-        if (count > 999)
-            snprintf(label, sizeof(label), "%s 999+###%s", name, id);
-        else
-            snprintf(label, sizeof(label), "%s %d###%s", name, count, id);
-
-        ImGui::PushStyleColor(ImGuiCol_Text, enabled ? color : EditorTheme::LOG_DIM);
-        ImGui::PushStyleColor(ImGuiCol_Button, enabled ? EditorTheme::CONSOLE_SEGMENT_ACTIVE : EditorTheme::BTN_GHOST);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorTheme::BTN_GHOST_HOVERED);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorTheme::BTN_GHOST_ACTIVE);
-        if (ImGui::Button(label, ImVec2(segmentWidth, 0.0f)))
-            ExecuteEditorCommand("console.set_option", "pointer", std::string(option) + "\t" + (!enabled ? "1" : "0"));
-        ctx->RecordSemanticItem("console_filter", name, true, std::string("console.filter.") + id,
-                                GetViewOption(option), static_cast<double>(count));
-        ImGui::PopStyleColor(4);
+    auto severity = [&](const char *id, const char *key, const char *labelKey, int count, const char *glyph,
+                        const char *colorKey) {
+        const bool enabled = GetViewOption(key);
+        const ImVec4 color = EditorThemeRegistry::Color(enabled ? colorKey : "TEXT_DISABLED");
+        ImGui::PushStyleColor(ImGuiCol_Button, EditorThemeRegistry::Color(enabled ? "ROLE_BG_RAISED" : "BTN_GHOST"));
+        if (ImGui::Button((std::string("##") + id).c_str(), ImVec2(segmentWidth, 22.0f * dpi)))
+            ExecuteEditorCommand("console.set_option", "pointer", std::string(key) + "\t" + (enabled ? "0" : "1"));
+        const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+        const auto texture = ctx->EditorIcon(glyph);
+        if (texture)
+            ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)texture, ImVec2(lo.x + 8 * dpi, lo.y + 5 * dpi),
+                                                 ImVec2(lo.x + 20 * dpi, lo.y + 17 * dpi), ImVec2(0, 0), ImVec2(1, 1),
+                                                 ImGui::GetColorU32(color));
+        const std::string text = count > 999 ? "999+" : std::to_string(count);
+        ctx->PushMonoFont();
+        ImGui::GetWindowDrawList()->AddText(ImVec2(lo.x + 27 * dpi, (lo.y + hi.y - ImGui::GetFontSize()) * 0.5f),
+                                            ImGui::GetColorU32(color), text.c_str());
+        ctx->PopFont();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", translate(labelKey).c_str());
+        ctx->RecordSemanticItem("console_filter", translate(labelKey), true, std::string("console.filter.") + id,
+                                GetViewOption(key), static_cast<double>(count));
+        ImGui::PopStyleColor();
     };
-
-    if (!stackSeverity)
-        ImGui::SameLine(0.0f, 6.0f * dpi);
-    severitySegment("ConsoleFilterInfo", "Log", "show_info", m_cachedInfoCount, EditorTheme::LOG_INFO);
-    ImGui::SameLine(0.0f, segmentGap);
-    severitySegment("ConsoleFilterWarn", "Warn", "show_warnings", m_cachedWarnCount, EditorTheme::LOG_WARNING);
-    ImGui::SameLine(0.0f, segmentGap);
-    severitySegment("ConsoleFilterError", "Error", "show_errors", m_cachedErrorCount, EditorTheme::LOG_ERROR);
-
+    if (!stacked)
+        ImGui::SameLine(0, gap);
+    severity("ConsoleFilterInfo", "show_info", "console.filter_info", m_cachedInfoCount, "glyphs/info", "LOG_INFO");
+    ImGui::SameLine(0, gap);
+    severity("ConsoleFilterWarn", "show_warnings", "console.filter_warning", m_cachedWarnCount, "glyphs/warn",
+             "LOG_WARNING");
+    ImGui::SameLine(0, gap);
+    severity("ConsoleFilterError", "show_errors", "console.filter_error", m_cachedErrorCount, "glyphs/error",
+             "LOG_ERROR");
     ImGui::PopStyleVar(3);
 }
-
-// ════════════════════════════════════════════════════════════════════
-// Body (log list + detail pane)
-// ════════════════════════════════════════════════════════════════════
 
 void ConsolePanel::RenderBody(InxGUIContext *ctx)
 {
     const float dpi = ctx->GetDpiScale();
-    float availH = ImGui::GetContentRegionAvail().y;
-    std::vector<int> selectedIndices = SelectedVisibleIndices();
-    bool hasDetail = !selectedIndices.empty();
-
-    const float splitterH = 3.0f * dpi;
-    float listH;
-    if (hasDetail) {
-        const float minimumDetailHeight = 40.0f * dpi;
-        const float detailHeight =
-            (std::max)(minimumDetailHeight, (std::min)(m_detailHeight * dpi, availH - 60.0f * dpi));
-        listH = (std::max)(availH - detailHeight - splitterH, 40.0f * dpi);
-    } else {
-        listH = 0.0f; // 0 = use remaining space
-    }
-
     int total = static_cast<int>(m_visible.size());
     float rowH = m_rowHeight;
 
     // ── Log list (virtual-scrolled) ──
-    ImGui::PushStyleColor(ImGuiCol_Border, EditorTheme::BORDER_TRANSPARENT);
-    if (ImGui::BeginChild("##ConsoleLogList", ImVec2(0, listH), ImGuiChildFlags_Borders)) {
+    ImGui::PushStyleColor(ImGuiCol_Border, EditorThemeRegistry::Color("BORDER_TRANSPARENT"));
+    if (ImGui::BeginChild("##ConsoleLogList", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding)) {
+        if (m_visible.empty())
+            ctx->EmptyState("##console_empty", "glyphs/info", translate("console.empty"),
+                            translate("console.empty_hint"));
         float scrollY = ImGui::GetScrollY();
         if (m_resetScrollToTop) {
             ImGui::SetScrollY(0.0f);
@@ -1065,74 +1323,6 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
     }
     ImGui::EndChild();
     ImGui::PopStyleColor(); // Border
-
-    // ── Draggable splitter ──
-    if (hasDetail) {
-        float availW = ImGui::GetContentRegionAvail().x;
-        ImGui::PushStyleColor(ImGuiCol_Button, EditorTheme::BTN_GHOST);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorTheme::SPLITTER_HOVER);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorTheme::SPLITTER_ACTIVE);
-        ImGui::InvisibleButton("##ConsoleSplitter", ImVec2(availW, splitterH));
-        if (ImGui::IsItemActivated())
-            m_detailResizeStart = m_detailHeight;
-        if (ImGui::IsItemActive()) {
-            const float dy = ImGui::GetMouseDragDelta(0).y / dpi;
-            if (std::abs(dy) > 0.5f) {
-                m_detailHeight = (std::max)(40.0f, m_detailHeight - dy);
-                ImGui::ResetMouseDragDelta(0);
-            }
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-        } else if (ImGui::IsItemHovered()) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-        }
-        if (ImGui::IsItemDeactivated() && std::abs(m_detailHeight - m_detailResizeStart) > 0.5f) {
-            const std::string argument = std::to_string(m_detailResizeStart) + "\t" + std::to_string(m_detailHeight);
-            if (!ExecuteEditorCommand("console.set_detail_height", "drag", argument))
-                SetDetailHeight(m_detailResizeStart);
-        }
-        ImGui::PopStyleColor(3);
-    }
-
-    // ── Detail pane ──
-    selectedIndices = SelectedVisibleIndices();
-    if (hasDetail && !selectedIndices.empty()) {
-        std::string detailText;
-        LogLevel strongestLevel = LOG_INFO;
-        std::string semanticLabel;
-        for (int index : selectedIndices) {
-            if (index < 0 || index >= static_cast<int>(m_visible.size()))
-                continue;
-            const auto &ve = m_visible[static_cast<size_t>(index)];
-            if (ve.logIndex >= m_logs.size())
-                continue;
-            const auto &log = m_logs[ve.logIndex];
-            if (!detailText.empty())
-                detailText += "\n\n----------------------------------------\n\n";
-            detailText +=
-                FormatDiagnosticMessage(log.level, log.sourceFile, log.sourceLine, log.message, m_projectRoot);
-            if (semanticLabel.empty())
-                semanticLabel = log.firstLine;
-            if (log.level == LOG_ERROR || log.level == LOG_FATAL)
-                strongestLevel = log.level;
-            else if (log.level == LOG_WARN && strongestLevel == LOG_INFO)
-                strongestLevel = LOG_WARN;
-        }
-        const ImVec4 &clr = LevelColor(strongestLevel);
-
-        ImGui::PushStyleColor(ImGuiCol_Text, clr);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorTheme::ROW_NONE);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, EditorTheme::ROW_NONE);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-
-        // Read-only multiline input — supports text selection & Ctrl+C
-        ImGui::InputTextMultiline("##ConsoleDetail", const_cast<char *>(detailText.c_str()), detailText.size() + 1,
-                                  ImVec2(-1, -1), ImGuiInputTextFlags_ReadOnly);
-        ctx->RecordSemanticItem("console_detail", semanticLabel, true, "console.detail", std::nullopt,
-                                static_cast<double>(selectedIndices.size()), detailText);
-
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
-    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1143,95 +1333,93 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
 {
     const float dpi = ctx->GetDpiScale();
     const auto &log = m_logs[ve.logIndex];
-    const ImVec4 &clr = LevelColor(log.level);
-    // Console selection is intentionally neutral. The blue default header
-    // color reads like an active editor selection and overwhelms log levels.
-    const ImVec4 selectedRow(59.0f / 255.0f, 59.0f / 255.0f, 64.0f / 255.0f, 1.0f);
-    // Row background
-    if (isSel)
-        ImGui::PushStyleColor(ImGuiCol_Header, selectedRow);
-    else if (visIdx % 2 == 1)
-        ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::ROW_ALT);
-    else
-        ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::ROW_NONE);
-
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, selectedRow);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, selectedRow);
-    ImGui::PushStyleColor(ImGuiCol_Text, clr);
-
-    // Keep interaction and presentation separate. Long diagnostics used to be
-    // rendered by Selectable itself and could run underneath the collapse
-    // count. The hidden label owns the full-row hit target; text is clipped to
-    // a dedicated content column below.
-    const std::string label =
-        "##clog_" + std::to_string(static_cast<unsigned long long>(ve.uid)) + "_" + std::to_string(visIdx);
-
-    if (ImGui::Selectable(label.c_str(), isSel,
-                          ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
+    const ImVec4 color = LevelColor(log.level);
+    ImGui::PushStyleColor(ImGuiCol_Header, EditorThemeRegistry::Color(isSel        ? "ROW_SELECTED"
+                                                                      : visIdx % 2 ? "ROW_ALT"
+                                                                                   : "ROW_NONE"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("ROLE_BG_HOVER"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("ROW_SELECTED"));
+    const std::string id = "##clog_" + std::to_string(ve.uid);
+    if (ImGui::Selectable(id.c_str(), isSel,
+                          ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick,
+                          ImVec2(0, EditorThemeRegistry::Float("CONSOLE_ROW_HEIGHT") * dpi))) {
         m_requestedUid = 0;
         m_followTail = false;
         m_scrollToBottom = false;
-        // Source navigation is an editor command, not a panel callback. This
-        // keeps pointer input, menus, shortcuts, and automation on one route.
-        if (ImGui::IsMouseDoubleClicked(0) && !log.sourceFile.empty()) {
+        if (ImGui::IsMouseDoubleClicked(0) && !log.sourceFile.empty())
             ExecuteEditorCommand("console.open_source", "pointer",
                                  log.sourceFile + "\t" + std::to_string((std::max)(log.sourceLine, 0)));
-        }
         if (ImGui::GetIO().KeyCtrl) {
             ToggleLocalSelection(ve.uid);
-            const uint64_t newPrimary =
+            const uint64_t primary =
                 IsUidSelected(ve.uid) ? ve.uid : (m_selectedUids.empty() ? 0 : m_selectedUids.back());
-            if (newPrimary != m_selectedUid)
-                PublishSelection(newPrimary, true);
+            if (primary != m_selectedUid)
+                PublishSelection(primary, true);
         } else {
-            const bool primaryChanged = m_selectedUid != ve.uid;
-            const bool localSetChanged = m_selectedUids.size() != 1 || !IsUidSelected(ve.uid);
-            if (localSetChanged)
+            const bool changed = m_selectedUid != ve.uid;
+            if (m_selectedUids.size() != 1 || !IsUidSelected(ve.uid))
                 ReplaceLocalSelection(ve.uid);
-            if (primaryChanged)
+            if (changed)
                 PublishSelection(ve.uid, true);
         }
     }
-    const ImVec2 rowMin = ImGui::GetItemRectMin();
-    const ImVec2 rowMax = ImGui::GetItemRectMax();
-    const float countWidth = ve.count > 1 ? ImGui::CalcTextSize(std::to_string(ve.count).c_str()).x : 0.0f;
-    const float rightReserve = ve.count > 1 ? (std::max)(36.0f * dpi, countWidth + 18.0f * dpi) : 8.0f * dpi;
-    const ImVec2 textMin(rowMin.x + ImGui::GetStyle().FramePadding.x, rowMin.y);
-    const ImVec2 textMax((std::max)(textMin.x, rowMax.x - rightReserve), rowMax.y);
-    const float textY = rowMin.y + (rowMax.y - rowMin.y - ImGui::GetFontSize()) * 0.5f;
-    ImDrawList *drawList = ImGui::GetWindowDrawList();
-    drawList->PushClipRect(textMin, textMax, true);
-    drawList->AddText(ImVec2(textMin.x, textY), ImGui::ColorConvertFloat4ToU32(clr), log.firstLine.c_str());
-    drawList->PopClipRect();
-    ctx->RecordSemanticItem("console_entry", log.firstLine, true,
-                            "console.entry." + std::to_string(static_cast<unsigned long long>(ve.uid)), isSel,
-                            static_cast<double>(ve.count));
-
-    // Collapse count badge
-    if (ve.count > 1) {
-        const std::string countText = std::to_string(ve.count);
-        const float countX = rowMax.x - ImGui::GetStyle().FramePadding.x - countWidth;
-        drawList->AddText(ImVec2(countX, textY), ImGui::ColorConvertFloat4ToU32(EditorTheme::LOG_BADGE),
-                          countText.c_str());
+    const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+    auto *draw = ImGui::GetWindowDrawList();
+    if (isSel)
+        draw->AddRectFilled(lo, ImVec2(lo.x + 2 * dpi, hi.y),
+                            ImGui::GetColorU32(EditorThemeRegistry::Color("ROLE_ACCENT")));
+    const bool error = log.level == LOG_ERROR || log.level == LOG_FATAL;
+    const bool warning = log.level == LOG_WARN;
+    const auto glyph = ctx->EditorIcon(error ? "glyphs/error" : warning ? "glyphs/warn" : "glyphs/info");
+    if (glyph)
+        draw->AddImage((ImTextureID)(intptr_t)glyph, ImVec2(lo.x + 8 * dpi, lo.y + 8 * dpi),
+                       ImVec2(lo.x + 20 * dpi, lo.y + 20 * dpi), ImVec2(0, 0), ImVec2(1, 1),
+                       ImGui::GetColorU32(EditorThemeRegistry::Color(error     ? "LOG_ERROR"
+                                                                     : warning ? "LOG_WARNING"
+                                                                               : "LOG_INFO")));
+    ctx->PushMonoFont();
+    const float smallSize = EditorThemeRegistry::Float("EDITOR_SMALL_FONT_SIZE") * dpi;
+    ImFont *mono = ImGui::GetFont();
+    const ImU32 muted = ImGui::GetColorU32(EditorThemeRegistry::Color("TEXT_DISABLED"));
+    const float timeWidth = mono->CalcTextSizeA(smallSize, FLT_MAX, 0, log.timestamp.c_str()).x;
+    draw->AddText(mono, smallSize, ImVec2(lo.x + 28 * dpi, lo.y + 8 * dpi), muted, log.timestamp.c_str());
+    const float textX = lo.x + 36 * dpi + timeWidth;
+    const std::string count = ve.count > 1 ? std::to_string(ve.count) : "";
+    const float countWidth = count.empty() ? 0 : mono->CalcTextSizeA(smallSize, FLT_MAX, 0, count.c_str()).x + 12 * dpi;
+    const float textRight = (std::max)(textX, hi.x - 12 * dpi - countWidth);
+    if (!log.sourceLabel.empty()) {
+        const ImVec4 clip(textX, lo.y + 27 * dpi, textRight, hi.y - 4 * dpi);
+        draw->AddText(mono, smallSize, ImVec2(textX, lo.y + 28 * dpi), muted, log.sourceLabel.c_str(), nullptr, 0,
+                      &clip);
     }
-
-    ImGui::PopStyleColor(4);
+    if (!count.empty()) {
+        const ImVec2 badgeLo(hi.x - countWidth - 8 * dpi, lo.y + 6 * dpi);
+        draw->AddRectFilled(badgeLo, ImVec2(hi.x - 8 * dpi, lo.y + 25 * dpi),
+                            ImGui::GetColorU32(EditorThemeRegistry::Color("ROLE_BG_RAISED")));
+        draw->AddText(mono, smallSize, ImVec2(badgeLo.x + 6 * dpi, lo.y + 10 * dpi), muted, count.c_str());
+    }
+    ctx->PopFont();
+    const ImVec2 messageMin(textX, lo.y + 5 * dpi), messageMax(textRight, lo.y + 23 * dpi);
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    ImGui::RenderTextEllipsis(draw, messageMin, messageMax, messageMax.x, log.displayLine.c_str(), nullptr, nullptr);
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered() && !log.sourceFile.empty())
+        ImGui::SetTooltip("%s", log.sourceFile.c_str());
+    ctx->RecordSemanticItem("console_entry", log.firstLine, true, "console.entry." + std::to_string(ve.uid), isSel,
+                            static_cast<double>(ve.count));
+    ImGui::PopStyleColor(3);
 }
 
-// ════════════════════════════════════════════════════════════════════
-// Utilities
-// ════════════════════════════════════════════════════════════════════
-
-const ImVec4 &ConsolePanel::LevelColor(LogLevel lv) const
+ImVec4 ConsolePanel::LevelColor(LogLevel lv) const
 {
     switch (lv) {
     case LOG_ERROR:
     case LOG_FATAL:
-        return EditorTheme::LOG_ERROR;
+        return EditorThemeRegistry::Color("ERROR_TEXT");
     case LOG_WARN:
-        return EditorTheme::LOG_WARNING;
+        return EditorThemeRegistry::Color("CONSOLE_MESSAGE_WARNING");
     default:
-        return EditorTheme::LOG_INFO;
+        return EditorThemeRegistry::Color("ROLE_TEXT");
     }
 }
 

@@ -430,7 +430,8 @@ class InxRenderer
     void ConfirmClose();
     void CancelClose();
 
-    void SetGUIFont(const char *fontPath, float fontSize);
+    void SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath, const std::string &monoFontPath,
+                     float fontSize);
     void InvalidateGUIFontAsset(const std::string &path);
     float GetDisplayScale() const;
     void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
@@ -453,6 +454,8 @@ class InxRenderer
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;
     uint64_t GetImGuiTextureId(const std::string &name) const;
+    void SetEditorIconsDirectory(const std::string &path);
+    uint64_t GetEditorIconId(const std::string &name) const;
     [[nodiscard]] ImGuiTexturePublication GetImGuiTexturePublication(const std::string &name) const;
     uint64_t GetImGuiTextureVersion(const std::string &name) const;
     uint64_t GetFailedImGuiTextureVersion(const std::string &name) const;

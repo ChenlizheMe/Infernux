@@ -147,6 +147,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             # on the next editor restart.
             if self.plugin_manager is not None:
                 self.plugin_manager.catch_up_preloads()
+            self._prewarm_inspector_metadata()
 
         self._finish_progress()
 
@@ -233,9 +234,15 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
                     for name, milliseconds in sorted(timings.items())
                 )
             )
-        # Match Unity's default UI text density more closely. Player bootstrap
-        # uses the same base size; explicit project UIText sizes stay unchanged.
-        self.engine.set_gui_font(_resources.engine_font_path, 18)
+        from infernux.engine.ui.theme import Theme
+
+        # Editor typography follows the visual guide; scene UIText keeps its own size.
+        self.engine.set_gui_fonts(
+            _resources.engine_font_path,
+            _resources.engine_font_cjk_path,
+            _resources.engine_mono_font_path,
+            Theme.EDITOR_FONT_SIZE,
+        )
 
     def _complete_initial_asset_catalog(self) -> None:
         """Publish the native catalog before any scene or icon consumes it."""
@@ -249,14 +256,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             database.complete_pending_refresh()
 
     def _prewarm_builtin_pipelines(self):
-        """Compile builtin material shader programs during startup.
+        """Prepare builtin pipelines before the first interactive frame.
 
-        Without this, the first mesh drawn with a builtin material (e.g. the
-        first primitive created in a fresh session) pays the full glslang
-        compilation of every pass variant (Forward / Forward+ / GBuffer /
-        Shadow / Depth / Picking / Motion) synchronously on the render
-        thread — a multi-second stall. Moving it here folds the cost into
-        the splash screen, where the launcher already shows progress.
+        A material's existence does not imply its device pipeline is ready.
+        Pay first-use compilation during startup, preserving clean pipelines.
         """
         if self.engine is None:
             raise RuntimeError("Builtin pipeline prewarm requires an Engine")
@@ -270,11 +273,24 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             material = registry.get_builtin_material(name)
             if material is None:
                 raise RuntimeError(f"Required builtin material is unavailable: {name}")
-            # DefaultLit is created by native InitializeMaterialSystem during
-            # renderer initialization. Refreshing it here destroys and
-            # rebuilds the pipeline we just compiled.
-            if name == "SkyboxProcedural":
+            if material.is_pipeline_dirty():
                 native.refresh_material_pipeline(material)
+
+    def _prewarm_inspector_metadata(self):
+        # These catalogs and logical fields used to be discovered on the first
+        # click. Prepare them while startup progress is still visible; schema
+        # inspection does not load a GPU shader or create a device pipeline.
+        # Import the material view here too: its first import used to land in
+        # the first Cube's Inspector frame, after startup had already finished.
+        from infernux.engine.ui.inspector_material import shader_utils
+        from infernux.lib import AssetRegistry
+
+        for stage in (".vert", ".frag"):
+            shader_utils.get_shader_candidates(stage)
+        registry = AssetRegistry.instance()
+        default_material = registry.get_builtin_material("DefaultLit").serialize_document()
+        shaders = default_material["shaders"]
+        shader_utils.get_all_shader_property_names(shaders["vertex"], shaders["fragment"])
 
     def _create_managers(self):
         from infernux.engine.interaction import EditorInteractionCore
@@ -331,6 +347,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
     def _wire_toolbar_callbacks_on(self, tb, engine):
         """Shared helper: attach play/camera/grid callbacks to a ToolbarPanel."""
+        EditorServices.instance().editor_controls = tb
         pmm = engine._play_mode_manager if engine else None
         from infernux.lib import PlayState
         from infernux.engine.play_mode import PlayModeState

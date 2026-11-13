@@ -1,7 +1,7 @@
 #version 450
 
 ShaderInfo {
-    Name "Particle Six-Way Smoke"
+    Name "infernux/particle/six_way_smoke"
     Capabilities [ParticleSprite]
     ShadingModel "SixWaySmoke"
     Surface Transparent

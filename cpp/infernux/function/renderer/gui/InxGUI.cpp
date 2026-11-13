@@ -15,9 +15,11 @@
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkRenderUtils.h>
 #include <function/renderer/vk/VkResourceManager.h>
+#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxTexture/TextureDecoder.h>
 #include <function/resources/ShaderAsset/SlangNativeModule.h>
 #include <function/resources/ShaderAsset/SlangUIModule.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -46,8 +48,10 @@ namespace
 struct EditorDpiState
 {
     ImGuiStyle baseStyle;
-    std::string fontPath;
-    float fontSize = 18.0f;
+    std::string uiFontPath;
+    std::string uiCjkFontPath;
+    std::string monoFontPath;
+    float fontSize = 16.0f;
 };
 
 EditorDpiState &GetEditorDpiState()
@@ -101,6 +105,7 @@ InxGUI::~InxGUI()
 
     textlayout::ClearFontCache();
     textlayout::SetDefaultFont(nullptr);
+    InxGUIContext::s_monoFont = nullptr;
     ImGui::DestroyContext(m_imguiContext_ptr);
     m_imguiContext_ptr = nullptr;
 }
@@ -119,6 +124,7 @@ void InxGUI::Init(SDL_Window *window)
     IMGUI_CHECKVERSION();
     m_imguiContext_ptr = ImGui::CreateContext();
     m_guiContext = std::make_unique<InxGUIContext>();
+    m_guiContext->resolveEditorIcon = [this](const std::string &name) { return GetEditorIconId(name); };
     ImGui::SetCurrentContext(m_imguiContext_ptr);
     m_imguiContext_ptr->ErrorCallback = [](ImGuiContext *context, void *, const char *message) {
         static thread_local bool handlingError = false;
@@ -243,17 +249,44 @@ void InxGUI::Init(SDL_Window *window)
     m_resourcePreviewManager.SetGUI(this);
 }
 
-void InxGUI::SetGUIFont(const char *fontPath, float fontSize)
+void InxGUI::SetEditorIconsDirectory(const std::string &path)
 {
-    if (fontPath == nullptr || *fontPath == '\0' || fontSize <= 0.0f) {
-        INXLOG_WARN("InxGUI::SetGUIFont(): Invalid font configuration");
-        return;
+    m_editorIconsDirectory = path;
+}
+
+uint64_t InxGUI::GetEditorIconId(const std::string &name)
+{
+    auto it = m_editorIconTextures.find(name);
+    if (it == m_editorIconTextures.end()) {
+        const std::string path = JoinPath({m_editorIconsDirectory, name + ".png"});
+        auto image = InxTextureLoader::LoadFromFile(path);
+        if (!image.IsValid())
+            throw std::runtime_error("Cannot load editor icon: " + path);
+        const std::string texture = "__editor_icon__" + name;
+        SubmitTextureForImGui(texture, image.pixels.data(), image.pixels.size(), image.width, image.height,
+                              VK_FILTER_LINEAR, true);
+        it = m_editorIconTextures.emplace(name, texture).first;
     }
+    return GetImGuiTextureId(it->second);
+}
+
+void InxGUI::SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath,
+                         const std::string &monoFontPath, float fontSize)
+{
+    if (uiFontPath.empty() || uiCjkFontPath.empty() || monoFontPath.empty() || fontSize <= 0.0f)
+        throw std::invalid_argument(
+            "InxGUI::SetGUIFonts(): ui, ui CJK and mono font paths and a positive size are required");
+    if (ImGui::GetCurrentContext() == nullptr)
+        throw std::logic_error("InxGUI::SetGUIFonts(): GUI is not initialized");
 
     EditorDpiState &dpiState = GetEditorDpiState();
-    dpiState.fontPath = fontPath;
+    dpiState.uiFontPath = uiFontPath;
+    dpiState.uiCjkFontPath = uiCjkFontPath;
+    dpiState.monoFontPath = monoFontPath;
     dpiState.fontSize = fontSize;
-    ReloadGUIFont();
+    if (!ReloadGUIFont())
+        throw std::runtime_error("InxGUI::SetGUIFonts(): engine fonts could not be loaded (ui='" + uiFontPath +
+                                 "', cjk='" + uiCjkFontPath + "', mono='" + monoFontPath + "')");
 }
 
 void InxGUI::InvalidateFontAsset(const std::string &path)
@@ -262,42 +295,38 @@ void InxGUI::InvalidateFontAsset(const std::string &path)
     RequestFrame();
 }
 
-void InxGUI::ReloadGUIFont()
+bool InxGUI::ReloadGUIFont()
 {
     EditorDpiState &dpiState = GetEditorDpiState();
-    if (dpiState.fontPath.empty() || ImGui::GetCurrentContext() == nullptr)
-        return;
+    if (dpiState.uiFontPath.empty() || ImGui::GetCurrentContext() == nullptr)
+        return false;
 
     ImGuiIO &io = ImGui::GetIO();
     textlayout::ClearFontCache();
     textlayout::SetDefaultFont(nullptr);
+    InxGUIContext::s_monoFont = nullptr;
     io.Fonts->Clear();
 
     // Font size is in the same window units as layout and hit testing. ImGui
     // 1.92's renderer separately rasterizes at the viewport framebuffer density.
     float scaledSize = dpiState.fontSize * m_dpiScale;
-    INXLOG_DEBUG("Loading font at ", scaledSize, "px (base ", dpiState.fontSize, " x scale ", m_dpiScale, ")");
+    INXLOG_DEBUG("Loading fonts at ", scaledSize, "px (base ", dpiState.fontSize, " x scale ", m_dpiScale, ")");
 
-    ImFontConfig fontConfig;
-    // World-space UIText can be magnified by a camera. Keep enough atlas
-    // coverage for that path while retaining ImGui's dynamic size baking.
-    fontConfig.OversampleH = 2;
-    fontConfig.OversampleV = 2;
-
-    // Since ImGui 1.92+ with RendererHasTextures, glyph ranges are no longer
-    // needed. Glyphs are loaded on-demand at any requested size, so the atlas
-    // grows incrementally instead of pre-baking all CJK glyphs up-front.
-    ImFont *font = io.Fonts->AddFontFromFileTTF(dpiState.fontPath.c_str(), scaledSize, &fontConfig);
-    if (font == nullptr) {
-        INXLOG_WARN("InxGUI::ReloadGUIFont(): Failed to load font from ", dpiState.fontPath);
-        return;
+    // `ui` (Inter + merged Noto Sans SC) is loaded first so it is Fonts[0];
+    // `mono` (Maple Mono CN, CJK built in) serves numbers, paths and code.
+    ImFont *uiFont = textlayout::LoadEngineFont(dpiState.uiFontPath, {dpiState.uiCjkFontPath}, scaledSize);
+    ImFont *monoFont = uiFont ? textlayout::LoadEngineFont(dpiState.monoFontPath, {}, scaledSize) : nullptr;
+    if (uiFont == nullptr || monoFont == nullptr) {
+        INXLOG_ERROR("InxGUI::ReloadGUIFont(): engine fonts failed to load; GUI text is unavailable");
+        return false;
     }
 
-    // This is the single engine font used by both ImGui and UIText when a
-    // component has no explicit Font asset. Keeping the exact ImFont pointer
-    // avoids an ambient ImGui default-font path and avoids loading the bundled face
-    // twice into the atlas.
-    textlayout::SetDefaultFont(font);
+    // `ui` is also the engine font for UIText without an explicit Font asset.
+    // Keeping the exact ImFont pointer avoids an ambient ImGui default-font
+    // path and avoids loading the bundled faces twice into the atlas.
+    io.FontDefault = uiFont;
+    textlayout::SetDefaultFont(uiFont);
+    InxGUIContext::s_monoFont = monoFont;
 
     // Clear() may restore the previous current font's size into FontSizeBase
     // (ImGui 1.92 UpdateCurrentFontSize). Publishing the new font alone then
@@ -306,6 +335,7 @@ void InxGUI::ReloadGUIFont()
 
     // Font texture is now created automatically by the backend
     // No need to manually call ImGui_ImplVulkan_CreateFontsTexture()
+    return true;
 }
 
 void InxGUI::RefreshDisplayScale()
@@ -722,27 +752,6 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
         bool needsDefaultLayout = (ImGui::DockBuilderGetNode(dockspaceId) == nullptr);
         RescaleDockspaceForViewport(dockspaceId, ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
 
-        // The dedicated, non-resizable toolbar must fit the same font and
-        // authored padding used by ToolbarPanel. Update before DockSpace so
-        // its Scene sibling is repositioned in this frame, without rebuilding
-        // the user's layout or touching floating/merged toolbar windows.
-        const float toolbarHeight =
-            ImGui::GetFontSize() +
-            2.0f * ((EditorTheme::TOOLBAR_FRAME_PAD.y + EditorTheme::TOOLBAR_WIN_PAD.y) * m_dpiScale +
-                    ImGui::GetStyle().WindowBorderSize);
-        if (ImGuiWindow *toolbarWindow = ImGui::FindWindowByName("###toolbar")) {
-            ImGuiDockNode *node = ImGui::DockBuilderGetNode(toolbarWindow->DockId);
-            const ImGuiDockNodeFlags fixedToolbar = ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoResize;
-            if (node && node->IsLeafNode() && node->Windows.Size == 1 && node->ParentNode &&
-                node->ParentNode->SplitAxis == ImGuiAxis_Y && ImGui::DockNodeGetRootNode(node)->ID == dockspaceId &&
-                (node->LocalFlags & fixedToolbar) == fixedToolbar && std::abs(node->Size.y - toolbarHeight) > 0.5f) {
-                node->Size.y = node->SizeRef.y = toolbarHeight;
-                node->AuthorityForSize = ImGuiDataAuthority_DockNode;
-                node->WantLockSizeOnce = true;
-                ImGui::MarkIniSettingsDirty();
-            }
-        }
-
         ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
         // Setup default Unity-style layout only when no saved layout exists.
@@ -766,26 +775,12 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
             ImGuiID dockBottom;
             ImGui::DockBuilderSplitNode(dockMain, ImGuiDir_Down, 0.30f, &dockBottom, &dockTop);
 
-            // Split top: Left (Hierarchy) | Center-top (Toolbar+Scene)
+            // Split top: Left (Hierarchy) | Center (Scene/Game)
             ImGuiID dockLeft;
             ImGuiID dockCenterTop;
             ImGui::DockBuilderSplitNode(dockTop, ImGuiDir_Left, 0.20f, &dockLeft, &dockCenterTop);
 
-            // Split center-top: Toolbar (thin strip) | Scene/Game
-            ImGuiID dockToolbar;
-            ImGuiID dockScene;
-            ImGui::DockBuilderSplitNode(dockCenterTop, ImGuiDir_Up, 0.04f, &dockToolbar, &dockScene);
-
-            // Set a fixed size for the toolbar node so it doesn't stretch
-            ImGui::DockBuilderSetNodeSize(dockToolbar, ImVec2(viewport->WorkSize.x, toolbarHeight));
-
-            // Hide tab bar on toolbar node — it should be locked in place
-            ImGuiDockNode *toolbarNode = ImGui::DockBuilderGetNode(dockToolbar);
-            if (toolbarNode) {
-                toolbarNode->SetLocalFlags(toolbarNode->LocalFlags | ImGuiDockNodeFlags_NoTabBar |
-                                           ImGuiDockNodeFlags_NoDockingSplit | ImGuiDockNodeFlags_NoResize |
-                                           ImGuiDockNodeFlags_NoUndocking);
-            }
+            const ImGuiID dockScene = dockCenterTop;
 
             // Dock windows to their positions.
             // Window IDs use the ### separator so the docking layout is
@@ -794,7 +789,6 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
             // ### must match what the Python panel passes to ImGui::Begin.
             ImGui::DockBuilderDockWindow("###hierarchy", dockLeft);
             ImGui::DockBuilderDockWindow("###inspector", dockRight);
-            ImGui::DockBuilderDockWindow("###toolbar", dockToolbar);
             ImGui::DockBuilderDockWindow("###game_view", dockScene);
             ImGui::DockBuilderDockWindow("###ui_editor", dockScene);
             ImGui::DockBuilderDockWindow("###animclip2d_editor", dockScene);

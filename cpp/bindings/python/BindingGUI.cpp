@@ -49,27 +49,11 @@ class PyGUIRenderable : public InxGUIRenderable
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Dedicated UI helper — render Position/Rotation/Scale in one bridge call
+//  Property descriptors shared by native Inspector batches
 // ═══════════════════════════════════════════════════════════════════════════
 
 namespace
 {
-
-// Render 3 Vector3 controls (Position, Rotation, Scale) and return all 9
-// floats in a single flat tuple.  This avoids the per-call pybind11
-// dispatch overhead that a generic batch would incur.
-py::tuple RenderTransformFields(InxGUIContext &ctx, float px, float py, float pz, float rx, float ry, float rz,
-                                float sx, float sy, float sz, float speedPos, float speedRot, float speedScl,
-                                float labelWidth)
-{
-    float pos[3] = {px, py, pz};
-    float rot[3] = {rx, ry, rz};
-    float scl[3] = {sx, sy, sz};
-    ctx.Vector3Control("Position", pos, speedPos, labelWidth);
-    ctx.Vector3Control("Rotation", rot, speedRot, labelWidth);
-    ctx.Vector3Control("Scale", scl, speedScl, labelWidth);
-    return py::make_tuple(pos[0], pos[1], pos[2], rot[0], rot[1], rot[2], scl[0], scl[1], scl[2]);
-}
 
 PropertyDesc DecodePropertyDesc(const py::dict &d)
 {
@@ -144,6 +128,12 @@ PropertyDesc DecodePropertyDesc(const py::dict &d)
         p.space = d["spc"].cast<float>();
     if (d.contains("tt"))
         p.tooltip = d["tt"].cast<std::string>();
+    if (d.contains("ro"))
+        p.readonly = d["ro"].cast<bool>();
+    if (d.contains("rt"))
+        p.readonlyText = d["rt"].cast<std::string>();
+    if (d.contains("info"))
+        p.infoText = d["info"].cast<std::string>();
     return p;
 }
 
@@ -479,11 +469,14 @@ void RegisterGUIBindings(py::module_ &m)
                  ctx.IntSlider(label, &value, min, max);
                  return value;
              })
-        .def("float_slider",
-             [](InxGUIContext &ctx, const std::string &label, float value, float min, float max) {
-                 ctx.FloatSlider(label, &value, min, max);
-                 return value;
-             })
+        .def(
+            "float_slider",
+            [](InxGUIContext &ctx, const std::string &label, float value, float min, float max,
+               const std::string &format) {
+                ctx.FloatSlider(label, &value, min, max, format.c_str());
+                return value;
+            },
+            py::arg("label"), py::arg("value"), py::arg("min"), py::arg("max"), py::arg("format") = "%.3f")
         .def("drag_int",
              [](InxGUIContext &ctx, const std::string &label, int value, float speed, int min, int max) {
                  ctx.DragInt(label, &value, speed, min, max);
@@ -585,6 +578,8 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("label"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a") = 1.0f,
             py::arg("hdr") = false)
+        .def("color_swatch", &InxGUIContext::ColorSwatch, py::arg("id"), py::arg("color"),
+             py::arg("width") = 0.0f, py::arg("height") = 0.0f, py::arg("hdr") = false)
         .def(
             "color_picker",
             [](InxGUIContext &ctx, const std::string &label, float r, float g, float b, float a,
@@ -710,11 +705,11 @@ void RegisterGUIBindings(py::module_ &m)
         .def("menu_item", &InxGUIContext::MenuItem,
              py::arg("label"), py::arg("shortcut") = "", py::arg("selected") = false, py::arg("enabled") = true)
         .def("begin_child", &InxGUIContext::BeginChild, py::arg("id"), py::arg("width") = 0.0f,
-             py::arg("height") = 0.0f, py::arg("border") = false, py::arg("flags") = 0,
+             py::arg("height") = 0.0f, py::arg("border") = false, py::arg("flags") = 0, py::arg("padding") = false,
              "Begin a child region. flags takes ImGuiWindowFlags (e.g. NoScrollWithMouse).")
         .def("end_child", &InxGUIContext::EndChild)
         .def("open_popup", &InxGUIContext::OpenPopup)
-        .def("begin_popup", &InxGUIContext::BeginPopup)
+        .def("begin_popup", &InxGUIContext::BeginPopup, py::arg("id"), py::arg("resizable") = false)
         .def("begin_popup_modal", &InxGUIContext::BeginPopupModal, py::arg("title"), py::arg("flags") = 0,
              "Open a modal popup. Returns true while open. Must call end_popup() when true.")
         .def("begin_popup_context_item", &InxGUIContext::BeginPopupContextItem, py::arg("id") = "",
@@ -978,6 +973,26 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("rotation")=0,py::arg("mirror_h")=false,py::arg("mirror_v")=false)
         .def("set_window_font_scale", &InxGUIContext::SetWindowFontScale, py::arg("scale"),
              "Set font scale for the current window (1.0 = default)")
+        .def("icon_button", &InxGUIContext::IconButton, py::arg("id"), py::arg("icon"), py::arg("tooltip"),
+             py::arg("width"), py::arg("height"))
+        .def("editor_icon", &InxGUIContext::EditorIcon, py::arg("name"))
+        .def("inspector_label_width", &InxGUIContext::InspectorLabelWidth)
+        .def("inspector_field_info", &InxGUIContext::InspectorFieldInfo, py::arg("text"), py::arg("value_column") = 0.0f)
+        .def("inspector_field_label", &InxGUIContext::InspectorFieldLabel, py::arg("text"), py::arg("value_column") = 0.0f)
+        .def("get_text_line_height_with_spacing", &InxGUIContext::TextLineHeightWithSpacing)
+        .def("readonly_field", &InxGUIContext::ReadonlyField, py::arg("id"), py::arg("text"))
+        .def("empty_state", &InxGUIContext::EmptyState, py::arg("id"), py::arg("icon"), py::arg("title"),
+             py::arg("hint"), py::arg("height") = 0.0f, py::arg("interactive") = true)
+        .def("draw_gradient_rect", &InxGUIContext::DrawGradientRect,
+             py::arg("x0"), py::arg("y0"), py::arg("x1"), py::arg("y1"), py::arg("left"), py::arg("right"))
+        .def("draw_triangle_filled", &InxGUIContext::DrawTriangleFilled,
+             py::arg("a"), py::arg("b"), py::arg("c"), py::arg("color"))
+        .def("draw_polyline", &InxGUIContext::DrawPolyline, py::arg("points"), py::arg("color"),
+             py::arg("thickness") = 1.0f, py::arg("closed") = false)
+        .def("push_ui_font", &InxGUIContext::PushUIFont, py::arg("font_size"))
+        .def("push_mono_font", &InxGUIContext::PushMonoFont,
+             "Push the monospace face (numbers, paths, code) at the current size; pair with pop_font()")
+        .def("pop_font", &InxGUIContext::PopFont, "Pop the font pushed by push_mono_font()")
         .def("get_dpi_scale", &InxGUIContext::GetDpiScale,
              "Get authored UI units to SDL window units (display scale / pixel density)")
         .def("draw_text", [](InxGUIContext &self, float x, float y, const py::str &text, float r, float g,
@@ -1070,17 +1085,6 @@ void RegisterGUIBindings(py::module_ &m)
                                                                  py::float_(h));
                                        },
             "Get primary display bounds as (x, y, width, height)")
-        // ── Dedicated Transform renderer (1 call for 3 vector3) ────
-        .def(
-            "render_transform_fields",
-            [](InxGUIContext &ctx, float px, float py, float pz, float rx, float ry, float rz, float sx, float sy,
-               float sz, float speedPos, float speedRot, float speedScl, float labelWidth) {
-                return RenderTransformFields(ctx, px, py, pz, rx, ry, rz, sx, sy, sz, speedPos, speedRot, speedScl,
-                                             labelWidth);
-            },
-            py::arg("px"), py::arg("py"), py::arg("pz"), py::arg("rx"), py::arg("ry"), py::arg("rz"), py::arg("sx"),
-            py::arg("sy"), py::arg("sz"), py::arg("speed_pos"), py::arg("speed_rot"), py::arg("speed_scl"),
-            py::arg("label_width"), "Render Position/Rotation/Scale vector3 controls in one call.")
         .def(
             "create_property_batch_plan",
             [](InxGUIContext &, py::list descriptors) {
@@ -1127,10 +1131,12 @@ void RegisterGUIBindings(py::module_ &m)
             "render_mesh_renderer_inspector_fields",
             [](InxGUIContext &ctx, const std::string &meshFieldId, const std::string &meshLabel,
                const std::string &meshDisplay, const std::vector<std::string> &slotLabels,
-               const std::vector<std::string> &slotDisplays, uint64_t pickerTextureId, float labelWidth) {
+               const std::vector<std::string> &slotDisplays, uint64_t pickerTextureId, float labelWidth,
+               const std::string &materialsLabel) {
                 py::list result;
                 for (const auto &interaction : ctx.RenderMeshRendererInspectorFields(
-                         meshFieldId, meshLabel, meshDisplay, slotLabels, slotDisplays, pickerTextureId, labelWidth)) {
+                         meshFieldId, meshLabel, meshDisplay, slotLabels, slotDisplays, pickerTextureId, labelWidth,
+                         materialsLabel)) {
                     py::dict item;
                     item["index"] = interaction.index;
                     item["flags"] = interaction.flags;
@@ -1143,6 +1149,7 @@ void RegisterGUIBindings(py::module_ &m)
             },
             py::arg("mesh_field_id"), py::arg("mesh_label"), py::arg("mesh_display"), py::arg("slot_labels"),
             py::arg("slot_displays"), py::arg("picker_texture_id"), py::arg("label_width"),
+            py::arg("materials_label") = "Materials",
             "Render MeshRenderer mesh and material reference fields in one native call.");
 
     py::class_<InxGUIRenderable, PyGUIRenderable, std::shared_ptr<InxGUIRenderable>>(m, "InxGUIRenderable",
@@ -1181,6 +1188,8 @@ void RegisterGUIBindings(py::module_ &m)
              "Check if the presented panel content owns the current pointer target")
         .def("set_open", &EditorPanel::SetOpen, py::arg("open"), "Set whether the panel is open")
         .def("get_window_id", &EditorPanel::GetWindowId, "Get the stable window ID")
+        .def("set_title", &EditorPanel::SetTitle, py::arg("title"))
+        .def("get_title", &EditorPanel::GetTitle)
         .def("republish_panel_focus", &EditorPanel::RepublishPanelFocus, "Republish the last native focus observation")
         .def("cancel_transient", &EditorPanel::CancelTransientInteraction, py::arg("token"),
              "Cancel a native temporary interaction through Editor Interaction Core")
@@ -1198,6 +1207,7 @@ void RegisterGUIBindings(py::module_ &m)
     // ConsolePanel — C++ native console that replaces the Python ConsolePanel
     py::class_<ConsolePanel, EditorPanel, std::shared_ptr<ConsolePanel>>(m, "ConsolePanel")
         .def(py::init<const std::string &>(), py::arg("project_root") = "")
+        .def_readwrite("translate", &ConsolePanel::translate)
         .def_property_readonly("project_root", &ConsolePanel::GetProjectRoot)
         .def("get_entry_context_object_id", &ConsolePanel::GetEntryContextObjectId, py::arg("uid"))
         .def(
@@ -1210,6 +1220,19 @@ void RegisterGUIBindings(py::module_ &m)
             py::arg("level"), py::arg("message"), py::arg("stack_trace") = "", py::arg("source_file") = "",
             py::arg("source_line") = 0, py::arg("context_handle") = py::none(),
             "Log a message originating from Python Debug.log()")
+        .def(
+            "set_diagnostic",
+            [](ConsolePanel &self, const std::string &owner, const std::string &key, LogLevel level,
+               const std::string &message, const std::string &stackTrace, const std::string &sourceFile, int sourceLine,
+               const std::optional<ObjectHandle> &contextHandle, int occurrences) {
+                self.SetDiagnostic(owner, key, level, message, stackTrace, sourceFile, sourceLine,
+                                   contextHandle.value_or(ObjectHandle{}), occurrences);
+            },
+            py::arg("owner"), py::arg("key"), py::arg("level"), py::arg("message"), py::arg("stack_trace") = "",
+            py::arg("source_file") = "", py::arg("source_line") = 0, py::arg("context_handle") = py::none(),
+            py::arg("occurrences") = 1, "Update one unresolved problem, preserving its Console identity")
+        .def("resolve_diagnostic", &ConsolePanel::ResolveDiagnostic, py::arg("owner"), py::arg("key"),
+             "Resolve one operation's problem without clearing other messages")
         .def("clear", &ConsolePanel::Clear, "Clear all log entries")
         .def("remove_entries_from_source", &ConsolePanel::RemoveEntriesFromSource, py::arg("source_file"),
              py::arg("message_prefix") = "", "Remove Console entries owned by one source file")
@@ -1254,6 +1277,9 @@ void RegisterGUIBindings(py::module_ &m)
                     item["uid"] = entry.uid;
                     item["latest_uid"] = entry.latestUid;
                     item["count"] = entry.count;
+                    item["diagnostic_owner"] = entry.diagnosticOwner;
+                    item["diagnostic_key"] = entry.diagnosticKey;
+                    item["occurrences"] = entry.occurrences;
                     result.append(std::move(item));
                 }
                 return result;
@@ -1267,8 +1293,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_search_query", &ConsolePanel::GetSearchQuery)
         .def("set_search_query", &ConsolePanel::SetSearchQuery, py::arg("query"))
         .def("request_search_focus", &ConsolePanel::RequestSearchFocus)
-        .def("get_detail_height", &ConsolePanel::GetDetailHeight)
-        .def("set_detail_height", &ConsolePanel::SetDetailHeight, py::arg("height"))
+        .def("render_selection_inspector", &ConsolePanel::RenderSelectionInspector, py::arg("ctx"))
         .def("_get_status_snapshot",
              [](ConsolePanel &self) {
                  std::string message;
@@ -1316,12 +1341,14 @@ void RegisterGUIBindings(py::module_ &m)
             py::arg("console"), py::keep_alive<1, 2>(), "Wire to ConsolePanel for click-to-select-latest")
         .def("set_engine_status", &StatusBarPanel::SetEngineStatus, py::arg("text"), py::arg("progress"),
              py::arg("kind") = "activity", "Update engine-status indicator")
+        .def("set_session_label", &StatusBarPanel::SetSessionLabel, py::arg("label"))
         .def_readwrite("sync_from_engine", &StatusBarPanel::syncFromEngine)
         .def_readwrite("execute_command", &StatusBarPanel::executeCommand);
 
     // ── ToolbarPanel ───────────────────────────────────────────────────
     py::class_<ToolbarPanel, EditorPanel, std::shared_ptr<ToolbarPanel>>(m, "ToolbarPanel")
         .def(py::init<>())
+        .def("render_viewport_controls", &ToolbarPanel::RenderViewportControls)
         .def_readwrite("get_play_state", &ToolbarPanel::getPlayState)
         .def_readwrite("get_play_time_str", &ToolbarPanel::getPlayTimeStr)
         .def_readwrite("is_show_grid", &ToolbarPanel::isShowGrid)
@@ -1614,6 +1641,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("get_selected_object_id", &InspectorPanel::GetSelectedObjectId)
         .def("set_selected_file", &InspectorPanel::SetSelectedFile, py::arg("file_path"), py::arg("category"))
         .def("clear_selected_file", &InspectorPanel::ClearSelectedFile)
+        .def("show_diagnostic", &InspectorPanel::ShowDiagnostic)
         .def("get_selected_file", &InspectorPanel::GetSelectedFile)
         .def("set_detail_file", &InspectorPanel::SetDetailFile, py::arg("file_path"), py::arg("category"))
         .def("set_selected_component_ids", &InspectorPanel::SetSelectedComponentIds, py::arg("component_ids"))
@@ -1639,6 +1667,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_add_component_entries", &InspectorPanel::getAddComponentEntries)
         // Asset / File preview
         .def_readwrite("render_asset_inspector", &InspectorPanel::renderAssetInspector)
+        .def_readwrite("render_diagnostic_inspector", &InspectorPanel::renderDiagnosticInspector)
         .def_readwrite("render_file_preview", &InspectorPanel::renderFilePreview)
         // Material sections
         .def_readwrite("render_material_sections", &InspectorPanel::renderMaterialSections)

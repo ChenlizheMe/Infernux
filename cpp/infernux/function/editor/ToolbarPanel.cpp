@@ -1,4 +1,5 @@
 #include "ToolbarPanel.h"
+#include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 
 #include <algorithm>
@@ -51,7 +52,9 @@ std::string ToolbarPanel::T(const std::string &key) const
 
 ImGuiWindowFlags ToolbarPanel::GetWindowFlags() const
 {
-    return ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    return ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+           ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+           ImGuiWindowFlags_NoScrollWithMouse;
 }
 
 void ToolbarPanel::PreRender(InxGUIContext *ctx)
@@ -72,9 +75,25 @@ void ToolbarPanel::PreRender(InxGUIContext *ctx)
 
 void ToolbarPanel::OnRenderContent(InxGUIContext *ctx)
 {
-    float winW = ctx->GetWindowWidth();
-    RenderPlayControls(ctx, winW);
-    RenderRightDropdowns(ctx, winW);
+    if (!ImGui::BeginMenuBar())
+        return;
+    const float dpi = ctx->GetDpiScale();
+    ImGui::SetCursorPosY((EditorThemeRegistry::Float("TOP_BAR_HEIGHT") - 26.0f) * 0.5f * dpi);
+    RenderPlayControls(ctx, ctx->GetWindowWidth());
+    const PlayState state = getPlayState ? getPlayState() : PlayState::Edit;
+    if (state != PlayState::Edit) {
+        const float dpi = ctx->GetDpiScale();
+        const ImVec2 origin = ImGui::GetWindowPos();
+        const ImVec2 end(origin.x + ImGui::GetWindowWidth(), origin.y + ImGui::GetWindowHeight());
+        const ImU32 color = ImGui::ColorConvertFloat4ToU32(
+            EditorThemeRegistry::Color(state == PlayState::Paused ? "LOG_WARNING" : "ROLE_ACCENT"));
+        auto *draw = ImGui::GetWindowDrawList();
+        draw->PushClipRect(ImVec2(origin.x, end.y - 3.0f * dpi), end, true);
+        for (float x = origin.x; x < end.x + 6.0f * dpi; x += 12.0f * dpi)
+            draw->AddLine(ImVec2(x, end.y), ImVec2(x + 6.0f * dpi, end.y - 6.0f * dpi), color, 3.0f * dpi);
+        draw->PopClipRect();
+    }
+    ImGui::EndMenuBar();
 }
 
 void ToolbarPanel::PostRender(InxGUIContext * /*ctx*/)
@@ -98,7 +117,7 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
     const bool canTogglePause = canExecuteCommand && canExecuteCommand("play.pause", "");
     const bool canStep = canExecuteCommand && canExecuteCommand("play.step", "");
 
-    float btnW = 160.0f * dpi;
+    float btnW = 106.0f * dpi;
     float cx = (winW - btnW) * 0.5f;
     if (cx < 6.0f * dpi)
         cx = 6.0f * dpi;
@@ -106,12 +125,15 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
     // ── Play / Stop ──────────────────────────────────────────────
     if (isPlaying && !isPaused)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::PLAY_ACTIVE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("PLAY_ACTIVE"));
     else
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_IDLE"));
 
     std::string playLabel = isPlaying ? T("toolbar.stop") : T("toolbar.play");
-    const bool playClicked = ImGui::Button(playLabel.c_str());
+    ImGui::BeginDisabled(!canTogglePlay);
+    const bool playClicked =
+        ctx->IconButton("toolbar_play", isPlaying ? "glyphs/stop" : "glyphs/play", playLabel, 34.0f * dpi, 26.0f * dpi);
+    ImGui::EndDisabled();
     if (captureSemantics)
         ctx->RecordSemanticItem("toolbar_play_stop", playLabel, canTogglePlay, "toolbar.play_stop");
     if (playClicked && canTogglePlay && executeCommand)
@@ -122,14 +144,16 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
     // ── Pause / Resume ───────────────────────────────────────────
     if (!isPlaying)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_DISABLED);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_DISABLED"));
     else if (isPaused)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::PAUSE_ACTIVE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("PAUSE_ACTIVE"));
     else
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_IDLE"));
 
     std::string pauseLabel = isPaused ? T("toolbar.resume") : T("toolbar.pause");
-    const bool pauseClicked = ImGui::Button(pauseLabel.c_str());
+    ImGui::BeginDisabled(!canTogglePause);
+    const bool pauseClicked = ctx->IconButton("toolbar_pause", "glyphs/pause", pauseLabel, 34.0f * dpi, 26.0f * dpi);
+    ImGui::EndDisabled();
     if (captureSemantics)
         ctx->RecordSemanticItem("toolbar_pause_resume", pauseLabel, canTogglePause, "toolbar.pause_resume");
     if (pauseClicked && canTogglePause && executeCommand)
@@ -140,12 +164,14 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
     // ── Step ─────────────────────────────────────────────────────
     if (isPaused)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_IDLE"));
     else
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_DISABLED);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_DISABLED"));
 
     std::string stepLabel = T("toolbar.step");
-    const bool stepClicked = ImGui::Button(stepLabel.c_str());
+    ImGui::BeginDisabled(!canStep);
+    const bool stepClicked = ctx->IconButton("toolbar_step", "glyphs/step_f", stepLabel, 34.0f * dpi, 26.0f * dpi);
+    ImGui::EndDisabled();
     if (captureSemantics)
         ctx->RecordSemanticItem("toolbar_step", stepLabel, canStep, "toolbar.step");
     if (stepClicked && canStep && executeCommand)
@@ -153,17 +179,20 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
     ImGui::PopStyleColor(3);
 
     // ── Time label while playing ─────────────────────────────────
-    if (isPlaying) {
-        std::string tag = isPaused ? T("toolbar.status_paused") : T("toolbar.status_playing");
+    {
         std::string timeStr = getPlayTimeStr ? getPlayTimeStr() : "00:00.000";
-        const std::string status = tag + "  " + timeStr;
+        const std::string status = "MET  " + timeStr;
         const float rightControlsX = std::max(winW - 200.0f * dpi, 300.0f * dpi);
         const float statusStartX = ImGui::GetItemRectMax().x + 8.0f * dpi;
         const float rightControlsScreenX = ImGui::GetWindowPos().x + rightControlsX;
         const float statusWidth = ImGui::CalcTextSize(status.c_str()).x;
         if (statusStartX + statusWidth + 8.0f * dpi <= rightControlsScreenX) {
             ImGui::SameLine(0.0f, 8.0f * dpi);
-            ImGui::TextUnformatted(status.c_str());
+            ctx->PushMonoFont();
+            ImGui::TextColored(
+                EditorThemeRegistry::Color(isPaused ? "LOG_WARNING" : (isPlaying ? "ROLE_ACCENT" : "TEXT_DISABLED")),
+                "%s", status.c_str());
+            ctx->PopFont();
         }
     }
 }
@@ -172,51 +201,45 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 // Right-aligned dropdowns
 // ════════════════════════════════════════════════════════════════════
 
-void ToolbarPanel::RenderRightDropdowns(InxGUIContext *ctx, float winW)
+void ToolbarPanel::RenderViewportControls(InxGUIContext *ctx)
 {
     const float dpi = ctx->GetDpiScale();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
-    float rightX = winW - 200.0f * dpi;
-    if (rightX < 300.0f * dpi)
-        rightX = 300.0f * dpi;
-
-    ImGui::SameLine(rightX);
+    ImGui::BeginGroup();
+    // Toolbar dropdowns sit on the bar as ghost frames; the chevron marks them.
+    // The ghost colours wrap only the frame so popup content keeps field styling.
+    auto beginDropdown = [ctx](const char *id, const std::string &label) {
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, EditorThemeRegistry::Colors().at("BTN_GHOST"));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, EditorThemeRegistry::Colors().at("BTN_GHOST_HOVERED"));
+        const bool open = ctx->BeginCombo(id, label, ImGuiComboFlags_WidthFitPreview | ImGuiComboFlags_HeightLargest);
+        ImGui::PopStyleColor(2);
+        return open;
+    };
 
     // Gizmos dropdown
-    EditorTheme::PushGhostButtonStyle();
-    std::string gizLabel = T("toolbar.gizmos");
-    const bool gizmosClicked = ImGui::Button(gizLabel.c_str());
-    if (captureSemantics)
-        ctx->RecordSemanticItem("toolbar_gizmos", gizLabel, true, "toolbar.gizmos");
-    if (gizmosClicked)
-        ImGui::OpenPopup("##giz");
-    ImGui::PopStyleColor(3);
-
-    if (ctx->BeginPopup("##giz")) {
+    const std::string gizLabel = T("toolbar.gizmos");
+    if (beginDropdown("##giz", gizLabel)) {
         if (captureSemantics)
             ctx->RecordSemanticWindow("toolbar_popup", gizLabel, "toolbar.gizmos.popup");
         PopupGizmos(ctx);
-        ctx->EndPopup();
+        ctx->EndCombo();
     }
+    if (captureSemantics)
+        ctx->RecordSemanticItem("toolbar_gizmos", gizLabel, true, "toolbar.gizmos");
 
     ImGui::SameLine(0.0f, 4.0f * dpi);
 
     // Camera dropdown
-    EditorTheme::PushGhostButtonStyle();
-    std::string camLabel = T("toolbar.camera");
-    const bool cameraClicked = ImGui::Button(camLabel.c_str());
-    if (captureSemantics)
-        ctx->RecordSemanticItem("toolbar_camera", camLabel, true, "toolbar.camera");
-    if (cameraClicked)
-        ImGui::OpenPopup("##cam");
-    ImGui::PopStyleColor(3);
-
-    if (ctx->BeginPopup("##cam")) {
+    const std::string camLabel = T("toolbar.camera");
+    if (beginDropdown("##cam", camLabel)) {
         if (captureSemantics)
             ctx->RecordSemanticWindow("toolbar_popup", camLabel, "toolbar.camera.popup");
         PopupCamera(ctx);
-        ctx->EndPopup();
+        ctx->EndCombo();
     }
+    if (captureSemantics)
+        ctx->RecordSemanticItem("toolbar_camera", camLabel, true, "toolbar.camera");
+    ImGui::EndGroup();
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -270,11 +293,9 @@ void ToolbarPanel::PopupCamera(InxGUIContext *ctx)
     ImGui::SameLine(145.0f * dpi);
     ImGui::SetNextItemWidth(200.0f * dpi);
     int projection = m_cameraSettings.orthographic ? 1 : 0;
-    const std::string perspective = T("toolbar.perspective");
-    const std::string orthographic = T("toolbar.orthographic");
-    const char *projectionItems[] = {perspective.c_str(), orthographic.c_str()};
     const CameraSettings projectionBefore = m_cameraSettings;
-    const bool projectionChanged = ImGui::Combo("##camera_projection", &projection, projectionItems, 2);
+    const bool projectionChanged =
+        ctx->Combo("##camera_projection", &projection, {T("toolbar.perspective"), T("toolbar.orthographic")});
     m_cameraSettings.orthographic = projection == 1;
     if (ImGui::IsItemActivated() && beginCameraEdit)
         beginCameraEdit("projection", projectionBefore);

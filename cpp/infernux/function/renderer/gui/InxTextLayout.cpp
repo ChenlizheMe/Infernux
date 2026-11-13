@@ -9,7 +9,7 @@ TextLayoutResult LayoutText(const TextLayoutParams &params)
 {
     TextLayoutResult result{};
     result.text = params.text;
-    result.font = ResolveFont(params.fontPath);
+    result.font = params.fontOverride != nullptr ? params.fontOverride : ResolveFont(params.fontPath);
     const float lineFontSize = ResolveFontSize(params.fontSize);
     const float rasterScale = ResolveEmRasterScale(result.font);
     const float logicalFontSize = params.fontSize > 0.0f ? lineFontSize : lineFontSize / rasterScale;

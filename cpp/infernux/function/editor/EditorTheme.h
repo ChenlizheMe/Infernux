@@ -8,31 +8,32 @@ namespace infernux
 {
 
 /// Lightweight theme constants for C++ editor panels.
-/// Matches the Python Theme class values from theme.py.
+/// Values mirror the base theme in EditorThemeTable.inl (Mission Control);
+/// the table is authoritative — keep these in sync with it.
 /// Colors are in linear sRGB, RGBA order (matching ImGui's convention).
 namespace EditorTheme
 {
 
-// ── Accent / brand color (Infernux red #EB5757) ─────────────────────
-constexpr float ACCENT_R = 0.922f;
-constexpr float ACCENT_G = 0.341f;
-constexpr float ACCENT_B = 0.341f;
+// ── Accent / brand color (Mission Control red #D8434F) ──────────────
+constexpr float ACCENT_R = 0.847f;
+constexpr float ACCENT_G = 0.263f;
+constexpr float ACCENT_B = 0.310f;
 
 // ── Console log level colors ─────────────────────────────────────────
-constexpr ImVec4 LOG_INFO{0.82f, 0.82f, 0.85f, 1.0f};
-constexpr ImVec4 LOG_WARNING{0.890f, 0.710f, 0.300f, 1.0f};
-constexpr ImVec4 LOG_ERROR{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
-constexpr ImVec4 LOG_TRACE{0.50f, 0.50f, 0.50f, 1.0f};
-constexpr ImVec4 LOG_BADGE{0.55f, 0.55f, 0.55f, 1.0f};
+constexpr ImVec4 LOG_INFO{0.914f, 0.894f, 0.855f, 1.0f};
+constexpr ImVec4 LOG_WARNING{0.949f, 0.710f, 0.267f, 1.0f};
+constexpr ImVec4 LOG_ERROR{1.0f, 0.420f, 0.420f, 1.0f};
+constexpr ImVec4 LOG_TRACE{0.663f, 0.647f, 0.616f, 1.0f};
+constexpr ImVec4 LOG_BADGE{0.663f, 0.647f, 0.616f, 1.0f};
 constexpr ImVec4 LOG_DIM{0.133f, 0.133f, 0.133f, 0.6f};
 
 // ── Selection / Row colors ───────────────────────────────────────────
 constexpr ImVec4 SELECTION_BG{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
-constexpr ImVec4 HIERARCHY_ROW_HOVER{0.28f, 0.28f, 0.28f, 1.0f};
+constexpr ImVec4 HIERARCHY_ROW_HOVER{0.165f, 0.169f, 0.180f, 1.0f};
 constexpr ImVec4 HIERARCHY_ROW_SELECTED{ACCENT_R, ACCENT_G, ACCENT_B, 0.22f};
 constexpr ImVec4 ROW_ALT{0.0f, 0.0f, 0.0f, 0.06f};
 constexpr ImVec4 ROW_NONE{0.0f, 0.0f, 0.0f, 0.0f};
-constexpr ImVec4 CONSOLE_SEGMENT_ACTIVE{0.23f, 0.23f, 0.25f, 1.0f};
+constexpr ImVec4 CONSOLE_SEGMENT_ACTIVE{0.165f, 0.169f, 0.180f, 1.0f};
 
 // ── Transparent / ghost ──────────────────────────────────────────────
 constexpr ImVec4 BTN_GHOST{0.0f, 0.0f, 0.0f, 0.0f};
@@ -41,35 +42,35 @@ constexpr ImVec4 BTN_GHOST_ACTIVE{1.0f, 1.0f, 1.0f, 0.10f};
 constexpr ImVec4 BORDER_TRANSPARENT{0.0f, 0.0f, 0.0f, 0.0f};
 
 // ── Status bar button ────────────────────────────────────────────────
-constexpr ImVec4 BTN_SB_HOVERED{0.20f, 0.20f, 0.20f, 0.6f};
-constexpr ImVec4 BTN_SB_ACTIVE{0.25f, 0.25f, 0.25f, 0.8f};
+constexpr ImVec4 BTN_SB_HOVERED{0.165f, 0.169f, 0.180f, 0.6f};
+constexpr ImVec4 BTN_SB_ACTIVE{0.301f, 0.188f, 0.206f, 0.8f};
 
 // ── Toolbar play-mode buttons ────────────────────────────────────────
-constexpr ImVec4 PLAY_ACTIVE{0.20f, 0.45f, 0.30f, 1.0f};
-constexpr ImVec4 PAUSE_ACTIVE{0.50f, 0.40f, 0.15f, 1.0f};
-constexpr ImVec4 BTN_IDLE{0.18f, 0.18f, 0.18f, 1.0f};
-constexpr ImVec4 BTN_DISABLED{0.15f, 0.15f, 0.15f, 0.4f};
+constexpr ImVec4 PLAY_ACTIVE{0.457f, 0.196f, 0.224f, 1.0f};
+constexpr ImVec4 PAUSE_ACTIVE{0.502f, 0.397f, 0.204f, 1.0f};
+constexpr ImVec4 BTN_IDLE{0.110f, 0.114f, 0.122f, 1.0f};
+constexpr ImVec4 BTN_DISABLED{0.137f, 0.141f, 0.153f, 0.4f};
 
 // ── Headers / Selectables ────────────────────────────────────────────
-constexpr ImVec4 HEADER_HOVERED{0.28f, 0.24f, 0.24f, 1.0f};
-constexpr ImVec4 HEADER_ACTIVE{0.32f, 0.25f, 0.25f, 1.0f};
+constexpr ImVec4 HEADER_HOVERED{0.288f, 0.186f, 0.203f, 1.0f};
+constexpr ImVec4 HEADER_ACTIVE{0.370f, 0.197f, 0.219f, 1.0f};
 
 // ── Panel backgrounds ────────────────────────────────────────────────
-constexpr ImVec4 STATUS_BAR_BG{0.13f, 0.13f, 0.13f, 1.0f};
-constexpr ImVec4 MENU_BAR_BG{0.16f, 0.16f, 0.16f, 1.0f};
-constexpr ImVec4 POPUP_BG{0.24f, 0.24f, 0.24f, 0.96f};
+constexpr ImVec4 STATUS_BAR_BG{0.039f, 0.043f, 0.047f, 1.0f};
+constexpr ImVec4 MENU_BAR_BG{0.039f, 0.043f, 0.047f, 1.0f};
+constexpr ImVec4 POPUP_BG{0.110f, 0.114f, 0.122f, 1.0f};
 
 // ── Status bar progress ──────────────────────────────────────────────
-constexpr ImVec4 STATUS_PROGRESS_CLR{235.0f / 255.0f, 87.0f / 255.0f, 87.0f / 255.0f, 1.0f};
-constexpr ImVec4 STATUS_PROGRESS_BG{0.10f, 0.10f, 0.10f, 1.0f};
-constexpr ImVec4 STATUS_PROGRESS_LABEL_CLR{0.65f, 0.65f, 0.65f, 1.0f};
-constexpr ImVec4 STATUS_ACTIVITY_BG{0.155f, 0.155f, 0.165f, 1.0f};
-constexpr ImVec4 STATUS_BAR_BORDER{0.26f, 0.26f, 0.28f, 1.0f};
+constexpr ImVec4 STATUS_PROGRESS_CLR{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
+constexpr ImVec4 STATUS_PROGRESS_BG{0.067f, 0.071f, 0.075f, 1.0f};
+constexpr ImVec4 STATUS_PROGRESS_LABEL_CLR{0.663f, 0.647f, 0.616f, 1.0f};
+constexpr ImVec4 STATUS_ACTIVITY_BG{0.110f, 0.114f, 0.122f, 1.0f};
+constexpr ImVec4 STATUS_BAR_BORDER{0.149f, 0.153f, 0.165f, 1.0f};
 constexpr float STATUS_PROGRESS_FRACTION = 0.25f;
 
 // ── Splitter ─────────────────────────────────────────────────────────
-constexpr ImVec4 SPLITTER_HOVER{0.35f, 0.25f, 0.25f, 0.6f};
-constexpr ImVec4 SPLITTER_ACTIVE{0.40f, 0.28f, 0.28f, 0.8f};
+constexpr ImVec4 SPLITTER_HOVER{0.288f, 0.186f, 0.203f, 0.6f};
+constexpr ImVec4 SPLITTER_ACTIVE{0.370f, 0.197f, 0.219f, 0.8f};
 
 // ── Console toolbar compact spacing ──────────────────────────────────
 constexpr float CONSOLE_FRAME_PAD_X = 4.0f;
@@ -82,7 +83,7 @@ constexpr float TOOLBAR_FRAME_BRD = 0.0f;
 constexpr ImVec2 TOOLBAR_WIN_PAD{4.0f, 4.0f};
 constexpr ImVec2 TOOLBAR_FRAME_PAD{6.0f, 4.0f};
 constexpr ImVec2 TOOLBAR_ITEM_SPC{6.0f, 4.0f};
-constexpr float TOOLBAR_FRAME_RND = 3.0f;
+constexpr float TOOLBAR_FRAME_RND = 0.0f;
 
 // ── Menu bar spacing ─────────────────────────────────────────────────
 // (reuses TOOLBAR_FRAME_PAD / TOOLBAR_ITEM_SPC / TOOLBAR_WIN_PAD)
@@ -96,21 +97,21 @@ constexpr ImVec2 POPUP_FRAME_PAD{8.0f, 6.0f};
 constexpr ImVec2 STATUS_BAR_WIN_PAD{6.0f, 4.0f};
 constexpr ImVec2 STATUS_BAR_ITEM_SPC{8.0f, 0.0f};
 constexpr ImVec2 STATUS_BAR_FRAME_PAD{0.0f, 0.0f};
-constexpr float STATUS_BAR_BASE_HEIGHT = 24.0f;
+constexpr float STATUS_BAR_BASE_HEIGHT = 28.0f;
 
 // ── Hierarchy / Tree ─────────────────────────────────────────────────
 constexpr ImVec2 TREE_ITEM_SPC{0.0f, 2.0f};  // ItemSpacing
 constexpr ImVec2 TREE_FRAME_PAD{2.0f, 2.0f}; // FramePadding
 constexpr float TREE_INDENT = 14.0f;         // IndentSpacing per level
-constexpr ImVec4 PREFAB_TEXT{235.0f / 255.0f, 87.0f / 255.0f, 87.0f / 255.0f, 1.0f};
-constexpr ImVec4 TEXT_DISABLED{0.40f, 0.40f, 0.40f, 1.0f};
+constexpr ImVec4 PREFAB_TEXT{0.949f, 0.635f, 0.608f, 1.0f};
+constexpr ImVec4 TEXT_DISABLED{0.435f, 0.424f, 0.400f, 1.0f};
 constexpr ImVec4 DND_REORDER_LINE{1.0f, 1.0f, 1.0f, 1.0f};
-constexpr ImVec4 DND_PARENT_OUTLINE{1.0f, 1.0f, 1.0f, 0.95f};
+constexpr ImVec4 DND_PARENT_OUTLINE{0.957f, 0.918f, 0.859f, 0.75f};
 
 // ── Project panel — model expand strip & embedded sub-assets ─────────
-constexpr ImVec4 PROJECT_EXPAND_STRIP_BG{0.22f, 0.22f, 0.24f, 1.0f};
-constexpr ImVec4 PROJECT_EXPAND_STRIP_HOVER{0.32f, 0.28f, 0.28f, 1.0f};
-constexpr ImVec4 PROJECT_SUBASSET_CELL_BG{0.17f, 0.17f, 0.19f, 0.94f};
+constexpr ImVec4 PROJECT_EXPAND_STRIP_BG{0.137f, 0.141f, 0.153f, 1.0f};
+constexpr ImVec4 PROJECT_EXPAND_STRIP_HOVER{0.247f, 0.180f, 0.196f, 1.0f};
+constexpr ImVec4 PROJECT_SUBASSET_CELL_BG{0.110f, 0.114f, 0.122f, 0.94f};
 constexpr ImVec4 PROJECT_SUBASSET_ACCENT{ACCENT_R * 0.70f, ACCENT_G * 0.70f, ACCENT_B * 0.70f, 0.90f};
 constexpr float PROJECT_SUBASSET_ACCENT_W = 3.0f;
 
@@ -124,13 +125,12 @@ constexpr const char *PREFAB_ICON = "\xe2\x97\x86"; // ◆ U+25C6
 constexpr const char *ICON_WARNING = "\xe2\x96\xb2"; // ▲ U+25B2
 constexpr const char *ICON_ERROR = "\xe2\x97\x8f";   // ● U+25CF
 // ── Inspector panel ──────────────────────────────────────────────
-constexpr ImVec4 TEXT{0.82f, 0.82f, 0.85f, 1.0f};
-constexpr ImVec4 TEXT_DIM2{0.55f, 0.55f, 0.55f, 1.0f};
-constexpr ImVec4 WARNING_TEXT{0.90f, 0.60f, 0.20f, 1.0f};
-constexpr ImVec4 ERROR_TEXT{0.90f, 0.30f, 0.30f, 1.0f};
-constexpr ImVec4 PREFAB_TEXT2{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
+constexpr ImVec4 TEXT{0.914f, 0.894f, 0.855f, 1.0f};
+constexpr ImVec4 TEXT_DIM2{0.663f, 0.647f, 0.616f, 1.0f};
+constexpr ImVec4 WARNING_TEXT{0.949f, 0.710f, 0.267f, 1.0f};
+constexpr ImVec4 ERROR_TEXT{1.0f, 0.420f, 0.420f, 1.0f};
 
-constexpr ImVec4 PREFAB_HEADER_BG{0.235f, 0.235f, 0.235f, 1.0f};
+constexpr ImVec4 PREFAB_HEADER_BG{0.110f, 0.114f, 0.122f, 1.0f};
 constexpr float PREFAB_HEADER_H = 28.0f;
 constexpr float PREFAB_HEADER_BTN_GAP = 4.0f;
 
@@ -141,13 +141,13 @@ constexpr float INSPECTOR_SPLITTER_H = 8.0f;
 constexpr float INSPECTOR_DEFAULT_RATIO = 0.4f;
 constexpr float INSPECTOR_LABEL_PAD = 12.0f;
 constexpr float INSPECTOR_MIN_LABEL_WIDTH = 132.0f;
-constexpr ImVec2 INSPECTOR_FRAME_PAD{4.0f, 2.0f};
-constexpr ImVec2 INSPECTOR_ITEM_SPC{4.0f, 2.0f};
+constexpr ImVec2 INSPECTOR_FRAME_PAD{6.0f, 4.5f};
+constexpr ImVec2 INSPECTOR_ITEM_SPC{6.0f, 4.0f};
 constexpr float INSPECTOR_SECTION_GAP = 6.0f;
 constexpr float INSPECTOR_TITLE_GAP = 10.0f;
 constexpr float INSPECTOR_ACTION_ALIGN_X = 0.0f;
 constexpr float INSPECTOR_HEADER_CONTENT_INDENT = 34.0f;
-constexpr float COMPONENT_ICON_SIZE = 16.0f;
+constexpr float COMPONENT_ICON_SIZE = 18.0f;
 
 constexpr ImVec2 INSPECTOR_HEADER_PRIMARY_FRAME_PAD{4.0f, 2.0f};
 constexpr ImVec2 INSPECTOR_HEADER_SECONDARY_FRAME_PAD{4.0f, 2.0f};
@@ -157,31 +157,31 @@ constexpr float INSPECTOR_HEADER_RIGHT_MARGIN = 0.0f;
 constexpr float INSPECTOR_HEADER_PRIMARY_FONT_SCALE = 1.0f;
 constexpr float INSPECTOR_HEADER_SECONDARY_FONT_SCALE = 1.0f;
 
-constexpr ImVec4 INSPECTOR_HEADER_PRIMARY{0.235f, 0.235f, 0.235f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_PRIMARY_HOVERED{0.28f, 0.24f, 0.24f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_PRIMARY_ACTIVE{0.32f, 0.25f, 0.25f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_SELECTED{0.40f, 0.22f, 0.22f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_SELECTED_HOVERED{0.46f, 0.24f, 0.24f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_SELECTED_ACTIVE{0.50f, 0.26f, 0.26f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_SECONDARY{0.20f, 0.20f, 0.20f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_SECONDARY_HOVERED{0.25f, 0.22f, 0.22f, 1.0f};
-constexpr ImVec4 INSPECTOR_HEADER_SECONDARY_ACTIVE{0.28f, 0.24f, 0.24f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_PRIMARY{0.110f, 0.114f, 0.122f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_PRIMARY_HOVERED{0.165f, 0.169f, 0.180f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_PRIMARY_ACTIVE{0.165f, 0.169f, 0.180f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_SELECTED{0.228f, 0.138f, 0.152f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_SELECTED_HOVERED{0.272f, 0.147f, 0.163f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_SELECTED_ACTIVE{0.316f, 0.156f, 0.175f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_SECONDARY{0.098f, 0.102f, 0.108f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_SECONDARY_HOVERED{0.137f, 0.141f, 0.153f, 1.0f};
+constexpr ImVec4 INSPECTOR_HEADER_SECONDARY_ACTIVE{0.165f, 0.169f, 0.180f, 1.0f};
 
 constexpr ImVec2 INSPECTOR_CHECKBOX_FRAME_PAD{3.0f, 1.5f};
 /// Scales only the checkbox square (label text stays at ambient font size).
 constexpr float INSPECTOR_CHECKBOX_BOX_SCALE = 0.75f;
 constexpr float INSPECTOR_CHECKBOX_SLOT_W = 16.5f;
 /// Fixed side length (px) of every checkbox square — one size everywhere.
-constexpr float INSPECTOR_CHECKBOX_BOX_PX = 14.0f;
+constexpr float INSPECTOR_CHECKBOX_BOX_PX = 13.0f;
 /// Fixed width of the numeric input box beside a ranged slider row.
 constexpr float INSPECTOR_RANGED_INPUT_WIDTH = 52.0f;
 constexpr float INSPECTOR_SLIDER_LINE_PAD = 2.0f;
 constexpr float INSPECTOR_SLIDER_TRACK_HEIGHT = 3.0f;
-/// Negative values move the track line upward within the slider row.
-constexpr float INSPECTOR_SLIDER_TRACK_Y_OFFSET = -2.0f;
+constexpr float INSPECTOR_SLIDER_GRAB_W = 8.0f;
+constexpr float INSPECTOR_SLIDER_GRAB_H = 14.0f;
 
-constexpr ImVec4 INSPECTOR_INLINE_BTN_IDLE{0.20f, 0.20f, 0.20f, 1.0f};
-constexpr ImVec4 INSPECTOR_INLINE_BTN_HOVER{0.28f, 0.24f, 0.24f, 1.0f};
+constexpr ImVec4 INSPECTOR_INLINE_BTN_IDLE{0.137f, 0.141f, 0.153f, 1.0f};
+constexpr ImVec4 INSPECTOR_INLINE_BTN_HOVER{0.247f, 0.180f, 0.196f, 1.0f};
 constexpr ImVec4 INSPECTOR_INLINE_BTN_ACTIVE{ACCENT_R, ACCENT_G, ACCENT_B, 1.0f};
 constexpr float INSPECTOR_INLINE_BTN_GAP = 4.0f;
 

@@ -877,9 +877,9 @@ def test_graphical_run_releases_gil_for_background_python_work(engine):
 
 def test_synthetic_ctrl_a_replaces_focused_imgui_text(engine):
     """Synthetic modifier state must reach ImGui shortcuts, not just InputManager."""
-    from infernux.resources import engine_font_path
+    from infernux.resources import engine_font_cjk_path, engine_font_path, engine_mono_font_path
 
-    engine.set_gui_font(engine_font_path, 18)
+    engine.set_gui_fonts(engine_font_path, engine_font_cjk_path, engine_mono_font_path, 18)
 
     class _TextProbe(InxGUIRenderable):
         def __init__(self) -> None:

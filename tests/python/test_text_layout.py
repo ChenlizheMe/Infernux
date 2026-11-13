@@ -5,13 +5,13 @@ import subprocess
 import sys
 
 from infernux.lib import TextLayout
-from infernux.resources import engine_font_path
+from infernux.resources import engine_font_cjk_path, engine_font_path, engine_mono_font_path
 import numpy as np
 
 
 @pytest.fixture(scope="module", autouse=True)
 def engine_font(engine):
-    engine.set_gui_font(engine_font_path, 18)
+    engine.set_gui_fonts(engine_font_path, engine_font_cjk_path, engine_mono_font_path, 18)
 
 
 def test_unicode_segmentation_is_available_without_a_renderer():

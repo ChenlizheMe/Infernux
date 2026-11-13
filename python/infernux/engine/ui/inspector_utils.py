@@ -18,6 +18,7 @@ Hierarchy of abstractions
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import math
 from enum import Flag
 from dataclasses import fields as dataclass_fields, is_dataclass, replace
@@ -145,7 +146,7 @@ def pretty_field_name(name: str) -> str:
 
 
 def serialized_field_label(name: str, metadata) -> str:
-    key = metadata.display_name_key
+    key = metadata.display_name_key or f"field.{name}"
     label = t(key) if key else ""
     return label if label and label != key else pretty_field_name(name)
 
@@ -202,46 +203,16 @@ def record_inspector_component_item(
 #  Label / layout primitives
 # ═══════════════════════════════════════════════════════════════════════════
 
-_LABEL_W_CACHE: dict = {}  # (tuple_of_labels,) -> float
 
 
 def max_label_w(ctx: InxGUIContext, labels, *, min_width: float = 0.0) -> float:
-    """Return the pixel width for the widest label + padding.
-
-    Results are cached per unique label set (font is constant at runtime).
-    """
-    key = tuple(labels)
-    cached = _LABEL_W_CACHE.get(key)
-    if cached is not None:
-        return cached
-    _min = min_width if min_width > 0 else Theme.INSPECTOR_MIN_LABEL_WIDTH
-    w = 0.0
-    for lb in labels:
-        tw = ctx.calc_text_width(lb)
-        if tw > w:
-            w = tw
-    result = max(w + Theme.INSPECTOR_LABEL_PAD, _min)
-    _LABEL_W_CACHE[key] = result
-    return result
+    """The common DPI-aware label column used by native and Python fields."""
+    return max(ctx.inspector_label_width(), min_width)
 
 
 def field_label(ctx: InxGUIContext, label: str, width: float = 0.0):
-    """Label on the left; the next widget starts at the shared value column.
-
-    Native vector and batch controls interpret the column as a window-local X
-    coordinate. FieldLabel takes a relative span instead, so subtract the row's
-    cursor X here. Keeping this conversion in one place also aligns references,
-    colors and scalar widgets inside indented sections and child windows.
-    """
-    if width <= 0.0:
-        width = max(
-            ctx.calc_text_width(label) + Theme.INSPECTOR_LABEL_PAD,
-            Theme.INSPECTOR_MIN_LABEL_WIDTH,
-        )
-    ctx.field_label(label, max(1.0, width - ctx.get_cursor_pos_x()))
-    # SameLine also accounts for ImGui table/group offsets. Use the identical
-    # anchor as native batch/vector rows rather than approximating that origin.
-    ctx.same_line(width, 0.0)
+    """Use the native label column, including inside grouped fields."""
+    ctx.inspector_field_label(label, width)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -323,63 +294,8 @@ def _label_or_fullwidth(ctx, display_name, lw, has_visible_label):
         ctx.set_next_item_width(-1)
 
 
-def _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, is_float):
-    """Render a FLOAT or INT inspector field."""
-    _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
-    if is_float:
-        speed = getattr(metadata, "drag_speed", None) or DRAG_SPEED_DEFAULT
-        slider = getattr(metadata, "slider", False)
-        if metadata.range:
-            if slider:
-                return ctx.float_slider(wid, float(current_value), metadata.range[0], metadata.range[1])
-            return ctx.drag_float(wid, float(current_value), speed, metadata.range[0], metadata.range[1])
-        return ctx.drag_float(wid, float(current_value), speed, -1e6, 1e6)
-    else:
-        speed = getattr(metadata, "drag_speed", None) or DRAG_SPEED_INT
-        slider = getattr(metadata, "slider", False)
-        if metadata.range:
-            if slider:
-                return int(ctx.int_slider(wid, int(current_value), metadata.range[0], metadata.range[1]))
-            return int(ctx.drag_int(wid, int(current_value), speed, metadata.range[0], metadata.range[1]))
-        return int(ctx.drag_int(wid, int(current_value), speed, -1000000, 1000000))
 
 
-def _render_vec_sf(ctx, wid, current_value, lw, has_visible_label, vector_label, ft):
-    """Render a VEC2, VEC3, or VEC4 inspector field."""
-    from infernux.components.fields import FieldType
-    vec_lw = lw if has_visible_label else 1.0
-    # The native VectorN helpers use their visible label as the aggregate
-    # widget ID. Scope them with the serialized field ID so repeated/localized
-    # display names never alias another visible field in the same Inspector.
-    ctx.push_id_str(str(wid))
-    try:
-        if ft == FieldType.VEC2:
-            x, y = (float(current_value.x), float(current_value.y)) if current_value is not None else (0.0, 0.0)
-            nx, ny = ctx.vector2(vector_label, x, y, DRAG_SPEED_DEFAULT, vec_lw)
-            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y)]):
-                from infernux.lib import Vector2
-                return Vector2(nx, ny)
-        elif ft == FieldType.VEC3:
-            if current_value is not None:
-                x, y, z = float(current_value.x), float(current_value.y), float(current_value.z)
-            else:
-                x, y, z = 0.0, 0.0, 0.0
-            nx, ny, nz = ctx.vector3(vector_label, x, y, z, DRAG_SPEED_DEFAULT, vec_lw)
-            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z)]):
-                from infernux.lib import Vector3
-                return Vector3(nx, ny, nz)
-        elif ft == FieldType.VEC4:
-            if current_value is not None:
-                x, y, z, w = float(current_value.x), float(current_value.y), float(current_value.z), float(current_value.w)
-            else:
-                x, y, z, w = 0.0, 0.0, 0.0, 0.0
-            nx, ny, nz, nw = ctx.vector4(vector_label, x, y, z, w, DRAG_SPEED_DEFAULT, vec_lw)
-            if any(not float_close(a, b) for a, b in [(nx, x), (ny, y), (nz, z), (nw, w)]):
-                from infernux.lib import vec4f
-                return vec4f(nx, ny, nz, nw)
-    finally:
-        ctx.pop_id()
-    return current_value
 
 
 def _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label):
@@ -485,83 +401,18 @@ def _render_animation_curve_sf(
 
 
 def _render_gradient_sf(ctx, wid, display_name, metadata, current_value):
-    """Render a reusable collapsible Gradient editor."""
+    """Gradients and curves share a compact preview with popup editing."""
     from infernux.graph.ramp import Gradient
-    from .gradient_editor import render_gradient_property
-
-    gradient = (
-        current_value
-        if isinstance(current_value, Gradient)
-        else Gradient.from_dict(current_value)
-    )
-    ctx.push_id_str(str(wid))
-    try:
-        if not render_compact_section_header(ctx, display_name or "Gradient", level="secondary"):
-            return gradient
-        document = render_gradient_property(
-            ctx,
-            str(wid),
-            gradient.to_dict(),
-            semantic_prefix=f"serialized_field.{wid}",
-            hdr=bool(getattr(metadata, "hdr", False)),
-        )
-        return Gradient.from_dict(document)
-    finally:
-        ctx.pop_id()
+    from .gradient_editor import render_gradient_field
+    gradient = current_value if isinstance(current_value, Gradient) else Gradient.from_dict(current_value)
+    document = render_gradient_field(ctx, str(wid), gradient.to_dict(), hdr=metadata.hdr)
+    return Gradient.from_dict(document)
 
 
-def render_serialized_field(
-    ctx: InxGUIContext,
-    wid: str,
-    display_name: str,
-    metadata,
-    current_value: Any,
-    lw: float,
-) -> Any:
-    """Render an inspector field based on its ``FieldType`` metadata.
-
-    Handles **scalar / value types** only:
-    ``FLOAT``, ``INT``, ``BOOL``, ``STRING``, ``VEC2``, ``VEC3``, ``VEC4``,
-    ``ENUM``, ``COLOR``, ``ANIMATION_CURVE``, ``GRADIENT``.
-    """
-    from infernux.components.fields import FieldType
-
-    ft = metadata.field_type
-    has_visible_label = bool(display_name and str(display_name).strip())
-    vector_label = display_name if has_visible_label else " "
-
-    if ft == FieldType.FLOAT:
-        return _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, True)
-    if ft == FieldType.INT:
-        return _render_numeric_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label, False)
-    if ft == FieldType.BOOL:
-        ctx.push_id_str(str(wid))
-        try:
-            checkbox_label = display_name if has_visible_label else "##value"
-            return render_inspector_checkbox(ctx, checkbox_label, bool(current_value), lw)
-        finally:
-            ctx.pop_id()
-    if ft == FieldType.STRING:
-        _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
-        multiline = getattr(metadata, "multiline", False)
-        if multiline:
-            return ctx.input_text_multiline(wid, str(current_value) if current_value else "", buffer_size=4096, width=-1, height=80)
-        return ctx.text_input(wid, str(current_value) if current_value else "", 256)
-    if ft in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
-        return _render_vec_sf(ctx, wid, current_value, lw, has_visible_label, vector_label, ft)
-    if ft == FieldType.ENUM:
-        return _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label)
-    if ft == FieldType.COLOR:
-        return _render_color_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label)
-    if ft == FieldType.ANIMATION_CURVE:
-        return _render_animation_curve_sf(
-            ctx, wid, display_name, metadata, current_value, lw, has_visible_label
-        )
-    if ft == FieldType.GRADIENT:
-        return _render_gradient_sf(ctx, wid, display_name, metadata, current_value)
-
-    ctx.label(f"{display_name}: {current_value}")
-    return current_value
+def render_serialized_field(ctx, wid, display_name, metadata, current_value, label_width):
+    """Compatibility entry point; all field rows use the common renderer."""
+    from .field_draw import draw_field_value
+    return draw_field_value(ctx, wid, display_name, metadata, current_value, label_width)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -592,18 +443,29 @@ def has_field_changed(field_type, old_value, new_value) -> bool:
 #  Info-text / tooltip helper
 # ═══════════════════════════════════════════════════════════════════════════
 
-def render_info_text(ctx: InxGUIContext, text: str):
-    """Render a dimmed, non-editable info line below a field."""
-    ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-    ctx.label(f"  {text}")
+def render_section_kicker(ctx, label: str) -> None:
+    """Section labels use the same quiet typography and divider in every Inspector."""
+    from .igui import IGUI
+    from .dpi import editor_dpi_scale
+    ctx.spacing()
+    ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+    ctx.push_ui_font(Theme.EDITOR_SMALL_FONT_SIZE)
+    with IGUI.mono_font(ctx):
+        ctx.label(label)
+    ctx.pop_font()
     ctx.pop_style_color(1)
+    ctx.separator()
+    ctx.spacing()
+
+
+def render_info_text(ctx: InxGUIContext, text: str, label_width: float = 0.0):
+    """The common below-field information row."""
+    ctx.inspector_field_info(text, label_width)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Unity-style colour bar (shared by FieldType.COLOR and material ptype 7)
 # ═══════════════════════════════════════════════════════════════════════════
-
-_COLOR_BAR_H: float = 20.0
 
 # Per-widget HDR state: wid -> {"enabled": bool, "intensity": float}
 _hdr_state: dict = {}
@@ -628,82 +490,72 @@ def _render_color_popup(
     """Render the colour-edit popup contents. Return *(nr, ng, nb, na)*."""
     nr, ng, nb, na = r, g, b, a
     if ctx.begin_popup(popup_id):
-        first_frame = wid in first_frame_set
-        if first_frame:
-            first_frame_set.discard(wid)
+        try:
+            first_frame = wid in first_frame_set
+            if first_frame:
+                first_frame_set.discard(wid)
 
-        state = _hdr_state.setdefault(
-            wid,
-            {
-                "enabled": bool(allow_hdr and default_hdr_enabled),
-                "intensity": 1.0,
-            },
-        )
-        live = _color_popup_live.setdefault(wid, [r, g, b, a])
+            state = _hdr_state.setdefault(
+                wid,
+                {
+                    "enabled": bool(allow_hdr and default_hdr_enabled),
+                    "intensity": 1.0,
+                },
+            )
+            live = _color_popup_live.setdefault(wid, [r, g, b, a])
 
-        # Undo/redo is allowed while this non-modal popup remains open. Pull an
-        # externally restored value back into the popup once no picker control
-        # owns the pointer; otherwise the stale live cache would visually mask
-        # the undo and could reapply the discarded colour on the next drag.
-        if not ctx.is_any_item_active():
-            incoming = [r, g, b, a]
-            if allow_hdr and state["enabled"] and state["intensity"] not in (0.0, 0):
-                inverse_intensity = 1.0 / state["intensity"]
-                incoming[0] *= inverse_intensity
-                incoming[1] *= inverse_intensity
-                incoming[2] *= inverse_intensity
-            if any(abs(float(live[index]) - float(incoming[index])) > 1e-6 for index in range(4)):
-                live[:] = incoming
-        lr, lg, lb, la = live[0], live[1], live[2], live[3]
+            # Undo/redo is allowed while this non-modal popup remains open. Pull an
+            # externally restored value back into the popup once no picker control
+            # owns the pointer; otherwise the stale live cache would visually mask
+            # the undo and could reapply the discarded colour on the next drag.
+            if not ctx.is_any_item_active():
+                incoming = [r, g, b, a]
+                if allow_hdr and state["enabled"] and state["intensity"] not in (0.0, 0):
+                    inverse_intensity = 1.0 / state["intensity"]
+                    incoming[0] *= inverse_intensity
+                    incoming[1] *= inverse_intensity
+                    incoming[2] *= inverse_intensity
+                if any(abs(float(live[index]) - float(incoming[index])) > 1e-6 for index in range(4)):
+                    live[:] = incoming
+            lr, lg, lb, la = live[0], live[1], live[2], live[3]
 
-        # AlphaBar = 1 << 18
-        changed_pick, pick_r, pick_g, pick_b, pick_a = ctx.color_picker(
-            f"{wid}_cpicker", float(lr), float(lg), float(lb), float(la), 1 << 18,
-        )
-        interaction = False
-        if changed_pick and not first_frame:
-            lr, lg, lb, la = pick_r, pick_g, pick_b, pick_a
-            interaction = True
-
-        ctx.separator()
-        new_r = float(ctx.drag_float(f"R##{wid}_r", float(lr), 0.01, 0.0, 0.0))
-        new_g = float(ctx.drag_float(f"G##{wid}_g", float(lg), 0.01, 0.0, 0.0))
-        new_b = float(ctx.drag_float(f"B##{wid}_b", float(lb), 0.01, 0.0, 0.0))
-        new_a = float(ctx.drag_float(f"A##{wid}_a", float(la), 0.01, 0.0, 1.0))
-
-        if new_r != lr:
-            lr = new_r; interaction = True
-        if new_g != lg:
-            lg = new_g; interaction = True
-        if new_b != lb:
-            lb = new_b; interaction = True
-        if new_a != la:
-            la = new_a; interaction = True
-
-        if allow_hdr:
-            old_en = state["enabled"]
-            state["enabled"] = ctx.checkbox("HDR##_hdr_toggle", state["enabled"])
-            if state["enabled"]:
-                old_int = state["intensity"]
-                state["intensity"] = ctx.drag_float(
-                    "Intensity##_hdr_val", state["intensity"], 0.01, 0.0, 0.0,
-                )
-                if state["intensity"] != old_int:
-                    interaction = True
-            else:
-                state["intensity"] = 1.0
-            if state["enabled"] != old_en:
+            # AlphaBar = 1 << 18
+            changed_pick, pick_r, pick_g, pick_b, pick_a = ctx.color_picker(
+                f"{wid}_cpicker", float(lr), float(lg), float(lb), float(la), 1 << 18,
+            )
+            interaction = False
+            if changed_pick and not first_frame:
+                lr, lg, lb, la = pick_r, pick_g, pick_b, pick_a
                 interaction = True
 
-        _color_popup_live[wid] = [lr, lg, lb, la]
+            if allow_hdr:
+                ctx.separator()
+                old_en = state["enabled"]
+                field_label(ctx, "HDR", ctx.inspector_label_width())
+                state["enabled"] = ctx.checkbox_field("##_hdr_toggle", state["enabled"])
+                if state["enabled"]:
+                    old_int = state["intensity"]
+                    field_label(ctx, t("field.intensity"), ctx.inspector_label_width())
+                    state["intensity"] = ctx.drag_float(
+                        "##_hdr_val", state["intensity"], 0.01, 0.0, 0.0,
+                    )
+                    if state["intensity"] != old_int:
+                        interaction = True
+                else:
+                    state["intensity"] = 1.0
+                if state["enabled"] != old_en:
+                    interaction = True
 
-        if interaction:
-            nr, ng, nb, na = lr, lg, lb, la
-            if allow_hdr and state["enabled"]:
-                m = state["intensity"]
-                nr, ng, nb = lr * m, lg * m, lb * m
+            _color_popup_live[wid] = [lr, lg, lb, la]
 
-        ctx.end_popup()
+            if interaction:
+                nr, ng, nb, na = lr, lg, lb, la
+                if allow_hdr and state["enabled"]:
+                    m = state["intensity"]
+                    nr, ng, nb = lr * m, lg * m, lb * m
+
+        finally:
+            ctx.end_popup()
     else:
         _color_popup_live.pop(wid, None)
         first_frame_set.discard(wid)
@@ -721,11 +573,9 @@ def _render_color_bar(
     width: float | None = None,
     height: float | None = None,
 ) -> tuple:
-    """Render a Unity-style colour bar and return ``(nr, ng, nb, na)``.
+    """Render the shared native colour swatch and return ``(nr, ng, nb, na)``.
 
-    The bar is a horizontal rectangle:
-    * Top 3/4 — solid RGB colour (full opacity).
-    * Bottom 1/4 — grey-scale representing alpha.
+    Opaque RGB, checkerboard alpha and the hexadecimal readout share one row.
 
     Clicking the bar opens a colour-edit popup directly.
 
@@ -738,32 +588,8 @@ def _render_color_bar(
         if width is None
         else max(1.0, float(width))
     )
-    bar_height = _COLOR_BAR_H if height is None else max(1.0, float(height))
-    clicked = ctx.invisible_button(f"{wid}_bar", bar_width, bar_height)
-
-    min_x = ctx.get_item_rect_min_x()
-    min_y = ctx.get_item_rect_min_y()
-    max_x = ctx.get_item_rect_max_x()
-    max_y = ctx.get_item_rect_max_y()
-    hovered = bool(ctx.is_item_hovered())
-    active = hovered and bool(ctx.is_mouse_button_down(0))
-
-    split_y = min_y + (max_y - min_y) * 0.75
-
-    # Top 3/4: RGB at full opacity
-    ctx.draw_filled_rect(min_x, min_y, max_x, split_y, r, g, b, 1.0)
-    # Bottom 1/4: alpha as grey
-    ctx.draw_filled_rect(min_x, split_y, max_x, max_y, a, a, a, 1.0)
-    # Hover / press feedback over the swatch (Unity-like lighten).
-    if active:
-        ctx.draw_filled_rect(min_x, min_y, max_x, max_y, 1.0, 1.0, 1.0, 0.14)
-        border = Theme.INSPECTOR_INLINE_BTN_ACTIVE
-    elif hovered:
-        ctx.draw_filled_rect(min_x, min_y, max_x, max_y, 1.0, 1.0, 1.0, 0.08)
-        border = Theme.INSPECTOR_INLINE_BTN_HOVER
-    else:
-        border = Theme.COLOR_SWATCH_BORDER
-    ctx.draw_rect(min_x, min_y, max_x, max_y, *border, 1.0)
+    clicked = ctx.color_swatch(f"{wid}_bar", (r, g, b, a), bar_width,
+                               0.0 if height is None else float(height), allow_hdr)
 
     popup_id = f"{wid}_cpop"
     if clicked:
@@ -837,113 +663,6 @@ def render_material_property(*args, **kwargs):
 #  Component header (icon + collapsing header + enabled checkbox)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def render_component_header(
-    ctx: InxGUIContext,
-    type_name: str,
-    *,
-    header_id: str = "",
-    icon_id: int = 0,
-    show_enabled: bool = True,
-    is_enabled: bool = True,
-    suffix: str = "",
-    default_open: bool = True,
-    force_open: bool = False,
-) -> tuple:
-    """Render a standard component / section header.
-
-    Layout:  [▶ full-width bar:  icon → checkbox → display_name]
-
-    The collapsing header spans the entire row, and the icon, checkbox,
-    and label are overlaid via ``SameLine``.
-
-    Returns ``(header_open: bool, new_enabled: bool)``.
-    """
-    from .theme import Theme
-
-    dpi = editor_dpi_scale(ctx)
-    display_name = format_display_name(f"{type_name}{suffix}")
-    new_enabled = is_enabled
-    frame_pad = tuple(value * dpi for value in Theme.INSPECTOR_HEADER_PRIMARY_FRAME_PAD)
-    item_spacing = tuple(value * dpi for value in Theme.INSPECTOR_HEADER_ITEM_SPC)
-
-    # ── styling ──
-    ctx.push_style_color(ImGuiCol.Header, *Theme.INSPECTOR_HEADER_PRIMARY)
-    ctx.push_style_color(ImGuiCol.HeaderHovered, *Theme.INSPECTOR_HEADER_PRIMARY_HOVERED)
-    ctx.push_style_color(ImGuiCol.HeaderActive, *Theme.INSPECTOR_HEADER_PRIMARY_ACTIVE)
-    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *frame_pad)
-    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *item_spacing)
-    ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, Theme.INSPECTOR_HEADER_BORDER_SIZE * dpi)
-    ctx.set_window_font_scale(Theme.INSPECTOR_HEADER_PRIMARY_FONT_SCALE)
-
-    # ── full-width collapsing header (arrow + hidden label) ──
-    if force_open:
-        ctx.set_next_item_open(True, 0)          # 0 = ImGuiCond_Always
-    elif default_open:
-        ctx.set_next_item_open(True, Theme.COND_FIRST_USE_EVER)
-    ctx.set_next_item_allow_overlap()
-    header_key = header_id or type_name
-    _clip_wx = ctx.get_window_pos_x()
-    _clip_cx = ctx.get_cursor_pos_x()
-    _clip_avail = ctx.get_content_region_avail_width()
-    _clip_max_x = _clip_wx + _clip_cx + _clip_avail - Theme.INSPECTOR_HEADER_RIGHT_MARGIN * dpi
-    ctx.push_draw_list_clip_rect(0.0, 0.0, _clip_max_x, 1e7, True)
-    header_open = ctx.collapsing_header(f"##comp_{header_key}")
-    ctx.pop_draw_list_clip_rect()
-    content_cursor_y = ctx.get_cursor_pos_y()
-    header_min_y = ctx.get_item_rect_min_y()
-    header_height = max(0.0, ctx.get_item_rect_max_y() - header_min_y)
-
-    # ── overlay icon / checkbox / label on the same row ──
-    indent = Theme.INSPECTOR_HEADER_CONTENT_INDENT * dpi
-    overlay_x = ctx.get_window_pos_x() + indent
-    ctx.set_cursor_screen_pos(overlay_x, header_min_y)
-
-    if icon_id:
-        icon_size = float(Theme.COMPONENT_ICON_SIZE) * dpi
-        ctx.dummy(icon_size, max(header_height, icon_size))
-        slot_min_x = ctx.get_item_rect_min_x()
-        slot_min_y = ctx.get_item_rect_min_y()
-        slot_max_x = ctx.get_item_rect_max_x()
-        slot_max_y = ctx.get_item_rect_max_y()
-        draw_size = min(icon_size, slot_max_x - slot_min_x, slot_max_y - slot_min_y)
-        draw_x = slot_min_x + max(0.0, (slot_max_x - slot_min_x - draw_size) * 0.5)
-        draw_y = slot_min_y + max(0.0, (slot_max_y - slot_min_y - draw_size) * 0.5)
-        ctx.draw_image_rect(icon_id, draw_x, draw_y, draw_x + draw_size, draw_y + draw_size)
-        ctx.same_line(0, item_spacing[0])
-
-    if show_enabled:
-        # Position the fixed-size square vertically centered in the header row.
-        box_size = float(Theme.INSPECTOR_CHECKBOX_BOX_PX) * dpi
-        ctx.set_cursor_screen_pos(
-            ctx.get_item_rect_max_x() + item_spacing[0]
-            if icon_id else overlay_x,
-            header_min_y + (header_height - box_size) * 0.5,
-        )
-        new_enabled = bool(ctx.checkbox("##hdr_en", is_enabled))
-        ctx.same_line(0, item_spacing[0])
-        # Center the component name on the checkbox's center line.
-        cb_top = ctx.get_item_rect_min_y()
-        cb_bot = ctx.get_item_rect_max_y()
-        name_h = ctx.calc_text_size(display_name)[1]
-        ctx.set_cursor_screen_pos(
-            ctx.get_item_rect_max_x() + item_spacing[0],
-            (cb_top + cb_bot) * 0.5 - name_h * 0.5,
-        )
-        ctx.label(display_name)
-    else:
-        ctx.align_text_to_frame_padding()
-        ctx.label(display_name)
-
-    # Overlay controls must not become the layout anchor for the component
-    # body.  Continue exactly where CollapsingHeader left the cursor.
-    ctx.set_cursor_pos_y(content_cursor_y)
-
-    # ── cleanup ──
-    ctx.set_window_font_scale(1.0)
-    ctx.pop_style_color(3)
-    ctx.pop_style_var(3)
-
-    return header_open, new_enabled
 
 
 def render_inspector_checkbox(
@@ -1006,8 +725,17 @@ def render_compact_section_header(
         )
 
     dpi = editor_dpi_scale(ctx)
-    effective_text_color = text_color if text_color is not None else Theme.TEXT
-    return bool(native_header(
+    kicker = level in ("primary", "secondary")
+    if kicker:
+        frame_pad = (0.0, 5.0)
+        font_scale = 0.85
+        base_color = (*Theme.ROLE_BG_BASE[:3], 0.0)
+        hover_color = Theme.BTN_GHOST_HOVERED
+        active_color = Theme.BTN_GHOST_ACTIVE
+    effective_text_color = text_color if text_color is not None else (Theme.TEXT_DIM if kicker else Theme.TEXT)
+    from .igui import IGUI
+    with IGUI.mono_font(ctx) if kicker else nullcontext():
+        opened = bool(native_header(
         f"{label}###{header_id}" if header_id else label,
         int(icon_id or 0),
         bool(default_open),
@@ -1025,9 +753,15 @@ def render_compact_section_header(
         base_color,
         hover_color,
         active_color,
-        text_color is not None,
+        True,
         effective_text_color,
-    ))
+        ))
+    if kicker:
+        x1 = ctx.get_item_rect_min_x()
+        x2 = ctx.get_item_rect_max_x()
+        y = ctx.get_item_rect_max_y()
+        ctx.draw_line(x1, y, x2, y, *Theme.ROLE_BORDER, dpi)
+    return opened
 
 
 def render_compact_section_title(
@@ -1181,6 +915,14 @@ def build_scalar_desc(
         return None
 
     desc = {"t": prop_type, "w": wid, "n": display_name}
+    if metadata.readonly:
+        from .field_draw import format_field_value
+        desc["ro"] = True
+        desc["rt"] = format_field_value(metadata, current_value)
+    if metadata.info_text:
+        from infernux.engine.i18n import t
+        desc["info"] = t(metadata.info_text)
+
     if semantic_id:
         desc["sid"] = semantic_id
     if mixed:

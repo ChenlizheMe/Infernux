@@ -3716,6 +3716,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     def _audit_direct_player_layout(self, final_dir: str) -> None:
         """Validate the runnable desktop layout after transport archives are gone."""
 
+        from infernux.engine.player_package_audit import _is_builtin_runtime_shader_path
+
         root = Path(final_dir)
         data_root = root / f"{self.project_name}_Data"
         runtime_root = data_root / "Runtime"
@@ -3821,6 +3823,10 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             path.relative_to(data_root).as_posix()
             for path in data_root.rglob("*")
             if path.is_file() and path.suffix.casefold() in {".py", ".pyi", ".meta"}
+            and not (
+                path.is_relative_to(runtime_root)
+                and _is_builtin_runtime_shader_path(path.relative_to(runtime_root).as_posix())
+            )
         ]
         if source_leaks:
             raise RuntimeError(

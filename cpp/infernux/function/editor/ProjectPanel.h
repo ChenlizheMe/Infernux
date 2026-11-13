@@ -8,6 +8,7 @@
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -234,8 +235,9 @@ class ProjectPanel : public EditorPanel
     };
     struct LabelEntry
     {
-        std::string displayText;
-        float offsetX = 0.0f;
+        std::array<std::string, 2> lines;
+        std::array<float, 2> offsetX{};
+        int lineCount = 1;
     };
     std::unordered_map<LabelCacheKey, LabelEntry, LabelCacheKeyHash> m_labelCache;
     float m_gridTextLineHeight = 0.0f;
@@ -302,7 +304,6 @@ class ProjectPanel : public EditorPanel
 
     void EnsureTypeIconsLoaded();
     uint64_t GetTypeIconId(const FileItem &item) const;
-    uint64_t GetModel3dIconId() const;
     bool IsUiPrefabFile(const std::string &filePath, uint64_t cachedMtimeNs);
 
     // ── Drag-drop maps ───────────────────────────────────────────────
@@ -323,9 +324,6 @@ class ProjectPanel : public EditorPanel
 
     // ── Filtering ────────────────────────────────────────────────────
     static bool ShouldShow(const std::string &name);
-
-    // File type tag for text fallback
-    static const char *GetFileTypeTag(const std::string &filename);
 
     // Icon map: ext/key → icon filename
     static const std::unordered_map<std::string, std::string> &GetIconMap();
@@ -366,7 +364,7 @@ class ProjectPanel : public EditorPanel
 
     // Breadcrumb
     std::string m_breadcrumbPath;
-    std::string m_breadcrumbText;
+    std::vector<std::pair<std::string, std::string>> m_breadcrumbSegments;
 
     // Project-wide search (Unity-style box on the Path bar)
     std::string m_searchBuf;
@@ -527,14 +525,14 @@ class ProjectPanel : public EditorPanel
     void AssignCurrentPath(const std::string &path);
     bool RequestDirectoryNavigation(const std::string &path, const std::string &source = "pointer") const;
     bool RequestAssetLocation(const std::string &path, const std::string &source = "pointer") const;
-    /// True when [..] may move to the parent folder (blocked at project-root subfolders).
+    /// True when the breadcrumb's parent control may navigate upward.
     bool CanNavigateUpFromCurrent() const;
     static uint64_t GetMtimeNs(const std::string &path);
 
     // ── Grid layout ──────────────────────────────────────────────────
     static constexpr int ICON_SIZE = 64;
     static constexpr int GRID_PADDING = 10;
-    static constexpr int CELL_WIDTH = ICON_SIZE + GRID_PADDING;
+    float m_gridIconScale = 1.0f;
     static constexpr double DIR_CACHE_TTL = 0.5; // seconds before re-checking mtime
 
     double m_frameTimeNow = 0.0; // steady_clock time cached once per frame

@@ -26,6 +26,9 @@ class LogEntry:
     internal: bool
     source_file: str
     source_line: int
+    diagnostic_owner: str
+    diagnostic_key: str
+    occurrences: int
 
     def __init__(
         self,
@@ -37,6 +40,9 @@ class LogEntry:
         internal: bool = ...,
         source_file: str = ...,
         source_line: int = ...,
+        diagnostic_owner: str = ...,
+        diagnostic_key: str = ...,
+        occurrences: int = ...,
     ) -> None: ...
     def get_formatted_time(self) -> str:
         """Return the timestamp as a formatted string."""
@@ -64,6 +70,10 @@ class DebugConsole:
     def log(self, entry: LogEntry) -> None:
         """Add a log entry to the console."""
         ...
+    def set_diagnostic(self, owner: str, key: str, entry: LogEntry) -> None: ...
+    def resolve_diagnostic(self, owner: str, key: str) -> bool: ...
+    def resolve_source_diagnostics(self, source_file: str, owner: str = ...) -> int: ...
+    def get_diagnostics(self, owner: str = ...) -> tuple[LogEntry, ...]: ...
     def get_entries(self) -> List[LogEntry]:
         """Get all log entries."""
         ...
@@ -96,6 +106,20 @@ class DebugConsole:
 class Debug:
     """Utility class for logging messages to the console."""
 
+    @staticmethod
+    def set_diagnostic(owner: str, key: str, message: str, context: Any = ..., *,
+                       source_file: str = ..., source_line: int = ..., details: str = ...,
+                       log_type: LogType = ...) -> None: ...
+    @staticmethod
+    def resolve_diagnostic(owner: str, key: str) -> bool: ...
+    @staticmethod
+    def report_script_error(exception: BaseException, site: str = ..., context: Any = ...) -> None: ...
+    @staticmethod
+    def resolve_script_error(site: str, context: Any = ...) -> bool: ...
+    @staticmethod
+    def report_internal_error(exception: BaseException, site: str = ..., context: Any = ...) -> None: ...
+    @staticmethod
+    def report_recovered(exception: BaseException, site: str = ..., context: Any = ...) -> None: ...
     @staticmethod
     def clear_source_entries(source_file: str, message_prefix: str = ...) -> int: ...
     @staticmethod

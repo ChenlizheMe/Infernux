@@ -1,15 +1,12 @@
-"""Centralized editor icon texture loader.
+"""Pinned editor icon textures — one loader, one cache, no text fallback.
 
-Uploads PNGs from ``resources/icons/`` as *pinned* ImGui textures so they
-are never LRU-evicted by the texture-preview cache.  Binding a cached
-descriptor from the unpinned preview path previously caused Vulkan
-DEVICE_LOST cascades (fence/semaphore/command-buffer validation spam).
+File-type and component PNGs live under ``resources/icons/`` (and
+``icons/components/``). Monochrome UI glyphs live under ``icons/glyphs/``;
+legacy root filenames (plus/minus/remove/picker/warning/error) are kept as
+copies of the same glyph art for existing call sites.
 
-Usage::
-
-    from .editor_icons import EditorIcons
-    tid = EditorIcons.get(native_engine, "plus")
-    tid = EditorIcons.get_cached("plus")  # resolves native via EditorServices
+Unknown icon names raise. A zero texture id only means the GPU upload is
+still in flight — never a cue to draw ``+`` / ``-`` text.
 """
 
 from __future__ import annotations
@@ -17,19 +14,63 @@ from __future__ import annotations
 import os
 
 import infernux.resources as _resources
-from infernux.debug import Debug
 
 _cache: dict[str, int] = {}
-_submitted: set[str] = set()
 _native = None
 
-_ICONS = (
+# Glyphs under icons/glyphs/{name}.png
+_GLYPHS = (
     "plus",
     "minus",
-    "remove",
+    "close",
+    "more",
     "picker",
-    "warning",
+    "grip",
+    "key",
+    "link",
+    "reset",
+    "loop",
+    "drag",
+    "chev_d",
+    "chev_r",
+    "up",
+    "down",
+    "arrow_r",
+    "back",
+    "play",
+    "pause",
+    "stop",
+    "step_b",
+    "step_f",
+    "record",
+    "key_add",
+    "key_del",
+    "folder_up",
+    "search",
+    "dirty",
+    "check",
+    "lock",
+    "eye",
+    "warn",
     "error",
+    "info",
+    "cube",
+    "canvas",
+    "frame",
+    "text",
+    "image",
+    "button",
+)
+
+# Legacy EditorIcons / Theme.ICON_IMG_* names → glyph file stem
+_ALIASES = {
+    "remove": "close",
+    "warning": "warn",
+}
+
+# Non-glyph pinned icons that still live at icons root / tools
+_ROOT_ICONS = (
+    "package",
     "ui_canvas",
     "ui_text",
     "ui_image",
@@ -41,9 +82,13 @@ _ICONS = (
     "tool_rect",
 )
 
+_ICONS = tuple(dict.fromkeys([*_GLYPHS, *_ALIASES.keys(), *_ROOT_ICONS]))
 
-def _tex_name(name: str) -> str:
-    return f"__edicon__{name}"
+
+def icon_key(name: str) -> str:
+    """Canonical resource key shared by Python and native editor panels."""
+    stem = _glyph_stem(name)
+    return f"glyphs/{stem}" if stem in _GLYPHS else stem
 
 
 def _resolve_native(native_engine=None):
@@ -62,78 +107,48 @@ def _resolve_native(native_engine=None):
     return _native
 
 
-def _live_id(native, name: str) -> int:
-    try:
-        return int(native.get_imgui_texture_id(_tex_name(name)) or 0)
-    except RuntimeError as exc:
-        Debug.log_suppressed("EditorIcons.live_id", exc)
-        return 0
+def _glyph_stem(name: str) -> str:
+    return _ALIASES.get(name, name)
 
 
-def _submit_icon(native, name: str) -> int:
-    """Submit a pinned ImGui texture; return the live id (0 while uploading)."""
-    tex_name = _tex_name(name)
-    try:
-        if native.has_imgui_texture(tex_name):
-            tid = _live_id(native, name)
-            _cache[name] = tid
-            _submitted.add(name)
-            return tid
-    except RuntimeError as exc:
-        Debug.log_suppressed("EditorIcons.texture_lookup", exc)
-        return 0
+def resolve_icon_path(name: str) -> str:
+    """Return absolute PNG path for a known icon. Raises if the name or file is unknown."""
+    if name not in _ICONS:
+        raise KeyError(f"Unknown editor icon: {name!r}")
+
+    stem = _glyph_stem(name)
+    if stem in _GLYPHS:
+        path = os.path.join(_resources.file_type_icons_dir, "glyphs", f"{stem}.png")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing glyph PNG for icon {name!r}: {path}")
+        return path
 
     path = os.path.join(_resources.file_type_icons_dir, f"{name}.png")
     if not os.path.isfile(path):
-        return 0
-
-    from infernux.lib import TextureLoader
-
-    try:
-        tex = TextureLoader.load_from_file(path, name)
-        if tex is None or not tex.is_valid():
-            return 0
-        pixels = tex.get_pixels()
-        native.submit_imgui_texture(tex_name, pixels, int(tex.width), int(tex.height), False, True)
-        tid = _live_id(native, name)
-        _cache[name] = tid
-        _submitted.add(name)
-        return tid
-    except (OSError, RuntimeError) as exc:
-        Debug.log_suppressed("EditorIcons.texture_upload", exc)
-        return 0
+        raise FileNotFoundError(f"Missing icon PNG: {path}")
+    return path
 
 
 def _ensure_loaded(native_engine) -> None:
     native = _resolve_native(native_engine)
-    if native is None:
-        return
     for name in _ICONS:
-        if name in _submitted:
-            tid = _live_id(native, name)
-            if tid != 0:
-                _cache[name] = tid
-            continue
-        _submit_icon(native, name)
+        _cache[name] = int(native.get_editor_icon_id(icon_key(name)))
 
 
 class EditorIcons:
     """Thin façade around the module-level pinned icon cache."""
 
+    GLYPHS = _GLYPHS
+
     @staticmethod
     def get(native_engine, name: str) -> int:
-        """Return ImGui texture id for *name*, or 0 if unavailable / still uploading."""
-        _ensure_loaded(native_engine)
+        """Return ImGui texture id for *name*, or 0 while the GPU upload is in flight."""
         native = _resolve_native(native_engine)
-        if native is None:
-            return _cache.get(name, 0)
-        tid = _live_id(native, name)
-        if tid != 0:
-            _cache[name] = tid
-            return tid
-        if name not in _submitted:
-            return _submit_icon(native, name)
-        return _cache.get(name, 0)
+        texture_id = _cache.get(name, 0)
+        if not texture_id:
+            texture_id = int(native.get_editor_icon_id(icon_key(name)))
+            _cache[name] = texture_id
+        return texture_id
 
     @staticmethod
     def get_cached(name: str) -> int:
@@ -146,6 +161,7 @@ class EditorIcons:
     @staticmethod
     def preload(native_engine) -> None:
         """Eagerly submit all known editor icons (call once after renderer init)."""
+        EditorIcons.reset()
         _ensure_loaded(native_engine)
 
     @staticmethod
@@ -153,5 +169,4 @@ class EditorIcons:
         """Clear the cache (e.g. after engine re-init)."""
         global _native
         _cache.clear()
-        _submitted.clear()
         _native = None

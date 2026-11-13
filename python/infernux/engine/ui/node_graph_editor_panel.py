@@ -1,6 +1,6 @@
 """Shared editor shell for every node-authored asset.
 
-The shell owns the canvas, floating workspace panels, resize behavior, and
+The shell owns the canvas, docked workspace panels, resize behavior, and
 standard view callbacks. Domain editors provide data, detail renderers, and
 compile/save adapters without rebuilding editor interaction infrastructure.
 """
@@ -62,13 +62,10 @@ from infernux.lib import InxGUIContext
 
 from .editor_panel import EditorPanel
 from .floating_workspace_panel import (
-    FloatingOverlayState,
     begin_workspace_entry,
     finish_workspace_entry,
     paint_workspace_entry,
-    render_floating_overlay,
     render_workspace_add_header,
-    update_overlay_resize_drag,
 )
 from .node_graph_view import NodeGraphView
 from .graph_details import GraphDetailContributor, GraphDetailHost
@@ -297,8 +294,6 @@ class NodeGraphEditorPanel(EditorPanel):
         super().__init__(title=title, window_id=window_id)
         self._view = NodeGraphView()
         self._view.semantic_namespace = semantic_namespace
-        self._left_overlay = FloatingOverlayState()
-        self._right_overlay = FloatingOverlayState()
         self._workspace_rename_cancel_token = ""
         self._node_graph_drag_cancel_token = ""
         self._workspace_entries: dict[GraphElementRef, GraphWorkspaceEntry] = {}
@@ -1829,62 +1824,42 @@ class NodeGraphEditorPanel(EditorPanel):
         return min(380.0, max(320.0, available_width * 0.30))
 
     def _render_node_graph_workspace(self, ctx: InxGUIContext) -> None:
-        available_w = ctx.get_content_region_avail_width()
-        available_h = ctx.get_content_region_avail_height()
-        left_w = self._node_graph_left_width(available_w)
-        detail_w = self._node_graph_detail_width(available_w)
-        margin = 8.0
-        max_overlay_h = max(1.0, available_h - margin * 2.0)
-        default_h = min(max(160.0, available_h * 0.52), max_overlay_h)
-        if self._left_overlay.height <= 0.0:
-            self._left_overlay.height = default_h
-        if self._right_overlay.height <= 0.0:
-            self._right_overlay.height = default_h
-        self._left_overlay.height = update_overlay_resize_drag(
-            ctx,
-            self._left_overlay,
-            avail_h=available_h,
-            margin=margin,
-        )
-        self._right_overlay.height = update_overlay_resize_drag(
-            ctx,
-            self._right_overlay,
-            avail_h=available_h,
-            margin=margin,
-        )
-
-        graph_visible = ctx.begin_child(
-            self._node_graph_canvas_id(), available_w, available_h, False
-        )
+        """Resizable sidebars stay outside the interactive canvas."""
+        from .theme import ImGuiStyleVar, Theme
+        dpi = ctx.get_dpi_scale()
+        height = max(1.0, ctx.get_content_region_avail_height())
+        # Resizable | BordersInnerV | SizingStretchProp.
+        if not ctx.begin_table(self._node_graph_canvas_id(), 3, 1 | (1 << 9) | (3 << 13), 0.0):
+            return
         try:
-            if not graph_visible:
-                return
-            defer_drop = self._node_graph_defer_canvas_drop_target()
-            self._view.render(ctx, defer_canvas_drop_target=defer_drop)
-            render_floating_overlay(
-                ctx,
-                self._left_overlay,
-                child_id=self._node_graph_left_child_id(),
-                x=margin,
-                y=margin,
-                width=left_w,
-                max_height=max_overlay_h,
-                render_fn=lambda: self._render_node_graph_left_panel(ctx),
+            for index, (name, weight) in enumerate((("parameters", 0.21), ("canvas", 0.56), ("details", 0.23))):
+                ctx.table_setup_column(f"##{name}", 1 << 3, weight, index)
+            ctx.table_next_row()
+            renderers = (
+                (self._node_graph_left_child_id(), self._render_node_graph_left_panel),
+                (self._node_graph_canvas_id() + "_content", self._render_docked_graph_canvas),
+                (self._node_graph_detail_child_id(), self._render_node_graph_detail_panel),
             )
-            render_floating_overlay(
-                ctx,
-                self._right_overlay,
-                child_id=self._node_graph_detail_child_id(),
-                x=max(margin, available_w - detail_w - margin),
-                y=margin,
-                width=detail_w,
-                max_height=max_overlay_h,
-                render_fn=lambda: self._render_node_graph_detail_panel(ctx),
-            )
-            if defer_drop:
-                self._view.render_canvas_drop_target(ctx)
+            for index, (child_id, render) in enumerate(renderers):
+                ctx.table_set_column_index(index)
+                padded = index != 1
+                px, py = Theme.WORKSPACE_PADDING if padded else (0.0, 0.0)
+                ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, px * dpi, py * dpi)
+                visible = ctx.begin_child(child_id, 0.0, height, False, padding=padded)
+                ctx.pop_style_var(1)
+                try:
+                    if visible:
+                        render(ctx)
+                finally:
+                    ctx.end_child()
         finally:
-            ctx.end_child()
+            ctx.end_table()
+
+    def _render_docked_graph_canvas(self, ctx: InxGUIContext) -> None:
+        defer_drop = self._node_graph_defer_canvas_drop_target()
+        self._view.render(ctx, defer_canvas_drop_target=defer_drop)
+        if defer_drop:
+            self._view.render_canvas_drop_target(ctx)
 
     def on_render_content(self, ctx: InxGUIContext) -> None:
         self._before_node_graph_render(ctx)

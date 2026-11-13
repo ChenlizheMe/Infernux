@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from infernux._source_kinds import is_host_python_source
 from infernux.debug import Debug
 from infernux.engine.path_utils import process_executable_path
 from infernux.engine.build_cancellation import BuildCancelled
@@ -63,7 +64,7 @@ _RUNTIME_MODULE_ARCHIVE_FILENAME = "Parallel.inxmod"
 _RUNTIME_MODULE_MANIFEST_FILENAME = "Player.inxmanifest"
 _PACKAGED_RUNTIME_MODULE_DIRNAME = "_runtime_modules"
 _RUNTIME_PACK_FORBIDDEN_SUFFIXES = frozenset(
-    {".bak", ".exp", ".lib", ".meta", ".pdb", ".py", ".pyi", ".pyo"}
+    {".bak", ".exp", ".lib", ".meta", ".pdb", ".pyi", ".pyo"}
 )
 _RUNTIME_MODULE_FORBIDDEN_SUFFIXES = _RUNTIME_PACK_FORBIDDEN_SUFFIXES | frozenset(
     {".c", ".cc", ".cpp", ".h", ".hpp", ".pyx"}
@@ -1744,7 +1745,10 @@ print(json.dumps({{
                     _RUNTIME_ARCHIVE_FILENAME,
                 }:
                     continue
-                if source_path.suffix.lower() in _RUNTIME_PACK_FORBIDDEN_SUFFIXES:
+                if (
+                    is_host_python_source(source_path)
+                    or source_path.suffix.lower() in _RUNTIME_PACK_FORBIDDEN_SUFFIXES
+                ):
                     continue
                 relative = source_path.relative_to(dist_dir).as_posix()
                 if self._is_redundant_engine_native_alias(source_path, Path(dist_dir)):
@@ -1843,7 +1847,10 @@ print(json.dumps({{
             for source_path in sorted(payload_root.rglob("*")):
                 if not source_path.is_file():
                     continue
-                if source_path.suffix.lower() in _RUNTIME_MODULE_FORBIDDEN_SUFFIXES:
+                if (
+                    is_host_python_source(source_path)
+                    or source_path.suffix.lower() in _RUNTIME_MODULE_FORBIDDEN_SUFFIXES
+                ):
                     continue
                 source_files.append(
                     (source_path.relative_to(payload_root).as_posix(), str(source_path))
@@ -3124,7 +3131,7 @@ print(json.dumps({{
             raise RuntimeError("Player Bootstrap standard library contains source files")
 
     def _inject_engine_python_runtime(self, dist_dir: str) -> None:
-        """Stage Infernux as source-less runtime bytecode.
+        """Stage host Python as bytecode and static GPU programs as source assets.
 
         ``_InfernuxPlayer`` must remain a small bootstrap extension. Following
         the complete engine package into that extension has proven unsafe in
@@ -3181,7 +3188,7 @@ print(json.dumps({{
 
             destination = destination_root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            if source_path.suffix.casefold() == ".py":
+            if is_host_python_source(source_path):
                 destination = destination.with_suffix(".pyc")
                 from infernux._compiler.source_metadata import embed_compute_sources
 
@@ -3227,8 +3234,8 @@ print(json.dumps({{
 
         if not (destination_root / "__init__.pyc").is_file():
             raise RuntimeError("Player Runtime is missing infernux/__init__.pyc")
-        if copied_bytecode == 0 or any(destination_root.rglob("*.py")):
-            raise RuntimeError("Player Runtime engine package is not source-less")
+        if copied_bytecode == 0 or any(is_host_python_source(path) for path in destination_root.rglob("*.py")):
+            raise RuntimeError("Player Runtime engine package contains host Python source")
 
     @classmethod
     def _is_player_runtime_excluded_source(cls, relative_posix: str) -> bool:
@@ -3451,13 +3458,15 @@ print(json.dumps({{
 
     @staticmethod
     def _compile_raw_python_sources(package_root: str | os.PathLike[str]) -> None:
-        """Replace raw package sources with importable adjacent bytecode."""
+        """Compile host modules while retaining static GPU program inputs."""
 
         root = Path(package_root)
         if not root.is_dir():
             return
 
         for source_path in sorted(root.rglob("*.py")):
+            if not is_host_python_source(source_path):
+                continue
             bytecode_path = Path(str(source_path) + "c")
             try:
                 py_compile.compile(

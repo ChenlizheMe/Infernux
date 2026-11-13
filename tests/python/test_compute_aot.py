@@ -52,6 +52,19 @@ def _write_kernel(project: Path) -> Path:
     return source
 
 
+def test_stage_compute_artifacts_keeps_static_authors_out_of_host_snapshots(tmp_path):
+    from infernux._source_kinds import GPU_SOURCE_SUFFIXES
+
+    paths = []
+    for suffix in (*GPU_SOURCE_SUFFIXES, ".particle.py"):
+        path = tmp_path / ("program" + suffix)
+        # Host analysis must not parse these sources; their own compiler owns them.
+        path.write_text("not host Python !\n", encoding="utf-8")
+        paths.append(path)
+    result = stage_compute_artifacts(tmp_path, tuple(paths), tmp_path / "output", source_snapshots={})
+    assert result.artifact_count == result.kernel_count == 0
+
+
 def test_stage_compute_artifacts_seals_selected_and_engine_kernels(tmp_path, monkeypatch):
     from infernux._compiler.source_metadata import embed_compute_sources
     from infernux.engine.project_context import using_project_root

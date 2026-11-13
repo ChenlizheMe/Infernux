@@ -28,6 +28,7 @@ class ToolbarPanel : public EditorPanel
   public:
     ToolbarPanel();
     ~ToolbarPanel() override = default;
+    void RenderViewportControls(InxGUIContext *ctx);
 
     // ── Callbacks set from Python ────────────────────────────────────
 
@@ -90,7 +91,6 @@ class ToolbarPanel : public EditorPanel
     CameraSettings m_cameraSettings;
 
     void RenderPlayControls(InxGUIContext *ctx, float winW);
-    void RenderRightDropdowns(InxGUIContext *ctx, float winW);
     void PopupGizmos(InxGUIContext *ctx);
     void PopupCamera(InxGUIContext *ctx);
 

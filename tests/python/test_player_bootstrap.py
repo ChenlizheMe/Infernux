@@ -174,13 +174,13 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
                 for node in tree.body
                 if isinstance(node, ast.FunctionDef) and node.name == "_prepare_player_runtime"
             )
-            from infernux.resources import engine_font_path
+            from infernux.resources import engine_font_cjk_path, engine_font_path
 
             fonts = []
             monkeypatch.setitem(
                 sys.modules,
                 "_InfernuxWebHost",
-                types.SimpleNamespace(screen_ui_set_default_font=fonts.append),
+                types.SimpleNamespace(screen_ui_set_default_font=lambda *paths: fonts.append(paths)),
             )
             namespace = {
                 "_player_session": None,
@@ -202,7 +202,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
         with pytest.raises(PreloadObserved):
             run()
         if host == "web":
-            assert fonts == [engine_font_path]
+            assert fonts == [(engine_font_path, engine_font_cjk_path)]
     finally:
         from infernux.core.assets import AssetManager
 

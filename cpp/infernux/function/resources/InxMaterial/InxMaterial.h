@@ -815,7 +815,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     static ShaderAssetReference ResolveShaderReference(ShaderAssetReference reference, const char *stage);
     void TrackRuntimeShaderReferences();
     void PublishDependencies();
-    bool ApplyDocument(const nlohmann::json &document);
+    void ApplyDocument(const nlohmann::json &document);
     void PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers = false);
     void RebaseRendererInstance(const InxMaterial &previous, const InxMaterial &next);
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);

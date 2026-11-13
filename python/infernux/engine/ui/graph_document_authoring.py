@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from .theme import Theme
 from collections.abc import Callable
 
 from infernux.core.node_graph import (
@@ -38,22 +39,6 @@ from infernux.graph.expression_ir import ExpressionCompiler
 from infernux.graph.types import CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, ValueType
 
 
-_PIN_COLORS = {
-    "bool": (0.78, 0.25, 0.31, 1.0),
-    "f32": (0.34, 0.72, 0.42, 1.0),
-    "i32": (0.30, 0.68, 0.52, 1.0),
-    "u32": (0.30, 0.68, 0.52, 1.0),
-    "vec2": (0.30, 0.70, 0.86, 1.0),
-    "vec3": (0.90, 0.58, 0.24, 1.0),
-    "vec4": (0.72, 0.45, 0.88, 1.0),
-    "color": (0.88, 0.78, 0.28, 1.0),
-    "curve": (0.42, 0.78, 0.62, 1.0),
-    "gradient": (0.86, 0.48, 0.68, 1.0),
-    "texture2d": (0.62, 0.48, 0.86, 1.0),
-    "asset_ref": (0.48, 0.62, 0.90, 1.0),
-    "exec": (0.76, 0.76, 0.78, 1.0),
-    "event": (0.84, 0.44, 0.40, 1.0),
-}
 
 
 def _value_port_accepts(source_type: TypeRef, target_type: TypeRef, target_port) -> bool:
@@ -233,7 +218,7 @@ def _canvas_definition(
                     if port.direction is PortDirection.INPUT
                     else CanvasPinKind.OUTPUT
                 ),
-                color=_PIN_COLORS.get(data_type, (0.72, 0.72, 0.74, 1.0)),
+                color=Theme.pin_color(data_type),
                 max_connections=(
                     port.max_connections
                     if port.max_connections is not None
@@ -1225,7 +1210,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
             return with_lifecycle_state(cached)
 
         if node.type_id.startswith("particle.output."):
-            shader_id = str(node.data.get("shader", "Particle Unlit"))
+            shader_id = str(node.data.get("shader", "infernux/particle/unlit"))
             cache_key = f"particle-output:{node.uid}:{shader_id}"
             cached = self._dynamic_type_cache.get(cache_key)
             if cached is None:

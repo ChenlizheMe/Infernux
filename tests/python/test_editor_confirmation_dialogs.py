@@ -70,6 +70,14 @@ class _ProjectDeleteSemanticContext:
         self.semantics: list[str] = []
         self.buttons: dict[str, object] = {}
 
+    @staticmethod
+    def push_mono_font() -> None:
+        pass
+
+    @staticmethod
+    def pop_font() -> None:
+        pass
+
     def open_popup(self, popup_id: str) -> None:
         self.opened.append(popup_id)
 
@@ -83,6 +91,10 @@ class _ProjectDeleteSemanticContext:
 
     @staticmethod
     def set_next_window_pos(_x, _y, _condition, _pivot_x, _pivot_y) -> None:
+        pass
+
+    @staticmethod
+    def set_next_window_size(_width, _height, _condition) -> None:
         pass
 
     @staticmethod
@@ -108,7 +120,59 @@ class _ProjectDeleteSemanticContext:
         pass
 
     @staticmethod
-    def same_line() -> None:
+    def same_line(*_args) -> None:
+        pass
+
+    @staticmethod
+    def get_content_region_avail_height() -> float:
+        return 400.0
+
+    @staticmethod
+    def get_content_region_avail_width() -> float:
+        return 600.0
+
+    @staticmethod
+    def get_cursor_pos_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_cursor_pos_y() -> float:
+        return 0.0
+
+    @staticmethod
+    def set_cursor_pos_x(_value: float) -> None:
+        pass
+
+    @staticmethod
+    def set_cursor_pos_y(_value: float) -> None:
+        pass
+
+    @staticmethod
+    def calc_text_width(text: str) -> float:
+        return 7.0 * len(text)
+
+    @staticmethod
+    def push_style_color(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_color(_count: int = 1) -> None:
+        pass
+
+    @staticmethod
+    def push_style_var_float(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_var(_count: int = 1) -> None:
+        pass
+
+    @staticmethod
+    def begin_disabled(_disabled: bool = True) -> None:
+        pass
+
+    @staticmethod
+    def end_disabled() -> None:
         pass
 
     @staticmethod
@@ -205,21 +269,23 @@ def test_asset_error_cancel_does_not_repeat_until_user_reopens(monkeypatch, tmp_
                                get_import_error=lambda guid: failure["error"] if failures else "",
                                get_guid_from_path=lambda path: "damaged",
                                report_asset_load_failure=lambda guid, error: None)
-    coordinator = _project_delete_confirmation()
-    monkeypatch.setattr(ProjectDeleteConfirmationCoordinator, "instance", classmethod(lambda cls: coordinator))
+    from infernux.engine.interaction import EditorInteractionCore
+    core = EditorInteractionCore()
+    monkeypatch.setattr(EditorInteractionCore, "_instance", core)
     monkeypatch.setattr(AssetLoadErrors, "_instance", None)
     deleted = []
     errors = AssetLoadErrors(database, SimpleNamespace(delete=lambda paths: deleted.extend(paths) or True))
     errors.poll()
-    assert coordinator.is_active
-    assert coordinator._load_error == "Damaged.mat\nInvalid material document"
+    dialog = errors._dialog
+    assert dialog.entry["path"] == str(asset)
     ctx = _ProjectDeleteSemanticContext()
-    coordinator.render(ctx)
-    next(callback for label, callback in ctx.buttons.items() if label.endswith("##cancel"))()
+    dialog.render(ctx)
+    assert {"asset.load_error.dialog", "asset.load_error.retry", "asset.load_error.ignore",
+            "asset.load_error.delete", "asset.load_error.reveal"}.issubset(ctx.semantics)
+    next(callback for label, callback in ctx.buttons.items() if label.endswith("##ignore"))()
     errors.poll()
-    assert not coordinator.is_active
-    assert asset.read_bytes() == damaged
-    assert deleted == []
+    assert dialog.entry is None
+    assert asset.read_bytes() == damaged and not deleted
     with monkeypatch.context() as lookup:
         lookup.setattr(__import__("os").path, "realpath", lambda *_: pytest.fail("Inspector lookup touched disk"))
         assert errors.error(str(asset)) == failure["error"]
@@ -227,23 +293,23 @@ def test_asset_error_cancel_does_not_repeat_until_user_reopens(monkeypatch, tmp_
 
     errors.report(str(asset), failure["error"])
     errors.poll()
-    assert coordinator.is_active
+    assert dialog.entry is not None
     failures.clear()
     database.query_generation += 1
     errors.poll()
     ctx = _ProjectDeleteSemanticContext()
-    coordinator.render(ctx)
-    assert not coordinator.is_active and ctx.closed
+    dialog.render(ctx)
+    assert dialog.entry is None and ctx.closed
     assert asset.read_bytes() == damaged and not deleted
 
     failures.append(failure)
     database.query_generation += 1
     errors.poll()
     ctx = _ProjectDeleteSemanticContext()
-    coordinator.render(ctx)
-    next(callback for label, callback in ctx.buttons.items() if label.endswith("##confirm"))()
-    assert deleted == [str(asset.resolve())]
-    assert not coordinator.is_active
+    dialog.render(ctx)
+    next(callback for label, callback in ctx.buttons.items() if label.endswith("##delete"))()
+    assert deleted == [str(asset)]
+    assert dialog.entry is None
 
 
 def test_project_script_delete_uses_meta_guid_when_database_path_lookup_misses(monkeypatch, tmp_path):

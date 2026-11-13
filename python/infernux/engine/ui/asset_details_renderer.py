@@ -52,6 +52,7 @@ from .inspector_utils import max_label_w, field_label, render_apply_revert
 from .theme import Theme, ImGuiCol
 from .asset_execution_layer import AssetAccessMode, get_asset_execution_layer
 from .asset_resource_preview import render_resource_preview_rect
+from .dpi import editor_dpi_scale
 from .asset_load_errors import AssetLoadErrors, report_asset_load_error
 from .imgui_keys import KEY_LEFT_CTRL, KEY_RIGHT_CTRL
 from infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
@@ -1112,14 +1113,16 @@ def _ensure_categories():
     _categories["animtimeline"] = AssetCategoryDef(
         display_name="asset.display_animtimeline",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
-        load_fn=_load_identity_asset,
+        load_fn=_load_animtimeline,
+        custom_body_fn=_render_animtimeline_body,
     )
 
     # ── Timeline State Machine (.timelinefsm) ──────────────────────────
     _categories["timelinefsm"] = AssetCategoryDef(
         display_name="asset.display_timelinefsm",
         access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
-        load_fn=_load_identity_asset,
+        load_fn=_load_animfsm,
+        custom_body_fn=_render_animfsm_body,
     )
 
     _categories["particle_graph"] = AssetCategoryDef(
@@ -1148,6 +1151,32 @@ def _load_audio(path: str):
 
 def _load_identity_asset(path: str):
     return {"path": path}, {}
+
+
+def _load_animtimeline(path: str):
+    from infernux.core.animation_timeline import AnimationTimeline
+    timeline = AnimationTimeline.load(path)
+    return (timeline, {}) if timeline is not None else None
+
+
+def _open_animation_editor(ctx, state, document_kind):
+    if ctx.button(t("asset.open_editor")):
+        from infernux.engine.interaction import DocumentOpenStatus, EditorInteractionCore
+        opened = EditorInteractionCore.instance().document_open.open_resource(document_kind, state.file_path)
+        if opened.status is DocumentOpenStatus.FAILED:
+            raise RuntimeError(opened.message)
+
+
+def _render_animtimeline_body(ctx, panel, state):
+    from infernux.engine.interaction import DocumentKind
+    timeline = state.settings
+    for key, value in (("animtimeline_editor.name", timeline.name),
+                       ("asset.timeline_duration", f"{timeline.duration:.2f} s"),
+                       ("asset.timeline_tracks", "1 · Transform"),
+                       ("asset.timeline_keys", str(len(timeline.keyframes)))):
+        field_label(ctx, t(key))
+        ctx.readonly_field(f"##timeline_{key}", value)
+    _open_animation_editor(ctx, state, DocumentKind.TIMELINE)
 
 
 def _load_shader(path: str):
@@ -1223,6 +1252,12 @@ def _render_data_asset_value(
     field_type = metadata.field_type
     label = metadata.display_name_key
     label = t(label) if label else pretty_field_name(field_name)
+
+    if metadata.readonly:
+        from .field_draw import draw_field
+        draw_field(ctx, metadata, current_value, label_width=label_width,
+                   widget_id=f"##{widget_path}", display_name=label, on_change=lambda value: None, show_metadata=False)
+        return current_value, False
 
     if field_type == FieldType.LIST:
         selected = current_value
@@ -1328,7 +1363,7 @@ def _render_data_asset_body(ctx: InxGUIContext, panel, state: _State):
     del panel
     from infernux.components.fields import get_raw_field_value, get_serialized_fields
     from infernux.core.data_asset import DataAsset
-    from .inspector_utils import pretty_field_name, render_info_text
+    from .inspector_utils import pretty_field_name, render_info_text, render_section_kicker
 
     asset = state.settings
     if not isinstance(asset, DataAsset):
@@ -1356,9 +1391,9 @@ def _render_data_asset_body(ctx: InxGUIContext, panel, state: _State):
 
     for field_name, metadata in visible_fields:
         if metadata.space > 0.0:
-            ctx.dummy(0.0, float(metadata.space))
+            ctx.dummy(0.0, float(metadata.space) * editor_dpi_scale(ctx))
         if metadata.header:
-            ctx.label(t(metadata.header) if "." in metadata.header else metadata.header)
+            render_section_kicker(ctx, t(metadata.header))
         current_value = get_raw_field_value(asset, field_name)
         edited, changed = _render_data_asset_value(
             ctx,
@@ -1752,7 +1787,7 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     elif clip.authoring_texture_guid:
         display = "(missing) " + clip.authoring_texture_guid[:8] + "…"
     else:
-        display = "None (Texture)"
+        display = t("igui.none")
 
     field_label(ctx, t("asset.animclip_texture"), lw)
     render_asset_reference_field(
@@ -2206,18 +2241,25 @@ def _render_animclip_preview(ctx: InxGUIContext, clip, state: _State):
             pb["elapsed"] = clip.duration
             pb["playing"] = False
 
-    label = "animclip_editor.pause" if pb["playing"] else "animclip_editor.play"
-    if ctx.button(t(label) + "##insp_transport"):
+    from .preview_transport import render_preview_transport
+
+    def seek(seconds):
+        pb["elapsed"] = seconds
+        pb["playing"] = False
+
+    def toggle():
         if not pb["playing"] and not clip.loop and pb["elapsed"] >= clip.duration:
             pb["elapsed"] = 0.0
         pb["playing"] = not pb["playing"]
         pb["last_time"] = now
-    pb["frame_idx"] = animation_frame_index(pb["elapsed"], fc, clip.fps, clip.loop)
 
-    ctx.same_line(0, 8)
-    ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-    ctx.label(f"{pb['frame_idx'] + 1}/{fc}")
-    ctx.pop_style_color(1)
+    render_preview_transport(
+        ctx, "asset.animclip.preview", playing=pb["playing"], seconds=pb["elapsed"], duration=clip.duration,
+        on_toggle=toggle, on_stop=lambda: seek(0.0), on_seek=seek,
+        on_step=lambda direction: seek(min(clip.duration, max(0.0, pb["elapsed"] + direction / clip.fps))),
+        frame=pb["frame_idx"] + 1, frame_count=fc,
+    )
+    pb["frame_idx"] = animation_frame_index(pb["elapsed"], fc, clip.fps, clip.loop)
 
     source_id = clip.frames[pb["frame_idx"]].sprite_frame_id
     frame = next(
@@ -2332,9 +2374,12 @@ def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
     # States section
     if render_compact_section_header(ctx, t("animfsm_editor.states").format(count=fsm.state_count)):
         for s in fsm.states:
-            is_default = (s.name == fsm.default_state)
-            prefix = "► " if is_default else "  "
-            ctx.label(f"{prefix}{s.name}")
+            if s.name == fsm.default_state:
+                ctx.push_style_color(ImGuiCol.Text, *Theme.ROLE_ACCENT)
+                ctx.label(s.name)
+                ctx.pop_style_color(1)
+            else:
+                ctx.label(s.name)
             if s.kind == "group":
                 ctx.same_line()
                 ctx.label(f"  [{t('animfsm_editor.node_kind_group')} · {len(s.clips)}]")
@@ -2346,7 +2391,10 @@ def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
                 ctx.same_line()
                 ctx.label(f"  [{os.path.basename(clip_path)}]")
             for tr in s.transitions:
-                ctx.label(f"      → {tr.target_state}")
+                from .igui import IGUI
+                IGUI.icon(ctx, "arrow_r")
+                ctx.same_line()
+                ctx.label(tr.target_state)
                 if tr.conditions:
                     labels = []
                     for condition in tr.conditions:
@@ -2357,6 +2405,9 @@ def _render_animfsm_body(ctx: InxGUIContext, panel, state: _State):
                         )
                     ctx.same_line()
                     ctx.label(f"  ({' AND '.join(labels)})")
+
+    from infernux.engine.interaction import DocumentKind
+    _open_animation_editor(ctx, state, DocumentKind.ANIMATION_FSM)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2632,20 +2683,13 @@ def _render_audio_header(ctx: InxGUIContext, panel, state: _State) -> None:
         and engine.is_preview_playing(state.file_path)
     )
 
-    if playing:
-        label = t("asset.audio_stop_preview")
-        callback = engine.stop_preview
-    else:
-        label = t("asset.audio_play_preview")
-        callback = (lambda: engine.play_preview(state.file_path)) if can_preview else (lambda: None)
-    if not can_preview:
-        ctx.begin_disabled(True)
-    ctx.button(f"{label}##audio_asset_preview", callback, width=132.0, height=32.0)
-    ctx.record_semantic_item("button", label, can_preview, "asset.audio.preview")
-    if not can_preview:
-        ctx.end_disabled()
-
     duration = float(state.extra.get("duration", 0.0) or 0.0)
+    from .preview_transport import render_preview_transport
+    render_preview_transport(
+        ctx, "asset.audio.preview", playing=playing, seconds=None, duration=duration,
+        on_toggle=lambda: engine.play_preview(state.file_path), on_stop=lambda: engine.stop_preview(),
+        enabled=can_preview, toggle_icon="play", toggle_label=t("asset.audio_play_preview"),
+    )
     sample_rate = int(state.extra.get("sample_rate", 0) or 0)
     channels = int(state.extra.get("channels", 0) or 0)
     sample_count = int(state.extra.get("sample_count", 0) or 0)
@@ -2968,9 +3012,8 @@ def _render_mesh_header(ctx: InxGUIContext, panel, state: _State):
                                         preview_size=int(draw_h),
                                         preserve_aspect=True,
                                         center=True):
-        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label("Model preview unavailable.")
-        ctx.pop_style_color(1)
+        from .asset_resource_preview import render_preview_placeholder
+        render_preview_placeholder(ctx, state.file_path, "model_3d", draw_h)
         ctx.separator()
 
 
@@ -3456,9 +3499,8 @@ def _render_prefab_preview(ctx: InxGUIContext, panel, state: _State):
                                         preview_size=int(draw_h),
                                         preserve_aspect=True,
                                         center=True):
-        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label("Prefab preview unavailable.")
-        ctx.pop_style_color(1)
+        from .asset_resource_preview import render_preview_placeholder
+        render_preview_placeholder(ctx, state.file_path, "prefab", draw_h)
     ctx.separator()
 
 
@@ -4165,13 +4207,13 @@ def _render_sprite_preview(ctx: InxGUIContext, settings: TextureImportSettings,
                 is_hovered = idx == hovered_frame
 
                 if is_selected:
-                    rgba = (0.22, 0.62, 0.98, 1.0)
+                    rgba = Theme.ROLE_ACCENT
                     thickness = 2.0
                 elif is_hovered:
-                    rgba = (0.97, 0.76, 0.24, 1.0)
+                    rgba = Theme.TEXT_DIM
                     thickness = 1.5
                 else:
-                    rgba = (1.0, 1.0, 1.0, 0.78)
+                    rgba = Theme.BORDER
                     thickness = 1.0
 
                 ctx.draw_rect(fx0, fy0, fx1, fy1, rgba[0], rgba[1], rgba[2], rgba[3], thickness)
@@ -4219,9 +4261,8 @@ def _render_texture_preview(ctx: InxGUIContext, panel, state: _State):
                                         texture_settings=None if embedded else state.settings,
                                         preserve_aspect=True,
                                         center=True):
-        ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
-        ctx.label("Texture preview unavailable.")
-        ctx.pop_style_color(1)
+        from .asset_resource_preview import render_preview_placeholder
+        render_preview_placeholder(ctx, state.file_path, "texture", draw_h)
 
     ctx.separator()
 

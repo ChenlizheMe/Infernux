@@ -22,6 +22,9 @@ from .asset_types import (
     PHYSIC_MATERIAL_EXTENSIONS,
     PREFAB_EXTENSIONS,
     RENDER_EFFECT_EXTENSIONS,
+    SHADER_EXTENSIONS,
+    SHADER_VERTEX_EXTENSIONS,
+    SHADER_FRAGMENT_EXTENSIONS,
     TIMELINEFSM_EXTENSIONS,
 )
 
@@ -444,9 +447,9 @@ _register_builtin(
     "Texture.VectorField", "Vector Field", {".inxvfield"},
     ("TEXTURE_GUID", "TEXTURE_FILE"), "vfield", structured=True,
 )
-_register_builtin("Shader.Vertex", "Vertex Shader", {".vert"}, ("SHADER_FILE",), "vert", aliases=("Vert",))
-_register_builtin("Shader.Fragment", "Fragment Shader", {".frag"}, ("SHADER_FILE",), "frag", aliases=("Frag",))
-_register_builtin("Shader", "Shader", {".vert", ".frag"}, ("SHADER_FILE",), "shd")
+_register_builtin("Shader.Vertex", "Vertex Shader", SHADER_VERTEX_EXTENSIONS, ("SHADER_FILE",), "vert", aliases=("Vert",))
+_register_builtin("Shader.Fragment", "Fragment Shader", SHADER_FRAGMENT_EXTENSIONS, ("SHADER_FILE",), "frag", aliases=("Frag",))
+_register_builtin("Shader", "Shader", SHADER_EXTENSIONS, ("SHADER_FILE",), "shd")
 _register_builtin(
     "Mesh", "Mesh", MESH_EXTENSIONS, ("MODEL_GUID", "MODEL_FILE"), "mesh",
     aliases=("Model",), structured=True, virtual_path_markers=("::submesh:",),
