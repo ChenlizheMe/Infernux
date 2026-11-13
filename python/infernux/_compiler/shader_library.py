@@ -11,13 +11,15 @@ from .shader_types import RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, ST
 from .diagnostics import parse_gpu_module
 
 
-_FRAME_FUNCTIONS = {"frame_time": "inx_frame_time", "frame_delta_time": "inx_frame_delta_time"}
+_FRAME_FUNCTIONS = {"frame_time": ("inx_frame_time", "float"),
+                    "frame_delta_time": ("inx_frame_delta_time", "float"),
+                    "view": ("inx_view_context", "InxViewContext")}
 
 
 def frame_imports(body, alias):
-    names = {alias + "." + name for name in _FRAME_FUNCTIONS}
+    names = {alias + "." + name for name in (*_FRAME_FUNCTIONS, "ViewContext")}
     return ("import inx_frame;",) if any(
-        isinstance(node, ast.Call) and qualified(node.func) in names
+        isinstance(node, ast.Attribute) and qualified(node) in names
         for declaration in body for node in ast.walk(declaration)
     ) else ()
 
@@ -44,10 +46,15 @@ class ShaderEmitter(SlangEmitter):
         super().__init__(source, path, aliases=aliases, types=types)
         self.functions = dict(functions or {})
 
+    def visit_Attribute(self, node):
+        if self.infer(node.value) in STRUCT_FIELDS:
+            self.infer(node)
+        return super().visit_Attribute(node)
+
     def infer(self, node):
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) in _FRAME_FUNCTIONS):
-            return "float"
+            return _FRAME_FUNCTIONS[self.symbol(qualified(node.func))][1]
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) == "SurfaceData"
                 and self.symbol(qualified(node.func)) != qualified(node.func)):
             return "InxSurfaceData"
@@ -74,7 +81,7 @@ class ShaderEmitter(SlangEmitter):
         if operation in _FRAME_FUNCTIONS and operation != qualified(node.func):
             if node.args or node.keywords:
                 self.error(node, "shader." + operation + " takes no arguments", code="author.type")
-            return _FRAME_FUNCTIONS[operation] + "()"
+            return _FRAME_FUNCTIONS[operation][0] + "()"
         if operation == "SurfaceData" and operation != qualified(node.func):
             values = {keyword.arg: keyword.value for keyword in node.keywords}
             if node.args or values.keys() - SURFACE_FIELDS.keys() or len(values) != len(node.keywords):

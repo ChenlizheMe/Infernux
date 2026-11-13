@@ -1884,11 +1884,7 @@ class RenderGraph:
         with self.add_pass("_DisplayEncode") as p:
             p.set_texture("source_tex", "color")
             p.write_color("_display_encode")
-            # The native per-camera render context overwrites these values at
-            # draw time without rebuilding the graph.
-            p.set_param("dithering", 0.0)
-            p.set_param("stopNaNs", 0.0)
-            p.fullscreen_quad("Display Encode")
+            p.fullscreen_quad("infernux/internal/display_encode")
         with self.add_pass("_DisplayEncode_Commit") as p:
             p.set_texture("source_tex", "_display_encode")
             p.write_color("color")

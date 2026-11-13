@@ -1445,6 +1445,8 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     globals.worldSpaceCameraPos = glm::vec4(glm::vec3(glm::inverse(view)[3]), 1.0f);
     globals.projectionParams = camera.projectionParams;
     globals.zBufferParams = camera.zBufferParams;
+    globals.viewOptions = glm::uvec4(static_cast<uint32_t>(m_cameraDithering), static_cast<uint32_t>(m_cameraStopNaNs),
+                                     static_cast<uint32_t>(m_renderView.kind == rhi::RenderViewKind::Scene), 0u);
     if (!rhiDevice.WriteBuffer(frame.globals.buffer, 0, &globals, sizeof(globals))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local globals UBO");
         return false;
@@ -4386,7 +4388,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 backbufferDirtySinceResolve = true;
             }
             if (command && command->type == GraphCommandType::FullscreenQuad &&
-                command->shaderName == "Display Encode") {
+                command->shaderName == "infernux/internal/display_encode") {
                 appendSceneOverlays();
             }
             const auto isPersistent = [&](const std::string &name) {
@@ -5153,27 +5155,11 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const bool fsAlphaBlend = command->alphaBlend;
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
-                int32_t cameraDitheringParameterIndex = -1;
-                int32_t cameraStopNaNsParameterIndex = -1;
                 if (!authorProgram) {
                     for (const auto &[name, value] : command->parameters) {
-                        const auto parameterIndex = static_cast<int32_t>(packedPushConstantSize / sizeof(float));
-                        if (shaderName == "Display Encode" && name == "dithering")
-                            cameraDitheringParameterIndex = parameterIndex;
-                        if (shaderName == "Display Encode" && name == "stopNaNs")
-                            cameraStopNaNsParameterIndex = parameterIndex;
                         packedPushConstants.values[packedPushConstantSize / sizeof(float)] = value.Read<float>();
                         packedPushConstantSize += sizeof(float);
                     }
-                }
-
-                if (shaderName == "Display Encode") {
-                    // Scene View is an opaque editor display. Keep coverage alpha
-                    // in graph intermediates and Game/RenderTexture output, while
-                    // exposing black background and overlays even without a sky.
-                    packedPushConstants.values[2] = m_renderView.kind == rhi::RenderViewKind::Scene ? 1.0f : 0.0f;
-                    packedPushConstantSize =
-                        std::max(packedPushConstantSize, 3u * static_cast<uint32_t>(sizeof(float)));
                 }
 
                 // Determine output target (primary color)
@@ -5360,21 +5346,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             drawPushConstants = *block.scalarPushConstants;
                             drawPushConstantSize = static_cast<uint32_t>(block.values->size() * sizeof(float));
                         }
-                        if (cameraDitheringParameterIndex >= 0 && static_cast<uint32_t>(cameraDitheringParameterIndex) <
-                                                                      drawPushConstantSize / sizeof(float)) {
-                            drawPushConstants.values[cameraDitheringParameterIndex] = m_cameraDithering ? 1.0f : 0.0f;
-                        }
-                        if (cameraStopNaNsParameterIndex >= 0 && static_cast<uint32_t>(cameraStopNaNsParameterIndex) <
-                                                                     drawPushConstantSize / sizeof(float)) {
-                            drawPushConstants.values[cameraStopNaNsParameterIndex] = m_cameraStopNaNs ? 1.0f : 0.0f;
-                        }
-
-                        if (shaderName == "Display Encode") {
-                            drawPushConstants.values[2] = m_renderView.kind == rhi::RenderViewKind::Scene ? 1.0f : 0.0f;
-                            drawPushConstantSize =
-                                std::max(drawPushConstantSize, 3u * static_cast<uint32_t>(sizeof(float)));
-                        }
-
                         fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),
                                          vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()), drawPushConstants,
                                          drawPushConstantSize);

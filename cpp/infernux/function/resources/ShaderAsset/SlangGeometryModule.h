@@ -63,6 +63,7 @@ public struct InxEngineGlobals
     public float4 projection_params;
     public float4 depth_params;
     public float4 frame_params;
+    public uint4 view_options;
 };
 public struct InxMeshInput
 {

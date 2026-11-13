@@ -63,10 +63,37 @@ class Clock(shader.fullscreen):
     assert "import inx_frame;" not in definition.generated_source
     for target in definition.compile()["targets"]:
         globals = next(resource for resource in target["resources"] if resource["name"] == "inx_globals")
-        assert (globals["set"], globals["binding"], globals["value"]["byte_size"]) == (2, 0, 128)
-        assert [field["offset"] for field in globals["value"]["fields"]] == list(range(0, 128, 16))
+        assert (globals["set"], globals["binding"], globals["value"]["byte_size"]) == (2, 0, 144)
+        assert [field["offset"] for field in globals["value"]["fields"]] == list(range(0, 144, 16))
     with pytest.raises(SyntaxError, match="takes no arguments"):
         parse_shader(source.replace("time()", "shader.frame_time(1.0)"), str(tmp_path / "invalid.frag.py"), "invalid")
+
+
+def test_view_context_is_native_typed_data_shared_with_shader_libraries(tmp_path):
+    (tmp_path / "view.shaderlib.py").write_text('''import infernux.shader as gpu
+def describe(context: gpu.ViewContext) -> gpu.vec4:
+    return gpu.vec4(context.size, context.near_clip, 1.0 if context.dithering else 0.0)
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+from .view import describe
+class View(shader.fullscreen):
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        context = shader.view()
+        return describe(context)
+'''
+    path = str(tmp_path / "view.frag.py")
+    definition = parse_shader(source, path, "view")
+    assert not definition.parameters and "import inx_frame;" in definition.generated_source
+    library = next(text for _, name, text in definition.libraries if name.endswith("view.shaderlib.py"))
+    assert "import inx_frame;" in library  # The type annotation alone imports its owner.
+    for target in definition.compile()["targets"]:
+        globals = next(resource for resource in target["resources"] if resource["name"] == "inx_globals")
+        assert globals["value"]["byte_size"] == 144
+        assert (globals["value"]["fields"][-1]["name"], globals["value"]["fields"][-1]["offset"]) == ("view_options", 128)
+    with pytest.raises(SyntaxError, match="takes no arguments"):
+        parse_shader(source.replace("shader.view()", "shader.view(1)"), path, "view")
+    with pytest.raises(SyntaxError, match="Unknown shader stage input"):
+        parse_shader(source.replace("describe(context)", "context.unknown"), path, "view")
 
 
 def test_mesh_fragment_uses_native_geometry_and_material_domain():

@@ -19,9 +19,7 @@ namespace infernux
  * belong to
  * Material/Renderer set 0.
  *
- * Total size: 8 × vec4 = 128 bytes (well within vkCmdUpdateBuffer's
- * 65536-byte limit
- * and minUniformBufferOffsetAlignment on all GPUs).
+ * Nine 16-byte rows share one camera-local uniform allocation.
  */
 struct EngineGlobalsUBO
 {
@@ -53,8 +51,11 @@ struct EngineGlobalsUBO
     // ─── Frame ──────────────────────────────────────────────────────
     /// x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = previous view sample time
     alignas(16) glm::vec4 frameParams{0.0f};
+
+    /// x = dithering, y = stop NaNs, z = opaque display output, w = reserved.
+    alignas(16) glm::uvec4 viewOptions{0u};
 };
 
-static_assert(sizeof(EngineGlobalsUBO) == 128, "EngineGlobalsUBO must be 128 bytes (8 x vec4)");
+static_assert(sizeof(EngineGlobalsUBO) == 144, "EngineGlobalsUBO must contain nine 16-byte rows");
 
 } // namespace infernux

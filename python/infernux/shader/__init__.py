@@ -6,6 +6,7 @@ operations use GPU types and Slang semantics; they do not run in Python.
 ``frame_time()`` and ``frame_delta_time()`` read the engine-owned render clock
 in seconds. Vertex deformation uses ``VertexContext.time`` for the geometry
 sample, including the previous sample used to calculate motion vectors.
+``view()`` returns the current view's engine-owned camera and output settings.
 """
 
 from __future__ import annotations
@@ -123,6 +124,20 @@ class fragment_input:
 
     position: vec4
     uv: vec2
+
+
+class ViewContext:
+    """Camera-local values read from the shared frame constant buffer."""
+
+    size: vec2
+    pixel_size: vec2
+    camera_position_ws: vec3
+    near_clip: float
+    far_clip: float
+    depth_params: vec4
+    dithering: bool
+    stop_nans: bool
+    opaque_output: bool
 
 
 class SurfaceData:
@@ -246,7 +261,7 @@ for _name in TYPES:
     globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
-for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time"):
+for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view"):
     globals()[_name] = _gpu_intrinsic(_name)
 
 
@@ -261,4 +276,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ViewContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", *TYPES, *INTRINSICS]

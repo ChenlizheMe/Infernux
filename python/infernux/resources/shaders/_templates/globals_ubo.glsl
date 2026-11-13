@@ -2,7 +2,7 @@
 // Infernux — Engine Globals UBO (set 2, binding 0)
 //
 // Available in ALL shaders (vertex + fragment).  Matches EngineGlobalsUBO
-// in C++ (std140 layout, 8 × vec4 = 128 bytes).
+// in C++ (std140 layout, nine 16-byte rows).
 // ============================================================================
 
 layout(std140, set = 2, binding = 0) uniform InfGlobals {
@@ -29,4 +29,6 @@ layout(std140, set = 2, binding = 0) uniform InfGlobals {
     // ─── Frame ─────────────────────────────────────────────────────
     // x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = previous view sample time
     vec4 _FrameParams;
+    // x = dithering, y = stop NaNs, z = opaque display output, w = reserved.
+    uvec4 _ViewOptions;
 } _Globals;
