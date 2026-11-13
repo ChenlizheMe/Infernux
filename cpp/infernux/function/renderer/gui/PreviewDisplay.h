@@ -8,8 +8,8 @@ namespace infernux
 {
 class InxVkCoreModular;
 
-// One descriptor pool per preview producer; immutable pipelines remain in the
-// existing device cache. Prepare is called only after its previous submission.
+// Each producer owns its prepared parameters and transient bindings; immutable
+// pipelines share the device cache. Prepare follows completion of its previous submission.
 class PreviewDisplay
 {
   public:
@@ -22,7 +22,10 @@ class PreviewDisplay
     InxVkCoreModular &m_core;
     FullscreenRenderer m_renderer;
     FullscreenPipelineEntry m_pipeline;
-    rhi::BindGroupHandle m_inputs;
+    std::shared_ptr<const FullscreenProgram> m_program;
+    FullscreenParameters m_parameters;
+    VkImageView m_sourceView = VK_NULL_HANDLE;
+    rhi::PixelFormat m_sourceFormat = rhi::PixelFormat::Undefined;
     uint64_t m_viewId;
     uint64_t m_sequence = 0;
     bool m_hdr = false;

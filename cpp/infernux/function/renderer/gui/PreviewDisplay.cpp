@@ -23,12 +23,16 @@ std::shared_ptr<PreviewImage> PreviewDisplay::Prepare(VkImageView source, VkForm
 {
     // A restored asset catalog may still be discovering a newly installed
     // builtin shader. Do not cache an empty pipeline as a completed product.
-    if (!m_core.EnsureShaderAvailable("Fullscreen Triangle", "vertex") ||
-        !m_core.EnsureShaderAvailable("Preview Display", "fragment"))
+    const auto program = m_renderer.AcquireProgram("infernux/internal/preview_display");
+    if (!program)
         return nullptr;
+    if (!m_program || program->code != m_program->code)
+        m_parameters = FullscreenRenderer::PrepareParameters(*program, {{"sphere_radius", 0.0f}, {"hdr", false}});
+    m_program = program;
     m_renderer.ResetPool();
     FullscreenPipelineKey key;
-    key.shaderName = "Preview Display";
+    key.shaderName = program->shaderId;
+    key.program = program;
     key.colorFormat = rhi::PixelFormat::RGBA8Srgb;
     key.useDynamicRendering = true;
     key.inputResourceCount = 1;
@@ -37,21 +41,8 @@ std::shared_ptr<PreviewImage> PreviewDisplay::Prepare(VkImageView source, VkForm
         throw std::runtime_error("Preview display pipeline is unavailable");
 
     auto &device = m_core.GetDeviceContext().GetRhiDevice();
-    const auto sourceView = device.RegisterTextureView(source);
-    FullscreenResourceInput input;
-    input.view = sourceView;
-    input.format = rhi::FromVkFormat(format);
-    try {
-        m_inputs = m_renderer.AllocateBindGroup(m_pipeline.inputLayout, &input, 1, m_renderer.GetLinearSampler());
-    } catch (...) {
-        device.Release(sourceView);
-        throw;
-    }
-    // This registration borrows the producer's scratch view, which stays alive
-    // through the entire submission. Releasing it does not destroy that view.
-    device.Release(sourceView);
-    if (!m_inputs.IsValid())
-        throw std::runtime_error("Preview display input binding is unavailable");
+    m_sourceView = source;
+    m_sourceFormat = rhi::FromVkFormat(format);
 
     rhi::RenderTextureDesc description;
     description.width = description.height = static_cast<uint32_t>(outputSize);
@@ -92,10 +83,20 @@ void PreviewDisplay::Record(VkCommandBuffer commands, const PreviewImage &output
     vkCmdSetScissor(commands, 0, 1, &scissor);
     vk::VulkanGraphicsCommandContext context;
     auto encoder = device.MakeGraphicsCommandEncoder(context, commands);
-    FullscreenPushConstants constants;
-    constants.values[0] = sphereRadius;
-    constants.values[1] = m_hdr ? 1.0f : 0.0f;
-    m_renderer.Draw(encoder, m_pipeline, m_inputs, {}, {}, constants, 2 * sizeof(float));
+    FullscreenResourceInput input;
+    input.view = device.RegisterTextureView(m_sourceView);
+    input.format = m_sourceFormat;
+    const ShaderParameterValue values[] = {sphereRadius, m_hdr};
+    try {
+        m_renderer.DrawProgram(encoder, m_pipeline, &input, m_parameters, values);
+    } catch (...) {
+        device.Release(input.view);
+        dynamic.end(commands);
+        throw;
+    }
+    // Only the temporary RHI registration is released here. The producer owns
+    // the scratch VkImageView through completion of this preview submission.
+    device.Release(input.view);
     dynamic.end(commands);
     vkrender::TransitionTrackedImageLayout(commands, target, VK_IMAGE_ASPECT_COLOR_BIT, targetLayout,
                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
