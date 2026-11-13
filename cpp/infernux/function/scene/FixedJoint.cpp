@@ -2,6 +2,7 @@
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
 #include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsWorld.h"
 
 namespace infernux
@@ -20,8 +21,10 @@ SemanticTypeDescriptor FixedJoint::DescribeSemanticType()
 
 uint64_t FixedJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
-    return world.CreateFixedConstraint(*this, bodyId, connectedBodyId, GetTransform()->TransformPoint(m_anchor),
-                                       m_anchor, m_enableCollision);
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    const auto *transform = GetTransform();
+    const auto localBakedAnchor = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
+    return world.CreateFixedConstraint(*this, bodyId, connectedBodyId, localBakedAnchor, m_anchor, m_enableCollision);
 }
 
 void FixedJoint::UpdateConstraintSettings()

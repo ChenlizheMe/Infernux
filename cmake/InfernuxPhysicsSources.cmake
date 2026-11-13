@@ -6,6 +6,8 @@ function(infernux_embed_physics_sources target)
     set(_physics_sources
         "${_physics_root}/PhysicsTypes.h"
         "${_physics_root}/Shaders/rigid_math.slang"
+        "${_physics_root}/Shaders/rigid_joints.slang"
+        "${_physics_root}/Shaders/joint_commands.slang"
         "${_physics_root}/Shaders/rigid_step.slang"
         "${_physics_root}/Shaders/rigid_body_mutations.slang"
         "${_physics_root}/Shaders/body_commands.slang"
@@ -17,6 +19,8 @@ function(infernux_embed_physics_sources target)
 
     file(READ "${_physics_root}/PhysicsTypes.h" JOLT_GPU_TYPES_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_math.slang" JOLT_GPU_MATH_SOURCE)
+    file(READ "${_physics_root}/Shaders/rigid_joints.slang" JOLT_GPU_JOINTS_SOURCE)
+    file(READ "${_physics_root}/Shaders/joint_commands.slang" JOLT_GPU_JOINT_COMMANDS_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_step.slang" JOLT_GPU_STEP_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_body_mutations.slang" JOLT_GPU_BODY_MUTATIONS_SOURCE)
     file(READ "${_physics_root}/Shaders/body_commands.slang" JOLT_GPU_BODY_COMMANDS_SOURCE)
@@ -28,6 +32,7 @@ function(infernux_embed_physics_sources target)
     # text or introducing runtime file access. Adjacent literals concatenate.
     foreach(_source IN ITEMS JOLT_GPU_TYPES_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_STEP_SOURCE
             JOLT_GPU_BODY_MUTATIONS_SOURCE JOLT_GPU_BODY_COMMANDS_SOURCE
+            JOLT_GPU_JOINTS_SOURCE JOLT_GPU_JOINT_COMMANDS_SOURCE
             JOLT_GPU_QUERIES_SOURCE JOLT_GPU_RENDER_POSES_SOURCE INFERNUX_PARTICLE_EXPORT_SOURCE)
         string(REPLACE "\n" "\n)INX_JPH_GPU\"\nR\"INX_JPH_GPU(" ${_source} "${${_source}}")
     endforeach()

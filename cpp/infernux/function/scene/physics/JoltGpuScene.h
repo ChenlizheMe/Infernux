@@ -4,15 +4,24 @@
 
 #include "JoltGpuActor.h"
 #include "JoltGpuTick.h"
+#include "PhysicsConstraintOwner.h"
 #include "PhysicsECSStore.h"
 #include "PhysicsTargetReference.h"
 
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 namespace infernux
 {
+class JoltGpuJoints;
+
+class JoltGpuQueryRequestError : public std::invalid_argument
+{
+  public:
+    using std::invalid_argument::invalid_argument;
+};
 
 /// One physical domain using the engine's shared compute services. Component
 /// ownership remains in PhysicsECSStore; only author transactions, device
@@ -70,14 +79,31 @@ class JoltGpuScene final
         OwnerIdentity owner;
         std::vector<PublishedLeaf> leaves;
         JPH::GPU::Float4 rootCenterOfMass{};
+        JPH::GPU::Float4 rootScale{1, 1, 1, 0};
         uint64_t shapeRevision = 0;
         JPH::RefConst<JPH::Shape> authoredShape;
     };
 
+    struct PublishedJoint
+    {
+        uint64_t id = 0;
+        uint32_t row = 0;
+        /// Public endpoints: A is the owner, B the connected body or world.
+        uint32_t bodyIdA = InvalidBodyId;
+        uint32_t bodyIdB = InvalidBodyId;
+        uint32_t kind = 0;
+        JPH::GPU::JointAuthor author{};
+    };
+
+    struct JointUpdate
+    {
+        uint64_t id;
+        JPH::GPU::JointAuthor author;
+    };
+
     /// All arrays/resources describe the same completed numerical generation.
     /// actors is indexed by GPU slot; null entries are unowned tombstones.
-    /// Retained results must resolve through this identity array, never through
-    /// the current body's lookup table after a slot has been reused.
+    /// Retained results resolve through these identities after slot reuse.
     struct Publication
     {
         uint64_t simulationEpoch = 0;
@@ -92,6 +118,8 @@ class JoltGpuScene final
         /// Global leaf ordinal -> immutable actor catalog in this publication.
         /// Addresses own no individual allocation and never refer to live slots.
         std::vector<LeafAddress> leaves;
+        std::shared_ptr<rhi::ComputeBuffer> jointStream;
+        std::vector<PublishedJoint> joints;
     };
     /// The retained publication travels with every result/continuation. A
     /// consumer must resolve hit identities through this exact shared value.
@@ -102,7 +130,7 @@ class JoltGpuScene final
     /// exceeding the current fork bound is an explicit error, never paging
     /// colliding bodies into separate physical domains.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
-                 const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget);
+                 const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget, JoltGpuJoints &joints);
     ~JoltGpuScene();
     JoltGpuScene(const JoltGpuScene &) = delete;
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;
@@ -125,6 +153,14 @@ class JoltGpuScene final
     /// Invalidates body lookup immediately. Its slot becomes reusable only
     /// after the ordered retirement transaction has been accepted.
     void StageRetire(uint32_t bodyId);
+    uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
+                         JPH::GPU::JointAuthor author);
+    void UpdateJoint(uint64_t id, const std::function<void(JPH::GPU::JointAuthor &)> &update);
+    /// One ordered author transaction for the complete batch.
+    void UpdateJoints(std::vector<JointUpdate> updates);
+    void DestroyJoint(uint64_t id);
+    void DestroyJointsForBody(uint32_t bodyId);
+    [[nodiscard]] const PublishedJoint &GetAuthoredJoint(uint64_t id) const;
 
     [[nodiscard]] BodyAllocation FindBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] PhysicsActorHandle FindActor(uint32_t bodyId) const noexcept;

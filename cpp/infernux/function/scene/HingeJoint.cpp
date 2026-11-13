@@ -4,6 +4,7 @@
 #include "ComponentFactory.h"
 #include "GameObject.h"
 #include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <core/log/InxLog.h>
 
@@ -76,10 +77,10 @@ const bool registeredHingeJoint = ComponentFactory::Register(
 
 uint64_t HingeJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto *transform = GetTransform();
-    const auto worldAnchor = transform->TransformPoint(m_anchor);
-    const auto worldAxis = transform->TransformDirection(m_axis);
-    return world.CreateHingeConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_anchor, m_useLimits,
+    const auto localBakedAnchor = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
+    return world.CreateHingeConstraint(*this, bodyId, connectedBodyId, localBakedAnchor, m_axis, m_anchor, m_useLimits,
                                        glm::radians(m_minimumAngle), glm::radians(m_maximumAngle), m_enableCollision);
 }
 

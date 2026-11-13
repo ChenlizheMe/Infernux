@@ -11,6 +11,7 @@ enum class JoltGpuProgram
     BodyMutations,
     BodyCommands,
     Queries,
+    Joints,
     RenderPoses
 };
 

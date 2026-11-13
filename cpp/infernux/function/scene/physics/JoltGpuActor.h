@@ -20,6 +20,7 @@ struct PreparedGpuActor
     JPH::GPU::BodyModel body;
     PreparedGpuShape geometry;
     JPH::GPU::BodyState initialState;
+    JPH::GPU::Float4 rootScale{1, 1, 1, 0};
     // Creation inputs belong to this exact component generation, even when a
     // different Rigidbody is attached to the actor before GPU acceptance.
     PhysicsECSStore::RigidbodyHandle initialRigidbody;

@@ -12,12 +12,6 @@ namespace particle
 {
 struct GpuParticleCollisionDevicePayload;
 }
-class JoltGpuQueryRequestError : public std::invalid_argument
-{
-  public:
-    using std::invalid_argument::invalid_argument;
-};
-
 enum class JoltGpuQueryReadback
 {
     Host,

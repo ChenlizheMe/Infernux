@@ -271,13 +271,19 @@ class JoltGpuTick::Impl
                         stages.push_back(JPH::GPU::Stage::BuildBounds);
                         stages.push_back(JPH::GPU::Stage::CollidePairs);
                         stages.push_back(JPH::GPU::Stage::SetupContacts);
+                    }
+                    if (storage.GetJointCount())
+                        stages.push_back(JPH::GPU::Stage::SetupJoints);
+                    if (storage.GetPatchCount() || storage.GetJointCount()) {
                         for (uint32_t iteration = 0; iteration < actual.counts.w; ++iteration)
                             stages.push_back(JPH::GPU::Stage::SolveVelocity);
                     }
                     stages.push_back(JPH::GPU::Stage::Integrate);
-                    if (storage.GetPatchCount())
+                    if (storage.GetPatchCount() || storage.GetJointCount())
                         for (uint32_t iteration = 0; iteration < actual.solve.x; ++iteration)
                             stages.push_back(JPH::GPU::Stage::SolvePosition);
+                    if (storage.GetJointCount())
+                        stages.push_back(JPH::GPU::Stage::FinishJoints);
                 }
                 stages.push_back(JPH::GPU::Stage::FinishTick);
             }

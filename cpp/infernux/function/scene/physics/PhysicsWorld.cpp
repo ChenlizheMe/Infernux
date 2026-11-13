@@ -13,6 +13,7 @@
 #include "../TagLayerManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
+#include "JoltGpuJoints.h"
 #include "JoltGpuProgramSources.h"
 #include "JoltGpuQueries.h"
 #include "JoltGpuRenderBindings.h"
@@ -393,16 +394,18 @@ bool PhysicsWorld::EnsureGpuReady()
         p->commands = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyCommands);
         const auto target = CompileProgram(*m_gpuHost, JoltGpuProgram::Queries);
         auto queries = std::make_unique<JoltGpuQueries>(*m_gpuHost, target);
+        auto joints = std::make_unique<JoltGpuJoints>(*m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::Joints));
         auto rendering =
             std::make_unique<GpuRenderState>(*m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::RenderPoses));
         m_gpuPrograms = std::move(p);
         m_gpuQueries = std::move(queries);
+        m_gpuJoints = std::move(joints);
         m_gpuRenderState = std::move(rendering);
     }
     if (!m_gpuScene) {
         m_recreateActors.reserve(MaxBodiesPerWorld);
         m_gpuScene = std::make_unique<JoltGpuScene>(*m_gpuHost, *m_gpuWork, MaxBodiesPerWorld, m_gpuPrograms->step,
-                                                    m_gpuPrograms->mutations, m_gpuPrograms->commands);
+                                                    m_gpuPrograms->mutations, m_gpuPrograms->commands, *m_gpuJoints);
         m_gpuScene->SetAdmissionEnabled(false);
         auto &store = PhysicsECSStore::Instance();
         for (const auto handle : m_recreateActors)
@@ -423,6 +426,7 @@ void PhysicsWorld::Shutdown()
     m_gpuScene.reset(); // Explicit shutdown drain. Normal Stop remains nonblocking.
     m_gpuRenderState.reset();
     m_gpuQueries.reset();
+    m_gpuJoints.reset();
     m_gpuPrograms.reset();
     m_lastPublication.reset();
     m_requestedMotion.clear();

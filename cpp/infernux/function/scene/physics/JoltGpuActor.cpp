@@ -56,6 +56,8 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
     if (prepared.geometry.leaves.size() > std::numeric_limits<uint32_t>::max())
         throw std::length_error("Jolt GPU actor exceeds its leaf index range");
     const auto *transform = actor.owner->GetTransform();
+    const auto scale = transform->GetWorldScale();
+    prepared.rootScale = {scale.x, scale.y, scale.z, 0};
     const auto rotation = transform->GetWorldRotation();
     const auto position = transform->GetPosition();
     const auto center = prepared.geometry.centerOfMass;

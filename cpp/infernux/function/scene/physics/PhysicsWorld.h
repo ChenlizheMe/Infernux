@@ -34,6 +34,7 @@ class FrameWorkOwner;
 class Infernux;
 class JoltGpuScene;
 class JoltGpuQueries;
+class JoltGpuJoints;
 struct JoltGpuQueryResult;
 struct PreparedGpuActor;
 struct ContactEvent;
@@ -457,7 +458,7 @@ class PhysicsWorld
     /// Create a world-space hinge between body A and body B, or body A and
     /// the fixed world when body B is invalid. Limits are radians.
     uint64_t CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                   const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
+                                   const glm::vec3 &localBakedAnchor, const glm::vec3 &ownerAxis,
                                    const glm::vec3 &localAnchor, bool useLimits, float minimumAngle, float maximumAngle,
                                    bool enableCollision);
     /// Create a prismatic constraint that permits only translation along one
@@ -468,7 +469,8 @@ class PhysicsWorld
                                     float maximumDistance, bool enableCollision);
     void DestroyConstraint(uint64_t constraintId);
     uint64_t CreateFixedConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                   const glm::vec3 &worldAnchor, const glm::vec3 &localAnchor, bool enableCollision);
+                                   const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
+                                   bool enableCollision);
     void SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled);
     uint64_t CreateDistanceConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                       const glm::vec3 &localAnchor, const glm::vec3 &connectedLocalAnchor,
@@ -769,6 +771,7 @@ class PhysicsWorld
     void RunControl(const JoltGpuScene::Consumer &consumer) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(const std::vector<JPH::GPU::QueryInput> &requests,
                                                                uint64_t sweepColliderId = 0) const;
+    void ReadJointMotion(const std::vector<uint64_t> &ids, float *output) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(const JPH::GPU::QueryInput &request,
                                                                        const JPH::GPU::QueryPrimitive &other) const;
     [[nodiscard]] std::vector<Collider *> QueryColliders(const JPH::GPU::QueryInput &request) const;
@@ -794,6 +797,7 @@ class PhysicsWorld
     std::unique_ptr<rhi::ComputeHost> m_gpuHost;
     FrameWorkOwner *m_gpuWork = nullptr;
     std::unique_ptr<CompiledGpuPrograms> m_gpuPrograms;
+    std::unique_ptr<JoltGpuJoints> m_gpuJoints;
     std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;
     std::unique_ptr<GpuRenderState> m_gpuRenderState;

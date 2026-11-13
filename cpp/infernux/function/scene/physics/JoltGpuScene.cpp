@@ -1,12 +1,15 @@
 #include "JoltGpuScene.h"
 
 #include "JoltGpuBodyMutations.h"
+#include "JoltGpuJoints.h"
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Rigidbody.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -47,6 +50,17 @@ JoltGpuModel EmptyModel(uint32_t capacity)
 bool FiniteVector(const Float4 &value)
 {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) && value.w == 0;
+}
+
+JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
+{
+    if (!work.packet)
+        return next();
+    auto continuation = std::move(work.continueAfterCompletion);
+    work.continueAfterCompletion = [continuation = std::move(continuation), next = std::move(next)]() mutable {
+        return continuation ? Then(continuation(), std::move(next)) : next();
+    };
+    return work;
 }
 
 } // namespace
@@ -108,6 +122,12 @@ class JoltGpuScene::Impl
         bool initializesRigidbody = false;
     };
 
+    struct JointRecord
+    {
+        PublishedJoint value;
+        PhysicsConstraintOwner *owner = nullptr;
+    };
+
     static uint8_t PositionChannel() noexcept
     {
         return static_cast<uint8_t>(PhysicsTargetChannels::Position);
@@ -160,9 +180,10 @@ class JoltGpuScene::Impl
     }
 
     Impl(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
-         const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget)
+         const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget, JoltGpuJoints &jointProgram)
         : actors(PhysicsECSStore::Instance()), storage(host, EmptyModel(capacity)), programs(host, stepTarget),
-          mutations(host, mutationTarget), commands(host, commandTarget), slots(capacity), tick(work, storage, programs)
+          mutations(host, mutationTarget), commands(host, commandTarget), joints(jointProgram), slots(capacity),
+          tick(work, storage, programs)
     {
         byId.reserve(capacity);
         freeSlots.reserve(capacity);
@@ -197,6 +218,164 @@ class JoltGpuScene::Impl
     {
         if (slots[slot].bodyId != id)
             throw std::logic_error("Jolt GPU control references a reused body slot");
+    }
+
+    const PublishedJoint &GetAuthoredJoint(uint64_t id) const
+    {
+        RequireUsable();
+        const auto found = authoredJoints.find(id);
+        if (found == authoredJoints.end())
+            throw std::invalid_argument("GPU joint identity is invalid or retired");
+        return found->second.value;
+    }
+
+    PublishedJoint &AcceptedJoint(uint64_t id)
+    {
+        const auto found = std::find_if(acceptedJoints.begin(), acceptedJoints.end(),
+                                        [id](const auto &joint) { return joint.id == id; });
+        if (found == acceptedJoints.end())
+            throw std::logic_error("GPU joint update precedes its accepted creation");
+        return *found;
+    }
+
+    void QueueJointTopology()
+    {
+        auto catalog = std::make_shared<std::vector<PublishedJoint>>();
+        catalog->reserve(authoredJoints.size());
+        for (auto &[id, joint] : authoredJoints) {
+            joint.value.row = static_cast<uint32_t>(catalog->size());
+            catalog->push_back(joint.value);
+        }
+        JoltGpuControlGroup group;
+        group.prepareModel = [this, catalog] {
+            std::unordered_map<uint64_t, uint32_t> previous;
+            for (const auto &joint : acceptedJoints)
+                previous.emplace(joint.id, joint.row);
+            std::vector<JointAuthor> authors;
+            std::vector<uint32_t> remap;
+            authors.reserve(catalog->size());
+            remap.reserve(catalog->size());
+            for (const auto &joint : *catalog) {
+                RequireOwnership(joint.author.bodies.y, joint.bodyIdA);
+                if (joint.bodyIdB != InvalidBodyId)
+                    RequireOwnership(joint.author.bodies.x, joint.bodyIdB);
+                authors.push_back(joint.author);
+                const auto old = previous.find(joint.id);
+                remap.push_back(old == previous.end() ? InvalidQueryBodySlot : old->second);
+            }
+            auto prepared =
+                joints.PrepareReplacement(authors, remap, storage.Get(Resource::Joints)->Freeze(),
+                                          storage.GetJointCount(), storage.Get(Resource::BodyStates)->Freeze());
+            return storage.PrepareJointReplacement(std::move(authors), std::move(prepared.stream),
+                                                   std::move(prepared.updates), std::move(prepared.dispatches));
+        };
+        group.modelAccepted = [this, catalog]() noexcept { acceptedJoints.swap(*catalog); };
+        pending.push_back(std::move(group));
+    }
+
+    uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody, JointAuthor author)
+    {
+        const auto a = RequireSlot(ownerBody);
+        const auto b = connectedBody == InvalidBodyId ? InvalidQueryBodySlot : RequireSlot(connectedBody);
+        if (ownerBody == connectedBody || !slots[a].authored || (b != InvalidQueryBodySlot && !slots[b].authored))
+            throw std::invalid_argument("A GPU joint requires distinct authored body endpoints");
+        if (!nextJointId)
+            throw std::overflow_error("GPU joint identity space is exhausted");
+        const auto id = nextJointId++;
+        author.bodies.x = b;
+        author.bodies.y = a;
+        author.identity = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
+        author.rootCOM1 = b == InvalidQueryBodySlot ? Float4{} : slots[b].authored->rootCenterOfMass;
+        author.rootCOM2 = slots[a].authored->rootCenterOfMass;
+        author.scale1 = b == InvalidQueryBodySlot ? Float4{1, 1, 1, 0} : slots[b].authored->rootScale;
+        author.scale2 = slots[a].authored->rootScale;
+        PublishedJoint value{id, 0, ownerBody, connectedBody, author.bodies.z, author};
+        authoredJoints.emplace(id, JointRecord{value, &owner});
+        QueueJointTopology();
+        return id;
+    }
+
+    void UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update)
+    {
+        auto author = GetAuthoredJoint(id).author;
+        update(author);
+        UpdateJoints({{id, author}});
+    }
+
+    void UpdateJoints(std::vector<JointUpdate> updates)
+    {
+        if (updates.empty())
+            return;
+        auto values = std::make_shared<std::vector<PublishedJoint>>();
+        values->reserve(updates.size());
+        for (const auto &update : updates) {
+            auto value = GetAuthoredJoint(update.id);
+            value.author = update.author;
+            values->push_back(value);
+        }
+        JoltGpuControlGroup group;
+        group.prepareModel = [this, values] {
+            std::vector<JoltGpuJointModelUpdate> changes;
+            changes.reserve(values->size());
+            for (auto &value : *values) {
+                value.row = AcceptedJoint(value.id).row;
+                changes.push_back({value.row, value.author});
+            }
+            return joints.PrepareUpdate(storage, std::move(changes));
+        };
+        group.modelAccepted = [this, values]() noexcept {
+            for (const auto &value : *values)
+                acceptedJoints[value.row].author = value.author;
+        };
+        pending.push_back(std::move(group));
+        for (const auto &value : *values)
+            authoredJoints.at(value.id).value.author = value.author;
+    }
+
+    void RefreshJointBody(uint32_t bodyId, const PublishedActor &actor)
+    {
+        std::vector<JointUpdate> changes;
+        for (const auto &[id, joint] : authoredJoints)
+            if (joint.value.bodyIdA == bodyId || joint.value.bodyIdB == bodyId) {
+                auto author = joint.value.author;
+                if (joint.value.bodyIdA == bodyId) {
+                    author.rootCOM2 = actor.rootCenterOfMass;
+                    author.scale2 = actor.rootScale;
+                } else {
+                    author.rootCOM1 = actor.rootCenterOfMass;
+                    author.scale1 = actor.rootScale;
+                }
+                changes.push_back({id, author});
+            }
+        UpdateJoints(std::move(changes));
+    }
+
+    void DestroyJoint(uint64_t id)
+    {
+        const auto found = authoredJoints.find(id);
+        if (found == authoredJoints.end())
+            return;
+        auto *owner = found->second.owner;
+        authoredJoints.erase(found);
+        QueueJointTopology();
+        owner->OnPhysicsConstraintDestroyed();
+    }
+
+    void DestroyJointsForBody(uint32_t bodyId)
+    {
+        std::vector<PhysicsConstraintOwner *> owners;
+        for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
+            if (it->second.value.bodyIdA == bodyId || it->second.value.bodyIdB == bodyId) {
+                owners.push_back(it->second.owner);
+                it = authoredJoints.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!owners.empty())
+            QueueJointTopology();
+        for (auto *owner : owners)
+            owner->OnPhysicsConstraintDestroyed();
     }
 
     BodyAllocation Reserve(PhysicsActorHandle actor, OwnerIdentity owner)
@@ -309,6 +488,7 @@ class JoltGpuScene::Impl
         identity->rigidbodyComponentId = actor.rigidbodyComponentId;
         identity->owner = slot.owner;
         identity->rootCenterOfMass = rootCOM;
+        identity->rootScale = actor.rootScale;
         identity->authoredShape = std::move(actor.authoredShape);
         identity->leaves.reserve(actor.geometry.leaves.size());
         for (const auto &leaf : actor.geometry.leaves) {
@@ -420,6 +600,7 @@ class JoltGpuScene::Impl
         if (motion != MotionStatic)
             slot.initialRigidbody = change->initialRigidbody;
         slot.authored = change->identity;
+        RefreshJointBody(id, *change->identity);
     }
 
     void SetResident(uint32_t id, bool resident, bool preserveVelocity)
@@ -477,7 +658,8 @@ class JoltGpuScene::Impl
         }
         pendingCompletions.reserve(pendingCompletions.size() + 2);
         const auto source = author ? AppendSource(*author) : PhysicsTargetSource{};
-        if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted) {
+        if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted &&
+            !pending.back().prepareWork) {
             pending.back().commands.push_back(command);
         } else {
             JoltGpuControlGroup group;
@@ -513,6 +695,7 @@ class JoltGpuScene::Impl
     void StageRetire(uint32_t id)
     {
         const uint32_t index = RequireSlot(id);
+        DestroyJointsForBody(id);
         JoltGpuControlGroup group;
         group.prepareModel = [this, index, id] {
             RequireOwnership(index, id);
@@ -561,12 +744,15 @@ class JoltGpuScene::Impl
                                 controlOnly]() -> std::unique_ptr<JoltGpuModelUpdate> {
             if (storage.GetBodyCount()) {
                 publication->bodyModels = storage.Get(Resource::BodyModels)->Freeze();
-                if (const auto &shapes = storage.Get(Resource::ShapeModels))
-                    publication->shapeModels = shapes->Freeze();
+                if (storage.GetShapeCount())
+                    publication->shapeModels = storage.Get(Resource::ShapeModels)->Freeze();
                 publication->worlds = storage.Get(Resource::Worlds)->Freeze();
                 if (controlOnly)
                     publication->bodyStates = storage.Get(Resource::BodyStates)->Freeze();
             }
+            publication->joints = acceptedJoints;
+            if (controlOnly && storage.GetJointCount())
+                publication->jointStream = storage.Get(Resource::Joints)->Freeze();
             publication->leaves.resize(storage.GetShapeCount());
             for (size_t index = 0; index < slots.size(); ++index) {
                 publication->actors[index] = slots[index].accepted;
@@ -602,12 +788,17 @@ class JoltGpuScene::Impl
                 return consumer(retainedPublication);
             };
         JoltGpuTickControl control;
-        if (finalConsumer)
-            control.prepareFinalWork = [publication, retainedPublication, consumer = std::move(finalConsumer)](
-                                           const std::shared_ptr<rhi::ComputeBuffer> &states) {
-                publication->bodyStates = states;
-                return consumer(retainedPublication);
-            };
+        control.prepareFinalWork = [this, publication, retainedPublication, consumer = std::move(finalConsumer)](
+                                       const std::shared_ptr<rhi::ComputeBuffer> &states) {
+            publication->bodyStates = states;
+            if (storage.GetJointCount())
+                publication->jointStream = storage.Get(Resource::Joints)->Freeze();
+            // Numerical failure rejects the whole unpublished step. The last
+            // complete world stays available; a local guard is not a fallback.
+            return Then(joints.PrepareStatus(retainedPublication), [retainedPublication, consumer] {
+                return consumer ? consumer(retainedPublication) : JoltGpuControlWork{};
+            });
+        };
         // Reserve before moving any pending work so allocation failure leaves
         // the authored queue intact and no initialization packet is orphaned.
         pending.reserve(pending.size() + 1);
@@ -718,6 +909,10 @@ class JoltGpuScene::Impl
         }
         candidate.reset();
         byId.clear();
+        for (auto &[id, joint] : authoredJoints)
+            joint.owner->OnPhysicsConstraintDestroyed();
+        authoredJoints.clear();
+        acceptedJoints.clear();
     }
 
     PhysicsECSStore &actors;
@@ -725,6 +920,10 @@ class JoltGpuScene::Impl
     JoltGpuPrograms programs;
     JoltGpuBodyMutations mutations;
     JoltGpuBodyCommands commands;
+    JoltGpuJoints &joints;
+    std::map<uint64_t, JointRecord> authoredJoints;
+    std::vector<PublishedJoint> acceptedJoints;
+    uint64_t nextJointId = 1;
     std::vector<Slot> slots;
     std::vector<uint32_t> freeSlots;
     std::unordered_map<uint32_t, uint32_t> byId;
@@ -745,8 +944,8 @@ class JoltGpuScene::Impl
 
 JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity,
                            const ShaderTargetCode &stepTarget, const ShaderTargetCode &mutationTarget,
-                           const ShaderTargetCode &commandTarget)
-    : m_impl(std::make_unique<Impl>(host, work, capacity, stepTarget, mutationTarget, commandTarget))
+                           const ShaderTargetCode &commandTarget, JoltGpuJoints &joints)
+    : m_impl(std::make_unique<Impl>(host, work, capacity, stepTarget, mutationTarget, commandTarget, joints))
 {
 }
 
@@ -775,6 +974,37 @@ PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand command,
 void JoltGpuScene::StageRetire(uint32_t id)
 {
     m_impl->StageRetire(id);
+}
+
+uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
+                                   JointAuthor author)
+{
+    return m_impl->CreateJoint(owner, ownerBody, connectedBody, author);
+}
+
+void JoltGpuScene::UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update)
+{
+    m_impl->UpdateJoint(id, update);
+}
+
+void JoltGpuScene::UpdateJoints(std::vector<JointUpdate> updates)
+{
+    m_impl->UpdateJoints(std::move(updates));
+}
+
+void JoltGpuScene::DestroyJoint(uint64_t id)
+{
+    m_impl->DestroyJoint(id);
+}
+
+void JoltGpuScene::DestroyJointsForBody(uint32_t bodyId)
+{
+    m_impl->DestroyJointsForBody(bodyId);
+}
+
+const JoltGpuScene::PublishedJoint &JoltGpuScene::GetAuthoredJoint(uint64_t id) const
+{
+    return m_impl->GetAuthoredJoint(id);
 }
 
 JoltGpuScene::BodyAllocation JoltGpuScene::FindBody(uint32_t id) const noexcept

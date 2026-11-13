@@ -153,12 +153,10 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(std::vector<std::
             throw std::invalid_argument("Compute kernel buffers must belong to its host");
     if (proof) {
         const auto validate = [&](const auto &ranges, ComputeBufferAccess required) {
-            std::vector<bool> seen(buffers.size());
             for (const auto &range : ranges) {
-                if (range.binding >= buffers.size() || seen[range.binding] ||
+                if (range.binding >= buffers.size() ||
                     (static_cast<uint8_t>(bufferAccesses[range.binding]) & static_cast<uint8_t>(required)) == 0)
-                    throw std::invalid_argument("Compute proof must name unique bindings with matching access");
-                seen[range.binding] = true;
+                    throw std::invalid_argument("Compute proof range must name a binding with matching access");
                 buffers[range.binding]->ValidateRange(range.offset, range.byteSize);
             }
         };
@@ -1350,12 +1348,10 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
                 throw std::invalid_argument("Compute work reads storage without a prior complete writer or input port");
         }
         ValidateWorkAliases(dispatch, identities);
-        std::vector<bool> written(dispatch.bindings.size());
         for (const auto &fact : dispatch.completeWrites) {
             const auto index = fact.binding;
-            if (index >= dispatch.bindings.size() || written[index] || !Writes(dispatch.bindings[index].access))
-                throw std::invalid_argument("Compute work complete-write facts must name unique writable bindings");
-            written[index] = true;
+            if (index >= dispatch.bindings.size() || !Writes(dispatch.bindings[index].access))
+                throw std::invalid_argument("Compute work complete-write facts must name writable bindings");
             const auto &binding = dispatch.bindings[index].range;
             validateRange({binding.slot, fact.offset, fact.byteSize});
             if (fact.offset < binding.offset || fact.offset - binding.offset > binding.byteSize ||
