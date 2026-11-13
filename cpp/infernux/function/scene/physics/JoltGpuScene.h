@@ -87,6 +87,8 @@ class JoltGpuScene final
         std::shared_ptr<rhi::ComputeBuffer> shapeModels;
         std::shared_ptr<rhi::ComputeBuffer> worlds;
         std::vector<std::shared_ptr<const PublishedActor>> actors;
+        /// Accepted author participation for this publication, not motion state.
+        std::vector<uint8_t> residentBodies;
         /// Global leaf ordinal -> immutable actor catalog in this publication.
         /// Addresses own no individual allocation and never refer to live slots.
         std::vector<LeafAddress> leaves;

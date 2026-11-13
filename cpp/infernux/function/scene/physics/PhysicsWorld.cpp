@@ -7,6 +7,7 @@
 #include "../Component.h"
 #include "../GameObject.h"
 #include "../Rigidbody.h"
+#include "../Scene.h"
 #include "../SceneManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
@@ -23,10 +24,12 @@
 #include <core/config/EngineConfig.h>
 #include <core/threading/FrameWorkOwner.h>
 #include <exception>
+#include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <utility>
 
@@ -52,6 +55,50 @@ Float4 Vector(const glm::vec3 &v)
 glm::vec3 Vector(const Float4 &v)
 {
     return {v.x, v.y, v.z};
+}
+JoltGpuControlWork AfterWork(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
+{
+    if (!work.packet)
+        return next();
+    auto continuation = std::move(work.continueAfterCompletion);
+    work.continueAfterCompletion = [continuation = std::move(continuation), next = std::move(next)]() mutable {
+        return continuation ? AfterWork(continuation(), std::move(next)) : next();
+    };
+    return work;
+}
+JoltGpuControlWork PrepareQueryWork(std::function<JoltGpuControlWork()> prepare, std::exception_ptr &error)
+{
+    try {
+        auto work = prepare();
+        if (auto continuation = std::move(work.continueAfterCompletion))
+            work.continueAfterCompletion = [continuation = std::move(continuation), &error]() mutable {
+                return PrepareQueryWork(std::move(continuation), error);
+            };
+        return work;
+    } catch (const JoltGpuQueryRequestError &) {
+        error = std::current_exception();
+        return {};
+    }
+}
+PhysicsBodyMotionState DecodeMotion(const JoltGpuScene::Publication &publication, const QueryMotionState &record)
+{
+    if (record.meta.x >= publication.actors.size() || !publication.actors[record.meta.x] ||
+        publication.actors[record.meta.x]->bodyId != record.meta.z)
+        throw std::runtime_error("GPU motion state differs from its retained body identity");
+    const auto &actor = *publication.actors[record.meta.x];
+    PhysicsBodyMotionState result;
+    result.bodyId = actor.bodyId;
+    result.shapeRevision = actor.shapeRevision;
+    result.position = Vector(record.positionInverseMass);
+    result.rotation = {record.rotation.w, record.rotation.x, record.rotation.y, record.rotation.z};
+    result.centerOfMass = Vector(record.centerOfMass);
+    result.linearVelocity = Vector(record.linearVelocity);
+    result.angularVelocity = Vector(record.angularVelocity);
+    result.inverseMass = glm::vec3(record.positionInverseMass.w);
+    result.inverseInertia = {Vector(record.inverseInertia0), Vector(record.inverseInertia1),
+                             Vector(record.inverseInertia2)};
+    result.inertia = {Vector(record.inertia0), Vector(record.inertia1), Vector(record.inertia2)};
+    return result;
 }
 Float4 Rotation(const glm::quat &v)
 {
@@ -354,6 +401,7 @@ void PhysicsWorld::Shutdown()
     m_lastPublication.reset();
     m_requestedMotion.clear();
     m_recreateActors.clear();
+    m_shapeGeometry.clear();
     m_gpuHost.reset();
     m_gpuWork = nullptr;
     if (m_ownsJoltGlobals) {
@@ -1209,54 +1257,254 @@ void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionStat
     }
 }
 
+JoltGpuControlWork
+PhysicsWorld::PrepareStateBatch(const std::shared_ptr<const JoltGpuScene::Publication> &publication,
+                                const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
+                                bool triggers, const std::vector<JoltGpuQueryExportBinding> &exports,
+                                PhysicsRigidbodyStateBatch &batch, std::shared_ptr<JoltGpuQueryResult> &motion,
+                                std::shared_ptr<JoltGpuQueryResult> &shapes, std::exception_ptr &requestError) const
+{
+    return PrepareQueryWork(
+        [&]() -> JoltGpuControlWork {
+            for (const auto &binding : exports)
+                if (binding.field > JoltGpuQueryExportField::ShapeBounciness ||
+                    (!includeBoxes && binding.field >= JoltGpuQueryExportField::ShapeBodyIndex))
+                    throw JoltGpuQueryRequestError("Physics export requires its requested state family");
+            batch.bodies = bodies;
+            batch.states.resize(bodies.size());
+            std::vector<QueryInput> motionInputs, shapeInputs;
+            const bool numericMotion =
+                (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) != 0 ||
+                std::any_of(exports.begin(), exports.end(), [](const auto &value) {
+                    return value.field <= JoltGpuQueryExportField::MotionInverseInertia;
+                });
+            motionInputs.reserve(numericMotion ? bodies.size() : 0);
+            shapeInputs.reserve(includeBoxes ? bodies.size() : 0);
+            for (size_t index = 0; index < bodies.size(); ++index) {
+                auto *body = bodies[index];
+                if (!body || !body->IsEnabled() || body->IsDestroyed() || !body->GetGameObject())
+                    throw JoltGpuQueryRequestError("Physics batch requires live enabled Rigidbody components");
+                const auto allocation = m_gpuScene->FindBody(body->GetBodyId());
+                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
+                    !publication->actors[allocation.slot])
+                    throw JoltGpuQueryRequestError("Physics batch requires accepted body identities");
+                const auto &identity = *publication->actors[allocation.slot];
+                if (identity.bodyId != allocation.bodyId || identity.rigidbodyComponentId != body->GetComponentID() ||
+                    identity.rigidbody != body->GetECSHandle())
+                    throw JoltGpuQueryRequestError("Physics batch Rigidbody differs from its retained publication");
+                batch.states[index].bodyId = identity.bodyId;
+                batch.states[index].shapeRevision = identity.shapeRevision;
+                if (numericMotion) {
+                    auto input = Query(QueryGatherMotion, QueryClosest, 0, false);
+                    input.meta.z = 0;
+                    input.source.y = allocation.slot;
+                    input.source.z = static_cast<uint32_t>(fields);
+                    input.geometry = identity.rootCenterOfMass;
+                    motionInputs.push_back(input);
+                }
+                if (includeBoxes) {
+                    auto input = Query(QueryGatherShapes, QueryAll, UINT32_MAX, triggers);
+                    input.meta.z = ShapeBox;
+                    input.source.y = allocation.slot;
+                    shapeInputs.push_back(input);
+                }
+            }
+            const uint64_t generation = GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange);
+            const auto readback = exports.empty() ? JoltGpuQueryReadback::Host : JoltGpuQueryReadback::Device;
+            JoltGpuPreparedQuery first, second;
+            if (!motionInputs.empty()) {
+                first = m_gpuQueries->Prepare(publication, motionInputs, {}, generation, readback);
+                motion = first.result;
+            }
+            if (!shapeInputs.empty()) {
+                second = m_gpuQueries->Prepare(publication, shapeInputs, {}, generation, readback);
+                shapes = second.result;
+            }
+            return AfterWork(std::move(first.work), [this, motionResult = motion, shapeResult = shapes,
+                                                     work = std::move(second.work), &batch, exports]() mutable {
+                if (motionResult && motionResult->GetSummary().counts.y != QuerySuccess)
+                    return JoltGpuControlWork{};
+                return AfterWork(std::move(work), [this, motionResult, shapeResult, &batch, exports] {
+                    if (shapeResult) {
+                        const auto &summary = shapeResult->GetSummary();
+                        if (summary.counts.y != QuerySuccess)
+                            return JoltGpuControlWork{};
+                        batch.boxCount = summary.counts.x;
+                    }
+                    if (exports.empty())
+                        return JoltGpuControlWork{};
+                    std::vector<std::shared_ptr<JoltGpuQueryResult>> results;
+                    if (motionResult)
+                        results.push_back(motionResult);
+                    if (shapeResult)
+                        results.push_back(shapeResult);
+                    return m_gpuQueries->PrepareExport(results, exports);
+                });
+            });
+        },
+        requestError);
+}
+
+void PhysicsWorld::MaterializeStateBatch(PhysicsRigidbodyStateBatch &batch,
+                                         const std::shared_ptr<JoltGpuQueryResult> &motion,
+                                         const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical) const
+{
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    if (motion) {
+        (void)motion->ReadSpans();
+        if (numerical) {
+            const auto &records = motion->ReadMotion();
+            if (records.size() != batch.bodies.size())
+                throw std::runtime_error("GPU motion batch did not preserve input body order");
+            for (size_t index = 0; index < records.size(); ++index) {
+                auto state = DecodeMotion(*motion->publication, records[index]);
+                if (state.bodyId != batch.states[index].bodyId)
+                    throw std::runtime_error("GPU motion batch differs from its input body order");
+                batch.states[index] = state;
+                m_requestedMotion[batch.states[index].bodyId] = {motion->numericalGeneration, batch.states[index],
+                                                                 static_cast<PhysicsStateFields>(0x1ff)};
+            }
+        }
+    }
+    if (shapes) {
+        const auto &spans = shapes->ReadSpans();
+        if (numerical) {
+            const auto &records = shapes->ReadShapes();
+            batch.boxes.reserve(records.size());
+            for (size_t input = 0; input < spans.size(); ++input)
+                for (uint32_t local = 0; local < spans[input].range.y; ++local) {
+                    const auto &record = records[spans[input].range.x + local];
+                    const auto &address = shapes->publication->leaves.at(record.meta.z);
+                    if (address.bodySlot != record.meta.x)
+                        throw std::runtime_error("GPU box batch differs from its published leaf owner");
+                    const auto &leaf = shapes->publication->actors.at(record.meta.x)->leaves.at(address.actorLeaf);
+                    PhysicsBoxShapeState box;
+                    box.memberIndex = leaf.memberIndex;
+                    box.center = Vector(record.center);
+                    box.rotation = {record.rotation.w, record.rotation.x, record.rotation.y, record.rotation.z};
+                    box.halfExtents = Vector(record.geometry);
+                    box.friction = record.material.x;
+                    box.bounciness = record.material.y;
+                    batch.boxes.push_back({static_cast<uint32_t>(input), box});
+                }
+        }
+    }
+}
+
+PhysicsRigidbodyStateBatch
+PhysicsWorld::GatherRigidbodyStates(const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields,
+                                    bool includeBoxes, bool triggers,
+                                    const std::vector<JoltGpuQueryExportBinding> &exports) const
+{
+    PhysicsRigidbodyStateBatch batch;
+    RequireOwnerThread();
+    if (bodies.empty())
+        return batch;
+    for (auto *body : bodies)
+        if (!body || !body->IsEnabled() || body->IsDestroyed() || !body->GetGameObject())
+            throw std::invalid_argument("Physics batch requires live enabled Rigidbody components");
+    std::shared_ptr<JoltGpuQueryResult> motion, shapes;
+    std::exception_ptr error;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        return PrepareStateBatch(publication, bodies, fields, includeBoxes, triggers, exports, batch, motion, shapes,
+                                 error);
+    });
+    if (error)
+        std::rethrow_exception(error);
+    MaterializeStateBatch(batch, motion, shapes, exports.empty());
+    return batch;
+}
+
+PhysicsRigidbodyStateBatch
+PhysicsWorld::GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layers,
+                                            bool triggers, PhysicsStateFields fields, bool includeBoxes,
+                                            const std::vector<JoltGpuQueryExportBinding> &exports) const
+{
+    (void)Vector(minimum);
+    (void)Vector(maximum);
+    if (glm::any(glm::greaterThan(minimum, maximum)))
+        throw std::invalid_argument("Physics query bounds require minimum <= maximum");
+    auto input = Query(QueryBodyBounds, QueryUniqueBody, layers, triggers);
+    input.positionMaximum = Vector(glm::vec3((glm::dvec3(minimum) + glm::dvec3(maximum)) * .5));
+    input.direction = Vector(glm::vec3((glm::dvec3(maximum) - glm::dvec3(minimum)) * .5));
+    PhysicsRigidbodyStateBatch batch;
+    std::shared_ptr<JoltGpuQueryResult> bounds, motion, shapes;
+    std::exception_ptr error;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        return PrepareQueryWork(
+            [&]() {
+                auto query = m_gpuQueries->Prepare(
+                    publication, {input}, {}, GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
+                bounds = query.result;
+                return AfterWork(std::move(query.work), [this, publication, &batch, &bounds, &motion, &shapes, fields,
+                                                         includeBoxes, triggers, exports, &error] {
+                    if (bounds->GetSummary().counts.y != QuerySuccess)
+                        return JoltGpuControlWork{};
+                    std::vector<Rigidbody *> bodies;
+                    auto &store = PhysicsECSStore::Instance();
+                    for (const auto &record : bounds->ReadHits()) {
+                        const auto &identity = *publication->actors.at(record.meta.x);
+                        if (!store.IsValid(identity.rigidbody))
+                            throw JoltGpuQueryRequestError("Bounds result Rigidbody no longer exists");
+                        bodies.push_back(store.GetRigidbody(identity.rigidbody).owner);
+                    }
+                    return PrepareStateBatch(publication, bodies, fields, includeBoxes, triggers, exports, batch,
+                                             motion, shapes, error);
+                });
+            },
+            error);
+    });
+    if (error)
+        std::rethrow_exception(error);
+    (void)bounds->ReadSpans();
+    MaterializeStateBatch(batch, motion, shapes, exports.empty());
+    return batch;
+}
+
 PhysicsBodyMotionState PhysicsWorld::ReadMotionState(uint32_t id, PhysicsStateFields fields) const
 {
+    RequireOwnerThread();
     RequireHealthyStep();
     RequireGpu();
-    if (HasPhysicsStateField(fields, PhysicsStateFields::InverseInertia))
-        Unsupported("GPU inertia-tensor state gathering");
-    const bool wantMass = HasPhysicsStateField(fields, PhysicsStateFields::InverseMass);
     const auto cached = m_requestedMotion.find(id);
     if ((!m_stepPending || m_stepCompleted) && !HasPendingControl() && cached != m_requestedMotion.end() &&
-        cached->second.generation == GetQueryGeneration() && (!wantMass || cached->second.hasInverseMass))
+        cached->second.generation == GetQueryGeneration() &&
+        (static_cast<uint32_t>(fields) & ~static_cast<uint32_t>(cached->second.fields)) == 0)
         return cached->second.state;
-    BodyState state{};
-    BodyModel model{};
-    std::shared_ptr<rhi::PreparedComputeBatch> packet;
-    std::shared_ptr<const JoltGpuScene::Publication> retainedPublication;
-    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        retainedPublication = publication;
-        const auto allocation = m_gpuScene->FindBody(id);
-        if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
-            !publication->actors[allocation.slot] || publication->actors[allocation.slot]->bodyId != id)
-            throw std::invalid_argument("Physics state requires an accepted live body");
-        std::vector<rhi::ComputeBufferRead> reads{
-            {publication->bodyStates, uint64_t(allocation.slot) * sizeof(BodyState), sizeof(BodyState)}};
-        if (wantMass)
-            reads.push_back(
-                {publication->bodyModels, uint64_t(allocation.slot) * sizeof(BodyModel), sizeof(BodyModel)});
-        packet = rhi::PrepareComputeBatch(*m_gpuHost, {}, {}, std::move(reads));
-        return packet;
-    });
-    FrameWorkOwner::Scope materialize(*m_gpuWork);
-    packet->Readback(0)->ReadInto(&state, sizeof(state));
-    if (wantMass)
-        packet->Readback(1)->ReadInto(&model, sizeof(model));
-    const auto allocation = m_gpuScene->FindBody(id);
-    const auto &identity = *retainedPublication->actors[allocation.slot];
     PhysicsBodyMotionState result;
-    result.bodyId = id;
-    result.shapeRevision = identity.shapeRevision;
-    result.rotation = {state.rotation.w, state.rotation.x, state.rotation.y, state.rotation.z};
-    result.centerOfMass = Vector(state.positionCOM);
-    // CPU Transform keeps body-origin/hierarchy semantics. This converts the
-    // actual completed device pose; no CPU integration or collision runs here.
-    result.position = result.centerOfMass - result.rotation * Vector(identity.rootCenterOfMass);
-    result.linearVelocity = Vector(state.linearVelocity);
-    result.angularVelocity = Vector(state.angularVelocity);
-    if (wantMass && (model.meta.z & ~MotionNotResident) == MotionDynamic)
-        result.inverseMass = glm::vec3(model.mass.x);
-    m_requestedMotion[id] = {GetQueryGeneration(), result, wantMass};
+    std::shared_ptr<JoltGpuQueryResult> motion;
+    std::exception_ptr error;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        return PrepareQueryWork(
+            [&]() -> JoltGpuControlWork {
+                const auto allocation = m_gpuScene->FindBody(id);
+                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
+                    !publication->actors[allocation.slot] || publication->actors[allocation.slot]->bodyId != id)
+                    throw JoltGpuQueryRequestError("Physics state requires an accepted live body");
+                const auto &identity = *publication->actors[allocation.slot];
+                result.bodyId = id;
+                result.shapeRevision = identity.shapeRevision;
+                if ((static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) == 0)
+                    return {};
+                auto input = Query(QueryGatherMotion, QueryClosest, 0, false);
+                input.meta.z = 0;
+                input.source.y = allocation.slot;
+                input.source.z = static_cast<uint32_t>(fields);
+                input.geometry = identity.rootCenterOfMass;
+                auto prepared = m_gpuQueries->Prepare(
+                    publication, {input}, {}, GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
+                motion = prepared.result;
+                return std::move(prepared.work);
+            },
+            error);
+    });
+    if (error)
+        std::rethrow_exception(error);
+    if (motion) {
+        FrameWorkOwner::Scope materialize(*m_gpuWork);
+        result = DecodeMotion(*motion->publication, motion->ReadMotion().at(0));
+        m_requestedMotion[id] = {motion->numericalGeneration, result, static_cast<PhysicsStateFields>(0x1ff)};
+    }
     return result;
 }
 PhysicsBodyMotionState PhysicsWorld::GetBodyMotionState(uint32_t id, PhysicsStateFields fields) const
@@ -1283,9 +1531,9 @@ glm::vec3 PhysicsWorld::GetBodyAngularVelocity(uint32_t id) const
 {
     return ReadMotionState(id, PhysicsStateFields::AngularVelocity).angularVelocity;
 }
-glm::mat3 PhysicsWorld::GetBodyWorldSpaceInertiaTensor(uint32_t) const
+glm::mat3 PhysicsWorld::GetBodyWorldSpaceInertiaTensor(uint32_t id) const
 {
-    Unsupported("GPU world inertia-tensor query");
+    return ReadMotionState(id, PhysicsStateFields::InverseInertia).inertia;
 }
 
 bool PhysicsWorld::PrepareRaycastBatchQuery() const
@@ -1682,13 +1930,204 @@ bool PhysicsWorld::CapsuleCast(const glm::vec3 &, const glm::vec3 &, float, cons
 {
     Unsupported("capsule cast");
 }
-std::vector<PhysicsShapeState> PhysicsWorld::GetBodyShapeStates(uint32_t, bool) const
+std::shared_ptr<const PhysicsShapeGeometry> PhysicsWorld::ResolveShapeGeometry(const JoltGpuScene::PublishedLeaf &leaf,
+                                                                               const QueryShapeState &record) const
 {
-    Unsupported("GPU world shape-state gathering");
+    const auto *shape = leaf.shape.GetPtr();
+    if (!shape)
+        throw std::runtime_error("Published shape state has no retained immutable geometry");
+    if (const auto found = m_shapeGeometry.find(shape); found != m_shapeGeometry.end())
+        if (auto geometry = found->second.lock())
+            return geometry;
+    auto geometry = std::make_shared<PhysicsShapeGeometry>();
+    // Intrusive Jolt ownership is retained by the aliasing owner. The pointer
+    // is an in-process identity only and remains unique while this value lives.
+    auto owner = std::make_shared<JPH::RefConst<JPH::Shape>>(leaf.shape);
+    geometry->shape = std::shared_ptr<const JPH::Shape>(std::move(owner), shape);
+    geometry->identity = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(shape));
+    geometry->convex = true;
+    const auto bounds = shape->GetLocalBounds();
+    geometry->boundsMin = {bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ()};
+    geometry->boundsMax = {bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ()};
+    if (record.surface.y == ShapeBox) {
+        geometry->type = PhysicsShapeType::Box;
+        geometry->dimensions = {record.geometry.x * 2, record.geometry.y * 2, record.geometry.z * 2, record.geometry.w};
+    } else if (record.surface.y == ShapeSphere) {
+        geometry->type = PhysicsShapeType::Sphere;
+        geometry->dimensions = {record.geometry.w, 0, 0, 0};
+    } else if (record.surface.y == ShapeCapsule) {
+        geometry->type = PhysicsShapeType::Capsule;
+        geometry->dimensions = {record.geometry.w, 2 * (record.geometry.y + record.geometry.w), 1, 0};
+    } else {
+        throw std::runtime_error("GPU shape state has no immutable geometry adapter");
+    }
+    m_shapeGeometry[shape] = geometry;
+    return geometry;
 }
-std::vector<PhysicsBoxShapeState> PhysicsWorld::GetBodyBoxShapeStates(uint32_t, bool) const
+
+std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::GatherBodyShapes(uint32_t id, bool triggers) const
 {
-    Unsupported("GPU box shape-state gathering");
+    JoltGpuPreparedQuery query;
+    std::exception_ptr error;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        return PrepareQueryWork(
+            [&] {
+                const auto allocation = m_gpuScene->FindBody(id);
+                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
+                    !publication->actors[allocation.slot] || publication->actors[allocation.slot]->bodyId != id)
+                    throw JoltGpuQueryRequestError("Shape gathering requires an accepted body identity");
+                auto input = Query(QueryGatherShapes, QueryAll, UINT32_MAX, triggers);
+                input.meta.z = QueryAllShapeTypes;
+                input.source.y = allocation.slot;
+                query = m_gpuQueries->Prepare(publication, {input}, {},
+                                              GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange));
+                return std::move(query.work);
+            },
+            error);
+    });
+    if (error)
+        std::rethrow_exception(error);
+    return std::move(query.result);
+}
+
+std::vector<PhysicsShapeState> PhysicsWorld::GetBodyShapeStates(uint32_t id, bool triggers) const
+{
+    auto query = GatherBodyShapes(id, triggers);
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    std::vector<PhysicsShapeState> result;
+    const auto &records = query->ReadShapes();
+    result.reserve(records.size());
+    for (const auto &record : records) {
+        const auto &address = query->publication->leaves.at(record.meta.z);
+        const auto &identity = *query->publication->actors.at(record.meta.x);
+        if (address.bodySlot != record.meta.x)
+            throw std::runtime_error("GPU shape state has a different published leaf owner");
+        const auto &leaf = identity.leaves.at(address.actorLeaf);
+        PhysicsShapeState state;
+        state.collider = leaf.surfaceTarget.GetCollider();
+        state.memberIndex = leaf.memberIndex;
+        state.layerBit = record.surface.x;
+        state.trigger = (record.meta.w & 1u) != 0;
+        state.moving = (record.meta.w & 2u) != 0;
+        state.geometry = ResolveShapeGeometry(leaf, record);
+        state.center = Vector(record.center);
+        state.rotation = {record.rotation.w, record.rotation.x, record.rotation.y, record.rotation.z};
+        state.bodyCenterOfMass = Vector(record.bodyCenterOfMass);
+        state.linearVelocity = Vector(record.linearVelocity);
+        state.angularVelocity = Vector(record.angularVelocity);
+        state.friction = record.material.x;
+        state.bounciness = record.material.y;
+        state.frictionCombine = record.surface.z;
+        state.bounceCombine = record.surface.w;
+        result.push_back(std::move(state));
+    }
+    return result;
+}
+
+std::vector<PhysicsBoxShapeState> PhysicsWorld::GetBodyBoxShapeStates(uint32_t id, bool triggers) const
+{
+    std::vector<PhysicsBoxShapeState> result;
+    for (const auto &state : GetBodyShapeStates(id, triggers))
+        if (state.geometry->type == PhysicsShapeType::Box)
+            result.push_back({state.memberIndex, state.center, state.rotation,
+                              glm::vec3(state.geometry->dimensions) * .5f, state.friction, state.bounciness});
+    return result;
+}
+
+std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::PrepareParticleCollisionScene(
+    Scene &scene, const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
+    uint64_t revision) const
+{
+    using RowKey = particle::GpuParticleCollisionRowKey;
+    struct Row
+    {
+        RowKey key;
+        JoltGpuParticleExportRow mapping;
+    };
+    JoltGpuPreparedQuery query;
+    std::shared_ptr<JoltGpuParticleExportResult> exported;
+    std::vector<RowKey> keys;
+    std::exception_ptr error;
+    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        return PrepareQueryWork(
+            [&]() -> JoltGpuControlWork {
+                std::vector<QueryInput> requests;
+                std::array<std::vector<Row>, 2> rows;
+                uint32_t sourceRow = 0;
+                for (uint32_t slot = 0; slot < publication->actors.size(); ++slot) {
+                    const auto &actor = publication->actors[slot];
+                    auto *owner = actor ? actor->owner.target.GetGameObject() : nullptr;
+                    if (!owner || owner->GetScene() != &scene || !publication->residentBodies.at(slot))
+                        continue;
+                    auto input = Query(QueryGatherShapes, QueryAll);
+                    input.meta.z = QueryAllShapeTypes;
+                    input.source.y = slot;
+                    requests.push_back(input);
+                    for (const auto &leaf : actor->leaves) {
+                        Row row;
+                        row.key = {leaf.colliderId, leaf.subShapeId, leaf.subShapeBits,
+                                   reinterpret_cast<uintptr_t>(leaf.shape.GetPtr())};
+                        row.mapping.selection = {sourceRow++, InvalidQueryBodySlot, 0, 0};
+                        row.mapping.identity = {static_cast<uint32_t>(leaf.colliderId),
+                                                static_cast<uint32_t>(leaf.colliderId >> 32),
+                                                static_cast<uint32_t>(leaf.surfaceGameObjectId),
+                                                static_cast<uint32_t>(leaf.surfaceGameObjectId >> 32)};
+                        rows[actor->acceptedMotionType == MotionStatic ? 0 : 1].push_back(std::move(row));
+                    }
+                }
+                // Preserve accepted leaf order within the two particle table ranges.
+                // This is identity mapping only; all numerical projection stays GPU-side.
+                const auto staticCount = static_cast<uint32_t>(rows[0].size());
+                const bool hasHistory = previous && previous->simulationEpoch == publication->simulationEpoch;
+                std::map<RowKey, uint32_t> history;
+                if (hasHistory)
+                    for (uint32_t index = 0; index < previous->rows.size(); ++index)
+                        history.emplace(previous->rows[index], index);
+                std::vector<JoltGpuParticleExportRow> mappings;
+                mappings.reserve(sourceRow);
+                keys.reserve(sourceRow);
+                for (auto &range : rows)
+                    for (auto &row : range) {
+                        if (const auto old = history.find(row.key); old != history.end())
+                            row.mapping.selection.y = old->second;
+                        mappings.push_back(row.mapping);
+                        keys.push_back(row.key);
+                    }
+                const uint64_t topology = !hasHistory ? 1
+                                                      : previous->topologyRevision +
+                                                            static_cast<uint64_t>(previous->rows != keys ||
+                                                                                  previous->staticCount != staticCount);
+                query = m_gpuQueries->Prepare(publication, requests, {},
+                                              GetQueryGeneration() + static_cast<uint64_t>(m_controlNumericalChange),
+                                              JoltGpuQueryReadback::Device);
+                return AfterWork(
+                    std::move(query.work),
+                    [this, source = query.result, mappings = std::move(mappings), previous, hasHistory, staticCount,
+                     revision, topology, &exported]() -> JoltGpuControlWork {
+                        const auto &summary = source->GetSummary();
+                        if (summary.counts.y != QuerySuccess)
+                            return {};
+                        if (summary.counts.x != mappings.size())
+                            throw std::runtime_error("GPU particle gather differs from its retained leaf catalog");
+                        auto prepared = m_gpuQueries->PrepareParticleExport(source, mappings,
+                                                                            hasHistory ? previous->records : nullptr,
+                                                                            staticCount, revision, topology);
+                        exported = std::move(prepared.result);
+                        return std::move(prepared.work);
+                    });
+            },
+            error);
+    });
+    if (error)
+        std::rethrow_exception(error);
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    (void)query.result->ReadSpans();
+    // A recognized read-only numerical failure is reported outside the world's
+    // source, so a failed export does not poison subsequent simulation steps.
+    exported->Validate();
+    exported->payload->simulationEpoch = query.result->publication->simulationEpoch;
+    exported->payload->rows = std::move(keys);
+    return std::move(exported->payload);
 }
 
 std::vector<glm::vec3> PhysicsShapeGeometry::GetTriangles() const

@@ -1,10 +1,13 @@
 #include "ParticleGpuCollisionScene.h"
 
+#include <function/renderer/rhi/RhiComputeBuffer.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -429,6 +432,8 @@ void ParticleGpuCollisionScene::Destroy() noexcept
     m_stagedMeshIndices.clear();
     m_stagedMeshBvhNodes.clear();
     m_stagedGeometryByIdentity.clear();
+    m_stagedDevicePayload.reset();
+    m_recordedDevicePayload.reset();
     m_pendingStaticUpload = false;
     m_pendingDynamicUpload = false;
     m_pendingTopologyUpload = false;
@@ -442,6 +447,66 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
     if (!IsValid() || snapshot.revision == 0 || snapshot.topologyRevision == 0) {
         SetError(error, "GPU particle collision snapshot is invalid");
         return false;
+    }
+
+    if (snapshot.device) {
+        const auto &value = *snapshot.device;
+        if (!snapshot.staticColliders.empty() || !snapshot.dynamicColliders.empty() ||
+            !snapshot.meshGeometries.empty() || snapshot.replaceMeshTopology || value.revision != snapshot.revision ||
+            value.topologyRevision != snapshot.topologyRevision || value.rowCount > m_capacity ||
+            value.staticCount > value.rowCount || value.rows.size() != value.rowCount || !value.retained ||
+            uint64_t(value.gridRefCount) > uint64_t(value.rowCount) * MaxGridCellCount ||
+            !m_stagedMeshVertices.empty() || !m_stagedMeshIndices.empty() || !m_stagedMeshBvhNodes.empty()) {
+            SetError(error, "GPU particle device publication differs from its prepared primitive table");
+            return false;
+        }
+        const auto validate = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes) {
+            return buffer && buffer->IsFrozen() && &buffer->GetHost().device == m_device &&
+                   buffer->GetHost().IsAlive() && buffer->GetByteSize() >= bytes &&
+                   (!bytes || (buffer->HasInitializedRange(0, bytes) && buffer->GetLastWriteSubmission().IsValid() &&
+                               buffer->GetHost().Queue().IsComplete(buffer->GetLastWriteSubmission())));
+        };
+        if (!validate(value.records, uint64_t(value.rowCount) * sizeof(GpuParticleColliderRecord)) ||
+            !validate(value.header, sizeof(GpuParticleCollisionSceneHeader)) ||
+            !validate(value.gridOffsets, uint64_t(MaxGridCellCount + 1u) * sizeof(uint32_t)) ||
+            !validate(value.gridRefs, uint64_t(value.gridRefCount) * sizeof(uint32_t)) ||
+            !value.records->GetHost().SharesServicesWith(value.header->GetHost()) ||
+            !value.records->GetHost().SharesServicesWith(value.gridOffsets->GetHost()) ||
+            !value.records->GetHost().SharesServicesWith(value.gridRefs->GetHost())) {
+            SetError(error, "GPU particle device publication requires completed frozen values on the shared host");
+            return false;
+        }
+        std::set<GpuParticleCollisionRowKey> identities;
+        for (const auto &row : value.rows)
+            if (!row.colliderId || !row.geometryIdentity || !identities.insert(row).second) {
+                SetError(error, "GPU particle device publication has an invalid or duplicate leaf identity");
+                return false;
+            }
+        const uint64_t currentRevision = m_uploadPending ? m_pendingRevision : m_publishedRevision;
+        if (snapshot.revision <= currentRevision) {
+            if (snapshot.revision == currentRevision && m_stagedDevicePayload == snapshot.device)
+                return true;
+            SetError(error, "GPU particle device publication revision did not advance");
+            return false;
+        }
+        m_stagedDevicePayload = snapshot.device;
+        // This is metadata for acceptance/diagnostics only; the real header,
+        // transforms, material, bounds and grid are copied from GPU output.
+        m_stagedHeader = {};
+        m_stagedHeader.colliderCount = value.rowCount;
+        m_stagedHeader.staticColliderCount = value.staticCount;
+        m_stagedHeader.revisionLow = static_cast<uint32_t>(value.revision);
+        m_stagedHeader.revisionHigh = static_cast<uint32_t>(value.revision >> 32u);
+        m_stagedHeader.topology[3] = static_cast<uint32_t>(value.topologyRevision);
+        m_stagedStaticColliders.clear();
+        m_stagedDynamicColliders.clear();
+        m_stagedGridOffsets.clear();
+        m_stagedGridColliderIndices.clear();
+        m_pendingStaticUpload = m_pendingDynamicUpload = m_pendingTopologyUpload = false;
+        m_pendingRevision = value.revision;
+        m_pendingTopologyRevision = value.topologyRevision;
+        m_uploadPending = true;
+        return true;
     }
 
     const uint64_t currentTopologyRevision =
@@ -494,7 +559,8 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
         return false;
     }
     if (snapshot.revision == currentRevision) {
-        if (!snapshot.replaceMeshTopology && EqualRecords(effectiveSnapshot.staticColliders, m_stagedStaticColliders) &&
+        if (!m_stagedDevicePayload && !snapshot.replaceMeshTopology &&
+            EqualRecords(effectiveSnapshot.staticColliders, m_stagedStaticColliders) &&
             EqualRecords(effectiveSnapshot.dynamicColliders, m_stagedDynamicColliders))
             return true;
         SetError(error, "GPU particle collision snapshot changed without a new revision");
@@ -525,6 +591,7 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
     m_pendingStaticUpload = m_pendingStaticUpload || staticChanged;
     m_pendingDynamicUpload = m_pendingDynamicUpload || staticChanged || dynamicChanged;
     m_stagedHeader = header;
+    m_stagedDevicePayload.reset();
 
     m_stagedStaticColliders = std::move(effectiveSnapshot.staticColliders);
     m_stagedDynamicColliders = std::move(effectiveSnapshot.dynamicColliders);
@@ -551,6 +618,25 @@ bool ParticleGpuCollisionScene::RecordPendingUpload(const rhi::TransferCommandEn
         return false;
     if (m_recordedRevision != 0)
         return m_recordedRevision == m_pendingRevision;
+
+    if (m_stagedDevicePayload) {
+        const auto &value = *m_stagedDevicePayload;
+        const auto copy = [&](const std::shared_ptr<rhi::ComputeBuffer> &source, rhi::BufferHandle destination,
+                              uint64_t bytes) {
+            if (bytes)
+                encoder.CopyBuffer(source->GetBuffer(), destination, {0, 0, bytes});
+        };
+        copy(value.header, m_headerBuffer, sizeof(GpuParticleCollisionSceneHeader));
+        copy(value.records, m_colliderBuffer, uint64_t(value.rowCount) * sizeof(GpuParticleColliderRecord));
+        copy(value.gridOffsets, m_gridOffsetBuffer, uint64_t(MaxGridCellCount + 1u) * sizeof(uint32_t));
+        copy(value.gridRefs, m_gridColliderIndexBuffer, uint64_t(value.gridRefCount) * sizeof(uint32_t));
+        m_recordedHeader = m_stagedHeader;
+        m_recordedRevision = m_pendingRevision;
+        m_recordedTopologyRevision = m_pendingTopologyRevision;
+        m_recordedGridReferenceCount = value.gridRefCount;
+        m_recordedDevicePayload = m_stagedDevicePayload;
+        return true;
+    }
 
     const auto upload = [&](rhi::BufferHandle buffer, uint64_t offset, const auto &values) {
         return values.empty() || encoder.UpdateBuffer(buffer, offset, values.data(), values.size() * sizeof(values[0]));
@@ -601,6 +687,7 @@ void ParticleGpuCollisionScene::NotifySubmission(bool submitted) noexcept
     m_recordedTopologyRevision = 0;
     m_recordedGridReferenceCount = 0;
     m_recordedHeader = {};
+    m_recordedDevicePayload.reset();
 }
 
 bool ParticleGpuCollisionScene::IsValid() const noexcept

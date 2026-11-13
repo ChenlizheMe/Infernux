@@ -8,9 +8,16 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
+
+namespace infernux::rhi
+{
+class ComputeBuffer;
+}
 
 namespace infernux::particle
 {
@@ -91,11 +98,52 @@ struct GpuParticleCollisionMeshGeometry
     std::vector<uint32_t> indices;
 };
 
+/// Only immutable publication identity participates in history matching. A leaf
+/// ordinal can move during repacking; neither its index nor a hash is an identity.
+struct GpuParticleCollisionRowKey
+{
+    uint64_t colliderId = 0;
+    uint32_t subShapeId = 0;
+    uint32_t subShapeBits = 0;
+    std::uintptr_t geometryIdentity = 0;
+
+    [[nodiscard]] bool operator==(const GpuParticleCollisionRowKey &other) const noexcept
+    {
+        return std::tie(colliderId, subShapeId, subShapeBits, geometryIdentity) ==
+               std::tie(other.colliderId, other.subShapeId, other.subShapeBits, other.geometryIdentity);
+    }
+    [[nodiscard]] bool operator<(const GpuParticleCollisionRowKey &other) const noexcept
+    {
+        return std::tie(colliderId, subShapeId, subShapeBits, geometryIdentity) <
+               std::tie(other.colliderId, other.subShapeId, other.subShapeBits, other.geometryIdentity);
+    }
+};
+
+/// Completed, frozen output of the common physics query/export work. Numeric
+/// transforms, material and broadphase data stay on the device. The particle
+/// submission copies these values into its existing collision tables.
+struct GpuParticleCollisionDevicePayload
+{
+    std::shared_ptr<rhi::ComputeBuffer> records;
+    std::shared_ptr<rhi::ComputeBuffer> header;
+    std::shared_ptr<rhi::ComputeBuffer> gridOffsets;
+    std::shared_ptr<rhi::ComputeBuffer> gridRefs;
+    std::shared_ptr<const void> retained;
+    uint32_t rowCount = 0;
+    uint32_t staticCount = 0;
+    uint32_t gridRefCount = 0;
+    uint64_t revision = 0;
+    uint64_t topologyRevision = 0;
+    uint64_t simulationEpoch = 0;
+    std::vector<GpuParticleCollisionRowKey> rows;
+};
+
 struct GpuParticleCollisionSceneSnapshot
 {
     uint64_t revision = 0;
     uint64_t topologyRevision = 0;
     bool replaceMeshTopology = false;
+    std::shared_ptr<const GpuParticleCollisionDevicePayload> device;
     std::vector<GpuParticleColliderRecord> staticColliders;
     std::vector<GpuParticleColliderRecord> dynamicColliders;
     std::vector<GpuParticleCollisionMeshGeometry> meshGeometries;
@@ -133,6 +181,12 @@ class ParticleGpuCollisionScene
     /// Report the actual submission result, not completion of command recording.
     /// A rejected submission keeps all prepared data available for the next frame.
     INFERNUX_PARTICLE_RUNTIME_API void NotifySubmission(bool submitted) noexcept;
+    /// The manager retires this owner against the real particle submission's
+    /// completion, since raw transfer reads are not ComputeBuffer readers.
+    [[nodiscard]] std::shared_ptr<const GpuParticleCollisionDevicePayload> RecordedDevicePayload() const noexcept
+    {
+        return m_recordedDevicePayload;
+    }
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
     [[nodiscard]] bool HasPendingUpload() const noexcept
@@ -244,6 +298,8 @@ class ParticleGpuCollisionScene
     std::vector<uint32_t> m_stagedMeshIndices;
     std::vector<GpuParticleCollisionBvhNode> m_stagedMeshBvhNodes;
     std::unordered_map<uint64_t, std::array<uint32_t, 4>> m_stagedGeometryByIdentity;
+    std::shared_ptr<const GpuParticleCollisionDevicePayload> m_stagedDevicePayload;
+    std::shared_ptr<const GpuParticleCollisionDevicePayload> m_recordedDevicePayload;
     bool m_pendingStaticUpload = false;
     bool m_pendingDynamicUpload = false;
     bool m_pendingTopologyUpload = false;

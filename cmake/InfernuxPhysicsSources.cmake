@@ -1,7 +1,8 @@
-# Embed the authoritative fork sources into a target-private runtime header.
+# Embed the fork and engine interop sources into a target-private header.
 function(infernux_embed_physics_sources target)
     get_filename_component(_engine_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     set(_physics_root "${_engine_root}/external/joltphysics_for_infernux/Jolt/GPU")
+    set(_particle_export "${_engine_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
     set(_physics_sources
         "${_physics_root}/PhysicsTypes.h"
         "${_physics_root}/Shaders/rigid_math.slang"
@@ -10,6 +11,7 @@ function(infernux_embed_physics_sources target)
         "${_physics_root}/Shaders/body_commands.slang"
         "${_physics_root}/Shaders/rigid_queries.slang"
         "${_physics_root}/Shaders/render_poses.slang"
+        "${_particle_export}"
     )
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_physics_sources})
 
@@ -20,12 +22,13 @@ function(infernux_embed_physics_sources target)
     file(READ "${_physics_root}/Shaders/body_commands.slang" JOLT_GPU_BODY_COMMANDS_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_queries.slang" JOLT_GPU_QUERIES_SOURCE)
     file(READ "${_physics_root}/Shaders/render_poses.slang" JOLT_GPU_RENDER_POSES_SOURCE)
+    file(READ "${_particle_export}" INFERNUX_PARTICLE_EXPORT_SOURCE)
 
     # Keep individual literals below MSVC's limit without changing the source
     # text or introducing runtime file access. Adjacent literals concatenate.
     foreach(_source IN ITEMS JOLT_GPU_TYPES_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_STEP_SOURCE
             JOLT_GPU_BODY_MUTATIONS_SOURCE JOLT_GPU_BODY_COMMANDS_SOURCE
-            JOLT_GPU_QUERIES_SOURCE JOLT_GPU_RENDER_POSES_SOURCE)
+            JOLT_GPU_QUERIES_SOURCE JOLT_GPU_RENDER_POSES_SOURCE INFERNUX_PARTICLE_EXPORT_SOURCE)
         string(REPLACE "\n" "\n)INX_JPH_GPU\"\nR\"INX_JPH_GPU(" ${_source} "${${_source}}")
     endforeach()
 

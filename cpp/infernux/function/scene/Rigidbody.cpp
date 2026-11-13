@@ -648,12 +648,9 @@ PhysicsBodyMotionState Rigidbody::GetMotionState() const
 PhysicsBodyMotionState Rigidbody::GetMotionState(PhysicsStateFields fields) const
 {
     const uint32_t bodyId = GetBodyId();
-    auto state = PhysicsWorld::Instance().GetBodyMotionState(bodyId, fields);
-    // ECS actor metadata is owner-thread state, not protected by Jolt's body
-    // lock. The physics boundary serializes shape publication with this read.
-    if (HasPhysicsStateField(fields, PhysicsStateFields::ShapeRevision))
-        state.shapeRevision = PhysicsECSStore::Instance().GetActor(Data().actorHandle).shapeRevision;
-    return state;
+    // Numerical fields and identity metadata belong to the same accepted
+    // publication, including when later authoring has changed the live actor.
+    return PhysicsWorld::Instance().GetBodyMotionState(bodyId, fields);
 }
 
 void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::vector<PhysicsBodyMotionState> states)
@@ -664,16 +661,22 @@ void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::v
         return;
     auto &world = PhysicsWorld::Instance();
     world.RequireResetPhase(); // Before accessing any scene/component state.
-    std::unordered_set<uint32_t> identities;
     for (size_t i = 0; i < bodies.size(); ++i) {
-        auto *body = bodies[i];
-        auto &state = states[i];
+        const auto *body = bodies[i];
+        const auto &state = states[i];
         if (!body || !body->IsEnabled() || body->IsDestroyed() || !body->GetGameObject())
             throw std::invalid_argument("reset requires live enabled Rigidbodies");
         if (!IsFinite(state.position) || !IsFiniteRotation(state.rotation) || !IsFinite(state.linearVelocity) ||
             !IsFinite(state.angularVelocity))
             throw std::invalid_argument("reset requires finite poses/velocities and nonzero rotations");
-        state.bodyId = body->GetMotionState(PhysicsStateFields::None).bodyId;
+    }
+    const auto accepted = world.GatherRigidbodyStates(bodies, PhysicsStateFields::None, false, true);
+    if (accepted.states.size() != states.size())
+        throw std::logic_error("reset metadata batch does not match its requested body count");
+    std::unordered_set<uint32_t> identities;
+    for (size_t i = 0; i < states.size(); ++i) {
+        auto &state = states[i];
+        state.bodyId = accepted.states[i].bodyId;
         if (!identities.insert(state.bodyId).second)
             throw std::invalid_argument("reset cannot contain duplicate bodies");
         state.rotation = glm::quat(glm::normalize(glm::dquat(state.rotation)));

@@ -5476,26 +5476,125 @@ bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_positi
     return true;
 }}
 
+float inx_rounded_box_distance(vec3 point, vec3 core, float radius) {{
+    vec3 signed_face = abs(point) - core;
+    vec3 outside = max(signed_face, vec3(0.0));
+    float scale = max(outside.x, max(outside.y, outside.z));
+    float distance_value = scale > 0.0 ? scale * length(outside / scale) : 0.0;
+    return distance_value + min(max(signed_face.x, max(signed_face.y, signed_face.z)), 0.0) - radius;
+}}
+
+vec3 inx_rounded_box_normal(vec3 point, vec3 core) {{
+    vec3 delta = point - clamp(point, -core, core);
+    float scale = max(abs(delta.x), max(abs(delta.y), abs(delta.z)));
+    if (scale > 0.0) return normalize(delta / scale);
+    vec3 slack = core - abs(point);
+    uint axis = slack.y < slack.x ? 1u : 0u;
+    if (slack.z < slack[axis]) axis = 2u;
+    vec3 normal = vec3(0.0);
+    normal[axis] = point[axis] < 0.0 ? -1.0 : 1.0;
+    return normal;
+}}
+
+bool inx_sweep_rounded_box(vec3 start_position, vec3 end_position, vec3 core, float radius,
+                           out float hit_time, out vec3 hit_normal) {{
+    // Distance to the finite AABB core is quadratic on each interval between
+    // its six slab crossings. Solve those intervals exactly, without time
+    // stepping, a parallel epsilon, or a sharp outer-box approximation.
+    hit_time = 0.0;
+    hit_normal = vec3(0.0);
+    float scale = max(max(abs(start_position.x), max(abs(start_position.y), abs(start_position.z))),
+                      max(max(core.x, max(core.y, core.z)), radius));
+    vec3 displacement = (end_position - start_position) / scale;
+    vec3 origin = start_position / scale;
+    core /= scale;
+    radius /= scale;
+    float breaks[8];
+    breaks[0] = 0.0;
+    breaks[1] = 1.0;
+    uint count = 2u;
+    for (uint axis = 0u; axis < 3u; ++axis) {{
+        if (displacement[axis] == 0.0) continue;
+        for (uint side = 0u; side < 2u; ++side) {{
+            float plane = side == 0u ? -core[axis] : core[axis];
+            float t = (plane - origin[axis]) / displacement[axis];
+            if (t > 0.0 && t < 1.0) breaks[count++] = t;
+        }}
+    }}
+    for (uint i = 1u; i < count; ++i) {{
+        float value = breaks[i];
+        uint j = i;
+        while (j > 0u && breaks[j - 1u] > value) {{
+            breaks[j] = breaks[j - 1u];
+            --j;
+        }}
+        breaks[j] = value;
+    }}
+    for (uint interval = 0u; interval + 1u < count; ++interval) {{
+        float start = breaks[interval];
+        float width = breaks[interval + 1u] - start;
+        if (width <= 0.0) continue;
+        vec3 at_start = origin + start * displacement;
+        vec3 middle = origin + (start + .5 * width) * displacement;
+        vec3 offset = vec3(0.0);
+        vec3 velocity = vec3(0.0);
+        for (uint axis = 0u; axis < 3u; ++axis) {{
+            if (middle[axis] < -core[axis] || middle[axis] > core[axis]) {{
+                offset[axis] = at_start[axis] - (middle[axis] < 0.0 ? -core[axis] : core[axis]);
+                velocity[axis] = displacement[axis];
+            }}
+        }}
+        float root = 0.0;
+        float offset_scale = max(max(abs(offset.x), max(abs(offset.y), abs(offset.z))), radius);
+        if (offset_scale > 0.0) {{
+            vec3 scaled_offset = offset / offset_scale;
+            float scaled_radius = radius / offset_scale;
+            float c = dot(scaled_offset, scaled_offset) - scaled_radius * scaled_radius;
+            if (c > 0.0) {{
+                float velocity_scale = max(abs(velocity.x), max(abs(velocity.y), abs(velocity.z)));
+                if (velocity_scale == 0.0) continue;
+                vec3 scaled_velocity = velocity / velocity_scale;
+                float aa = dot(scaled_velocity, scaled_velocity);
+                float bb = dot(scaled_offset, scaled_velocity);
+                if (bb >= 0.0) continue;
+                vec3 perpendicular = scaled_offset - scaled_velocity * (bb / aa);
+                float discriminant = aa * (scaled_radius * scaled_radius - dot(perpendicular, perpendicular));
+                if (discriminant < 0.0) continue;
+                root = (c / (-bb + sqrt(discriminant))) * offset_scale / velocity_scale;
+                if (root > width) continue;
+            }}
+        }}
+        hit_time = start + root;
+        hit_normal = inx_rounded_box_normal(origin + hit_time * displacement, core);
+        return true;
+    }}
+    return false;
+}}
+
 bool inx_collision_box(InxParticleCollider collider, vec3 previous_world_position,
                        vec3 world_position, float world_radius,
                        out vec3 corrected_world_position, out vec3 world_normal) {{
     vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
     vec3 local_previous =
         inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
-    float local_radius = inx_collision_local_radius(collider.world_to_collider, world_radius);
-    vec3 half_extent = max(collider.shape.xyz * 0.5, vec3(0.0)) + vec3(local_radius);
+    float convex_radius = max(collider.shape.w, 0.0);
+    vec3 core = max(collider.shape.xyz * .5 - vec3(convex_radius), vec3(0.0));
+    float radius = convex_radius + inx_collision_local_radius(collider.world_to_collider, world_radius);
     vec3 local_normal = vec3(0.0);
     float hit_time = 0.0;
-    bool start_inside = all(lessThanEqual(abs(local_previous), half_extent));
-    if (!start_inside &&
-        inx_sweep_box(local_previous, local_position, half_extent, hit_time, local_normal)) {{
+    bool start_inside = inx_rounded_box_distance(local_previous, core, radius) <= 0.0;
+    if (!start_inside && inx_sweep_rounded_box(local_previous, local_position, core, radius,
+                                               hit_time, local_normal)) {{
         local_position = mix(local_previous, local_position, hit_time);
-    }} else if (all(lessThanEqual(abs(local_position), half_extent))) {{
-        vec3 face_distance = half_extent - abs(local_position);
-        uint axis = face_distance.x <= face_distance.y && face_distance.x <= face_distance.z
-                        ? 0u : (face_distance.y <= face_distance.z ? 1u : 2u);
-        local_normal[axis] = local_position[axis] < 0.0 ? -1.0 : 1.0;
-        local_position[axis] = local_normal[axis] * half_extent[axis];
+    }} else if (inx_rounded_box_distance(local_position, core, radius) <= 0.0) {{
+        local_normal = inx_rounded_box_normal(local_position, core);
+        vec3 closest = clamp(local_position, -core, core);
+        if (any(notEqual(closest, local_position))) {{
+            local_position = closest + radius * local_normal;
+        }} else {{
+            uint axis = abs(local_normal.y) > 0.0 ? 1u : abs(local_normal.z) > 0.0 ? 2u : 0u;
+            local_position[axis] = local_normal[axis] * (core[axis] + radius);
+        }}
     }} else {{
         return false;
     }}

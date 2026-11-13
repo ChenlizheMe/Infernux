@@ -31,6 +31,7 @@
 #include "function/scene/SwingTwistJoint.h"
 #include "function/scene/TagLayerManager.h"
 #include "function/scene/physics/HingeJointBatch.h"
+#include "function/scene/physics/JoltGpuQueries.h"
 #include "function/scene/physics/PhysicsContactTypes.h"
 #include "function/scene/physics/PhysicsWorld.h"
 #include <glm/glm.hpp>
@@ -335,129 +336,147 @@ constexpr RigidbodyStateField kRigidbodyStateFields[] = {
     {"shape_revision", PhysicsStateFields::ShapeRevision, 1},
 };
 
-py::dict GetRigidbodyStates(const std::vector<Rigidbody *> &bodies, py::object output, py::object fields)
+void RequireRigidbodyBatchBodies(const std::vector<Rigidbody *> &bodies)
 {
-    const auto count = static_cast<py::ssize_t>(bodies.size());
-    const bool create = output.is_none();
-    if (!create && !py::isinstance<py::dict>(output))
-        throw py::type_error("Rigidbody state output must be a dictionary of writable arrays");
-    std::vector<const RigidbodyStateField *> selected;
-    uint32_t mask = 0;
-    if (fields.is_none()) {
-        for (const auto &field : kRigidbodyStateFields)
-            if (HasPhysicsStateField(PhysicsStateFields::All, field.field))
-                selected.push_back(&field);
-        mask = static_cast<uint32_t>(PhysicsStateFields::All);
-    } else {
-        if (py::isinstance<py::str>(fields))
-            throw py::type_error("Rigidbody state fields must be a sequence of field names");
-        const auto names = py::cast<std::vector<std::string>>(fields);
-        if (names.empty())
-            throw py::value_error("Rigidbody state fields must not be empty");
-        for (const auto &name : names) {
-            const auto field = std::find_if(std::begin(kRigidbodyStateFields), std::end(kRigidbodyStateFields),
-                                            [&](const auto &candidate) { return name == candidate.name; });
-            if (field == std::end(kRigidbodyStateFields))
-                throw py::value_error("Unknown Rigidbody state field: " + name);
-            const auto bit = static_cast<uint32_t>(field->field);
-            if (mask & bit)
-                throw py::value_error("Duplicate Rigidbody state field: " + name);
-            mask |= bit;
-            selected.push_back(field);
-        }
-    }
-    py::dict result = create ? py::dict() : py::reinterpret_borrow<py::dict>(output);
-    if (!create && !fields.is_none() && result.size() != selected.size())
-        throw py::value_error("Selected Rigidbody state output must contain exactly the requested fields");
+    for (const auto *body : bodies)
+        if (!body)
+            throw py::value_error("rigidbodies must not contain None");
+}
+
+struct RigidbodyStateArrayWriter
+{
     struct Writer
     {
         const RigidbodyStateField *field;
         py::array owner;
         void *data;
     };
+    py::dict result;
+    py::ssize_t count;
+    uint32_t mask = 0;
     std::vector<Writer> writers;
-    writers.reserve(selected.size());
-    for (const auto *field : selected) {
-        std::vector<py::ssize_t> shape{count};
-        if (field->field == PhysicsStateFields::InverseInertia) {
-            shape.push_back(3);
-            shape.push_back(3);
-        } else if (field->components > 1) {
-            shape.push_back(field->components);
-        }
-        py::array array = field->field == PhysicsStateFields::BodyId
-                              ? py::array(RigidbodyStateArray<uint32_t>(result, field->name, shape, create))
-                          : field->field == PhysicsStateFields::ShapeRevision
-                              ? py::array(RigidbodyStateArray<uint64_t>(result, field->name, shape, create))
-                              : py::array(RigidbodyStateArray<float>(result, field->name, shape, create));
-        for (const auto &writer : writers) {
-            const auto first = reinterpret_cast<uintptr_t>(array.data());
-            const auto other = reinterpret_cast<uintptr_t>(writer.owner.data());
-            const auto writtenBytes = count * field->components * array.itemsize();
-            const auto otherWrittenBytes = count * writer.field->components * writer.owner.itemsize();
-            if (writtenBytes && otherWrittenBytes && first < other + otherWrittenBytes && other < first + writtenBytes)
-                throw py::value_error("Rigidbody state output fields must not overlap");
-        }
-        auto *data = array.mutable_data();
-        writers.push_back({field, std::move(array), data});
-    }
-    for (py::ssize_t row = 0; row < count; ++row) {
-        if (!bodies[row])
-            throw py::value_error("rigidbodies must not contain None");
-        const auto state = bodies[row]->GetMotionState(static_cast<PhysicsStateFields>(mask));
-        for (const auto &writer : writers) {
-            const auto field = writer.field->field;
-            if (field == PhysicsStateFields::BodyId) {
-                static_cast<uint32_t *>(writer.data)[row] = state.bodyId;
-                continue;
-            }
-            if (field == PhysicsStateFields::ShapeRevision) {
-                static_cast<uint64_t *>(writer.data)[row] = state.shapeRevision;
-                continue;
-            }
-            auto *destination = static_cast<float *>(writer.data) + row * writer.field->components;
-            const glm::vec3 *vector;
-            switch (field) {
-            case PhysicsStateFields::Position:
-                vector = &state.position;
-                break;
-            case PhysicsStateFields::CenterOfMass:
-                vector = &state.centerOfMass;
-                break;
-            case PhysicsStateFields::LinearVelocity:
-                vector = &state.linearVelocity;
-                break;
-            case PhysicsStateFields::AngularVelocity:
-                vector = &state.angularVelocity;
-                break;
-            case PhysicsStateFields::InverseMass:
-                vector = &state.inverseMass;
-                break;
-            case PhysicsStateFields::Rotation:
-                for (int axis = 0; axis < 4; ++axis)
-                    destination[axis] = state.rotation[axis];
-                continue;
-            case PhysicsStateFields::InverseInertia:
-                for (int axis = 0; axis < 3; ++axis)
-                    for (int column = 0; column < 3; ++column)
-                        destination[axis * 3 + column] = state.inverseInertia[column][axis];
-                continue;
-            default:
-                throw std::logic_error("Invalid Rigidbody state writer");
-            }
-            for (int axis = 0; axis < 3; ++axis)
-                destination[axis] = (*vector)[axis];
-        }
-    }
-    return result;
-}
 
-template <typename T> std::vector<uint8_t> ComputeBytes(const std::vector<T> &values)
+    RigidbodyStateArrayWriter(py::ssize_t rowCount, py::object output, py::object fields) : count(rowCount)
+    {
+        const bool create = output.is_none();
+        if (!create && !py::isinstance<py::dict>(output))
+            throw py::type_error("Rigidbody state output must be a dictionary of writable arrays");
+        std::vector<const RigidbodyStateField *> selected;
+        if (fields.is_none()) {
+            for (const auto &field : kRigidbodyStateFields)
+                if (HasPhysicsStateField(PhysicsStateFields::All, field.field))
+                    selected.push_back(&field);
+            mask = static_cast<uint32_t>(PhysicsStateFields::All);
+        } else {
+            if (py::isinstance<py::str>(fields))
+                throw py::type_error("Rigidbody state fields must be a sequence of field names");
+            const auto names = py::cast<std::vector<std::string>>(fields);
+            if (names.empty())
+                throw py::value_error("Rigidbody state fields must not be empty");
+            for (const auto &name : names) {
+                const auto field = std::find_if(std::begin(kRigidbodyStateFields), std::end(kRigidbodyStateFields),
+                                                [&](const auto &candidate) { return name == candidate.name; });
+                if (field == std::end(kRigidbodyStateFields))
+                    throw py::value_error("Unknown Rigidbody state field: " + name);
+                const auto bit = static_cast<uint32_t>(field->field);
+                if (mask & bit)
+                    throw py::value_error("Duplicate Rigidbody state field: " + name);
+                mask |= bit;
+                selected.push_back(field);
+            }
+        }
+        result = create ? py::dict() : py::reinterpret_borrow<py::dict>(output);
+        if (!create && !fields.is_none() && result.size() != selected.size())
+            throw py::value_error("Selected Rigidbody state output must contain exactly the requested fields");
+        writers.reserve(selected.size());
+        for (const auto *field : selected) {
+            std::vector<py::ssize_t> shape{count};
+            if (field->field == PhysicsStateFields::InverseInertia) {
+                shape.push_back(3);
+                shape.push_back(3);
+            } else if (field->components > 1) {
+                shape.push_back(field->components);
+            }
+            py::array array = field->field == PhysicsStateFields::BodyId
+                                  ? py::array(RigidbodyStateArray<uint32_t>(result, field->name, shape, create))
+                              : field->field == PhysicsStateFields::ShapeRevision
+                                  ? py::array(RigidbodyStateArray<uint64_t>(result, field->name, shape, create))
+                                  : py::array(RigidbodyStateArray<float>(result, field->name, shape, create));
+            for (const auto &writer : writers) {
+                const auto first = reinterpret_cast<uintptr_t>(array.data());
+                const auto other = reinterpret_cast<uintptr_t>(writer.owner.data());
+                const auto writtenBytes = count * field->components * array.itemsize();
+                const auto otherWrittenBytes = count * writer.field->components * writer.owner.itemsize();
+                if (writtenBytes && otherWrittenBytes && first < other + otherWrittenBytes &&
+                    other < first + writtenBytes)
+                    throw py::value_error("Rigidbody state output fields must not overlap");
+            }
+            auto *data = array.mutable_data();
+            writers.push_back({field, std::move(array), data});
+        }
+    }
+
+    py::dict Write(const std::vector<PhysicsBodyMotionState> &states)
+    {
+        if (states.size() != static_cast<size_t>(count))
+            throw std::logic_error("Rigidbody state batch does not match its requested row count");
+        for (py::ssize_t row = 0; row < count; ++row) {
+            const auto &state = states[static_cast<size_t>(row)];
+            for (const auto &writer : writers) {
+                const auto field = writer.field->field;
+                if (field == PhysicsStateFields::BodyId) {
+                    static_cast<uint32_t *>(writer.data)[row] = state.bodyId;
+                    continue;
+                }
+                if (field == PhysicsStateFields::ShapeRevision) {
+                    static_cast<uint64_t *>(writer.data)[row] = state.shapeRevision;
+                    continue;
+                }
+                auto *destination = static_cast<float *>(writer.data) + row * writer.field->components;
+                const glm::vec3 *vector;
+                switch (field) {
+                case PhysicsStateFields::Position:
+                    vector = &state.position;
+                    break;
+                case PhysicsStateFields::CenterOfMass:
+                    vector = &state.centerOfMass;
+                    break;
+                case PhysicsStateFields::LinearVelocity:
+                    vector = &state.linearVelocity;
+                    break;
+                case PhysicsStateFields::AngularVelocity:
+                    vector = &state.angularVelocity;
+                    break;
+                case PhysicsStateFields::InverseMass:
+                    vector = &state.inverseMass;
+                    break;
+                case PhysicsStateFields::Rotation:
+                    for (int axis = 0; axis < 4; ++axis)
+                        destination[axis] = state.rotation[axis];
+                    continue;
+                case PhysicsStateFields::InverseInertia:
+                    for (int axis = 0; axis < 3; ++axis)
+                        for (int column = 0; column < 3; ++column)
+                            destination[axis * 3 + column] = state.inverseInertia[column][axis];
+                    continue;
+                default:
+                    throw std::logic_error("Invalid Rigidbody state writer");
+                }
+                for (int axis = 0; axis < 3; ++axis)
+                    destination[axis] = (*vector)[axis];
+            }
+        }
+        return result;
+    }
+};
+
+py::dict GetRigidbodyStates(const std::vector<Rigidbody *> &bodies, py::object output, py::object fields)
 {
-    std::vector<uint8_t> result(values.size() * sizeof(T));
-    if (!result.empty())
-        std::memcpy(result.data(), values.data(), result.size());
-    return result;
+    RigidbodyStateArrayWriter writer(static_cast<py::ssize_t>(bodies.size()), output, fields);
+    RequireRigidbodyBatchBodies(bodies);
+    const auto batch = PhysicsWorld::Instance().GatherRigidbodyStates(
+        bodies, static_cast<PhysicsStateFields>(writer.mask), false, true);
+    return writer.Write(batch.states);
 }
 
 std::shared_ptr<rhi::ComputeBuffer> ComputeOutput(py::dict &output, const char *name, rhi::ComputeScalarType scalarType,
@@ -478,54 +497,31 @@ std::shared_ptr<rhi::ComputeBuffer> ComputeOutput(py::dict &output, const char *
     return buffer;
 }
 
-void AppendRigidbodyStateBufferUpdates(const std::vector<Rigidbody *> &bodies, py::dict output,
-                                       std::vector<rhi::ComputeBufferUpdate> &updates, rhi::ComputeHost *&host)
+std::vector<JoltGpuQueryExportBinding> RigidbodyStateExports(py::dict output, uint64_t count, rhi::ComputeHost *&host)
 {
-    const auto count = static_cast<uint64_t>(bodies.size());
-    auto position = ComputeOutput(output, "position", rhi::ComputeScalarType::Float32, 3, count, host);
-    auto center = ComputeOutput(output, "center_of_mass", rhi::ComputeScalarType::Float32, 3, count, host);
-    auto linear = ComputeOutput(output, "linear_velocity", rhi::ComputeScalarType::Float32, 3, count, host);
-    auto angular = ComputeOutput(output, "angular_velocity", rhi::ComputeScalarType::Float32, 3, count, host);
-    auto mass = ComputeOutput(output, "inverse_mass", rhi::ComputeScalarType::Float32, 3, count, host);
-    auto rotation = ComputeOutput(output, "rotation", rhi::ComputeScalarType::Float32, 4, count, host);
-    auto inertia = ComputeOutput(output, "inverse_inertia", rhi::ComputeScalarType::Float32, 1, count * 9, host);
-    if (count == 0)
-        return;
-
-    std::vector<float> positions(count * 3), centers(count * 3), linears(count * 3), angulars(count * 3);
-    std::vector<float> masses(count * 3), rotations(count * 4), inertias(count * 9);
-    for (uint64_t row = 0; row < count; ++row) {
-        if (!bodies[row])
-            throw py::value_error("rigidbodies must not contain None");
-        const auto state = bodies[row]->GetMotionState();
-        for (uint64_t axis = 0; axis < 3; ++axis) {
-            positions[row * 3 + axis] = state.position[axis];
-            centers[row * 3 + axis] = state.centerOfMass[axis];
-            linears[row * 3 + axis] = state.linearVelocity[axis];
-            angulars[row * 3 + axis] = state.angularVelocity[axis];
-            masses[row * 3 + axis] = state.inverseMass[axis];
-            for (uint64_t column = 0; column < 3; ++column)
-                inertias[row * 9 + axis * 3 + column] = state.inverseInertia[column][axis];
-        }
-        for (uint64_t axis = 0; axis < 4; ++axis)
-            rotations[row * 4 + axis] = state.rotation[axis];
-    }
-    updates.push_back({position, 0, ComputeBytes(positions)});
-    updates.push_back({center, 0, ComputeBytes(centers)});
-    updates.push_back({linear, 0, ComputeBytes(linears)});
-    updates.push_back({angular, 0, ComputeBytes(angulars)});
-    updates.push_back({mass, 0, ComputeBytes(masses)});
-    updates.push_back({rotation, 0, ComputeBytes(rotations)});
-    updates.push_back({inertia, 0, ComputeBytes(inertias)});
+    using Field = JoltGpuQueryExportField;
+    return {
+        {Field::MotionPosition, ComputeOutput(output, "position", rhi::ComputeScalarType::Float32, 3, count, host)},
+        {Field::MotionCenterOfMass,
+         ComputeOutput(output, "center_of_mass", rhi::ComputeScalarType::Float32, 3, count, host)},
+        {Field::MotionLinearVelocity,
+         ComputeOutput(output, "linear_velocity", rhi::ComputeScalarType::Float32, 3, count, host)},
+        {Field::MotionAngularVelocity,
+         ComputeOutput(output, "angular_velocity", rhi::ComputeScalarType::Float32, 3, count, host)},
+        {Field::MotionInverseMass,
+         ComputeOutput(output, "inverse_mass", rhi::ComputeScalarType::Float32, 3, count, host)},
+        {Field::MotionRotation, ComputeOutput(output, "rotation", rhi::ComputeScalarType::Float32, 4, count, host)},
+        {Field::MotionInverseInertia,
+         ComputeOutput(output, "inverse_inertia", rhi::ComputeScalarType::Float32, 1, count * 9, host)},
+    };
 }
 
 void WriteRigidbodyStateBuffers(const std::vector<Rigidbody *> &bodies, py::dict output)
 {
     rhi::ComputeHost *host = nullptr;
-    std::vector<rhi::ComputeBufferUpdate> updates;
-    AppendRigidbodyStateBufferUpdates(bodies, output, updates, host);
-    if (!updates.empty())
-        rhi::SubmitComputeBatch(*host, std::move(updates), {});
+    auto exports = RigidbodyStateExports(output, bodies.size(), host);
+    RequireRigidbodyBatchBodies(bodies);
+    (void)PhysicsWorld::Instance().GatherRigidbodyStates(bodies, PhysicsStateFields::All, false, true, exports);
 }
 
 py::dict GetContactEvents()
@@ -629,31 +625,8 @@ py::array BoxStateArray(py::dict &result, const char *name, const py::dtype &dty
     return value;
 }
 
-struct RigidbodyBoxEntry
+py::dict WriteRigidbodyBoxArrays(const std::vector<PhysicsRigidbodyBoxState> &entries, py::object output)
 {
-    uint64_t bodyIndex;
-    PhysicsBoxShapeState shape;
-};
-
-std::vector<RigidbodyBoxEntry> CollectRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, bool queryTriggers)
-{
-    std::vector<RigidbodyBoxEntry> entries;
-    auto &world = PhysicsWorld::Instance();
-    for (uint64_t index = 0; index < bodies.size(); ++index) {
-        auto *body = bodies[index];
-        if (!body)
-            throw py::value_error("rigidbodies must not contain None");
-        (void)body->GetMotionState(PhysicsStateFields::None);
-        for (const auto &shape : world.GetBodyBoxShapeStates(body->GetBodyId(), queryTriggers))
-            entries.push_back({index, shape});
-    }
-    return entries;
-}
-
-py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::object output, bool queryTriggers)
-{
-    const auto entries = CollectRigidbodyBoxStates(bodies, queryTriggers);
-
     const auto count = static_cast<py::ssize_t>(entries.size());
     const bool create = output.is_none();
     if (!create && !py::isinstance<py::dict>(output))
@@ -693,87 +666,78 @@ py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::objec
     return result;
 }
 
-uint64_t AppendRigidbodyBoxStateBufferUpdates(const std::vector<Rigidbody *> &bodies, py::dict output,
-                                              bool queryTriggers, std::vector<rhi::ComputeBufferUpdate> &updates,
-                                              rhi::ComputeHost *&host)
+py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::object output, bool queryTriggers)
 {
-    const auto entries = CollectRigidbodyBoxStates(bodies, queryTriggers);
+    RequireRigidbodyBatchBodies(bodies);
+    const auto batch =
+        PhysicsWorld::Instance().GatherRigidbodyStates(bodies, PhysicsStateFields::None, true, queryTriggers);
+    return WriteRigidbodyBoxArrays(batch.boxes, output);
+}
 
-    const auto count = static_cast<uint64_t>(entries.size());
-    auto bodyIndex = ComputeOutput(output, "body_index", rhi::ComputeScalarType::Int32, 1, count, host);
-    auto center = ComputeOutput(output, "center", rhi::ComputeScalarType::Float32, 3, count, host);
-    auto rotation = ComputeOutput(output, "rotation", rhi::ComputeScalarType::Float32, 4, count, host);
-    auto extents = ComputeOutput(output, "half_extents", rhi::ComputeScalarType::Float32, 3, count, host);
-    auto friction = ComputeOutput(output, "friction", rhi::ComputeScalarType::Float32, 1, count, host);
-    auto bounce = ComputeOutput(output, "bounciness", rhi::ComputeScalarType::Float32, 1, count, host);
-    if (count == 0)
-        return 0;
-
-    std::vector<int32_t> indices(count);
-    std::vector<float> centers(count * 3), rotations(count * 4), halfExtents(count * 3), frictions(count),
-        bounces(count);
-    for (uint64_t row = 0; row < count; ++row) {
-        const auto &entry = entries[row];
-        const auto &worldCenter = entry.shape.center;
-        const auto &worldRotation = entry.shape.rotation;
-        const auto &halfExtent = entry.shape.halfExtents;
-        indices[row] = static_cast<int32_t>(entry.bodyIndex);
-        for (uint64_t axis = 0; axis < 3; ++axis) {
-            centers[row * 3 + axis] = worldCenter[axis];
-            halfExtents[row * 3 + axis] = halfExtent[axis];
-        }
-        rotations[row * 4] = worldRotation.x;
-        rotations[row * 4 + 1] = worldRotation.y;
-        rotations[row * 4 + 2] = worldRotation.z;
-        rotations[row * 4 + 3] = worldRotation.w;
-        frictions[row] = entry.shape.friction;
-        bounces[row] = entry.shape.bounciness;
-    }
-    updates.push_back({bodyIndex, 0, ComputeBytes(indices)});
-    updates.push_back({center, 0, ComputeBytes(centers)});
-    updates.push_back({rotation, 0, ComputeBytes(rotations)});
-    updates.push_back({extents, 0, ComputeBytes(halfExtents)});
-    updates.push_back({friction, 0, ComputeBytes(frictions)});
-    updates.push_back({bounce, 0, ComputeBytes(bounces)});
-    return count;
+std::vector<JoltGpuQueryExportBinding> RigidbodyBoxExports(py::dict output, rhi::ComputeHost *&host)
+{
+    using Field = JoltGpuQueryExportField;
+    // The device collector determines the exact Box prefix. The common export
+    // continuation validates that prefix against every retained target capacity.
+    return {
+        {Field::ShapeBodyIndex, ComputeOutput(output, "body_index", rhi::ComputeScalarType::Int32, 1, 0, host)},
+        {Field::ShapeCenter, ComputeOutput(output, "center", rhi::ComputeScalarType::Float32, 3, 0, host)},
+        {Field::ShapeRotation, ComputeOutput(output, "rotation", rhi::ComputeScalarType::Float32, 4, 0, host)},
+        {Field::ShapeHalfExtents, ComputeOutput(output, "half_extents", rhi::ComputeScalarType::Float32, 3, 0, host)},
+        {Field::ShapeFriction, ComputeOutput(output, "friction", rhi::ComputeScalarType::Float32, 1, 0, host)},
+        {Field::ShapeBounciness, ComputeOutput(output, "bounciness", rhi::ComputeScalarType::Float32, 1, 0, host)},
+    };
 }
 
 uint64_t WriteRigidbodyBoxStateBuffers(const std::vector<Rigidbody *> &bodies, py::dict output, bool queryTriggers)
 {
     rhi::ComputeHost *host = nullptr;
-    std::vector<rhi::ComputeBufferUpdate> updates;
-    const auto count = AppendRigidbodyBoxStateBufferUpdates(bodies, output, queryTriggers, updates, host);
-    if (!updates.empty())
-        rhi::SubmitComputeBatch(*host, std::move(updates), {});
-    return count;
+    auto exports = RigidbodyBoxExports(output, host);
+    RequireRigidbodyBatchBodies(bodies);
+    return PhysicsWorld::Instance()
+        .GatherRigidbodyStates(bodies, PhysicsStateFields::None, true, queryTriggers, exports)
+        .boxCount;
 }
 
 uint64_t WriteRigidbodyStateAndBoxStateBuffers(const std::vector<Rigidbody *> &bodies, py::dict stateOutput,
                                                py::dict boxOutput, bool queryTriggers)
 {
     rhi::ComputeHost *host = nullptr;
-    std::vector<rhi::ComputeBufferUpdate> updates;
-    AppendRigidbodyStateBufferUpdates(bodies, stateOutput, updates, host);
-    const auto boxCount = AppendRigidbodyBoxStateBufferUpdates(bodies, boxOutput, queryTriggers, updates, host);
-    if (!updates.empty())
-        rhi::SubmitComputeBatch(*host, std::move(updates), {});
-    return boxCount;
+    auto exports = RigidbodyStateExports(stateOutput, bodies.size(), host);
+    auto boxes = RigidbodyBoxExports(boxOutput, host);
+    exports.insert(exports.end(), std::make_move_iterator(boxes.begin()), std::make_move_iterator(boxes.end()));
+    RequireRigidbodyBatchBodies(bodies);
+    return PhysicsWorld::Instance()
+        .GatherRigidbodyStates(bodies, PhysicsStateFields::All, true, queryTriggers, exports)
+        .boxCount;
+}
+
+void RequireRigidbodyQueryBounds(const glm::vec3 &minimum, const glm::vec3 &maximum)
+{
+    RequireFinite(minimum, "minimum");
+    RequireFinite(maximum, "maximum");
+    if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
+        throw py::value_error("minimum must not exceed maximum on any axis");
+}
+
+py::list RigidbodyBatchObjects(const PhysicsRigidbodyStateBatch &batch)
+{
+    py::list result;
+    for (auto *body : batch.bodies)
+        result.append(py::cast(body, py::return_value_policy::reference));
+    return result;
 }
 
 py::tuple QueryRigidbodyBoxStateBuffers(const glm::vec3 &minimum, const glm::vec3 &maximum,
                                         std::optional<uint32_t> requestedMask, bool queryTriggers, py::dict output)
 {
     const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
-    RequireFinite(minimum, "minimum");
-    RequireFinite(maximum, "maximum");
-    if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
-        throw py::value_error("minimum must not exceed maximum on any axis");
-    auto bodies = PhysicsWorld::Instance().QueryRigidbodiesInBounds(minimum, maximum, layerMask, queryTriggers);
-    const auto count = WriteRigidbodyBoxStateBuffers(bodies, output, queryTriggers);
-    py::list result;
-    for (auto *body : bodies)
-        result.append(py::cast(body, py::return_value_policy::reference));
-    return py::make_tuple(result, count);
+    RequireRigidbodyQueryBounds(minimum, maximum);
+    rhi::ComputeHost *host = nullptr;
+    auto exports = RigidbodyBoxExports(output, host);
+    const auto batch = PhysicsWorld::Instance().GatherRigidbodyStatesInBounds(
+        minimum, maximum, layerMask, queryTriggers, PhysicsStateFields::None, true, exports);
+    return py::make_tuple(RigidbodyBatchObjects(batch), batch.boxCount);
 }
 
 py::tuple QueryRigidbodyStateAndBoxStateBuffers(const glm::vec3 &minimum, const glm::vec3 &maximum,
@@ -781,21 +745,14 @@ py::tuple QueryRigidbodyStateAndBoxStateBuffers(const glm::vec3 &minimum, const 
                                                 py::dict stateOutput, py::dict boxOutput)
 {
     const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
-    RequireFinite(minimum, "minimum");
-    RequireFinite(maximum, "maximum");
-    if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
-        throw py::value_error("minimum must not exceed maximum on any axis");
-    const auto bodies = PhysicsWorld::Instance().QueryRigidbodiesInBounds(minimum, maximum, layerMask, queryTriggers);
+    RequireRigidbodyQueryBounds(minimum, maximum);
     rhi::ComputeHost *host = nullptr;
-    std::vector<rhi::ComputeBufferUpdate> updates;
-    AppendRigidbodyStateBufferUpdates(bodies, stateOutput, updates, host);
-    const auto boxCount = AppendRigidbodyBoxStateBufferUpdates(bodies, boxOutput, queryTriggers, updates, host);
-    if (!updates.empty())
-        rhi::SubmitComputeBatch(*host, std::move(updates), {});
-    py::list result;
-    for (auto *body : bodies)
-        result.append(py::cast(body, py::return_value_policy::reference));
-    return py::make_tuple(result, boxCount);
+    auto exports = RigidbodyStateExports(stateOutput, 0, host);
+    auto boxes = RigidbodyBoxExports(boxOutput, host);
+    exports.insert(exports.end(), std::make_move_iterator(boxes.begin()), std::make_move_iterator(boxes.end()));
+    const auto batch = PhysicsWorld::Instance().GatherRigidbodyStatesInBounds(
+        minimum, maximum, layerMask, queryTriggers, PhysicsStateFields::All, true, exports);
+    return py::make_tuple(RigidbodyBatchObjects(batch), batch.boxCount);
 }
 
 py::tuple QueryRigidbodyStateAndBoxStateArrays(const glm::vec3 &minimum, const glm::vec3 &maximum,
@@ -803,17 +760,13 @@ py::tuple QueryRigidbodyStateAndBoxStateArrays(const glm::vec3 &minimum, const g
                                                py::dict stateOutput, py::dict boxOutput)
 {
     const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
-    RequireFinite(minimum, "minimum");
-    RequireFinite(maximum, "maximum");
-    if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
-        throw py::value_error("minimum must not exceed maximum on any axis");
-    const auto bodies = PhysicsWorld::Instance().QueryRigidbodiesInBounds(minimum, maximum, layerMask, queryTriggers);
-    GetRigidbodyStates(bodies, stateOutput, py::none());
-    const auto boxes = GetRigidbodyBoxStates(bodies, boxOutput, queryTriggers);
-    py::list result;
-    for (auto *body : bodies)
-        result.append(py::cast(body, py::return_value_policy::reference));
-    return py::make_tuple(result, py::cast<uint64_t>(boxes[py::str("count")]));
+    RequireRigidbodyQueryBounds(minimum, maximum);
+    const auto batch = PhysicsWorld::Instance().GatherRigidbodyStatesInBounds(
+        minimum, maximum, layerMask, queryTriggers, PhysicsStateFields::All, true);
+    RigidbodyStateArrayWriter writer(static_cast<py::ssize_t>(batch.states.size()), stateOutput, py::none());
+    writer.Write(batch.states);
+    WriteRigidbodyBoxArrays(batch.boxes, boxOutput);
+    return py::make_tuple(RigidbodyBatchObjects(batch), batch.boxCount);
 }
 
 void ResetRigidbodies(const std::vector<Rigidbody *> &bodies, const py::dict &input)
@@ -861,10 +814,10 @@ void ApplyRigidbodyImpulseValues(const std::vector<Rigidbody *> &bodies, const f
             throw py::value_error("Impulse buffers must contain finite values");
     // Reject invalid public input before any body receives feedback.
     const auto fields = expectedShapeRevisions ? PhysicsStateFields::ShapeRevision : PhysicsStateFields::None;
+    RequireRigidbodyBatchBodies(bodies);
+    const auto batch = PhysicsWorld::Instance().GatherRigidbodyStates(bodies, fields, false, true);
     for (py::ssize_t row = 0; row < count; ++row) {
-        if (!bodies[row])
-            throw py::value_error("rigidbodies must not contain None");
-        const auto state = bodies[row]->GetMotionState(fields);
+        const auto &state = batch.states[static_cast<size_t>(row)];
         if (expectedBodyIds && state.bodyId != expectedBodyIds[row])
             throw py::value_error("Rigidbody feedback body identity has changed");
         if (expectedShapeRevisions && state.shapeRevision != expectedShapeRevisions[row])
@@ -1613,24 +1566,21 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def_static("reset_rigidbodies", &ResetRigidbodies, "rigidbodies"_a, "state"_a,
                     "Reset resident body poses/velocities and solver history between completed fixed steps")
         .def_static("_write_rigidbody_state_buffers", &WriteRigidbodyStateBuffers, "rigidbodies"_a, "output"_a,
-                    "Upload current solver state directly into resident GPU buffers")
+                    "Gather solver state on GPU and write resident buffers under one immutable snapshot")
         .def_static("_write_rigidbody_state_and_box_state_buffers", &WriteRigidbodyStateAndBoxStateBuffers,
                     "rigidbodies"_a, "state_output"_a, "box_output"_a, "query_triggers"_a = false,
-                    "Upload rigidbody solver state and flattened BoxCollider descriptors in one compute submission")
+                    "Gather rigidbody and flattened BoxCollider state under one immutable GPU snapshot")
         .def_static("get_rigidbody_box_states", &GetRigidbodyBoxStates, "rigidbodies"_a, "output"_a = py::none(),
                     "query_triggers"_a = false,
                     "Write flattened world-space BoxCollider descriptors and source body indices")
         .def_static("_write_rigidbody_box_state_buffers", &WriteRigidbodyBoxStateBuffers, "rigidbodies"_a, "output"_a,
-                    "query_triggers"_a = false,
-                    "Upload flattened BoxCollider descriptors directly into resident GPU buffers")
-        .def_static(
-            "_query_rigidbody_box_state_buffers", &QueryRigidbodyBoxStateBuffers, "minimum"_a, "maximum"_a,
-            "layer_mask"_a, "query_triggers"_a, "output"_a,
-            "Query broad-phase candidates and upload their flattened BoxCollider descriptors in one native pass")
-        .def_static(
-            "_query_rigidbody_state_and_box_state_buffers", &QueryRigidbodyStateAndBoxStateBuffers, "minimum"_a,
-            "maximum"_a, "layer_mask"_a, "query_triggers"_a, "state_output"_a, "box_output"_a,
-            "Query candidates and upload authoritative rigidbody plus BoxCollider state in one compute submission")
+                    "query_triggers"_a = false, "Gather flattened BoxCollider descriptors on GPU into resident buffers")
+        .def_static("_query_rigidbody_box_state_buffers", &QueryRigidbodyBoxStateBuffers, "minimum"_a, "maximum"_a,
+                    "layer_mask"_a, "query_triggers"_a, "output"_a,
+                    "Query candidates and write their flattened BoxCollider state from the same GPU snapshot")
+        .def_static("_query_rigidbody_state_and_box_state_buffers", &QueryRigidbodyStateAndBoxStateBuffers, "minimum"_a,
+                    "maximum"_a, "layer_mask"_a, "query_triggers"_a, "state_output"_a, "box_output"_a,
+                    "Query candidates and write rigidbody plus BoxCollider state from one immutable GPU snapshot")
         .def_static("_query_rigidbody_state_and_box_state_arrays", &QueryRigidbodyStateAndBoxStateArrays, "minimum"_a,
                     "maximum"_a, "layer_mask"_a, "query_triggers"_a, "state_output"_a, "box_output"_a,
                     "Query candidates and write authoritative rigidbody plus BoxCollider state into CPU arrays")

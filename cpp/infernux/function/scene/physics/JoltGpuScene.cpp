@@ -549,6 +549,7 @@ class JoltGpuScene::Impl
         publication->simulationEpoch = epoch;
         publication->fixedStepIndex = step;
         publication->actors.resize(slots.size());
+        publication->residentBodies.resize(slots.size());
         auto prefix = std::make_shared<std::vector<PrefixTarget>>();
         prefix->reserve(slots.size());
         for (const auto &slot : slots)
@@ -569,6 +570,7 @@ class JoltGpuScene::Impl
             publication->leaves.resize(storage.GetShapeCount());
             for (size_t index = 0; index < slots.size(); ++index) {
                 publication->actors[index] = slots[index].accepted;
+                publication->residentBodies[index] = (storage.GetModel().bodies[index].meta.z & MotionNotResident) == 0;
                 const auto &acceptedBody = storage.GetModel().bodies[index];
                 if (acceptedBody.meta.y != 0) {
                     const auto &identity = publication->actors[index];

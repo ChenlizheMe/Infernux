@@ -13,6 +13,7 @@
 
 #include "JoltGpuShape.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -98,6 +99,13 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCou
         }
         prepared.leaves.push_back(std::move(output));
     }
+    // Jolt's CPU tree traversal is spatially ordered. The device consumes a
+    // flat leaf stream, so establish component member order once at cook time
+    // for queries, batch exports and downstream consumers alike.
+    std::sort(prepared.leaves.begin(), prepared.leaves.end(), [](const auto &left, const auto &right) {
+        return left.memberIndex != right.memberIndex ? left.memberIndex < right.memberIndex
+                                                     : left.subShapeID.GetValue() < right.subShapeID.GetValue();
+    });
     return prepared;
 }
 

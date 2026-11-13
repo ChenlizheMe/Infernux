@@ -676,7 +676,7 @@ struct ParticleGpuSystemManager::Impl
         before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT |
                                VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-        before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
         if (collisionPending && !collisionScene->RecordPendingUpload(transfer))
@@ -2696,8 +2696,15 @@ void ParticleGpuSystemManager::NotifySubmission(bool submitted) noexcept
         }
     }
     m_impl->recordedDiagnostics.clear();
-    if (m_impl->collisionScene)
+    if (m_impl->collisionScene) {
+        // Export buffers are read by the raw particle transfer recording. Keep
+        // their frozen owners until this actual submission completes, just as
+        // diagnostic captures above retain their submission-owned resources.
+        if (submitted)
+            if (auto payload = m_impl->collisionScene->RecordedDevicePayload())
+                m_impl->deletionQueue->Retire([payload = std::move(payload)] {});
         m_impl->collisionScene->NotifySubmission(submitted);
+    }
     for (const auto &[id, emitter] : m_impl->emitters) {
         (void)id;
         emitter->runtime->NotifySubmission(submitted);

@@ -30,6 +30,7 @@
 #include "particle/ParticleGpuSorter.h"
 #include "particle/ParticleGpuSystemManager.h"
 #include "particle/ParticleSceneSources.h"
+#include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiComputeHost.h"
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
@@ -71,6 +72,7 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <platform/filesystem/InxPath.h>
 #include <platform/window/InxView.h>
@@ -82,60 +84,6 @@ namespace infernux
 {
 namespace
 {
-
-uint64_t ParticleCollisionStableHash(std::string_view value) noexcept
-{
-    uint64_t hash = 1469598103934665603ull;
-    for (const unsigned char byte : value) {
-        hash ^= byte;
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
-
-void ParticleCollisionHashAppend(uint64_t &hash, uint64_t value) noexcept
-{
-    for (uint32_t byte = 0; byte < 8; ++byte) {
-        hash ^= static_cast<uint8_t>(value >> (byte * 8u));
-        hash *= 1099511628211ull;
-    }
-}
-
-void StoreParticleCollisionAffine(particle::GpuParticleAffineTransform &destination, const glm::mat4 &matrix)
-{
-    destination.row0 = {matrix[0][0], matrix[1][0], matrix[2][0], matrix[3][0]};
-    destination.row1 = {matrix[0][1], matrix[1][1], matrix[2][1], matrix[3][1]};
-    destination.row2 = {matrix[0][2], matrix[1][2], matrix[2][2], matrix[3][2]};
-}
-
-void CopyParticleCollisionAffine(particle::GpuParticleAffineTransform &destination, const std::array<float, 12> &source)
-{
-    std::copy_n(source.begin(), 4, destination.row0.begin());
-    std::copy_n(source.begin() + 4, 4, destination.row1.begin());
-    std::copy_n(source.begin() + 8, 4, destination.row2.begin());
-}
-
-void CopyParticleCollisionAffine(std::array<float, 12> &destination, const particle::GpuParticleAffineTransform &source)
-{
-    std::copy(source.row0.begin(), source.row0.end(), destination.begin());
-    std::copy(source.row1.begin(), source.row1.end(), destination.begin() + 4);
-    std::copy(source.row2.begin(), source.row2.end(), destination.begin() + 8);
-}
-
-void StoreParticleCollisionAabb(particle::GpuParticleColliderRecord &record, const glm::mat4 &localToWorld,
-                                const glm::vec3 &localMin, const glm::vec3 &localMax)
-{
-    const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
-    const glm::vec3 localExtent = (localMax - localMin) * 0.5f;
-    const glm::vec3 worldCenter = glm::vec3(localToWorld * glm::vec4(localCenter, 1.0f));
-    const glm::mat3 linear(localToWorld);
-    const glm::vec3 worldExtent =
-        glm::abs(linear[0]) * localExtent.x + glm::abs(linear[1]) * localExtent.y + glm::abs(linear[2]) * localExtent.z;
-    const glm::vec3 worldMin = worldCenter - worldExtent;
-    const glm::vec3 worldMax = worldCenter + worldExtent;
-    record.worldAabbMin = {worldMin.x, worldMin.y, worldMin.z, 0.0f};
-    record.worldAabbMax = {worldMax.x, worldMax.y, worldMax.z, 0.0f};
-}
 
 template <typename Program, size_t Count> struct CompiledParticleProgram
 {
@@ -753,6 +701,14 @@ void InxRenderer::PreparePipeline()
 
         m_vkCore->SetFramePreSetupBuilder(
             [this](vk::VulkanFrameSubmission &submission, std::vector<uint32_t> &extraSetupDependencies) {
+                if (m_particleCollisionPendingDevice)
+                    for (const auto &buffer :
+                         {m_particleCollisionPendingDevice->records, m_particleCollisionPendingDevice->header,
+                          m_particleCollisionPendingDevice->gridOffsets, m_particleCollisionPendingDevice->gridRefs}) {
+                        m_vkCore->RegisterFrameBufferReadDependency(buffer->GetLastWriteSubmission(),
+                                                                    rhi::PipelineStage::Transfer);
+                        submission.Retain(buffer);
+                    }
                 if (m_particleGpuSystemManager && m_frameWorkOwner) {
                     rhi::ComputeHost host(m_vkCore->GetDeviceContext().GetRhiDevice(), m_vkCore->PrepareComputeQueue());
                     m_particleGpuSystemManager->PrepareStateCaptures(submission, host, *m_frameWorkOwner);
@@ -4055,138 +4011,46 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
 void InxRenderer::UpdateParticleCollisionScene()
 {
     if (!m_particleGpuSystemManager || !m_particleGpuSystemManager->RequiresCollisionScene()) {
-        // A collision-free interval has no immediately preceding simulation
-        // pose. Resuming starts a new history, retaining installed topology.
-        m_particleCollisionPublishedState.clear();
-        m_particleCollisionHistoryPending = true;
+        // No immediately preceding collision consumer exists across this gap.
+        m_particleCollisionAcceptedDevice.reset();
+        m_particleCollisionPendingDevice.reset();
+        m_particleCollisionSourceScene = nullptr;
         return;
     }
 
-    auto &manager = SceneManager::Instance();
-    manager.EnsurePhysicsQueriesCurrent();
-    auto &store = PhysicsECSStore::Instance();
-    Scene *scene = manager.GetActiveScene();
-    const uint64_t sourceRevision = store.GetCollisionSceneRevision();
-    if (scene == m_particleCollisionSourceScene && sourceRevision == m_particleCollisionSourceRevision &&
-        !m_particleCollisionHistoryPending)
-        return;
-
-    const bool sceneChanged = scene != m_particleCollisionSourceScene;
-    if (sceneChanged)
-        m_particleCollisionPublishedState.clear();
-
-    std::vector<PhysicsShapeState> shapes;
-    shapes.reserve(store.GetAliveColliderCount());
-    store.ForEachAliveActor([&](const PhysicsActorData &actor) {
-        if (actor.owner->GetScene() != scene || !actor.bodyInBroadphase || actor.sceneSuspended)
-            return;
-        auto bodyShapes = PhysicsWorld::Instance().GetBodyShapeStates(actor.bodyId);
-        shapes.insert(shapes.end(), std::make_move_iterator(bodyShapes.begin()),
-                      std::make_move_iterator(bodyShapes.end()));
-    });
-    uint64_t topologyFingerprint = 1469598103934665603ull;
-    for (const auto &shape : shapes) {
-        if (shape.geometry->type != PhysicsShapeType::Mesh)
-            continue;
-        ParticleCollisionHashAppend(topologyFingerprint,
-                                    ParticleCollisionStableHash(shape.collider->GetInstanceGuid()));
-        ParticleCollisionHashAppend(topologyFingerprint, shape.geometry->identity);
+    Scene *scene = SceneManager::Instance().GetActiveScene();
+    if (scene != m_particleCollisionSourceScene) {
+        m_particleCollisionAcceptedDevice.reset();
+        m_particleCollisionPendingDevice.reset();
     }
-    const bool replaceTopology = sceneChanged || topologyFingerprint != m_particleCollisionTopologyFingerprint;
-    const uint64_t topologyRevision =
-        replaceTopology ? m_particleCollisionTopologyRevision + 1u : m_particleCollisionTopologyRevision;
+    if (m_particleCollisionPendingDevice &&
+        m_particleGpuSystemManager->CollisionSceneRevision() == m_particleCollisionPendingDevice->revision) {
+        // Only an actually accepted particle submission advances history.
+        m_particleCollisionAcceptedDevice = std::move(m_particleCollisionPendingDevice);
+    }
+    if (m_particleCollisionPendingDevice)
+        return; // Rejected/unrecorded publication remains available for retry.
 
     particle::GpuParticleCollisionSceneSnapshot snapshot;
+    if (m_particleCollisionPublishedRevision == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("GPU particle collision publication revision exhausted");
     snapshot.revision = ++m_particleCollisionPublishedRevision;
-    snapshot.topologyRevision = topologyRevision;
-    snapshot.replaceMeshTopology = replaceTopology;
-    snapshot.staticColliders.reserve(shapes.size());
-    snapshot.dynamicColliders.reserve(shapes.size());
-    std::unordered_map<uint64_t, ParticleCollisionPublishedState> nextPublishedState;
-    nextPublishedState.reserve(shapes.size());
-    bool moved = false;
-
-    for (const auto &shape : shapes) {
-        Collider *collider = shape.collider;
-        GameObject *gameObject = collider->GetGameObject();
-        const auto &geometry = *shape.geometry;
-        const uint64_t componentIdentity = ParticleCollisionStableHash(collider->GetInstanceGuid());
-        if (replaceTopology && geometry.type == PhysicsShapeType::Mesh) {
-            particle::GpuParticleCollisionMeshGeometry mesh;
-            mesh.identity = componentIdentity;
-            const auto vertices = geometry.GetTriangles();
-            mesh.positions.reserve(vertices.size());
-            mesh.indices.reserve(vertices.size());
-            for (const auto &vertex : vertices) {
-                mesh.indices.push_back(static_cast<uint32_t>(mesh.positions.size()));
-                mesh.positions.push_back({vertex.x, vertex.y, vertex.z, 0.0f});
-            }
-            snapshot.meshGeometries.push_back(std::move(mesh));
-        }
-
-        particle::GpuParticleColliderRecord record;
-        record.shape = {geometry.dimensions.x, geometry.dimensions.y, geometry.dimensions.z, geometry.dimensions.w};
-        const glm::mat4 colliderToWorld =
-            glm::translate(glm::mat4(1.0f), shape.center) * glm::mat4_cast(shape.rotation);
-        const glm::mat4 worldToCollider = glm::inverse(colliderToWorld);
-        StoreParticleCollisionAffine(record.colliderToWorld, colliderToWorld);
-        StoreParticleCollisionAffine(record.worldToCollider, worldToCollider);
-        StoreParticleCollisionAabb(record, colliderToWorld, geometry.boundsMin, geometry.boundsMax);
-
-        uint32_t flags = shape.trigger ? particle::GpuParticleColliderTrigger : 0u;
-        if (geometry.convex)
-            flags |= particle::GpuParticleColliderConvex;
-        if (shape.moving)
-            flags |= particle::GpuParticleColliderDynamic;
-        record.linearVelocity = {shape.linearVelocity.x, shape.linearVelocity.y, shape.linearVelocity.z, 0.0f};
-        record.angularVelocity = {shape.angularVelocity.x, shape.angularVelocity.y, shape.angularVelocity.z, 0.0f};
-        record.centerOfMass = {shape.bodyCenterOfMass.x, shape.bodyCenterOfMass.y, shape.bodyCenterOfMass.z, 0.0f};
-        record.material = {collider->GetFriction(), collider->GetBounciness(),
-                           static_cast<float>(collider->GetFrictionCombine()),
-                           static_cast<float>(collider->GetBounceCombine())};
-        record.metadata = {static_cast<uint32_t>(geometry.type), shape.layerBit, flags, 0u};
-        const uint64_t objectIdentity = gameObject->GetID();
-        record.identity = {static_cast<uint32_t>(componentIdentity), static_cast<uint32_t>(componentIdentity >> 32u),
-                           static_cast<uint32_t>(objectIdentity), static_cast<uint32_t>(objectIdentity >> 32u)};
-        const auto previous = m_particleCollisionPublishedState.find(componentIdentity);
-        const bool sameGeometry = previous != m_particleCollisionPublishedState.end() &&
-                                  previous->second.geometryIdentity == geometry.identity;
-        if (sameGeometry) {
-            CopyParticleCollisionAffine(record.previousWorldToCollider, previous->second.worldToCollider);
-            record.previousWorldAabbMin = previous->second.worldAabbMin;
-            record.previousWorldAabbMax = previous->second.worldAabbMax;
-        } else {
-            record.previousWorldToCollider = record.worldToCollider;
-            record.previousWorldAabbMin = record.worldAabbMin;
-            record.previousWorldAabbMax = record.worldAabbMax;
-        }
-        auto &nextState = nextPublishedState[componentIdentity];
-        nextState.geometryIdentity = geometry.identity;
-        CopyParticleCollisionAffine(nextState.worldToCollider, record.worldToCollider);
-        moved |= sameGeometry && nextState.worldToCollider != previous->second.worldToCollider;
-        nextState.worldAabbMin = record.worldAabbMin;
-        nextState.worldAabbMax = record.worldAabbMax;
-        if (shape.moving)
-            snapshot.dynamicColliders.push_back(record);
-        else
-            snapshot.staticColliders.push_back(record);
+    snapshot.topologyRevision = 1;
+    if (scene) {
+        // One owner-controlled operation selects the immutable publication,
+        // gathers its device state and projects the particle table on the GPU.
+        // The renderer never downloads poses or consults live Collider material.
+        snapshot.device = PhysicsWorld::Instance().PrepareParticleCollisionScene(
+            *scene, m_particleCollisionAcceptedDevice, snapshot.revision);
+        if (!snapshot.device)
+            throw std::runtime_error("GPU particle collision export returned no device publication");
+        snapshot.topologyRevision = snapshot.device->topologyRevision;
     }
-
     std::string error;
-    const bool published = m_particleGpuSystemManager->PublishCollisionScene(snapshot, &error);
-    if (published) {
-        m_particleCollisionSourceScene = scene;
-        m_particleCollisionSourceRevision = sourceRevision;
-        // Retire the one-frame sweep even when the next frame has no pose edits.
-        m_particleCollisionHistoryPending = moved;
-        m_particleCollisionPublishedState = std::move(nextPublishedState);
-        if (replaceTopology) {
-            m_particleCollisionTopologyFingerprint = topologyFingerprint;
-            m_particleCollisionTopologyRevision = topologyRevision;
-        }
-    } else {
-        INXLOG_ERROR("Failed to publish GPU particle collision scene: ", error);
-    }
+    if (!m_particleGpuSystemManager->PublishCollisionScene(snapshot, &error))
+        throw std::runtime_error("Failed to publish GPU particle collision scene: " + error);
+    m_particleCollisionSourceScene = scene;
+    m_particleCollisionPendingDevice = std::move(snapshot.device);
 }
 
 uint32_t InxRenderer::GetMaxFramesInFlight() const noexcept

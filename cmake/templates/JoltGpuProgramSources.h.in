@@ -1,6 +1,6 @@
 #pragma once
 
-// Generated from the fork's authoritative GPU sources; edit those inputs.
+// Generated from authoritative fork and engine sources; edit those inputs.
 namespace infernux::jolt_gpu_sources
 {
 inline constexpr char Types[] = R"INX_JPH_GPU(@JOLT_GPU_TYPES_SOURCE@)INX_JPH_GPU";
@@ -10,4 +10,5 @@ inline constexpr char BodyMutations[] = R"INX_JPH_GPU(@JOLT_GPU_BODY_MUTATIONS_S
 inline constexpr char BodyCommands[] = R"INX_JPH_GPU(@JOLT_GPU_BODY_COMMANDS_SOURCE@)INX_JPH_GPU";
 inline constexpr char Queries[] = R"INX_JPH_GPU(@JOLT_GPU_QUERIES_SOURCE@)INX_JPH_GPU";
 inline constexpr char RenderPoses[] = R"INX_JPH_GPU(@JOLT_GPU_RENDER_POSES_SOURCE@)INX_JPH_GPU";
+inline constexpr char ParticleExport[] = R"INX_JPH_GPU(@INFERNUX_PARTICLE_EXPORT_SOURCE@)INX_JPH_GPU";
 }

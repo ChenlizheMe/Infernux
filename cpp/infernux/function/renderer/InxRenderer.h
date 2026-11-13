@@ -47,6 +47,7 @@ namespace particle
 {
 class ParticleGpuDrawRegistry;
 class ParticleGpuSystemManager;
+struct GpuParticleCollisionDevicePayload;
 } // namespace particle
 class InxGUI;
 class InxGUIRenderable;
@@ -838,19 +839,9 @@ class InxRenderer
     std::shared_ptr<ParticleProgramBootstrap> m_particleProgramBootstrap;
     bool m_particleGpuSystemManagerInitializationAttempted = false;
     const Scene *m_particleCollisionSourceScene = nullptr;
-    uint64_t m_particleCollisionSourceRevision = 0;
-    bool m_particleCollisionHistoryPending = false;
     uint64_t m_particleCollisionPublishedRevision = 1;
-    uint64_t m_particleCollisionTopologyFingerprint = 0;
-    uint64_t m_particleCollisionTopologyRevision = 1;
-    struct ParticleCollisionPublishedState
-    {
-        uint64_t geometryIdentity = 0;
-        std::array<float, 12> worldToCollider{};
-        std::array<float, 4> worldAabbMin{};
-        std::array<float, 4> worldAabbMax{};
-    };
-    std::unordered_map<uint64_t, ParticleCollisionPublishedState> m_particleCollisionPublishedState;
+    std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> m_particleCollisionAcceptedDevice;
+    std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> m_particleCollisionPendingDevice;
     std::unique_ptr<OutlineRenderer> m_outlineRenderer;
     uint64_t m_gpuResidencyBudgetBytes = 0;
     uint32_t m_gpuResidencyCheckFrames = 0;

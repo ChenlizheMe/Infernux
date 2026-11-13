@@ -627,8 +627,10 @@ def _resolve_single_reference(value: Any, field_type: FieldType) -> Any:
         return value.resolve() if isinstance(value, ShaderRef) else value
     if field_type == FieldType.ASSET:
         from infernux.core.asset_ref import AssetRefBase, get_asset_type_for_ref
-        # Text renderers consume font handles through the asset catalog.
-        if isinstance(value, AssetRefBase) and get_asset_type_for_ref(value) == "Font":
+        # These consumers use catalog identities, not their editable source
+        # definitions. Keep the handle so ordinary component-to-component
+        # assignment preserves the compiled artifact GUID without loading source.
+        if isinstance(value, AssetRefBase) and get_asset_type_for_ref(value) in ("Font", "ParticleGraph"):
             return value
         return value.resolve() if isinstance(value, AssetRefBase) else value
     return value

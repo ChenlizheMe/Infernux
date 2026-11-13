@@ -8,6 +8,7 @@
  * and raycast queries. Stepped by SceneManager's fixed-time accumulator.
  */
 
+#include "JoltGpuQueries.h"
 #include "JoltGpuScene.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsTargetReference.h"
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -105,6 +107,7 @@ struct PhysicsBodyMotionState
     glm::vec3 angularVelocity{0.0f};
     glm::vec3 inverseMass{0.0f};
     glm::mat3 inverseInertia{0.0f};
+    glm::mat3 inertia{0.0f};
 };
 
 struct PhysicsPenetrationResult
@@ -124,6 +127,22 @@ struct PhysicsBoxShapeState
     glm::vec3 halfExtents{0.0f};
     float friction = 0.0f;
     float bounciness = 0.0f;
+};
+
+struct PhysicsRigidbodyBoxState
+{
+    uint32_t bodyIndex = 0;
+    PhysicsBoxShapeState shape;
+};
+
+/// One publication and input order for a whole state request. With GPU export
+/// targets, states contains identity metadata only and boxes stays on-device.
+struct PhysicsRigidbodyStateBatch
+{
+    std::vector<Rigidbody *> bodies;
+    std::vector<PhysicsBodyMotionState> states;
+    std::vector<PhysicsRigidbodyBoxState> boxes;
+    size_t boxCount = 0;
 };
 
 enum class PhysicsShapeType : uint32_t
@@ -165,6 +184,10 @@ struct PhysicsShapeState
     glm::vec3 bodyCenterOfMass{0.0f};
     glm::vec3 linearVelocity{0.0f};
     glm::vec3 angularVelocity{0.0f};
+    float friction = 0.0f;
+    float bounciness = 0.0f;
+    uint32_t frictionCombine = 0;
+    uint32_t bounceCombine = 0;
 };
 
 /// Actual velocity-solver impulse from the most recent fixed step. The
@@ -546,6 +569,13 @@ class PhysicsWorld
     [[nodiscard]] glm::vec3 GetBodyCenterOfMassPosition(uint32_t bodyId) const;
     [[nodiscard]] PhysicsBodyMotionState GetBodyMotionState(uint32_t bodyId,
                                                             PhysicsStateFields fields = PhysicsStateFields::All) const;
+    [[nodiscard]] PhysicsRigidbodyStateBatch
+    GatherRigidbodyStates(const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
+                          bool queryTriggers, const std::vector<JoltGpuQueryExportBinding> &exports = {}) const;
+    [[nodiscard]] PhysicsRigidbodyStateBatch
+    GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layers,
+                                  bool queryTriggers, PhysicsStateFields fields, bool includeBoxes,
+                                  const std::vector<JoltGpuQueryExportBinding> &exports = {}) const;
     [[nodiscard]] std::optional<PhysicsPenetrationResult>
     ComputePenetration(const Collider &a, const glm::vec3 &positionA, const glm::quat &rotationA, const Collider &b,
                        const glm::vec3 &positionB, const glm::quat &rotationB) const;
@@ -677,6 +707,10 @@ class PhysicsWorld
     void DriveRagdollPose(uint64_t id, const std::vector<glm::quat> &worldRotations, bool enableMotors = true);
     [[nodiscard]] std::vector<PhysicsBoxShapeState> GetBodyBoxShapeStates(uint32_t bodyId, bool queryTriggers) const;
     [[nodiscard]] std::vector<PhysicsShapeState> GetBodyShapeStates(uint32_t bodyId, bool queryTriggers = true) const;
+    [[nodiscard]] std::shared_ptr<particle::GpuParticleCollisionDevicePayload>
+    PrepareParticleCollisionScene(class Scene &scene,
+                                  const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
+                                  uint64_t revision) const;
     /// Resolve through the accepted immutable slot identity, never CPU Body data.
     Collider *ResolveColliderForSubShape(uint32_t bodyId, uint32_t subShapeIdValue) const;
 
@@ -716,7 +750,7 @@ class PhysicsWorld
     {
         uint64_t generation = 0;
         PhysicsBodyMotionState state;
-        bool hasInverseMass = false;
+        PhysicsStateFields fields = PhysicsStateFields::None;
     };
     bool EnsureGpuReady();
     void RefreshGpuSurfaces();
@@ -741,6 +775,17 @@ class PhysicsWorld
     void RefreshGpuActor(uint32_t bodyId, const std::function<void(PreparedGpuActor &)> &edit = {});
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(uint32_t bodyId, PhysicsStateFields fields) const;
     void CheckContactSupport() const;
+    [[nodiscard]] JoltGpuControlWork
+    PrepareStateBatch(const std::shared_ptr<const JoltGpuScene::Publication> &publication,
+                      const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
+                      bool queryTriggers, const std::vector<JoltGpuQueryExportBinding> &exports,
+                      PhysicsRigidbodyStateBatch &batch, std::shared_ptr<JoltGpuQueryResult> &motion,
+                      std::shared_ptr<JoltGpuQueryResult> &shapes, std::exception_ptr &requestError) const;
+    [[nodiscard]] std::shared_ptr<const PhysicsShapeGeometry>
+    ResolveShapeGeometry(const JoltGpuScene::PublishedLeaf &leaf, const JPH::GPU::QueryShapeState &record) const;
+    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> GatherBodyShapes(uint32_t bodyId, bool queryTriggers) const;
+    void MaterializeStateBatch(PhysicsRigidbodyStateBatch &batch, const std::shared_ptr<JoltGpuQueryResult> &motion,
+                               const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical) const;
 
     bool m_initialized = false;
     bool m_ownsJoltGlobals = false;
@@ -777,6 +822,7 @@ class PhysicsWorld
     mutable std::atomic<uint64_t> m_queryGeneration{1};
     mutable std::shared_ptr<const void> m_lastPublication;
     mutable std::unordered_map<uint32_t, CachedMotionState> m_requestedMotion;
+    mutable std::unordered_map<const JPH::Shape *, std::weak_ptr<const PhysicsShapeGeometry>> m_shapeGeometry;
     bool m_contactEventStreamEnabled = false;
     bool m_contactImpulseStreamEnabled = false;
 };
