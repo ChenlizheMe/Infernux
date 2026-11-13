@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import sys
 import tempfile
-import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from infernux.application import ContentPublication
 from infernux.debug import Debug
 from infernux.engine.player_scene import PlayerSceneService
 from infernux.engine.work_runtime import WorkRuntime
-from infernux.timing import Time
 
 if TYPE_CHECKING:
     from infernux.engine.player_service_graph import (
@@ -58,7 +56,6 @@ class PlayerRuntimeSession(WorkRuntime):
         self._pending_content: Optional[tuple[ContentPublication, str]] = None
         self._content_roots: tuple[str, ...] = ()
         self._state = "stopped"
-        self._last_frame_time = time.perf_counter()
         self._membership_warmup_frames = 0
         self._startup_warmup = None
 
@@ -334,8 +331,6 @@ class PlayerRuntimeSession(WorkRuntime):
         if scene is None:
             Debug.log_warning("Player cannot start without an active scene")
             return False
-        Time._reset()
-        self._last_frame_time = time.perf_counter()
         from infernux.lib import _Infernux as native_module
 
         if getattr(native_module, "__runtime_profile__", "desktop") != "web-player":
@@ -383,8 +378,8 @@ class PlayerRuntimeSession(WorkRuntime):
         self._membership_warmup_frames = 8
         return True
 
-    def tick(self, external_delta_time: Optional[float] = None) -> float:
-        """Advance one Player frame at the safe pre-scene boundary.
+    def prepare_frame(self) -> None:
+        """Prepare one Player frame at the safe pre-scene boundary.
 
         Scene callbacks can queue a runtime load while the native scene is
         being iterated. The editor advances that transaction before the next
@@ -392,7 +387,7 @@ class PlayerRuntimeSession(WorkRuntime):
         editor-only scene services.
         """
         if not self.is_playing:
-            return 0.0
+            return
         self.pump_startup_warmup()
         self._publish_ready_content()
         if self._membership_warmup_frames > 0:
@@ -402,25 +397,6 @@ class PlayerRuntimeSession(WorkRuntime):
         self._scene_service.process_pending_load()
         if self._scene_service.active_scene_path != previous_scene_path:
             self._refresh_execution_membership()
-
-        current_time = time.perf_counter()
-        delta_time = (
-            current_time - self._last_frame_time
-            if external_delta_time is None
-            else float(external_delta_time)
-        )
-        self._last_frame_time = current_time
-        if self.is_paused:
-            return 0.0
-        Time._tick(delta_time)
-        if self._native_engine is not None:
-            try:
-                Time._game_delta_time = (
-                    self._native_engine.get_game_only_frame_ms() / 1000.0
-                )
-            except Exception as exc:
-                Debug.log_suppressed("PlayerRuntimeSession.read_game_only_frame_ms", exc)
-        return delta_time
 
     def shutdown(self) -> None:
         """Retire Player scenes while their resource catalog is still bound."""

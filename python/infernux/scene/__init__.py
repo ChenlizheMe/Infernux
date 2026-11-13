@@ -830,8 +830,6 @@ class SceneManager:
         else:
             scene = sm.get_active_scene()
             SceneManager._unload_other_scenes(scene)
-            from infernux.timing import Time
-            Time._reset_frame_delta()
             if scene:
                 sm._start_active_scene_for_play()
 

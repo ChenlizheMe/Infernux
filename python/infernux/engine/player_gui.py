@@ -240,7 +240,7 @@ class PlayerGUI(InxGUIRenderable):
     def _tick(self, ctx):
         """Handle Player window input and debug-control polling.
 
-        Play timing is owned by ``Engine.tick_play_mode``. This must not start
+        Play timing is owned by the native SceneManager. This must not start
         the session before an optional project splash has finished.
         """
         # Standalone Players have no competing Editor viewport.  Establish the

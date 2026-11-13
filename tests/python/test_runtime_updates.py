@@ -41,16 +41,12 @@ def render_pipeline(engine):
 @pytest.fixture
 def live_clock(engine, scene):
     manager = SceneManager.instance()
-    engine.set_pre_scene_update_callback(Time._tick)
     manager.play()
-    engine.tick(0.0)
-    Time._reset()
     try:
         yield manager
     finally:
         manager.stop()
-        engine.set_pre_scene_update_callback(None)
-        Time._reset()
+        Time.time_scale = 1.0
 
 
 @pytest.mark.parametrize("scale,fixed_steps", [(1.0, 2), (0.5, 1), (0.0, 0)])

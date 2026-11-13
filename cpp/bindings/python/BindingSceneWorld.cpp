@@ -418,9 +418,20 @@ void BindSceneManager(py::module_ &m)
         .value("RENDER_PRESENTED", SceneManager::RuntimeFrameBarrier::RenderPresented)
         .value("PENDING_DESTROY", SceneManager::RuntimeFrameBarrier::PendingDestroy);
 
+    py::class_<SceneManager::FrameTime>(m, "_FrameTime")
+        .def_readonly("time", &SceneManager::FrameTime::time)
+        .def_readonly("unscaled_time", &SceneManager::FrameTime::unscaledTime)
+        .def_readonly("delta_time", &SceneManager::FrameTime::deltaTime)
+        .def_readonly("unscaled_delta_time", &SceneManager::FrameTime::unscaledDeltaTime)
+        .def_readonly("smooth_delta_time", &SceneManager::FrameTime::smoothDeltaTime)
+        .def_readonly("frame_count", &SceneManager::FrameTime::frameCount);
+
     py::class_<SceneManager, std::unique_ptr<SceneManager, py::nodelete>>(m, "SceneManager")
         .def_static("instance", &SceneManager::Instance, py::return_value_policy::reference,
                     "Get the singleton SceneManager instance")
+        .def_property_readonly("_frame_time", &SceneManager::GetFrameTime, py::return_value_policy::reference_internal)
+        .def("get_realtime_since_startup", &SceneManager::GetRealtimeSinceStartup,
+             "Monotonic real seconds since the owning engine started")
         .def("create_scene", &SceneManager::CreateScene, py::return_value_policy::reference, py::arg("name"),
              "Create a new empty scene")
         .def("_create_preview_scene", &SceneManager::CreatePreviewScene, py::return_value_policy::reference,

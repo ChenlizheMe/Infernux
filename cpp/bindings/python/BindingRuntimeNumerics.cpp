@@ -1,6 +1,5 @@
 #include "BindingRegistration.h"
 #include <array>
-#include <core/math/FrameTimeSmoothing.h>
 #include <core/math/ImageFill.h>
 #include <pybind11/stl.h>
 #include <vector>
@@ -9,12 +8,6 @@ namespace py = pybind11;
 
 void infernux::RegisterRuntimeNumericsBindings(py::module_ &module)
 {
-    py::class_<timing::FrameTimeSmoother>(module, "_FrameTimeSmoother")
-        .def(py::init<>())
-        .def("advance", &timing::FrameTimeSmoother::Advance, py::arg("delta"))
-        .def("reset", &timing::FrameTimeSmoother::Reset)
-        .def_property_readonly("value", &timing::FrameTimeSmoother::Value);
-
     module.def(
         "_image_fill_geometry",
         [](float amount, int method, int origin, bool clockwise) {

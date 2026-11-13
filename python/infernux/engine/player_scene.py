@@ -396,8 +396,6 @@ class PlayerSceneService:
         self._scene_paths = {int(scene.world_id): path} if scene is not None else {}
         self._active_scene_path = path if scene is not None else None
         self._last_error = ""
-        from infernux.timing import Time
-        Time._reset_frame_delta()
         if start_for_play:
             scene_manager._start_active_scene_for_play()
         authored_camera = scene is not None and scene.main_camera is not None

@@ -181,7 +181,6 @@ def apply(settings: dict) -> None:
     """Push *settings* into the live engine (gravity, fixed timestep, etc.)."""
     from infernux.lib import EngineConfig, SceneManager
     from infernux.physics import Physics
-    from infernux.timing import Time
 
     validated = normalize(settings)
     gravity = validated["gravity"]
@@ -213,5 +212,3 @@ def apply(settings: dict) -> None:
     sm = SceneManager.instance()
     sm.set_fixed_time_step(fixed_dt)
     sm.set_max_fixed_delta_time(max_fixed_dt)
-    Time._fixed_delta_time = fixed_dt
-    Time._maximum_delta_time = max_fixed_dt

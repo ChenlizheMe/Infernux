@@ -256,7 +256,7 @@ def test_prepare_scene_holds_ready_transaction_until_explicit_activation(monkeyp
     assert calls == ["start", "commit"]
 
 
-def test_player_runtime_tick_advances_pending_scene_load_before_time(scene, monkeypatch):
+def test_player_preparation_commits_scene_work_without_advancing_time(scene):
     from infernux.engine.player_runtime import PlayerRuntimeSession
     from infernux.lib import SceneManager as NativeSceneManager
 
@@ -273,24 +273,24 @@ def test_player_runtime_tick_advances_pending_scene_load_before_time(scene, monk
         def cancel_pending_load():
             return None
 
-    monkeypatch.setattr("infernux.timing.Time._tick", lambda value: calls.append("time"))
+    from infernux.timing import Time
 
     native = NativeSceneManager.instance()
     native.play()
 
     session = PlayerRuntimeSession(scene_service=RuntimeSceneService())
     session._state = "playing"
-    session.tick(1.0 / 60.0)
+    session.prepare_frame()
 
-    assert calls == ["process", "time"]
+    assert calls == ["process"] and Time.frame_count == 0
     native.pause()
     assert session.is_paused
-    assert session.tick(1.0) == 0.0
-    assert calls == ["process", "time", "process"]
+    session.prepare_frame()
+    assert calls == ["process", "process"] and Time.frame_count == 0
     native.play()
     assert not session.is_paused
-    session.tick(1.0 / 60.0)
-    assert calls == ["process", "time", "process", "process", "time"]
+    session.prepare_frame()
+    assert calls == ["process", "process", "process"] and Time.frame_count == 0
 
 
 def test_pending_scene_transaction_starts_the_new_scene_once(monkeypatch):

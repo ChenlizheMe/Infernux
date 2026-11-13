@@ -200,6 +200,37 @@ float SceneManager::ConsumeFrameDeltaTime(float deltaTime) noexcept
     return 0.0f;
 }
 
+void SceneManager::StartRuntimeClock()
+{
+    m_startupTime = std::chrono::steady_clock::now();
+    m_timeScale = 1.0f;
+    ResetFrameTime();
+}
+
+void SceneManager::ResetFrameTime()
+{
+    m_frameTime = {};
+    m_frameTimeSmoother.Reset();
+}
+
+void SceneManager::ResetFrameDelta()
+{
+    m_frameTime.deltaTime = 0.0f;
+    m_frameTime.unscaledDeltaTime = 0.0f;
+    m_frameTime.smoothDeltaTime = 0.0f;
+    m_frameTimeSmoother.Reset();
+}
+
+void SceneManager::AdvanceFrameTime(float unscaledDeltaTime, float scaledDeltaTime)
+{
+    m_frameTime.deltaTime = scaledDeltaTime;
+    m_frameTime.unscaledDeltaTime = unscaledDeltaTime;
+    m_frameTime.smoothDeltaTime = m_frameTimeSmoother.Advance(scaledDeltaTime);
+    m_frameTime.time += static_cast<double>(scaledDeltaTime);
+    m_frameTime.unscaledTime += static_cast<double>(unscaledDeltaTime);
+    ++m_frameTime.frameCount;
+}
+
 void SceneManager::UnloadScene(Scene *scene)
 {
     Scene::RequireNoWorldRetirement();
@@ -272,6 +303,7 @@ void SceneManager::Shutdown()
     // No play-mode restore logic here — this is irreversible engine teardown.
     m_isPlaying = false;
     m_isPaused = false;
+    ResetFrameTime();
     m_startupPending = false;
     m_fixedPhase = FixedPhase::Idle;
     m_pausedStepPending = false;
@@ -498,6 +530,9 @@ void SceneManager::Update(float deltaTime)
 
     // Update active scene if playing
     if (m_isPlaying && !m_isPaused && (!m_scenes.empty() || m_runtimePersistentScene)) {
+        // Admit one simulation frame before any lifecycle callback observes it.
+        // Fixed-step continuations retain their own already admitted step time.
+        AdvanceFrameTime(deltaTime, std::clamp(deltaTime * m_timeScale, 0.0f, m_maxFixedDeltaTime));
         t0 = ProfileClock::now();
         for (const auto &scene : m_scenes) {
             if (GetSimulationState() != admittedState)
@@ -526,15 +561,11 @@ void SceneManager::Update(float deltaTime)
         if (GetSimulationState() != admittedState)
             return;
 
-        // Bound simulation catch-up after scaling; unscaled consumers keep the
-        // actual frame duration, including long frames and paused game time.
-        m_lastScaledDeltaTime = std::clamp(deltaTime * m_timeScale, 0.0f, m_maxFixedDeltaTime);
-
         // ---- Fixed-update accumulator (Unity-style) ----
         // Each host update contributes time once, including while a fixed
         // step is waiting for its dependencies. Resuming that step does not
         // replay FixedUpdate or debit the accumulator until it completes.
-        m_fixedTimeAccumulator += m_lastScaledDeltaTime;
+        m_fixedTimeAccumulator += m_frameTime.deltaTime;
         while (HasPendingFixedStep() || m_fixedTimeAccumulator >= m_fixedTimeStep) {
             const bool current = RunFixedSimulationStep(useRuntimeScheduler, admittedState);
             if (!current)
@@ -550,18 +581,18 @@ void SceneManager::Update(float deltaTime)
         t0 = ProfileClock::now();
         if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0) {
             if (auto callback = m_runtimeLifecycleUpdate)
-                callback(m_lastScaledDeltaTime);
+                callback(m_frameTime.deltaTime);
         }
         for (const auto &scene : m_scenes) {
             if (GetSimulationState() != admittedState)
                 return;
             if (scene)
-                scene->Update(m_lastScaledDeltaTime);
+                scene->Update(m_frameTime.deltaTime);
         }
         if (GetSimulationState() != admittedState)
             return;
         if (m_runtimePersistentScene)
-            m_runtimePersistentScene->Update(m_lastScaledDeltaTime);
+            m_runtimePersistentScene->Update(m_frameTime.deltaTime);
         if (GetSimulationState() != admittedState)
             return;
         if (!TransformECSStore::Instance().IsFrameCacheActive())
@@ -611,18 +642,18 @@ void SceneManager::LateUpdate(float deltaTime)
         if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable &&
             m_runtimeLifecycleLateUpdateCount > 0) {
             if (auto callback = m_runtimeLifecycleLateUpdate)
-                callback(m_lastScaledDeltaTime);
+                callback(m_frameTime.deltaTime);
         }
         for (const auto &scene : m_scenes) {
             if (GetSimulationState() != admittedState)
                 return;
             if (scene)
-                scene->LateUpdate(m_lastScaledDeltaTime);
+                scene->LateUpdate(m_frameTime.deltaTime);
         }
         if (GetSimulationState() != admittedState)
             return;
         if (m_runtimePersistentScene)
-            m_runtimePersistentScene->LateUpdate(m_lastScaledDeltaTime);
+            m_runtimePersistentScene->LateUpdate(m_frameTime.deltaTime);
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.lateUpdateMs += ProfileMsSince(t0);
@@ -676,7 +707,7 @@ void SceneManager::Play()
         m_fixedTimeAccumulator = 0.0f;
         m_fixedTime = 0.0;
         m_fixedUnscaledTime = 0.0;
-        m_lastScaledDeltaTime = 0.0f;
+        ResetFrameTime();
         m_runtimeFrameCount = 0;
     }
 
@@ -822,7 +853,7 @@ void SceneManager::Stop()
     m_fixedTimeAccumulator = 0.0f;
     m_fixedTime = 0.0;
     m_fixedUnscaledTime = 0.0;
-    m_lastScaledDeltaTime = 0.0f;
+    ResetFrameTime();
     m_runtimeFrameCount = 0;
 
     // Notify renderer that play stopped.
@@ -848,7 +879,7 @@ void SceneManager::Pause()
 #endif
 }
 
-void SceneManager::Step(float deltaTime)
+void SceneManager::Step(float requestedDeltaTime)
 {
     if (m_fixedPhase == FixedPhase::Failed)
         throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
@@ -856,9 +887,12 @@ void SceneManager::Step(float deltaTime)
         return;
     if (m_isStepping || (m_stepFrameOpen && !m_pausedStepPending))
         throw std::logic_error("a paused simulation step cannot be reentered");
+    const bool beginningFrame = !m_pausedStepPending;
     m_isStepping = true;
     m_pausedStepPending = true;
-    m_pausedStepDeltaTime = deltaTime;
+    if (beginningFrame)
+        m_pausedStepDeltaTime = requestedDeltaTime;
+    const float deltaTime = m_pausedStepDeltaTime;
     struct StepScope
     {
         bool &active;
@@ -868,6 +902,8 @@ void SceneManager::Step(float deltaTime)
         }
     } stepScope{m_isStepping};
     const auto admittedState = GetSimulationState();
+    if (beginningFrame)
+        AdvanceFrameTime(m_timeScale > 0.0f ? deltaTime / m_timeScale : 0.0f, deltaTime);
 
     if (m_startupPending) {
         StartActiveSceneForPlay();
@@ -900,7 +936,6 @@ void SceneManager::Step(float deltaTime)
 
     if (GetSimulationState() != admittedState)
         return;
-    m_lastScaledDeltaTime = deltaTime;
     if (GetSimulationState() != admittedState || !RunFixedSimulationStep(useRuntimeScheduler, admittedState))
         return;
     m_pausedStepPending = false;
@@ -1192,7 +1227,7 @@ void SceneManager::PrepareActiveSceneReplacement()
     m_fixedPhase = FixedPhase::Idle;
     m_pausedStepPending = false;
     m_stepFrameOpen = false;
-    m_lastScaledDeltaTime = 0.0f;
+    ResetFrameDelta();
     m_resetDeltaTimeOnNextFrame = true;
     if (m_isPlaying) {
         FlushPersistentPromotions();

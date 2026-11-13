@@ -648,6 +648,7 @@ void Infernux::AcquireRuntimeServices()
         throw std::logic_error("The asset registry is already owned outside this runtime");
     g_runtimeOwner = this;
     m_ownsRuntimeServices = true;
+    SceneManager::Instance().StartRuntimeClock();
 }
 
 void Infernux::StartRuntimeServices()

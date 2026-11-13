@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <core/math/FrameTimeSmoothing.h>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -35,6 +36,16 @@ class Light;
 class SceneManager
 {
   public:
+    struct FrameTime
+    {
+        double time = 0.0;
+        double unscaledTime = 0.0;
+        float deltaTime = 0.0f;
+        float unscaledDeltaTime = 0.0f;
+        float smoothDeltaTime = 0.0f;
+        uint64_t frameCount = 0;
+    };
+
     struct FrameProfile
     {
         double editorCameraMs = 0.0;
@@ -167,7 +178,16 @@ class SceneManager
     void LateUpdate(float deltaTime);
     [[nodiscard]] float GetFrameDeltaTime() const
     {
-        return m_lastScaledDeltaTime;
+        return m_frameTime.deltaTime;
+    }
+    [[nodiscard]] const FrameTime &GetFrameTime() const noexcept
+    {
+        return m_frameTime;
+    }
+    void StartRuntimeClock();
+    [[nodiscard]] double GetRealtimeSinceStartup() const noexcept
+    {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - m_startupTime).count();
     }
 
     /// @brief Process pending destroys at end of frame
@@ -594,6 +614,9 @@ class SceneManager
 
     SceneManager();
     ~SceneManager() = default;
+    void AdvanceFrameTime(float unscaledDeltaTime, float scaledDeltaTime);
+    void ResetFrameTime();
+    void ResetFrameDelta();
 
     /// Walk all colliders in the active scene and sync transforms to Jolt.
     /// Uses a global transform serial to skip entirely when no transforms changed.
@@ -646,7 +669,9 @@ class SceneManager
     float m_fixedTimeAccumulator = 0.0f;
     float m_maxFixedDeltaTime = 1.0f / 3.0f; // Unity Maximum Allowed Timestep default
     float m_timeScale = 1.0f;
-    float m_lastScaledDeltaTime = 0.0f;
+    FrameTime m_frameTime;
+    timing::FrameTimeSmoother m_frameTimeSmoother;
+    std::chrono::steady_clock::time_point m_startupTime = std::chrono::steady_clock::now();
     bool m_resetDeltaTimeOnNextFrame = true;
     double m_fixedTime = 0.0;
     double m_fixedUnscaledTime = 0.0;

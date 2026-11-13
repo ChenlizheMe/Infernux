@@ -496,11 +496,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._scene_manager_api = _SceneManagerAPI
         self._time_api = _TimeAPI
         
-        # Timing
-        self._last_frame_time: float = 0.0
-        self._delta_time: float = 0.0
-        self._time_scale: float = 1.0
-        self._total_play_time: float = 0.0
         # Monotonic within one Play session.  A paused editor frame does not
         # advance Time.frame_count and may not consume a fixed physics step,
         # so automation needs an explicit completion sequence for Step.
@@ -616,24 +611,22 @@ class PlayModeManager(PlayModeSerializationMixin):
     @property
     def delta_time(self) -> float:
         """Time since last frame in seconds."""
-        return self._delta_time
+        return self._time_api.delta_time
     
     @property
     def time_scale(self) -> float:
         """Time scale factor (1.0 = normal speed)."""
-        return self._time_scale
+        return self._time_api.time_scale
     
     @time_scale.setter
     def time_scale(self, value: float):
         """Set the native gameplay time scale."""
-        from infernux.timing import Time
-        Time.time_scale = value
-        self._time_scale = Time.time_scale
+        self._time_api.time_scale = value
     
     @property
     def total_play_time(self) -> float:
         """Total time elapsed since entering play mode."""
-        return self._total_play_time
+        return self._time_api.time
 
     @property
     def step_sequence(self) -> int:
@@ -738,19 +731,14 @@ class PlayModeManager(PlayModeSerializationMixin):
             from infernux.core.assets import AssetManager
             from infernux.core.material import Material
             from infernux.renderstack.render_effect import RenderEffect
-            from infernux.timing import Time
 
             self._state = PlayModeState.ENTERING
             Material._suppress_auto_save = True
             RenderEffect._suppress_auto_save = True
             try:
-                self._last_frame_time = time.perf_counter()
-                self._total_play_time = 0.0
-                self._delta_time = 0.0
                 self._step_sequence = 0
                 self._pending_step_requests = 0
                 self._step_completion = None
-                Time._reset()
                 AssetManager._begin_play_data_asset_isolation()
 
                 # Clear-on-Play is a preparation event, before lifecycle logs.
@@ -837,8 +825,6 @@ class PlayModeManager(PlayModeSerializationMixin):
                     RenderEffect._suppress_auto_save = False
                     self._pending_step_requests = 0
                     self._step_completion = None
-                    self._total_play_time = self._delta_time = 0.0
-                    Time._reset()
                 except Exception as restore_error:
                     self._state = PlayModeState.RECOVERY_REQUIRED
                     if self._native_engine is not None:
@@ -1056,9 +1042,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         
         self._pending_step_requests = 0
         self._step_completion = None
-        # Reset timing to avoid large delta_time after unpause
-        self._last_frame_time = time.perf_counter()
-        
         scene_manager = self._get_scene_manager()
         if scene_manager:
             scene_manager.play()
@@ -1110,7 +1093,8 @@ class PlayModeManager(PlayModeSerializationMixin):
         if self._pending_step_requests <= 0:
             return False
         self._pending_step_requests -= 1
-        dt = self._delta_time if self._delta_time > 0 else (1.0 / 60.0)
+        delta = self.delta_time
+        dt = delta if delta > 0 else (1.0 / 60.0)
         epoch = int(scene_manager.simulation_epoch)
         step = int(scene_manager.fixed_step_index) + int(not scene_manager.fixed_step_pending)
         frame = int(scene_manager.runtime_frame_count) + 1
@@ -1169,54 +1153,14 @@ class PlayModeManager(PlayModeSerializationMixin):
     # Game Loop Integration
     # ========================================================================
     
-    def tick(self, external_delta_time: float = None):
-        """
-        Called every frame by the engine.
-        Updates timing and processes deferred scene loads.
-        
-        Args:
-            external_delta_time: Optional externally provided delta time.
-                                If None, calculates from wall clock.
-        """
+    def prepare_frame(self) -> None:
+        """Commit queued scene work before native simulation admits this frame."""
         if not self.is_playing:
             return
-
-        # --- Process deferred scene loads (must run outside C++ iteration) ---
-        # The common path has no pending request.  Avoid crossing into the
-        # scene-load service until a script actually queued a load or an
-        # existing transaction needs polling.
         scene_manager_api = self._scene_manager_api
-        if (
-            scene_manager_api._pending_scene_load is not None
-            or scene_manager_api._active_scene_transaction is not None
-        ):
+        if (scene_manager_api._pending_scene_load is not None
+                or scene_manager_api._active_scene_transaction is not None):
             scene_manager_api.process_pending_load()
-        
-        if self._state == PlayModeState.PAUSED:
-            # Don't update timing when paused
-            return
-        
-        # Calculate delta time
-        current_time = time.perf_counter()
-        if external_delta_time is not None:
-            raw_dt = external_delta_time
-        else:
-            raw_dt = current_time - self._last_frame_time
-        
-        self._last_frame_time = current_time
-
-        # Sync time_scale from the static Time class (user may set Time.time_scale)
-        Time = self._time_api
-        self._time_scale = Time.time_scale
-        Time._tick(raw_dt)
-        # Read back computed values so PlayModeManager stays in sync
-        self._delta_time = Time.delta_time
-        self._total_play_time = Time.time
-        # Read game-only frame cost from C++ (previous frame's measurement)
-        if self._native_engine is not None:
-            Time._game_delta_time = self._native_engine.get_game_only_frame_ms() / 1000.0
-        
-        # NOTE: Lifecycle update is driven by C++ only.
 
     def _rebuild_active_scene(
         self,

@@ -18,21 +18,19 @@ class Time:
     fixed_delta_time: float
     """The interval in seconds at which physics and fixed updates are performed."""
     fixed_time: float
-    """The time since the last fixed update."""
+    """Scaled time at the currently admitted native fixed step."""
     fixed_unscaled_time: float
-    """The unscaled time since the last fixed update."""
+    """Unscaled time represented by admitted native fixed steps."""
     time_scale: float
     """The scale at which time passes (1.0 = normal speed)."""
     frame_count: int
-    """The total number of frames rendered since the start of the game."""
+    """Simulation frames admitted in the current Play session."""
     realtime_since_startup: float
     """The real time in seconds since the application started."""
     maximum_delta_time: float
     """The maximum time a frame can take before delta_time is clamped."""
 
-    @classmethod
-    def _reset(cls) -> None: ...
-    @classmethod
-    def _tick(cls, raw_delta_time: float) -> None: ...
-    @classmethod
-    def _tick_fixed(cls, fixed_dt: float) -> None: ...
+    game_delta_time: float
+    """Previous game-frame CPU cost, excluding editor panel overhead."""
+    shader_time: float
+    """Exact engine-owned time published to Shader globals."""

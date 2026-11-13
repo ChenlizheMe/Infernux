@@ -1,7 +1,6 @@
 import gc
 import math
 import os
-import time
 import weakref
 from typing import TYPE_CHECKING
 
@@ -64,7 +63,6 @@ class Engine(WorkRuntime):
         self._runtime_scene_manager = None
         self._last_native_transform_serial = None
         self._render_pipeline = None  # prevents GC of pybind11 trampoline
-        self._last_frame_time = time.time()
         self._gizmos_collector = None  # lazy-init GizmosCollector
         self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
         # Authoritative Scene View Gizmos switch. Keep this Python-side so it
@@ -525,7 +523,7 @@ class Engine(WorkRuntime):
                 getattr(self, "_scene_view_visible", False)
                 and getattr(self, "_show_gizmos", True)
             ):
-                now = time.monotonic()
+                now = self._runtime_scene_manager.get_realtime_since_startup()
                 is_playing = bool(scene_manager and scene_manager.is_playing())
                 interval = (
                     self._gizmo_collect_interval_play
@@ -741,18 +739,9 @@ class Engine(WorkRuntime):
         if self._engine:
             self._engine.exit()
     
-    def tick_play_mode(self, external_delta_time: float | None = None):
-        """
-        Called each frame to update play mode timing only.
-        Lifecycle updates are driven by C++.
-        """
-        current_time = time.time()
-        delta_time = (
-            current_time - self._last_frame_time
-            if external_delta_time is None
-            else float(external_delta_time)
-        )
-        self._last_frame_time = current_time
+    def tick_play_mode(self, delta_time: float):
+        """Prepare Python services; the native scene driver owns game time."""
+        current_time = self._runtime_scene_manager.get_realtime_since_startup()
 
         # Process pending script reloads on the main thread, but throttle polling.
         pmm = self._play_mode_manager
@@ -772,11 +761,10 @@ class Engine(WorkRuntime):
             else pmm is not None and pmm.is_playing
         )
 
-        # The editor owns play transitions through PlayModeManager. Headless
-        # callers may drive the native SceneManager directly, so keep Time
-        # valid for that composition as well.
+        # Scene transactions precede native frame admission. Headless
+        # callers use the same native clock without a Python timing hook.
         if player_runtime is not None:
-            player_runtime.tick(delta_time)
+            player_runtime.prepare_frame()
             if player_runtime.is_playing:
                 self._tick_runtime_acceptance(delta_time)
             else:
@@ -784,21 +772,12 @@ class Engine(WorkRuntime):
                 if RuntimeAcceptance.is_active():
                     RuntimeAcceptance.reset()
         elif is_playing:
-            pmm.tick(delta_time)
+            pmm.prepare_frame()
             self._tick_runtime_acceptance(delta_time)
         else:
             RuntimeAcceptance, _ = _runtime_acceptance_services()
             if RuntimeAcceptance.is_active():
                 RuntimeAcceptance.reset()
-            # Graphical Editor play state is authoritative in PlayModeManager.
-            # Only headless composition may drive the native SceneManager
-            # directly, so avoid two native queries on every editor frame.
-            if self._mode == RuntimeMode.Headless:
-                from infernux.lib import SceneManager
-                native_scene_manager = SceneManager.instance()
-                if native_scene_manager.is_playing() and not native_scene_manager.is_paused():
-                    from infernux.timing import Time
-                    Time._tick(delta_time)
 
         # Flush throttled material saves — skip during play mode
         if not is_playing and (pmm is None or pmm.is_edit_mode):
