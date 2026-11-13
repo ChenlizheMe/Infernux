@@ -48,7 +48,7 @@ class FilmGrainEffect(FullScreenEffect):
     )
 
     def get_shader_list(self) -> List[str]:
-        return ["Fullscreen Triangle", "Film Grain"]
+        return ["infernux/post/film_grain"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
@@ -59,12 +59,12 @@ class FilmGrainEffect(FullScreenEffect):
             bus,
             output_name="_filmgrain_out",
             pass_name="FilmGrain_Apply",
-            shader_name="Film Grain",
+            shader_name="infernux/post/film_grain",
             format=Format.RGBA16_SFLOAT,
             params={
                 "intensity": self.intensity,
                 "response": self.response,
                 "size": size,
-                "colored": 1.0 if self.colored else 0.0,
+                "colored": self.colored,
             },
         )

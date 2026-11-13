@@ -20,13 +20,13 @@ class FilmGrainSize(IntEnum):
 
 
 class FilmGrainEffect(FullScreenEffect):
-    """URP-aligned Film Grain post-processing effect.
+    """A centered grain plate in display-linear space, after tone mapping.
 
     Adds cinematic noise overlay.  Operates in LDR space (after tone mapping).
 
     Attributes:
         intensity: Grain strength (0 = off, 1 = heavy).
-        response: Luminance response (0 = uniform, 1 = highlights only).
+        response: Luminance response (0 = uniform, 1 = suppress bright grain).
     """
 
     name: ClassVar[str]

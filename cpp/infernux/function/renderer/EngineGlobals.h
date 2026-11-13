@@ -10,8 +10,7 @@ namespace infernux
 /**
  * @brief Engine time and camera-local parameters exposed via set 2.
  *
- * Layout matches globals_ubo.glsl (std140).  Each field is a vec4 for
- * alignment simplicity — UE5-style naming conventions.
+ * Layout matches Slang InxEngineGlobals. Each field occupies one 16-byte row.
  *
  * This is a fixed ABI populated by the engine. Arbitrary name-based
  * "set_global" dictionaries are deliberately not
@@ -30,7 +29,7 @@ struct EngineGlobalsUBO
     /// x = time since startup (s), y = sin(time), z = cos(time), w = deltaTime
     alignas(16) glm::vec4 time{0.0f};
 
-    /// x = time/20, y = time/4, z = time*2, w = time*3  (UE _Time style)
+    /// x = sin(time/20), y = sin(time/4), z = sin(time*2), w = sin(time*3)
     alignas(16) glm::vec4 sinTime{0.0f};
 
     /// x = cos(time/20), y = cos(time/4), z = cos(time*2), w = cos(time*3)

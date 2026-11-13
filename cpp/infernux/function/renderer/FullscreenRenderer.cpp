@@ -1,4 +1,5 @@
 #include "FullscreenRenderer.h"
+#include "EngineGlobals.h"
 
 #include "rhi/RhiDevice.h"
 #include "shader/DeviceShaderProgram.h"
@@ -65,9 +66,11 @@ void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText
                 throw std::logic_error("Compiled fullscreen resource has no logical input: " + resource.name);
             entry.resourceInputs.push_back(static_cast<int32_t>(input - entry.inputNames.begin()));
         } else {
-            if (resource.binding.type != rhi::BindingType::UniformBuffer || resource.name != "inx_parameters")
+            if (resource.binding.type != rhi::BindingType::UniformBuffer ||
+                (resource.name != "inx_parameters" && resource.name != "inx_globals"))
                 throw std::logic_error("Fullscreen author resource has no graph binding contract: " + resource.name);
-            entry.resourceInputs.push_back(-1);
+            entry.resourceInputs.push_back(resource.name == "inx_globals" ? FullscreenPipelineEntry::Globals
+                                                                          : FullscreenPipelineEntry::Parameters);
         }
     }
 }
@@ -572,7 +575,7 @@ FullscreenRenderer::PrepareParameters(const FullscreenProgram &program,
 
 void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
                                      const FullscreenResourceInput *inputs, const FullscreenParameters &parameters,
-                                     const ShaderParameterValue *values)
+                                     const ShaderParameterValue *values, rhi::BufferHandle globals)
 {
     const auto frame = m_impl->CurrentFrame();
     auto &bytes = m_impl->frameParameters[frame].scratch;
@@ -594,7 +597,9 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
         auto &group = groups[resource.set];
         const auto &binding = resource.binding;
         if (binding.type == rhi::BindingType::UniformBuffer) {
-            group.buffers[group.bufferCount++] = {binding.binding, binding.type, uniform, 0, bytes.size()};
+            const bool frameGlobals = entry.resourceInputs[index] == FullscreenPipelineEntry::Globals;
+            group.buffers[group.bufferCount++] = {binding.binding, binding.type, frameGlobals ? globals : uniform, 0,
+                                                  frameGlobals ? sizeof(EngineGlobalsUBO) : bytes.size()};
         } else {
             const auto &input = inputs[entry.resourceInputs[index]];
             group.textures[group.textureCount++] = {binding.binding, binding.type, input.view,

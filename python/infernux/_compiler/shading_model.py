@@ -6,7 +6,7 @@ import ast
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .shader_library import ShaderEmitter, declarations
+from .shader_library import ShaderEmitter, declarations, frame_imports
 from .slang_ast import qualified
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 
@@ -138,7 +138,7 @@ def read_shading_model(path, graph, owner, location, *, source=None):
                 or response.result != "float3"):
             author.error(direct_calls[0], "lighting.direct requires shade_light(self, surface: shader.SurfaceData, "
                          "ctx: shader.ShadingContext, light: shader.LightData) -> shader.vec3", code="author.type")
-    code = ["import inx_geometry;", *("import " + name + ";" for name in dependencies)]
+    code = ["import inx_geometry;", *frame_imports(body, alias), *("import " + name + ";" for name in dependencies)]
     if contract != "unlit":
         code.append("import inx_lighting;")
     code.append("namespace inx_shading_model {")

@@ -2,6 +2,10 @@
 
 Shader source is parsed, never imported as a game component. Mathematical
 operations use GPU types and Slang semantics; they do not run in Python.
+
+``frame_time()`` and ``frame_delta_time()`` read the engine-owned render clock
+in seconds. Vertex deformation uses ``VertexContext.time`` for the geometry
+sample, including the previous sample used to calculate motion vectors.
 """
 
 from __future__ import annotations
@@ -236,7 +240,7 @@ for _name in TYPES:
     globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
-for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions"):
+for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time"):
     globals()[_name] = _gpu_intrinsic(_name)
 
 
@@ -251,4 +255,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", *TYPES, *INTRINSICS]

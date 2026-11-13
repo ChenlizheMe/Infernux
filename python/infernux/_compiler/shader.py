@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 
-from .shader_library import LibraryGraph, ShaderEmitter, declarations
+from .shader_library import LibraryGraph, ShaderEmitter, declarations, frame_imports
 from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
@@ -146,7 +146,6 @@ InxMeshInput vertex_main(InxVertexInput input, uint instance : SV_VulkanInstance
 """
 
 _VERTEX_DEFORM = """
-[[vk::binding(0, 2)]] ConstantBuffer<InxEngineGlobals> inx_globals;
 InxVertexInput inx_apply_vertex(InxVertexInput input, uint instance, float time, float4x4 model)
 {
     InxVertexContext context;
@@ -346,6 +345,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(declaration, "Mesh image resources are declared as material properties")
     dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies)]
+    code.extend(("import inx_frame;",) if vertex else frame_imports(body, author.alias))
     if author.is_surface:
         code.insert(0, "import inx_surface_model;")
     for field in inputs:
@@ -411,6 +411,7 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
         parameters = tuple(vertex.author.fields.values())
         code, ranges = vertex.emit()
         prefix = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;",
+                  *frame_imports(vertex.methods, vertex.author.alias),
                   *("import " + name + ";" for name in vertex.dependencies),
                   *vertex.author.parameter_declarations(parameters)]
         schema = {"name": vertex.name, "domain": "vertex", "info": vertex.info,

@@ -100,6 +100,9 @@ struct FullscreenPipelineKeyHash
 
 struct FullscreenPipelineEntry
 {
+    static constexpr int32_t Parameters = -1;
+    static constexpr int32_t Globals = -2;
+
     rhi::GraphicsPipelineHandle pipeline;
     rhi::BindingLayoutHandle inputLayout;
     bool hasPerView = false;
@@ -172,11 +175,10 @@ class FullscreenRenderer
     PrepareParameters(const FullscreenProgram &program,
                       const std::vector<std::pair<std::string, ShaderParameterValue>> &parameters);
 
-    INFERNUX_RENDER_CORE_API void DrawProgram(rhi::GraphicsCommandEncoder &encoder,
-                                              const FullscreenPipelineEntry &entry,
-                                              const FullscreenResourceInput *inputs,
-                                              const FullscreenParameters &parameters,
-                                              const ShaderParameterValue *values = nullptr);
+    INFERNUX_RENDER_CORE_API void
+    DrawProgram(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
+                const FullscreenResourceInput *inputs, const FullscreenParameters &parameters,
+                const ShaderParameterValue *values = nullptr, rhi::BufferHandle globals = {});
 
     INFERNUX_RENDER_CORE_API rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout,
                                                                     const FullscreenResourceInput *inputs,

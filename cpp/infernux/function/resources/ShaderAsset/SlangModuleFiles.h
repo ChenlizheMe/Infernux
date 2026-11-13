@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SlangCompiler.h"
+#include "SlangFrameModule.h"
 #include "SlangGeometryModule.h"
 #include "SlangLightingModule.h"
 
@@ -51,6 +52,7 @@ class SlangModuleFiles final : public ISlangFileSystemExt
     {
         Add(GetSlangGeometryModule());
         Add(GetSlangLightingModule());
+        Add(GetSlangFrameModule());
         for (const auto &library : libraries)
             Add(library);
         Add(source);

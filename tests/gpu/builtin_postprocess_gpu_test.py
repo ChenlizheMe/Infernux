@@ -9,6 +9,7 @@ import infernux as inx
 from infernux.core.asset_ref import RenderEffectRef
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, SceneManager
+from infernux.rendergraph import Format
 from infernux.renderstack import EffectSlot
 from builtin_bloom_gpu_test import BloomPipeline, Host
 
@@ -20,7 +21,7 @@ def half(value):
 Y, X = np.meshgrid((np.arange(24) + .5) / 24, (np.arange(32) + .5) / 32, indexing="ij")
 UV = np.stack((X, Y), axis=-1)
 NAMES = ("white_balance", "color_adjustments", "vignette", "sharpen", "pixelation",
-         "chromatic_aberration", "tonemapping")
+         "chromatic_aberration", "tonemapping", "film_grain")
 PLANS = (
     ({"temperature": 0., "tint": 0.},
      {"post_exposure": 0., "contrast": 0., "saturation": 0., "hue_shift": 0.},
@@ -29,7 +30,8 @@ PLANS = (
      {"pixel_size": 4, "pixel_aspect": 1., "grid_offset_x": 0., "grid_offset_y": 0.,
       "intensity": 0., "sampling": 0, "preserve_alpha_coverage": False},
      {"intensity": 0.},
-     {"mode": 0, "exposure": 1.}),
+     {"mode": 0, "exposure": 1.},
+     {"intensity": 0., "response": .8, "preset": 3, "size": 2.4, "colored": False}),
     ({"temperature": 25., "tint": -10.},
      {"post_exposure": .5, "contrast": 20., "saturation": -15., "hue_shift": 45.},
      {"intensity": .4, "smoothness": .5, "roundness": .4, "rounded": True, "color": (.15, .05, .2, 1.)},
@@ -37,7 +39,8 @@ PLANS = (
      {"pixel_size": 4, "pixel_aspect": 1.4, "grid_offset_x": .2, "grid_offset_y": -.1,
       "intensity": .8, "sampling": 1, "preserve_alpha_coverage": True},
      {"intensity": .8},
-     {"mode": 1, "exposure": 1.2}),
+     {"mode": 1, "exposure": 1.2},
+     {"intensity": .5, "response": .8, "preset": 0, "size": 2.4, "colored": False}),
     ({"temperature": -25., "tint": 15.},
      {"post_exposure": -.5, "contrast": -10., "saturation": 25., "hue_shift": -30.},
      {"intensity": .6, "smoothness": .6, "roundness": .8, "rounded": False, "color": (.02, .08, .12, 1.)},
@@ -45,8 +48,58 @@ PLANS = (
      {"pixel_size": 5, "pixel_aspect": .8, "grid_offset_x": -.3, "grid_offset_y": .25,
       "intensity": 1., "sampling": 2, "preserve_alpha_coverage": False},
      {"intensity": .2},
-     {"mode": 2, "exposure": 1.5}),
+     {"mode": 2, "exposure": 1.5},
+     {"intensity": .8, "response": .3, "preset": 2, "size": 2.4, "colored": True}),
 )
+
+
+class PostprocessPipeline(BloomPipeline):
+    def define_topology(self, graph):
+        super().define_topology(graph)
+        output = graph.create_texture("capture_clock", format=Format.RGBA16_SFLOAT)
+        with graph.add_pass("CaptureClock") as p:
+            p.set_texture("source_tex", graph.get_texture("color"))
+            p.write_color(output)
+            p.fullscreen_quad(str(self.clock))
+        with graph.add_pass("CommitClock") as p:
+            p.set_texture("source_tex", output)
+            p.write_color(graph.get_texture("color"))
+            p.fullscreen_quad("infernux/internal/fullscreen_copy")
+
+
+def grain_reference(image, parameters, frame):
+    size = parameters["size"] if parameters["preset"] == 3 else (1.4, 2.4, 3.8)[parameters["preset"]]
+    coordinates = np.stack((X * 32, Y * 24), axis=-1) / size
+
+    def plate(position, seed):
+        cell = np.floor(position).astype(np.int64).astype(np.uint32)
+        fraction = (position % 1) ** 2 * (3 - 2 * (position % 1))
+
+        def density(x, y):
+            bits = x * np.uint32(1973) ^ y * np.uint32(9277) ^ np.uint32((seed * 26699) & 0xFFFFFFFF)
+            bits ^= bits >> 16
+            bits *= np.uint32(0x7FEB352D)
+            bits ^= bits >> 15
+            bits *= np.uint32(0x846CA68B)
+            bits ^= bits >> 16
+            return ((bits & 65535).astype(np.float64) + (bits >> 16)) / 65535 - 1
+
+        x, y = cell[..., 0], cell[..., 1]
+        a = density(x, y) * (1 - fraction[..., 0]) + density(x + np.uint32(1), y) * fraction[..., 0]
+        b = density(x, y + np.uint32(1)) * (1 - fraction[..., 0]) + density(x + np.uint32(1), y + np.uint32(1)) * fraction[..., 0]
+        return a * (1 - fraction[..., 1]) + b * fraction[..., 1]
+
+    if parameters["intensity"]:
+        seed = frame * 5
+        rotated = coordinates @ np.array(((.8, .6), (-.6, .8)))
+        neutral = .74 * plate(rotated, seed) + .26 * plate(coordinates * 1.8 + (71, 13), seed + 1)
+        grain = np.repeat(neutral[..., None], 3, axis=-1)
+        if parameters["colored"]:
+            grain = .7 * grain + .3 * np.stack([plate(coordinates, seed + channel) for channel in (2, 3, 4)], axis=-1)
+        luma = np.clip(image[..., :3] @ (.2126, .7152, .0722), 0, 1)
+        amplitude = parameters["intensity"] * (1 - np.sqrt(luma) * parameters["response"])
+        image[..., :3] = np.maximum(image[..., :3] * (1 + grain * amplitude[..., None]), 0)
+    return half(image)
 
 
 def sample(image, uv):
@@ -58,8 +111,8 @@ def sample(image, uv):
             + (image[high[..., 1], low[..., 0]] * (1 - tx) + image[high[..., 1], high[..., 0]] * tx) * ty)
 
 
-def reference(plan):
-    wb, ca, vig, sharp, pix, chroma, tone = plan
+def reference(plan, frame):
+    wb, ca, vig, sharp, pix, chroma, tone, grain = plan
     image = half(np.stack((.1 + .7 * X, .05 + .5 * Y, .2 + .2 * X * Y, .1 + .8 * X), axis=-1))
     # Adapt XYZ independently of the production shader's fused LMS matrices.
     primaries = np.array(((.4124564, .3575761, .1804375), (.2126729, .7151522, .0721750), (.0193339, .1191920, .9503041)))
@@ -131,6 +184,9 @@ def reference(plan):
         color = value @ output_matrix.T
     image[..., :3] = np.clip(color, 0, 1)
     image = half(image)
+    image = grain_reference(image, grain, frame)
+    image[0, 0, 3] = half(np.array((frame & 255) / 255))
+    image[0, 1, 3] = half(np.array((frame >> 8) / 255))
     image[..., :3] = np.where(image[..., :3] <= .0031308, image[..., :3] * 12.92,
                               1.055 * image[..., :3] ** (1 / 2.4) - .055)
     return image
@@ -145,6 +201,20 @@ class Source(shader.fullscreen):
     def main(self, uv: shader.vec2) -> shader.vec4:
         return shader.vec4(0.1 + 0.7 * uv.x, 0.05 + 0.5 * uv.y, 0.2 + 0.2 * uv.x * uv.y, 0.1 + 0.8 * uv.x)
 ''', encoding="utf-8")
+    clock = project / "Assets/clock.frag.py"
+    clock.write_text('''import infernux.shader as shader
+class Clock(shader.fullscreen):
+    source_tex = shader.input("color", shader.Color2D, domain="display_linear_ldr")
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        color = shader.load(self.source_tex, shader.ivec2(ctx.position.xy), 0)
+        cadence = shader.u32(shader.floor(shader.frame_time() * 24.0)) & shader.u32(65535)
+        if ctx.position.y < 1.0:
+            if ctx.position.x < 1.0:
+                color.a = float(cadence & shader.u32(255)) / 255.0
+            elif ctx.position.x < 2.0:
+                color.a = float(cadence >> shader.u32(8)) / 255.0
+        return color
+''', encoding="utf-8")
     frontend, host, console = inx.Engine(), Host(), ConsolePanel()
     native = frontend.get_native_engine()
     failures, completed = [], False
@@ -156,6 +226,7 @@ class Source(shader.fullscreen):
         native.set_editor_idle_fps(0)
         database = frontend.get_asset_database()
         assert AssetManager.import_asset(str(source), database=database)
+        assert AssetManager.import_asset(str(clock), database=database)
         slots, effects = [], []
         for name, parameters in zip(NAMES, PLANS[0]):
             path = project / f"Assets/{name}.effect"
@@ -170,14 +241,15 @@ class Source(shader.fullscreen):
         for obj in scene.get_root_objects():
             scene.destroy_game_object(obj)
         scene.create_game_object("滤镜相机").add_component(inx.Camera)
-        pipeline = BloomPipeline()
-        pipeline.source = source
+        pipeline = PostprocessPipeline()
+        pipeline.source, pipeline.clock = source, clock
         host.stack._pipeline = pipeline
         host.stack.effect_slots = slots
         frontend.set_render_pipeline(host)
         native.set_game_camera_enabled(True)
         frame = changed = phase = 0
         ticket = builds = None
+        sampled_frames = []
 
         def after_draw():
             nonlocal frame, changed, phase, ticket, builds, completed
@@ -187,16 +259,20 @@ class Source(shader.fullscreen):
                     ticket = frontend.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels = ticket.result_numpy().copy().astype(np.float64)
-                    expected = reference(PLANS[phase])
+                    cadence = round(pixels[0, 0, 3] * 255) + (round(pixels[0, 1, 3] * 255) << 8)
+                    sampled_frames.append(cadence)
+                    expected = reference(PLANS[phase], cadence)
                     np.testing.assert_allclose(pixels, expected, atol=.004)
                     assert not host.stack.effect_compile_errors, host.stack.effect_compile_errors
                     if builds is None:
                         builds = pipeline.builds
                     assert pipeline.builds == builds, (builds, pipeline.builds)
                     assert not [row for row in console._get_visible_log_snapshot(2000) if row["level"] in ("ERROR", "FATAL")]
-                    print("BUILTIN_POSTPROCESS", phase, "max_error", float(abs(pixels - expected).max()), flush=True)
+                    print("BUILTIN_POSTPROCESS", phase, "cadence", cadence,
+                          "max_error", float(abs(pixels - expected).max()), flush=True)
                     phase += 1
                     if phase == len(PLANS):
+                        assert len(set(sampled_frames)) > 1, sampled_frames
                         completed = True
                         native.exit()
                         return

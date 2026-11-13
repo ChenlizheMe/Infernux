@@ -29,6 +29,7 @@ class Tint(shader.fullscreen):
     ("shader.ivec3(1, 3, -5) / 2", "float3"),
     ("shader.sign(shader.vec3(-1.0, 0.0, 1.0))", "int3"),
     ("shader.dot(shader.ivec3(1, 2, 3), shader.ivec3(3, 2, 1))", "int"),
+    ("shader.frame_time() + shader.frame_delta_time()", "float"),
 ])
 def test_intrinsic_results_keep_their_native_types(expression, kind):
     result = "shader.vec4(value, 1.0)" if kind.endswith("3") else "shader.vec4(value, 0.0, 0.0, 1.0)"
@@ -41,6 +42,31 @@ class Math(shader.fullscreen):
     definition = parse_shader(source, "数学.frag.py", "intrinsic_math")
     assert f"{kind} value;" in definition.generated_source
     assert {target["target"] for target in definition.compile()["targets"]} == {"spirv", "wgsl"}
+
+
+def test_frame_globals_are_optional_and_follow_library_dependencies(tmp_path):
+    ordinary = parse_shader(SOURCE, "ordinary.frag.py", "ordinary")
+    assert "import inx_frame;" not in ordinary.generated_source
+    assert all(resource["name"] != "inx_globals" for target in ordinary.compile()["targets"]
+               for resource in target["resources"])
+    (tmp_path / "clock.shaderlib.py").write_text('''import infernux.shader as gpu
+def time() -> float:
+    return gpu.frame_time() + gpu.frame_delta_time()
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+from .clock import time
+class Clock(shader.fullscreen):
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(time(), uv.x, uv.y, 1.0)
+'''
+    definition = parse_shader(source, str(tmp_path / "clock.frag.py"), "clock")
+    assert "import inx_frame;" not in definition.generated_source
+    for target in definition.compile()["targets"]:
+        globals = next(resource for resource in target["resources"] if resource["name"] == "inx_globals")
+        assert (globals["set"], globals["binding"], globals["value"]["byte_size"]) == (2, 0, 128)
+        assert [field["offset"] for field in globals["value"]["fields"]] == list(range(0, 128, 16))
+    with pytest.raises(SyntaxError, match="takes no arguments"):
+        parse_shader(source.replace("time()", "shader.frame_time(1.0)"), str(tmp_path / "invalid.frag.py"), "invalid")
 
 
 def test_mesh_fragment_uses_native_geometry_and_material_domain():

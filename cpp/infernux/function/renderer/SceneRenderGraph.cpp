@@ -5274,7 +5274,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                                      ? nullptr
                                                      : m_submittedParameterBlocks.at(parameterBlock).values->data();
                             fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
-                                                    values);
+                                                    values, GetViewGlobalsBinding().buffer);
                             return;
                         }
 
