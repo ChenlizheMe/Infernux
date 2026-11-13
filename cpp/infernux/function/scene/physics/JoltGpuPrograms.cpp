@@ -221,8 +221,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                 throw std::invalid_argument("Jolt GPU body has invalid mass, inertia or damping");
             for (uint32_t leaf = record.meta.x; leaf < bodyLeafEnd + record.meta.y; ++leaf) {
                 const auto &shape = ModelRecord(model.shapes, shapeChanges, leaf);
-                if (shape.meta.y != body || (shape.meta.x != ShapeSphere && shape.meta.x != ShapeBox) ||
-                    (shape.meta.w & ~ShapeSensor) || shape.surface.x >= 32 ||
+                if (shape.meta.y != body || (shape.meta.w & ~ShapeSensor) || shape.surface.x >= 32 ||
                     shape.surface.z > MaterialCombineMaximum || shape.surface.w > MaterialCombineMaximum ||
                     shape.source.w > 32)
                     throw std::invalid_argument("Jolt GPU leaf identity, flags or material mode is invalid");
@@ -231,12 +230,23 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                     shape.material.y < 0 || shape.material.y > 1 || shape.material.z != 0 || shape.material.w != 0)
                     throw std::invalid_argument("Jolt GPU leaf pose or material is invalid");
                 const auto geometry = shape.geometry;
-                if (shape.meta.x == ShapeSphere) {
+                switch (shape.meta.x) {
+                case ShapeSphere:
                     if (!std::isfinite(geometry.w) || geometry.w <= 0)
                         throw std::invalid_argument("Jolt GPU sphere radius must be positive and finite");
-                } else if (!Finite4(geometry) || geometry.x <= 0 || geometry.y <= 0 || geometry.z <= 0 ||
-                           geometry.w < 0 || geometry.w > std::min({geometry.x, geometry.y, geometry.z})) {
-                    throw std::invalid_argument("Jolt GPU box dimensions or convex radius are invalid");
+                    break;
+                case ShapeBox:
+                    if (!Finite4(geometry) || geometry.x <= 0 || geometry.y <= 0 || geometry.z <= 0 || geometry.w < 0 ||
+                        geometry.w > std::min({geometry.x, geometry.y, geometry.z}))
+                        throw std::invalid_argument("Jolt GPU box dimensions or convex radius are invalid");
+                    break;
+                case ShapeCapsule:
+                    if (!Finite4(geometry) || geometry.x != 0 || geometry.z != 0 || geometry.y <= 0 || geometry.w <= 0)
+                        throw std::invalid_argument("Jolt GPU capsule half cylinder and radius must be positive and "
+                                                    "finite with zero unused dimensions");
+                    break;
+                default:
+                    throw std::invalid_argument("Jolt GPU leaf has an unsupported primitive type");
                 }
             }
             bodyLeafEnd += record.meta.y;

@@ -35,8 +35,8 @@ struct PreparedGpuShape
 };
 
 /// Resolve decorators and compound child user data through the authored root.
-/// Only Sphere/Box leaves with baked unit scale are admitted in this slice;
-/// Capsule and other unsupported geometry throw before any model is staged.
+/// Sphere, Box and Capsule leaves use baked unit scale; unsupported geometry
+/// throws before any model is staged.
 /// memberCount is the actual contributing Collider count, not a leaf count.
 [[nodiscard]] PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCount);
 

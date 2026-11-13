@@ -3,6 +3,7 @@
 #include <Jolt/Geometry/AABox.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/DecoratedShape.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
@@ -85,9 +86,14 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCou
             output.model.geometry = {halfExtent.GetX(), halfExtent.GetY(), halfExtent.GetZ(), box->GetConvexRadius()};
             break;
         }
+        case JPH::EShapeSubType::Capsule: {
+            const auto *capsule = static_cast<const JPH::CapsuleShape *>(leaf.mShape.GetPtr());
+            output.model.meta.x = JPH::GPU::ShapeCapsule;
+            output.model.geometry = {0.0f, capsule->GetHalfHeightOfCylinder(), 0.0f, capsule->GetRadius()};
+            break;
+        }
         default:
-            throw std::invalid_argument(
-                "Jolt GPU shape preparation supports only Sphere and Box leaves; Capsule is not yet admitted");
+            throw std::invalid_argument("Jolt GPU shape preparation supports only Sphere, Box and Capsule leaves");
         }
         prepared.leaves.push_back(std::move(output));
     }
