@@ -47,6 +47,7 @@ class SceneRenderExtractor final
   private:
     struct SceneRenderSource
     {
+        RenderDrawIdentity identity;
         MeshRenderer *meshRenderer = nullptr;
         Transform *transform = nullptr;
         SkinnedMeshRenderer *skinnedRenderer = nullptr;

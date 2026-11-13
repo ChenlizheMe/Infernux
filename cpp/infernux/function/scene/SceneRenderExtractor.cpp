@@ -476,6 +476,10 @@ void SceneRenderExtractor::CaptureMaterialPublications(RenderWorldFrame &frame)
 }
 void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
 {
+    std::unordered_map<RenderDrawIdentity, std::shared_ptr<rhi::ComputeBuffer>, RenderDrawIdentityHash> vertexValues;
+    for (auto &source : m_sceneSources)
+        if (source.vertexPublication)
+            vertexValues.emplace(source.identity, std::move(source.vertexPublication));
     frame.m_proxies.clear();
     frame.m_drawCalls = {};
     m_sceneSources.clear();
@@ -530,6 +534,9 @@ void SceneRenderExtractor::CollectRenderables(RenderWorldFrame &frame)
         renderable.structural.materialSortKey = reinterpret_cast<uintptr_t>(renderable.structural.renderMaterial.get());
 
         SceneRenderSource source;
+        source.identity = renderable.structural.identity.MakeDrawIdentity();
+        if (const auto previous = vertexValues.find(source.identity); previous != vertexValues.end())
+            source.vertexPublication = std::move(previous->second);
         source.meshRenderer = renderer;
         source.transform = obj->GetTransform();
         source.skinnedRenderer = dynamic_cast<SkinnedMeshRenderer *>(renderer);
