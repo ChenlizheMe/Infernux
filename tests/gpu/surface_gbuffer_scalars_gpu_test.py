@@ -44,10 +44,10 @@ class ScalarPipeline(DefaultDeferredPipeline):
             builder.frame(hdr=True, msaa=1)
             builder.opaque().deferred(fallback=RenderPath.FORWARD_PLUS)
             compile_pipeline_definition(builder.build(), g, pipeline=self)
-            lighting, = [p for p in g._passes if p._action == 'fullscreen_quad' and p._shader_name == 'Deferred Lighting']
-            albedo = g.get_texture(lighting._input_bindings['gAlbedo'])
-            material = g.get_texture(lighting._input_bindings['gMaterial'])
-            emission = g.get_texture(lighting._input_bindings['gEmission'])
+            lighting, = [p for p in g._passes if p._action == 'fullscreen_quad' and p._shader_name == 'infernux/internal/deferred_lighting']
+            albedo = g.get_texture(lighting._input_bindings['albedo_tex'])
+            material = g.get_texture(lighting._input_bindings['material_tex'])
+            emission = g.get_texture(lighting._input_bindings['emission_tex'])
         target = g.get_texture('color')
         p=g.add_pass('CheckScalarStorage').write_color(target)
         for key,texture in [('albedoTex',albedo),('materialTex',material),('emissionTex',emission)]:p.set_texture(key,texture)

@@ -55,7 +55,12 @@ void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText
         throw std::invalid_argument("Fullscreen pass requires a shader.fullscreen author program");
     for (const auto &input : schema.at("inputs"))
         entry.inputNames.push_back(input.at("name").get<std::string>());
-    for (const auto &resource : entry.program->GetResources()) {
+    const auto &resources = entry.program->GetResources();
+    for (uint32_t index = 0; index < resources.size(); ++index) {
+        const auto &resource = resources[index];
+        if (resource.set == 1)
+            continue;
+        entry.resourceIndices.push_back(index);
         if (resource.binding.type == rhi::BindingType::SampledTexture ||
             resource.binding.type == rhi::BindingType::Sampler) {
             const auto end = resource.name.find('.');
@@ -68,7 +73,6 @@ void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText
             static const std::unordered_map<std::string, int32_t> uniformSources = {
                 {"inx_parameters", FullscreenPipelineEntry::Parameters},
                 {"inx_globals", FullscreenPipelineEntry::Globals},
-                {"inx_view", FullscreenPipelineEntry::Camera},
             };
             const auto source = uniformSources.find(resource.name);
             if (resource.binding.type != rhi::BindingType::UniformBuffer || source == uniformSources.end())
@@ -122,6 +126,7 @@ struct FullscreenPipelineCache::Impl
     std::shared_ptr<FullscreenRendererHost> host;
     rhi::Device *device = nullptr;
     std::unordered_map<FullscreenPipelineKey, PipelineEntry, FullscreenPipelineKeyHash> pipelines;
+    std::unordered_map<std::string, std::shared_ptr<const FullscreenProgram>> programs;
     size_t capacity = 0;
     uint64_t useSequence = 0;
 
@@ -166,7 +171,16 @@ struct FullscreenPipelineCache::Impl
             for (uint32_t index = 0; index < key.program->code->entries.size(); ++index)
                 if (key.program->code->entries[index].stage != rhi::ShaderStage::Compute)
                     selected.push_back(index);
-            entry.rhi.program = std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected);
+            std::vector<rhi::BindingLayoutHandle> sharedLayouts;
+            entry.rhi.hasPerView = std::any_of(key.program->code->resources.begin(), key.program->code->resources.end(),
+                                               [](const auto &resource) { return resource.set == 1; });
+            if (entry.rhi.hasPerView) {
+                if (!host->GetPerViewLayout().IsValid())
+                    throw std::logic_error("Fullscreen scene lighting requires its owner's view layout");
+                sharedLayouts = {{}, host->GetPerViewLayout()};
+            }
+            entry.rhi.program =
+                std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected, sharedLayouts);
             entry.rhi.program->Apply(desc);
             PrepareInputs(entry.rhi, key.program->schema);
             entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
@@ -415,14 +429,17 @@ const FullscreenPipelineEntry &FullscreenPipelineCache::EnsurePipeline(const Ful
 
 void FullscreenRenderer::InvalidateShader(const std::string &shaderName)
 {
-    if (m_impl)
+    if (m_impl) {
         m_impl->pipelines->InvalidateShader(shaderName);
+    }
 }
 
 void FullscreenPipelineCache::InvalidateShader(const std::string &shaderName)
 {
     if (shaderName.empty())
         return;
+
+    m_impl->programs.clear();
 
     size_t retired = 0;
     for (auto entry = m_impl->pipelines.begin(); entry != m_impl->pipelines.end();) {
@@ -514,9 +531,20 @@ void FullscreenRenderer::ResetPool()
     m_impl->frameParameters[m_impl->CurrentFrame()].next = 0;
 }
 
-std::shared_ptr<const FullscreenProgram> FullscreenRenderer::AcquireProgram(const std::string &name)
+std::shared_ptr<const FullscreenProgram> FullscreenRenderer::AcquireProgram(const std::string &name) const
 {
-    return m_impl->host->AcquireProgram(name);
+    return m_impl->pipelines->AcquireProgram(name);
+}
+
+std::shared_ptr<const FullscreenProgram> FullscreenPipelineCache::AcquireProgram(const std::string &name) const
+{
+    const auto found = m_impl->programs.find(name);
+    if (found != m_impl->programs.end())
+        return found->second;
+    auto program = m_impl->host->AcquireProgram(name);
+    if (program)
+        m_impl->programs.emplace(name, program);
+    return program;
 }
 
 FullscreenParameters
@@ -600,10 +628,9 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
     }
     const auto uniform =
         bytes.empty() ? rhi::BufferHandle{} : m_impl->UploadParameters(frame, bytes.data(), bytes.size());
-    const std::array<rhi::BufferBinding, 3> uniforms = {{
+    const std::array<rhi::BufferBinding, 2> uniforms = {{
         {0, rhi::BindingType::UniformBuffer, uniform, 0, bytes.size()},
         view.globals,
-        view.camera,
     }};
     const auto &layouts = entry.program->GetBindingLayouts();
     std::array<rhi::BindGroupDesc, rhi::GraphicsPipelineDesc::MaxBindingLayouts> groups;
@@ -612,8 +639,8 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
         groups[index].lifetime = rhi::BindGroupLifetime::FrameTransient;
     }
     const auto &resources = entry.program->GetResources();
-    for (size_t index = 0; index < resources.size(); ++index) {
-        const auto &resource = resources[index];
+    for (size_t index = 0; index < entry.resourceIndices.size(); ++index) {
+        const auto &resource = resources[entry.resourceIndices[index]];
         auto &group = groups[resource.set];
         const auto &binding = resource.binding;
         if (binding.type == rhi::BindingType::UniformBuffer) {
@@ -631,6 +658,10 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
     }
     encoder.BindPipeline(entry.pipeline);
     for (uint32_t index = 0; index < layouts.size(); ++index) {
+        if (index == 1 && entry.hasPerView) {
+            encoder.BindGroup(entry.pipeline, index, view.perView);
+            continue;
+        }
         const auto group = m_impl->device->CreateBindGroup(groups[index]);
         if (!group.IsValid())
             throw std::runtime_error("Fullscreen bind group creation failed");

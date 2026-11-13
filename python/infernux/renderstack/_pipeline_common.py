@@ -117,14 +117,14 @@ def draw_deferred_lighting(
     render_pass: RenderPassBuilder, *, albedo, normal, material, emission, object_data, depth,
 ) -> None:
     render_pass.set_textures({
-        "_GAlbedo": albedo,
-        "_GNormal": normal,
-        "_GMaterial": material,
-        "_GEmission": emission,
-        "_GObject": object_data,
-        "_SceneDepth": depth,
+        "albedo_tex": albedo,
+        "normal_tex": normal,
+        "material_tex": material,
+        "emission_tex": emission,
+        "object_tex": object_data,
+        "depth_tex": depth,
     })
-    render_pass.fullscreen_quad("Deferred Lighting")
+    render_pass.fullscreen_quad("infernux/internal/deferred_lighting")
 
 
 def add_shadow_caster_pass(

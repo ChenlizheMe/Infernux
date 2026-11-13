@@ -36,7 +36,7 @@ Usage::
     This pipeline requires the engine to support:
     - MRT (multiple render targets) — already supported
     - Depth buffer as shader input — now supported
-    - Deferred lighting shader (``deferred_lighting.frag``)
+    - Deferred lighting program (``infernux/internal/deferred_lighting``)
 
     Deferred lighting uses the same camera-local light, shadow, layer-mask,
     and Forward+ tile data as the built-in Forward+ path.

@@ -108,6 +108,19 @@ public struct InxShadingContext
     public uint layer_mask;
     public bool receives_shadows;
 };
+public InxShadingContext inx_shading_context(float3 position_ws, float3 geometric_normal_ws,
+                                            float view_depth, float2 pixel_position,
+                                            uint layer_mask, bool receives_shadows)
+{
+    InxShadingContext result;
+    result.position_ws = position_ws;
+    result.geometric_normal_ws = geometric_normal_ws;
+    result.view_depth = view_depth;
+    result.pixel_position = pixel_position;
+    result.layer_mask = layer_mask;
+    result.receives_shadows = receives_shadows;
+    return result;
+}
 public struct InxLight
 {
     public float3 direction;

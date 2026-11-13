@@ -6,7 +6,7 @@ import ast
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .shader_library import ShaderEmitter, declarations, engine_imports
+from .shader_library import Module, ShaderEmitter, declarations, engine_imports
 from .slang_ast import qualified
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 
@@ -32,7 +32,7 @@ public struct InxAuthorLightResponse<let tiled_lighting : bool> : IInxLightRespo
     InxShadingContext context;
     public float3 evaluate(InxLight light)
     {
-        return inx_shading_model::shade_light<tiled_lighting>(surface, context, light);
+        return shade_light<tiled_lighting>(surface, context, light);
     }
 };
 float3 inx_author_direct<let tiled_lighting : bool>(InxSurfaceData surface, InxShadingContext context)
@@ -50,14 +50,20 @@ class _ModelEmitter(ShaderEmitter):
     def __init__(self, *args, contract, **kwargs):
         super().__init__(*args, **kwargs)
         self.contract = contract
+        self.lighting_mode = "tiled_lighting"
 
     def infer(self, node):
-        if isinstance(node, ast.Call) and self.symbol(qualified(node.func)) in _LIGHTING:
+        if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
+                and self.symbol(qualified(node.func)) in _LIGHTING):
             return _LIGHTING[self.symbol(qualified(node.func))][1]
         return super().infer(node)
 
     def visit_Call(self, node):
         operation = self.symbol(qualified(node.func))
+        if operation == qualified(node.func):
+            return super().visit_Call(node)
+        if self.contract == "unlit" and operation == "lighting.shade":
+            self.error(node, "An unlit shading model does not request lighting resources", code="author.capability")
         if operation not in _LIGHTING:
             return super().visit_Call(node)
         if self.contract == "unlit":
@@ -83,7 +89,7 @@ class ShadingModel:
     info: dict
 
 
-def read_shading_model(path, graph, owner, location, *, source=None):
+def read_shading_model(path, graph, owner, location, *, source=None, namespace="inx_shading_model"):
     path = Path(path).resolve()
     if source is None:
         try:
@@ -124,7 +130,7 @@ def read_shading_model(path, graph, owner, location, *, source=None):
         name = "self." + method.name
         if name in functions:
             author.error(method, "Duplicate shading model method: " + method.name)
-        functions[name] = replace(author.signature(method, "inx_shading_model::" + method.name, method=True),
+        functions[name] = replace(author.signature(method, namespace + "::" + method.name, method=True),
                                   lighting_specialization=True)
     entry = functions.get("self.shade")
     if entry is None or entry.arguments != ("InxSurfaceData", "InxShadingContext") or entry.result != "float3":
@@ -138,18 +144,18 @@ def read_shading_model(path, graph, owner, location, *, source=None):
                 or response.result != "float3"):
             author.error(direct_calls[0], "lighting.direct requires shade_light(self, surface: shader.SurfaceData, "
                          "ctx: shader.ShadingContext, light: shader.LightData) -> shader.vec3", code="author.type")
-    code = ["import inx_geometry;", *engine_imports(body, alias), *("import " + name + ";" for name in dependencies)]
+    code = ["import inx_geometry;", *engine_imports(body, alias, graph=graph, owner=author), *("import " + name + ";" for name in dependencies)]
     if contract != "unlit":
         code.append("import inx_lighting;")
-    code.append("namespace inx_shading_model {")
+    code.append("namespace " + namespace + " {")
     ranges = []
     for method in methods:
         emitter = _ModelEmitter(source, str(path), aliases=(alias,), functions=functions, contract=contract)
         code.extend(emitter.emit_function(method, functions["self." + method.name], method=True, public=True))
         ranges.extend(emitter.source_ranges)
-    code.append("}")
     if direct_calls:
         code.append(_DIRECT_RESPONSE)
+    code.append("}")
     builtin_models = {_builtin_root().joinpath(name + ".shadingmodel.py").resolve(): model
                       for name, model in (("pbr", "PBR"), ("unlit", "Unlit"), ("toon", "Toon"))}
     return ShadingModel(declaration.name, str(path), contract, "\n".join(code), dependencies, tuple(ranges),
@@ -158,3 +164,27 @@ def read_shading_model(path, graph, owner, location, *, source=None):
 
 def default_shading_model():
     return _builtin_root() / "pbr.shadingmodel.py"
+
+
+def surface_lighting_module(graph, owner, location):
+    """Link the same model responses used by Surface into a material evaluator."""
+    if graph.lighting_registry is not None:
+        return graph.lighting_registry
+    module = Module("inx_material_lighting", "<infernux/shader/material_lighting>", "", {})
+    graph.lighting_registry = module
+    imports, branches = [], []
+    for name in ("pbr", "unlit", "toon"):
+        namespace = "inx_response_" + name
+        model = read_shading_model(_builtin_root() / (name + ".shadingmodel.py"), graph, owner, location,
+                                   namespace=namespace)
+        response = Module(namespace, model.path, model.source, {}, model.source_ranges)
+        graph.ordered.append(response)
+        imports.append("import " + response.name + ";")
+        branches.append("    if (model_id == INX_" + name.upper() + "_MODEL_ID) return " + namespace
+                        + "::shade<tiled_lighting>(surface, context);")
+    module.source = "\n".join(["import inx_geometry;", *imports,
+        "public float3 inx_evaluate_material<let tiled_lighting : bool>(",
+        "    InxSurfaceData surface, InxShadingContext context, uint model_id)", "{",
+        *branches, "    return float3(0.0);", "}"])
+    graph.ordered.append(module)
+    return module

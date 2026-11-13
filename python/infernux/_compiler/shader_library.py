@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .slang_ast import SlangEmitter, qualified
@@ -19,14 +19,26 @@ _ENGINE_MODULES = {"inx_frame": ("frame_time", "frame_delta_time", "view", "View
                    "inx_camera": ("camera", "CameraContext")}
 
 
-def engine_imports(body, alias):
+def engine_imports(body, alias, *, graph, owner):
     names = {
         qualified(node)
         for declaration in body for node in ast.walk(declaration)
         if isinstance(node, ast.Attribute)
     }
-    return tuple("import " + module + ";" for module, exports in _ENGINE_MODULES.items()
-                 if any(alias + "." + name in names for name in exports))
+    modules = [module for module, exports in _ENGINE_MODULES.items()
+               if any(alias + "." + name in names for name in exports)]
+    if alias + ".lighting.shade" in names:
+        from .shading_model import surface_lighting_module
+
+        modules.append(surface_lighting_module(graph, owner, body[0]).name)
+    return tuple("import " + module + ";" for module in modules)
+
+
+def uses_surface_lighting(body, alias, functions):
+    return any(function.lighting_specialization for function in functions.values()) or any(
+        isinstance(node, ast.Call) and qualified(node.func) == alias + ".lighting.shade"
+        for declaration in body for node in ast.walk(declaration)
+    )
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,8 @@ class Module:
 
 
 class ShaderEmitter(SlangEmitter):
+    lighting_mode = "false"
+
     def __init__(self, source, path, *, aliases=("shader",), functions=None, types=None):
         super().__init__(source, path, aliases=aliases, types=types)
         self.functions = dict(functions or {})
@@ -57,6 +71,12 @@ class ShaderEmitter(SlangEmitter):
         return super().visit_Attribute(node)
 
     def infer(self, node):
+        if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
+                and self.symbol(qualified(node.func)) == "lighting.shade"):
+            return "float3"
+        if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
+                and self.symbol(qualified(node.func)) == "ShadingContext"):
+            return "InxShadingContext"
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) in _ENGINE_FUNCTIONS):
             return _ENGINE_FUNCTIONS[self.symbol(qualified(node.func))][1]
@@ -83,6 +103,24 @@ class ShaderEmitter(SlangEmitter):
 
     def visit_Call(self, node):
         operation = self.symbol(qualified(node.func))
+        intrinsic = operation != qualified(node.func)
+        if intrinsic and operation == "lighting.shade":
+            expected = ("InxSurfaceData", "InxShadingContext", "uint")
+            if node.keywords or len(node.args) != len(expected):
+                self.error(node, "lighting.shade takes a SurfaceData, ShadingContext and uint model ID", code="author.type")
+            for value, kind in zip(node.args, expected):
+                if self.infer(value) != kind:
+                    self.error(value, "Lighting argument requires " + kind, code="author.type")
+            return "inx_evaluate_material<" + self.lighting_mode + ">(" + ", ".join(self.visit(value) for value in node.args) + ")"
+        if intrinsic and operation == "ShadingContext":
+            fields = STRUCT_FIELDS["InxShadingContext"]
+            values = {keyword.arg: keyword.value for keyword in node.keywords}
+            if node.args or values.keys() != fields.keys() or len(values) != len(node.keywords):
+                self.error(node, "ShadingContext declares its six named geometry and visibility fields", code="author.type")
+            for name, kind in fields.items():
+                if self.infer(values[name]) != kind:
+                    self.error(values[name], "ShadingContext." + name + " requires " + kind, code="author.type")
+            return "inx_shading_context(" + ", ".join(self.visit(values[name]) for name in fields) + ")"
         if operation in _ENGINE_FUNCTIONS and operation != qualified(node.func):
             if node.args or node.keywords:
                 self.error(node, "shader." + operation + " takes no arguments", code="author.type")
@@ -116,7 +154,7 @@ class ShaderEmitter(SlangEmitter):
             return super().visit_Call(node)
         if node.keywords or len(node.args) != len(function.arguments):
             self.error(node, "Shader helper arguments must match its typed positional signature")
-        specialization = "<tiled_lighting>" if function.lighting_specialization else ""
+        specialization = "<" + self.lighting_mode + ">" if function.lighting_specialization else ""
         return function.symbol + specialization + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
 
     def annotation(self, node):
@@ -147,6 +185,8 @@ class ShaderEmitter(SlangEmitter):
                         tuple(self.annotation(field.annotation) for field in fields))
 
     def emit_function(self, definition, function, *, method=False, public=False):
+        if function.lighting_specialization:
+            self.lighting_mode = "tiled_lighting"
         fields = definition.args.args[1:] if method else definition.args.args
         self.types.update((field.arg, kind) for field, kind in zip(fields, function.arguments))
         self.declare_locals(definition.body)
@@ -188,6 +228,7 @@ class LibraryGraph:
         self.modules: dict[Path, Module] = {}
         self.ordered: list[Module] = []
         self.loading: set[Path] = set()
+        self.lighting_registry: Module | None = None
         self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
 
     def reference(self, call, owner, *, stage, suffix):
@@ -264,14 +305,16 @@ class LibraryGraph:
         self.modules[path] = module
         self.loading.add(path)
         functions, dependencies = self.imports(imports, emitter)
+        lighting = uses_surface_lighting(body, alias, functions)
         for definition in body:
             if not isinstance(definition, ast.FunctionDef):
                 emitter.error(definition, "ShaderLib exports typed functions")
             if definition.name in functions:
                 emitter.error(definition, "Duplicate ShaderLib function: " + definition.name)
-            function = emitter.signature(definition, module.name + "::" + definition.name)
+            function = replace(emitter.signature(definition, module.name + "::" + definition.name),
+                               lighting_specialization=lighting)
             module.functions[definition.name] = functions[definition.name] = function
-        code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias),
+        code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias, graph=self, owner=emitter),
                 *("import " + name + ";" for name in dependencies),
                 "namespace " + module.name + " {"]
         ranges = []

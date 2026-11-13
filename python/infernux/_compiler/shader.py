@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 
-from .shader_library import LibraryGraph, ShaderEmitter, declarations, engine_imports
+from .shader_library import LibraryGraph, ShaderEmitter, declarations, engine_imports, uses_surface_lighting
 from .shader_types import RESOURCE_BINDINGS, RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
@@ -304,6 +304,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) not in bases:
         author.error(declaration, "Declare shader.fullscreen, shader.frag or shader.surface")
     author.domain = bases[author.qualified(declaration.bases[0])]
+    author.lighting_mode = "true" if author.domain == "fullscreen" else "false"
     author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
     entry_name = "surface" if author.is_surface else "main"
     main, helpers, references = None, [], {}
@@ -331,6 +332,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(statement, "Expected a shader parameter or typed method")
     if main is None:
         author.error(declaration, "Shader class needs a " + entry_name + " entry")
+    if uses_surface_lighting(body, author.alias, author.functions):
+        for helper in helpers:
+            name = "self." + helper.name
+            author.functions[name] = replace(author.functions[name], lighting_specialization=True)
     if author.domain == "mesh":
         author.fields["_alpha_clip_threshold"] = ShaderParameter("_alpha_clip_threshold", "float", 0.0, "", internal=True)
         author.field_nodes["_alpha_clip_threshold"] = declaration
@@ -370,7 +375,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(declaration, "Mesh image resources are declared as material properties")
     dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies)]
-    code.extend(engine_imports(body, author.alias))
+    code.extend(engine_imports(body, author.alias, graph=graph, owner=author))
     if vertex:
         code.append("import inx_frame;")
     if author.domain == "mesh":
@@ -440,7 +445,7 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
         parameters = tuple(vertex.author.fields.values())
         code, ranges = vertex.emit()
         prefix = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;",
-                  *engine_imports(vertex.methods, vertex.author.alias),
+                  *engine_imports(vertex.methods, vertex.author.alias, graph=graph, owner=vertex.author),
                   *("import " + name + ";" for name in vertex.dependencies),
                   *vertex.author.parameter_declarations(parameters)]
         schema = {"name": vertex.name, "domain": "vertex", "info": vertex.info,

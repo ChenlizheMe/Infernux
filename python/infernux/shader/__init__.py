@@ -296,6 +296,13 @@ for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions", "fr
 
 
 class _Lighting:
+    """Scene lighting and shared Surface responses.
+
+    ``shade(surface, context, model_id)`` evaluates a built-in GBuffer model
+    using the same source as its Surface. Fullscreen programs use tiled lights.
+    """
+
+    shade = staticmethod(_gpu_intrinsic("lighting.shade"))
     pbr = staticmethod(_gpu_intrinsic("lighting.pbr"))
     pbr_indirect = staticmethod(_gpu_intrinsic("lighting.pbr_indirect"))
     main_light = staticmethod(_gpu_intrinsic("lighting.main_light"))

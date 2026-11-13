@@ -29,6 +29,14 @@ struct FullscreenProgram
     std::string shaderId;
     std::shared_ptr<const ShaderTargetCode> code;
     std::string schema;
+
+    [[nodiscard]] bool UsesViewBinding(uint32_t binding) const noexcept
+    {
+        for (const auto &resource : code->resources)
+            if (resource.set == 1 && resource.binding.binding == binding)
+                return true;
+        return false;
+    }
 };
 
 /// Logical overrides and their target copy plans, prepared with the graph.
@@ -47,12 +55,12 @@ struct FullscreenParameters
     std::vector<History> histories;
 };
 
-// Borrowed ranges from the current view. Their owner stages and retires the
-// allocations; fullscreen programs never repack camera or frame constants.
+// Borrowed view resources. Their owner stages and retires the allocations;
+// fullscreen programs share the geometry view's camera, lights and shadows.
 struct FullscreenViewResources
 {
     rhi::BufferBinding globals;
-    rhi::BufferBinding camera;
+    rhi::BindGroupHandle perView;
 };
 
 class FullscreenRendererHost
@@ -118,7 +126,6 @@ struct FullscreenPipelineEntry
 {
     static constexpr int32_t Parameters = -1;
     static constexpr int32_t Globals = -2;
-    static constexpr int32_t Camera = -3;
 
     rhi::GraphicsPipelineHandle pipeline;
     rhi::BindingLayoutHandle inputLayout;
@@ -126,6 +133,7 @@ struct FullscreenPipelineEntry
     bool hasGlobals = false;
     std::shared_ptr<DeviceShaderProgram> program;
     std::vector<std::string> inputNames;
+    std::vector<uint32_t> resourceIndices;
     std::vector<int32_t> resourceInputs;
 };
 
@@ -157,6 +165,9 @@ class FullscreenPipelineCache
     INFERNUX_RENDER_CORE_API const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
     INFERNUX_RENDER_CORE_API void InvalidateShader(const std::string &shaderName);
 
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<const FullscreenProgram>
+    AcquireProgram(const std::string &name) const;
+
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasShader(const std::string &name, rhi::ShaderStage stage) const;
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API rhi::Device &GetDevice() const noexcept;
@@ -187,7 +198,7 @@ class FullscreenRenderer
     INFERNUX_RENDER_CORE_API void InvalidateShader(const std::string &shaderName);
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<const FullscreenProgram>
-    AcquireProgram(const std::string &name);
+    AcquireProgram(const std::string &name) const;
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API static FullscreenParameters
     PrepareParameters(const FullscreenProgram &program,

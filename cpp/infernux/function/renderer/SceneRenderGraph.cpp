@@ -2572,10 +2572,10 @@ bool SceneRenderGraph::UsesForwardPlus() const
                 command.shaderTarget == ShaderCompileTarget::ForwardPlus) {
                 return true;
             }
-            // Deferred lighting consumes the same per-view light grid even
-            // when the graph contains no Forward+ geometry pass.
-            if (command.type == GraphCommandType::FullscreenQuad && command.shaderName == "Deferred Lighting") {
-                return true;
+            if (command.type == GraphCommandType::FullscreenQuad) {
+                const auto program = m_fullscreenRenderer.AcquireProgram(command.shaderName);
+                if (program && (program->UsesViewBinding(2) || program->UsesViewBinding(3)))
+                    return true;
             }
         }
     }
@@ -5245,7 +5245,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                      [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
                         builder.ReadSampledDepth(fullscreenShadowInput);
                     }
-                    if (shaderName == "Deferred Lighting") {
+                    if (authorProgram && (authorProgram->UsesViewBinding(2) || authorProgram->UsesViewBinding(3))) {
                         for (const auto &resources : forwardPlusResources) {
                             if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
                                 !resources.lightMasks.IsValid()) {
@@ -5327,8 +5327,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             const auto &frame = m_perViewFrames[m_vkCore->GetCurrentFrameSlot()];
                             const FullscreenViewResources viewResources{
                                 {0, rhi::BindingType::UniformBuffer, frame.globals.buffer, 0, sizeof(EngineGlobalsUBO)},
-                                {5, rhi::BindingType::UniformBuffer, frame.cameraMatrix, 0,
-                                 sizeof(UniformBufferObject)},
+                                frame.geometryGroup,
                             };
                             fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
                                                     values, viewResources);

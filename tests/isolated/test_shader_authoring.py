@@ -516,6 +516,73 @@ class Camera(shader.{domain}):
         parse_shader(source.replace("shader.camera()", "shader.camera(1)"), "camera.frag.py", "invalid_camera")
 
 
+def test_deferred_lighting_reuses_surface_models_and_the_view_resource_contract():
+    from infernux._compiler.shading_model import default_shading_model
+
+    path = default_shading_model().with_name("deferred_lighting.frag.py")
+    definition = parse_shader(path.read_text(encoding="utf-8"), str(path), "builtin_deferred_lighting")
+    assert definition.info["shader_id"] == "infernux/internal/deferred_lighting"
+    assert definition.info["hidden"] is True
+    models = {source_path for _, source_path, _ in definition.libraries if source_path.endswith(".shadingmodel.py")}
+    assert models == {str(default_shading_model().with_name(name + ".shadingmodel.py"))
+                      for name in ("pbr", "unlit", "toon")}
+    for target in definition.compile()["targets"]:
+        resources = {resource["name"]: resource for resource in target["resources"]}
+        assert resources["inx_view"]["set"] == resources["lighting"]["set"] == 1
+        assert resources["inx_view"]["binding"] == 5
+        assert resources["lighting"]["binding"] == 4
+        assert {resources[name]["binding"] for name in (
+            "canonical_lights", "forward_plus_tile_headers", "forward_plus_tile_masks")} == {1, 2, 3}
+        assert {(resource["set"], resource["binding"]) for resource in resources.values()
+                if resource["name"] in {"shadow_image", "shadow_sampler"}} == {(1, 0), (1, 6)}
+
+
+def test_material_lighting_specialization_crosses_shader_library_calls(tmp_path):
+    (tmp_path / "lighting.shaderlib.py").write_text('''import infernux.shader as shader
+def shade(surface: shader.SurfaceData, context: shader.ShadingContext, model: shader.uint) -> shader.vec3:
+    return shader.lighting.shade(surface, context, model)
+''', encoding="utf-8")
+    (tmp_path / "response.shaderlib.py").write_text('''import infernux.shader as shader
+from .lighting import shade
+def response(surface: shader.SurfaceData, context: shader.ShadingContext, model: shader.uint) -> shader.vec3:
+    return shade(surface, context, model)
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+from .response import response
+class Deferred(shader.fullscreen):
+    def helper(self, surface: shader.SurfaceData, context: shader.ShadingContext) -> shader.vec3:
+        return response(surface, context, shader.uint(1))
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        context = shader.ShadingContext(position_ws=shader.vec3(0.0), geometric_normal_ws=shader.vec3(0.0, 1.0, 0.0),
+            view_depth=1.0, pixel_position=uv, layer_mask=shader.uint(4294967295), receives_shadows=False)
+        return shader.vec4(self.helper(shader.SurfaceData(), context), 1.0)
+'''
+    definition = parse_shader(source, str(tmp_path / "deferred.frag.py"), "library_deferred")
+    assert "helper<true>" in definition.generated_source
+    for target in definition.compile()["targets"]:
+        fragment = next(entry for entry in target["entries"] if entry["name"] == "fragment_main")
+        assert {(1, 1), (1, 2), (1, 3)} <= {tuple(binding) for binding in fragment["bindings"]}
+    with pytest.raises(SyntaxError, match="requires uint"):
+        parse_shader(source.replace("layer_mask=shader.uint(4294967295)", "layer_mask=1.0"),
+                     str(tmp_path / "deferred.frag.py"), "invalid_context")
+    (tmp_path / "lighting.shaderlib.py").write_text('''import infernux.shader as shader
+def shade(value: float) -> float:
+    return value * 2.0
+def ShadingContext(value: float) -> float:
+    return value + 1.0
+''', encoding="utf-8")
+    plain = '''import infernux.shader as shader
+from . import lighting
+from .lighting import ShadingContext
+class Plain(shader.fullscreen):
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(lighting.shade(ShadingContext(uv.x)), 0.0, 0.0, 1.0)
+'''
+    definition = parse_shader(plain, str(tmp_path / "plain.frag.py"), "ordinary_library_names")
+    assert "inx_evaluate_material" not in definition.generated_source
+    assert len(definition.compile()["targets"]) == 2
+
+
 def test_camera_context_annotations_and_library_calls_use_the_same_module(tmp_path):
     (tmp_path / "camera.shaderlib.py").write_text('''import infernux.shader as gpu
 def depth(context: gpu.CameraContext) -> float:

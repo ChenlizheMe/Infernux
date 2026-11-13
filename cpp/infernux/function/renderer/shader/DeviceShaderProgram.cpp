@@ -20,6 +20,7 @@ struct DeviceShaderProgram::Impl
     std::vector<Entry> entries;
     std::vector<ShaderResourceLayout> resources;
     std::vector<rhi::BindingLayoutHandle> layouts;
+    std::vector<rhi::BindingLayoutHandle> ownedLayouts;
     uint32_t rootConstantBytes = 0;
 
     explicit Impl(rhi::Device &owner) : device(owner)
@@ -29,13 +30,14 @@ struct DeviceShaderProgram::Impl
     {
         for (const auto &entry : entries)
             device.Release(entry.module);
-        for (const auto layout : layouts)
+        for (const auto layout : ownedLayouts)
             device.Release(layout);
     }
 };
 
 DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTargetCode &code,
-                                         const std::vector<uint32_t> &entries)
+                                         const std::vector<uint32_t> &entries,
+                                         const std::vector<rhi::BindingLayoutHandle> &sharedLayouts)
     : m_impl(std::make_unique<Impl>(device))
 {
     m_impl->rootConstantBytes = code.rootConstants ? static_cast<uint32_t>(code.rootConstants->byteSize) : 0;
@@ -69,11 +71,14 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTarget
         set.entries[set.entryCount++] = binding;
         m_impl->resources.push_back(std::move(resource));
     }
-    for (const auto &description : descriptions) {
-        const auto layout = device.CreateBindingLayout(description);
+    for (size_t index = 0; index < descriptions.size(); ++index) {
+        const bool shared = index < sharedLayouts.size() && sharedLayouts[index].IsValid();
+        const auto layout = shared ? sharedLayouts[index] : device.CreateBindingLayout(descriptions[index]);
         if (!layout.IsValid())
             throw std::runtime_error("Device shader binding layout creation failed");
         m_impl->layouts.push_back(layout);
+        if (!shared)
+            m_impl->ownedLayouts.push_back(layout);
     }
 }
 
