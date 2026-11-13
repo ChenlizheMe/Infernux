@@ -62,22 +62,26 @@ class _Author(ParameterAuthor):
                            "Fullscreen input is shader.vec2 or shader.fragment_input")
             signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
-        result = "InxSurfaceData" if self.is_surface else "float4"
-        if main.returns is None or self.annotation(main.returns) != result:
-            self.error(main, "Surface returns shader.SurfaceData" if self.is_surface else "Fragment main returns shader.vec4")
+        result = self.annotation(main.returns) if main.returns is not None else None
+        expected = {"InxSurfaceData"} if self.is_surface else {"float4", "InxFragmentOutput"}
+        if result not in expected:
+            self.error(main, "Surface returns shader.SurfaceData" if self.is_surface else
+                       "Fragment main returns shader.vec4 or shader.FragmentOutput")
         self.aliases = (self.alias,)
         self.declare_locals(main.body)
         self.local_declarations()
         self.block(main.body)
+        semantic = " : SV_Target0" if result == "float4" else ""
         if self.domain == "mesh" and not self.is_surface:
             argument = arguments[1].arg if len(arguments) == 2 else ""
-            return [self.source_directive(main), "float4 inx_author_fragment(" + signature + ")",
+            alpha = "color.color.a" if result == "InxFragmentOutput" else "color.a"
+            return [self.source_directive(main), result + " inx_author_fragment(" + signature + ")",
                     "{", *self.lines, "}", '[shader("fragment")]',
-                    "float4 fragment_main(" + signature + ") : SV_Target0", "{",
-                    "    float4 color = inx_author_fragment(" + argument + ");",
-                    "    clip(color.a - inx_parameters._alpha_clip_threshold);", "    return color;", "}"]
+                    result + " fragment_main(" + signature + ")" + semantic, "{",
+                    "    " + result + " color = inx_author_fragment(" + argument + ");",
+                    "    clip(" + alpha + " - inx_parameters._alpha_clip_threshold);", "    return color;", "}"]
         declaration = ("InxSurfaceData inx_author_surface(" + signature + ")" if self.is_surface else
-                       "float4 fragment_main(" + signature + ") : SV_Target0")
+                       result + " fragment_main(" + signature + ")" + semantic)
         return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
             declaration, "{", *self.lines, "}"]
 

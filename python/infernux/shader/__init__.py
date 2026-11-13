@@ -103,6 +103,18 @@ class CameraContext:
     depth_params: vec4
 
 
+class FragmentOutput:
+    """Fragment color and normalized device depth, written together.
+
+    Return this instead of ``vec4`` when a mesh or fullscreen fragment computes
+    depth. The render pass still controls depth testing and attachment writes.
+    Camera projection and reconstruction helpers use the same depth convention.
+    """
+
+    color: vec4
+    depth: float
+
+
 class ShadingContext:
     """Lighting geometry independent of mesh UVs, vertex colors and tangent streams."""
 
@@ -291,7 +303,7 @@ for _name in TYPES:
     globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
-for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", "camera"):
+for _name in ("sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "clip", "frame_time", "frame_delta_time", "view", "camera"):
     globals()[_name] = _gpu_intrinsic(_name)
 
 
@@ -313,4 +325,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]

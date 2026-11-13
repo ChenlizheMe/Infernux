@@ -3481,13 +3481,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             // set before their built-in materials can create fallback pipelines.
             // A late publication cannot repair a cached fallback descriptor
             // generation without an explicit material invalidation.
-            static constexpr std::array<std::pair<std::string_view, std::string_view>, 10> editorOverlayShaderStages{{
-                {"Gizmo", "vertex"},
-                {"Gizmo", "fragment"},
-                {"Grid", "vertex"},
-                {"Grid", "fragment"},
-                {"Gizmo Icon", "vertex"},
-                {"Gizmo Icon", "fragment"},
+            static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> editorOverlayShaderStages{{
                 {"Outline Mask", "vertex"},
                 {"Outline Mask", "fragment"},
                 {"Outline Composite", "vertex"},

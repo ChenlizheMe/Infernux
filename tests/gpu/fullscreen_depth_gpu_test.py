@@ -1,4 +1,4 @@
-"""Real tutorial depth copy, full-screen blending, and subsequent depth tests."""
+"""Authored fragment depth, copied depth, blending and subsequent depth tests."""
 import argparse
 import tempfile
 from pathlib import Path
@@ -9,19 +9,6 @@ from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, SceneManager, Vector3
 from infernux.renderstack import RenderPipeline
 from infernux.rendergraph import DepthCompare, Format
-
-def shader(name, body, resources=''):
-    return f'''#version 450
-ShaderInfo {{
-    Name "{name}"
-    Hidden On
-    Capabilities [Fullscreen]
-    {resources}
-    Inputs {{ Float2 inUV }}
-    Outputs {{ Float4 outColor }}
-}}
-void main() {{ {body} }}
-'''
 
 class DepthAudit(RenderPipeline):
     name = 'Tutorial Fullscreen Depth Audit'
@@ -35,20 +22,21 @@ class DepthAudit(RenderPipeline):
         with graph.add_pass('Initialize') as p:
             p.write_color(scene_color).write_depth(scene_depth)
             p.set_clear(color=(0,0,0,0),depth=0.0)
-            p.fullscreen_quad('Tutorial Initialize',depth_test=DepthCompare.ALWAYS,depth_write=True)
+            p.fullscreen_quad('tests/depth/initialize',depth_test=DepthCompare.ALWAYS,depth_write=True)
         graph.add_copy_pass('PreserveSceneDepth').copy_texture(scene_depth,previous_depth)
         with graph.add_pass('DepthAwareOverlay') as p:
             p.write_color(scene_color).write_depth(scene_depth)
-            p.set_texture('sceneDepthTex',previous_depth)
+            p.set_texture('scene_depth',previous_depth)
             if self.clear:
                 p.set_clear(color=(1,0,0,0))
-            p.fullscreen_quad('Tutorial Overlay',depth_test=DepthCompare.ALWAYS,
+            p.fullscreen_quad('tests/depth/overlay',depth_test=DepthCompare.ALWAYS,
                               depth_write=self.write,alpha_blend=self.blend)
         with graph.add_pass('DepthProbe') as p:
             p.write_color(scene_color).write_depth(scene_depth)
             if samples>1:
                 p.write_resolve(resolved)
-            p.fullscreen_quad('Tutorial Probe',depth_test=DepthCompare.LESS_EQUAL)
+            p.set_param('clip_edge',0.5 if self.clip else -1.0)
+            p.fullscreen_quad('tests/depth/probe',depth_test=DepthCompare.LESS_EQUAL)
         with graph.add_pass('Commit') as p:
             p.write_color(color)
             p.set_texture('source_tex',resolved)
@@ -65,20 +53,42 @@ def main():
         for directory in ('Assets','Packages','ProjectSettings'):
             (project/directory).mkdir()
         sources = {
-            'Initialize':shader('Tutorial Initialize','outColor=vec4(0,0,1,1); gl_FragDepth=0.2;'),
-            'Overlay':shader('Tutorial Overlay','''float d = texture(sceneDepthTex,inUV).r;
-                outColor = abs(d-0.2)<0.001 ? vec4(0,1,0,0.5) : vec4(1,0,1,1);
-                gl_FragDepth=0.6;''','Resources { Texture2D sceneDepthTex }'),
-            'Probe':shader('Tutorial Probe','outColor=vec4(1,0,0,1); gl_FragDepth=0.4;'),
+            'Initialize':'''import infernux.shader as shader
+class Initialize(shader.fullscreen):
+    shader_id = "tests/depth/initialize"
+    hidden = True
+    def main(self, uv: shader.vec2) -> shader.FragmentOutput:
+        return shader.FragmentOutput(color=shader.vec4(0.0, 0.0, 1.0, 1.0), depth=0.2)
+''',
+            'Overlay':'''import infernux.shader as shader
+class Overlay(shader.fullscreen):
+    shader_id = "tests/depth/overlay"
+    hidden = True
+    scene_depth = shader.input("previous_depth", shader.Depth2D)
+    def main(self, uv: shader.vec2) -> shader.FragmentOutput:
+        depth = shader.sample_level(self.scene_depth, uv, 0.0)
+        color = shader.vec4(0.0, 1.0, 0.0, 0.5) if shader.abs(depth - 0.2) < 0.001 else shader.vec4(1.0, 0.0, 1.0, 1.0)
+        return shader.FragmentOutput(color=color, depth=0.6)
+''',
+            'Probe':'''import infernux.shader as shader
+class Probe(shader.fullscreen):
+    shader_id = "tests/depth/probe"
+    hidden = True
+    clip_edge = shader.parameter.float(default=-1.0)
+    def main(self, uv: shader.vec2) -> shader.FragmentOutput:
+        shader.clip(uv.x - self.clip_edge)
+        return shader.FragmentOutput(color=shader.vec4(1.0, 0.0, 0.0, 1.0), depth=0.4)
+''',
         }
         for name,content in sources.items():
-            (project/f'Assets/{name}.frag').write_text(content,encoding='ascii')
+            (project/f'Assets/{name}.frag.py').write_text(content,encoding='ascii')
         frontend = Engine()
         engine = frontend.get_native_engine()
         console = ConsolePanel()
         pipeline = DepthAudit()
         pipeline.samples=args.samples
         pipeline.write,pipeline.blend,pipeline.clear = True,True,False
+        pipeline.clip = False
         completed,failures = False,[]
         try:
             frontend.init_renderer(64,48,str(project))
@@ -93,12 +103,12 @@ def main():
             camera.transform.position = Vector3(0,0,-5)
             camera.add_component('Camera')
             for name in sources:
-                imported = AssetManager.import_asset(str(project/f'Assets/{name}.frag'),database=frontend.get_asset_database())
+                imported = AssetManager.import_asset(str(project/f'Assets/{name}.frag.py'),database=frontend.get_asset_database())
                 assert imported,imported.error
             frontend.set_render_pipeline(pipeline)
             engine.set_game_camera_enabled(True)
-            phases=('depth_written','depth_not_written','blend_off','explicit_clear','restored')
-            expectations=((0,.5,.5,1),(1,0,0,1),(0,1,0,.5),(.5,.5,0,.5),(0,.5,.5,1))
+            phases=('depth_written','depth_not_written','blend_off','explicit_clear','clipped_probe','restored')
+            expectations=((0,.5,.5,1),(1,0,0,1),(0,1,0,.5),(.5,.5,0,.5),(1,0,0,1),(0,.5,.5,1))
             phase,frame,changed,ticket=0,0,0,None
             images={}
             def after_draw():
@@ -117,18 +127,24 @@ def main():
                         expected=np.array(expectations[phase],dtype=np.float32)
                         expected[:3]=np.where(expected[:3]<=.0031308,expected[:3]*12.92,
                                                1.055*expected[:3]**(1/2.4)-.055)
-                        np.testing.assert_allclose(pixels,np.broadcast_to(expected,pixels.shape),atol=.005,
+                        expected=np.broadcast_to(expected,pixels.shape).copy()
+                        if pipeline.clip:
+                            half=np.array((0,.5,.5,1),np.float32)
+                            half[:3]=np.where(half[:3]<=.0031308,half[:3]*12.92,1.055*half[:3]**(1/2.4)-.055)
+                            expected[:,:pixels.shape[1]//2]=half
+                        np.testing.assert_allclose(pixels,expected,atol=.005,
                                                    err_msg=f'{args.samples}: {phases[phase]}')
                         if phase==len(phases)-1:
                             np.testing.assert_array_equal(images['restored'],images['depth_written'])
-                            print('PASS depth copy/blend/load/gl_FragDepth/subsequent depth test',flush=True)
+                            print('PASS depth copy/blend/load/fragment depth/clipping/subsequent depth test',flush=True)
                             completed=True
                             engine.exit()
                             return
                         phase+=1
-                        pipeline.write=phase!=1
+                        pipeline.write=phase not in (1,4)
                         pipeline.blend=phase!=2
                         pipeline.clear=phase==3
+                        pipeline.clip=phase==4
                         pipeline.dispose()
                         ticket,changed=None,frame
                     if frame>130:

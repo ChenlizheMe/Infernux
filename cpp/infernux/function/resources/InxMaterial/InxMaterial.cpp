@@ -268,7 +268,8 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
                                                                       const std::string &textureRef)
 {
     auto material = std::make_shared<InxMaterial>(name);
-    material->SetShader("Gizmo Icon");
+    material->SetVertShader("Standard");
+    material->SetFragShader("infernux/editor/gizmo_icon");
 
     RenderState state;
     state.cullMode = MaterialCullMode::None;
@@ -290,6 +291,7 @@ std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std:
     state.alphaClipThreshold = 0.0f;
     state.renderQueue = 24950;
     material->SetRenderState(state);
+    material->PrepareShaderDefaults();
     material->SyncAlphaClipProperty();
 
     material->SetColor("base_color", glm::vec4(1.0f));
@@ -1961,7 +1963,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
     auto material = std::make_shared<InxMaterial>("GizmoMaterial");
 
     // Use gizmo shader (simple unlit with vertex color)
-    material->SetShader("Gizmo");
+    material->SetVertShader("Standard");
+    material->SetFragShader("infernux/editor/gizmo");
 
     // Gizmo render state: no culling (double-sided), depth test, depth write
     RenderState state;
@@ -1972,6 +1975,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
     state.blendEnable = false;
     state.renderQueue = 20100; // Editor gizmo layer (20001-25000)
     material->SetRenderState(state);
+    material->PrepareShaderDefaults();
 
     return material;
 }
@@ -1980,7 +1984,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGridMaterial()
 {
     auto material = std::make_shared<InxMaterial>("GridMaterial");
 
-    material->SetShader("Grid");
+    material->SetVertShader("infernux/editor/grid_vertex");
+    material->SetFragShader("infernux/editor/grid");
 
     // Grid render state: double-sided, alpha-blended, depth test but no depth write
     RenderState state;
@@ -2008,9 +2013,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGridMaterial()
     state.renderQueue = 20001; // Editor gizmo layer (20001-25000), renders after all user passes
     material->SetRenderState(state);
 
-    // Default fade distances
-    material->SetFloat("fadeStart", 15.0f);
-    material->SetFloat("fadeEnd", 80.0f);
+    material->PrepareShaderDefaults();
 
     material->SetBuiltin(true);
 
@@ -2022,7 +2025,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateEditorToolsMaterial()
     auto material = std::make_shared<InxMaterial>("EditorToolsMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetShader("Gizmo");
+    material->SetVertShader("Standard");
+    material->SetFragShader("infernux/editor/gizmo");
 
     // Editor tools render state: always on top (no depth test), double-sided
     RenderState state;
@@ -2033,6 +2037,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateEditorToolsMaterial()
     state.blendEnable = false;
     state.renderQueue = 25001; // Editor tools layer (25001-30000)
     material->SetRenderState(state);
+    material->PrepareShaderDefaults();
 
     material->SetBuiltin(true);
 
@@ -2044,7 +2049,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmosMaterial()
     auto material = std::make_shared<InxMaterial>("ComponentGizmosMaterial");
 
     // Same gizmo shader: simple unlit with vertex color
-    material->SetShader("Gizmo");
+    material->SetVertShader("Standard");
+    material->SetFragShader("infernux/editor/gizmo");
 
     // Component gizmos: depth-tested (occluded by scene geometry), double-sided, LINE topology
     RenderState state;
@@ -2056,6 +2062,7 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmosMaterial()
     state.blendEnable = false;
     state.renderQueue = 10000; // Component gizmos layer (10000-20000)
     material->SetRenderState(state);
+    material->PrepareShaderDefaults();
 
     material->SetBuiltin(true);
 

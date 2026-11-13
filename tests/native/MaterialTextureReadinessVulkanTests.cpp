@@ -132,7 +132,7 @@ int main()
     declaredWhite.type = "Texture2D";
     declaredWhite.textureDefault = "white";
     defaults.properties.push_back(declaredWhite);
-    InxMaterial defaultMaterial("declared-texture-defaults", "Gizmo Icon");
+    InxMaterial defaultMaterial("declared-texture-defaults", "infernux/editor/gizmo_icon");
     defaultMaterial.SynchronizeShaderPropertyDefaults(defaults);
     assert(defaultMaterial.SerializeDocument()["properties"]["albedo_map"]["guid"] == "");
     auto *defaultDescriptor = descriptors.GetOrCreateDescriptorSet(defaultMaterial, program);
@@ -159,7 +159,7 @@ int main()
     const std::array<std::pair<const char *, size_t>, 3> builtins = {
         std::pair{"white", size_t{0}}, {"black", 3}, {"normal", 1}};
     for (const auto &[initialToken, initialView] : builtins) {
-        InxMaterial tokens(std::string("builtin-") + initialToken, "Gizmo Icon");
+        InxMaterial tokens(std::string("builtin-") + initialToken, "infernux/editor/gizmo_icon");
         tokens.SynchronizeShaderPropertyDefaults(defaults);
         tokens.SetTextureGuid("albedo_map", initialToken);
         auto *created = descriptors.GetOrCreateDescriptorSet(tokens, program);
@@ -225,7 +225,7 @@ int main()
         // One captured block remains immutable while its texture upload and
         // later GPU publications advance. An explicit draw cannot use a
         // default texture while its authored GUID is unresolved.
-        InxMaterial selectedMaterial("selected-texture-publication", "Gizmo Icon");
+        InxMaterial selectedMaterial("selected-texture-publication", "infernux/editor/gizmo_icon");
         selectedMaterial.SynchronizeShaderPropertyDefaults(defaults);
         auto selectedParameters = std::make_shared<RendererParameterBlock>();
         selectedParameters->properties["albedo_map"] =
@@ -254,7 +254,7 @@ int main()
     {
         // Sprite-derived values exist before material/shader linking. Each
         // sprite publishes its own descriptor without authoring the material.
-        auto shared = std::make_shared<InxMaterial>("shared-sprites", "Gizmo Icon");
+        auto shared = std::make_shared<InxMaterial>("shared-sprites", "infernux/editor/gizmo_icon");
         const auto authored = shared->SerializeDocument();
         SpriteRenderer left;
         SpriteRenderer right;
@@ -295,7 +295,7 @@ int main()
         assert(!left.SerializeDocument().contains("parameterOverrides"));
     }
 
-    InxMaterial material("texture-readiness", "Gizmo Icon");
+    InxMaterial material("texture-readiness", "infernux/editor/gizmo_icon");
     material.SetFloat("gain", 1.0f);
     auto document = material.SerializeDocument();
     document["properties"]["albedo_map"] = {{"type", static_cast<int>(MaterialPropertyType::Texture2D)},
@@ -321,7 +321,7 @@ int main()
     // The dedicated icon draw must wait while its first explicit texture is missing.
     check(true, true, 0, 2);
     statuses["icon-guid"] = TextureResolveStatus::Failed;
-    InxMaterial failedMaterial("failed-texture-readiness", "Gizmo Icon");
+    InxMaterial failedMaterial("failed-texture-readiness", "infernux/editor/gizmo_icon");
     document["name"] = failedMaterial.GetName();
     assert(failedMaterial.DeserializeDocument(document));
     auto *failedDescriptor = descriptors.GetOrCreateDescriptorSet(failedMaterial, program);

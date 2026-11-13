@@ -516,6 +516,40 @@ class Camera(shader.{domain}):
         parse_shader(source.replace("shader.camera()", "shader.camera(1)"), "camera.frag.py", "invalid_camera")
 
 
+@pytest.mark.parametrize("domain,context,uv", [("fullscreen", "fragment_input", "uv"), ("frag", "mesh_input", "uv0")])
+def test_fragment_output_preserves_color_depth_and_clipping(domain, context, uv):
+    source = f'''import infernux.shader as shader
+class Depth(shader.{domain}):
+    def main(self, ctx: shader.{context}) -> shader.FragmentOutput:
+        shader.clip(ctx.{uv}.x - 0.25)
+        return shader.FragmentOutput(color=shader.vec4(0.25, 0.5, 0.75, 1.0), depth=0.625)
+'''
+    definition = parse_shader(source, "depth.frag.py", "depth_" + domain)
+    assert "InxFragmentOutput fragment_main(" in definition.generated_source
+    for target in definition.compile()["targets"]:
+        assert {entry["name"] for entry in target["entries"]} == {"vertex_main", "fragment_main"}
+    with pytest.raises(SyntaxError, match="FragmentOutput.depth requires float"):
+        parse_shader(source.replace("depth=0.625", "depth=shader.vec2(0.5)"), "depth.frag.py", "bad_depth")
+
+
+def test_editor_shader_authors_use_standard_libraries_and_explicit_vertex_selection():
+    from infernux._compiler.shading_model import default_shading_model
+
+    root = default_shading_model().parent
+    vertex = root / "grid.vert.py"
+    for name in ("grid", "gizmo", "gizmo_icon"):
+        path = root / (name + ".frag.py")
+        definition = parse_shader(path.read_text(encoding="utf-8"), str(path), "builtin_" + name,
+                                  vertex_path=vertex if name == "grid" else None)
+        assert definition.info["shader_id"] == "infernux/editor/" + name
+        assert definition.info["hidden"] is True
+        assert "vertex_shader" not in definition.info
+        for target in definition.compile()["targets"]:
+            assert {"vertex_main", "fragment_main"} <= {entry["name"] for entry in target["entries"]}
+        if name == "grid":
+            assert {parameter.name for parameter in definition.parameters} >= {"fade_start", "fade_end"}
+
+
 def test_deferred_lighting_reuses_surface_models_and_the_view_resource_contract():
     from infernux._compiler.shading_model import default_shading_model
 

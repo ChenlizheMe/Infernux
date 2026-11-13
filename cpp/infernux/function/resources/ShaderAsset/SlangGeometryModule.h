@@ -12,6 +12,18 @@ inline const ShaderSourceModule &GetSlangGeometryModule()
 {
     static const ShaderSourceModule module{"inx_geometry", "<infernux/shader/geometry>",
                                            R"slang(
+public struct InxFragmentOutput
+{
+    public float4 color : SV_Target0;
+    public float depth : SV_Depth;
+};
+public InxFragmentOutput inx_fragment_output(float4 color, float depth)
+{
+    InxFragmentOutput result;
+    result.color = color;
+    result.depth = depth;
+    return result;
+}
 public struct InxVertexInput
 {
     // One indexed semantic space preserves the canonical locations on both

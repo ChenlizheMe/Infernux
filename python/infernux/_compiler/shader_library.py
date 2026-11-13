@@ -17,6 +17,8 @@ _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float"),
                      "camera": ("inx_camera_context", "InxCameraContext")}
 _ENGINE_MODULES = {"inx_frame": ("frame_time", "frame_delta_time", "view", "ViewContext"),
                    "inx_camera": ("camera", "CameraContext")}
+_CONSTRUCTORS = {"ShadingContext": ("InxShadingContext", "inx_shading_context"),
+                 "FragmentOutput": ("InxFragmentOutput", "inx_fragment_output")}
 
 
 def engine_imports(body, alias, *, graph, owner):
@@ -75,8 +77,8 @@ class ShaderEmitter(SlangEmitter):
                 and self.symbol(qualified(node.func)) == "lighting.shade"):
             return "float3"
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
-                and self.symbol(qualified(node.func)) == "ShadingContext"):
-            return "InxShadingContext"
+                and self.symbol(qualified(node.func)) in _CONSTRUCTORS):
+            return _CONSTRUCTORS[self.symbol(qualified(node.func))][0]
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
                 and self.symbol(qualified(node.func)) in _ENGINE_FUNCTIONS):
             return _ENGINE_FUNCTIONS[self.symbol(qualified(node.func))][1]
@@ -90,7 +92,7 @@ class ShaderEmitter(SlangEmitter):
                     self.error(node, "Unknown shader stage input: " + node.attr, code="author.type")
                 return fields[node.attr]
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
-                and self.symbol(qualified(node.func)) in {"sample", "sample_level", "sample_grad", "load"}):
+                and self.symbol(qualified(node.func)) in {"sample", "sample_level", "sample_bias", "sample_grad", "load"}):
             if not node.args:
                 self.error(node, "A texture operation needs a declared GPU image", code="author.type")
             return RESOURCE_ELEMENTS.get(self.infer(node.args[0]))
@@ -112,15 +114,20 @@ class ShaderEmitter(SlangEmitter):
                 if self.infer(value) != kind:
                     self.error(value, "Lighting argument requires " + kind, code="author.type")
             return "inx_evaluate_material<" + self.lighting_mode + ">(" + ", ".join(self.visit(value) for value in node.args) + ")"
-        if intrinsic and operation == "ShadingContext":
-            fields = STRUCT_FIELDS["InxShadingContext"]
+        if intrinsic and operation in _CONSTRUCTORS:
+            kind, constructor = _CONSTRUCTORS[operation]
+            fields = STRUCT_FIELDS[kind]
             values = {keyword.arg: keyword.value for keyword in node.keywords}
             if node.args or values.keys() != fields.keys() or len(values) != len(node.keywords):
-                self.error(node, "ShadingContext declares its six named geometry and visibility fields", code="author.type")
+                self.error(node, operation + " declares named fields: " + ", ".join(fields), code="author.type")
             for name, kind in fields.items():
                 if self.infer(values[name]) != kind:
-                    self.error(values[name], "ShadingContext." + name + " requires " + kind, code="author.type")
-            return "inx_shading_context(" + ", ".join(self.visit(values[name]) for name in fields) + ")"
+                    self.error(values[name], operation + "." + name + " requires " + kind, code="author.type")
+            return constructor + "(" + ", ".join(self.visit(values[name]) for name in fields) + ")"
+        if intrinsic and operation == "clip":
+            if node.keywords or len(node.args) != 1:
+                self.error(node, "shader.clip takes one signed clipping distance", code="author.type")
+            return "clip(" + self.visit(node.args[0]) + ")"
         if operation in _ENGINE_FUNCTIONS and operation != qualified(node.func):
             if node.args or node.keywords:
                 self.error(node, "shader." + operation + " takes no arguments", code="author.type")
@@ -132,7 +139,7 @@ class ShaderEmitter(SlangEmitter):
             fields = (self.visit(values[name]) if name in values else default
                       for name, (_, default) in SURFACE_FIELDS.items())
             return "inx_surface_data(" + ", ".join(fields) + ")"
-        image_operations = {"sample": (2, "Sample"), "sample_level": (3, "SampleLevel"),
+        image_operations = {"sample": (2, "Sample"), "sample_level": (3, "SampleLevel"), "sample_bias": (3, "SampleBias"),
                             "sample_grad": (4, "SampleGrad"), "load": (3, "Load"), "dimensions": (2, "GetDimensions")}
         if operation in image_operations and operation != qualified(node.func):
             arity, intrinsic = image_operations[operation]
