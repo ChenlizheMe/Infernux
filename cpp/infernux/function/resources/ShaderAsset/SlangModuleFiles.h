@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SlangCameraModule.h"
 #include "SlangCompiler.h"
 #include "SlangFrameModule.h"
 #include "SlangGeometryModule.h"
@@ -51,6 +52,7 @@ class SlangModuleFiles final : public ISlangFileSystemExt
     SlangModuleFiles(const ShaderSourceModule &source, const std::vector<ShaderSourceModule> &libraries)
     {
         Add(GetSlangGeometryModule());
+        Add(GetSlangCameraModule());
         Add(GetSlangLightingModule());
         Add(GetSlangFrameModule());
         for (const auto &library : libraries)

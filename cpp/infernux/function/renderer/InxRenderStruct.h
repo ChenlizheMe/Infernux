@@ -162,7 +162,8 @@ struct UniformBufferObject
     // rendered in the same frame with different clipping planes.
     // x = near, y = far, z = 1 / far, w = near / far
     alignas(16) glm::vec4 projectionParams{0.01f, 5000.0f, 0.0002f, 0.000002f};
-    // x = 1 - far / near, y = far / near, z = x / far, w = y / far
+    // Reversed-Z linearization from depth::LinearizationParams. Perspective
+    // eye depth is 1 / (z * deviceDepth + w); the shared policy owns the formula.
     alignas(16) glm::vec4 zBufferParams{1.0f, 0.0f, 0.0f, 0.0f};
 };
 

@@ -491,6 +491,50 @@ def test_error_surface_supplies_the_standard_auxiliary_passes():
                     entry["name"] for entry in target["entries"]}
 
 
+@pytest.mark.parametrize("domain,context", [("fullscreen", "fragment_input"), ("frag", "mesh_input")])
+def test_camera_matrices_share_one_native_resource_across_stages(domain, context):
+    source = f'''import infernux.shader as shader
+from infernux.shader.lib.camera import world_position
+class Camera(shader.{domain}):
+    def main(self, ctx: shader.{context}) -> shader.vec4:
+        camera = shader.camera()
+        world = world_position(shader.vec2(0.25, 0.75), 0.625, camera)
+        clip = camera.previous_view_projection_matrix @ shader.vec4(world, 1.0)
+        return shader.vec4(clip.xyz / clip.w, camera.projection_params.x)
+'''
+    definition = parse_shader(source, "camera.frag.py", "camera_" + domain)
+    for target in definition.compile()["targets"]:
+        cameras = [resource for resource in target["resources"] if resource["name"] == "inx_view"]
+        assert len(cameras) == 1
+        camera = cameras[0]
+        assert (camera["set"], camera["binding"], camera["value"]["byte_size"]) == (1, 5, 352)
+        assert [field["offset"] for field in camera["value"]["fields"]] == [0, 64, 128, 192, 256, 320, 336]
+        entries = {entry["name"]: {tuple(binding) for binding in entry["bindings"]} for entry in target["entries"]}
+        assert (1, 5) in entries["fragment_main"]
+        assert ((1, 5) in entries["vertex_main"]) == (domain == "frag")
+    with pytest.raises(SyntaxError, match="takes no arguments"):
+        parse_shader(source.replace("shader.camera()", "shader.camera(1)"), "camera.frag.py", "invalid_camera")
+
+
+def test_camera_context_annotations_and_library_calls_use_the_same_module(tmp_path):
+    (tmp_path / "camera.shaderlib.py").write_text('''import infernux.shader as gpu
+def depth(context: gpu.CameraContext) -> float:
+    return context.projection_params.x
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+from .camera import depth
+class Camera(shader.fullscreen):
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(depth(shader.camera()), 0.0, 0.0, 1.0)
+'''
+    definition = parse_shader(source, str(tmp_path / "camera.frag.py"), "camera_library")
+    for target in definition.compile()["targets"]:
+        assert len([resource for resource in target["resources"] if resource["name"] == "inx_view"]) == 1
+    with pytest.raises(SyntaxError, match="Unknown shader stage input: unknown_matrix"):
+        parse_shader(source.replace("depth(shader.camera())", "shader.camera().unknown_matrix[0][0]"),
+                     str(tmp_path / "camera.frag.py"), "unknown_camera")
+
+
 def test_static_shader_library_dependencies_and_typed_helpers(tmp_path):
     (tmp_path / "curves.shaderlib.py").write_text('''import infernux.shader as shader
 

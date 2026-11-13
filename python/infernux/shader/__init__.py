@@ -7,6 +7,7 @@ operations use GPU types and Slang semantics; they do not run in Python.
 in seconds. Vertex deformation uses ``VertexContext.time`` for the geometry
 sample, including the previous sample used to calculate motion vectors.
 ``view()`` returns the current view's engine-owned camera and output settings.
+``camera()`` supplies its matrices in canonical clip coordinates (+Y up).
 """
 
 from __future__ import annotations
@@ -83,6 +84,23 @@ class ProjectionContext:
 
     view_matrix: mat4
     projection_matrix: mat4
+
+
+class CameraContext:
+    """Camera matrices shared by geometry and fullscreen passes.
+
+    Clip X/Y span [-w, w], with +Y up; depth uses the engine's [0, w]
+    convention. Normalized image UVs start at the top left. Matrices include
+    the current view's temporal projection jitter.
+    """
+
+    view_matrix: mat4
+    projection_matrix: mat4
+    view_projection_matrix: mat4
+    previous_view_projection_matrix: mat4
+    inverse_view_projection_matrix: mat4
+    projection_params: vec4
+    depth_params: vec4
 
 
 class ShadingContext:
@@ -273,7 +291,7 @@ for _name in TYPES:
     globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
-for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view"):
+for _name in ("sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", "camera"):
     globals()[_name] = _gpu_intrinsic(_name)
 
 
@@ -288,4 +306,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "ViewContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]

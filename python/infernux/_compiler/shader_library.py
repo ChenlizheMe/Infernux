@@ -11,17 +11,22 @@ from .shader_types import RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, ST
 from .diagnostics import parse_gpu_module
 
 
-_FRAME_FUNCTIONS = {"frame_time": ("inx_frame_time", "float"),
-                    "frame_delta_time": ("inx_frame_delta_time", "float"),
-                    "view": ("inx_view_context", "InxViewContext")}
+_ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float"),
+                     "frame_delta_time": ("inx_frame_delta_time", "float"),
+                     "view": ("inx_view_context", "InxViewContext"),
+                     "camera": ("inx_camera_context", "InxCameraContext")}
+_ENGINE_MODULES = {"inx_frame": ("frame_time", "frame_delta_time", "view", "ViewContext"),
+                   "inx_camera": ("camera", "CameraContext")}
 
 
-def frame_imports(body, alias):
-    names = {alias + "." + name for name in (*_FRAME_FUNCTIONS, "ViewContext")}
-    return ("import inx_frame;",) if any(
-        isinstance(node, ast.Attribute) and qualified(node) in names
+def engine_imports(body, alias):
+    names = {
+        qualified(node)
         for declaration in body for node in ast.walk(declaration)
-    ) else ()
+        if isinstance(node, ast.Attribute)
+    }
+    return tuple("import " + module + ";" for module, exports in _ENGINE_MODULES.items()
+                 if any(alias + "." + name in names for name in exports))
 
 
 @dataclass(frozen=True)
@@ -53,8 +58,8 @@ class ShaderEmitter(SlangEmitter):
 
     def infer(self, node):
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) != qualified(node.func)
-                and self.symbol(qualified(node.func)) in _FRAME_FUNCTIONS):
-            return _FRAME_FUNCTIONS[self.symbol(qualified(node.func))][1]
+                and self.symbol(qualified(node.func)) in _ENGINE_FUNCTIONS):
+            return _ENGINE_FUNCTIONS[self.symbol(qualified(node.func))][1]
         if (isinstance(node, ast.Call) and self.symbol(qualified(node.func)) == "SurfaceData"
                 and self.symbol(qualified(node.func)) != qualified(node.func)):
             return "InxSurfaceData"
@@ -78,10 +83,10 @@ class ShaderEmitter(SlangEmitter):
 
     def visit_Call(self, node):
         operation = self.symbol(qualified(node.func))
-        if operation in _FRAME_FUNCTIONS and operation != qualified(node.func):
+        if operation in _ENGINE_FUNCTIONS and operation != qualified(node.func):
             if node.args or node.keywords:
                 self.error(node, "shader." + operation + " takes no arguments", code="author.type")
-            return _FRAME_FUNCTIONS[operation][0] + "()"
+            return _ENGINE_FUNCTIONS[operation][0] + "()"
         if operation == "SurfaceData" and operation != qualified(node.func):
             values = {keyword.arg: keyword.value for keyword in node.keywords}
             if node.args or values.keys() - SURFACE_FIELDS.keys() or len(values) != len(node.keywords):
@@ -266,7 +271,7 @@ class LibraryGraph:
                 emitter.error(definition, "Duplicate ShaderLib function: " + definition.name)
             function = emitter.signature(definition, module.name + "::" + definition.name)
             module.functions[definition.name] = functions[definition.name] = function
-        code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *frame_imports(body, alias),
+        code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias),
                 *("import " + name + ";" for name in dependencies),
                 "namespace " + module.name + " {"]
         ranges = []

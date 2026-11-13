@@ -2,6 +2,7 @@
 
 #include <function/renderer/rhi/RenderCoreApi.h>
 #include <function/renderer/rhi/RhiCommand.h>
+#include <function/renderer/rhi/RhiDescriptors.h>
 #include <function/renderer/shader/ShaderParameterValue.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
 #include <function/renderer/shader/ShaderValueCopy.h>
@@ -44,6 +45,14 @@ struct FullscreenParameters
     std::vector<ShaderValueCopy> copies;
     std::vector<ShaderParameterValue> values;
     std::vector<History> histories;
+};
+
+// Borrowed ranges from the current view. Their owner stages and retires the
+// allocations; fullscreen programs never repack camera or frame constants.
+struct FullscreenViewResources
+{
+    rhi::BufferBinding globals;
+    rhi::BufferBinding camera;
 };
 
 class FullscreenRendererHost
@@ -109,6 +118,7 @@ struct FullscreenPipelineEntry
 {
     static constexpr int32_t Parameters = -1;
     static constexpr int32_t Globals = -2;
+    static constexpr int32_t Camera = -3;
 
     rhi::GraphicsPipelineHandle pipeline;
     rhi::BindingLayoutHandle inputLayout;
@@ -186,7 +196,7 @@ class FullscreenRenderer
     INFERNUX_RENDER_CORE_API void
     DrawProgram(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
                 const FullscreenResourceInput *inputs, const FullscreenParameters &parameters,
-                const ShaderParameterValue *values = nullptr, rhi::BufferHandle globals = {});
+                const ShaderParameterValue *values = nullptr, const FullscreenViewResources &view = {});
 
     INFERNUX_RENDER_CORE_API rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout,
                                                                     const FullscreenResourceInput *inputs,

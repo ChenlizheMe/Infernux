@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 
-from .shader_library import LibraryGraph, ShaderEmitter, declarations, frame_imports
+from .shader_library import LibraryGraph, ShaderEmitter, declarations, engine_imports
 from .shader_types import RESOURCE_BINDINGS, RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
@@ -96,7 +96,6 @@ FullscreenVertex vertex_main(uint id : SV_VulkanVertexID)
 """
 
 _MESH_RESOURCES = """
-[[vk::binding(5, 1)]] ConstantBuffer<InxCameraData> inx_view;
 [[vk::binding(1, 2)]] StructuredBuffer<InxModelMatrix> inx_models;
 [[vk::binding(2, 2)]] StructuredBuffer<InxSkinState> inx_skins;
 [[vk::binding(3, 2)]] StructuredBuffer<InxModelMatrix> inx_bones;
@@ -160,8 +159,7 @@ float4 inx_project_vertex(InxMeshInput vertex)
 {
     InxProjectionContext context;
     context.view_matrix = inx_view.view;
-    context.projection_matrix = inx_view.projection;
-    context.projection_matrix[1] = -context.projection_matrix[1];
+    context.projection_matrix = inx_canonical_projection(inx_view.projection);
     return inx_vertex_author::project(vertex, context);
 }
 """
@@ -372,7 +370,12 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(declaration, "Mesh image resources are declared as material properties")
     dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies)]
-    code.extend(("import inx_frame;",) if vertex else frame_imports(body, author.alias))
+    code.extend(engine_imports(body, author.alias))
+    if vertex:
+        code.append("import inx_frame;")
+    if author.domain == "mesh":
+        code.append("import inx_camera;")
+    code = list(dict.fromkeys(code))
     if author.is_surface:
         code.insert(0, "import inx_surface_model;")
     for field in inputs:
@@ -437,7 +440,7 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
         parameters = tuple(vertex.author.fields.values())
         code, ranges = vertex.emit()
         prefix = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;",
-                  *frame_imports(vertex.methods, vertex.author.alias),
+                  *engine_imports(vertex.methods, vertex.author.alias),
                   *("import " + name + ";" for name in vertex.dependencies),
                   *vertex.author.parameter_declarations(parameters)]
         schema = {"name": vertex.name, "domain": "vertex", "info": vertex.info,

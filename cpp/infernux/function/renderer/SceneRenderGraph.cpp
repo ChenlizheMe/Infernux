@@ -5324,8 +5324,14 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             const auto *values = parameterBlock.empty()
                                                      ? nullptr
                                                      : m_submittedParameterBlocks.at(parameterBlock).values->data();
+                            const auto &frame = m_perViewFrames[m_vkCore->GetCurrentFrameSlot()];
+                            const FullscreenViewResources viewResources{
+                                {0, rhi::BindingType::UniformBuffer, frame.globals.buffer, 0, sizeof(EngineGlobalsUBO)},
+                                {5, rhi::BindingType::UniformBuffer, frame.cameraMatrix, 0,
+                                 sizeof(UniformBufferObject)},
+                            };
                             fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
-                                                    values, GetViewGlobalsBinding().buffer);
+                                                    values, viewResources);
                             return;
                         }
 

@@ -1,5 +1,4 @@
 #include "FullscreenRenderer.h"
-#include "EngineGlobals.h"
 
 #include "rhi/RhiDevice.h"
 #include "shader/DeviceShaderProgram.h"
@@ -66,11 +65,15 @@ void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText
                 throw std::logic_error("Compiled fullscreen resource has no logical input: " + resource.name);
             entry.resourceInputs.push_back(static_cast<int32_t>(input - entry.inputNames.begin()));
         } else {
-            if (resource.binding.type != rhi::BindingType::UniformBuffer ||
-                (resource.name != "inx_parameters" && resource.name != "inx_globals"))
+            static const std::unordered_map<std::string, int32_t> uniformSources = {
+                {"inx_parameters", FullscreenPipelineEntry::Parameters},
+                {"inx_globals", FullscreenPipelineEntry::Globals},
+                {"inx_view", FullscreenPipelineEntry::Camera},
+            };
+            const auto source = uniformSources.find(resource.name);
+            if (resource.binding.type != rhi::BindingType::UniformBuffer || source == uniformSources.end())
                 throw std::logic_error("Fullscreen author resource has no graph binding contract: " + resource.name);
-            entry.resourceInputs.push_back(resource.name == "inx_globals" ? FullscreenPipelineEntry::Globals
-                                                                          : FullscreenPipelineEntry::Parameters);
+            entry.resourceInputs.push_back(source->second);
         }
     }
 }
@@ -583,7 +586,7 @@ FullscreenRenderer::PrepareParameters(const FullscreenProgram &program,
 
 void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,
                                      const FullscreenResourceInput *inputs, const FullscreenParameters &parameters,
-                                     const ShaderParameterValue *values, rhi::BufferHandle globals)
+                                     const ShaderParameterValue *values, const FullscreenViewResources &view)
 {
     const auto frame = m_impl->CurrentFrame();
     auto &bytes = m_impl->frameParameters[frame].scratch;
@@ -597,6 +600,11 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
     }
     const auto uniform =
         bytes.empty() ? rhi::BufferHandle{} : m_impl->UploadParameters(frame, bytes.data(), bytes.size());
+    const std::array<rhi::BufferBinding, 3> uniforms = {{
+        {0, rhi::BindingType::UniformBuffer, uniform, 0, bytes.size()},
+        view.globals,
+        view.camera,
+    }};
     const auto &layouts = entry.program->GetBindingLayouts();
     std::array<rhi::BindGroupDesc, rhi::GraphicsPipelineDesc::MaxBindingLayouts> groups;
     for (size_t index = 0; index < layouts.size(); ++index) {
@@ -609,9 +617,9 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
         auto &group = groups[resource.set];
         const auto &binding = resource.binding;
         if (binding.type == rhi::BindingType::UniformBuffer) {
-            const bool frameGlobals = entry.resourceInputs[index] == FullscreenPipelineEntry::Globals;
-            group.buffers[group.bufferCount++] = {binding.binding, binding.type, frameGlobals ? globals : uniform, 0,
-                                                  frameGlobals ? sizeof(EngineGlobalsUBO) : bytes.size()};
+            auto source = uniforms[static_cast<size_t>(-1 - entry.resourceInputs[index])];
+            source.binding = binding.binding;
+            group.buffers[group.bufferCount++] = source;
         } else {
             const auto &input = inputs[entry.resourceInputs[index]];
             const auto sampler = binding.samplerType == rhi::SamplerBindingType::NonFiltering ? m_impl->nearestSampler

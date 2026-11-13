@@ -12,8 +12,12 @@ SURFACE_FIELDS = {
 STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
                 "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight",
                 "VertexData": "InxVertexData", "VertexContext": "InxVertexContext", "ViewContext": "InxViewContext",
-                "ProjectionContext": "InxProjectionContext"}
+                "ProjectionContext": "InxProjectionContext", "CameraContext": "InxCameraContext"}
 STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
+                 "InxCameraContext": {"view_matrix": "float4x4", "projection_matrix": "float4x4",
+                                      "view_projection_matrix": "float4x4", "previous_view_projection_matrix": "float4x4",
+                                      "inverse_view_projection_matrix": "float4x4",
+                                      "projection_params": "float4", "depth_params": "float4"},
                  "InxViewContext": {"size": "float2", "pixel_size": "float2", "camera_position_ws": "float3",
                                     "near_clip": "float", "far_clip": "float", "depth_params": "float4",
                                     "dithering": "bool", "stop_nans": "bool", "opaque_output": "bool"},
