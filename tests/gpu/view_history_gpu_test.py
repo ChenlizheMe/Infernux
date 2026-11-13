@@ -5,38 +5,75 @@ import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel,SceneManager,Vector3,GraphParameterBlockUpdate
-from shared_camera_gpu_test import Monitor,Router,MONITOR
+from shared_camera_gpu_test import Monitor,Router
 
 
-SOURCE='''#version 450
-ShaderInfo { Name "Tutorial View History Source" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D historyTex }
- PushConstants pc { Float red Float blue Float oldRed Float oldBlue Float expectedValid Float _InfernuxHistoryValid }
- Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() {
- vec4 old=texture(historyTex,inUV);
- bool valid=pc._InfernuxHistoryValid<0.5
-     ? all(lessThan(abs(old),vec4(0.001)))
-     : pc.expectedValid>0.5 && abs(old.r-pc.oldRed)<0.001 && abs(old.b-pc.oldBlue)<0.001
-       && abs(old.g-1)<0.001 && abs(old.a-1)<0.001;
- // Preserve an earlier failure until history is explicitly invalidated.
- outColor=vec4(pc.red,valid ? 1 : 2,pc.blue,1);
-}
+SOURCE='''import infernux.shader as shader
+class HistorySource(shader.fullscreen):
+    shader_id = "tests/history/source"
+    hidden = True
+    history_tex = shader.input("history", shader.History2D)
+    red = shader.parameter.float()
+    blue = shader.parameter.float()
+    old_red = shader.parameter.float()
+    old_blue = shader.parameter.float()
+    expected_valid = shader.parameter.bool()
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        old = shader.sample_level(self.history_tex, uv, 0.0)
+        if self.history_tex.valid:
+            valid = self.expected_valid and shader.abs(old.r - self.old_red) < 0.001
+            valid = valid and shader.abs(old.b - self.old_blue) < 0.001
+            valid = valid and shader.abs(old.g - 1.0) < 0.001 and shader.abs(old.a - 1.0) < 0.001
+        else:
+            # Preparation may precede the first accepted view submission.
+            valid = shader.all(shader.abs(old) < shader.vec4(0.001))
+        # Preserve an earlier failure until history is explicitly invalidated.
+        return shader.vec4(self.red, 1.0 if valid else 2.0, self.blue, 1.0)
 '''
-CHECK='''#version 450
-ShaderInfo { Name "Tutorial View History Check" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D historyTex Texture2D currentTex }
- PushConstants pc { Float oldRed Float oldBlue Float expectedValid Float _InfernuxHistoryValid }
- Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() {
- vec4 old=texture(historyTex,inUV);
- bool valid=pc._InfernuxHistoryValid<0.5
-     ? all(lessThan(abs(old),vec4(0.001)))
-     : pc.expectedValid>0.5 && abs(old.r-pc.oldRed)<0.001 && abs(old.b-pc.oldBlue)<0.001;
- valid=valid && abs(texture(currentTex,inUV).g-1)<0.001;
- outColor=valid ? vec4(0,1,pc._InfernuxHistoryValid<0.5 ? 1 : 0,1) : vec4(1,0,0,1);
-}
+CHECK='''import infernux.shader as shader
+class HistoryCheck(shader.fullscreen):
+    shader_id = "tests/history/check"
+    hidden = True
+    history_tex = shader.input("history", shader.History2D)
+    current_tex = shader.input("current", shader.Color2D)
+    old_red = shader.parameter.float()
+    old_blue = shader.parameter.float()
+    expected_valid = shader.parameter.bool()
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        old = shader.sample_level(self.history_tex, uv, 0.0)
+        if self.history_tex.valid:
+            valid = self.expected_valid and shader.abs(old.r - self.old_red) < 0.001
+            valid = valid and shader.abs(old.b - self.old_blue) < 0.001
+        else:
+            valid = shader.all(shader.abs(old) < shader.vec4(0.001))
+        valid = valid and shader.abs(shader.sample_level(self.current_tex, uv, 0.0).g - 1.0) < 0.001
+        if valid:
+            return shader.vec4(0.0, 1.0, 0.0 if self.history_tex.valid else 1.0, 1.0)
+        return shader.vec4(1.0, 0.0, 0.0, 1.0)
 '''
+MONITOR='''import infernux.shader as shader
+class HistoryMonitor(shader.fullscreen):
+    shader_id = "tests/history/monitor"
+    hidden = True
+    left_tex = shader.input("left", shader.Color2D)
+    right_tex = shader.input("right", shader.Color2D)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        if uv.x < 0.5:
+            return shader.sample_level(self.left_tex, shader.vec2(uv.x * 2.0, uv.y), 0.0)
+        return shader.sample_level(self.right_tex, shader.vec2(uv.x * 2.0 - 1.0, uv.y), 0.0)
+'''
+
+
+class HistoryMonitor(Monitor):
+    def define_topology(self, g):
+        self.builds += 1
+        g.set_msaa_samples(1)
+        left = g.import_texture("left", self.targets[0])
+        right = g.import_texture("right", self.targets[1])
+        color = g.create_texture("color", camera_target=True)
+        g.add_pass("CompareViews").write_color(color).set_texture("left_tex", left).set_texture("right_tex", right).fullscreen_quad("tests/history/monitor")
+        g.screen_ui_overlay_section(resources={"color"})
+        g.set_output(color)
 def update(context,block,revision,values):
     item=GraphParameterBlockUpdate();item.id=block;item.revision=revision;item.values=list(values.items())
     context.update_parameter_blocks([item])
@@ -48,8 +85,8 @@ class History(inx.renderstack.RenderPipeline):
         raw=g.create_texture('raw',format=f.RGBA16_SFLOAT,samples=1)
         old,new=g.create_temporal_history('view_history',format=f.RGBA16_SFLOAT)
         color=g.create_texture('color',camera_target=True)
-        g.add_pass('CurrentMarker').write_color(raw).set_texture('historyTex',old).bind_parameter_block('marker',{'red':0,'blue':0,'oldRed':0,'oldBlue':0,'expectedValid':0,'_InfernuxHistoryValid':0}).fullscreen_quad('Tutorial View History Source')
-        g.add_pass('CheckPreviousView').write_color(color).set_texture('historyTex',old).set_texture('currentTex',raw).bind_parameter_block('expected',{'oldRed':0,'oldBlue':0,'expectedValid':0,'_InfernuxHistoryValid':0}).fullscreen_quad('Tutorial View History Check')
+        g.add_pass('CurrentMarker').write_color(raw).read(old).bind_parameter_block('marker',{'red':0.,'blue':0.,'old_red':0.,'old_blue':0.,'expected_valid':False}).fullscreen_quad('tests/history/source')
+        g.add_pass('CheckPreviousView').write_color(color).set_texture('history_tex',old).set_texture('current_tex',raw).bind_parameter_block('expected',{'old_red':0.,'old_blue':0.,'expected_valid':False}).fullscreen_quad('tests/history/check')
         g.add_copy_pass('CommitMarker').copy_texture(raw,new).set_side_effect()
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
     def render_camera(self,context,camera,culling):
@@ -61,8 +98,8 @@ class History(inx.renderstack.RenderPipeline):
         if key in self.reset_next:self.reset_next.remove(key);self.resets[key]=self.resets.get(key,0)+1
         old=(0,0) if reset else self.previous[key]
         marker=(.25 if count%2 else .5,0) if key==self.left_id else (0,.625 if count%2 else .875)
-        update(context,'marker',count,{'red':marker[0],'blue':marker[1],'oldRed':old[0],'oldBlue':old[1],'expectedValid':0 if reset else 1,'_InfernuxHistoryValid':0})
-        update(context,'expected',count,{'oldRed':old[0],'oldBlue':old[1],'expectedValid':0 if reset else 1,'_InfernuxHistoryValid':0})
+        update(context,'marker',count,{'red':marker[0],'blue':marker[1],'old_red':old[0],'old_blue':old[1],'expected_valid':not reset})
+        update(context,'expected',count,{'old_red':old[0],'old_blue':old[1],'expected_valid':not reset})
         context.submit_culling(culling)
         self.previous[key]=marker
         self.views[key]={'native_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'output_samples':int(context.output_samples)}
@@ -71,16 +108,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix='infernux-view-history-') as folder:
         project=Path(folder)
         for name in ('Assets','Packages','ProjectSettings'):(project/name).mkdir()
-        for filename,shader in [('Source.frag',SOURCE),('Check.frag',CHECK),('Monitor.frag',MONITOR)]: (project/'Assets'/filename).write_text(shader,encoding='ascii')
+        for filename,shader in [('source.frag.py',SOURCE),('check.frag.py',CHECK),('monitor.frag.py',MONITOR)]: (project/'Assets'/filename).write_text(shader,encoding='utf-8')
         frontend=inx.Engine();native=frontend.get_native_engine();console=ConsolePanel();router=Router()
         router.shared=History();router.shared.builds=0;router.shared.counts={};router.shared.previous={};router.shared.reset_next=set();router.shared.resets={};router.shared.views={}
-        router.monitor=Monitor();router.monitor.builds=0;failures=[];complete=False
+        router.monitor=HistoryMonitor();router.monitor.builds=0;failures=[];complete=False
         proof={'scope':'Distinct per-camera previous-frame markers in one shared topology; first history read and target resize validity checked inside a GPU shader. Exact current-frame monitor consumption under reversed scheduling and target replacement.','phases':[]}
         try:
             frontend.init_renderer(160,120,str(project));frontend.resize_game_render_target(160,120)
             native.set_scene_view_visible(False);native.set_editor_fps_cap(240);native.set_editor_idle_fps(0)
             db=frontend.get_asset_database()
-            for path in (project/'Assets').glob('*.frag'):
+            for path in (project/'Assets').glob('*.frag.py'):
                 imported=AssetManager.import_asset(str(path),database=db);assert imported,imported.error
             scene=SceneManager.instance().get_active_scene()
             for obj in scene.get_root_objects():scene.destroy_game_object(obj)

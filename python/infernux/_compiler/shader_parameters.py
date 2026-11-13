@@ -81,6 +81,8 @@ class ParameterAuthor(ShaderEmitter):
             self.error(statement, "Expected shader.parameter declaration")
         declaration = self.qualified(call.func)
         name = targets[0].id
+        if name.startswith("_inx_"):
+            self.error(statement, "The _inx_ prefix is reserved for engine state", code="author.parameter")
         self.field_nodes[name] = statement
         self.field_sources[name] = (self, statement)
         if declaration == self.alias + ".input":
@@ -146,6 +148,8 @@ class ParameterAuthor(ShaderEmitter):
     def visit_Attribute(self, node):
         if isinstance(node.value, ast.Name) and node.value.id == "self":
             field = self.fields.get(node.attr)
+            if isinstance(field, ShaderInput) and field.kind == "History2D":
+                return f"inx_history(inx_{node.attr}, inx_parameters._inx_history_valid_{node.attr} != 0u)"
             if isinstance(field, ShaderInput) or (isinstance(field, ShaderParameter) and field.kind == "texture_2d"):
                 return "inx_" + node.attr
             if field is None:
@@ -161,11 +165,13 @@ class ParameterAuthor(ShaderEmitter):
             code.extend([owner.source_directive(node),
                          f"[[vk::binding({1 + 2 * index}, 0)]] InxColor2D inx_{field.name};"])
         uniforms = tuple(field for field in parameters if field.kind != "texture_2d")
-        if uniforms:
+        histories = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "History2D")
+        if uniforms or histories:
             code.append("struct ShaderParameters {")
             for field in uniforms:
                 owner, node = self.field_sources[field.name]
                 code.extend([owner.source_directive(node), "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
+            code.extend("    uint _inx_history_valid_" + field.name + ";" for field in histories)
             binding = "[[vk::binding(0, 0)]] " if self.domain == "mesh" else ""
             code.extend(["};", binding + "ConstantBuffer<ShaderParameters> inx_parameters;"])
         return code

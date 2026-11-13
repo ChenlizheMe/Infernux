@@ -34,9 +34,16 @@ struct FullscreenProgram
 /// Each frame only copies bytes; it does not look up fields or convert types.
 struct FullscreenParameters
 {
+    struct History
+    {
+        uint32_t input;
+        uint32_t offset;
+    };
+
     std::vector<char> defaults;
     std::vector<ShaderValueCopy> copies;
     std::vector<ShaderParameterValue> values;
+    std::vector<History> histories;
 };
 
 class FullscreenRendererHost
@@ -117,6 +124,7 @@ struct FullscreenResourceInput
     rhi::TextureViewHandle view;
     rhi::PixelFormat format = rhi::PixelFormat::Undefined;
     bool depthRead = false;
+    bool historyValid = false;
     rhi::BufferHandle buffer;
     uint64_t byteOffset = 0;
     uint64_t byteSize = 0;

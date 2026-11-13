@@ -399,6 +399,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     {
         m_fullscreenRenderer.InvalidateShader(shaderName);
         if (m_authorShaderGuids.count(shaderName)) {
+            m_rejectedFullscreenSourceRevision.reset();
             InvalidateTemporalHistory();
             m_needsRebuild = true;
             return;
@@ -409,6 +410,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         for (const auto &pass : m_pythonGraphDesc.passes) {
             for (const auto &command : pass.commands) {
                 if (command.type == GraphCommandType::FullscreenQuad && command.shaderName == shaderName) {
+                    m_rejectedFullscreenSourceRevision.reset();
                     InvalidateTemporalHistory();
                     m_needsRebuild = true;
                     return;
@@ -705,6 +707,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         // mismatch guard firing on an outdated descriptor.
         m_hasPythonGraph = false;
         m_pythonGraphValid = false;
+        m_rejectedFullscreenSourceRevision.reset();
         m_hasShadowCasterPass = false;
         m_parameterBlocks.clear();
         m_submittedParameterBlocks.clear();
@@ -906,6 +909,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     bool m_hasPythonGraph = false;
     bool m_pythonGraphValid = false;
     uint64_t m_pythonGraphSourceRevision = 0;
+    std::optional<uint64_t> m_rejectedFullscreenSourceRevision;
     rhi::GraphicsRenderingSignature m_pythonCallbackTarget;
     bool m_cameraInvertCulling = false;
     bool m_pythonCallbackInvertCulling = false;

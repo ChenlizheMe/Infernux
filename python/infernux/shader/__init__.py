@@ -144,8 +144,14 @@ class Color2D:
     """A typed sampled RGBA image and the sampler supplied by its graph port."""
 
 
+class History2D:
+    """A previous-view color image with validity owned by its temporal graph resource."""
+
+    valid: bool
+
+
 class Depth2D:
-    """A depth attachment read as a scalar through its graph port."""
+    """Unfiltered scalar depth from a depth plane or a resolved R32 image."""
 
 
 class UInt2D:
@@ -255,4 +261,4 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "input", "sample", "sample_level", "sample_grad", "load", "dimensions", "frame_time", "frame_delta_time", *TYPES, *INTRINSICS]

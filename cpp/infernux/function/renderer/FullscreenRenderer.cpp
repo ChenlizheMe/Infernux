@@ -542,6 +542,14 @@ FullscreenRenderer::PrepareParameters(const FullscreenProgram &program,
         return *field;
     };
     const auto &declarations = schema.at("parameters");
+    const auto &inputs = schema.at("inputs");
+    for (uint32_t index = 0; index < inputs.size(); ++index) {
+        const auto &input = inputs[index];
+        if (input.at("kind") == "History2D")
+            result.histories.push_back(
+                {index, static_cast<uint32_t>(
+                            fieldByName("_inx_history_valid_" + input.at("name").get<std::string>()).offset)});
+    }
     for (const auto &parameter : declarations) {
         const auto &field = fieldByName(parameter.at("name").get<std::string>());
         const ShaderValueCopy copy(field);
@@ -583,6 +591,10 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
     if (values)
         for (size_t index = 0; index < parameters.copies.size(); ++index)
             parameters.copies[index].Write(bytes.data(), values[index].Data());
+    for (const auto &history : parameters.histories) {
+        const uint32_t valid = inputs[history.input].historyValid ? 1u : 0u;
+        std::memcpy(bytes.data() + history.offset, &valid, sizeof(valid));
+    }
     const auto uniform =
         bytes.empty() ? rhi::BufferHandle{} : m_impl->UploadParameters(frame, bytes.data(), bytes.size());
     const auto &layouts = entry.program->GetBindingLayouts();
@@ -602,8 +614,10 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
                                                   frameGlobals ? sizeof(EngineGlobalsUBO) : bytes.size()};
         } else {
             const auto &input = inputs[entry.resourceInputs[index]];
-            group.textures[group.textureCount++] = {binding.binding, binding.type, input.view,
-                                                    input.sampler.IsValid() ? input.sampler : m_impl->linearSampler,
+            const auto sampler = binding.samplerType == rhi::SamplerBindingType::NonFiltering ? m_impl->nearestSampler
+                                 : input.sampler.IsValid()                                    ? input.sampler
+                                                                                              : m_impl->linearSampler;
+            group.textures[group.textureCount++] = {binding.binding, binding.type, input.view, sampler,
                                                     input.depthRead};
         }
     }

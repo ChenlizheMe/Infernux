@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from .shader_library import LibraryGraph, ShaderEmitter, declarations, frame_imports
-from .shader_types import RESOURCE_MODULE, RESOURCE_TYPES
+from .shader_types import RESOURCE_BINDINGS, RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 from .shader_parameters import ParameterAuthor, ShaderInput, ShaderParameter
@@ -37,6 +37,7 @@ class ShaderDefinition:
         return _Infernux._compile_shader_program(
             self.generated_source, self.source_path, self.module_name, self.libraries, targets,
             source_ranges=self.source_ranges,
+            input_kinds=tuple((field.name, field.kind) for field in self.inputs),
         )
 
 
@@ -350,7 +351,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.insert(0, "import inx_surface_model;")
     for field in inputs:
         code.extend([author.source_directive(author.field_nodes[field.name]),
-                     RESOURCE_TYPES[field.kind] + " inx_" + field.name + ";"])
+                     RESOURCE_BINDINGS[field.kind] + " inx_" + field.name + ";"])
     code.extend(author.parameter_declarations(parameters))
     vertex_ranges = ()
     if vertex:

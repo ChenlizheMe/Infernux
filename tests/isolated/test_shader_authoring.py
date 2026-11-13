@@ -132,6 +132,38 @@ def test_static_fullscreen_schema_and_both_targets():
         assert block["fields"][-1]["type"]["scalarType"] == "uint32"
 
 
+def test_each_temporal_input_has_engine_owned_validity_and_typed_library_calls(tmp_path):
+    (tmp_path / "history.shaderlib.py").write_text('''import infernux.shader as shader
+def sample(image: shader.History2D, uv: shader.vec2) -> shader.vec4:
+    if image.valid:
+        return shader.sample_level(image, uv, 0.0)
+    return shader.vec4(0.0)
+''', encoding="utf-8")
+    source = '''import infernux.shader as shader
+from .history import sample
+class Temporal(shader.fullscreen):
+    first = shader.input("previous_color", shader.History2D)
+    second = shader.input("previous_moments", shader.History2D)
+    gain = shader.parameter.float(default=0.5)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return sample(self.first, uv) * self.gain + sample(self.second, uv)
+'''
+    definition = parse_shader(source, str(tmp_path / "temporal.frag.py"), "temporal")
+    assert [field.name for field in definition.parameters] == ["gain"]
+    assert [field.kind for field in definition.inputs] == ["History2D", "History2D"]
+    for target in definition.compile()["targets"]:
+        resources = target["resources"]
+        parameters = next(resource for resource in resources if resource["name"] == "inx_parameters")
+        assert parameters["value"]["byte_size"] == 16
+        assert [(field["name"], field["offset"]) for field in parameters["value"]["fields"]] == [
+            ("gain", 0), ("_inx_history_valid_first", 4), ("_inx_history_valid_second", 8)]
+        assert [resource["name"] for resource in resources if ".texture" in resource["name"]] == [
+            "inx_first.texture", "inx_second.texture"]
+    with pytest.raises(SyntaxError, match="reserved for engine state"):
+        parse_shader(source.replace("gain =", "_inx_history_valid_first ="),
+                     str(tmp_path / "invalid.frag.py"), "invalid")
+
+
 def test_active_resource_tree_owns_builtin_models_and_libraries(tmp_path, monkeypatch):
     from pathlib import Path
     from infernux.resources import get_package_resources_path
@@ -316,7 +348,9 @@ class ReadBuffers(shader.fullscreen):
 '''
     for target in parse_shader(source, "场景缓冲.frag.py", "read_buffers").compile()["targets"]:
         images = {resource["name"]: resource for resource in target["resources"]}
-        assert images["inx_depth.texture"]["depth"]
+        assert not images["inx_depth.texture"]["depth"]
+        assert images["inx_depth.texture"]["sample_type"] == 1  # Raw D32 and R32 both bind as unfilterable float.
+        assert images["inx_depth.sampler"]["sampler_type"] == 1  # Nearest sampling on every backend.
         assert images["inx_identity.texture"]["sample_type"] == 3  # Uint, never a filtered float image.
         assert "inx_identity.sampler" not in images
     with pytest.raises(SyntaxError, match="pixel coordinates"):

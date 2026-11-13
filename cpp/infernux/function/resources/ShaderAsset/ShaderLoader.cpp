@@ -7,6 +7,7 @@
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
+#include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMetadata.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
@@ -150,9 +151,14 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
             if (!dependency.empty())
                 asset->sourceDependencies.push_back(std::move(dependency));
         }
-        asset->program = std::make_shared<ShaderCompilation>(
+        auto program = std::make_shared<ShaderCompilation>(
             compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl},
                              false, prepared.sourceRanges));
+        std::vector<std::pair<std::string, std::string>> inputs;
+        for (const auto &input : schema.at("inputs"))
+            inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
+        ApplyShaderAuthorInputs(*program, inputs);
+        asset->program = std::move(program);
         if (schema.at("domain") == "mesh") {
             asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(
                 CreateShaderAuthorMaterial(guid, asset->program, prepared.schema, "Standard"));

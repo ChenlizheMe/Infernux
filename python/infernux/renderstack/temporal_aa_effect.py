@@ -47,7 +47,7 @@ class TemporalAAEffect(FullScreenEffect):
     )
 
     def get_shader_list(self) -> List[str]:
-        return ["Fullscreen Triangle", "Temporal Anti-Aliasing"]
+        return ["infernux/post/temporal_aa"]
 
     def setup_passes(self, graph: "RenderGraph", bus: "ResourceBus") -> None:
         from infernux.rendergraph.graph import Format
@@ -84,24 +84,16 @@ class TemporalAAEffect(FullScreenEffect):
             render_pass.set_textures(
                 {
                     "source_tex": color_in,
-                    "_HistoryTex": history_read,
-                    "_MotionTex": motion,
-                    "_DepthTex": depth,
+                    "history_tex": history_read,
+                    "motion_tex": motion,
+                    "depth_tex": depth,
                 }
             )
             render_pass.write_color(color_out)
-            render_pass.set_param("feedback", min(max(float(self.feedback), 0.0), 0.98))
-            render_pass.set_param(
-                "motionRejection",
-                min(max(float(self.motion_rejection), 0.0), 1.0),
-            )
-            render_pass.set_param(
-                "depthRejection",
-                min(max(float(self.depth_rejection), 0.0), 512.0),
-            )
-            # Native per-view state overwrites this reserved value at record time.
-            render_pass.set_param("_InfernuxHistoryValid", 0.0)
-            render_pass.fullscreen_quad("Temporal Anti-Aliasing")
+            render_pass.set_param("feedback", self.feedback)
+            render_pass.set_param("motion_rejection", self.motion_rejection)
+            render_pass.set_param("depth_rejection", self.depth_rejection)
+            render_pass.fullscreen_quad("infernux/post/temporal_aa")
 
         with graph.add_copy_pass("TAA_CommitHistory") as commit:
             commit.copy_texture(color_out, history_write)

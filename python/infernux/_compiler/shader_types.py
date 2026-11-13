@@ -1,7 +1,8 @@
 """Resource value types consumed by the static Shader frontends."""
 
-RESOURCE_TYPES = {"Color2D": "InxColor2D", "Depth2D": "InxDepth2D", "UInt2D": "InxUInt2D"}
-RESOURCE_ELEMENTS = {"InxColor2D": "float4", "InxDepth2D": "float", "InxUInt2D": "uint4"}
+RESOURCE_TYPES = {"Color2D": "InxColor2D", "Depth2D": "InxDepth2D", "UInt2D": "InxUInt2D", "History2D": "InxHistory2D"}
+RESOURCE_BINDINGS = RESOURCE_TYPES | {"History2D": "InxColor2D"}
+RESOURCE_ELEMENTS = {"InxColor2D": "float4", "InxDepth2D": "float", "InxUInt2D": "uint4", "InxHistory2D": "float4"}
 SURFACE_FIELDS = {
     "albedo": ("float3", "float3(1.0)"), "normal_ws": ("float3", "float3(0.0)"),
     "metallic": ("float", "0.0"), "smoothness": ("float", "0.5"), "occlusion": ("float", "1.0"),
@@ -12,6 +13,7 @@ STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "mesh_input": "InxMeshInpu
                 "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight",
                 "VertexData": "InxVertexData", "VertexContext": "InxVertexContext"}
 STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
+                 "InxHistory2D": {"valid": "bool"},
                  "InxMeshInput": {"position": "float4", "position_ws": "float3", "normal_ws": "float3",
                                   "tangent_ws": "float4", "color": "float3", "uv0": "float2", "uv1": "float2",
                                   "view_depth": "float", "line_color": "float4", "object_id": "uint2",
@@ -33,9 +35,23 @@ public struct InxColor2D
     public Texture2D<float4> texture;
     public SamplerState sampler;
 };
+public struct InxHistory2D
+{
+    public Texture2D<float4> texture;
+    public SamplerState sampler;
+    public bool valid;
+};
+public InxHistory2D inx_history(InxColor2D source, bool valid)
+{
+    InxHistory2D result;
+    result.texture = source.texture;
+    result.sampler = source.sampler;
+    result.valid = valid;
+    return result;
+}
 public struct InxDepth2D
 {
-    public DepthTexture2D texture;
+    public Texture2D<float> texture;
     public SamplerState sampler;
 };
 public struct InxUInt2D

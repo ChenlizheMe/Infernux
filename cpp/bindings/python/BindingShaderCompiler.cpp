@@ -3,6 +3,7 @@
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
+#include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangParticleModule.h>
 
@@ -216,8 +217,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         "_compile_shader_program",
         [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,
            const std::vector<std::tuple<std::string, std::string, std::string>> &libraries,
-           const std::vector<std::string> &targetNames, bool precise,
-           const std::vector<SourceRangeTuple> &sourceRanges) {
+           const std::vector<std::string> &targetNames, bool precise, const std::vector<SourceRangeTuple> &sourceRanges,
+           const std::vector<std::pair<std::string, std::string>> &inputKinds) {
             std::vector<ShaderSourceModule> modules;
             for (const auto &[name, path, text] : libraries)
                 modules.push_back({name, path, text});
@@ -238,6 +239,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                 py::gil_scoped_release release;
                 compiled = SlangCompiler::Get().Compile({moduleName, sourcePath, source}, modules, targets, precise,
                                                         SourceRanges(sourceRanges));
+                ApplyShaderAuthorInputs(compiled, inputKinds);
             }
             py::dict result;
             result["diagnostics"] = ShaderDiagnosticsToPython(compiled.diagnostics);
@@ -315,7 +317,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         py::arg("source"), py::arg("source_path"), py::arg("module_name"),
         py::arg("libraries") = std::vector<std::tuple<std::string, std::string, std::string>>{},
         py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false,
-        py::arg("source_ranges") = std::vector<SourceRangeTuple>{});
+        py::arg("source_ranges") = std::vector<SourceRangeTuple>{},
+        py::arg("input_kinds") = std::vector<std::pair<std::string, std::string>>{});
 }
 
 } // namespace infernux

@@ -1549,8 +1549,63 @@ MaterialPassPipelineDescriptor SceneRenderGraph::GetEditorOverlayMaterialPass() 
     return descriptor;
 }
 
+namespace
+{
+const GraphTextureDesc &FullscreenTexture(const RenderGraphDescription &graph, const std::string &name)
+{
+    const auto texture = std::find_if(graph.textures.begin(), graph.textures.end(),
+                                      [&](const auto &value) { return value.name == name; });
+    if (texture == graph.textures.end())
+        throw std::invalid_argument("Fullscreen texture is not declared: " + name);
+    return *texture;
+}
+
+std::vector<std::string> ImplicitFullscreenInputs(const GraphPassDesc &pass, const RenderGraphDescription &graph)
+{
+    std::vector<std::string> inputs;
+    for (bool viewColor : {false, true})
+        for (const auto &name : pass.readTextures) {
+            const auto &texture = FullscreenTexture(graph, name);
+            if (!texture.IsDepth() && texture.IsViewColor() == viewColor)
+                inputs.push_back(name);
+        }
+    return inputs;
+}
+
+void ValidateFullscreenHistories(const FullscreenProgram &program, const FullscreenParameters &parameters,
+                                 const GraphCommandDesc &command, const GraphPassDesc &pass,
+                                 const RenderGraphDescription &graph)
+{
+    if (parameters.histories.empty())
+        return;
+    const auto schema = nlohmann::json::parse(program.schema);
+    const auto implicit =
+        command.inputBindings.empty() ? ImplicitFullscreenInputs(pass, graph) : std::vector<std::string>{};
+    for (const auto &history : parameters.histories) {
+        const auto name = schema.at("inputs").at(history.input).at("name").get<std::string>();
+        std::string source;
+        if (command.inputBindings.empty()) {
+            if (history.input >= implicit.size())
+                throw std::invalid_argument("History2D input is not bound: " + command.shaderName + "." + name);
+            source = implicit[history.input];
+        } else {
+            const auto binding = std::find_if(command.inputBindings.begin(), command.inputBindings.end(),
+                                              [&](const auto &value) { return value.first == name; });
+            if (binding == command.inputBindings.end())
+                throw std::invalid_argument("History2D input is not bound: " + command.shaderName + "." + name);
+            source = binding->second;
+        }
+        if (FullscreenTexture(graph, source).role != GraphTextureRole::TemporalRead)
+            throw std::invalid_argument("History2D input requires a temporal history read resource: " +
+                                        command.shaderName + "." + name + " <- " + source);
+    }
+}
+} // namespace
+
 bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
+    if (desc.sourceRevision != 0 && m_rejectedFullscreenSourceRevision == desc.sourceRevision)
+        return false;
     if (!m_vkCore || !m_sceneTarget) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: Not initialized");
         return false;
@@ -1586,7 +1641,9 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 if (command.type != GraphCommandType::FullscreenQuad)
                     continue;
                 if (const auto program = m_vkCore->AcquireFullscreenProgram(command.shaderName)) {
+                    m_authorShaderGuids.insert(program->assetGuid);
                     const auto prepared = FullscreenRenderer::PrepareParameters(*program, command.parameters);
+                    ValidateFullscreenHistories(*program, prepared, command, pass, normalizedDesc);
                     for (size_t index = 0; index < command.parameters.size(); ++index)
                         command.parameters[index].second = prepared.values[index];
                 } else {
@@ -1599,8 +1656,11 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         }
     } catch (const std::invalid_argument &error) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: ", error.what());
+        m_rejectedFullscreenSourceRevision = desc.sourceRevision;
         return rejectGraph(desc);
     }
+    m_needsRebuild = m_needsRebuild || m_rejectedFullscreenSourceRevision.has_value();
+    m_rejectedFullscreenSourceRevision.reset();
     for (auto &buffer : normalizedDesc.buffers)
         if (buffer.input)
             buffer.computeBuffer = buffer.input->GetValue();
@@ -2251,7 +2311,7 @@ std::vector<rhi::SubmissionDependency> SceneRenderGraph::GetBufferReadDependenci
 
 void SceneRenderGraph::EnsureGraphBuilt()
 {
-    if (m_hasPythonGraph && !m_pythonGraphValid) {
+    if (m_hasPythonGraph && (!m_pythonGraphValid || m_rejectedFullscreenSourceRevision.has_value())) {
         m_graphBuilt = false;
         return;
     }
@@ -4797,9 +4857,20 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const auto authorProgram = m_fullscreenRenderer.AcquireProgram(command->shaderName);
                 if (authorProgram)
                     m_authorShaderGuids.insert(authorProgram->assetGuid);
-                const auto authorParameters =
-                    authorProgram ? FullscreenRenderer::PrepareParameters(*authorProgram, command->parameters)
-                                  : FullscreenParameters{};
+                FullscreenParameters authorParameters;
+                if (authorProgram) {
+                    try {
+                        authorParameters = FullscreenRenderer::PrepareParameters(*authorProgram, command->parameters);
+                        ValidateFullscreenHistories(*authorProgram, authorParameters, *command, passDesc,
+                                                    m_pythonGraphDesc);
+                    } catch (const std::invalid_argument &error) {
+                        INXLOG_ERROR("SceneRenderGraph: fullscreen program rejected: ", error.what());
+                        m_rejectedFullscreenSourceRevision = m_pythonGraphSourceRevision;
+                        m_needsRebuild = false;
+                        m_needsCompile = false;
+                        return;
+                    }
+                }
                 struct FullscreenInput
                 {
                     std::string name;
@@ -4807,6 +4878,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     bool storage = false;
                     bool readOnly = true;
                     bool multisampled = false;
+                    bool history = false;
                     uint32_t arraySize = 1;
                     ReflectedImageDimension dimension = ReflectedImageDimension::D2;
                     VkFormat scalarArrayFormat = VK_FORMAT_UNDEFINED;
@@ -4827,6 +4899,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             throw std::logic_error("Fullscreen author input has no target resource: " + name);
                         FullscreenInput item;
                         item.name = name;
+                        item.history = input.at("kind") == "History2D";
                         item.binding = static_cast<uint32_t>(declaredInputs.size());
                         item.multisampled = resource->binding.multisampled;
                         declaredInputs.push_back(std::move(item));
@@ -4899,16 +4972,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     }
                     inputNames[*binding] = sourceName;
                 }
-                if (inputNames.empty()) {
-                    // Preserve the implicit binding order: ordinary color, then camera color.
-                    for (bool backbuffer : {false, true}) {
-                        for (const auto &name : passDesc.readTextures) {
-                            const auto *texture = texDescMap.at(name);
-                            if (!texture->IsDepth() && texture->IsViewColor() == backbuffer)
-                                inputNames.push_back(name);
-                        }
-                    }
-                }
+                if (inputNames.empty())
+                    inputNames = ImplicitFullscreenInputs(passDesc, m_pythonGraphDesc);
                 struct FullscreenReadResource
                 {
                     vk::ResourceHandle handle;
@@ -4917,12 +4982,13 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     bool depthRead = false;
                     bool storageBuffer = false;
                     bool frameLocal = false;
+                    // Map nodes remain owned by this graph across frame rotation and camera cuts.
+                    const bool *historyValidity = nullptr;
                     uint64_t byteOffset = 0;
                     uint64_t byteSize = 0;
                     rhi::SamplerHandle sampler;
                 };
                 std::vector<FullscreenReadResource> fsReadInputs;
-                std::string temporalHistoryKey;
                 for (uint32_t binding = 0; binding < inputNames.size(); ++binding) {
                     const auto &name = inputNames[binding];
                     if (const auto buffer = bufferHandles.find(name); buffer != bufferHandles.end()) {
@@ -4976,8 +5042,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         continue;
                     }
                     const auto &texture = *texDescMap.at(name);
-                    if (texture.role == GraphTextureRole::TemporalRead)
-                        temporalHistoryKey = texture.temporalKey;
+                    const bool historyInput = authorProgram && declaredInputs[binding].history;
                     const uint32_t samples = texture.EffectiveSamples(static_cast<uint32_t>(msaaSamples));
                     auto source = texture.IsViewColor() ? m_importedColorTarget : customRTHandles.at(name);
                     auto format = texture.EffectiveFormat(m_renderView);
@@ -5005,6 +5070,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     }
                     if (rawSamples || samples == 1) {
                         FullscreenReadResource input{};
+                        if (historyInput)
+                            input.historyValidity = &m_temporalHistories.at(texture.temporalKey).valid;
                         input.handle = source;
                         input.format = format;
                         input.depthRead = texture.IsDepth();
@@ -5086,14 +5153,11 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const bool fsAlphaBlend = command->alphaBlend;
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
-                int32_t historyValidParameterIndex = -1;
                 int32_t cameraDitheringParameterIndex = -1;
                 int32_t cameraStopNaNsParameterIndex = -1;
                 if (!authorProgram) {
                     for (const auto &[name, value] : command->parameters) {
                         const auto parameterIndex = static_cast<int32_t>(packedPushConstantSize / sizeof(float));
-                        if (name == "_InfernuxHistoryValid")
-                            historyValidParameterIndex = parameterIndex;
                         if (shaderName == "Display Encode" && name == "dithering")
                             cameraDitheringParameterIndex = parameterIndex;
                         if (shaderName == "Display Encode" && name == "stopNaNs")
@@ -5258,6 +5322,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             inputs[i].sampler = input.sampler;
                             inputs[i].format = input.format;
                             inputs[i].depthRead = input.depthRead;
+                            inputs[i].historyValid = input.historyValidity && *input.historyValidity;
                             if (!inputs[i].view.IsValid()) {
                                 INXLOG_ERROR("FullscreenQuad '", shaderName,
                                              "': input texture view is unavailable at binding ", i);
@@ -5294,12 +5359,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             const auto &block = m_submittedParameterBlocks.at(parameterBlock);
                             drawPushConstants = *block.scalarPushConstants;
                             drawPushConstantSize = static_cast<uint32_t>(block.values->size() * sizeof(float));
-                        }
-                        if (historyValidParameterIndex >= 0 &&
-                            static_cast<uint32_t>(historyValidParameterIndex) < drawPushConstantSize / sizeof(float)) {
-                            const auto history = m_temporalHistories.find(temporalHistoryKey);
-                            drawPushConstants.values[historyValidParameterIndex] =
-                                history != m_temporalHistories.end() && history->second.valid ? 1.0f : 0.0f;
                         }
                         if (cameraDitheringParameterIndex >= 0 && static_cast<uint32_t>(cameraDitheringParameterIndex) <
                                                                       drawPushConstantSize / sizeof(float)) {
