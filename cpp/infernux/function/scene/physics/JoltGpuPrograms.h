@@ -58,6 +58,20 @@ struct JoltGpuContactWorkset
 
 class JoltGpuModelUpdate;
 
+/// Numerical endpoints for one accepted or prepared body-capacity domain.
+struct JoltGpuBodyStatePorts
+{
+    uint32_t count = 0;
+    std::shared_ptr<rhi::ComputeBuffer> states, forces, targets;
+};
+
+/// Candidate endpoints; author uploads and their installation remain one model transaction.
+struct JoltGpuBodyGrowthBuffers
+{
+    std::shared_ptr<rhi::ComputeBuffer> models, worlds;
+    JoltGpuBodyStatePorts bodies;
+};
+
 /// One validated step description, reusing the shared device record. Contact
 /// settings and iteration counts are prepared once; only gravity/dt change in
 /// place during normal stepping. Zero velocity/position iterations are legal.
@@ -113,6 +127,11 @@ class JoltGpuStorage
     [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
     PrepareModelReplacement(JoltGpuModel replacement, std::vector<rhi::ComputeBufferUpdate> additionalUpdates = {},
                             std::vector<rhi::ComputeDispatchDesc> mutations = {});
+    /// Install a prepared larger body domain. Numerical prefix copy and tail
+    /// initialization must already be complete; this packet uploads author
+    /// tables and commits every endpoint/count together at acceptance.
+    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate> PrepareBodyGrowth(uint32_t capacity,
+                                                                        JoltGpuBodyGrowthBuffers buffers);
     /// Replace only joint topology and world joint ranges. The caller prepares
     /// the new stream's author upload and GPU runtime initialization/remap;
     /// this transaction never reads numerical joint state back to the host.

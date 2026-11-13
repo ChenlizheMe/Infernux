@@ -21,6 +21,7 @@ enum Port : uint8_t
     States,
     Forces,
     Targets,
+    Work,
     PortCount
 };
 struct PortLayout
@@ -33,7 +34,8 @@ constexpr PortLayout Ports[] = {{"mutation_params", sizeof(BodyMutationParams)},
                                 {"center_of_mass_updates", sizeof(CenterOfMassUpdate)},
                                 {"body_states", sizeof(BodyState)},
                                 {"body_forces", sizeof(BodyForces)},
-                                {"kinematic_targets", sizeof(KinematicTarget)}};
+                                {"kinematic_targets", sizeof(KinematicTarget)},
+                                {"stage_work", sizeof(StageWork)}};
 
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
@@ -96,7 +98,7 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
             if (port == std::end(Ports) || resource.set != 0)
                 throw std::invalid_argument("Jolt GPU mutation target has an unknown resource");
             const auto index = static_cast<uint8_t>(port - std::begin(Ports));
-            const bool uniform = index == Parameters;
+            const bool uniform = index == Parameters || index == Work;
             if (resource.binding.type !=
                     (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
                 resource.value.kind != ShaderValueKind::Struct ||
@@ -105,6 +107,13 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
                 throw std::invalid_argument("Jolt GPU mutation target differs from its shared records");
             if (index == Targets)
                 ValidateTargetLayout(resource.value);
+            if (index == Work) {
+                const auto &fields = resource.value.fields;
+                if (fields.size() != 1 || fields[0].name != "range" || fields[0].offset != 0 ||
+                    fields[0].byteSize != sizeof(UInt4) || fields[0].kind != ShaderValueKind::Vector ||
+                    fields[0].scalar != ShaderScalarKind::UInt32 || fields[0].rows != 1 || fields[0].columns != 4)
+                    throw std::invalid_argument("Jolt GPU capacity work differs from StageWork");
+            }
             bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
             entry.ports.push_back(index);
             actual |= 1u << index;
@@ -130,6 +139,50 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
                                                   (1u << Forces) | (1u << Targets));
     m_centerOfMass =
         build("update_centers_of_mass", (1u << Parameters) | (1u << CentersOfMass) | (1u << States) | (1u << Targets));
+    m_capacity = build("initialize_capacity", (1u << Work) | (1u << States) | (1u << Forces) | (1u << Targets));
+}
+
+rhi::ComputeDispatchDesc
+JoltGpuBodyMutations::PrepareCapacityInitialization(const JoltGpuBodyStatePorts &ports, uint32_t first, uint32_t count,
+                                                    const std::shared_ptr<rhi::ComputeBuffer> &workUniform) const
+{
+    if (!count || count > 2048u || first > ports.count || count > ports.count - first)
+        throw std::invalid_argument("Jolt GPU capacity initialization requires one bounded tail within its candidates");
+    if (!workUniform || !m_host.SharesServicesWith(workUniform->GetHost()) ||
+        workUniform->GetByteSize() != sizeof(StageWork))
+        throw std::invalid_argument("Jolt GPU capacity initialization requires its same-owner StageWork uniform");
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
+    buffers[States] = ports.states;
+    buffers[Forces] = ports.forces;
+    buffers[Targets] = ports.targets;
+    buffers[Work] = workUniform;
+    for (const auto port : {States, Forces, Targets}) {
+        const auto &buffer = buffers[port];
+        if (!buffer || buffer->IsFrozen() || !m_host.SharesServicesWith(buffer->GetHost()) ||
+            buffer->GetByteSize() != uint64_t(ports.count) * Ports[port].stride)
+            throw std::invalid_argument("Jolt GPU capacity initialization requires writable candidate endpoints");
+    }
+    rhi::ComputeDispatchDesc dispatch;
+    dispatch.kernel = m_capacity.kernel;
+    dispatch.groupCountX = count / 64u + static_cast<uint32_t>(count % 64u != 0);
+    if (dispatch.groupCountX > m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
+        throw std::invalid_argument("Jolt GPU capacity initialization exceeds the device dispatch range");
+    rhi::ComputeDispatchProof proof;
+    for (const auto port : m_capacity.ports) {
+        const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
+        const auto &buffer = buffers[port];
+        dispatch.buffers.push_back(buffer);
+        if (port == Work) {
+            dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Read);
+            proof.reads.push_back({binding, 0, sizeof(StageWork)});
+        } else {
+            dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
+            const auto stride = Ports[port].stride;
+            proof.writes.push_back({binding, uint64_t(first) * stride, uint64_t(count) * stride});
+        }
+    }
+    dispatch.proof = std::move(proof);
+    return dispatch;
 }
 
 std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(

@@ -27,6 +27,12 @@ class JoltGpuBodyMutations
     PrepareReplacement(JoltGpuStorage &storage, JoltGpuModel replacement,
                        const std::vector<JPH::GPU::BodyInitialization> &initializations = {},
                        const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {});
+    /// Initialize one contiguous new-capacity tail without reading old state.
+    /// The caller uploads StageWork{{first, count, 0, 0}} to workUniform in the
+    /// same ordered packet. Each call covers at most 2048 complete body slots.
+    [[nodiscard]] rhi::ComputeDispatchDesc
+    PrepareCapacityInitialization(const JoltGpuBodyStatePorts &ports, uint32_t first, uint32_t count,
+                                  const std::shared_ptr<rhi::ComputeBuffer> &workUniform) const;
 
   private:
     struct Entry
@@ -44,7 +50,7 @@ class JoltGpuBodyMutations
                                                const std::vector<JPH::GPU::BodyInitialization> &initializations,
                                                const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass);
     rhi::ComputeHost m_host;
-    Entry m_initialize, m_centerOfMass;
+    Entry m_initialize, m_centerOfMass, m_capacity;
 };
 
 } // namespace infernux

@@ -404,8 +404,8 @@ bool PhysicsWorld::EnsureGpuReady()
         m_gpuRenderState = std::move(rendering);
     }
     if (!m_gpuScene) {
-        m_recreateActors.reserve(MaxBodiesPerWorld);
-        m_gpuScene = std::make_unique<JoltGpuScene>(*m_gpuHost, *m_gpuWork, MaxBodiesPerWorld, m_gpuPrograms->step,
+        m_recreateActors.reserve(InitialBodyCapacity);
+        m_gpuScene = std::make_unique<JoltGpuScene>(*m_gpuHost, *m_gpuWork, InitialBodyCapacity, m_gpuPrograms->step,
                                                     m_gpuPrograms->mutations, m_gpuPrograms->commands,
                                                     m_gpuPrograms->broadphase, *m_gpuJoints);
         m_gpuScene->SetAdmissionEnabled(false);
@@ -1015,8 +1015,15 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
     auto prepared = PrepareJoltGpuActor(actor, 0, 0);
     if (!prepared)
         return UINT32_MAX;
-    if (m_gpuScene->GetBodyCount() >= m_gpuScene->GetCapacity())
-        throw std::length_error("GPU physics world exceeds its current 32-body capacity");
+    if (m_gpuScene->GetBodyCount() >= m_gpuScene->GetCapacity()) {
+        const uint64_t capacity = std::max(uint64_t{InitialBodyCapacity}, uint64_t{2} * m_gpuScene->GetCapacity());
+        if (capacity > UINT32_MAX)
+            throw std::length_error("GPU physics world exceeds body indexing");
+        // CancelPendingStep is noexcept and must not allocate while rebuilding
+        // the complete planned set, including a growth not yet accepted.
+        m_recreateActors.reserve(static_cast<size_t>(capacity));
+        m_gpuScene->ReserveCapacity(static_cast<uint32_t>(capacity));
+    }
     if (!m_gpuScene->CanReserve()) {
         m_waitingForSlot = true;
         store.QueueBodyCreation(handle);

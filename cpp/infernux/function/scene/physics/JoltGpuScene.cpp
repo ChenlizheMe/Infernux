@@ -1,5 +1,6 @@
 #include "JoltGpuScene.h"
 
+#include "JoltGpuBodyGrowth.h"
 #include "JoltGpuBodyMutations.h"
 #include "JoltGpuBroadphase.h"
 #include "JoltGpuJoints.h"
@@ -38,8 +39,6 @@ BodyState EmptyState()
 
 JoltGpuModel EmptyModel(uint32_t capacity)
 {
-    if (capacity > MaxBodiesPerWorld)
-        throw std::invalid_argument("Jolt GPU scene capacity exceeds the fork's single-world bound");
     JoltGpuModel model;
     model.bodies.reserve(capacity);
     for (uint32_t slot = 0; slot < capacity; ++slot)
@@ -380,6 +379,27 @@ class JoltGpuScene::Impl
             owner->OnPhysicsConstraintDestroyed();
     }
 
+    void ReserveCapacity(uint32_t capacity)
+    {
+        const auto previous = static_cast<uint32_t>(slots.size());
+        if (capacity <= previous)
+            return;
+        if (!storage.GetHost().device.GetCapabilities().IsStorageBufferRangeValid(0, uint64_t(capacity) *
+                                                                                         sizeof(BodyModel)))
+            throw std::length_error("Jolt GPU body capacity exceeds the device storage range");
+        auto growth = std::make_shared<JoltGpuBodyGrowth>(storage, mutations, previous, capacity);
+        JoltGpuControlGroup preparation, acceptance;
+        preparation.prepareWork = [growth] { return growth->Prepare(); };
+        acceptance.prepareModel = [growth] { return growth->Commit(); };
+        pending.reserve(pending.size() + 2);
+        freeSlots.reserve(capacity);
+        slots.resize(capacity);
+        for (uint32_t index = capacity; index > previous; --index)
+            freeSlots.push_back(index - 1);
+        pending.push_back(std::move(preparation));
+        pending.push_back(std::move(acceptance));
+    }
+
     BodyAllocation Reserve(PhysicsActorHandle actor, OwnerIdentity owner)
     {
         RequireUsable();
@@ -711,7 +731,7 @@ class JoltGpuScene::Impl
         group.modelAccepted = [this, index]() noexcept {
             slots[index] = Slot{};
             // Every reservation pops once and every retirement pushes once;
-            // construction reserves the complete fixed capacity up front.
+            // Capacity planning reserves the complete slot range up front.
             freeSlots.push_back(index);
         };
         pendingCompletions.reserve(pendingCompletions.size() + 2);
@@ -728,20 +748,23 @@ class JoltGpuScene::Impl
             throw std::logic_error("Jolt GPU scene cannot admit a second logical tick");
         if (candidate)
             throw std::logic_error("Publish the previous completed Jolt GPU tick before admitting its successor");
+        const auto prefixCapacity = slots.size();
         auto publication = std::make_shared<Publication>();
         publication->simulationEpoch = epoch;
         publication->fixedStepIndex = step;
-        publication->actors.resize(slots.size());
-        publication->residentBodies.resize(slots.size());
+        publication->actors.resize(prefixCapacity);
+        publication->residentBodies.resize(prefixCapacity);
         auto prefix = std::make_shared<std::vector<PrefixTarget>>();
-        prefix->reserve(slots.size());
+        prefix->reserve(prefixCapacity);
         for (const auto &slot : slots)
             prefix->push_back({slot.bodyId, slot.queuedTarget});
         auto completions = std::make_shared<std::vector<TargetCompletion>>(pendingCompletions);
-        completions->reserve(completions->size() + slots.size() * 2);
+        completions->reserve(completions->size() + prefixCapacity * 2);
         JoltGpuControlGroup capture;
-        capture.prepareModel = [this, publication, prefix, completions,
+        capture.prepareModel = [this, publication, prefix, completions, prefixCapacity,
                                 controlOnly]() -> std::unique_ptr<JoltGpuModelUpdate> {
+            if (storage.GetBodyCount() != prefixCapacity)
+                throw std::logic_error("Jolt GPU publication must match its accepted body-capacity prefix");
             if (storage.GetBodyCount()) {
                 publication->bodyModels = storage.Get(Resource::BodyModels)->Freeze();
                 if (storage.GetShapeCount())
@@ -754,7 +777,7 @@ class JoltGpuScene::Impl
             if (controlOnly && storage.GetJointCount())
                 publication->jointStream = storage.Get(Resource::Joints)->Freeze();
             publication->leaves.resize(storage.GetShapeCount());
-            for (size_t index = 0; index < slots.size(); ++index) {
+            for (size_t index = 0; index < prefixCapacity; ++index) {
                 publication->actors[index] = slots[index].accepted;
                 publication->residentBodies[index] = (storage.GetModel().bodies[index].meta.z & MotionNotResident) == 0;
                 const auto &acceptedBody = storage.GetModel().bodies[index];
@@ -962,6 +985,12 @@ JoltGpuScene::BodyAllocation JoltGpuScene::Reserve(PhysicsActorHandle actor, Own
 void JoltGpuScene::StageActor(uint32_t id, PreparedGpuActor actor)
 {
     m_impl->StageActor(id, std::move(actor));
+}
+
+void JoltGpuScene::ReserveCapacity(uint32_t capacity)
+{
+    m_impl->RequireUsable();
+    m_impl->ReserveCapacity(capacity);
 }
 
 void JoltGpuScene::SetResident(uint32_t id, bool resident, bool preserveVelocity)

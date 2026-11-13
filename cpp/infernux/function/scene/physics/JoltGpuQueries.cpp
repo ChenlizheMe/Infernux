@@ -471,7 +471,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
                     throw std::invalid_argument("Jolt GPU query requires matching frozen publication records");
             }
             const auto count = buffers[Models]->GetByteSize() / sizeof(BodyModel);
-            if (count > MaxBodiesPerWorld || publication->actors.size() != count ||
+            if (count > std::numeric_limits<uint32_t>::max() || publication->actors.size() != count ||
                 buffers[States]->GetByteSize() / sizeof(BodyState) != count)
                 throw std::invalid_argument("Jolt GPU query body capacity differs from its publication");
             bodyCount = static_cast<uint32_t>(count);

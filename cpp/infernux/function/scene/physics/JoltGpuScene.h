@@ -126,9 +126,8 @@ class JoltGpuScene final
     using Consumer = std::function<JoltGpuControlWork(const std::shared_ptr<const Publication> &)>;
 
     /// Targets come from the common compiler. This owner creates no compiler,
-    /// device or queue. One fixed world range contains all capacity slots;
-    /// exceeding the current fork bound is an explicit error, never paging
-    /// colliding bodies into separate physical domains.
+    /// device or queue. Body slots grow within the same physical domain;
+    /// colliding bodies are never paged into separate worlds.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
                  const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
                  const ShaderTargetCode &broadphaseTarget, JoltGpuJoints &joints);
@@ -137,6 +136,8 @@ class JoltGpuScene final
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;
 
     [[nodiscard]] BodyAllocation Reserve(PhysicsActorHandle actor, OwnerIdentity owner);
+    /// Plan append-only slots; device growth precedes their first author use.
+    void ReserveCapacity(uint32_t capacity);
     /// Captures every contributing member as lifetime-safe per-leaf identity.
     /// Only a new ownership initializes state; subsequent changes rebase COM
     /// from the previously accepted metadata using actual device rotation.

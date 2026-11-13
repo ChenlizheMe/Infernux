@@ -210,9 +210,8 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
     for (size_t world = 0; world < model.worlds.size(); ++world) {
         const auto range = model.worlds[world].bodies;
         const auto leaves = model.worlds[world].leaves;
-        if (range.x != bodyEnd || leaves.x != leafEnd || range.z || range.w || range.y > MaxBodiesPerWorld ||
-            bodyEnd + range.y > counts.bodies || leafEnd + leaves.y > counts.shapes || leaves.z != jointEnd ||
-            jointEnd + leaves.w > model.joints.size())
+        if (range.x != bodyEnd || leaves.x != leafEnd || range.z || range.w || bodyEnd + range.y > counts.bodies ||
+            leafEnd + leaves.y > counts.shapes || leaves.z != jointEnd || jointEnd + leaves.w > model.joints.size())
             throw std::invalid_argument("Jolt GPU model requires contiguous author ranges and zero contact fields");
         uint64_t bodyLeafEnd = leafEnd;
         for (uint32_t body = range.x; body < bodyEnd + range.y; ++body) {
@@ -659,6 +658,52 @@ JoltGpuStorage::PrepareModelReplacement(JoltGpuModel replacement,
     return transaction;
 }
 
+std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareBodyGrowth(uint32_t capacity,
+                                                                      JoltGpuBodyGrowthBuffers candidate)
+{
+    if (m_modelUpdatePending)
+        throw std::logic_error("Jolt GPU storage already has an unaccepted model transaction");
+    if (!m_bodyCount || capacity <= m_bodyCount || !m_worldCount || candidate.bodies.count != capacity)
+        throw std::invalid_argument("Jolt GPU growth requires a larger body capacity in its accepted world domain");
+
+    auto replacement = m_model;
+    BodyModel unused{};
+    unused.meta = {m_shapeCount, 0, MotionStatic | MotionNotResident, m_worldCount - 1};
+    unused.inertiaRotation.w = 1;
+    replacement.bodies.resize(capacity, unused);
+    replacement.worlds.back().bodies.y += capacity - m_bodyCount;
+    const auto counts = ValidateModel(replacement);
+    auto buffers = m_buffers;
+    for (const auto &[resource, buffer] :
+         {std::pair{Resource::BodyModels, candidate.models}, std::pair{Resource::Worlds, candidate.worlds},
+          std::pair{Resource::BodyStates, candidate.bodies.states},
+          std::pair{Resource::BodyForces, candidate.bodies.forces},
+          std::pair{Resource::KinematicTargets, candidate.bodies.targets}}) {
+        const auto port = PortIndex(resource);
+        const auto count = resource == Resource::Worlds ? m_worldCount : capacity;
+        const auto &previous = m_buffers[port];
+        if (!buffer || buffer->IsFrozen() || !m_host.SharesServicesWith(buffer->GetHost()) ||
+            buffer->GetByteSize() != uint64_t(count) * Ports[port].stride ||
+            buffer->GetDesc().scalarType != previous->GetDesc().scalarType ||
+            buffer->GetDesc().lanes != previous->GetDesc().lanes)
+            throw std::invalid_argument("Jolt GPU growth endpoints differ from their body domain layout");
+        if (resource != Resource::BodyModels && resource != Resource::Worlds &&
+            !buffer->HasInitializedRange(0, buffer->GetByteSize()))
+            throw std::logic_error("Jolt GPU growth requires its completed numerical prefix and tail");
+        buffers[port] = buffer;
+    }
+    auto batch =
+        rhi::PrepareComputeBatch(m_host,
+                                 {{candidate.models, 0, Bytes(replacement.bodies.data(), replacement.bodies.size())},
+                                  {candidate.worlds, 0, Bytes(replacement.worlds.data(), replacement.worlds.size())}},
+                                 {});
+    auto transaction = std::unique_ptr<JoltGpuModelUpdate>(
+        new JoltGpuModelUpdate(*this, std::move(batch), std::move(replacement), std::move(buffers),
+                               {counts.shapes, counts.maxBodiesPerWorld, counts.maxLeavesPerWorld}));
+    m_modelUpdatePending = true;
+    return transaction;
+}
+
 std::unique_ptr<JoltGpuModelUpdate>
 JoltGpuStorage::PrepareJointReplacement(std::vector<JointAuthor> joints, std::shared_ptr<rhi::ComputeBuffer> newStream,
                                         std::vector<rhi::ComputeBufferUpdate> uploads,
@@ -779,6 +824,8 @@ void JoltGpuModelUpdate::Commit() noexcept
         m_storage->m_model.worlds.swap(m_replacement->worlds);
         m_storage->m_model.joints.swap(m_replacement->joints);
         m_storage->m_buffers.swap(m_replacementBuffers);
+        m_storage->m_bodyCount = static_cast<uint32_t>(m_storage->m_model.bodies.size());
+        m_storage->m_worldCount = static_cast<uint32_t>(m_storage->m_model.worlds.size());
         m_storage->m_shapeCount = m_replacementCounts[0];
         m_storage->m_maxBodiesPerWorld = m_replacementCounts[1];
         m_storage->m_maxLeavesPerWorld = m_replacementCounts[2];
