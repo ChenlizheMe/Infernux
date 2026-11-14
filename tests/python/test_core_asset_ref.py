@@ -36,7 +36,6 @@ def test_reference_cache_follows_guid_changes_and_explicit_invalidation(monkeypa
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: False))
     monkeypatch.setattr(AssetManager, "_cache", {})
     monkeypatch.setattr(AssetManager, "_texture_cache", {})
-    monkeypatch.setattr(AssetManager, "_play_data_asset_cache", None)
     monkeypatch.setattr(AssetManager, "_get_path_from_guid", classmethod(lambda cls, guid: str(path)))
     refs = [kind(guid="6" * 32) for kind in (AnimStateMachineRef, AnimStateMachineRef, TimelineFSMRef)]
     shared = refs[0].resolve()
