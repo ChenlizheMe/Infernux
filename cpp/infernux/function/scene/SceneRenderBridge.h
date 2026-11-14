@@ -2,7 +2,9 @@
 
 #include "SceneRenderExtractor.h"
 #include "SceneRenderer.h"
+#include "function/renderer/GameScreenOutput.h"
 #include <functional>
+#include <optional>
 
 namespace infernux
 {
@@ -17,6 +19,7 @@ struct RenderWorldPublication
 {
     std::shared_ptr<const RenderWorldFrame> world;
     RenderViewPlans plans;
+    std::optional<GameScreenSourceConfig> screenConfig;
 };
 
 /// Scene-side adapter that publishes extracted frames to the renderer
@@ -45,8 +48,11 @@ class SceneRenderBridge final
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedGameFrame() const;
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> CapturePreview(Camera &camera);
     using CaptureViews = std::function<bool(const std::shared_ptr<const RenderWorldFrame> &, RenderViewPlans &)>;
-    [[nodiscard]] bool PublishRuntimeFrame(RuntimeWorld &world, const CaptureViews &capture);
+    [[nodiscard]] bool PublishRuntimeFrame(RuntimeWorld &world, const CaptureViews &capture,
+                                           const std::optional<GameScreenSourceConfig> &screenConfig = std::nullopt);
     void RetireRuntimeWorld(uint64_t worldId);
+    /// Latest complete producer value, before this Host's prepared view index.
+    [[nodiscard]] std::shared_ptr<const RenderWorldPublication> AcquireLatestRuntimePublication(uint64_t worldId) const;
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedRuntimeFrame() const noexcept
     {
         return m_preparedRuntime;
@@ -58,6 +64,11 @@ class SceneRenderBridge final
     }
     [[nodiscard]] std::shared_ptr<const RenderWorldPublication>
     AcquirePreparedRuntimePublication(uint64_t worldId) const noexcept;
+    [[nodiscard]] const std::vector<std::shared_ptr<const RenderWorldPublication>> &
+    AcquirePreparedRuntimePublications() const noexcept
+    {
+        return m_preparedRuntimePublications;
+    }
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedFrameForCamera(uint64_t cameraId) const;
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedFrameForCamera(uint64_t worldId,
                                                                                         uint64_t cameraId) const;

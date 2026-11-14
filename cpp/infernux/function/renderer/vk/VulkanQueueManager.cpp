@@ -97,6 +97,12 @@ void VulkanQueueManager::Destroy() noexcept
                     vkDestroyFence(m_device, fence, nullptr);
             }
         }
+        for (auto &receipt : m_workCompletions) {
+            receipt->complete = false;
+            receipt->failed = true; // Destruction is not an observed successful completion.
+        }
+        m_workCompletions.clear();
+        m_workObservation = uint64_t(-1);
         m_graphicsFrameFences.clear();
         m_deviceId = rhi::InvalidDeviceId;
         m_device = VK_NULL_HANDLE;
@@ -478,6 +484,65 @@ void VulkanQueueManager::CompleteCompletionEpochLocked(rhi::SubmissionSerial epo
             break;
         m_completedCompletionEpoch = *next;
         m_completedOutOfOrderEpochs.erase(next);
+    }
+}
+
+void VulkanQueueManager::ReserveWorkCompletions(size_t additional)
+{
+    std::lock_guard lock(m_mutex);
+    m_workCompletions.reserve(m_workCompletions.size() + additional);
+}
+
+void VulkanQueueManager::WatchWorkCompletion(rhi::SubmissionTicket ticket,
+                                             std::shared_ptr<rhi::WorkCompletionReceipt> receipt)
+{
+    std::lock_guard lock(m_mutex);
+    if (!receipt || !ticket.IsValid() || ticket.device != m_deviceId || ticket.queue >= rhi::QueueRole::Count)
+        throw std::invalid_argument("Work receipt requires its actual device/queue ticket");
+    const auto &queue = m_queues[LaneIndex(ticket.queue)];
+    const auto accepted = std::lower_bound(queue.accepted.begin(), queue.accepted.end(), ticket.serial,
+                                           [](const auto &range, auto serial) { return range.last < serial; });
+    if (accepted == queue.accepted.end() || ticket.serial < accepted->first)
+        throw std::invalid_argument("Unaccepted reservation cannot publish a work receipt");
+    if (m_workCompletions.size() == m_workCompletions.capacity())
+        throw std::logic_error("Work receipt metadata was not reserved before submission");
+    receipt->submission = ticket;
+    m_workCompletions.push_back(std::move(receipt));
+}
+
+void VulkanQueueManager::FailWorkCompletions() noexcept
+{
+    std::lock_guard lock(m_mutex);
+    for (auto &receipt : m_workCompletions) {
+        receipt->complete = false;
+        receipt->failed = true;
+    }
+    m_workCompletions.clear();
+}
+
+void VulkanQueueManager::ObserveWorkCompletions(uint64_t opportunity)
+{
+    std::lock_guard lock(m_mutex);
+    if (m_workObservation == opportunity)
+        return;
+    m_workObservation = opportunity;
+    std::array<bool, static_cast<size_t>(rhi::QueueRole::Count)> queried{}, failed{};
+    std::array<uint64_t, static_cast<size_t>(rhi::QueueRole::Count)> values{};
+    for (auto it = m_workCompletions.begin(); it != m_workCompletions.end();) {
+        auto &receipt = **it;
+        const auto lane = LaneIndex(receipt.submission.queue);
+        const auto &queue = m_queues[lane];
+        if (!queried[lane]) {
+            queried[lane] = true;
+            failed[lane] = queue.timeline == VK_NULL_HANDLE ||
+                           vkGetSemaphoreCounterValue(m_device, queue.timeline, &values[lane]) != VK_SUCCESS;
+        }
+        receipt.failed = failed[lane];
+        receipt.complete = !receipt.failed && values[lane] >= receipt.submission.serial;
+        if (receipt.complete || receipt.failed)
+            it = m_workCompletions.erase(it);
+        else
+            ++it;
     }
 }
 

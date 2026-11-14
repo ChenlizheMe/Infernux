@@ -45,6 +45,15 @@ struct SubmissionTicket
     }
 };
 
+/// Owner-thread observation of one actually accepted graphics work batch.
+/// No native timeline, device, resource or callback is owned by this value.
+struct WorkCompletionReceipt
+{
+    SubmissionTicket submission;
+    bool complete = false;
+    bool failed = false;
+};
+
 struct SubmissionDependency
 {
     SubmissionTicket producer;

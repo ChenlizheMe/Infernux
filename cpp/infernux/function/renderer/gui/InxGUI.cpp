@@ -538,6 +538,13 @@ bool InxGUI::AppendTextureUpload(PendingTextureUpload &pending, FrameWorkOwner &
 
 void InxGUI::PublishCompletedTextureUploads()
 {
+    // An external immutable image may be republished after its World output
+    // retired. Its weak sample producer must not become a permanent GUI row.
+    for (const auto &[name, resource] : m_textures_umap)
+        if (resource.requiresPixelLease && resource.pixelLease.expired() &&
+            std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name) ==
+                m_pendingTextureRemovals.end())
+            RemoveImGuiTexture(name);
     if (m_pendingTextureUploads.empty())
         return;
     auto &resourceManager = m_vkCore_ptr->GetResourceManager();
@@ -1536,8 +1543,20 @@ std::shared_ptr<const ScreenUITexturePublication> InxGUI::AcquireScreenUITexture
 {
     const auto descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
     const auto name = m_textureNamesByDescriptor.find(descriptor);
-    if (name != m_textureNamesByDescriptor.end())
-        return m_textures_umap.at(name->second).publication;
+    if (name != m_textureNamesByDescriptor.end()) {
+        const auto &resource = m_textures_umap.at(name->second);
+        if (!resource.requiresPixelLease)
+            return resource.publication;
+        if (const auto retained = resource.pixelPublication.lock())
+            return retained;
+        const auto pixels = resource.pixelLease.lock();
+        if (!pixels)
+            throw std::runtime_error("Immutable UI image source retired before its pixels were captured");
+        auto publication = std::make_shared<ScreenUITexturePublication>(*resource.publication);
+        publication->pixelLease = pixels;
+        resource.pixelPublication = publication;
+        return publication;
+    }
     if (auto allocation = ImGui_ImplVulkan_AcquireAtlasAllocation(descriptor)) {
         auto publication = std::make_shared<ScreenUITexturePublication>();
         publication->textureId = textureId;
@@ -1546,6 +1565,22 @@ std::shared_ptr<const ScreenUITexturePublication> InxGUI::AcquireScreenUITexture
     }
     // Foreign raw TexIDs retain their existing caller-owned lifetime contract.
     return {};
+}
+
+void InxGUI::SetImGuiTexturePixelLease(uint64_t textureId, std::weak_ptr<const void> pixelLease)
+{
+    const auto descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
+    const auto name = m_textureNamesByDescriptor.find(descriptor);
+    if (name == m_textureNamesByDescriptor.end())
+        throw std::invalid_argument("Pixel lease requires an engine-owned GUI texture publication");
+    auto &resource = m_textures_umap.at(name->second);
+    const auto next = pixelLease.lock();
+    if (!next)
+        throw std::invalid_argument("Pixel lease producer expired before publication");
+    if (!resource.requiresPixelLease || resource.pixelLease.lock() != next)
+        resource.pixelPublication.reset();
+    resource.pixelLease = std::move(pixelLease);
+    resource.requiresPixelLease = true;
 }
 
 bool InxGUI::TouchImGuiTextureId(uint64_t textureId)

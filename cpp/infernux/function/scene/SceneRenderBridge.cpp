@@ -49,7 +49,8 @@ void SceneRenderBridge::OnWindowResize(uint32_t width, uint32_t height)
         editorCamera->SetScreenDimensions(width, height);
 }
 
-bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureViews &capture)
+bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureViews &capture,
+                                            const std::optional<GameScreenSourceConfig> &screenConfig)
 {
     WorldExecutionScope scope(&world);
     auto &state = m_runtimePublications[world.id];
@@ -61,6 +62,7 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
             (void)state->extractor.ExtractRuntimeFrame(state->staging, world);
             state->pending = std::make_shared<RenderWorldPublication>();
             state->pending->world = state->staging.Acquire();
+            state->pending->screenConfig = screenConfig;
         }
         if (!capture(state->pending->world, state->pending->plans))
             return false;
@@ -74,6 +76,14 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
         return false;
     }
     return true;
+}
+
+std::shared_ptr<const RenderWorldPublication> SceneRenderBridge::AcquireLatestRuntimePublication(uint64_t worldId) const
+{
+    const auto found = m_runtimePublications.find(worldId);
+    return found == m_runtimePublications.end()
+               ? nullptr
+               : std::atomic_load_explicit(&found->second->completed, std::memory_order_acquire);
 }
 
 void SceneRenderBridge::RetireRuntimeWorld(uint64_t worldId)

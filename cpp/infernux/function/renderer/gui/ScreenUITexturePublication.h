@@ -17,5 +17,6 @@ struct ScreenUITexturePublication final
     std::shared_ptr<ImGuiTextureAllocationLease> allocation;
     std::shared_ptr<rhi::RenderTexture> renderTexture;
     std::shared_ptr<const rhi::RenderTextureGeneration> renderTextureGeneration;
+    std::shared_ptr<const void> pixelLease;
 };
 } // namespace infernux

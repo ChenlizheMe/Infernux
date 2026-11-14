@@ -1537,6 +1537,21 @@ class Engine(WorkRuntime):
         if self._engine:
             self._engine.resize_game_render_target(width, height, point_filter)
 
+    def _request_game_screen(self, consumer, world, width, height, *, nearest=False, required=False):
+        self._engine._request_game_screen(consumer, world, width, height, nearest, required)
+
+    def _release_game_screen(self, consumer):
+        self._engine._release_game_screen(consumer)
+
+    def _acquire_game_screen(self, world):
+        return self._engine._acquire_game_screen(world)
+
+    def _game_screen_image(self, sample):
+        return self._engine._game_screen_image(sample)
+
+    def _game_screen_status(self, world):
+        return self._engine._game_screen_status(world)
+
     def request_render_target_readback(self, game_view: bool = True):
         """Return a readback ticket. Host opportunities materialize its CPU result after GPU completion."""
         return self._engine.request_render_target_readback(game_view)

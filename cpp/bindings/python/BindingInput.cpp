@@ -96,6 +96,8 @@ void RegisterInputBindings(py::module_ &m)
         .def("_set_game_viewport_origin", &InputManager::SetGameplayViewportOrigin)
         .def("_set_game_viewport_size", &InputManager::SetGameplayViewportSize)
         .def("_set_game_view_output", &InputManager::SetGameplayViewOutput)
+        .def("_set_world_game_view", &InputManager::SetWorldGameplayRouting, py::arg("selected_world"),
+             py::arg("broadcast"), py::arg("outputs"), py::arg("image_rects"))
         .def_property_readonly("_sampled_game_render_size", &InputManager::GetGameplayRenderSize)
         .def_property_readonly("_sampled_touch_viewport", &InputManager::GetGameplayTouchViewport)
 

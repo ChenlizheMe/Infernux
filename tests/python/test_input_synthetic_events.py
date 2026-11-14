@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -13,6 +15,10 @@ from infernux.lib import (
     get_gui_semantic_snapshot,
     request_gui_semantic_snapshot,
     set_gui_semantic_capture_enabled,
+)
+from tests.python.test_player_resident_scene_api import (
+    _configure_player_contract,
+    player_runtime,
 )
 
 
@@ -136,8 +142,14 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
 
 
 @pytest.mark.parametrize("button,occluded", [(index, False) for index in range(5)] + [(0, True)])
-def test_game_capture_is_resolved_before_component_update(engine, scene, button, occluded, editor_project):
-    from infernux.components import InxComponent
+def test_game_capture_is_resolved_before_component_update(
+    engine, scene, button, occluded, editor_project, request,
+):
+    from infernux.components.component_identity import bind_asset_script_guid
+    from infernux.components.script_loader import load_all_components_from_file
+    from infernux.core.assets import AssetManager
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.project_context import using_project_root
     from infernux.engine.ui.game_view_panel import GameViewPanel
     from infernux.lib import SceneManager
 
@@ -174,16 +186,42 @@ def test_game_capture_is_resolved_before_component_update(engine, scene, button,
                     ctx.button("Covered")
                 ctx.end_window()
 
-    class ClickConsumer(InxComponent):
-        def start(self):
-            Input.set_cursor_locked(True)
+    # A runtime clone executes its own imported class, rather than retaining a
+    # closure over this test's authoring component and observation list.
+    script = Path(editor_project) / "Assets" / "Scripts" / f"SyntheticClickConsumer_{button}_{int(occluded)}.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(dedent("""\
+        from infernux.components import FieldType, InxComponent, serialized_field
+        from infernux.input import Input
+        from infernux.lib import InputManager
 
-        def update(self, _delta_time):
-            if manager.get_mouse_button_down(button):
-                down_samples.append((Input.get_mouse_button_down(button), Input.is_cursor_locked()))
+        class ClickConsumer(InxComponent):
+            button: int = 0
+            game_down_samples: list[bool] = serialized_field(
+                default=[], field_type=FieldType.LIST, element_type=FieldType.BOOL)
+            cursor_locked_samples: list[bool] = serialized_field(
+                default=[], field_type=FieldType.LIST, element_type=FieldType.BOOL)
+
+            def start(self):
+                Input.set_cursor_locked(True)
+
+            def update(self, _delta_time):
+                if InputManager.instance().get_mouse_button_down(self.button):
+                    self.game_down_samples.append(Input.get_mouse_button_down(self.button))
+                    self.cursor_locked_samples.append(Input.is_cursor_locked())
+        """), encoding="utf-8")
+    database = engine.get_asset_database()
+    imported = AssetManager.import_asset(str(script), database=database)
+    assert imported, imported.error
+    assert imported.guid
+    classes = tuple(load_all_components_from_file(str(script)))
+    assert len(classes) == 1
+    ClickConsumer = classes[0]
+    bind_asset_script_guid(ClickConsumer, imported.guid)
 
     view = GameCaptureView()
-    scene.create_game_object("Click consumer").add_component(ClickConsumer)
+    authored = scene.create_game_object("Click consumer").add_component(ClickConsumer)
+    authored.button = button
     engine.register_gui_renderable("test.game_capture", view)
     set_gui_semantic_capture_enabled(True)
 
@@ -199,15 +237,32 @@ def test_game_capture_is_resolved_before_component_update(engine, scene, button,
             engine.exit()
 
     scenes = SceneManager.instance()
+    player = None
     try:
-        scenes.play()
-        manager.set_editor_cursor_capture_allowed(False)
-        engine.set_pre_scene_update_callback(on_update)
-        engine.run()
+        # Reuse the existing Python companion of this native host. Its normal
+        # Player activation prepares and clones the complete authored graph,
+        # publishes the actual World, then dispatches Start and Play.
+        player = request.getfixturevalue("player_runtime")
+        with using_project_root(editor_project):
+            catalog = PlayerRuntimeAssetCatalog.from_documents(
+                editor_project, {"artifacts": []}, {"entries": []})
+            _configure_player_contract(player.session, catalog)
+            assert player.session.activate()
+            runtime_scene = scenes.get_active_scene()
+            assert runtime_scene is not scene
+            consumer, = runtime_scene.find("Click consumer").get_py_components()
+            assert consumer is not authored
+            assert type(consumer) is not ClickConsumer
+            assert type(consumer)._asset_script_guid_ == imported.guid
+            manager.set_editor_cursor_capture_allowed(False)
+            engine.set_pre_scene_update_callback(on_update)
+            engine.run()
+            down_samples = list(zip(consumer.game_down_samples, consumer.cursor_locked_samples, strict=True))
     finally:
         engine.set_pre_scene_update_callback(None)
         engine.unregister_gui_renderable("test.game_capture")
-        scenes.stop()
+        if player is not None:
+            player.session.shutdown()
         Input.set_cursor_locked(False)
         manager.set_editor_cursor_capture_allowed(True)
         Input.set_game_focused(True)
@@ -949,6 +1004,10 @@ def test_synthetic_ctrl_a_replaces_focused_imgui_text(engine):
 
 def test_synthetic_ctrl_click_edits_semantic_vector_axis(engine):
     """Vector-axis semantics must expose the real ImGui numeric text path."""
+    from infernux.resources import engine_font_cjk_path, engine_font_path, engine_mono_font_path
+
+    # Numeric widgets require the real mono face independently of test order.
+    engine.set_gui_fonts(engine_font_path, engine_font_cjk_path, engine_mono_font_path, 18)
 
     class _VectorProbe(InxGUIRenderable):
         def __init__(self) -> None:
@@ -957,11 +1016,10 @@ def test_synthetic_ctrl_click_edits_semantic_vector_axis(engine):
 
         def on_render(self, ctx) -> None:
             ctx.set_next_window_pos(0.0, 0.0, 0, 0.0, 0.0)
-            # The shared native test engine has a 64x64 SDL viewport. Keep
-            # every generated axis inside it so this exercises real hit
-            # testing instead of an ImGui item clipped beyond the window.
+            # A title bar consumes most of this 64x64 viewport at the normal
+            # font size. Keep the actual numeric row inside its content clip.
             ctx.set_next_window_size(64.0, 64.0, 0)
-            if ctx.begin_window("Synthetic Vector Probe###synthetic_vector_probe", True, 0):
+            if ctx.begin_window("Synthetic Vector Probe###synthetic_vector_probe", True, 1 << 0):
                 self.value = ctx.vector3(
                     "P",
                     *self.value,
@@ -985,9 +1043,11 @@ def test_synthetic_ctrl_click_edits_semantic_vector_axis(engine):
         state["frame"] += 1
         axis = _find_axis()
         if not state["activated"] and axis:
-            rect = axis["rect"]
-            x = float(rect[0]) + float(rect[2]) * 0.5
-            y = float(rect[1]) + float(rect[3]) * 0.5
+            assert axis["visible"] and axis["enabled"], axis
+            assert axis["has_click_point"], axis
+            # The native registry supplies a point inside the visible item,
+            # accounting for both window clipping and actual font geometry.
+            x, y = (float(value) for value in axis["click_point"])
             engine.queue_synthetic_key_input(224, True)  # SDL_SCANCODE_LCTRL
             engine.queue_synthetic_mouse_motion_input(x, y, 0.0, 0.0)
             engine.queue_synthetic_mouse_button_input(0, True, x, y)

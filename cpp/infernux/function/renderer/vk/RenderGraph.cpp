@@ -1528,6 +1528,43 @@ void RenderGraph::UpdateImportedRenderTextureColor(
     RefreshImportedAttachmentViews(handle.id);
 }
 
+void RenderGraph::RebindRenderTextureGeneration(const std::shared_ptr<const rhi::RenderTextureGeneration> &previous,
+                                                const std::shared_ptr<const rhi::RenderTextureGeneration> &next)
+{
+    if (!previous || !next || previous->width != next->width || previous->height != next->height ||
+        previous->description.colorFormat != next->description.colorFormat ||
+        previous->description.depthFormat != next->description.depthFormat ||
+        previous->description.samples != next->description.samples ||
+        previous->description.sampledDepth != next->description.sampledDepth ||
+        next->color->GetTexture().Device() != m_deviceId)
+        throw std::invalid_argument("Screen allocation rotation must preserve the compiled attachment contract");
+    if (previous == next)
+        return;
+    for (uint32_t id = 0; id < m_resources.size(); ++id) {
+        auto &resource = m_resources[id];
+        if (resource.externalOwner != previous)
+            continue;
+        const rhi::TextureResource *image = nullptr;
+        if (resource.externalImage == m_rhiDevice->Resolve(previous->color->GetTexture()))
+            image = next->color.get();
+        else if (previous->multisampleColor &&
+                 resource.externalImage == m_rhiDevice->Resolve(previous->multisampleColor->GetTexture()))
+            image = next->multisampleColor.get();
+        else if (previous->depth && resource.externalImage == m_rhiDevice->Resolve(previous->depth->GetTexture()))
+            image = next->depth.get();
+        if (!image)
+            throw std::logic_error("Persistent screen import is not an attachment of its retained generation");
+        m_rhiDevice->Release(resource.rhiView);
+        m_rhiDevice->Release(resource.rhiTexture);
+        resource.externalOwner = next;
+        resource.externalImage = m_rhiDevice->Resolve(image->GetTexture());
+        resource.externalView = m_rhiDevice->Resolve(image->GetView());
+        resource.rhiTexture = m_rhiDevice->RegisterTexture(image->GetTexture());
+        resource.rhiView = m_rhiDevice->RegisterTextureView(resource.externalView);
+        RefreshImportedAttachmentViews(id);
+    }
+}
+
 ResourceHandle RenderGraph::ImportRendererList(const std::string &name, const RendererList *rendererList)
 {
     ResourceHandle handle = CreateResource(name, ResourceType::RendererList);

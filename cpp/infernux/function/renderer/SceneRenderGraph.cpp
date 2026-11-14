@@ -182,6 +182,7 @@ std::shared_ptr<GraphFramePublication> SceneRenderGraph::PreparePublication(cons
         }
         prepare().captures.push_back({capture, entry->second});
         capture->occurrence = m_bufferOccurrence;
+        capture->screenAdmission = m_screenAdmission;
         capture->selected = true;
     };
     auto output = m_bufferCaptures.begin();
@@ -653,9 +654,14 @@ RenderViewAccess SceneRenderGraph::GetResourceAccess() const
 
 bool SceneRenderGraph::HasPendingBufferInputs(bool forStep) const
 {
-    return std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *input) {
-        return input->IsWaitingForResult() && (!forStep || input->HoldsStep());
-    });
+    // SubmitCulling records readiness for this view's exact geometry. The
+    // revision is only a ready marker here; another view changing its bindings
+    // must not withhold this view. Retry the retained plan after uploads finish
+    // rather than publishing a clear-only image as the completed World frame.
+    return (m_hasCachedDrawCalls && m_cachedObjectBufferRevision == 0) ||
+           std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *input) {
+               return input->IsWaitingForResult() && (!forStep || input->HoldsStep());
+           });
 }
 
 void SceneRenderGraph::CacheLiveAuthorPasses()
@@ -729,6 +735,38 @@ void SceneRenderGraph::CacheLiveAuthorPasses()
                 read(command.sourceResource);
     }
     std::reverse(m_executedEventPasses.begin(), m_executedEventPasses.end());
+}
+
+void SceneRenderGraph::BindScreenOutput(SceneRenderTarget *target, std::shared_ptr<const void> storageOwner)
+{
+    [[maybe_unused]] const auto previousStorage = m_screenStorageOwner;
+    m_screenStorageOwner = std::move(storageOwner);
+    if (m_screenTarget == target || HasOutputTexture())
+        return;
+    const auto previous = m_screenTarget ? m_screenTarget->GetAttachments() : nullptr;
+    const auto next = target ? target->GetAttachments() : nullptr;
+    const bool compatible = previous && next && previous->width == next->width && previous->height == next->height &&
+                            previous->description.colorFormat == next->description.colorFormat &&
+                            previous->description.depthFormat == next->description.depthFormat &&
+                            previous->description.samples == next->description.samples &&
+                            previous->description.sampledDepth == next->description.sampledDepth;
+    if (!compatible) {
+        InvalidateBeforeTargetReplacement();
+        ReplaceSceneTarget(target);
+        return;
+    }
+    m_renderGraph->RebindRenderTextureGeneration(previous, next);
+    m_viewport.RebindOutput(next);
+    m_screenTarget = target;
+    if (!m_viewportGeneration)
+        m_sceneTarget = target;
+    ++m_resourceAccessRevision;
+    // Slot rotation is not a logical view revision or temporal discontinuity.
+    if (m_graphBuilt) {
+        const auto color = m_importedResolveTarget.IsValid() ? m_importedResolveTarget : m_importedColorTarget;
+        m_renderView.color = m_renderGraph->ResolveRhiTextureView(color);
+        m_renderView.depth = m_renderGraph->ResolveRhiTextureView(m_importedDepthTarget);
+    }
 }
 
 void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
@@ -1341,9 +1379,10 @@ void SceneRenderGraph::SetCachedCameraView(const RenderViewData &camera)
 {
     const auto &view = camera.view;
     const auto &proj = camera.projection;
-    bool cameraCut =
-        m_hasCachedCameraVP && (camera.cameraId != m_cachedCameraView.cameraId ||
-                                camera.temporalHistoryRevision != m_cachedCameraView.temporalHistoryRevision);
+    bool cameraCut = m_hasCachedCameraVP &&
+                     (camera.cameraId != m_cachedCameraView.cameraId || camera.worldId != m_cachedCameraView.worldId ||
+                      camera.simulationEpoch != m_cachedCameraView.simulationEpoch ||
+                      camera.temporalHistoryRevision != m_cachedCameraView.temporalHistoryRevision);
     if (m_hasCachedCameraVP && !cameraCut) {
         const glm::mat4 previousInverseView = glm::inverse(m_cachedView);
         const glm::mat4 currentInverseView = glm::inverse(view);
@@ -2752,8 +2791,9 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
     }
 
     if (m_importedDepthTarget.IsValid()) {
-        const bool sampled = m_outputGeneration && m_outputGeneration->description.sampledDepth &&
-                             m_outputGeneration->description.samples == rhi::SampleCount::One;
+        const auto attachments = m_sceneTarget->GetAttachments();
+        const bool sampled = attachments && attachments->description.sampledDepth &&
+                             attachments->description.samples == rhi::SampleCount::One;
         m_renderGraph->SetResourceInitialState(
             m_importedDepthTarget,
             sampled ? rhi::TextureLayout::DepthStencilReadOnly : rhi::TextureLayout::DepthStencilAttachment,
@@ -3061,7 +3101,11 @@ void SceneRenderGraph::ImportSceneTargetResources()
         return;
     }
 
-    const auto generation = m_viewportGeneration ? m_viewportGeneration : m_outputGeneration;
+    const auto generation = m_viewportGeneration ? m_viewportGeneration
+                            : m_outputGeneration ? m_outputGeneration
+                            : m_renderView.kind == rhi::RenderViewKind::Game && m_screenTarget
+                                ? m_screenTarget->GetAttachments()
+                                : nullptr;
     if (generation) {
         const auto attachments = m_renderGraph->ImportRenderTexture("CameraOutput", generation);
         m_importedColorTarget = attachments.color;
@@ -3588,8 +3632,9 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
             if (preserveMsaaAttachment)
                 builder.PrepareColorAttachment(msaaSource);
             if (exportDepth.IsValid()) {
-                if (m_outputGeneration && m_outputGeneration->description.sampledDepth &&
-                    m_outputGeneration->description.samples == rhi::SampleCount::One)
+                const auto exported = m_outputGeneration ? m_outputGeneration : m_sceneTarget->GetAttachments();
+                if (exported && exported->description.sampledDepth &&
+                    exported->description.samples == rhi::SampleCount::One)
                     builder.ReadSampledDepth(exportDepth, rhi::RenderTextureSampleStages);
                 else
                     builder.PrepareDepthStencilAttachment(exportDepth);

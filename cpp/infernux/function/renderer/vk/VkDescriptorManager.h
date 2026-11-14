@@ -113,6 +113,7 @@ class VkDescriptorManager
         rhi::SubmissionSerial lastUse = 0;
         rhi::SubmissionSerial retireAfter = 0;
         bool retired = false;
+        uint64_t nextRetiredLease = 0;
         SubmissionReads uploadSources{};
     };
 
@@ -130,6 +131,7 @@ class VkDescriptorManager
     uint32_t m_nextSetGeneration = 1;
     std::array<std::vector<PoolPage>, static_cast<size_t>(DescriptorArena::Count)> m_pools;
     std::unordered_map<uint64_t, LeaseState> m_leases;
+    uint64_t m_retiredLease = 0;
     std::unordered_map<uint64_t, uint64_t> m_nativeLeaseIds;
     std::unordered_map<VkDescriptorSet, rhi::SubmissionTicket> m_externalUploadSources;
     size_t m_peakLiveSets = 0;

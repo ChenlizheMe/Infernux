@@ -315,7 +315,7 @@ namespace
 PhysicsDomain::RenderState::Keys CaptureRenderKeys()
 {
     const auto &manager = SceneManager::Instance();
-    return {manager.GetGlobalTransformSerial(), manager.GetMeshRendererVersion(), manager.GetRenderContentRevision()};
+    return {manager.GetRenderTransformRevision(), manager.GetMeshRendererVersion(), manager.GetRenderContentRevision()};
 }
 JoltGpuTickOutput CompactOutput(const JoltGpuScene::Publication &p)
 {
@@ -559,13 +559,13 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
     FrameWorkOwner::Scope preparation(*m_gpuWork);
     auto &rendering = domain.rendering;
     const auto keys = CaptureRenderKeys();
-    auto snapshot = rendering.bindings.Capture(domain.owner);
     const auto generation =
         domain.queryGeneration.load(std::memory_order_acquire) + static_cast<uint64_t>(numericalChange);
     if (rendering.ready && rendering.ready->numericalGeneration == generation && rendering.ready->keys == keys) {
         rendering.pending.reset();
         return {};
     }
+    auto snapshot = rendering.bindings.Capture(domain.owner);
     if (!rendering.bindings.NeedsExport(*snapshot, generation)) {
         rendering.pending.reset();
         rendering.checkedKeys = keys;

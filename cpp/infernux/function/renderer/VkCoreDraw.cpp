@@ -370,6 +370,7 @@ try {
 
     vk::VulkanSubmissionExecutor::ExecuteResult executeResult{};
     try {
+        m_backend.Queues().ReserveWorkCompletions(m_frameSubmission.WorkPublicationCount());
         executeResult = m_submissionExecutor.Execute(
             frameSlot, submissionPlan,
             [this, &submissionPlan, &residentReadStages, &residentReadAccess](uint32_t batchIndex,
@@ -409,7 +410,8 @@ try {
             m_resourceManager.AcceptFrameImageReadback(*m_presentationReadback, externalSync.completionEpoch);
         }
     }
-    if (m_frameComputeSubmissionCallback)
+    if (m_frameComputeSubmissionCallback && (executeResult.Succeeded() || !executeResult.submittedBatchCount ||
+                                             executeResult.failureDrainResult == VK_SUCCESS))
         m_frameComputeSubmissionCallback(executeResult.Succeeded());
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
@@ -417,11 +419,25 @@ try {
     _tPrev = _tNow;
 #endif
 
+    if (executeResult.submittedBatchCount)
+        m_lastSubmittedCompletionEpoch = externalSync.completionEpoch;
+    m_frameSubmission.PublishWorkAccepted(submissionPlan, executeResult.batchTickets,
+                                          executeResult.submittedBatchCount);
+    if (executeResult.result == VK_ERROR_DEVICE_LOST)
+        m_backend.Queues().FailWorkCompletions();
     const VkResult submitResult = executeResult.result;
     if (!executeResult.Succeeded()) {
         m_resourceManager.CancelFrameImageReadbacks(externalSync.completionEpoch);
-        if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
+        if (executeResult.submittedBatchCount && executeResult.failureDrainResult != VK_SUCCESS) {
+            auto owners = m_frameSubmission.TakeResourceOwners();
+            if (!owners.empty())
+                m_deletionQueue.RetireAfter(externalSync.completionEpoch,
+                                            [owners = std::move(owners)]() mutable { owners.clear(); });
+            // The permanent frame-failure latch prevents Reset/reuse. This
+            // epoch stays unsignaled until the strict shutdown owner drains.
+        } else if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot)) {
             INXLOG_ERROR("Failed to restore graphics frame fence after submission failure");
+        }
         // Earlier queue batches may already have executed. A failed terminal
         // submit is not permission to reset or replay their simulation state.
         throw std::runtime_error(
@@ -2831,6 +2847,8 @@ void InxVkCoreModular::RegisterMeshUploadWork(FrameWorkOwner &owner)
         FrameWorkFacts facts;
         facts.pending = !m_pendingSharedMeshBuffers.empty();
         for (const auto &[key, upload] : m_pendingSharedMeshBuffers) {
+            if (m_requiredMeshOnly && upload.requiredFrame != m_ensureFrameCounter)
+                continue;
             const bool vertex = upload.vertexUpload->GetSubmittedBytes() != upload.vertexUpload->GetSize();
             const auto &ticket = vertex ? upload.vertexUpload : upload.indexUpload;
             const auto unit = vertex ? sizeof(float) : key.IndexBytes();
@@ -2855,6 +2873,26 @@ void InxVkCoreModular::RegisterMeshUploadWork(FrameWorkOwner &owner)
         return false;
     };
     m_meshWorkSource = owner.AddSource(std::move(source));
+}
+
+bool InxVkCoreModular::AdvanceRequiredMeshUploads(const std::function<FrameGpuAvailability()> &gpuAvailability)
+{
+    const auto required = [this](const auto &entry) { return entry.second.requiredFrame == m_ensureFrameCounter; };
+    if (!std::any_of(m_pendingSharedMeshBuffers.begin(), m_pendingSharedMeshBuffers.end(), required))
+        return false;
+    struct RequiredScope
+    {
+        bool &only;
+        ~RequiredScope()
+        {
+            only = false;
+        }
+    } scope{m_requiredMeshOnly};
+    m_requiredMeshOnly = true;
+    // The source retains all pending ownership. Only this admission selects
+    // the previous opportunity's actual view inputs; companions stay background.
+    (void)m_frameWorkOwner->AdvanceRequired(m_meshWorkSource, gpuAvailability);
+    return std::any_of(m_pendingSharedMeshBuffers.begin(), m_pendingSharedMeshBuffers.end(), required);
 }
 
 bool InxVkCoreModular::AppendMeshUploadBlock(const SharedMeshKey &key, PendingSharedMeshBuffers &upload, bool vertex,
@@ -3179,6 +3217,9 @@ InxVkCoreModular::PerObjectBuffers *InxVkCoreModular::PrepareObjectGeometry(cons
         }
         if (active != m_runtimeMeshUploads.end()) {
             active->second.requestedFrame = m_ensureFrameCounter;
+            if (auto pending = m_pendingSharedMeshBuffers.find(active->second.key);
+                pending != m_pendingSharedMeshBuffers.end())
+                pending->second.requiredFrame = m_ensureFrameCounter;
             if (auto completed = m_sharedMeshBuffers.find(active->second.key); completed != m_sharedMeshBuffers.end()) {
                 if (sharedIt == m_sharedMeshBuffers.end())
                     sharedIt = completed;
@@ -3196,6 +3237,8 @@ InxVkCoreModular::PerObjectBuffers *InxVkCoreModular::PrepareObjectGeometry(cons
         if (sharedKey.IsRegistryAsset())
             QueueHierarchyCompanionView(assetGuid, runtimeVersion, geometryView);
     }
+    if (auto pending = m_pendingSharedMeshBuffers.find(sharedKey); pending != m_pendingSharedMeshBuffers.end())
+        pending->second.requiredFrame = m_ensureFrameCounter;
     if (sharedIt == m_sharedMeshBuffers.end()) {
         // Read/Write-disabled Player assets rebind the resident generation.
         if (cpuGeometryReleased)

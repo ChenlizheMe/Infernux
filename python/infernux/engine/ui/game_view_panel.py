@@ -138,6 +138,15 @@ class GameViewPanel(EditorPanel):
         self._display_scale = 0.5
         self._fit_mode = True            # When True, scale auto-adjusts to fill area
         self._settings_loaded = False
+        self._world_layout = 1  # Grid; one ordinary World still fills one tile.
+        self._world_input_mode = 0  # Broadcast, preserving the existing default.
+        self._selected_world_id = 0
+        self._captured_world_id = 0
+        self._screen_consumers = {}
+        self._screen_samples = {}
+        self._world_count_draft = 1
+        self._world_count_editing = False
+        self._last_screen_routes = {}
 
         # Sample the renderer's real frame serial once per second. UI rendering
         # has its own 60 Hz cadence and must not be counted as engine frames.
@@ -160,30 +169,27 @@ class GameViewPanel(EditorPanel):
         self._apply_project_output(self._output_settings.capture_document())
 
     def _set_game_render_active(self, active: bool) -> None:
-        """Keep C++ game rendering in lockstep with actual panel visibility.
-
-        Hidden dock tabs do not execute the panel body, so all per-frame Game
-        view maintenance stops. If C++ keeps rendering the Game graph anyway,
-        it can submit work against stale Game-view state and trigger
-        VK_ERROR_DEVICE_LOST when the tab is switched away or closed.
-        """
+        # This same Panel now owns named subscriptions. The old global switch
+        # releases only its legacy host/default-game alias during migration.
         active = bool(active)
-        if not active:
-            Input.set_game_focused(False)
-            _NativeInputManager.instance().set_editor_cursor_capture_allowed(False)
-
-        if not self._engine:
-            if not active:
-                self._game_camera_was_enabled = False
-            return
-
-        if active and not self._game_camera_was_enabled:
-            self._engine.set_game_camera_enabled(True)
-            self._game_camera_was_enabled = True
-        elif not active and self._game_camera_was_enabled:
+        if self._engine and not self._game_camera_was_enabled and active:
             self._engine.set_game_camera_enabled(False)
-            self._game_camera_was_enabled = False
-    
+        self._game_camera_was_enabled = active
+        if not active:
+            if self._engine:
+                for consumer in self._screen_consumers.values():
+                    self._engine._release_game_screen(consumer)
+            self._screen_consumers.clear()
+            self._screen_samples.clear()
+            self._last_screen_routes.clear()
+            self._captured_world_id = 0
+            Input.set_game_focused(False)
+            Input.set_game_viewport_size(0.0,0.0)
+            native = _NativeInputManager.instance()
+            native._set_world_game_view(0,True,[],[])
+            native.set_editor_game_viewport((0,0,0,0),(0,0,0,0))
+            native.set_editor_cursor_capture_allowed(False)
+
     def set_engine(self, engine):
         self._engine = engine
         if self._engine:
@@ -500,18 +506,6 @@ class GameViewPanel(EditorPanel):
         self._was_focused = False
         Input.set_game_focused(False)
         self._reset_pointer_input()
-        from infernux.acceptance import RuntimeAcceptance
-
-        if RuntimeAcceptance.is_active():
-            # RuntimeAcceptance owns the Game render path even while automated
-            # scene loads transiently hide or move focus away from this dock.
-            self._set_game_render_active(True)
-            return
-        # Disable game rendering when the panel is invisible (e.g. another
-        # tab like UI Editor covers this dock).  Without this, C++ keeps
-        # submitting draw commands against a stale game render target, which
-        # can trigger VK_ERROR_DEVICE_LOST.  Rendering is re-enabled in
-        # on_render_content() once the panel becomes visible again.
         self._set_game_render_active(False)
 
     def _on_visible_pre(self, ctx):
@@ -600,8 +594,13 @@ class GameViewPanel(EditorPanel):
         from .dpi import editor_dpi_scale
 
         dpi = editor_dpi_scale(ctx)
+        self._render_world_toolbar(ctx, dpi)
         self._render_resolution_toolbar(ctx, dpi)
-        target_w, target_h, fit_scale = self._render_scale_toolbar(ctx, dpi)
+        if self._world_layout == 0:
+            target_w, target_h, fit_scale = self._render_scale_toolbar(ctx, dpi)
+        else:
+            target_w, target_h = self._current_target_resolution()
+            fit_scale = 1.0
         self._render_fps_counter(ctx)
         # Keep the viewport close to the controls. ``NewLine`` after a row
         # that already used SameLine reserves another full row in ImGui.
@@ -823,106 +822,182 @@ class GameViewPanel(EditorPanel):
         # Canvas/OnMouse dispatch and capture cancellation for each World.
         native_input._set_game_view_output(float(target_w), float(target_h), (0.0, 0.0, 1.0, 1.0))
 
+    def _world_rows(self):
+        manager = self._play_mode_manager
+        if manager.is_edit_mode:
+            from infernux.lib import SceneManager
+            return ((int(SceneManager.instance()._authoring_runtime_world_id), 'ready', '', True),)
+        if manager.state not in (PlayModeState.PLAYING,PlayModeState.PAUSED,PlayModeState.ENTERING):
+            return ()  # Restore/recovery has no published author or runtime image.
+        from infernux import WorldManager
+        return tuple((world.id,world.state,world.error,
+                      world.display_in_game and not world.destroy_requested)
+                     for world in WorldManager.get_world_statuses())
+
+    def _render_world_toolbar(self, ctx, dpi):
+        from infernux import WorldManager
+        manager = self._play_mode_manager
+        rows = self._world_rows()
+        active = manager.state in (PlayModeState.PLAYING,PlayModeState.PAUSED)
+        count = (sum(state in ('ready','preparing') and display for _,state,_,display in rows)
+                 if active else manager.initial_world_count)
+        if active:
+            # Display is independent: hidden live Worlds still count.
+            count = sum(world.state in ('ready','preparing') and not world.destroy_requested
+                        for world in WorldManager.get_world_statuses())
+        if not self._world_count_editing:
+            self._world_count_draft = count
+        ctx.set_next_item_width(92.0*dpi)
+        self._world_count_draft = int(ctx.input_int(t('game_view.worlds')+'##world_count',self._world_count_draft))
+        committed = ctx.is_item_deactivated_after_edit()
+        self._world_count_editing = ctx.is_item_active()
+        if committed and manager.state != PlayModeState.ENTERING:
+            target = max(0 if active else 1,self._world_count_draft)
+            if active:
+                WorldManager.set_world_count(target)
+            elif manager.is_edit_mode:
+                manager.initial_world_count = target
+        ctx.same_line()
+        ctx.set_next_item_width(100.0*dpi)
+        self._world_layout = ctx.combo('##world_layout',self._world_layout,
+                                      [t('game_view.selected'),t('game_view.grid')],-1)
+        selectable = tuple(world for world,state,_error,display in rows if display and state == 'ready')
+        if self._world_layout == 0 and selectable:
+            selected = selectable.index(self._selected_world_id) if self._selected_world_id in selectable else 0
+            ctx.same_line()
+            ctx.set_next_item_width(110.0*dpi)
+            selected = ctx.combo('##world_selected',selected,[f'World {world}' for world in selectable],-1)
+            self._selected_world_id = selectable[selected]
+        ctx.same_line()
+        ctx.set_next_item_width(120.0*dpi)
+        self._world_input_mode = ctx.combo('##world_input',self._world_input_mode,
+                                          [t('game_view.broadcast'),t('game_view.selected_input')],-1)
+        ready = sum(state == 'ready' for _,state,_,_ in rows)
+        preparing = sum(state == 'preparing' for _,state,_,_ in rows)
+        ctx.same_line()
+        ctx.label(f'{ready} / {preparing} '+t('game_view.ready_preparing'))
+        ctx.spacing()
+
     def _render_game_viewport(self, ctx, target_w, target_h, fit_scale):
-        """Render the game texture, screen UI, and route input events."""
-        auto_resolution = self._selected_resolution_idx == self._AUTO_RESOLUTION_INDEX
-        # Recompute fit after the toolbar row has consumed layout height.
-        viewport_avail_width = ctx.get_content_region_avail_width()
-        viewport_avail_height = ctx.get_content_region_avail_height()
-        if not auto_resolution and self._fit_mode and target_w > 0 and target_h > 0 and viewport_avail_width > 0 and viewport_avail_height > 0:
-            fit_scale = min(viewport_avail_width / float(target_w), viewport_avail_height / float(target_h))
-            self._display_scale = max(0.01, fit_scale)
-
-        draw_w = float(target_w) * self._display_scale
-        draw_h = float(target_h) * self._display_scale
-
-        viewport_clicked = False
-
-        if ctx.begin_child("##GameViewportRegion", 0, 0, False):
-            avail_width = ctx.get_content_region_avail_width()
-            avail_height = ctx.get_content_region_avail_height()
-
-            if auto_resolution:
-                screen = _NativeInputManager.instance().screen_state
-                if avail_width <= 0 or avail_height <= 0:
-                    ctx.end_child()
-                    return
-                target_w = max(1, round(avail_width * screen.framebuffer_width / screen.logical_width))
-                target_h = max(1, round(avail_height * screen.framebuffer_height / screen.logical_height))
-                self._auto_resolution = (target_w, target_h)
-                draw_w, draw_h = avail_width, avail_height
-                self._display_scale = min(draw_w / target_w, draw_h / target_h)
-            elif self._fit_mode and target_w > 0 and target_h > 0 and avail_width > 0 and avail_height > 0:
-                # Leave a tiny epsilon so float rounding does not create a child scrollbar.
-                fit_region_w = max(0.0, avail_width - 1.0)
-                fit_region_h = max(0.0, avail_height - 1.0)
-                draw_w, draw_h = self._fit_into_region(
-                    target_w, target_h, fit_region_w, fit_region_h,
-                    point_filter=self._render_output["filter"] == "nearest",
-                )
-                self._display_scale = max(0.01, min(draw_w / float(target_w), draw_h / float(target_h)))
-
-            if target_w != self._last_game_width or target_h != self._last_game_height:
-                self._resize_game_target(target_w, target_h)
-                self._last_game_width, self._last_game_height = target_w, target_h
-            game_texture_id = self._engine.get_game_texture_id()
-
-            cursor_start_x = ctx.get_cursor_pos_x()
-            cursor_start_y = ctx.get_cursor_pos_y()
-
-            if game_texture_id != 0:
-                pad_x = max(0.0, (avail_width - draw_w) * 0.5)
-                pad_y = max(0.0, (avail_height - draw_h) * 0.5)
-                ctx.set_cursor_pos_x(cursor_start_x + pad_x)
-                ctx.set_cursor_pos_y(cursor_start_y + pad_y)
-                ctx.image(game_texture_id, float(draw_w), float(draw_h), 0.0, 0.0, 1.0, 1.0)
-
-                # Images are visual-only ImGui items. Overlay an invisible
-                # button on the same rectangle so real clicks, including MCP
-                # synthetic input, activate the Game View's interaction item.
-                ctx.set_cursor_pos_x(cursor_start_x + pad_x)
-                ctx.set_cursor_pos_y(cursor_start_y + pad_y)
-                ctx.invisible_button(
-                    "##GameViewportInput", float(draw_w), float(draw_h)
-                )
-                vp = capture_viewport_info(ctx)
-                # Expose the interactive overlay, so MCP focuses the same
-                # surface a player clicks before sending game input.
-                ctx.record_semantic_item(
-                    "viewport", "Game Viewport", True, _GAME_VIEWPORT_SEMANTIC_ID
-                )
-                viewport_clicked = any(ctx.is_item_clicked(button) for button in range(5))
-                Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
-                Input.set_game_viewport_size(float(draw_w), float(draw_h))
-                _NativeInputManager.instance().set_editor_game_viewport(
-                    (vp.image_min_x, vp.image_min_y, float(draw_w), float(draw_h)),
-                    ctx.get_item_visible_rect(),
-                )
-
-                self._render_screen_ui(ctx, vp.image_min_x, vp.image_min_y,
-                                       float(draw_w), float(draw_h))
-                play_mode = PlayModeManager.instance()
-                if play_mode is not None and not play_mode.is_edit_mode:
-                    border = Theme.BORDER_PAUSE if play_mode.state == PlayModeState.PAUSED else Theme.BORDER_PLAY
-                    inset = ctx.get_dpi_scale()
-                    ctx.draw_rect(vp.image_min_x + inset, vp.image_min_y + inset,
-                                  vp.image_min_x + draw_w - inset, vp.image_min_y + draw_h - inset,
-                                  *border, 2.0 * inset, 0.0)
-
-            else:
-                Input.set_game_viewport_origin(0.0, 0.0)
-                Input.set_game_viewport_size(0.0, 0.0)
-                _NativeInputManager.instance().set_editor_game_viewport((0, 0, 0, 0), (0, 0, 0, 0))
-                ctx.label("")
-                ctx.label("  " + t("game_view.no_camera"))
-                ctx.label("  " + t("game_view.no_camera_detail"))
-                ctx.label("")
-                ctx.label("  " + t("game_view.create_camera_hint_1"))
-                ctx.label("  " + t("game_view.create_camera_hint_2"))
+        import math
+        rows = tuple(row for row in self._world_rows() if row[3] and row[1] in ('ready','preparing'))
+        visible_ids = {identity for identity,_,_,_ in rows}
+        if self._selected_world_id not in visible_ids:
+            self._selected_world_id = rows[0][0] if rows else 0
+        if self._world_layout == 0:
+            rows = tuple(row for row in rows if row[0] == self._selected_world_id)
+        requested = set()
+        routes = {}
+        hovered = 0
+        clicked = False
+        native = _NativeInputManager.instance()
+        held = any(native.get_mouse_button(button) for button in range(3))
+        if not ctx.begin_child('##GameViewportRegion',0,0,False):
+            ctx.end_child()
+            self._set_game_render_active(False)
+            return
+        avail_w = float(ctx.get_content_region_avail_width())
+        avail_h = float(ctx.get_content_region_avail_height())
+        start_x,start_y = ctx.get_cursor_pos_x(),ctx.get_cursor_pos_y()
+        if not rows:
+            ctx.label(t('game_view.no_worlds'))
+        elif avail_w > 0 and avail_h > 0:
+            gap = 8.0*ctx.get_dpi_scale()
+            label_h = 22.0*ctx.get_dpi_scale()
+            columns = max(1,min(len(rows),math.ceil(math.sqrt(len(rows)*avail_w/avail_h))))
+            row_count = math.ceil(len(rows)/columns)
+            cell_w = (avail_w-gap*(columns-1))/columns
+            image_h = (avail_h-gap*(row_count-1))/row_count-label_h
+            screen = native.screen_state
+            for index,(world,state,error,_display) in enumerate(rows):
+                x = start_x+(index%columns)*(cell_w+gap)
+                y = start_y+(index//columns)*(image_h+label_h+gap)
+                ctx.set_cursor_pos_x(x); ctx.set_cursor_pos_y(y)
+                ctx.label(f'World {world}  '+(state if state != 'ready' else ''))
+                if error:
+                    ctx.label(error)
+                if state != 'ready' or cell_w <= 0 or image_h <= 0:
+                    continue
+                width,height = target_w,target_h
+                if self._selected_resolution_idx == self._AUTO_RESOLUTION_INDEX:
+                    width = round(cell_w*screen.framebuffer_width/screen.logical_width)
+                    height = round(image_h*screen.framebuffer_height/screen.logical_height)
+                if width <= 0 or height <= 0:
+                    continue
+                consumer = f'{self.window_id}/world/{world}'
+                self._engine._request_game_screen(consumer,world,int(width),int(height),
+                    nearest=self._render_output['filter'] == 'nearest')
+                self._screen_consumers[world] = consumer
+                requested.add(world)
+                sample = self._engine._acquire_game_screen(world)
+                status = self._engine._game_screen_status(world)
+                if sample is None:
+                    message = status['error'] or status['wait_reason']
+                    if not message:
+                        message = t('game_view.no_camera' if status['no_camera'] else 'game_view.waiting_image')
+                    ctx.label(message)
+                    continue
+                self._screen_samples[world] = sample
+                texture = self._engine._game_screen_image(sample)
+                draw_w,draw_h = self._fit_into_region(sample.width,sample.height,cell_w,image_h,
+                    point_filter=self._render_output['filter'] == 'nearest')
+                image_x,image_y = x+(cell_w-draw_w)*.5,y+label_h+(image_h-draw_h)*.5
+                ctx.set_cursor_pos_x(image_x); ctx.set_cursor_pos_y(image_y)
+                ctx.image(texture,float(draw_w),float(draw_h),0.,0.,1.,1.)
+                ctx.set_cursor_pos_x(image_x); ctx.set_cursor_pos_y(image_y)
+                ctx.invisible_button(f'##GameWorldInput{world}',float(draw_w),float(draw_h))
+                viewport = capture_viewport_info(ctx)
+                rect = (viewport.image_min_x,viewport.image_min_y,float(draw_w),float(draw_h))
+                routes[world] = (rect,int(sample.width),int(sample.height),ctx.get_item_visible_rect())
+                ctx.record_semantic_item('viewport',f'World {world}',True,
+                                         f'{self.window_id}.world.{world}.viewport')
+                if viewport.is_hovered:
+                    hovered = world
+                if any(ctx.is_item_clicked(button) for button in range(3)):
+                    self._selected_world_id = self._captured_world_id = world
+                    clicked = True
+                if status['error']:
+                    ctx.label(status['error'])
         ctx.end_child()
-
-        if target_w > 0 and target_h > 0:
-            self._route_game_input(ctx, target_w, target_h, viewport_clicked)
+        for world in tuple(self._screen_consumers):
+            if world not in requested:
+                self._engine._release_game_screen(self._screen_consumers.pop(world))
+                self._screen_samples.pop(world,None)
+        self._last_screen_routes = routes
+        if self._captured_world_id not in routes:
+            self._captured_world_id = 0
+        source_world = (self._captured_world_id if self._captured_world_id else
+                        hovered if self._world_input_mode == 0 and hovered else self._selected_world_id)
+        route = routes.get(source_world)
+        if route is None:
+            Input.set_game_focused(False)
+            native._set_world_game_view(0,True,[],[])
+            Input.set_game_viewport_size(0.,0.)
+            native.set_editor_game_viewport((0,0,0,0),(0,0,0,0))
+            return
+        rect,width,height,_clip = route
+        self._route_game_input(ctx,width,height,clicked)
+        Input.set_game_viewport_origin(rect[0],rect[1])
+        Input.set_game_viewport_size(rect[2],rect[3])
+        # Cursor confinement retains an enclosing rectangle. Physical hit
+        # routing below uses the actual union, excluding gaps/labels/letterbox.
+        left = min(value[3][0] for value in routes.values())
+        top = min(value[3][1] for value in routes.values())
+        right = max(value[3][0]+value[3][2] for value in routes.values())
+        bottom = max(value[3][1]+value[3][3] for value in routes.values())
+        native.set_editor_game_viewport(rect,(left,top,right-left,bottom-top))
+        outputs = []
+        for world,state,_error,_display in self._world_rows():
+            if state != 'ready':
+                continue
+            sample = self._screen_samples.get(world)
+            status = self._engine._game_screen_status(world)
+            outputs.append((world,sample.width if sample is not None else status['width'],
+                                  sample.height if sample is not None else status['height']))
+        native._set_world_game_view(self._selected_world_id,self._world_input_mode == 0,outputs,
+                                    [value[3] for value in routes.values()])
+        if not held:
+            self._captured_world_id = 0  # Release sample still uses its original capture tile.
 
     # ------------------------------------------------------------------
     # Screen-space UI overlay

@@ -1059,6 +1059,14 @@ void Infernux::BeginRuntimeFrame(float deltaTime)
     m_frameWork.BeginOpportunity();
     SceneManager::Instance().BindRuntimeFrameWork(m_frameWork);
     PollGpuCompletions();
+    // Last opportunity's actual view inputs precede background discovery and
+    // graphics-slot acquisition. Cold geometry must not starve behind its own
+    // waiting view; uploads still use the same Host/GPU/transfer allowances.
+    if (m_renderer && m_renderer->AdvanceRequiredRenderResources([this] {
+            const auto availability = BackgroundGpuAvailability(true);
+            return availability == FrameGpuAvailability::BackgroundPending ? FrameGpuAvailability::Ready : availability;
+        }))
+        m_renderer->RequestFullSpeedFrame();
     if (m_textureWorkSource)
         m_frameWork.Wake(m_textureWorkSource);
     if (m_assetLoadWorkSource)
@@ -1105,7 +1113,9 @@ FrameGpuAvailability Infernux::BackgroundGpuAvailability(bool foregroundReady)
         return FrameGpuAvailability::ForegroundDeferred;
     if (!m_gpuServices)
         return foregroundReady ? FrameGpuAvailability::Ready : FrameGpuAvailability::ForegroundDeferred;
-    m_gpuServices->CollectComputeResources();
+    // Queue admission only needs current compute completions. General resource
+    // retirement belongs to the Host maintenance pass, not every chooser round.
+    m_gpuServices->Compute().Collect();
     // A successful foreground submission owns the front of this opportunity.
     // Older in-flight frames are normal pipelining, not a requirement to drain
     // the entire graphics queue before admitting one bounded compute segment.

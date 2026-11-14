@@ -2,6 +2,7 @@
 
 #include "RhiRenderTexture.h"
 #include <glm/glm.hpp>
+#include <stdexcept>
 
 namespace infernux::rhi
 {
@@ -15,6 +16,14 @@ class CameraViewportTarget
     bool Prepare(Device &device, const std::string &identity, std::shared_ptr<const RenderTextureGeneration> output,
                  const glm::vec4 &rect);
     void Reset();
+    /// Allocation rotation preserves camera-local work and viewport geometry.
+    void RebindOutput(std::shared_ptr<const RenderTextureGeneration> output)
+    {
+        if (m_output && (!output || m_output->width != output->width || m_output->height != output->height ||
+                         m_output->description.samples != output->description.samples))
+            throw std::invalid_argument("Viewport output rotation must preserve its extent/sample contract");
+        m_output = std::move(output);
+    }
     [[nodiscard]] bool IsPartial() const
     {
         return m_work != nullptr;

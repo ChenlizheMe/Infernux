@@ -211,7 +211,11 @@ class SceneManager
     [[nodiscard]] bool CanContinueRuntimeFrame() const noexcept;
     void ReportRuntimeFrameProgress() noexcept;
     void SetRuntimeInputCallback(std::function<void()> callback);
-    void FinishStepPresentation(bool completeStep) noexcept;
+    void FinishStepPresentation(bool completeStep);
+    void SetRuntimeFramePresentationCallback(std::function<bool(RuntimeWorld &)> callback)
+    {
+        m_runtimeFramePresentation = std::move(callback);
+    }
 
     /// Consume the one-frame timing boundary published by a scene replacement.
     /// The first frame of a newly committed scene receives zero delta so asset
@@ -749,6 +753,7 @@ class SceneManager
     std::function<void()> m_runtimeInput;
     std::function<bool(RuntimeWorld &)> m_runtimeFramePublication;
     std::function<void(uint64_t)> m_runtimeFrameRetirement;
+    std::function<bool(RuntimeWorld &)> m_runtimeFramePresentation;
     std::vector<std::unique_ptr<Scene>> m_previewScenes;
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)

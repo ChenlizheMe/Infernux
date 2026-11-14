@@ -892,6 +892,12 @@ class RenderGraph
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
     RebindImportedBuffers(const std::vector<ImportedBufferBinding> &bindings);
 
+    /// Rotate all imports of a same-description persistent allocation.
+    /// Attachment bindings/owners change; pass and resource identities do not.
+    INFERNUX_VULKAN_BACKEND_API void
+    RebindRenderTextureGeneration(const std::shared_ptr<const rhi::RenderTextureGeneration> &previous,
+                                  const std::shared_ptr<const rhi::RenderTextureGeneration> &next);
+
     /// Import a stable host-side renderer list object. Its contents may change every frame.
     INFERNUX_VULKAN_BACKEND_API ResourceHandle ImportRendererList(const std::string &name,
                                                                   const RendererList *rendererList);

@@ -5,6 +5,7 @@
 #include "PythonCallback.h"
 #include "ShaderDiagnosticPyBridge.h"
 #include "SpirvPyBridge.h"
+#include "function/renderer/GameScreenOutput.h"
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
@@ -1002,6 +1003,15 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
     // its engine wrapper; explicit Cleanup also checks outstanding leases.
     RegisterComputeBindings(m);
 
+    py::class_<GameScreenSample, std::shared_ptr<GameScreenSample>>(m, "_GameScreenSample")
+        .def_readonly("world_id", &GameScreenSample::worldId)
+        .def_readonly("output_id", &GameScreenSample::outputId)
+        .def_readonly("sequence", &GameScreenSample::sequence)
+        .def_readonly("generation", &GameScreenSample::generation)
+        .def_readonly("world_frame", &GameScreenSample::completedWorldFrame)
+        .def_readonly("simulation_epoch", &GameScreenSample::simulationEpoch)
+        .def_property_readonly("width", [](const GameScreenSample &s) { return s.image->width; })
+        .def_property_readonly("height", [](const GameScreenSample &s) { return s.image->height; });
     py::class_<Infernux>(m, "Infernux")
         .def(py::init<std::string, RuntimeMode>(), py::arg("dll_path"), py::arg("mode") = RuntimeMode::Graphical)
         .def("init_renderer", [](Infernux &engine, int width, int height, const std::string &projectPath,
@@ -1044,6 +1054,38 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("_prepare_material_texture_assets", [](Infernux &engine, const std::shared_ptr<InxMaterial> &material) {
             engine.GetRenderer()->PrepareMaterialTextureAssets(material);
         }, py::arg("material"))
+        .def("_request_game_screen", [](Infernux &engine, const std::string &consumer, uint64_t world,
+                                          uint32_t width, uint32_t height, bool nearest, bool required) {
+            GameScreenOutputConfig config;
+            config.width = width; config.height = height;
+            config.filter = nearest ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear;
+            RequireRenderer(engine).RequestGameScreenOutput(consumer, world, config,
+                required ? GameScreenConsumerKind::Required : GameScreenConsumerKind::Presentation);
+        }, py::arg("consumer"), py::arg("world"), py::arg("width"), py::arg("height"),
+           py::arg("nearest") = false, py::arg("required") = false)
+        .def("_release_game_screen", [](Infernux &engine, const std::string &consumer) {
+            RequireRenderer(engine).ReleaseGameScreenOutput(consumer);
+        })
+        .def("_acquire_game_screen", [](Infernux &engine, uint64_t world) {
+            return std::const_pointer_cast<GameScreenSample>(RequireRenderer(engine).AcquireGameScreenOutput(world));
+        })
+        .def("_game_screen_image", [](Infernux &engine, const std::shared_ptr<GameScreenSample> &sample) {
+            return RequireRenderer(engine).GetGameScreenTextureId(sample);
+        })
+        .def("_game_screen_status", [](Infernux &engine, uint64_t world) {
+            const auto status = RequireRenderer(engine).GetGameScreenOutputStatus(world);
+            py::dict value;
+            value["world_id"] = world;
+            value["width"] = status.requested.width; value["height"] = status.requested.height;
+            value["generation"] = status.generation;
+            value["pending"] = status.pendingSamples;
+            value["consumers"] = status.consumers;
+            value["no_camera"] = status.sourcePublished && !status.hasScreenCamera;
+            value["withheld"] = status.workWithheld;
+            value["error"] = status.error;
+            value["wait_reason"] = status.publicationWaitReason;
+            return value;
+        })
         .def("_get_render_texture_ui_texture_id", [](Infernux &engine, const std::shared_ptr<rhi::RenderTexture> &texture) {
             return engine.GetRenderer()->GetRenderTextureUITextureId(texture);
         }, py::arg("texture"))

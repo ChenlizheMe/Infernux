@@ -6,13 +6,13 @@
       "en": "RIGID BODIES",
       "zh": "刚体",
       "leaves": [
-        ["Jolt integration","Jolt 集成","live"],
-        ["Colliders","碰撞体","live"],
-        ["Constraints","约束","live"],
+        ["Jolt GPU rigid-body integration","Jolt GPU 刚体集成","live"],
+        ["Full GPU collider coverage","完整 GPU 碰撞体支持","planned"],
+        ["Rigidbody axis constraints","刚体轴向约束","planned"],
         ["Vehicles","载具","future"],
-        ["Body activation policy","刚体激活策略","live"],
+        ["Body activation policy","刚体激活策略","planned"],
         ["Mass-property authoring","质量属性编辑","live"],
-        ["Continuous collision detection","连续碰撞检测","live"],
+        ["Continuous collision detection","连续碰撞检测","planned"],
         ["Solver iteration budgets","求解迭代预算","live"]
       ]
     },
@@ -35,8 +35,8 @@
       "zh": "碰撞",
       "leaves": [
         ["Layer masks","层遮罩","live"],
-        ["Contact callbacks","接触回调","live"],
-        ["Trigger volumes","触发体积","live"],
+        ["Contact callbacks","接触回调","planned"],
+        ["Trigger volumes","触发体积","planned"],
         ["Destruction","破坏系统","future"],
         ["Collision matrix editing","碰撞矩阵编辑","live"],
         ["Contact material rules","接触材质规则","live"],
@@ -49,7 +49,7 @@
       "zh": "定步循环",
       "leaves": [
         ["Stable tick","稳定 Tick","live"],
-        ["Interpolation","插值","live"],
+        ["Interpolation","插值","planned"],
         ["Rollback hooks","回滚钩子","future"],
         ["Deterministic replay","确定性回放","future"],
         ["Substep scheduling","子步调度","live"],
@@ -76,12 +76,12 @@
       "en": "Constraints & joints",
       "zh": "约束与关节",
       "leaves": [
-        ["Fixed joints","固定关节","planned"],
+        ["Fixed joints","固定关节","live"],
         ["Hinge joints","铰链关节","live"],
         ["Slider joints","滑动关节","live"],
-        ["Distance constraints","距离约束","planned"],
+        ["Distance constraints","距离约束","live"],
         ["Motor drives","马达驱动","planned"],
-        ["Joint limits","关节限制","live"],
+        ["Hinge, slider and distance limits","铰链、滑动和距离限制","live"],
         ["Breakable joints","可破坏关节","planned"],
         ["Constraint inspector","约束检查器","planned"]
       ]
@@ -90,12 +90,12 @@
       "en": "Collision assets",
       "zh": "碰撞资产",
       "leaves": [
-        ["Convex hull cooking","凸包烘焙","live"],
-        ["Compound shapes","复合形状","live"],
-        ["Triangle mesh acceleration","三角网格加速结构","live"],
+        ["Convex hull asset cooking","凸包资产烘焙","live"],
+        ["Compound shapes","复合形状","planned"],
+        ["Triangle-mesh BVH asset cooking","三角网格 BVH 资产烘焙","live"],
         ["Heightfield collision","高度场碰撞","planned"],
         ["Collider simplification","碰撞体简化","planned"],
-        ["Cooked shape cache","烘焙形状缓存","live"],
+        ["Cooked collision asset cache","烘焙碰撞资产缓存","live"],
         ["Scale validation","缩放验证","planned"],
         ["Collision import diagnostics","碰撞导入诊断","planned"]
       ]
@@ -120,7 +120,7 @@
         ["Contact history capture","接触历史捕获","planned"],
         ["Physics scene benchmarks","物理场景基准","live"],
         ["Island profiling","岛屿分析","planned"],
-        ["Sleep-state inspection","休眠状态检查","live"],
+        ["Sleep-state inspection","休眠状态检查","planned"],
         ["Physics state export","物理状态导出","live"],
         ["Regression replay scenes","回归回放场景","planned"]
       ]
@@ -142,8 +142,8 @@
       "en": "Broadphase mechanics",
       "zh": "宽相位细节",
       "leaves": [
-        ["Static-dynamic tree separation","静动态树分离","live"],
-        ["Broadphase rebuild heuristics","宽相位重建启发式","live"],
+        ["Static-dynamic tree separation","静动态树分离","planned"],
+        ["Broadphase rebuild heuristics","宽相位重建启发式","planned"],
         ["Broadphase update publication","宽相位更新发布","live"],
         ["Broadphase pair budgets","宽相位碰撞对预算","live"],
         ["Broadphase occupancy views","宽相位占用视图","planned"]
@@ -157,7 +157,7 @@
         ["Internal edge suppression","内部边缘抑制","planned"],
         ["Restitution velocity thresholds","恢复速度阈值","live"],
         ["Anisotropic friction directions","各向异性摩擦方向","planned"],
-        ["Contact impulse reporting","接触冲量报告","live"],
+        ["Contact impulse reporting","接触冲量报告","planned"],
         ["Contact manifold inspection","接触流形检查","planned"]
       ]
     },
@@ -176,13 +176,13 @@
       "en": "Continuous motion",
       "zh": "连续运动细节",
       "leaves": [
-        ["Time-of-impact brackets","碰撞时间区间","live"],
-        ["CCD motion thresholds","CCD 运动阈值","live"],
-        ["CCD substep limits","CCD 子步上限","live"],
+        ["Time-of-impact brackets","碰撞时间区间","planned"],
+        ["CCD motion thresholds","CCD 运动阈值","planned"],
+        ["CCD substep limits","CCD 子步上限","planned"],
         ["Fast trigger crossing policy","高速触发穿越策略","planned"],
         ["Teleport contact invalidation","瞬移接触失效","planned"],
         ["Extrapolation error bounds","外推误差边界","planned"],
-        ["Continuous motion diagnostics","连续运动诊断","live"]
+        ["Continuous motion diagnostics","连续运动诊断","planned"]
       ]
     },
     {
@@ -256,7 +256,7 @@
       "leaves": [
         ["Rigid state tensor layouts","刚体状态张量布局","live"],
         ["Joint state tensor layouts","关节状态张量布局","planned"],
-        ["Contact tensor packing","接触张量打包","live"],
+        ["Contact tensor packing","接触张量打包","planned"],
         ["Force command accumulation","力命令累积","live"],
         ["Sensor noise injection","传感器噪声注入","planned"],
         ["Physics rollout checkpoints","物理采样检查点","planned"],

@@ -4,6 +4,7 @@
 
 // Minimal includes required for public API value types and POD members
 #include "CaptureService.h"
+#include "GameScreenOutput.h"
 #include "GpuResidency.h"
 #include "GraphEvents.h"
 #include "InxRenderStruct.h"
@@ -32,6 +33,7 @@ class RenderWorldFrame;
 class RuntimeWorld;
 struct TextureCpuData;
 class FrameWorkOwner;
+enum class FrameGpuAvailability : uint8_t;
 class FrameCpuStorageClaim;
 struct PreviewImage;
 struct PreviewGeometryUpload;
@@ -78,6 +80,7 @@ class SceneRenderGraph;
 class SceneRenderTarget;
 class InxGUIContext;
 class InxScreenUIRenderer;
+class GameScreenOutputs;
 struct ShaderProgramArtifact;
 struct ShaderStagePair;
 struct ShaderProgramKey;
@@ -367,6 +370,7 @@ class InxRenderer
     /// Non-blocking completion poll for headless/tool loops that are not
     /// currently advancing DrawFrame(). Never waits for a queue or device.
     void PollGpuCompletions();
+    bool AdvanceRequiredRenderResources(const std::function<FrameGpuAvailability()> &gpuAvailability);
     [[nodiscard]] uint64_t RegisterFrameWork(FrameWorkOwner &owner);
     [[nodiscard]] bool HasPendingBackgroundGpuWork() const;
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
@@ -588,6 +592,15 @@ class InxRenderer
 
     /// @brief Get Game View texture ID for ImGui display
     uint64_t GetGameTextureId();
+    /// Same native output registry used by the primary convenience accessor.
+    /// Consumers keep this lease through GUI/capture/sensor use.
+    void RequestGameScreenOutput(const std::string &consumerId, uint64_t worldId, const GameScreenOutputConfig &config,
+                                 GameScreenConsumerKind kind = GameScreenConsumerKind::Presentation);
+    void RequestGameScreenSample(const std::string &consumerId, uint64_t worldId);
+    void ReleaseGameScreenOutput(const std::string &consumerId);
+    [[nodiscard]] std::shared_ptr<const GameScreenSample> AcquireGameScreenOutput(uint64_t worldId);
+    [[nodiscard]] GameScreenOutputStatus GetGameScreenOutputStatus(uint64_t worldId) const;
+    [[nodiscard]] uint64_t GetGameScreenTextureId(const std::shared_ptr<const GameScreenSample> &sample);
 
     /// Screen-camera graphs have executed and initial uploads have drained.
     [[nodiscard]] bool IsGamePresentationReady() const;
@@ -834,6 +847,7 @@ class InxRenderer
         uint64_t sourceGeneration = 0;
         uint64_t cameraComponentId = 0;
         GameImageGeneration gameImage{};
+        std::shared_ptr<const GameScreenSample> gameSample;
     };
     [[nodiscard]] bool HasPendingCapture(CaptureSource source, uint64_t cameraId = 0) const;
     void SubmitPendingCaptureReadbacks(bool frameSubmitted);
@@ -856,23 +870,30 @@ class InxRenderer
     uint32_t m_gpuResidencyCheckFrames = 0;
     double m_gpuResidencyCheckAccumulatorMs = 0.0;
 
-    // Game cameras share one output target but own independent RenderGraphs.
-    // This keeps camera matrices, shadows, Forward+ lists, particles and
-    // temporal history isolated while Camera.depth determines execution order.
-    std::unique_ptr<SceneRenderTarget> m_gameRenderTarget;
-    const rhi::RenderViewId m_gameScreenViewId = rhi::AllocateRenderViewId();
+    // One registry owns all real World screen outputs. These primary aliases
+    // are convenience metadata only; no second target or rendering path exists.
+    std::unique_ptr<GameScreenOutputs> m_gameScreenOutputs;
+    SceneRenderTarget *m_gameRenderTarget = nullptr;
+    rhi::RenderViewId m_gameScreenViewId = rhi::InvalidRenderViewId;
+    GameScreenOutputConfig m_defaultGameOutput;
+    GameScreenOutputs &GameScreens();
+    [[nodiscard]] uint64_t PrimaryScreenWorldId() const;
+    void SyncPrimaryScreenRequest();
+    void RetireGameCameraGraph(uint64_t cameraId);
+    void RetireUnrequestedScreenGraphs(uint64_t worldId);
+    void RefreshPrimaryScreenAliases();
     [[nodiscard]] GameImageGeneration CurrentGameImageGeneration() const;
-    struct
-    {
-        GameImageGeneration generation;
-        rhi::SubmissionSerial completionEpoch = rhi::InvalidSubmissionSerial;
-    } m_acceptedGameImage;
     // Relative targets follow Game render pixels, never editor zoom/DPI or the
     // last Camera drawn. Registration must not extend the resource lifetime.
-    std::vector<std::weak_ptr<rhi::RenderTexture>> m_relativeRenderTextures;
+    struct RelativeRenderTexture
+    {
+        uint64_t worldId = 0;
+        std::weak_ptr<rhi::RenderTexture> texture;
+    };
+    std::vector<RelativeRenderTexture> m_relativeRenderTextures;
     struct ImportedRenderTexture;
     std::unordered_map<std::string, std::weak_ptr<ImportedRenderTexture>> m_assetRenderTextures;
-    void ResizeRelativeRenderTextures(uint32_t width, uint32_t height);
+    void ResizeRelativeRenderTextures(uint64_t worldId, uint32_t width, uint32_t height);
     std::unordered_map<uint64_t, std::unique_ptr<SceneRenderGraph>> m_gameRenderGraphs;
     SceneRenderGraph *m_gameRenderGraph = nullptr; ///< Representative graph for legacy single-view queries.
     struct ScheduledView
@@ -893,6 +914,7 @@ class InxRenderer
     std::vector<std::pair<uint64_t, uint64_t>> m_objectBindingViews;
     uint64_t m_sweptObjectBufferRevision = 0;
     RenderViewSchedule m_viewSchedule;
+    bool m_viewScheduleDirty = false;
     uint64_t m_viewRequestSerial = 0;
     uint64_t m_cameraRequestSerial = 1;
     void CollectRequestedViews(bool sceneActive, bool gameActive);
@@ -929,6 +951,12 @@ class InxRenderer
     const RenderViewData *m_cachedGameCamera = nullptr;
     std::vector<const RenderViewData *> m_cachedGameCameras;
     std::shared_ptr<const RenderWorldFrame> m_cachedGameFrame;
+    std::vector<std::shared_ptr<const RenderWorldFrame>> m_cachedGameFrames;
+    std::unordered_map<uint64_t, std::shared_ptr<const RenderWorldFrame>> m_gameSources;
+    std::unordered_map<uint64_t, std::shared_ptr<const RenderWorldPublication>> m_gamePublications;
+    void SyncRequiredScreenWork();
+    std::unordered_map<uint64_t, uint64_t> m_gameGraphWorlds;
+    std::vector<std::shared_ptr<SceneRenderGraph>> m_retiringGameGraphs;
     std::shared_ptr<const RenderWorldFrame> m_cameraPreviewFrame;
     std::unordered_map<uint64_t, std::array<uint64_t, 2>> m_cameraRenderRequests;
     bool m_gameCameraCacheValid = false;
@@ -975,6 +1003,8 @@ class InxRenderer
     bool HasActiveGameViews(bool allowScreen = true);
     void PrepareWorldRenderInputs();
     bool PublishRuntimeRenderFrame(RuntimeWorld &world);
+    bool IsStepScreenComplete(RuntimeWorld &world);
+    std::unordered_map<uint64_t, std::shared_ptr<const GameScreenSample>> m_stepScreenSamples;
     void RetireRuntimeRenderFrame(uint64_t worldId);
     bool ShouldRenderGameCamera(const RenderViewData *camera, bool allowScreen = true) const;
 

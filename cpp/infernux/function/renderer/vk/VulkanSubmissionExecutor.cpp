@@ -357,6 +357,8 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             signalValues[index] = tickets[index].serial;
     }
     output.completionTicket = tickets.back();
+    // Allocate publication metadata before any queue accepts work.
+    output.batchTickets.assign(tickets.begin(), tickets.begin() + plan.batches.size());
 
     size_t firstGraphicsBatch = plan.batches.size();
     size_t lastGraphicsBatch = plan.batches.size();
@@ -498,9 +500,9 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     const auto failSubmission = [&](VkResult result) {
         reservations.CancelRemaining();
         if (output.submittedBatchCount) {
-            (void)m_queues->WaitIdleForAllQueues();
-            for (const auto &accepted : frame.submittedTickets)
-                m_queues->MarkCompleted(accepted);
+            output.failureDrainResult = m_queues->WaitIdleForAllQueues();
+            if (output.failureDrainResult != VK_SUCCESS)
+                result = output.failureDrainResult;
         }
         output.result = result;
         return output;

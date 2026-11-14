@@ -152,6 +152,9 @@ class InxGUI
     /// @return false when the descriptor is no longer owned by the live texture registry.
     bool TouchImGuiTextureId(uint64_t textureId);
     std::shared_ptr<const ScreenUITexturePublication> AcquireScreenUITexturePublication(uint64_t textureId) const;
+    /// Optional immutable-pixel producer. GUI caches keep only a weak pin;
+    /// completed UI packets acquire the strong lease while selecting the source.
+    void SetImGuiTexturePixelLease(uint64_t textureId, std::weak_ptr<const void> pixelLease);
     bool ImGuiTextureNeedsDisplayEncoding(uint64_t textureId) const;
     /// Return whether the current ImDrawData publication still contains a
     /// draw command that samples @p textureId. Render-target generations use
@@ -235,6 +238,9 @@ class InxGUI
         std::shared_ptr<const rhi::TextureGpuView> externalView;
         std::weak_ptr<rhi::RenderTexture> renderTexture;
         std::shared_ptr<const ScreenUITexturePublication> publication;
+        bool requiresPixelLease = false;
+        std::weak_ptr<const void> pixelLease;
+        mutable std::weak_ptr<const ScreenUITexturePublication> pixelPublication;
         std::shared_ptr<bool> publicationRetiring;
 
         [[nodiscard]] rhi::SubmissionTicket GetUploadSubmission() const noexcept

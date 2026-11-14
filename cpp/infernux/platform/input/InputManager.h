@@ -106,11 +106,20 @@ struct ScreenState
 
 /// A sealed sample of the existing host device, shared by World admissions.
 /// No script/action state, callbacks, platform handles or mutable routing owner.
+struct WorldGameplayRouting final
+{
+    uint64_t selectedWorld = 0;
+    bool broadcast = true;
+    std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs;
+    std::vector<std::array<float, 4>> imageRects;
+};
+
 struct InputFrameSample final
 {
     uint64_t hostFrameIndex = 0;
     uint64_t sampleIdentity = 0, sourceSampleIdentity = 0, logicalFrameIndex = 0;
     bool logical = false;
+    std::shared_ptr<const WorldGameplayRouting> worldRouting;
     std::array<uint8_t, INPUT_MAX_KEYS> keyDownConsumed{};
     std::array<uint8_t, INPUT_MAX_KEYS> keys{}, keyDown{}, keyUp{}, gameKeyOwned{};
     std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> mouseButtons{}, mouseDown{}, mouseUp{}, gameMouseOwned{};
@@ -182,6 +191,9 @@ class InputManager
     /// Call every admitted Host, including while another WorldFrame is open.
     /// Reads raw live members even under an older World InputReadScope.
     [[nodiscard]] InputFrameLease CaptureFrame();
+    void SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcast,
+                                 std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs,
+                                 std::vector<std::array<float, 4>> imageRects);
     /// Exactly once per new WorldFrame admission; scope entry never consumes.
     [[nodiscard]] InputFrameLease BeginWorldFrameInput(uint64_t worldId, InputFrameLease external,
                                                        uint64_t logicalFrameIndex);
@@ -692,6 +704,7 @@ class InputManager
     [[nodiscard]] InputFrameSample *OverrideReadFrame();
     std::unordered_map<uint64_t, std::shared_ptr<InputFrameReadState>> m_worldReadStates;
     InputFrameLease m_capturedFrame;
+    std::shared_ptr<const WorldGameplayRouting> m_worldGameplayRouting;
     uint64_t m_hostReadRevision = 0;
     uint64_t m_sampleIdentity = 0;
     enum class SampleEventKind

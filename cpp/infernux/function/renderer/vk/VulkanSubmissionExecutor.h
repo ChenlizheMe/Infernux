@@ -52,11 +52,13 @@ class VulkanSubmissionExecutor
     struct ExecuteResult
     {
         VkResult result = VK_ERROR_INITIALIZATION_FAILED;
+        VkResult failureDrainResult = VK_SUCCESS; // Read only for a failed accepted prefix.
         rhi::SubmissionTicket completionTicket{};
         VkSemaphore completionTimeline = VK_NULL_HANDLE;
         uint64_t completionTimelineValue = 0;
         // Prefix of the plan accepted by the queues, even if a later submit fails.
         size_t submittedBatchCount = 0;
+        std::vector<rhi::SubmissionTicket> batchTickets;
 
         [[nodiscard]] bool Succeeded() const noexcept
         {

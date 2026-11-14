@@ -139,9 +139,14 @@ void SceneRenderTarget::InitializeAttachmentLayouts()
     barriers[count++] =
         vkrender::MakeImageBarrier(m_colorImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                    VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-    barriers[count++] = vkrender::MakeImageBarrier(
-        m_depthImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        rhi::ToVkImageAspectMask(GetDepthFormat()), 0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+    const bool sampledDepth =
+        m_attachments->description.sampledDepth && m_attachments->description.samples == rhi::SampleCount::One;
+    barriers[count++] = vkrender::MakeImageBarrier(m_depthImage, VK_IMAGE_LAYOUT_UNDEFINED,
+                                                   sampledDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                   rhi::ToVkImageAspectMask(GetDepthFormat()), 0,
+                                                   sampledDepth ? VK_ACCESS_SHADER_READ_BIT
+                                                                : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
     barriers[count++] = vkrender::MakeImageBarrier(m_outlineMaskImage, VK_IMAGE_LAYOUT_UNDEFINED,
                                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
                                                    0, VK_ACCESS_SHADER_READ_BIT);
@@ -152,8 +157,8 @@ void SceneRenderTarget::InitializeAttachmentLayouts()
     }
     const auto command = m_vkCore->BeginSingleTimeCommands();
     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         rhi::ToVkPipelineStages(rhi::RenderTextureSampleStages) |
+                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                          0, 0, nullptr, 0, nullptr, count, barriers.data());
 
     // Camera stacks may preserve color, and a viewport may paint only part of

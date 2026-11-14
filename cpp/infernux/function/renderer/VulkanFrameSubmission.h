@@ -30,6 +30,13 @@ class VulkanFrameSubmission
     [[nodiscard]] std::vector<std::shared_ptr<void>> TakeResourceOwners();
     void OnAccepted(std::function<void(rhi::SubmissionTicket)> publish);
     void PublishAccepted(rhi::SubmissionTicket ticket);
+    void OnWorkAccepted(uint32_t workItem, std::function<void(rhi::SubmissionTicket)> publish);
+    void PublishWorkAccepted(const rhi::SubmissionPlan &plan, const std::vector<rhi::SubmissionTicket> &batchTickets,
+                             size_t acceptedCount);
+    [[nodiscard]] size_t WorkPublicationCount() const noexcept
+    {
+        return m_workPublications.size();
+    }
     void DiscardPublications() noexcept;
 
     [[nodiscard]] uint32_t AddWork(rhi::DeviceId device, rhi::QueueRole queue, rhi::SubmissionDomain domain,
@@ -56,6 +63,7 @@ class VulkanFrameSubmission
     std::unordered_map<uint32_t, Recorder> m_recorders;
     std::vector<std::shared_ptr<void>> m_resourceOwners;
     std::vector<std::function<void(rhi::SubmissionTicket)>> m_publications;
+    std::unordered_map<uint32_t, std::vector<std::function<void(rhi::SubmissionTicket)>>> m_workPublications;
     std::array<uint32_t, static_cast<size_t>(rhi::QueueRole::Count)> m_lastWork{};
 };
 

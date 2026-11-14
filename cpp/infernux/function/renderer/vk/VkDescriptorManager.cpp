@@ -260,12 +260,16 @@ void VkDescriptorManager::Retire(const DescriptorLease &lease, rhi::SubmissionSe
     const auto found = m_leases.find(lease.id);
     if (found == m_leases.end() || !MatchesLease(lease, found->second.lease))
         return;
-    found->second.retired = true;
+    auto &state = found->second;
     const auto currentSerial = m_retirementSerialSource ? m_retirementSerialSource() : 0;
-    found->second.retireAfter = (std::max)({found->second.lastUse, retireAfter, currentSerial});
-    if (found->second.retireAfter == 0) {
-        FreeLease(found->second);
+    state.retireAfter = (std::max)({state.retireAfter, state.lastUse, retireAfter, currentSerial});
+    if (state.retireAfter == 0) {
+        FreeLease(state);
         m_leases.erase(found);
+    } else if (!state.retired) {
+        state.retired = true;
+        state.nextRetiredLease = m_retiredLease;
+        m_retiredLease = lease.id;
     }
 }
 
@@ -273,19 +277,23 @@ size_t VkDescriptorManager::Collect(rhi::SubmissionSerial completedSerial) noexc
 {
     std::lock_guard lock(m_mutex);
     size_t collected = 0;
-    for (auto it = m_leases.begin(); it != m_leases.end();) {
-        if (it->second.retired && it->second.retireAfter <= completedSerial) {
+    auto *next = &m_retiredLease;
+    while (*next) {
+        const auto it = m_leases.find(*next);
+        auto &state = it->second;
+        if (state.retireAfter <= completedSerial) {
 #if INFERNUX_VULKAN_VALIDATION_LAYERS
             // INXLOG_INFO("[DescriptorLifetime] free set=", reinterpret_cast<uint64_t>(it->second.lease.set),
             //             " lease=", it->second.lease.id, " arena=", static_cast<uint32_t>(it->second.lease.arena),
             //             " generation=", it->second.lease.setGeneration, " last_use=", it->second.lastUse,
             //             " retire_after=", it->second.retireAfter, " completed=", completedSerial);
 #endif
-            FreeLease(it->second);
-            it = m_leases.erase(it);
+            *next = state.nextRetiredLease;
+            FreeLease(state);
+            m_leases.erase(it);
             ++collected;
         } else {
-            ++it;
+            next = &state.nextRetiredLease;
         }
     }
     return collected;
@@ -295,6 +303,7 @@ void VkDescriptorManager::Destroy() noexcept
 {
     std::lock_guard lock(m_mutex);
     m_leases.clear();
+    m_retiredLease = 0;
     m_nativeLeaseIds.clear();
     m_externalUploadSources.clear();
     if (m_device != VK_NULL_HANDLE) {

@@ -1132,10 +1132,11 @@ bool SceneManager::TryPublishRuntimeFrame()
     return GetSimulationState() == admittedState;
 }
 
-void SceneManager::FinishStepPresentation(bool completeStep) noexcept
+void SceneManager::FinishStepPresentation(bool completeStep)
 {
     if (completeStep && !CurrentWorld().simulation.pausedStepPending &&
-        CurrentWorld().frame.phase == RuntimeWorld::FramePhase::Idle)
+        CurrentWorld().frame.phase == RuntimeWorld::FramePhase::Idle &&
+        (!m_runtimeFramePresentation || m_runtimeFramePresentation(CurrentWorld())))
         CurrentWorld().simulation.stepFrameOpen = false;
 }
 

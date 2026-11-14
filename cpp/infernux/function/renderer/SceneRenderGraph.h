@@ -54,6 +54,7 @@
 namespace infernux
 {
 struct RenderViewPlan;
+struct GameScreenAdmission;
 /// A capture of one submitted graph execution, not a mutable latest-value slot.
 struct GraphBufferCapture
 {
@@ -76,6 +77,8 @@ struct GraphBufferCapture
     std::string name;
     std::shared_ptr<rhi::ComputeBuffer> value;
     bool selected = false;
+    // Actual execution contract, set when this capture is selected.
+    std::shared_ptr<const GameScreenAdmission> screenAdmission;
     void Cancel(const std::string &reason)
     {
         if (status == Status::Pending) {
@@ -188,6 +191,12 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     /// Invalidate the compiled graph before replacing its imported target views.
     void InvalidateBeforeTargetReplacement();
+    /// Same-contract allocation rotation preserves compiled passes and history.
+    void BindScreenOutput(SceneRenderTarget *target, std::shared_ptr<const void> storageOwner);
+    [[nodiscard]] const RenderViewData &GetCachedCameraView() const noexcept
+    {
+        return m_cachedCameraView;
+    }
 
     [[nodiscard]] const rhi::RenderViewContext &GetRenderViewContext() const noexcept
     {
@@ -518,6 +527,17 @@ class SceneRenderGraph : public NativeLifetimeOwner
     }
     [[nodiscard]] std::shared_ptr<void> AcquireComputeReadValues() const;
     [[nodiscard]] std::shared_ptr<GraphBufferCapture> CaptureBuffer(const std::string &name);
+    [[nodiscard]] bool HasPendingBufferCaptures() const
+    {
+        return std::any_of(m_bufferCaptures.begin(), m_bufferCaptures.end(), [](const auto &weak) {
+            const auto capture = weak.lock();
+            return capture && capture->status == GraphBufferCapture::Status::Pending;
+        });
+    }
+    void SetScreenAdmission(std::shared_ptr<const GameScreenAdmission> admission)
+    {
+        m_screenAdmission = std::move(admission);
+    }
     [[nodiscard]] std::shared_ptr<GraphFramePublication> PreparePublication(const GraphEventInterests &interests);
 
     /// Classify an implicit material/UI sample against explicit same-graph
@@ -906,6 +926,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
     InxVkCoreModular *m_vkCore = nullptr;
     SceneRenderTarget *m_sceneTarget = nullptr;
     SceneRenderTarget *m_screenTarget = nullptr;
+    std::shared_ptr<const void> m_screenStorageOwner;
+    std::shared_ptr<const GameScreenAdmission> m_screenAdmission;
     std::shared_ptr<rhi::RenderTexture> m_outputTexture;
     std::shared_ptr<const rhi::RenderTextureGeneration> m_outputGeneration;
     std::unique_ptr<SceneRenderTarget> m_outputTarget;

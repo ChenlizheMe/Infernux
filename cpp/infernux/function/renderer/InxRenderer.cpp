@@ -7,6 +7,7 @@
 // make_unique calls, and member-function calls all have complete types.
 #include "EditorGizmos.h"
 #include "EditorTools.h"
+#include "GameScreenOutputs.h"
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
@@ -292,18 +293,18 @@ std::shared_ptr<rhi::RenderTexture> InxRenderer::CreateRenderTexture(const rhi::
     if (!m_vkCore || !m_vkCore->GetDeviceContext().IsValid())
         throw std::runtime_error("RenderTexture requires an initialized graphical engine");
     const bool relative = description.sizeMode == rhi::RenderTextureSizeMode::Relative;
-    if (relative && (!m_gameRenderTarget || !m_gameRenderTarget->IsReady()))
-        throw std::runtime_error("Relative RenderTexture requires the Game output resolution to be initialized");
+    const auto worldId = SceneManager::Instance().CurrentWorld().id;
+    const auto reference = m_gameScreenOutputs ? m_gameScreenOutputs->Config(worldId) : m_defaultGameOutput;
     static std::atomic<uint64_t> nextIdentity{1};
     auto texture = std::make_shared<rhi::RenderTexture>(
         m_vkCore->GetDeviceContext().GetRhiDevice(),
         "runtime/render-texture/" + std::to_string(nextIdentity.fetch_add(1, std::memory_order_relaxed)), description,
-        relative ? m_gameRenderTarget->GetWidth() : 0, relative ? m_gameRenderTarget->GetHeight() : 0, assetGuid);
+        relative ? reference.width : 0, relative ? reference.height : 0, assetGuid);
     if (relative) {
         m_relativeRenderTextures.erase(std::remove_if(m_relativeRenderTextures.begin(), m_relativeRenderTextures.end(),
-                                                      [](const auto &entry) { return entry.expired(); }),
+                                                      [](const auto &entry) { return entry.texture.expired(); }),
                                        m_relativeRenderTextures.end());
-        m_relativeRenderTextures.push_back(texture);
+        m_relativeRenderTextures.push_back({worldId, texture});
     }
     return texture;
 }
@@ -358,32 +359,32 @@ void InxRenderer::ReconfigureImportedRenderTexture(const std::string &guid, cons
     }
     const auto &target = owner->texture;
     const bool relative = description.sizeMode == rhi::RenderTextureSizeMode::Relative;
-    if (relative && (!m_gameRenderTarget || !m_gameRenderTarget->IsReady()))
-        throw std::runtime_error("Relative RenderTexture requires the Game output resolution");
+    const auto worldId = SceneManager::Instance().CurrentWorld().id;
+    const auto reference = m_gameScreenOutputs ? m_gameScreenOutputs->Config(worldId) : m_defaultGameOutput;
     if (relative)
         m_relativeRenderTextures.reserve(m_relativeRenderTextures.size() + 1);
-    target->Reconfigure(description, relative ? m_gameRenderTarget->GetWidth() : 0,
-                        relative ? m_gameRenderTarget->GetHeight() : 0);
+    target->Reconfigure(description, relative ? reference.width : 0, relative ? reference.height : 0);
     // Publish tracking only after the whole allocation succeeded. No allocation
     // or per-frame polling is needed to switch between absolute/relative sizing.
     m_relativeRenderTextures.erase(std::remove_if(m_relativeRenderTextures.begin(), m_relativeRenderTextures.end(),
                                                   [&target](const auto &weak) {
-                                                      auto live = weak.lock();
+                                                      auto live = weak.texture.lock();
                                                       return !live || live == target;
                                                   }),
                                    m_relativeRenderTextures.end());
     if (relative)
-        m_relativeRenderTextures.push_back(target);
+        m_relativeRenderTextures.push_back({worldId, target});
 }
 
-void InxRenderer::ResizeRelativeRenderTextures(uint32_t width, uint32_t height)
+void InxRenderer::ResizeRelativeRenderTextures(uint64_t worldId, uint32_t width, uint32_t height)
 {
     std::vector<std::shared_ptr<rhi::RenderTexture>> live;
     live.reserve(m_relativeRenderTextures.size());
     m_relativeRenderTextures.erase(std::remove_if(m_relativeRenderTextures.begin(), m_relativeRenderTextures.end(),
-                                                  [&live](const auto &entry) {
-                                                      if (auto target = entry.lock()) {
-                                                          live.push_back(std::move(target));
+                                                  [&live, worldId](const auto &entry) {
+                                                      if (auto target = entry.texture.lock()) {
+                                                          if (entry.worldId == worldId)
+                                                              live.push_back(std::move(target));
                                                           return false;
                                                       }
                                                       return true;
@@ -416,6 +417,7 @@ bool InxRenderer::InvalidateMaterialTextureAssets(const std::string &owner, cons
 
 InxRenderer::~InxRenderer()
 {
+    SceneManager::Instance().SetRuntimeFramePresentationCallback({});
     SceneManager::Instance().SetRuntimeFramePublicationCallbacks({}, {});
     SceneRenderBridge::Instance().SetMaterialPreparation({});
     SceneRenderBridge::Instance().RetireRuntimeWorld(SceneManager::Instance().CurrentWorld().id);
@@ -441,6 +443,7 @@ InxRenderer::~InxRenderer()
     m_graphEvents.clear();
     m_gameRenderGraph = nullptr;
     m_gameRenderGraphs.clear();
+    m_retiringGameGraphs.clear();
     m_sceneCameraPreviewGraph.reset();
     m_sceneCameraPreviewTarget.reset();
     m_sceneRenderGraph.reset();
@@ -452,7 +455,8 @@ InxRenderer::~InxRenderer()
     m_captureService.reset();
     m_scenePickingService.reset();
 
-    m_gameRenderTarget.reset();
+    m_gameRenderTarget = nullptr;
+    m_gameScreenOutputs.reset();
     m_sceneRenderTarget.reset();
     m_replacedViewTargets.clear();
 
@@ -768,6 +772,15 @@ void InxRenderer::PreparePipeline()
                     (void)cameraId;
                     collectOwnershipReleases(graph.get());
                 }
+                for (const auto &graph : m_retiringGameGraphs) {
+                    collectOwnershipReleases(graph.get());
+                    submission.Retain(graph);
+                    submission.OnAccepted([this, graph](rhi::SubmissionTicket) {
+                        m_retiringGameGraphs.erase(
+                            std::remove(m_retiringGameGraphs.begin(), m_retiringGameGraphs.end(), graph),
+                            m_retiringGameGraphs.end());
+                    });
+                }
                 return true;
             });
         m_vkCore->SetFrameSubmissionBuilder([this](vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem,
@@ -809,15 +822,7 @@ void InxRenderer::PreparePipeline()
                     return false;
                 const uint64_t previewId =
                     viewContext.kind == rhi::RenderViewKind::Preview ? m_sceneCameraPreviewId : 0;
-                submission.OnAccepted(
-                    [this, graph, previewId,
-                     publication = graph->PreparePublication(m_graphEventInterests)](rhi::SubmissionTicket ticket) {
-                        graph->CommitSubmissionExecution();
-                        if (previewId)
-                            m_sceneCameraPreviewRenderedId = previewId;
-                        if (publication)
-                            publication->Accept(ticket, m_graphEvents);
-                    });
+                const auto publication = graph->PreparePublication(m_graphEventInterests);
 
                 const uint32_t finalize = submission.AddWork(
                     viewContext.device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, viewContext.id,
@@ -835,6 +840,14 @@ void InxRenderer::PreparePipeline()
                         return true;
                     },
                     "SceneGraph/Finalize");
+                submission.OnWorkAccepted(finalize,
+                                          [this, graph, previewId, publication](rhi::SubmissionTicket ticket) {
+                                              graph->CommitSubmissionExecution();
+                                              if (previewId)
+                                                  m_sceneCameraPreviewRenderedId = previewId;
+                                              if (publication)
+                                                  publication->Accept(ticket, m_graphEvents);
+                                          });
                 presentationDependencies.push_back(finalize);
                 if (finalWorkItem)
                     *finalWorkItem = finalize;
@@ -842,28 +855,48 @@ void InxRenderer::PreparePipeline()
             };
 
             std::vector<uint32_t> viewFinals(m_scheduledViews.size());
-            const auto gameImage = CurrentGameImageGeneration();
-            const bool observeGameImage = m_gameRenderTarget && (!(m_acceptedGameImage.generation == gameImage) ||
-                                                                 HasPendingCapture(CaptureSource::Game));
-            bool producesGameImage = false;
+            std::unordered_map<uint64_t, uint32_t> finalScreenIndex;
+            for (const auto index : m_viewSchedule.order) {
+                const auto *graph = m_scheduledViews[index].graph;
+                const auto &camera = graph->GetCachedCameraView();
+                if (graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture)
+                    finalScreenIndex[camera.worldId] = index;
+            }
+            std::unordered_map<uint64_t, std::vector<uint32_t>> screenTerminals;
+            std::unordered_map<uint64_t, uint32_t> screenSetups;
             for (const auto index : m_viewSchedule.order) {
                 const auto &view = m_scheduledViews[index];
                 std::vector<uint32_t> dependencies{frameSetupWorkItem};
+                const auto &screenCamera = view.graph->GetCachedCameraView();
+                if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game &&
+                    !screenCamera.renderToTexture) {
+                    auto setup = screenSetups.find(screenCamera.worldId);
+                    if (setup == screenSetups.end()) {
+                        const bool partial = screenCamera.rect != glm::vec4(0, 0, 1, 1);
+                        const bool preserveColor = partial || screenCamera.clearFlags == CameraClearFlags::DepthOnly ||
+                                                   screenCamera.clearFlags == CameraClearFlags::DontClear;
+                        const bool preserveDepth = partial || screenCamera.clearFlags == CameraClearFlags::DontClear;
+                        const auto work = GameScreens().AppendPreserve(
+                            submission, screenCamera.worldId, frameSetupWorkItem, preserveColor, preserveDepth);
+                        setup = screenSetups.emplace(screenCamera.worldId, work).first;
+                    }
+                    dependencies.push_back(setup->second);
+                }
                 for (const auto producer : m_viewSchedule.predecessors[index])
                     dependencies.push_back(viewFinals[producer]);
                 if (!appendView(view.graph, view.scene, view.graph->GetCachedView(), dependencies, &viewFinals[index]))
                     return false;
-                if (observeGameImage && !producesGameImage && viewFinals[index] != 0 &&
-                    view.graph->GetOutputTarget() == m_gameRenderTarget.get())
-                    producesGameImage =
-                        view.graph->GetCompiledRenderGraph()->HasLiveWriteToImage(m_gameRenderTarget->GetColorImage());
+                const auto &camera = view.graph->GetCachedCameraView();
+                if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture &&
+                    viewFinals[index]) {
+                    auto &terminals = screenTerminals[camera.worldId];
+                    terminals.push_back(viewFinals[index]);
+                    if (finalScreenIndex.at(camera.worldId) == index) {
+                        const auto source = m_gameSources.at(camera.worldId);
+                        (void)GameScreens().AppendCompletion(submission, camera.worldId, source, terminals);
+                    }
+                }
             }
-            // The view schedule keeps requested layers and their producers
-            // together. Publish the screen image only if its work was accepted.
-            if (producesGameImage)
-                submission.OnAccepted([this, gameImage](rhi::SubmissionTicket) {
-                    m_acceptedGameImage = {gameImage, m_vkCore->GetLastSubmittedCompletionEpoch()};
-                });
 
             if (sceneViewActive && m_sceneRenderGraph)
                 activateView(m_sceneRenderGraph.get());
@@ -882,6 +915,8 @@ void InxRenderer::PreparePipeline()
         SceneManager::Instance().SetRuntimeFramePublicationCallbacks(
             [this](RuntimeWorld &world) { return PublishRuntimeRenderFrame(world); },
             [this](uint64_t world) { RetireRuntimeRenderFrame(world); });
+        SceneManager::Instance().SetRuntimeFramePresentationCallback(
+            [this](RuntimeWorld &world) { return IsStepScreenComplete(world); });
     }
 }
 
@@ -913,6 +948,9 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         return true;
     };
     RetireReplacedViewTargets();
+    SyncPrimaryScreenRequest();
+    if (m_gameScreenOutputs)
+        m_gameScreenOutputs->Poll();
     const bool samplePerformanceFrame = m_framePerformanceWindowActive;
     RendererFramePerformanceSample performanceSample;
     const auto performanceWindowFrameStart =
@@ -1221,9 +1259,10 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderExtraction);
     if (finishStoppedFrame())
         return {};
-    if (!sceneManager.IsPlaying())
+    if (!sceneManager.IsRuntimeWorldManagementActive())
         PrepareWorldRenderInputs();
     bridge.PrepareFrame(sceneViewActive);
+    SyncPrimaryScreenRequest();
     const bool gameViewActive = HasActiveGameViews(allowViewportViews);
     auto _prepareEnd = std::chrono::high_resolution_clock::now();
     m_prepareFrameMs = std::chrono::duration<double, std::milli>(_prepareEnd - _prepareStart).count();
@@ -1299,11 +1338,18 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             for (const auto *view : FindGameCamerasCached()) {
                 if (!ShouldRenderGameCamera(view, allowViewportViews))
                     continue;
+                if (!view->renderToTexture) {
+                    const auto owner = m_gameSources.at(view->worldId);
+                    const auto publication = m_gamePublications.find(view->worldId);
+                    if (!GameScreens().Prepare(view->worldId, owner,
+                                               publication == m_gamePublications.end() ? nullptr : publication->second))
+                        continue;
+                }
                 auto *graph = EnsureGameRenderGraph(view);
                 if (!graph)
                     continue;
                 graph->SetBillboardViewMatrix(view->view);
-                const auto frame = bridge.AcquirePreparedFrameForCamera(view->worldId, view->cameraId);
+                const auto frame = m_gameSources.at(view->worldId);
                 if (!frame)
                     throw std::logic_error("Published Game view has no matching World/camera source: " +
                                            std::to_string(view->worldId) + "/" + std::to_string(view->cameraId));
@@ -1312,9 +1358,9 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                     content.activeScene = sceneManager.GetActiveScene();
                 std::shared_ptr<const RenderViewPlan> plan;
                 if (sceneManager.IsRuntimeWorldManagementActive()) {
-                    const auto completed = bridge.AcquirePreparedRuntimePublication(view->worldId);
+                    const auto completed = m_gamePublications.at(view->worldId);
                     if (!completed || completed->world != frame)
-                        continue;
+                        throw std::logic_error("Game work plan does not belong to its admitted source");
                     plan = completed->plans.at(view->cameraId);
                 } else {
                     ScriptableRenderContext capture(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, *view,
@@ -2266,7 +2312,8 @@ bool InxRenderer::HasPendingBackgroundGpuWork() const
     if (!m_vkCore)
         return false;
     const auto &resources = m_vkCore->GetResourceManager();
-    return resources.GetPendingAsyncGraphicsSubmissionCount() != 0 || resources.GetPendingGpuTransferCount() != 0;
+    return !m_retiringGameGraphs.empty() || (m_gameScreenOutputs && m_gameScreenOutputs->HasPendingCompletion()) ||
+           resources.GetPendingAsyncGraphicsSubmissionCount() != 0 || resources.GetPendingGpuTransferCount() != 0;
 }
 
 GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
@@ -2302,12 +2349,14 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
         m_vkCore->GetResourceManager().GetPendingAsyncGraphicsSubmissionCount();
     snapshot.asyncGraphicsSubmissionCount = m_vkCore->GetResourceManager().GetAsyncGraphicsSubmissionCount();
     snapshot.renderTargetBytes = (m_sceneRenderTarget ? m_sceneRenderTarget->GetResidentBytes() : 0) +
-                                 (m_gameRenderTarget ? m_gameRenderTarget->GetResidentBytes() : 0);
+                                 (m_gameScreenOutputs ? m_gameScreenOutputs->ResidentBytes() : 0);
     snapshot.renderGraphBytes = m_sceneRenderGraph ? m_sceneRenderGraph->GetTransientResidentBytes() : 0;
     for (const auto &[cameraId, graph] : m_gameRenderGraphs) {
         (void)cameraId;
         snapshot.renderGraphBytes += graph->GetTransientResidentBytes();
     }
+    for (const auto &graph : m_retiringGameGraphs)
+        snapshot.renderGraphBytes += graph->GetTransientResidentBytes();
     // Legacy telemetry field; temporary image ownership is in each RenderGraph.
     snapshot.transientPoolBytes = 0;
     const MaterialGpuResidencySnapshot materialResidency = m_vkCore->GetMaterialGpuResidency();
@@ -2366,6 +2415,17 @@ void InxRenderer::PollGpuCompletions()
     }
     if (m_gui)
         m_gui->PublishCompletedTextureUploads();
+    if (m_gameScreenOutputs)
+        m_gameScreenOutputs->Poll();
+    auto &manager = SceneManager::Instance();
+    const auto worlds = manager.GetRuntimeWorldIds();
+    for (auto id : worlds) {
+        auto *world = manager.FindRuntimeWorld(id);
+        if (world && world->simulation.stepFrameOpen && !world->simulation.pausedStepPending) {
+            const WorldExecutionScope scope(world);
+            manager.FinishStepPresentation(true);
+        }
+    }
 }
 
 void InxRenderer::RetireReplacedViewTargets()
@@ -2401,6 +2461,11 @@ uint64_t InxRenderer::RegisterFrameWork(FrameWorkOwner &owner)
         m_particleGpuSystemManager->RegisterMeshUploadWork(owner);
     m_captureService = std::make_unique<CaptureService>(owner);
     return textureSource;
+}
+
+bool InxRenderer::AdvanceRequiredRenderResources(const std::function<FrameGpuAvailability()> &gpuAvailability)
+{
+    return m_vkCore->AdvanceRequiredMeshUploads(gpuAvailability);
 }
 
 void InxRenderer::SetGpuResidencyBudgetBytes(uint64_t bytes)
@@ -3147,7 +3212,7 @@ void InxRenderer::UpdateSceneLighting()
               m_cameraPreviewFrame->FindView(m_sceneCameraPreviewId));
     for (const auto *view : FindGameCamerasCached())
         if (const auto graph = m_gameRenderGraphs.find(view->cameraId); graph != m_gameRenderGraphs.end())
-            stage(graph->second.get(), bridge.AcquirePreparedFrameForCamera(view->worldId, view->cameraId), view);
+            stage(graph->second.get(), m_gameSources.at(view->worldId), view);
     const auto frame = bridge.AcquirePreparedGameFrame();
     if (frame && frame->Lighting())
         m_vkCore->GetLightCollector().CollectLights(*frame->Lighting(), frame->PrimaryView().position);
@@ -3172,12 +3237,21 @@ BeginTargetReadback(vk::VkResourceManager &resources, const SceneRenderTarget &t
 
 std::shared_ptr<vk::ImageReadbackTicket> InxRenderer::RequestRenderTargetReadback(bool gameView)
 {
-    SceneRenderTarget *target = gameView ? m_gameRenderTarget.get() : m_sceneRenderTarget.get();
-    if (!m_vkCore || !target || !target->IsReady())
-        throw std::logic_error(gameView ? "Game render target is not initialized"
-                                        : "Scene render target is not initialized");
-
-    return BeginTargetReadback(m_vkCore->GetResourceManager(), *target, vk::ImageReadbackOutput::Pixels);
+    if (gameView) {
+        const auto sample = AcquireGameScreenOutput(PrimaryScreenWorldId());
+        if (!sample)
+            throw std::logic_error("Game output has no GPU-completed sample");
+        SceneRenderTarget target(m_vkCore.get());
+        target.BindAttachments(sample->image);
+        auto readback = BeginTargetReadback(m_vkCore->GetResourceManager(), target, vk::ImageReadbackOutput::Pixels);
+        // BeginTargetReadback reserves its own completion epoch. Keep the pixel
+        // lease until that read finishes, independently from panel/world life.
+        m_vkCore->GetRetirementQueue().Retire([sample] {});
+        return readback;
+    }
+    if (!m_vkCore || !m_sceneRenderTarget || !m_sceneRenderTarget->IsReady())
+        throw std::logic_error("Scene render target is not initialized");
+    return BeginTargetReadback(m_vkCore->GetResourceManager(), *m_sceneRenderTarget, vk::ImageReadbackOutput::Pixels);
 }
 
 std::shared_ptr<vk::ImageReadbackTicket> InxRenderer::RequestImGuiTextureReadback(const std::string &name)
@@ -3586,44 +3660,55 @@ uint64_t InxRenderer::RequestCapture(CaptureSource source, const std::string &ou
         RequestFullSpeedFrame();
         return captureId;
     }
-    const bool gameView = source == CaptureSource::Game;
-    if (gameView && (!m_gameRenderTarget || !m_gameRenderTarget->IsReady())) {
-        if (!FindGameCameraCached())
-            throw std::logic_error("Game camera is not available");
-        constexpr uint32_t kBackgroundCaptureWidth = 1280;
-        constexpr uint32_t kBackgroundCaptureHeight = 720;
-        ResizeGameRenderTarget(kBackgroundCaptureWidth, kBackgroundCaptureHeight);
+    if (source == CaptureSource::Game) {
+        const auto worldId = PrimaryScreenWorldId();
+        if (!worldId)
+            throw std::logic_error("The active runtime group has no World screen output");
+        const auto output = GameScreens().Touch(worldId);
+        const auto sample = AcquireGameScreenOutput(worldId);
+        const auto frozen = SceneRenderBridge::Instance().AcquireLatestRuntimePublication(worldId);
+        const auto config =
+            !sample && frozen && frozen->screenConfig ? frozen->screenConfig->config : GameScreens().Config(worldId);
+        const auto generation = sample                           ? sample->generation
+                                : frozen && frozen->screenConfig ? frozen->screenConfig->generation
+                                                                 : output->generation;
+        rhi::RenderViewContext view;
+        view.id = rhi::AllocateRenderViewId();
+        view.source = output->id;
+        view.device = m_vkCore->GetDeviceContext().GetDeviceId();
+        view.kind = rhi::RenderViewKind::Capture;
+        view.output = rhi::RenderOutputKind::Readback;
+        view.width = sample ? sample->image->width : config.width;
+        view.height = sample ? sample->image->height : config.height;
+        view.colorFormat = rhi::PixelFormat::RGBA16SFloat;
+        view.revision = generation;
+        const auto id = m_captureService->Request(source, view, generation, m_frameCount, outputPath);
+        PendingCapture capture;
+        capture.id = id;
+        capture.source = source;
+        capture.sourceGeneration = generation;
+        capture.gameImage.world = worldId;
+        capture.gameImage.target = generation;
+        capture.gameSample = sample;
+        m_pendingCaptures.push_back(std::move(capture));
+        if (!sample)
+            GameScreens().Request("capture/" + std::to_string(id), worldId, config, GameScreenConsumerKind::Required);
+        RequestFullSpeedFrame();
+        return id;
     }
-    const uint64_t generation = gameView ? m_gameRenderTargetGeneration : m_sceneRenderTargetGeneration;
-    SceneRenderTarget *target = gameView ? m_gameRenderTarget.get() : m_sceneRenderTarget.get();
-    if (!target || !target->IsReady())
-        throw std::logic_error(gameView ? "Game render target is not initialized"
-                                        : "Scene render target is not initialized");
-
-    rhi::RenderViewContext captureView;
-    if (gameView) {
-        captureView.id = m_gameScreenViewId;
-        captureView.device = m_vkCore->GetDeviceContext().GetDeviceId();
-        captureView.colorFormat = rhi::FromVkFormat(target->GetColorFormat());
-        captureView.revision = generation;
-    } else if (m_sceneRenderGraph) {
-        captureView = m_sceneRenderGraph->GetRenderViewContext();
-    }
-    captureView.width = target->GetWidth();
-    captureView.height = target->GetHeight();
-    if (!captureView.IsValid())
-        throw std::logic_error("Capture source render view is not initialized");
+    if (!m_sceneRenderTarget || !m_sceneRenderTarget->IsReady() || !m_sceneRenderGraph)
+        throw std::logic_error("Scene capture source is not initialized");
+    auto captureView = m_sceneRenderGraph->GetRenderViewContext();
+    const auto generation = m_sceneRenderTargetGeneration;
     captureView.source = captureView.id;
     captureView.id = rhi::AllocateRenderViewId();
     captureView.kind = rhi::RenderViewKind::Capture;
     captureView.output = rhi::RenderOutputKind::Readback;
-    // Capture metadata identifies the source but never owns its live handles.
     captureView.color = {};
     captureView.depth = {};
     captureView.motion = {};
-    const uint64_t captureId = m_captureService->Request(source, captureView, generation, m_frameCount, outputPath);
-    m_pendingCaptures.push_back(
-        {captureId, source, generation, 0, gameView ? CurrentGameImageGeneration() : GameImageGeneration{}});
+    const auto captureId = m_captureService->Request(source, captureView, generation, m_frameCount, outputPath);
+    m_pendingCaptures.push_back({captureId, source, generation});
     RequestFullSpeedFrame();
     return captureId;
 }
@@ -3640,7 +3725,7 @@ void InxRenderer::SubmitPendingCaptureReadbacks(bool frameSubmitted)
 {
     // DrawFrame may return before submission while acquiring/resizing the surface.
     // Keep requests pending until a real frame submission produces their source.
-    if (!m_captureService || m_pendingCaptures.empty() || !frameSubmitted)
+    if (!m_captureService || m_pendingCaptures.empty())
         return;
 
     const auto sourceWasRendered = [this](const SceneRenderGraph *graph) {
@@ -3663,8 +3748,15 @@ void InxRenderer::SubmitPendingCaptureReadbacks(bool frameSubmitted)
     for (const PendingCapture &capture : pending) {
         try {
             const auto snapshot = m_captureService->Query(capture.id);
-            if (snapshot.status != CaptureStatus::PendingGpu)
+            if (snapshot.status != CaptureStatus::PendingGpu) {
+                if (capture.source == CaptureSource::Game)
+                    ReleaseGameScreenOutput("capture/" + std::to_string(capture.id));
                 continue;
+            }
+            if (!frameSubmitted && capture.source != CaptureSource::Game) {
+                m_pendingCaptures.push_back(capture);
+                continue;
+            }
             if (capture.source == CaptureSource::Camera) {
                 const auto found = m_gameRenderGraphs.find(capture.cameraComponentId);
                 if (found == m_gameRenderGraphs.end() || !found->second->HasOutputTexture() ||
@@ -3699,15 +3791,31 @@ void InxRenderer::SubmitPendingCaptureReadbacks(bool frameSubmitted)
                 continue;
             }
             if (capture.source == CaptureSource::Game) {
-                if (capture.sourceGeneration != m_gameRenderTargetGeneration) {
-                    m_captureService->InvalidateSource(capture.source, m_gameRenderTargetGeneration);
-                } else if (!(capture.gameImage == CurrentGameImageGeneration())) {
-                    m_captureService->Fail(capture.id, "Game capture world changed before submission");
-                } else if (m_acceptedGameImage.completionEpoch == m_vkCore->GetLastSubmittedCompletionEpoch() &&
-                           m_acceptedGameImage.generation == capture.gameImage) {
-                    attach(capture.id, *m_gameRenderTarget);
+                const auto sample =
+                    capture.gameSample ? capture.gameSample : AcquireGameScreenOutput(capture.gameImage.world);
+                const auto output = GameScreens().Find(capture.gameImage.world);
+                if (!sample && !output) {
+                    m_captureService->Fail(capture.id,
+                                           "Game capture World retired before producing a completed sample");
+                    ReleaseGameScreenOutput("capture/" + std::to_string(capture.id));
+                } else if (!sample) {
+                    if (!output->error.empty()) {
+                        m_captureService->Fail(capture.id, output->error);
+                        ReleaseGameScreenOutput("capture/" + std::to_string(capture.id));
+                    } else {
+                        m_pendingCaptures.push_back(capture);
+                    }
+                } else if (sample->worldId != capture.gameImage.world ||
+                           sample->generation != capture.sourceGeneration) {
+                    m_captureService->Fail(capture.id,
+                                           "Game capture completed sample does not match its requested source");
+                    ReleaseGameScreenOutput("capture/" + std::to_string(capture.id));
                 } else {
-                    m_pendingCaptures.push_back(capture);
+                    SceneRenderTarget target(m_vkCore.get());
+                    target.BindAttachments(sample->image);
+                    attach(capture.id, target);
+                    m_vkCore->GetRetirementQueue().Retire([sample] {});
+                    ReleaseGameScreenOutput("capture/" + std::to_string(capture.id));
                 }
                 continue;
             }
@@ -4325,12 +4433,9 @@ void InxRenderer::PrepareWorldRenderInputs()
 {
     for (Camera *camera : FindGameCameras()) {
         const auto output = GetCameraOutputTexture(*camera);
-        const uint32_t width = output               ? output->Acquire()->width
-                               : m_gameRenderTarget ? m_gameRenderTarget->GetWidth()
-                                                    : 0;
-        const uint32_t height = output               ? output->Acquire()->height
-                                : m_gameRenderTarget ? m_gameRenderTarget->GetHeight()
-                                                     : 0;
+        const auto config = GameScreens().Config(SceneManager::Instance().CurrentWorld().id);
+        const uint32_t width = output ? output->Acquire()->width : config.width;
+        const uint32_t height = output ? output->Acquire()->height : config.height;
         camera->SetScreenDimensions(width, height);
         if (height)
             camera->UpdateAutomaticAspectRatio(static_cast<float>(width) / height);
@@ -4341,40 +4446,165 @@ bool InxRenderer::PublishRuntimeRenderFrame(RuntimeWorld &world)
 {
     if (!m_renderPipeline)
         return false;
+    const WorldExecutionScope ownerScope(&world);
+    const auto output = GameScreens().Touch(world.id);
+    const GameScreenSourceConfig raster{output->id, output->generation, output->config, output->samples};
     PrepareWorldRenderInputs();
-    return SceneRenderBridge::Instance().PublishRuntimeFrame(world, [this, &world](const auto &frame, auto &plans) {
-        for (const auto &view : frame->Views()) {
-            if (view.editorView || plans.find(view.cameraId) != plans.end())
-                continue;
-            const auto existing = m_gameRenderGraphs.find(view.cameraId);
-            auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
-            EditorGizmosContext content;
-            content.activeScene = world.scenes.active;
-            ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, view, true,
-                                            true);
-            m_renderPipeline->Render(context, context.GetView());
-            if (!context.CapturePlan()->ui)
-                return false;
-            plans.emplace(view.cameraId, context.CapturePlan());
-        }
+    return SceneRenderBridge::Instance().PublishRuntimeFrame(
+        world,
+        [this, &world](const auto &frame, auto &plans) {
+            for (const auto &view : frame->Views()) {
+                if (view.editorView || plans.find(view.cameraId) != plans.end())
+                    continue;
+                const auto existing = m_gameRenderGraphs.find(view.cameraId);
+                auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
+                EditorGizmosContext content;
+                content.activeScene = world.scenes.active;
+                ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, view, true,
+                                                true);
+                m_renderPipeline->Render(context, context.GetView());
+                if (!context.CapturePlan()->ui)
+                    return false;
+                plans.emplace(view.cameraId, context.CapturePlan());
+            }
+            return true;
+        },
+        raster);
+}
+
+bool InxRenderer::IsStepScreenComplete(RuntimeWorld &world)
+{
+    if (!m_gameScreenOutputs || !m_gameScreenOutputs->Requested(world.id)) {
+        m_stepScreenSamples.erase(world.id);
         return true;
-    });
+    }
+    const auto publication = SceneRenderBridge::Instance().AcquireLatestRuntimePublication(world.id);
+    if (!publication)
+        return false;
+    if (std::none_of(publication->world->Views().begin(), publication->world->Views().end(),
+                     [](const auto &view) { return !view.editorView && !view.renderToTexture; }))
+        return true; // A legal empty/no-screen Camera has no raster consumer.
+    auto &sample = m_stepScreenSamples[world.id];
+    const auto matches = [&world](const auto &value) {
+        return value && value->worldId == world.id && value->simulationEpoch == world.simulation.simulationEpoch &&
+               value->completedWorldFrame == world.simulation.frameTime.frameCount;
+    };
+    if (sample && !matches(sample))
+        sample.reset();
+    if (!sample) {
+        const auto status = m_gameScreenOutputs->Status(world.id);
+        // First actually accepted matching sample pins the Step's obligation.
+        if (matches(status.accepted))
+            sample = status.accepted;
+        else if (matches(status.completed))
+            sample = status.completed;
+        if (!sample && !status.error.empty()) {
+            INXLOG_ERROR("Step screen failed for World ", world.id, ": ", status.error);
+            m_stepScreenSamples.erase(world.id);
+            return true; // Terminal diagnostic, never a fabricated completed sample.
+        }
+    }
+    if (!sample || (!sample->receipt->complete && !sample->receipt->failed))
+        return false;
+    if (sample->receipt->failed)
+        INXLOG_ERROR("Step screen work failed for World ", world.id);
+    m_stepScreenSamples.erase(world.id);
+    return true;
+}
+
+void InxRenderer::RetireUnrequestedScreenGraphs(uint64_t worldId)
+{
+    if (m_gameScreenOutputs && m_gameScreenOutputs->Requested(worldId))
+        return;
+    std::vector<uint64_t> cameras;
+    for (const auto &[camera, owner] : m_gameGraphWorlds)
+        if (owner == worldId && !m_gameRenderGraphs.at(camera)->HasOutputTexture())
+            cameras.push_back(camera);
+    for (const auto camera : cameras)
+        RetireGameCameraGraph(camera);
+}
+
+void InxRenderer::RetireGameCameraGraph(uint64_t cameraId)
+{
+    const auto found = m_gameRenderGraphs.find(cameraId);
+    if (found == m_gameRenderGraphs.end())
+        return;
+    auto *graph = found->second.get();
+    if (m_gameRenderGraph == graph)
+        m_gameRenderGraph = nullptr;
+    const auto remove = [graph](auto &views) {
+        views.erase(
+            std::remove_if(views.begin(), views.end(), [graph](const auto &view) { return view.graph == graph; }),
+            views.end());
+    };
+    remove(m_scheduledViews);
+    remove(m_nextScheduledViews);
+    // The next CollectRequestedViews/UpdateViewSchedule rebuilds the index DAG.
+    // No removed raw pointer may survive in an old scheduled vector meanwhile.
+    m_viewSchedule = {};
+    m_viewScheduleDirty = true;
+    if (m_vkCore->UsesDrawCalls(&graph->GetCachedDrawCalls()) ||
+        m_vkCore->UsesShadowDrawCalls(&graph->GetCachedShadowDrawCalls())) {
+        m_vkCore->SetDrawBufferBindings(nullptr);
+        m_vkCore->ReleaseActiveDrawLists();
+    }
+    std::shared_ptr<SceneRenderGraph> retired(found->second.release());
+    m_gameRenderGraphs.erase(found);
+    m_gameGraphWorlds.erase(cameraId);
+    m_cameraRenderRequests.erase(cameraId);
+    auto *compiled = retired->GetCompiledRenderGraph();
+    const bool owesOwnershipRelease =
+        compiled && (compiled->HasExternalQueueOwnershipReleases(rhi::QueueRole::Graphics) ||
+                     compiled->HasExternalQueueOwnershipReleases(rhi::QueueRole::Compute) ||
+                     compiled->HasExternalQueueOwnershipReleases(rhi::QueueRole::Transfer));
+    if (owesOwnershipRelease) {
+        m_retiringGameGraphs.push_back(std::move(retired));
+        RequestFullSpeedFrame();
+    } else {
+        const auto epoch = m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+        m_vkCore->GetRetirementQueue().RetireAfter(epoch, [retired = std::move(retired)] {});
+    }
 }
 
 void InxRenderer::RetireRuntimeRenderFrame(uint64_t worldId)
 {
+    std::vector<uint64_t> cameras;
+    for (const auto &[camera, owner] : m_gameGraphWorlds)
+        if (owner == worldId)
+            cameras.push_back(camera);
+    for (const auto camera : cameras)
+        RetireGameCameraGraph(camera);
     SceneRenderBridge::Instance().RetireRuntimeWorld(worldId);
-    m_cachedGameFrame.reset();
-    m_cachedGameCameras.clear();
-    m_cachedGameCamera = nullptr;
-    m_gameRenderGraph = nullptr;
-    m_gameRenderGraphs.clear();
-    m_cameraRenderRequests.clear();
-    m_cameraPreviewFrame.reset();
+    m_stepScreenSamples.erase(worldId);
+    if (m_gameScreenOutputs)
+        m_gameScreenOutputs->Retire(worldId);
+    m_cachedGameCameras.erase(std::remove_if(m_cachedGameCameras.begin(), m_cachedGameCameras.end(),
+                                             [worldId](const auto *view) { return view->worldId == worldId; }),
+                              m_cachedGameCameras.end());
+    if (m_cachedGameCamera && m_cachedGameCamera->worldId == worldId)
+        m_cachedGameCamera = nullptr;
+    if (m_cachedGameFrame && m_cachedGameFrame->WorldId() == worldId)
+        m_cachedGameFrame.reset();
+    m_cachedGameFrames.erase(std::remove_if(m_cachedGameFrames.begin(), m_cachedGameFrames.end(),
+                                            [worldId](const auto &frame) { return frame->WorldId() == worldId; }),
+                             m_cachedGameFrames.end());
     m_gameCameraCacheValid = false;
-    if (m_sceneRenderGraph)
-        m_sceneRenderGraph->ClearCachedFrameState();
-    m_sceneCameraPreviewGraph.reset();
+    m_gameSources.erase(worldId);
+    m_gamePublications.erase(worldId);
+    if (m_cameraPreviewFrame && m_cameraPreviewFrame->WorldId() == worldId) {
+        m_cameraPreviewFrame.reset();
+        if (m_sceneCameraPreviewGraph &&
+            (m_vkCore->UsesDrawCalls(&m_sceneCameraPreviewGraph->GetCachedDrawCalls()) ||
+             m_vkCore->UsesShadowDrawCalls(&m_sceneCameraPreviewGraph->GetCachedShadowDrawCalls()))) {
+            m_vkCore->SetDrawBufferBindings(nullptr);
+            m_vkCore->ReleaseActiveDrawLists();
+        }
+        std::shared_ptr<SceneRenderGraph> graph(m_sceneCameraPreviewGraph.release());
+        auto target = std::move(m_sceneCameraPreviewTarget);
+        const auto epoch = m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+        m_vkCore->GetRetirementQueue().RetireAfter(epoch, [graph = std::move(graph), target = std::move(target)] {});
+    }
+    RefreshPrimaryScreenAliases();
 }
 
 std::shared_ptr<rhi::RenderTexture> InxRenderer::GetCameraOutputTexture(Camera &camera)
@@ -4420,23 +4650,40 @@ void InxRenderer::RequestCameraRender(Camera &camera)
 
 SceneRenderGraph *InxRenderer::EnsureGameRenderGraph(const RenderViewData *camera)
 {
-    if (!camera || !m_vkCore ||
-        (!camera->outputGeneration &&
-         (camera->renderToTexture || !m_gameRenderTarget || !m_gameRenderTarget->IsReady())))
+    if (!camera || !m_vkCore)
+        return nullptr;
+    auto *screen = GameScreens().Work(camera->worldId);
+    if (!camera->outputGeneration && (camera->renderToTexture || !screen))
         return nullptr;
     auto found = m_gameRenderGraphs.find(camera->cameraId);
     if (found == m_gameRenderGraphs.end()) {
         auto graph = std::make_unique<SceneRenderGraph>();
-        if (!graph->Initialize(m_vkCore.get(), m_gameRenderTarget.get(), rhi::RenderViewKind::Game,
-                               camera->outputTexture, camera->outputGeneration))
+        if (!graph->Initialize(m_vkCore.get(), screen, rhi::RenderViewKind::Game, camera->outputTexture,
+                               camera->outputGeneration))
             return nullptr;
         graph->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
         graph->SetEffectiveMsaaSamples(GetMsaaSamples());
         found = m_gameRenderGraphs.emplace(camera->cameraId, std::move(graph)).first;
+        m_gameGraphWorlds[camera->cameraId] = camera->worldId;
     }
+    if (m_gameGraphWorlds.at(camera->cameraId) != camera->worldId)
+        throw std::logic_error("Game Camera graph changed its actual World owner");
     auto *graph = found->second.get();
+    if (!camera->renderToTexture) {
+        const auto admission = GameScreens().Admitted(camera->worldId);
+        if (!admission || admission->source != m_gameSources.at(camera->worldId))
+            throw std::logic_error("Screen graph requires its original immutable admission");
+        graph->SetEffectiveMsaaSamples(static_cast<int>(rhi::ToVkSampleCount(admission->samples)));
+        graph->SetScreenAdmission(admission);
+        graph->BindScreenOutput(screen, GameScreens().WorkOwner(camera->worldId));
+    }
     graph->SetOutputTextureGeneration(camera->outputTexture, camera->outputGeneration);
-    return graph->SetCameraViewport(*camera) ? graph : nullptr;
+    if (!graph->SetCameraViewport(*camera))
+        return nullptr;
+    if (m_cachedGameCamera && m_cachedGameCamera->cameraId == camera->cameraId)
+        m_gameRenderGraph = graph;
+    RefreshPrimaryScreenAliases();
+    return graph;
 }
 
 bool InxRenderer::ShouldRenderGameCamera(const RenderViewData *camera, bool allowScreen) const
@@ -4448,13 +4695,20 @@ bool InxRenderer::ShouldRenderGameCamera(const RenderViewData *camera, bool allo
                                              request->second[m_viewRequestSerial % 2] == m_viewRequestSerial) ||
                                             HasPendingCapture(CaptureSource::Camera, camera->cameraId));
     }
-    return (allowScreen && m_gameCameraEnabled) || HasPendingCapture(CaptureSource::Game);
+    const bool captureNeedsOutput =
+        std::any_of(m_pendingCaptures.begin(), m_pendingCaptures.end(), [camera](const auto &capture) {
+            return capture.source == CaptureSource::Game && capture.gameImage.world == camera->worldId &&
+                   !capture.gameSample;
+        });
+    if ((!allowScreen && !captureNeedsOutput &&
+         !(m_gameScreenOutputs && m_gameScreenOutputs->Required(camera->worldId))) ||
+        !m_gameScreenOutputs || !m_gameScreenOutputs->Requested(camera->worldId))
+        return false;
+    return m_gameScreenOutputs->Due(camera->worldId, m_gameSources.at(camera->worldId));
 }
 
 bool InxRenderer::HasActiveGameViews(bool allowScreen)
 {
-    if ((allowScreen && m_gameCameraEnabled) || HasPendingCapture(CaptureSource::Game))
-        return true;
     const auto &cameras = FindGameCamerasCached();
     return std::any_of(cameras.begin(), cameras.end(), [this, allowScreen](const RenderViewData *camera) {
         return ShouldRenderGameCamera(camera, allowScreen);
@@ -4484,24 +4738,27 @@ void InxRenderer::UpdateViewSchedule()
 {
     // The last admitted screen view composites the screen-space lists.
     // Prepare from the end to assign that owner before building each view.
-    bool hasScreenUIOwner = false;
+    std::unordered_set<uint64_t> screenUIOwners;
     bool waitingForResults = false;
     for (auto entry = m_nextScheduledViews.rbegin(); entry != m_nextScheduledViews.rend(); ++entry) {
         auto &view = *entry;
         const bool game = view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game;
-        const bool ownsScreenUI = game && !hasScreenUIOwner && !view.graph->HasOutputTexture();
+        const uint64_t owner = view.graph->GetCachedCameraView().worldId;
+        const bool ownsScreenUI = game && !view.graph->HasOutputTexture() && !screenUIOwners.count(owner);
         if (game)
             view.graph->SetScreenUIRenderer(m_screenUIRenderer.get(), ownsScreenUI);
         view.graph->EnsureGraphBuilt();
         view.waitingForResult = view.graph->HasPendingBufferInputs();
         view.admitted = !view.waitingForResult && view.graph->AdmitGraphEvents(m_graphEventInterests);
         view.accessRevision = view.graph->GetResourceAccessRevision();
-        hasScreenUIOwner |= view.admitted && ownsScreenUI;
+        if (view.admitted && ownsScreenUI)
+            screenUIOwners.insert(owner);
         waitingForResults |= view.waitingForResult;
     }
     const bool changed = m_scheduledViews != m_nextScheduledViews;
-    if (!waitingForResults && !changed)
+    if (!waitingForResults && !changed && !m_viewScheduleDirty)
         return;
+    m_viewScheduleDirty = false;
     m_scheduledViews.swap(m_nextScheduledViews);
     std::vector<RenderViewAccess> accesses;
     accesses.reserve(m_scheduledViews.size());
@@ -4528,38 +4785,61 @@ void InxRenderer::UpdateViewSchedule()
 
 const std::vector<const RenderViewData *> &InxRenderer::FindGameCamerasCached()
 {
-    const auto frame = SceneRenderBridge::Instance().AcquirePreparedGameFrame();
-    if (m_gameCameraCacheValid && m_cachedGameFrame == frame)
+    auto &bridge = SceneRenderBridge::Instance();
+    std::vector<std::shared_ptr<const RenderWorldFrame>> frames;
+    m_gameSources.clear();
+    m_gamePublications.clear();
+    if (SceneManager::Instance().IsRuntimeWorldManagementActive()) {
+        for (const auto &latest : bridge.AcquirePreparedRuntimePublications()) {
+            const auto worldId = latest->world->WorldId();
+            const auto admitted = m_gameScreenOutputs ? m_gameScreenOutputs->Admitted(worldId) : nullptr;
+            const auto publication = admitted ? admitted->publication : latest;
+            if (!publication || (admitted && publication->world != admitted->source))
+                throw std::logic_error("Admitted screen work lost its exact complete World publication");
+            frames.push_back(publication->world);
+            m_gameSources.emplace(worldId, publication->world);
+            m_gamePublications.emplace(worldId, publication);
+        }
+    } else if (auto latest = bridge.AcquirePreparedGameFrame()) {
+        const auto admitted = m_gameScreenOutputs ? m_gameScreenOutputs->Admitted(latest->WorldId()) : nullptr;
+        const auto frame = admitted ? admitted->source : latest;
+        frames.push_back(frame);
+        m_gameSources.emplace(frame->WorldId(), frame);
+    }
+    const auto selected = m_gameSources.find(PrimaryScreenWorldId());
+    const auto primary = selected == m_gameSources.end() ? nullptr : selected->second;
+    if (m_gameCameraCacheValid && frames == m_cachedGameFrames && primary == m_cachedGameFrame)
         return m_cachedGameCameras;
-    m_cachedGameFrame = frame;
+    m_cachedGameFrames = std::move(frames);
+    m_cachedGameFrame = primary;
     m_cachedGameCameras.clear();
     m_cachedGameCamera = nullptr;
-    if (frame)
+    std::unordered_set<uint64_t> retained;
+    for (const auto &frame : m_cachedGameFrames)
         for (const auto &view : frame->Views()) {
             if (view.editorView)
                 continue;
             m_cachedGameCameras.push_back(&view);
-            if (view.isMainCamera && !view.renderToTexture)
+            retained.insert(view.cameraId);
+            if (frame == primary && !view.renderToTexture && view.isMainCamera)
                 m_cachedGameCamera = &view;
         }
-    if (!m_cachedGameCamera)
-        for (const auto *view : m_cachedGameCameras)
-            if (!view->renderToTexture && view->pixelWidth && view->pixelHeight) {
-                m_cachedGameCamera = view;
+    if (!m_cachedGameCamera && primary)
+        for (const auto &view : primary->Views())
+            if (!view.editorView && !view.renderToTexture && view.pixelWidth && view.pixelHeight) {
+                m_cachedGameCamera = &view;
                 break;
             }
-    for (auto it = m_gameRenderGraphs.begin(); it != m_gameRenderGraphs.end();) {
-        if (frame && frame->FindView(it->first)) {
-            ++it;
-        } else {
-            if (m_gameRenderGraph == it->second.get())
-                m_gameRenderGraph = nullptr;
-            m_cameraRenderRequests.erase(it->first);
-            it = m_gameRenderGraphs.erase(it);
-        }
-    }
+    std::vector<uint64_t> removed;
+    for (const auto &[camera, graph] : m_gameRenderGraphs)
+        if (!retained.count(camera))
+            removed.push_back(camera);
+    for (const auto camera : removed)
+        RetireGameCameraGraph(camera);
     m_gameCameraCacheValid = true;
-    m_gameRenderGraph = m_cachedGameCamera ? EnsureGameRenderGraph(m_cachedGameCamera) : nullptr;
+    const auto main =
+        m_cachedGameCamera ? m_gameRenderGraphs.find(m_cachedGameCamera->cameraId) : m_gameRenderGraphs.end();
+    m_gameRenderGraph = main == m_gameRenderGraphs.end() ? nullptr : main->second.get();
     return m_cachedGameCameras;
 }
 
@@ -4569,94 +4849,192 @@ const RenderViewData *InxRenderer::FindGameCameraCached()
     return m_cachedGameCamera;
 }
 
-InxRenderer::GameImageGeneration InxRenderer::CurrentGameImageGeneration() const
+GameScreenOutputs &InxRenderer::GameScreens()
+{
+    if (!m_vkCore || !m_gui)
+        throw std::logic_error("Game screen requests require an initialized renderer and GUI owner");
+    if (!m_gameScreenOutputs) {
+        m_gameScreenOutputs = std::make_unique<GameScreenOutputs>(*m_vkCore, *m_gui);
+        m_gameScreenOutputs->SetDefaultConfig(m_defaultGameOutput);
+        m_gameScreenOutputs->SetSamples(ToRhiSampleCount(GetMsaaSamples()));
+    }
+    return *m_gameScreenOutputs;
+}
+
+uint64_t InxRenderer::PrimaryScreenWorldId() const
 {
     const auto &manager = SceneManager::Instance();
-    const Scene *scene = manager.GetActiveScene();
-    return {m_gameRenderTargetGeneration, scene ? scene->GetWorldId() : 0, manager.GetSimulationEpoch(),
-            scene ? scene->GetTemporalDiscontinuityRevision() : 0};
+    const auto *primary = manager.GetPrimaryRuntimeWorld();
+    return manager.IsRuntimeWorldManagementActive() ? (primary ? primary->id : 0) : manager.AuthoringWorld().id;
+}
+
+void InxRenderer::RequestGameScreenOutput(const std::string &consumer, uint64_t worldId,
+                                          const GameScreenOutputConfig &config, GameScreenConsumerKind kind)
+{
+    auto &manager = SceneManager::Instance();
+    auto *world =
+        worldId == manager.AuthoringWorld().id ? &manager.AuthoringWorld() : manager.FindRuntimeWorld(worldId);
+    if (!world)
+        throw std::invalid_argument("Game screen request refers to an unknown World");
+    const auto previous = GameScreens().Config(worldId);
+    GameScreens().Request(consumer, worldId, config, kind);
+    const auto desired = GameScreens().Config(worldId);
+    if (!(previous == desired))
+        ResizeRelativeRenderTextures(worldId, desired.width, desired.height);
+    m_gameCameraCacheValid = false;
+    RequestFullSpeedFrame();
+}
+
+void InxRenderer::RequestGameScreenSample(const std::string &consumer, uint64_t worldId)
+{
+    GameScreens().RequestSample(consumer, worldId);
+    RequestFullSpeedFrame();
+}
+
+void InxRenderer::ReleaseGameScreenOutput(const std::string &consumer)
+{
+    SyncRequiredScreenWork();
+    if (m_gameScreenOutputs)
+        for (const auto worldId : m_gameScreenOutputs->Release(consumer))
+            RetireUnrequestedScreenGraphs(worldId);
+    RefreshPrimaryScreenAliases();
+}
+
+void InxRenderer::RefreshPrimaryScreenAliases()
+{
+    const auto output = m_gameScreenOutputs ? m_gameScreenOutputs->Find(PrimaryScreenWorldId()) : nullptr;
+    const auto previousId = m_gameScreenViewId;
+    m_gameScreenViewId = output ? output->id : rhi::InvalidRenderViewId;
+    m_gameRenderTarget = nullptr;
+    if (output)
+        m_gameRenderTarget = m_gameScreenOutputs->LatestTarget(output->worldId);
+    if (previousId != m_gameScreenViewId)
+        ++m_gameRenderTargetGeneration;
+}
+
+void InxRenderer::SyncRequiredScreenWork()
+{
+    if (!m_gameScreenOutputs)
+        return;
+    std::unordered_set<uint64_t> required;
+    for (const auto &[camera, graph] : m_gameRenderGraphs)
+        if (!graph->HasOutputTexture() && graph->HasPendingBufferCaptures())
+            required.insert(m_gameGraphWorlds.at(camera));
+    for (const auto worldId : m_gameScreenOutputs->SyncRequiredBufferWork(required))
+        RetireUnrequestedScreenGraphs(worldId);
+}
+
+void InxRenderer::SyncPrimaryScreenRequest()
+{
+    SyncRequiredScreenWork();
+    if (!m_vkCore || !m_gui)
+        return;
+    auto &screens = GameScreens();
+    // The original one-panel convenience API is one named consumer of the
+    // same registry. New panels own separate consumers and do not use this flag.
+    auto &manager = SceneManager::Instance();
+    const auto primary = PrimaryScreenWorldId();
+    const bool displayed =
+        !manager.IsRuntimeWorldManagementActive() || (primary && manager.GetRuntimeWorldHandle(primary)->displayInGame);
+    const auto keepWorld = m_gameCameraEnabled && displayed ? primary : 0;
+    const auto emptied = screens.Release("host/default-game", keepWorld);
+    if (m_gameCameraEnabled && displayed && primary) {
+        const auto worldId = PrimaryScreenWorldId();
+        const auto previous = screens.Config(worldId);
+        screens.Request("host/default-game", worldId, m_defaultGameOutput);
+        if (!(previous == m_defaultGameOutput))
+            ResizeRelativeRenderTextures(worldId, m_defaultGameOutput.width, m_defaultGameOutput.height);
+    }
+    for (const auto worldId : emptied)
+        RetireUnrequestedScreenGraphs(worldId);
+    RefreshPrimaryScreenAliases();
+}
+
+std::shared_ptr<const GameScreenSample> InxRenderer::AcquireGameScreenOutput(uint64_t worldId)
+{
+    if (!m_gameScreenOutputs)
+        return nullptr;
+    m_gameScreenOutputs->Poll();
+    return m_gameScreenOutputs->Acquire(worldId);
+}
+
+GameScreenOutputStatus InxRenderer::GetGameScreenOutputStatus(uint64_t worldId) const
+{
+    auto result = m_gameScreenOutputs ? m_gameScreenOutputs->Status(worldId) : GameScreenOutputStatus{};
+    result.worldId = worldId;
+    auto &bridge = SceneRenderBridge::Instance();
+    const auto runtime = bridge.AcquireLatestRuntimePublication(worldId);
+    const auto frame = runtime                                                   ? runtime->world
+                       : worldId == SceneManager::Instance().AuthoringWorld().id ? bridge.AcquirePreparedGameFrame()
+                                                                                 : nullptr;
+    result.sourcePublished = frame && frame->WorldId() == worldId;
+    result.hasScreenCamera = result.sourcePublished &&
+                             std::any_of(frame->Views().begin(), frame->Views().end(),
+                                         [](const auto &view) { return !view.editorView && !view.renderToTexture; });
+    return result;
+}
+
+uint64_t InxRenderer::GetGameScreenTextureId(const std::shared_ptr<const GameScreenSample> &sample)
+{
+    if (!sample)
+        return 0;
+    if (!m_gui)
+        throw std::logic_error("Screen sample presentation outlived the renderer GUI owner");
+    const auto pixels = std::static_pointer_cast<const GameScreenOutputs::PixelStorage>(sample->storageOwner);
+    // Touch the native GUI owner on every presentation; cached draw data keeps
+    // old descriptors alive and the slot pool checks it before reusing pixels.
+    pixels->textureId = m_gui->PublishRenderTextureForImGui(pixels->texture);
+    pixels->registered = true;
+    m_gui->SetImGuiTexturePixelLease(pixels->textureId, sample);
+    auto &descriptors = pixels->guiDescriptors;
+    descriptors.erase(std::remove_if(descriptors.begin(), descriptors.end(),
+                                     [this, &pixels](uint64_t id) {
+                                         return id != pixels->textureId &&
+                                                !m_gui->IsTextureReferencedByCurrentDrawData(id);
+                                     }),
+                      descriptors.end());
+    if (std::find(descriptors.begin(), descriptors.end(), pixels->textureId) == descriptors.end())
+        descriptors.push_back(pixels->textureId);
+    return pixels->textureId;
+}
+
+InxRenderer::GameImageGeneration InxRenderer::CurrentGameImageGeneration() const
+{
+    const auto worldId = PrimaryScreenWorldId();
+    const auto output = m_gameScreenOutputs ? m_gameScreenOutputs->Find(worldId) : nullptr;
+    const auto frame = SceneRenderBridge::Instance().AcquirePreparedGameFrame();
+    return {output ? output->generation : 0, worldId, frame ? frame->SimulationEpoch() : 0,
+            frame ? frame->PrimaryView().temporalHistoryRevision : 0};
 }
 
 bool InxRenderer::IsGamePresentationReady() const
 {
-    return m_gameRenderTarget && m_gameRenderTarget->IsReady() &&
-           m_acceptedGameImage.generation == CurrentGameImageGeneration();
+    const auto worldId = PrimaryScreenWorldId();
+    const auto output = m_gameScreenOutputs ? m_gameScreenOutputs->Find(worldId) : nullptr;
+    const auto sample = output ? output->front : nullptr;
+    const auto source = SceneRenderBridge::Instance().AcquirePreparedGameFrame();
+    return sample && source && sample->generation == output->generation && sample->worldId == source->WorldId() &&
+           sample->simulationEpoch == source->SimulationEpoch();
 }
 
 uint64_t InxRenderer::GetGameTextureId()
 {
-    if (m_gameRenderTarget && m_gameRenderTarget->IsReady()) {
-        // Resolving here makes the GUI's no-camera state change in the same
-        // frame instead of briefly presenting the previous camera image.
-        if (FindGameCameraCached())
-            return m_gameRenderTarget->GetImGuiTextureId();
-        return 0;
-    }
-    return 0;
+    return GetGameScreenTextureId(AcquireGameScreenOutput(PrimaryScreenWorldId()));
 }
 
 void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height, rhi::FilterMode filter)
 {
-    if (width == 0 || height == 0) {
+    if (!width || !height)
         return;
-    }
-
-    // Lazy-initialize game render target on first resize request
-    if (!m_gameRenderTarget) {
-        // INXLOG_INFO("Game render target: lazy-initializing (", width, "x", height, ")");
-        m_gameRenderTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
-        // Match the current MSAA setting from the scene render target.
-        // Without this, the game render target defaults to 4x MSAA even
-        // when the engine has already switched to 1x, causing a layout
-        // mismatch (COLOR_ATTACHMENT_OPTIMAL vs SHADER_READ_ONLY_OPTIMAL)
-        // that triggers VK_ERROR_DEVICE_LOST.
-        if (m_sceneRenderTarget) {
-            m_gameRenderTarget->SetMsaaSampleCount(m_sceneRenderTarget->GetMsaaSampleCount());
-        }
-        m_gameRenderTarget->Initialize(width, height, filter);
-        ++m_gameRenderTargetGeneration;
-
-        EnsureScreenUIRenderer();
-        // Pre-discover the ordered camera stack and create one graph per
-        // camera so the first Game frame cannot reuse Scene-view state.
-        m_gameCameraCacheValid = false;
-        (void)FindGameCamerasCached();
-
+    const GameScreenOutputConfig config{width, height, filter};
+    if (m_defaultGameOutput == config)
         return;
-    }
-
-    if (width != m_gameRenderTarget->GetWidth() || height != m_gameRenderTarget->GetHeight() ||
-        filter != m_gameRenderTarget->GetFilterMode()) {
-        auto replacementTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
-        replacementTarget->SetMsaaSampleCount(m_gameRenderTarget->GetMsaaSampleCount());
-        if (!replacementTarget->Initialize(width, height, filter)) {
-            INXLOG_ERROR("Failed to prepare replacement Game render target for resize to ", width, "x", height,
-                         "; keeping the current generation.");
-            return;
-        }
-
-        // Allocate every dependent generation before replacing the Game target.
-        // No graph can observe a partially published reference-size transition.
-        ResizeRelativeRenderTextures(width, height);
-        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-            (void)cameraId;
-            graph->InvalidateBeforeTargetReplacement();
-        }
-
-        std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_gameRenderTarget);
-        m_gameRenderTarget = std::move(replacementTarget);
-        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-            (void)cameraId;
-            graph->ReplaceSceneTarget(m_gameRenderTarget.get());
-        }
-        m_replacedViewTargets.push_back(std::move(retiredTarget));
-
-        ++m_gameRenderTargetGeneration;
-        if (m_captureService)
-            m_captureService->InvalidateSource(CaptureSource::Game, m_gameRenderTargetGeneration);
-        if (m_gui)
-            m_gui->RequestFrame();
-    }
+    m_defaultGameOutput = config;
+    GameScreens().SetDefaultConfig(config);
+    ++m_gameRenderTargetGeneration;
+    SyncPrimaryScreenRequest();
+    if (m_gui)
+        m_gui->RequestFrame();
 }
 
 void InxRenderer::InvalidateTemporalHistory(bool sceneView, bool gameView)
@@ -4679,64 +5057,51 @@ void InxRenderer::InvalidateTemporalHistory(bool sceneView, bool gameView)
 
 void InxRenderer::ConsumeSceneTemporalDiscontinuity()
 {
-    Scene *scene = SceneManager::Instance().GetActiveScene();
-    const uint64_t worldId = scene ? scene->GetWorldId() : 0;
-    if (worldId != m_temporalHistoryWorldId) {
-        m_temporalHistoryWorldId = worldId;
-        m_observedSceneTemporalDiscontinuityRevision = scene ? scene->GetTemporalDiscontinuityRevision() : 0;
-        InvalidateGpuViewStateForSceneBoundary();
-        m_gameRenderGraph = nullptr;
-        m_gameRenderGraphs.clear();
-        m_gameCameraCacheValid = false;
-        m_cachedGameCamera = nullptr;
-        m_cachedGameCameras.clear();
+    auto &manager = SceneManager::Instance();
+    const WorldExecutionScope authorScope(&manager.AuthoringWorld());
+    const auto *scene = manager.GetActiveScene();
+    const uint64_t worldId = manager.AuthoringWorld().id;
+    const uint64_t revision = scene ? scene->GetTemporalDiscontinuityRevision() : 0;
+    if (worldId == m_temporalHistoryWorldId && revision == m_observedSceneTemporalDiscontinuityRevision)
         return;
-    }
-    if (!scene)
-        return;
-
-    const uint64_t revision = scene->GetTemporalDiscontinuityRevision();
-    if (revision == m_observedSceneTemporalDiscontinuityRevision)
-        return;
+    m_temporalHistoryWorldId = worldId;
     m_observedSceneTemporalDiscontinuityRevision = revision;
-    // Play/Stop keeps the same world id. Treat that edge like opening Scene:
-    // drop compiled Scene/Game graphs and rebuild from the current generation.
     InvalidateGpuViewStateForSceneBoundary();
-    InvalidateTemporalHistory();
 }
 
 void InxRenderer::InvalidateGpuViewStateForSceneBoundary()
 {
-    if (m_particleGpuSystemManager) {
-        m_particleGpuSystemManager->AbortAsyncRecording();
-        // View invalidation runs after Scene Update. Particle owners have
-        // already rebuilt and scheduled the new scene's first frame here.
-        // Resetting simulation would discard that frame's initial bursts;
-        // scene/component lifecycle owns simulation resets, not view caches.
+    // This is the authoring Scene-view boundary. Runtime views detect their
+    // own camera/temporal revisions in SetCachedCameraView, or retire by World.
+    // Primary reorder is not a source/temporal boundary.
+    if (m_sceneRenderGraph) {
+        auto replacement = std::make_unique<SceneRenderGraph>();
+        if (!replacement->Initialize(m_vkCore.get(), m_sceneRenderTarget.get(), rhi::RenderViewKind::Scene))
+            throw std::runtime_error("Failed to prepare the authoring Scene view successor");
+        replacement->SetParticleGpuDrawRegistry(m_particleGpuDrawRegistry.get());
+        replacement->SetScreenUIRenderer(m_screenUIRenderer.get());
+        replacement->SetEffectiveMsaaSamples(GetMsaaSamples());
+        if (m_sceneViewVisible && m_outlineRenderer)
+            replacement->SetOutlineRenderer(m_outlineRenderer.get());
+        auto *old = m_sceneRenderGraph.get();
+        if (m_vkCore->UsesDrawCalls(&old->GetCachedDrawCalls()) ||
+            m_vkCore->UsesShadowDrawCalls(&old->GetCachedShadowDrawCalls())) {
+            m_vkCore->SetDrawBufferBindings(nullptr);
+            m_vkCore->ReleaseActiveDrawLists();
+        }
+        m_scheduledViews.erase(std::remove_if(m_scheduledViews.begin(), m_scheduledViews.end(),
+                                              [old](const auto &view) { return view.graph == old; }),
+                               m_scheduledViews.end());
+        m_nextScheduledViews.erase(std::remove_if(m_nextScheduledViews.begin(), m_nextScheduledViews.end(),
+                                                  [old](const auto &view) { return view.graph == old; }),
+                                   m_nextScheduledViews.end());
+        m_viewSchedule = {};
+        m_viewScheduleDirty = true;
+        std::shared_ptr<SceneRenderGraph> retired(m_sceneRenderGraph.release());
+        m_sceneRenderGraph = std::move(replacement);
+        const auto epoch = m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+        m_vkCore->GetRetirementQueue().RetireAfter(epoch, [retired = std::move(retired)] {});
     }
-    if (m_sceneRenderGraph)
-        m_sceneRenderGraph->InvalidateParticleViews();
-    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-        (void)cameraId;
-        graph->InvalidateParticleViews();
-    }
-    WaitForGpuIdle();
-    // Game cameras keep the same IDs across Play/Stop. Destroy the compiled
-    // graphs only after the device is idle: SceneRenderGraph::Destroy releases
-    // RHI objects immediately. The next Game frame must import the current
-    // particle generation instead of recycled handles from two Play cycles ago.
-    m_gameRenderGraph = nullptr;
-    m_gameRenderGraphs.clear();
-    m_gameCameraCacheValid = false;
-    m_cachedGameCamera = nullptr;
-    m_cachedGameCameras.clear();
-    m_sceneCameraPreviewGraph.reset();
-    m_sceneCameraPreviewTarget.reset();
-    m_sceneCameraPreviewRenderedId = 0;
-    m_sceneCameraPreviewDue = {};
-    RecreateSceneRenderGraph();
-    if (m_vkCore)
-        m_vkCore->FlushRetiredGpuResources();
 }
 
 void InxRenderer::RecreateSceneRenderGraph()
@@ -4873,15 +5238,7 @@ void InxRenderer::SetGameCameraEnabled(bool enabled)
     if (m_gameCameraEnabled == enabled)
         return;
     m_gameCameraEnabled = enabled;
-    // Panel visibility invalidates camera submissions, not graphics resources.
-    // Scene/target replacement and particle registry revisions own those
-    // invalidations. Rebuilding here reallocated every transient attachment
-    // and particle view whenever the user returned to the Game tab.
-    for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-        (void)cameraId;
-        graph->ClearCachedViewSubmission();
-    }
-    INXLOG_DEBUG("Game camera rendering {}", enabled ? "enabled" : "disabled");
+    SyncPrimaryScreenRequest();
 }
 
 InxScreenUIRenderer *InxRenderer::GetScreenUIRenderer()
@@ -4937,14 +5294,13 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
 
     const VkSampleCountFlagBits vkSamples = rhi::ToVkSampleCount(ToRhiSampleCount(samples));
     const bool sceneAligned = !m_sceneRenderTarget || m_sceneRenderTarget->GetMsaaSampleCount() == vkSamples;
-    const bool gameAligned = !m_gameRenderTarget || m_gameRenderTarget->GetMsaaSampleCount() == vkSamples;
+    const bool gameAligned = !m_gameScreenOutputs || m_gameScreenOutputs->Samples() == ToRhiSampleCount(samples);
     const bool materialsAligned = !m_vkCore || m_vkCore->GetMaterialPipelineManager().GetSampleCount() == vkSamples;
 
     if (sceneAligned && gameAligned && materialsAligned)
         return false;
 
     std::unique_ptr<SceneRenderTarget> replacementSceneTarget;
-    std::unique_ptr<SceneRenderTarget> replacementGameTarget;
     std::unique_ptr<InxScreenUIRenderer> replacementScreenUI;
     std::unique_ptr<OutlineRenderer> replacementOutline;
 
@@ -4960,15 +5316,6 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
         replacementSceneTarget = createReplacement(*m_sceneRenderTarget);
         if (!replacementSceneTarget) {
             INXLOG_ERROR("Failed to create the replacement Scene target for ", samples,
-                         "x MSAA; keeping all current resources.");
-            return false;
-        }
-    }
-
-    if (!gameAligned) {
-        replacementGameTarget = createReplacement(*m_gameRenderTarget);
-        if (!replacementGameTarget) {
-            INXLOG_ERROR("Failed to create the replacement Game target for ", samples,
                          "x MSAA; keeping all current resources.");
             return false;
         }
@@ -5022,20 +5369,12 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
     }
 
     std::unique_ptr<SceneRenderTarget> retiredSceneTarget;
-    std::unique_ptr<SceneRenderTarget> retiredGameTarget;
     std::unique_ptr<InxScreenUIRenderer> retiredScreenUI;
     std::unique_ptr<OutlineRenderer> retiredOutline;
 
     // Invalidate graphs before publishing replacement target views.
     if (replacementSceneTarget && m_sceneRenderGraph)
         m_sceneRenderGraph->InvalidateBeforeTargetReplacement();
-    if (replacementGameTarget) {
-        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-            (void)cameraId;
-            graph->InvalidateBeforeTargetReplacement();
-        }
-    }
-
     if (replacementSceneTarget) {
         retiredSceneTarget = std::move(m_sceneRenderTarget);
         m_sceneRenderTarget = std::move(replacementSceneTarget);
@@ -5048,16 +5387,10 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
         retiredOutline = std::move(m_outlineRenderer);
         m_outlineRenderer = std::move(replacementOutline);
     }
-    if (replacementGameTarget) {
-        retiredGameTarget = std::move(m_gameRenderTarget);
-        m_gameRenderTarget = std::move(replacementGameTarget);
-        for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-            (void)cameraId;
-            graph->ReplaceSceneTarget(m_gameRenderTarget.get());
-        }
+    if (m_gameScreenOutputs && !gameAligned) {
+        m_gameScreenOutputs->SetSamples(ToRhiSampleCount(samples));
         ++m_gameRenderTargetGeneration;
-        if (m_captureService)
-            m_captureService->InvalidateSource(CaptureSource::Game, m_gameRenderTargetGeneration);
+        RefreshPrimaryScreenAliases();
     }
     if (replacementScreenUI) {
         replacementScreenUI->AdoptCompletedSnapshots(*m_screenUIRenderer);
@@ -5080,8 +5413,6 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
     }
     if (retiredSceneTarget)
         m_replacedViewTargets.push_back(std::move(retiredSceneTarget));
-    if (retiredGameTarget)
-        m_replacedViewTargets.push_back(std::move(retiredGameTarget));
 
     // BuildFrame() ran before the MSAA request was observed. Replacing render
     // targets and preview renderers invalidates texture descriptor sets already
@@ -5113,8 +5444,11 @@ void InxRenderer::SetEffectiveGraphMsaaSamples(int samples)
     if (m_sceneRenderGraph)
         m_sceneRenderGraph->SetEffectiveMsaaSamples(samples);
     for (auto &[cameraId, graph] : m_gameRenderGraphs) {
-        (void)cameraId;
-        graph->SetEffectiveMsaaSamples(samples);
+        const auto worldId = m_gameGraphWorlds.at(cameraId);
+        const auto admitted = m_gameScreenOutputs ? m_gameScreenOutputs->Admitted(worldId) : nullptr;
+        graph->SetEffectiveMsaaSamples(admitted && !graph->HasOutputTexture()
+                                           ? static_cast<int>(rhi::ToVkSampleCount(admitted->samples))
+                                           : samples);
     }
 }
 

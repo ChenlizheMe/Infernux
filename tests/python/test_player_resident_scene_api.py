@@ -13,7 +13,7 @@ from infernux.scene import SceneManager
 
 
 @pytest.fixture
-def player_runtime(engine, tmp_path, monkeypatch):
+def player_runtime(engine, tmp_path, monkeypatch, runtime_scheduler):
     """Borrow the existing CI native host through its real Python companion.
 
     Construct no second native Engine, runtime driver or placeholder world.
@@ -27,12 +27,25 @@ def player_runtime(engine, tmp_path, monkeypatch):
     from infernux.engine.project_context import using_project_root
     from infernux.lib import RuntimeMode
     from infernux.renderstack.render_stack import RenderStack
+    from conftest import install_runtime_scheduler_bridge
+
+    # Earlier users of this shared host can end Run with Exit. Reopen its
+    # public driver before constructing the companion or preparing a World;
+    # Exit suspends FrameWork and leaves exit_requested set until Run/Tick.
+    engine.tick(0.0)
 
     host = Engine.__new__(Engine)
     host._engine = engine
     host._mode = RuntimeMode.Graphical
     host._application_role = "player"
     host._play_mode_manager = None
+    # Match Engine.__init__'s Player services for the real graphical pre-scene
+    # callback. Player has no Editor reload watcher or Scene View gizmo owner.
+    host._resources_manager = None
+    host._next_reload_poll_time = 0.0
+    host._reload_poll_interval = 1.0 / 60.0
+    host._scene_view_visible = False
+    host._gizmos_uploaded = False
     host._world_runtimes = {}
     host._runtime_world_session = None
     host._initialize_work_runtime(engine.frame_work, accepting=True)
@@ -63,16 +76,24 @@ def player_runtime(engine, tmp_path, monkeypatch):
                 assert host._runtime_world_session is None
                 assert not host._world_runtimes
             finally:
-                session.release_content()
-                engine._set_runtime_frame_callbacks(None, None)
-                native._set_runtime_world_retirement_callbacks(None, None)
-                native.clear_runtime_lifecycle_callbacks()
-                host._authoring_scheduler.end_native_frame()
-                host._authoring_scheduler.unbind_native_bridge()
-                host._authoring_scheduler.clear()
-                host._runtime_scene_manager = None
-                Application._unbind_engine(host)
-                host._engine = None
+                try:
+                    session.release_content()
+                finally:
+                    engine._set_runtime_frame_callbacks(None, None)
+                    native._set_runtime_world_retirement_callbacks(None, None)
+                    native.clear_runtime_lifecycle_callbacks()
+                    try:
+                        host._authoring_scheduler.end_native_frame()
+                        host._authoring_scheduler.unbind_native_bridge()
+                        host._authoring_scheduler.clear()
+                    finally:
+                        host._runtime_scene_manager = None
+                        Application._unbind_engine(host)
+                        host._engine = None
+                        # The borrowed native host survives this companion.
+                        # Restore its real author bridge without dropping the
+                        # session scheduler's existing Editor registrations.
+                        install_runtime_scheduler_bridge(runtime_scheduler, reset_callbacks=False)
 
 
 def _configure_player_contract(session, catalog):

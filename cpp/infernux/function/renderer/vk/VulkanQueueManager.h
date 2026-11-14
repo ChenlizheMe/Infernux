@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <vector>
@@ -106,6 +107,13 @@ class VulkanQueueManager
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionSerial ReserveCompletionEpoch() noexcept;
     INFERNUX_VULKAN_BACKEND_API void CompleteCompletionEpoch(rhi::SubmissionSerial epoch) noexcept;
 
+    // Reserve observer metadata before any batch can be accepted.
+    INFERNUX_VULKAN_BACKEND_API void ReserveWorkCompletions(size_t additional);
+    INFERNUX_VULKAN_BACKEND_API void WatchWorkCompletion(rhi::SubmissionTicket ticket,
+                                                         std::shared_ptr<rhi::WorkCompletionReceipt> receipt);
+    // One native-lane query per Host opportunity; no frame-pool recycling.
+    INFERNUX_VULKAN_BACKEND_API void ObserveWorkCompletions(uint64_t opportunity);
+    INFERNUX_VULKAN_BACKEND_API void FailWorkCompletions() noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API QueueSnapshot GetSnapshot(rhi::QueueRole role) const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::GpuQueuePressure GetFramePressure() const;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionSerial
@@ -153,6 +161,8 @@ class VulkanQueueManager
     [[nodiscard]] rhi::SubmissionSerial ReserveCompletionEpochLocked() noexcept;
     void CompleteCompletionEpochLocked(rhi::SubmissionSerial epoch) noexcept;
 
+    std::vector<std::shared_ptr<rhi::WorkCompletionReceipt>> m_workCompletions;
+    uint64_t m_workObservation = uint64_t(-1);
     mutable std::mutex m_mutex;
     std::condition_variable m_submitCv;
     VkDevice m_device = VK_NULL_HANDLE;

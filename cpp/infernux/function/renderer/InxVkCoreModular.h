@@ -72,6 +72,7 @@ class AssetLoadTicket;
 class TextureReadTask;
 struct FrameWorkSource;
 class FrameWorkOwner;
+enum class FrameGpuAvailability : uint8_t;
 class EditorGizmos;
 class GPUMaterialPreview;
 class GPUMeshPreview;
@@ -365,6 +366,11 @@ class InxVkCoreModular
         return m_drawCallsPtr == drawCalls;
     }
 
+    [[nodiscard]] bool UsesShadowDrawCalls(const std::vector<DrawCall> *drawCalls) const noexcept
+    {
+        return m_shadowDrawCallsPtr == drawCalls;
+    }
+
     /// @brief Set shadow-caster draw calls (stores pointer, no copy)
     void SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh = false);
 
@@ -494,6 +500,7 @@ class InxVkCoreModular
     }
     [[nodiscard]] FrameWorkSource GetTextureWorkSource(FrameWorkOwner &owner);
     void RegisterMeshUploadWork(FrameWorkOwner &owner);
+    bool AdvanceRequiredMeshUploads(const std::function<FrameGpuAvailability()> &gpuAvailability);
     [[nodiscard]] FrameWorkOwner *GetFrameWorkOwner() const noexcept
     {
         return m_frameWorkOwner;
@@ -1461,6 +1468,7 @@ class InxVkCoreModular
         std::shared_ptr<vk::BufferUploadTicket> indexUpload;
         uint64_t token = 0;
         uint64_t requestedFrame = 0;
+        uint64_t requiredFrame = 0;
     };
 
     bool AppendMeshUploadBlock(const SharedMeshKey &key, PendingSharedMeshBuffers &upload, bool vertex,
@@ -1524,6 +1532,7 @@ class InxVkCoreModular
     uint64_t m_completedMeshUploadCount = 0;
     uint64_t m_asyncMeshUploadCount = 0;
     uint64_t m_meshWorkSource = 0, m_meshWorkToken = 0, m_lastMeshGpuToken = 0;
+    bool m_requiredMeshOnly = false;
 
     void PublishSharedMeshBuffers(const SharedMeshKey &key, SharedMeshBuffers buffers);
     void RetireSharedMeshBuffers(SharedMeshBuffers buffers, bool eviction);

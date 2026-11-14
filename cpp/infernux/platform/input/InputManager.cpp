@@ -198,6 +198,33 @@ void InputManager::ClearSampleTransients(InputFrameSample &sample)
         std::get<5>(mouse) = std::get<6>(mouse) = false;
     }
 }
+void InputManager::SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcast,
+                                           std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs,
+                                           std::vector<std::array<float, 4>> imageRects)
+{
+    if (InputReadScope::Current())
+        throw std::logic_error("World tile routing is recorded by the Host, not a gameplay callback");
+    std::sort(outputs.begin(), outputs.end());
+    if (!selectedWorld && outputs.empty()) {
+        if (m_worldGameplayRouting) {
+            m_worldGameplayRouting.reset();
+            InvalidateCapture();
+        }
+        return;
+    }
+    if (m_worldGameplayRouting && m_worldGameplayRouting->selectedWorld == selectedWorld &&
+        m_worldGameplayRouting->broadcast == broadcast && m_worldGameplayRouting->outputs == outputs &&
+        m_worldGameplayRouting->imageRects == imageRects)
+        return;
+    auto routing = std::make_shared<WorldGameplayRouting>();
+    routing->selectedWorld = selectedWorld;
+    routing->broadcast = broadcast;
+    routing->outputs = std::move(outputs);
+    routing->imageRects = std::move(imageRects);
+    m_worldGameplayRouting = std::move(routing);
+    InvalidateCapture();
+}
+
 InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameLease external,
                                                    uint64_t logicalFrameIndex)
 {
@@ -212,6 +239,34 @@ InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameL
     auto value = std::make_shared<InputFrameSample>(*external);
     if (state->lastExternalSample == external->sampleIdentity)
         ClearSampleTransients(*value);
+    if (const auto &routing = value->worldRouting) {
+        const auto output = std::lower_bound(routing->outputs.begin(), routing->outputs.end(), worldId,
+                                             [](const auto &entry, uint64_t id) { return std::get<0>(entry) < id; });
+        value->gameplayRenderSize = output != routing->outputs.end() && std::get<0>(*output) == worldId
+                                        ? std::array<float, 2>{float(std::get<1>(*output)), float(std::get<2>(*output))}
+                                        : std::array<float, 2>{0, 0};
+        if (!routing->broadcast && routing->selectedWorld != worldId) {
+            value->gameplayFocused = false;
+            value->keys.fill(0);
+            value->keyDown.fill(0);
+            value->keyUp.fill(0);
+            value->gameKeyOwned.fill(0);
+            value->mouseButtons.fill(0);
+            value->mouseDown.fill(0);
+            value->mouseUp.fill(0);
+            value->gameMouseOwned.fill(0);
+            for (auto &mouse : value->gameMouseFrames)
+                mouse = {};
+            value->mouseX = value->mouseY = value->mouseDX = value->mouseDY = 0;
+            value->scrollX = value->scrollY = 0;
+            value->gameScroll = {};
+            value->inputString.clear();
+            value->gameInputString.clear();
+            value->touches.clear();
+            value->droppedFiles.clear();
+            value->anyKeyDown = value->syntheticGameplayInput = value->syntheticHeld = false;
+        }
+    }
     value->logical = true;
     value->logicalFrameIndex = logicalFrameIndex;
     value->sourceSampleIdentity = external->sampleIdentity;
@@ -263,6 +318,7 @@ InputFrameLease InputManager::CaptureFrame()
     sample->syntheticInputFrame = m_syntheticInputThisFrame;
     sample->syntheticGameplayInput = m_syntheticInputThisFrame || m_syntheticHeldCount != 0;
     sample->syntheticHeld = m_syntheticHeldCount != 0;
+    sample->worldRouting = m_worldGameplayRouting;
     sample->gameplayFocused = m_gameplayFocused;
     sample->gameplayViewportOrigin = m_gameplayViewportOrigin;
     sample->gameplayViewportSize = m_gameplayViewportSize;
@@ -1299,6 +1355,12 @@ bool InputManager::IsGameMouseButtonOwned(int button) const
 
 bool InputManager::IsInEditorGameInputRect(float x, float y) const
 {
+    if (m_worldGameplayRouting)
+        return std::any_of(m_worldGameplayRouting->imageRects.begin(), m_worldGameplayRouting->imageRects.end(),
+                           [x, y](const auto &rect) {
+                               const auto &[left, top, width, height] = rect;
+                               return x >= left && y >= top && x < left + width && y < top + height;
+                           });
     const auto &[left, top, width, height] = m_editorGameInputRect;
     return x >= left && y >= top && x < left + width && y < top + height;
 }

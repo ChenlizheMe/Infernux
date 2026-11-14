@@ -3,6 +3,7 @@
 #include "vk/RenderGraph.h"
 
 #include <core/error/InxError.h>
+#include <stdexcept>
 
 namespace infernux::vk
 {
@@ -13,6 +14,7 @@ void VulkanFrameSubmission::Reset(uint32_t firstWorkItemId)
     m_recorders.clear();
     m_resourceOwners.clear();
     m_publications.clear();
+    m_workPublications.clear();
     m_lastWork.fill(0);
 }
 
@@ -41,9 +43,40 @@ void VulkanFrameSubmission::PublishAccepted(rhi::SubmissionTicket ticket)
     m_publications.clear();
 }
 
+void VulkanFrameSubmission::OnWorkAccepted(uint32_t workItem, std::function<void(rhi::SubmissionTicket)> publish)
+{
+    if (!workItem || !publish)
+        throw std::invalid_argument("Work publication needs a real work item and callback");
+    m_workPublications[workItem].push_back(std::move(publish));
+}
+
+void VulkanFrameSubmission::PublishWorkAccepted(const rhi::SubmissionPlan &plan,
+                                                const std::vector<rhi::SubmissionTicket> &tickets, size_t acceptedCount)
+{
+    if (acceptedCount == 0) {
+        m_workPublications.clear();
+        return;
+    }
+    if (tickets.size() != plan.batches.size())
+        throw std::logic_error("Accepted batch tickets do not match the submitted plan");
+    if (acceptedCount > plan.batches.size())
+        throw std::logic_error("Accepted work prefix exceeds the actual plan");
+    for (size_t index = 0; index < acceptedCount; ++index)
+        for (const auto work : plan.batches[index].workItems)
+            if (const auto found = m_workPublications.find(work); found != m_workPublications.end()) {
+                for (auto &publish : found->second)
+                    publish(tickets[index]);
+                m_workPublications.erase(found);
+            }
+    if (acceptedCount == plan.batches.size() && !m_workPublications.empty())
+        throw std::logic_error("Accepted output publication work was omitted from the submitted plan");
+    m_workPublications.clear(); // Unaccepted reservations publish nothing.
+}
+
 void VulkanFrameSubmission::DiscardPublications() noexcept
 {
     m_publications.clear();
+    m_workPublications.clear();
 }
 
 uint32_t VulkanFrameSubmission::AddWork(rhi::DeviceId device, rhi::QueueRole queue, rhi::SubmissionDomain domain,
