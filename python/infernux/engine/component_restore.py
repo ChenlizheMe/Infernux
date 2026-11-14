@@ -1369,6 +1369,7 @@ def create_component_instance(
         bind_runtime_lifecycle_contract,
         validate_runtime_component_identity,
     )
+    from infernux.engine.runtime_worlds import source_module_name
 
     script_path = resolve_script_from_guid(script_guid, asset_database)
 
@@ -1400,7 +1401,7 @@ def create_component_instance(
                 runtime_contract = validate_runtime_component_identity(
                     script_guid=script_guid,
                     type_guid=type_guid,
-                    module_name=component_type.__module__,
+                    module_name=source_module_name(component_type.__module__),
                     qualified_name=component_type.__qualname__,
                 )
                 bind_runtime_lifecycle_contract(component_type, runtime_contract)
@@ -1436,7 +1437,7 @@ def create_component_instance(
         runtime_contract = validate_runtime_component_identity(
             script_guid=script_guid,
             type_guid=type_guid,
-            module_name=instance.__class__.__module__,
+            module_name=source_module_name(instance.__class__.__module__),
             qualified_name=instance.__class__.__qualname__,
         )
         bind_runtime_lifecycle_contract(instance.__class__, runtime_contract)

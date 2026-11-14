@@ -59,8 +59,7 @@ def source_module_name(name):
     marker = getattr(module, '__infernux_source_name__', None)
     if marker is not None:
         return marker
-    prefix, separator, source = name.partition('.')
-    return source if separator and prefix.startswith('_infernux_runtime_') else name
+    return name
 
 
 def runtime_module_name(path, default):
