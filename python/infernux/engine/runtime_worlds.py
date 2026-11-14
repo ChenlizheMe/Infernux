@@ -298,7 +298,8 @@ class WorldRuntime:
         self.scope = ExecutionScope()
         self.scope._world_id = self.identity
         self.scheduler = RuntimeExecutionScheduler(name=f'world:{identity}', change_journal=self.journal,
-                                                   native_bridge=True, world_id=self.identity)
+                                                   native_bridge=True, world_id=self.identity,
+                                                   runtime_updates=self.updates)
         self.modules = ProjectModules(self.identity, self.serializable_types.maps[0])
 
     def close(self):

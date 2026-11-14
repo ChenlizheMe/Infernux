@@ -60,9 +60,11 @@ class Engine(WorkRuntime):
         SceneManager.instance()._ensure_authoring_world()
         self._world_runtimes = {}
         self._runtime_world_session = None
+        from infernux.runtime_services import _author_update_callbacks
         self._authoring_scheduler = RuntimeExecutionScheduler(
             name=self._application_role,
             native_bridge=True,
+            runtime_updates=_author_update_callbacks,
         )
         self._runtime_scene_manager = None
         self._last_native_transform_serial = None
@@ -371,12 +373,15 @@ class Engine(WorkRuntime):
             from infernux.lib import _Infernux, SceneManager
             manager = SceneManager.instance()
             identities = manager._runtime_world_ids
-            if not identities and engine._runtime_world_session is None:
-                identities = [manager._authoring_runtime_world_id]
+            author_only = not identities and engine._runtime_world_session is None
+            if author_only:
+                with _Infernux._RuntimeWorldScope(manager._authoring_runtime_world_id):
+                    engine._authoring_scheduler.prepare_frame()
             for identity in identities:
+                scheduler = engine._world_runtimes[int(identity)].scheduler
                 with _Infernux._RuntimeWorldScope(identity):
-                    engine._runtime_scheduler.prepare_frame()
-            if identities:
+                    scheduler.prepare_frame()
+            if identities or author_only:
                 # A paused Step is intentionally executed outside the
                 # authoring transaction above.  This is the single owner
                 # safe point where the runtime journal may be consumed.
@@ -602,6 +607,7 @@ class Engine(WorkRuntime):
             if callbacks:
                 _dispatch_updates(callbacks, self._clock_delta, self._clock_delta, gameplay_phase=False)
             return changes
+        scheduler = self._runtime_scheduler
         if barrier == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
             scene_manager = getattr(self, "_runtime_scene_manager", None)
             getter = getattr(scene_manager, "get_global_transform_serial", None)
@@ -614,24 +620,24 @@ class Engine(WorkRuntime):
                 )
                 self._last_native_transform_serial = current_serial
                 if previous_serial is not None and current_serial != previous_serial:
-                    journal = self._runtime_scheduler.change_journal
+                    journal = scheduler.change_journal
                     journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
                     journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
-        changes = self._runtime_scheduler.consume_native_barrier(barrier)
+        changes = scheduler.consume_native_barrier(barrier)
         if barrier == RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
             if changes is not None:
-                self._runtime_scheduler.execute_native_phase(
+                scheduler.execute_native_phase(
                     "physics_pre_step",
                     float(self._runtime_scene_manager.get_fixed_time_step()),
                 )
         elif barrier == RuntimeFrameBarrier.ANIMATION_EVALUATION:
             if changes is not None:
-                self._runtime_scheduler.execute_native_phase(
+                scheduler.execute_native_phase(
                     "animation_update", self._runtime_scene_manager.get_frame_delta_time(),
                 )
         elif barrier == RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
             if changes is not None:
-                self._runtime_scheduler.execute_native_phase(
+                scheduler.execute_native_phase(
                     "physics_post_step",
                     float(self._runtime_scene_manager.get_fixed_time_step()),
                 )
@@ -1053,9 +1059,16 @@ class Engine(WorkRuntime):
 
     @property
     def _runtime_scheduler(self):
-        from .runtime_worlds import current_world_runtime
-        domain = current_world_runtime()
-        return domain.scheduler if domain is not None else self._authoring_scheduler
+        manager = self._runtime_scene_manager
+        if manager is None:
+            return self._authoring_scheduler
+        identity = int(manager._current_runtime_world_id)
+        domain = self._world_runtimes.get(identity)
+        if domain is not None:
+            return domain.scheduler
+        if identity != int(manager._authoring_runtime_world_id):
+            raise KeyError(identity)
+        return self._authoring_scheduler
 
     def get_runtime_execution_scheduler(self):
         """Get the shared phase-plan service for diagnostics and profiling."""

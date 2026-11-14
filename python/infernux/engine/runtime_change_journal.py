@@ -459,7 +459,7 @@ class RuntimeChangeJournal:
             raise RuntimeError("cannot flush a runtime change transaction before it exits")
 
         with self._lock:
-            if flush:
+            if flush and self._pending:
                 self._flush_locked()
             start_revision = int(cursor.revision)
             current_revision = self._revision

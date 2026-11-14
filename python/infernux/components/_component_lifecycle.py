@@ -70,8 +70,10 @@ class RuntimeExecutionScheduler:
         change_journal: Any = None,
         native_bridge: bool = False,
         world_id: int | None = None,
+        runtime_updates: Mapping[str, tuple[Any, ...]] | None = None,
     ) -> None:
         self.name = str(name)
+        self._runtime_updates = runtime_updates
         if world_id is None:
             from infernux.lib import SceneManager
             world_id = int(SceneManager.instance()._current_runtime_world_id)
@@ -554,7 +556,7 @@ class RuntimeExecutionScheduler:
             _runtime_change_types = (RuntimeChangeDomain, RuntimeFrameBarrier)
         RuntimeChangeDomain, RuntimeFrameBarrier = _runtime_change_types
 
-        typed_barrier = RuntimeFrameBarrier(barrier)
+        typed_barrier = barrier if isinstance(barrier, RuntimeFrameBarrier) else RuntimeFrameBarrier(barrier)
         changes = self._change_journal.consume(self._change_cursor)
         global _structure_change_domains
         if _structure_change_domains is None:
@@ -940,7 +942,8 @@ class RuntimeExecutionScheduler:
     # those steps.
 
     def begin_native_frame(self) -> None:
-        self.end_native_frame()
+        if self._native_frame is not None:
+            self.end_native_frame()
         self._native_frame = self.begin_frame()
         self._counters["native_frame_begins"] += 1
 
@@ -1124,7 +1127,8 @@ class RuntimeExecutionFrame:
         self.phase_plan = snapshot.phase_plan
         self.component_snapshots = snapshot.component_snapshots
         self.dispatch_plan = snapshot.dispatch_plan
-        self.update_callbacks = _update_snapshot()
+        updates = scheduler._runtime_updates
+        self.update_callbacks = dict(updates) if updates is not None else _update_snapshot()
         self.structure_revision = snapshot.structure_revision
         self.epoch = snapshot.epoch
         self.barrier_changes: dict[Any, Any] = {}
