@@ -168,8 +168,10 @@ ShaderValueLayout ReflectValue(spirv_cross::Compiler &compiler, spirv_cross::Typ
         value.kind = ShaderValueKind::Struct;
         value.byteSize = compiler.get_declared_struct_size(type);
         for (uint32_t index = 0; index < type.member_types.size(); ++index) {
-            auto member = ReflectValue(compiler, type.member_types[index],
-                                       compiler.get_member_decoration(type.self, index, spv::DecorationMatrixStride),
+            const auto &memberType = compiler.get_type(type.member_types[index]);
+            const auto matrixStride =
+                memberType.columns > 1 ? compiler.type_struct_member_matrix_stride(type, index) : 0;
+            auto member = ReflectValue(compiler, type.member_types[index], matrixStride,
                                        compiler.has_member_decoration(type.self, index, spv::DecorationRowMajor));
             member.name = compiler.get_member_name(type.self, index);
             member.offset = compiler.type_struct_member_offset(type, index);
