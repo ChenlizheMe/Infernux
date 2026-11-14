@@ -932,7 +932,8 @@ void PhysicsWorld::RefreshRenderPoses()
             FlushAuthoring(domain);
         }
         while (domain.waitingForSlot) {
-            (void)BeginGpuControl(domain, true);
+            if (!BeginGpuControl(domain, true))
+                return;
             if (!AdvanceGpuControl(domain, false))
                 return;
             RetryCapacityBodyCreations(domain);
