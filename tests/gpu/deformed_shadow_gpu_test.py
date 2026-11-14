@@ -10,11 +10,15 @@ from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, InxMaterial, LightShadows, SceneManager, Vector3
 from deformed_tangent_frame_gpu_test import VERTEX, FRAGMENT
 
-RECEIVER = '''#version 450
-ShaderInfo { Name "Deformed Shadow Receiver" ShadingModel PBR Cull Off }
-void surface(out SurfaceData s) {
-    s = InitSurfaceData(); s.albedo = vec3(0.5); s.smoothness = 0.0;
-}
+RECEIVER = '''import infernux.shader as shader
+
+
+class ShadowReceiver(shader.surface):
+    shader_id = "tests/deformation/shadow_receiver"
+    cull_mode = "none"
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(0.5), smoothness=0.0)
 '''
 
 def main():
@@ -50,25 +54,31 @@ def main():
         for name in ('Assets', 'Packages', 'ProjectSettings'):
             (project / name).mkdir()
         quad = 'v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 -1\nf 1/1/1 3/3/1 2/2/1\nf 1/1/1 4/4/1 3/3/1\n'
-        vertex = VERTEX.replace('Float handedness=1.0', 'Float handedness=1.0 Float deform=1.0')
-        vertex = vertex.replace('v.position = rotation * v.position;', 'if (material.deform < 0.5) rotation = mat3(1.0);\n    v.position = rotation * v.position;')
-        fragment = FRAGMENT.replace('ShadingModel Unlit Cull Off', 'ShadingModel Unlit Cull Off AlphaClip 0.5')
-        fragment = fragment.replace('s.albedo = normalOK && tangentOK && basisOK && mappedOK ? vec3(0,1,0) : vec3(1,0,1);',
-                                    's.alpha = normalOK && tangentOK && basisOK && mappedOK ? 1.0 : 0.0;\n    s.albedo = vec3(1,0,1);')
+        vertex = VERTEX.replace('    handedness = shader.material.float(default=1.0)',
+            '    handedness = shader.material.float(default=1.0)\n    deform = shader.material.float(default=1.0)')
+        vertex = vertex.replace('        vertex.position_os = rotation @ vertex.position_os',
+            '        if self.deform < 0.5:\n            rotation = shader.mat3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)\n        vertex.position_os = rotation @ vertex.position_os')
+        fragment = FRAGMENT.replace('    cull_mode = "none"', '    cull_mode = "none"\n    alpha_clip = 0.5')
+        fragment = fragment.replace('albedo = shader.vec3(0.0, 1.0, 0.0) if valid else shader.vec3(1.0, 0.0, 1.0)',
+                                    'albedo = shader.vec3(1.0, 0.0, 1.0)')
+        fragment = fragment.replace('return shader.SurfaceData(albedo=albedo)',
+                                    'return shader.SurfaceData(albedo=albedo, alpha=1.0 if valid else 0.0)')
         if args.shading == 'pbr':
-            fragment = fragment.replace('ShadingModel Unlit', 'ShadingModel PBR')
-            fragment = fragment.replace('s.albedo = vec3(1,0,1);',
-                's.albedo = vec3(.5,.15,.04); s.smoothness = 0.0;\n    s.normalWS = normalFromTangentSpace(normalize(vec3(.35,-.25,.9)), getWorldNormal(), getWorldTangent());')
-        for name, source in [('Quad.obj', quad), ('Probe.vert', vertex), ('Probe.frag', fragment), ('Receiver.frag', RECEIVER)]:
+            fragment = fragment.replace('    shading_model = shader.ref("infernux/shading/unlit")\n', '')
+            fragment = fragment.replace('albedo = shader.vec3(1.0, 0.0, 1.0)',
+                                         'albedo = shader.vec3(0.5, 0.15, 0.04)')
+            fragment = fragment.replace('albedo=albedo, alpha=',
+                                         'albedo=albedo, smoothness=0.0, normal_ws=mapped_normal, alpha=')
+        for name, source in [('Quad.obj', quad), ('Probe.vert.py', vertex), ('Probe.frag.py', fragment), ('Receiver.frag.py', RECEIVER)]:
             (project / 'Assets' / name).write_text(source, encoding='ascii')
         if args.skinned:
             from skinned_mesh_gpu_fixture import write_skinned_quad
             write_skinned_quad(project / 'Assets/Quad.gltf', envelope=True)
             # Match the hook's deliberately authored UV orientation in both
             # paths. The CPU mesh has already applied the bone reflection.
-            vertex = vertex.replace('Float deform=1.0', 'Float deform=1.0 Float referenceW=1.0')
-            vertex = vertex.replace('v.tangent.w = material.handedness;', 'v.tangent.w = material.handedness * material.referenceW;')
-            (project / 'Assets/Probe.vert').write_text(vertex, encoding='ascii')
+            vertex = vertex.replace('    deform = shader.material.float(default=1.0)', '    deform = shader.material.float(default=1.0)\n    reference_w = shader.material.float(default=1.0)')
+            vertex = vertex.replace('self.handedness)', 'self.handedness * self.reference_w)')
+            (project / 'Assets/Probe.vert.py').write_text(vertex, encoding='ascii')
             proof['scope'] += ' Imported bone scale animation after vertex hook compared with CPU positions and normal-mapped lighting.'
         frontend = inx.Engine()
         engine = frontend.get_native_engine()
@@ -83,7 +93,7 @@ def main():
             engine.set_editor_idle_fps(0)
             db = frontend.get_asset_database()
             imported = {}
-            for name in ('Quad.obj', 'Probe.vert', 'Probe.frag', 'Receiver.frag', *(('Quad.gltf',) if args.skinned else ())):
+            for name in ('Quad.obj', 'Probe.vert.py', 'Probe.frag.py', 'Receiver.frag.py', *(('Quad.gltf',) if args.skinned else ())):
                 result = AssetManager.import_asset(str(project / 'Assets' / name), database=db)
                 assert result, result.error
                 imported[name] = result.guid
@@ -103,7 +113,7 @@ def main():
             receiver = plane.add_component('MeshRenderer')
             receiver.set_mesh_asset_guid(imported['Quad.obj'])
             receiver_material = InxMaterial.create_default_lit()
-            receiver_material.frag_shader_name = 'Deformed Shadow Receiver'
+            receiver_material.frag_shader_name = 'tests/deformation/shadow_receiver'
             receiver.set_material(0, receiver_material)
             obj = scene.create_game_object('Caster')
             obj.transform.position = Vector3(-.5,0,-1.5)
@@ -116,8 +126,8 @@ def main():
                 reference_obj.transform.position = obj.transform.position
                 reference_renderer = reference_obj.add_component('MeshRenderer')
             material = InxMaterial.create_default_unlit()
-            material.vert_shader_name = 'Deformed Tangent Probe'
-            material.frag_shader_name = 'Deformed Tangent Consumer'
+            material.vert_shader_name = 'tests/deformation/tangent'
+            material.frag_shader_name = 'tests/deformation/tangent_surface'
             caster.set_material(0, material)
             if reference_renderer is not None:
                 reference_renderer.set_material(0, material)
@@ -140,7 +150,7 @@ def main():
                 scale = scales[scale_index]
                 if not args.skinned:
                     obj.transform.local_scale = Vector3(*scale)
-                for key, value in zip(('scaleX', 'scaleY', 'scaleZ'), scale):
+                for key, value in zip(('scale_x', 'scale_y', 'scale_z'), scale):
                     material.set_float(key, value)
                 if args.skinned:
                     caster.enabled = phase in (1,3)
@@ -164,7 +174,7 @@ def main():
                                                 mesh_tangents[choice])
                 material.set_float('deform', 0. if phase == 2 else 1.)
                 if args.skinned:
-                    material.set_float('referenceW', float(np.sign(np.prod(scale))) if phase == 2 else 1.)
+                    material.set_float('reference_w', float(np.sign(np.prod(scale))) if phase == 2 else 1.)
 
             set_pipeline()
             apply()

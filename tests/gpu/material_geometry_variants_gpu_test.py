@@ -9,58 +9,62 @@ import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, InxMaterial, SceneManager, Vector3
 
-VERTEX = '''#version 450
-ShaderInfo { Name "Tutorial Variant Shift" Properties { Float shiftX=0.4 Float shiftY=0.2 } }
-void vertex(inout VertexInput v) { v.position.xy += vec2(material.shiftX, material.shiftY); }
+VERTEX = '''import infernux.shader as shader
+
+
+class VariantShift(shader.vert):
+    shader_id = "tests/variants/shift"
+    shift_x = shader.material.float(default=0.4)
+    shift_y = shader.material.float(default=0.2)
+
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os += shader.vec3(self.shift_x, self.shift_y, 0.0)
+        return vertex
 '''
-SURFACE = '''#version 450
-ShaderInfo {
-    Name "Tutorial Variant Cutout"
-    ShadingModel Unlit
-    Cull Off
-    AlphaClip 0.5
-    DepthTest Less
-    Properties { Float clipEdge=0.5 }
-}
-void surface(out SurfaceData s) {
-    s=InitSurfaceData();
-    s.albedo=vec3(1,0,0);
-    s.alpha=step(material.clipEdge,v_TexCoord.x);
-}
+SURFACE = '''import infernux.shader as shader
+
+
+class VariantCutout(shader.surface):
+    shader_id = "tests/variants/cutout"
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "none"
+    alpha_clip = 0.5
+    depth_test = "less"
+    clip_edge = shader.material.float(default=0.5)
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(1.0, 0.0, 0.0),
+                                  alpha=shader.step(self.clip_edge, ctx.uv0.x))
 '''
-CONSUMER = '''#version 450
-ShaderInfo {
-    Name "Tutorial Variant Coverage Consumer"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources {
-        Texture2D colorTex
-        Texture2D normalTex
-        Texture2D baseTex
-        Texture2D depthTex
-        Texture2D motionTex
-        Texture2DUInt pickingTex
-    }
-    PushConstants pc { Float expected_object Float secondary_object }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    ivec2 p=ivec2(gl_FragCoord.xy);
-    bool color=texelFetch(colorTex,p,0).a>0.9;
-    bool normal=texelFetch(normalTex,p,0).a>0.9;
-    bool base=texelFetch(baseTex,p,0).a>0.9;
-    bool depth=texelFetch(depthTex,p,0).r>0.0;
-    uvec2 id=texelFetch(pickingTex,p,0).rg;
-    bool picking=id==uvec2(uint(pc.expected_object),0u) ||
-        (pc.secondary_object>0.0 && id==uvec2(uint(pc.secondary_object),0u));
-    vec2 motion=texelFetch(motionTex,p,0).rg;
-    bool moving=length(motion)>0.00001;
-    if(color!=normal || color!=base || color!=depth || color!=picking || (!picking && id!=uvec2(0u)) || (!color && moving))
-        outColor=vec4(1,0,1,1);
-    else if(!color) outColor=vec4(0,0,0,1);
-    else outColor=moving ? vec4(0,1,0,1) : vec4(1,0,0,1);
-}
+CONSUMER = '''import infernux.shader as shader
+
+
+class VariantCoverage(shader.fullscreen):
+    shader_id = "tests/variants/coverage"
+    hidden = True
+    color_tex = shader.input("color_data", shader.Color2D)
+    normal_tex = shader.input("normal", shader.Color2D)
+    base_tex = shader.input("base", shader.Color2D)
+    depth_tex = shader.input("depth", shader.Depth2D)
+    motion_tex = shader.input("motion", shader.Color2D)
+    picking_tex = shader.input("picking", shader.UInt2D)
+    expected_object = shader.parameter.float()
+    secondary_object = shader.parameter.float()
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        pixel = shader.ivec2(ctx.position.xy)
+        color = shader.load(self.color_tex, pixel, 0).a > 0.9
+        normal = shader.load(self.normal_tex, pixel, 0).a > 0.9
+        base = shader.load(self.base_tex, pixel, 0).a > 0.9
+        depth = shader.load(self.depth_tex, pixel, 0) > 0.0
+        identity = shader.load(self.picking_tex, pixel, 0).rg
+        picking = shader.all(identity == shader.uvec2(shader.uint(self.expected_object), 0)) or (self.secondary_object > 0.0 and shader.all(identity == shader.uvec2(shader.uint(self.secondary_object), 0)))
+        moving = shader.length(shader.load(self.motion_tex, pixel, 0).rg) > 0.00001
+        if color != normal or color != base or color != depth or color != picking or (not picking and shader.any(identity != shader.uvec2(0))) or (not color and moving):
+            return shader.vec4(1.0, 0.0, 1.0, 1.0)
+        if not color:
+            return shader.vec4(0.0, 0.0, 0.0, 1.0)
+        return shader.vec4(0.0, 1.0, 0.0, 1.0) if moving else shader.vec4(1.0, 0.0, 0.0, 1.0)
 '''
 
 
@@ -84,9 +88,9 @@ class VariantsPipeline(inx.renderstack.RenderPipeline):
         graph.add_pass('Picking').write_color(picking).write_depth(picking_depth).set_clear(color=(0,0,0,0),depth=0.0).draw_renderers(queue_range=(0,2500),material_pass='picking')
         target=graph.create_texture('color',camera_target=True)
         p=graph.add_pass('CompareVariants').write_color(target)
-        for key,texture in (('colorTex',color),('normalTex',normal),('baseTex',base),('depthTex',depth),('motionTex',motion),('pickingTex',picking)):
+        for key,texture in (('color_tex',color),('normal_tex',normal),('base_tex',base),('depth_tex',depth),('motion_tex',motion),('picking_tex',picking)):
             p.set_texture(key,texture)
-        p.set_param('expected_object',float(self.object_id)).fullscreen_quad('Tutorial Variant Coverage Consumer')
+        p.set_param('expected_object',float(self.object_id)).fullscreen_quad('tests/variants/coverage')
         p.set_param('secondary_object',float(self.secondary_id))
         graph.screen_ui_overlay_section(resources={'color'})
         graph.set_output(target)
@@ -108,7 +112,7 @@ def main():
             write_skinned_quad(mesh_path)
         else:
             mesh_path.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 -1\nf 1/1/1 3/3/1 2/2/1\nf 1/1/1 4/4/1 3/3/1\n',encoding='ascii')
-        for file,content in (('Shift.vert',VERTEX),('Cutout.frag',SURFACE),('Consumer.frag',CONSUMER)):
+        for file,content in (('Shift.vert.py',VERTEX),('Cutout.frag.py',SURFACE),('Consumer.frag.py',CONSUMER)):
             (project/'Assets'/file).write_text(content,encoding='ascii')
         frontend=inx.Engine()
         native=frontend.get_native_engine()
@@ -126,7 +130,7 @@ def main():
             database=frontend.get_asset_database()
             mesh=AssetManager.import_asset(str(mesh_path),database=database)
             assert mesh,mesh.error
-            for file in ('Shift.vert','Cutout.frag','Consumer.frag'):
+            for file in ('Shift.vert.py','Cutout.frag.py','Consumer.frag.py'):
                 result=AssetManager.import_asset(str(project/'Assets'/file),database=database)
                 assert result,result.error
             scene=SceneManager.instance().get_active_scene()
@@ -136,9 +140,9 @@ def main():
             camera.transform.position=Vector3(0,0,-5)
             camera.add_component('Camera')
             material=InxMaterial.create_default_unlit()
-            material.vert_shader_name='Tutorial Variant Shift'
-            material.frag_shader_name='Tutorial Variant Cutout'
-            for key,value in (('shiftX',.4),('shiftY',.2),('clipEdge',.5)):
+            material.vert_shader_name='tests/variants/shift'
+            material.frag_shader_name='tests/variants/cutout'
+            for key,value in (('shift_x',.4),('shift_y',.2),('clip_edge',.5)):
                 material.set_float(key,value)
             objects=[]
             positions=(0,) if args.instances==1 else (-1,1)
@@ -215,22 +219,22 @@ def main():
                             return
                         phase+=1
                         if phase==1:
-                            material.set_float('clipEdge',0.)
+                            material.set_float('clip_edge',0.)
                         elif phase==2:
-                            material.set_float('clipEdge',.5)
+                            material.set_float('clip_edge',.5)
                         elif phase==3:
-                            material.set_float('shiftX',-.4)
+                            material.set_float('shift_x',-.4)
                         elif phase==6:
                             for obj,x in zip(objects,positions):
                                 obj.transform.position=Vector3(x,0,0)
-                            material.set_float('shiftX',.4)
+                            material.set_float('shift_x',.4)
                         changed,ticket=frames,None
                     if phase==4:
                         for index,obj in enumerate(objects):
                             position=obj.transform.position
                             obj.transform.position=Vector3(position.x+(.03 if index==0 else -.03),0,0)
                     elif phase==5:
-                        material.set_float('shiftX',material.get_float('shiftX')+.03)
+                        material.set_float('shift_x',material.get_float('shift_x')+.03)
                     if phase==7:
                         for obj in objects:
                             seconds=(frames-changed)*.02

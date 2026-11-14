@@ -9,38 +9,52 @@ import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, InxMaterial, SceneManager, Vector3
 
-VERTEX = '''#version 450
-ShaderInfo { Name "Deformed Tangent Probe" Properties { Float handedness=1.0 } }
-void vertex(inout VertexInput v) {
-    mat3 rotation = mat3(vec3(0.8, 0.48, 0.36), vec3(-0.6, 0.64, 0.48), vec3(0.0, -0.6, 0.8));
-    v.position = rotation * v.position;
-    v.normal = rotation * v.normal;
-    v.tangent.xyz = rotation * v.tangent.xyz;
-    v.tangent.w = material.handedness;
-}
+VERTEX = '''import infernux.shader as shader
+
+
+class DeformedTangent(shader.vert):
+    shader_id = "tests/deformation/tangent"
+    handedness = shader.material.float(default=1.0)
+
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        rotation = shader.mat3(0.8, -0.6, 0.0, 0.48, 0.64, -0.6, 0.36, 0.48, 0.8)
+        vertex.position_os = rotation @ vertex.position_os
+        vertex.normal_os = rotation @ vertex.normal_os
+        vertex.tangent_os = shader.vec4(rotation @ vertex.tangent_os.xyz, self.handedness)
+        return vertex
 '''
-FRAGMENT = '''#version 450
-ShaderInfo {
-    Name "Deformed Tangent Consumer" ShadingModel Unlit Cull Off
-    Properties { Float scaleX=1.0 Float scaleY=1.0 Float scaleZ=1.0 Float handedness=1.0 }
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec3 scale = vec3(material.scaleX, material.scaleY, material.scaleZ);
-    vec3 N = normalize(vec3(0.0, 0.6, -0.8) / scale);
-    vec3 T = normalize(vec3(0.8, 0.48, 0.36) * scale);
-    float signW = material.handedness * sign(scale.x * scale.y * scale.z);
-    vec3 B = cross(N, T) * signW;
-    vec3 tangentNormal = normalize(vec3(0.35, -0.25, 0.9));
-    vec3 expectedMapped = normalize(mat3(T, B, N) * tangentNormal);
-    vec4 actualT = getWorldTangent();
-    bool normalOK = length(getWorldNormal() - N) < 0.002;
-    bool tangentOK = length(actualT.xyz - T) < 0.002 && abs(actualT.w - signW) < 0.002;
-    bool basisOK = length(getWorldBitangent() - B) < 0.002
-        && abs(dot(getWorldNormal(), actualT.xyz)) < 0.002;
-    bool mappedOK = length(normalFromTangentSpace(tangentNormal, getWorldNormal(), actualT) - expectedMapped) < 0.002;
-    s.albedo = normalOK && tangentOK && basisOK && mappedOK ? vec3(0,1,0) : vec3(1,0,1);
-}
+FRAGMENT = '''import infernux.shader as shader
+from infernux.shader.lib.surface import tangent_to_world
+
+
+class DeformedTangentSurface(shader.surface):
+    shader_id = "tests/deformation/tangent_surface"
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "none"
+    scale_x = shader.material.float(default=1.0)
+    scale_y = shader.material.float(default=1.0)
+    scale_z = shader.material.float(default=1.0)
+    handedness = shader.material.float(default=1.0)
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        scale = shader.vec3(self.scale_x, self.scale_y, self.scale_z)
+        normal = shader.normalize(shader.vec3(0.0, 0.6, -0.8) / scale)
+        tangent = shader.normalize(shader.vec3(0.8, 0.48, 0.36) * scale)
+        sign_w = self.handedness * shader.sign(scale.x * scale.y * scale.z)
+        bitangent = shader.cross(normal, tangent) * sign_w
+        tangent_normal = shader.normalize(shader.vec3(0.35, -0.25, 0.9))
+        expected_mapped = shader.normalize(tangent * tangent_normal.x + bitangent * tangent_normal.y + normal * tangent_normal.z)
+        actual_normal = shader.normalize(ctx.normal_ws)
+        actual_tangent = shader.vec4(shader.normalize(ctx.tangent_ws.xyz), ctx.tangent_ws.w)
+        actual_bitangent = shader.cross(actual_normal, actual_tangent.xyz) * actual_tangent.w
+        mapped_normal = tangent_to_world(tangent_normal, ctx)
+        normal_ok = shader.length(actual_normal - normal) < 0.002
+        tangent_ok = shader.length(actual_tangent.xyz - tangent) < 0.002 and shader.abs(actual_tangent.w - sign_w) < 0.002
+        basis_ok = shader.length(actual_bitangent - bitangent) < 0.002 and shader.abs(shader.dot(actual_normal, actual_tangent.xyz)) < 0.002
+        mapped_ok = shader.length(mapped_normal - expected_mapped) < 0.002
+        valid = normal_ok and tangent_ok and basis_ok and mapped_ok
+        albedo = shader.vec3(0.0, 1.0, 0.0) if valid else shader.vec3(1.0, 0.0, 1.0)
+        return shader.SurfaceData(albedo=albedo)
 '''
 
 
@@ -62,7 +76,7 @@ def main():
         project = Path(folder)
         for name in ('Assets', 'Packages', 'ProjectSettings'):
             (project / name).mkdir()
-        for name, source in (('Probe.vert', VERTEX), ('Probe.frag', FRAGMENT)):
+        for name, source in (('Probe.vert.py', VERTEX), ('Probe.frag.py', FRAGMENT)):
             (project / 'Assets' / name).write_text(source, encoding='utf-8')
         mesh = project / ('Assets/Quad.gltf' if args.skinned else 'Assets/Quad.obj')
         if args.skinned:
@@ -86,7 +100,7 @@ def main():
             database = frontend.get_asset_database()
             imported_mesh = AssetManager.import_asset(str(mesh), database=database)
             assert imported_mesh, imported_mesh.error
-            for name in ('Probe.vert', 'Probe.frag'):
+            for name in ('Probe.vert.py', 'Probe.frag.py'):
                 imported = AssetManager.import_asset(str(project / 'Assets' / name), database=database)
                 assert imported, imported.error
             scene = SceneManager.instance().get_active_scene()
@@ -96,8 +110,8 @@ def main():
             camera.transform.position = Vector3(0, 0, -5)
             camera.add_component('Camera')
             material = InxMaterial.create_default_unlit()
-            material.vert_shader_name = 'Deformed Tangent Probe'
-            material.frag_shader_name = 'Deformed Tangent Consumer'
+            material.vert_shader_name = 'tests/deformation/tangent'
+            material.frag_shader_name = 'tests/deformation/tangent_surface'
             objects = []
             for x in (-1., 1.):
                 obj = scene.create_game_object(f'Tangent Quad {x}')
@@ -115,7 +129,7 @@ def main():
 
             def apply_phase():
                 _, scale, handedness = phases[phase]
-                for key, value in zip(('scaleX', 'scaleY', 'scaleZ'), scale):
+                for key, value in zip(('scale_x', 'scale_y', 'scale_z'), scale):
                     material.set_float(key, value)
                 material.set_float('handedness', handedness)
                 # Alter UV orientation in the authored hook without replacing
