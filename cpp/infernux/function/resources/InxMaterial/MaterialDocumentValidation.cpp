@@ -283,7 +283,7 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     }
 }
 
-void ValidateShaderReference(const json &document, std::string_view path)
+void ValidateShaderReference(const json &document, std::string_view path, bool required)
 {
     static const std::unordered_set<std::string> fields = {"guid", "shader_id"};
     RequireFields(document, fields, path);
@@ -291,7 +291,7 @@ void ValidateShaderReference(const json &document, std::string_view path)
         if (!document[field].is_string())
             Fail(path, std::string(field) + " must be a string");
     }
-    if (document["guid"].get_ref<const std::string &>().empty() &&
+    if (required && document["guid"].get_ref<const std::string &>().empty() &&
         document["shader_id"].get_ref<const std::string &>().empty()) {
         Fail(path, "requires guid or shader_id");
     }
@@ -335,8 +335,8 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
 
     const std::string shadersPath = std::string(path) + ".shaders";
     RequireFields(document["shaders"], shaderFields, shadersPath);
-    ValidateShaderReference(document["shaders"]["vertex"], shadersPath + ".vertex");
-    ValidateShaderReference(document["shaders"]["fragment"], shadersPath + ".fragment");
+    ValidateShaderReference(document["shaders"]["vertex"], shadersPath + ".vertex", false);
+    ValidateShaderReference(document["shaders"]["fragment"], shadersPath + ".fragment", true);
 
     ValidateRenderState(document["renderState"], std::string(path) + ".renderState");
     if (document.contains("passTag") && !document["passTag"].is_string())

@@ -1,4 +1,4 @@
-"""Real surface shading consumes per-view lights and per-object controls."""
+"""Constructor and field-written surfaces share the live lighting/pass contract."""
 import argparse
 from pathlib import Path
 import tempfile
@@ -23,20 +23,22 @@ class Painted(shader.surface):
                                   alpha=self.tint.a * ctx.uv0.x * self.coverage * shader.sample(self.mask, ctx.uv0).a)
 '''
 
-REFERENCE = '''#version 450
-ShaderInfo {
-    Name "Surface Baseline"
-    ShadingModel PBR
-    Properties { Color tint=[0.4,0.6,0.8,1.0] Float metallic=0.2 Float smoothness=0.4 Float coverage=1.0 Texture2D mask="white" }
-}
-void surface(out SurfaceData s) {
-    s=InitSurfaceData();
-    s.albedo=material.tint.rgb;
-    s.normalWS=normalize(v_Normal);
-    s.metallic=material.metallic;
-    s.smoothness=material.smoothness;
-    s.alpha=material.tint.a * v_TexCoord.x * material.coverage * texture(mask, v_TexCoord).a;
-}
+REFERENCE = '''import infernux.shader as shader
+class Reference(shader.surface):
+    shader_id = "tests/surface/reference"
+    tint = shader.material.color(default=(0.4, 0.6, 0.8, 1.0))
+    metallic = shader.material.float(default=0.2)
+    smoothness = shader.material.float(default=0.4)
+    coverage = shader.material.float(default=1.0)
+    mask = shader.material.texture_2d(default="white")
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        value = shader.SurfaceData()
+        value.albedo = self.tint.rgb
+        value.normal_ws = shader.normalize(ctx.normal_ws)
+        value.metallic = self.metallic
+        value.smoothness = self.smoothness
+        value.alpha = self.tint.a * ctx.uv0.x * self.coverage * shader.sample(self.mask, ctx.uv0).a
+        return value
 '''
 
 MODEL = '''import infernux.shader as shader
@@ -51,23 +53,13 @@ class BandResponse(shader.shadingmodel):
         return direct + surface.emission
 '''
 
-REFERENCE_MODEL = '''ShadingModelInfo {
-    Name "BaselineBand"
-    Imports ["Lighting"]
-    Requires [Lighting]
-}
-void shading(in SurfaceData s, out vec4 color) {
-    ShadingContext ctx = GetShadingContext();
-    Light light = getMainLight(ctx.positionWS, s.normalWS, ctx.viewDepth);
-#ifdef INX_FORWARD_PLUS_PASS
-    bool affects = (canonicalLights[0].metadata.y & _inx_ObjectLayerMask) != 0u && (canonicalLights[0].metadata.w & 1u) != 0u;
-#else
-    bool affects = (lighting.directionalLights[0].metadata.x & _inx_ObjectLayerMask) != 0u && (lighting.directionalLights[0].metadata.y & 1u) != 0u;
-#endif
-    light.color *= affects ? 1.0 : 0.0;
-    float weight = mix(0.25, 1.0, step(0.55, max(0.0, dot(s.normalWS, light.direction))));
-    color = vec4(s.albedo * light.color * light.attenuation * light.shadow * weight + s.emission, s.alpha);
-}
+REFERENCE_MODEL = '''import infernux.shader as shader
+class ReferenceBand(shader.shadingmodel):
+    lighting_contract = "custom_response"
+    def shade(self, surface: shader.SurfaceData, ctx: shader.ShadingContext) -> shader.vec3:
+        light = shader.lighting.main_light(ctx, surface.normal_ws)
+        weight = shader.mix(0.25, 1.0, shader.step(0.55, shader.max(0.0, shader.dot(surface.normal_ws, light.direction))))
+        return surface.albedo * light.color * light.attenuation * light.shadow * weight + surface.emission
 '''
 
 
@@ -82,28 +74,28 @@ def main():
         root = Path(directory)
         for name in ("Assets", "Packages", "ProjectSettings"):
             (root / name).mkdir()
-        source, reference = root / "Assets/表面.frag.py", root / "Assets/baseline.frag"
+        source, reference = root / "Assets/表面.frag.py", root / "Assets/reference.frag.py"
         author_source, reference_source = SOURCE, REFERENCE
         model_path = None
         if options.model == "unlit":
             from infernux._compiler.shading_model import default_shading_model
             model_path = default_shading_model().with_name("unlit.shadingmodel.py")
             author_source = SOURCE.replace("(shader.surface):", f"(shader.surface):\n    shading_model = shader.ref({model_path.as_posix()!r})")
-            reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel Unlit")
+            reference_source = REFERENCE.replace("(shader.surface):", f"(shader.surface):\n    shading_model = shader.ref({model_path.as_posix()!r})")
         elif options.model == "band":
             model_path = root / "Assets/band.shadingmodel.py"
             model_path.write_text(MODEL, encoding="utf-8")
-            (root / "Assets/baseline.shadingmodel").write_text(REFERENCE_MODEL, encoding="utf-8")
+            (root / "Assets/reference.shadingmodel.py").write_text(REFERENCE_MODEL, encoding="utf-8")
             author_source = SOURCE.replace("(shader.surface):", '(shader.surface):\n    shading_model = shader.ref("./band.shadingmodel.py")')
-            reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel BaselineBand")
+            reference_source = REFERENCE.replace("(shader.surface):", '(shader.surface):\n    shading_model = shader.ref("./reference.shadingmodel.py")')
         elif options.model == "toon":
             from infernux._compiler.shading_model import default_shading_model
             model_path = default_shading_model().with_name("toon.shadingmodel.py")
             author_source = SOURCE.replace("(shader.surface):", f"(shader.surface):\n    shading_model = shader.ref({model_path.as_posix()!r})")
             author_source = author_source.replace("metallic=self.metallic, smoothness=self.smoothness,",
                                                   "shading_param0=0.45, shading_param1=0.04, metallic=self.metallic, smoothness=self.smoothness,")
-            reference_source = REFERENCE.replace("ShadingModel PBR", "ShadingModel Toon").replace(
-                "s.metallic=material.metallic;", "s.shadingParam0=0.45; s.shadingParam1=0.04; s.metallic=material.metallic;")
+            reference_source = REFERENCE.replace("(shader.surface):", f"(shader.surface):\n    shading_model = shader.ref({model_path.as_posix()!r})").replace(
+                "value.metallic = self.metallic", "value.shading_param0 = 0.45\n        value.shading_param1 = 0.04\n        value.metallic = self.metallic")
         if options.vertex:
             (root / "Assets/translate.vert.py").write_text('''import infernux.shader as shader
 class Translate(shader.vert):
@@ -113,9 +105,13 @@ class Translate(shader.vert):
         vertex.position_os.x += self.translation
         return vertex
 ''', encoding="utf-8")
-            (root / "Assets/baseline.vert").write_text('''#version 450
-ShaderInfo { Name "Baseline Translate" Properties { Float translation=0.35 } }
-void vertex(inout VertexInput v) { v.position.x += material.translation; }
+            (root / "Assets/reference.vert.py").write_text('''import infernux.shader as shader
+class ReferenceTranslate(shader.vert):
+    shader_id = "tests/vertex/reference_translate"
+    translation = shader.material.float(default=0.35)
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os = vertex.position_os + shader.vec3(self.translation, 0.0, 0.0)
+        return vertex
 ''', encoding="utf-8")
         source.write_text(author_source, encoding="utf-8")
         reference.write_text(reference_source, encoding="utf-8")
@@ -164,9 +160,9 @@ void vertex(inout VertexInput v) { v.position.x += material.translation; }
             candidate = inx.Material.from_shader(str(source), "Slang 表面")
             baseline = inx.Material.create_lit("基准表面")
             if options.vertex:
-                baseline.vert_shader_name = "Baseline Translate"
+                baseline.vert_shader_name = "tests/vertex/reference_translate"
                 candidate.vert_shader_name = "tests/vertex/translate"
-            baseline.frag_shader_name = "Surface Baseline"
+            baseline.frag_shader_name = "tests/surface/reference"
             materials = (baseline, candidate)
             for material in materials:
                 material.set_color("tint", .4, .6, .8, 1.)

@@ -46,6 +46,31 @@ class surface(_ShaderAsset):
     """Material surface evaluated by the engine's shared lighting and geometry passes."""
 
 
+class particle(_ShaderAsset):
+    """Particle fragment shared by billboard, mesh and ribbon geometry."""
+
+class ParticleContext:
+    """Immutable geometry and lifetime values of one rendered particle."""
+
+    position: vec4
+    position_ws: vec3
+    normal_ws: vec3
+    tangent_ws: vec4
+    color: vec3
+    uv0: vec2
+    view_depth: float
+    line_color: vec4
+    motion_vector: vec2
+    flipbook_grid: vec2
+    local_uv: vec2
+    next_uv: vec2
+    frame_blend: float
+    normalized_age: float
+    particle_id: uint
+    alpha: float
+    layer_mask: uint
+
+
 class shadingmodel(_ShaderAsset):
     """A typed lighting response shared by surfaces referring to this GPU asset."""
 
@@ -361,8 +386,10 @@ class _Lighting:
     view_direction = staticmethod(_gpu_intrinsic("lighting.view_direction"))
     direct = staticmethod(_gpu_intrinsic("lighting.direct"))
     ambient = staticmethod(_gpu_intrinsic("lighting.ambient"))
+    particle_pbr = staticmethod(_gpu_intrinsic("lighting.particle_pbr"))
+    six_way_smoke = staticmethod(_gpu_intrinsic("lighting.six_way_smoke"))
 
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "multisample_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "particle", "ParticleContext", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "multisample_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]

@@ -104,30 +104,25 @@ void main() {
 }
 )glsl",
                                                                   "Tests/FrameSnapshotRendering.comp"));
-    const auto vertex = SpirvWords(compiler.CompileVertexGlsl(R"glsl(
-#version 450
-layout(std430, set=0, binding=0) readonly buffer Instances { vec4 snapshots[]; };
-layout(push_constant) uniform View {
-    mat4 current; mat4 previous; vec4 right;
-} view;
-layout(location=0) out vec4 snapshot;
-void main() {
-    vec2 positions[3] = vec2[](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
-    gl_Position = vec4(positions[gl_VertexIndex % 3], 0, 1);
-    snapshot = snapshots[gl_InstanceIndex * 7] + vec4(view.right.x, 0, 0, 0);
+    const auto geometry = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().Compile(
+        {"particle_snapshot_geometry", "Tests/ParticleFrameSnapshot.slang", R"slang(import inx_particle;
+[[vk::binding(1, 2)]] StructuredBuffer<float4> instances;
+[shader("vertex")]
+InxParticleInput vertex_main(uint vertex : SV_VulkanVertexID, uint instance : SV_VulkanInstanceID)
+{
+    float2 positions[3] = {float2(-1,-1), float2(3,-1), float2(-1,3)};
+    InxParticleInput result = (InxParticleInput)0;
+    result.position = float4(positions[vertex % 3], 0.5, 1.0);
+    float4 snapshot = instances[instance * 7] + float4(inx_particle_draw().camera_right.x, 0, 0, 0);
+    result.color = snapshot.rgb;
+    result.alpha = snapshot.a;
+    return result;
 }
-)glsl",
-                                                              "Tests/FrameSnapshot.vert"));
-    const auto fragment = SpirvWords(compiler.CompileFragmentGlsl(R"glsl(
-#version 450
-layout(location=0) in vec4 snapshot;
-layout(std140, set=2, binding=14) uniform Material { vec4 color; };
-layout(location=0) out vec4 outputColor;
-void main() { outputColor = snapshot + color; }
-)glsl",
-                                                                  "Tests/FrameSnapshot.frag"));
-    if (!Require(!noop.empty() && !bootstrap.empty() && !rendering.empty() && !vertex.empty() && !fragment.empty(),
-                 "Particle frame snapshot shaders failed"))
+)slang"},
+        {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
+    auto graphicsPrograms = particle_test::GeometryPrograms();
+    graphicsPrograms[0] = geometry;
+    if (!Require(!noop.empty() && !bootstrap.empty() && !rendering.empty(), "Particle frame snapshot shaders failed"))
         return false;
     auto &device = resources.context.GetRhiDevice();
     struct Owner
@@ -138,7 +133,7 @@ void main() { outputColor = snapshot + color; }
         GpuRetirementQueue retirement;
         ParticleGpuDrawRegistry draws;
         ParticleGpuSystemManager manager;
-        GpuParticlePerViewBindings perView;
+        std::unique_ptr<particle_test::ViewResources> perView;
         std::array<rhi::TextureHandle, 4> targets{};
         std::array<rhi::TextureViewHandle, 4> views{};
         rhi::BufferHandle readback;
@@ -158,8 +153,7 @@ void main() { outputColor = snapshot + color; }
             retirement.FlushAll();
             queues.Destroy();
             auto &device = context.GetRhiDevice();
-            device.Release(perView.group);
-            device.Release(perView.layout);
+            perView.reset();
             for (auto view : views)
                 device.Release(view);
             for (auto target : targets)
@@ -176,14 +170,12 @@ void main() { outputColor = snapshot + color; }
                      owner.executor.Initialize(resources.context, owner.queues, 2) &&
                      owner.manager.Initialize(resources.context, resources.pipelines, resources.resources,
                                               owner.retirement, owner.draws, {}, {}, ResolveSceneSkinnedMeshSource,
-                                              sortProgram, cullProgram, boundsProgram, migrationProgram, spawnProgram),
+                                              sortProgram, cullProgram, boundsProgram, migrationProgram, spawnProgram,
+                                              {}, {}, graphicsPrograms),
                  "Particle frame snapshot manager initialization failed"))
         return false;
     owner.retirement.BindSerialSource([&] { return owner.queues.GetLastReservedCompletionEpoch(); });
-    owner.perView.layout = device.CreateBindingLayout({});
-    rhi::BindGroupDesc perView;
-    perView.layout = owner.perView.layout;
-    owner.perView.group = device.CreateBindGroup(perView);
+    owner.perView = std::make_unique<particle_test::ViewResources>(device);
     rhi::BufferDesc readback;
     readback.byteSize = 4 * sizeof(glm::vec4);
     readback.usage = rhi::BufferUsageFlags::TransferDestination;
@@ -205,7 +197,7 @@ void main() { outputColor = snapshot + color; }
     type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     VkSemaphoreCreateInfo semaphore{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     semaphore.pNext = &type;
-    if (!Require(owner.readback.IsValid() && owner.perView.IsValid() &&
+    if (!Require(owner.readback.IsValid() && owner.perView->bindings.group.IsValid() &&
                      vkCreateSemaphore(resources.context.GetDevice(), &semaphore, nullptr, &owner.gate) == VK_SUCCESS,
                  "Snapshot gate/resources failed"))
         return false;
@@ -220,27 +212,10 @@ void main() { outputColor = snapshot + color; }
     materialState.cullMode = MaterialCullMode::None;
     material->SetRenderState(materialState);
     material->SetVector4("color", glm::vec4(0));
-    auto artifact = std::make_shared<ShaderProgramArtifact>();
-    artifact->key = {{"Tests/FrameSnapshot", "Tests/FrameSnapshot"}, 1};
-    artifact->domain = ShaderProgramDomain::ParticleSprite;
-    artifact->compatibilitySignature = 91;
-    artifact->materialBufferSize = 16;
-    artifact->properties = {{"color", "Float4", "[0,0,0,0]", "", ShaderProgramStageMask::Fragment, false, std::nullopt,
-                             0, std::nullopt, 16, 16}};
-    ShaderProgramArtifact::PassVariant variant;
-    variant.compatibilitySignature = 91;
-    variant.vertexSpirv = SpirvBytes(vertex);
-    variant.fragmentSpirv = SpirvBytes(fragment);
-    artifact->variants.push_back(variant);
-    variant.target = ShaderCompileTarget::Motion;
-    artifact->variants.push_back(std::move(variant));
+    const auto artifact = particle_test::Surface();
     auto program = prototype;
     program.id = 99801;
     program.graphInstanceId = 9981;
-    program.billboardVertexShader = vertex;
-    program.billboardMotionVertexShader = vertex;
-    program.billboardPickingFragmentShader = fragment;
-    program.billboardMotionFragmentShader = fragment;
     program.outputs.resize(1);
     program.outputs[0].id = 998011;
     program.outputs[0].shaderProgram = artifact;
@@ -380,10 +355,10 @@ void main() { outputColor = snapshot + color; }
                         vkCmdSetScissor(commands, 0, 1, &scissor);
                         vk::VulkanGraphicsCommandContext context;
                         const auto graphics = device.MakeGraphicsCommandEncoder(context, commands);
-                        GpuBillboardViewConstants view;
+                        GpuParticleViewConstants view;
                         view.cameraRight[0] = viewMarker;
-                        const bool drawn = entry.renderer->RecordDraw(graphics, pass, entry.indirectArguments, view, {},
-                                                                      {}, true, owner.perView);
+                        const bool drawn = entry.renderer->RecordDraw(graphics, pass, entry.indirectArguments, view,
+                                                                      owner.perView->bindings);
                         dynamicRendering.end(commands);
                         if (!drawn)
                             return false;

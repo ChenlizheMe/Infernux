@@ -4,6 +4,8 @@
 
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/renderer/rhi/RhiTexture.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
+#include <function/renderer/shader/ShaderValueCopy.h>
 
 #include <array>
 #include <cstdint>
@@ -55,12 +57,9 @@ enum class GpuParticleTextureRequest : uint8_t
 using GpuBillboardTextureResolver = std::function<GpuBillboardTextureLease(
     const std::string &textureGuid, const std::string &bindingName, GpuParticleTextureRequest request)>;
 
-/// Owns the linked particle shader's surface descriptor domain.
-///
-/// The domain is deliberately independent from output geometry:
-///   set 2, texture bindings 2..13, material UBO binding 14, scene depth 15.
-/// Geometry renderers can therefore share the same material/shader state without
-/// consuming bindings reserved for instances, indices, or output-specific data.
+/// Owns an authored particle material's reflected set-zero resources.
+/// Geometry and view resources are composed from independent programs.
+/// Logical values use the same prepared copies as ordinary materials.
 class ParticleGpuSurfaceBinding
 {
   public:
@@ -83,40 +82,26 @@ class ParticleGpuSurfaceBinding
     {
         return m_layout;
     }
-    [[nodiscard]] bool SupportsSceneDepth() const noexcept
-    {
-        return m_supportsSceneDepth;
-    }
-    [[nodiscard]] bool UsesBindlessTextures() const noexcept
-    {
-        return m_usesBindlessTextures;
-    }
-    [[nodiscard]] rhi::BindlessTextureTableBinding BindlessTableBinding() const noexcept
-    {
-        return m_device && m_usesBindlessTextures ? m_device->GetBindlessTextureTableBinding()
-                                                  : rhi::BindlessTextureTableBinding{};
-    }
-    void MarkBindlessTexturesUsed() noexcept;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> ShaderProgram() const noexcept
     {
         return m_shaderProgram;
     }
 
     [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
-    [[nodiscard]] std::array<float, 4> ResolveMaterialTint() const noexcept;
     [[nodiscard]] float ResolveMaterialFloat(const char *name, float fallback) const noexcept;
 
     [[nodiscard]] bool RefreshMaterialBuffer(bool force);
     [[nodiscard]] bool RefreshTextureBindings(bool force);
-    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup(rhi::TextureViewHandle sceneDepth = {},
-                                                        bool sceneDepthIsDepth = true);
+    [[nodiscard]] rhi::BindGroupHandle ResolveBindGroup() const noexcept
+    {
+        return m_group;
+    }
 
   private:
     struct TextureBindingState
     {
         uint32_t binding = 0;
-        uint32_t textureSlot = 0;
-        rhi::ShaderStage visibility = rhi::ShaderStage::None;
+        uint32_t samplerBinding = 0;
         std::string name;
         std::string defaultGuid;
         std::string requestedGuid;
@@ -125,27 +110,14 @@ class ParticleGpuSurfaceBinding
         rhi::SamplerHandle sampler;
         std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
         std::shared_ptr<const rhi::TextureGpuView> gpuView;
-        rhi::ResourceIndex resourceIndex{};
         bool pending = false;
         bool fallback = false;
     };
 
-    struct ViewBindGroup
-    {
-        rhi::TextureViewHandle sceneDepth;
-        bool sceneDepthIsDepth = true;
-        rhi::BindGroupHandle group;
-    };
-
     [[nodiscard]] rhi::BindGroupHandle CreateBindGroup(const std::vector<TextureBindingState> &textures,
-                                                       rhi::BufferHandle materialBuffer,
-                                                       rhi::BufferHandle textureIndexBuffer,
-                                                       rhi::TextureViewHandle sceneDepth = {},
-                                                       bool sceneDepthIsDepth = true) const;
+                                                       rhi::BufferHandle materialBuffer) const;
     [[nodiscard]] std::string ResolveMaterialTextureGuid(const TextureBindingState &binding) const;
     [[nodiscard]] bool RebuildBindGroup();
-    [[nodiscard]] rhi::BufferHandle CreateTextureIndexBuffer(const std::vector<TextureBindingState> &textures) const;
-    void RetireViewBindGroups();
     void RetireBindGroup(rhi::BindGroupHandle group);
     void RetireBuffer(rhi::BufferHandle buffer);
     void RetireTexture(std::shared_ptr<const rhi::TextureGpuView> gpuView);
@@ -159,17 +131,14 @@ class ParticleGpuSurfaceBinding
     GpuRetirementQueue *m_deletionQueue = nullptr;
     rhi::BindingLayoutHandle m_layout;
     rhi::BindGroupHandle m_group;
-    std::vector<ViewBindGroup> m_viewGroups;
     rhi::BufferHandle m_materialBuffer;
     std::vector<uint8_t> m_materialBytes;
-    rhi::BufferHandle m_textureIndexBuffer;
+    const ShaderTargetCode *m_target = nullptr;
+    uint32_t m_materialBufferSize = 0;
+    std::vector<std::pair<std::string, ShaderValueCopy>> m_memberCopies;
     std::vector<TextureBindingState> m_textures;
-    GpuBillboardTextureLease m_sceneDepthFallback;
     uint64_t m_materialVersion = 0;
     bool m_materialVersionInitialized = false;
-    bool m_usesTexture = false;
-    bool m_usesBindlessTextures = false;
-    bool m_supportsSceneDepth = false;
 };
 
 } // namespace infernux::particle

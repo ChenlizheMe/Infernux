@@ -827,10 +827,18 @@ uint64_t SceneRenderGraph::CurrentParticleDrawRegistryRevision() const noexcept
     return m_particleDrawRegistry ? m_particleDrawRegistry->Revision() : 0;
 }
 
+void SceneRenderGraph::ReleaseParticleView(
+    const std::shared_ptr<particle::ParticleGpuOutputRenderer> &renderer) noexcept
+{
+    for (const auto &frame : m_perViewFrames)
+        if (frame.globals.buffer.IsValid())
+            renderer->ReleaseView(frame.globals.buffer);
+}
+
 void SceneRenderGraph::ReleaseParticleViewBindings() noexcept
 {
     for (auto &[id, binding] : m_particleViewBindings)
-        binding.renderer->ReleaseViewBinding(binding.indices);
+        ReleaseParticleView(binding.renderer);
     m_particleViewBindings.clear();
 }
 
@@ -1354,6 +1362,13 @@ rhi::BindGroupHandle SceneRenderGraph::GetPerViewBindGroup() const
     return m_perViewFrames[frameIndex].geometryGroup;
 }
 
+ShaderViewBindings SceneRenderGraph::GetPerViewBindings() const
+{
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
+    const auto &frame = m_perViewFrames[frameIndex];
+    return {m_perViewLayout, frame.geometryGroup, frame.globals.buffer};
+}
+
 rhi::BindGroupHandle SceneRenderGraph::GetEditorOverlayBindGroup() const
 {
     if (!m_vkCore)
@@ -1849,10 +1864,9 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 // Shadow caster pass: draw filtered objects using shadow pipeline
                 // with lightVP from SceneLightCollector. The shadow pipeline is
                 // lazily created inside DrawShadowCasters().
-                vkCore->DrawShadowCasters(
-                    ctx.GetCommandBuffer(), w, h, queueMin, queueMax, m_shadowCameraResourceId,
-                    m_vkCore->GetDeviceContext().GetRhiDevice().Resolve(GetViewGlobalsBinding().buffer),
-                    m_cameraLightCollector.GetShadowFrame(), lightIndex);
+                vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, m_shadowCameraResourceId,
+                                          GetViewGlobalsBinding().buffer, m_cameraLightCollector.GetShadowFrame(),
+                                          lightIndex);
                 break;
             case GraphCommandType::DrawWorldUI:
                 if (m_screenUIRenderer)
@@ -3849,28 +3863,29 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
         it = m_particleSorters.erase(it);
     }
 
-    // Reconcile ownership only when the graph topology changes. An output can
-    // replace its renderer while retaining its culler, or replace cull/sort
-    // buffers while retaining its renderer; both invalidate the old binding.
+    // All outputs participate, including shadow draws using their source
+    // indices. A view owns the globals shared by every frame and light face.
+    std::unordered_set<uint64_t> activeOutputs;
+    activeOutputs.reserve(particleEntries.size());
     for (const auto &entry : particleEntries) {
+        activeOutputs.insert(entry.id);
         const auto culler = m_particleCullers.find(entry.id);
-        if (culler == m_particleCullers.end())
-            continue;
         const auto sorter = m_particleSorters.find(entry.id);
-        const auto indices =
-            sorter == m_particleSorters.end() ? culler->second->VisibleIndexBuffer() : sorter->second->SortedIndices();
+        const auto indices = sorter != m_particleSorters.end()   ? sorter->second->SortedIndices()
+                             : culler != m_particleCullers.end() ? culler->second->VisibleIndexBuffer()
+                                                                 : entry.renderIndices;
         auto [binding, inserted] =
             m_particleViewBindings.try_emplace(entry.id, ParticleViewBinding{entry.renderer, indices});
         if (!inserted && (binding->second.renderer != entry.renderer || binding->second.indices != indices)) {
-            binding->second.renderer->ReleaseViewBinding(binding->second.indices);
+            ReleaseParticleView(binding->second.renderer);
             binding->second = {entry.renderer, indices};
         }
     }
     for (auto binding = m_particleViewBindings.begin(); binding != m_particleViewBindings.end();) {
-        if (activeCullers.find(binding->first) != activeCullers.end()) {
+        if (activeOutputs.find(binding->first) != activeOutputs.end()) {
             ++binding;
         } else {
-            binding->second.renderer->ReleaseViewBinding(binding->second.indices);
+            ReleaseParticleView(binding->second.renderer);
             binding = m_particleViewBindings.erase(binding);
         }
     }
@@ -5756,14 +5771,11 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         localVkCore->DrawShadowCasters(
                             ctx.GetCommandBuffer(), passWidth, passHeight, shadowQueueMin, shadowQueueMax,
-                            m_shadowCameraResourceId,
-                            m_vkCore->GetDeviceContext().GetRhiDevice().Resolve(GetViewGlobalsBinding().buffer),
+                            m_shadowCameraResourceId, GetViewGlobalsBinding().buffer,
                             m_cameraLightCollector.GetShadowFrame(), shadowLightIndex, shadowDepthFormat,
-                            [&](uint32_t, const lighting::ShadowView &activeShadowView) {
+                            [&](uint32_t, const lighting::ShadowView &activeShadowView,
+                                const ShaderViewBindings &shadowBindings) {
                                 particle::GpuParticleViewConstants shadowView;
-                                std::memcpy(shadowView.viewProjection.data(), &activeShadowView.viewProjection[0][0],
-                                            sizeof(activeShadowView.viewProjection));
-                                shadowView.previousViewProjection = shadowView.viewProjection;
                                 // Particle billboards expand along these axes in
                                 // the vertex shader; the caster pass must face
                                 // the light, not the camera, or the quads
@@ -5781,10 +5793,11 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                     0.0f,
                                 };
                                 for (const auto &packet : particlePackets) {
-                                    [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
-                                        encoder, particlePass, ctx.GetBufferHandle(packet.indirectArguments),
-                                        shadowView, packet.drawRenderIndices);
-                                    ctx.RecordParticleDraw(true);
+                                    shadowView.objectData[2] = packet.ownerLayerMask;
+                                    if (packet.renderer->RecordDraw(
+                                            encoder, particlePass, ctx.GetBufferHandle(packet.indirectArguments),
+                                            shadowView, shadowBindings, packet.drawRenderIndices))
+                                        ctx.RecordParticleDraw(true);
                                 }
                             });
                         CommitShadowAtlasUpdate();
@@ -5794,12 +5807,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         callback(ctx, passWidth, passHeight);
                     if (!particlePackets.empty()) {
                         particle::GpuParticleViewConstants view;
-                        const glm::mat4 viewProjection = m_cachedProj * m_cachedView;
-                        const glm::mat4 previousViewProjection = GetPreviousViewProj();
                         const glm::mat4 inverseView = glm::inverse(m_cachedView);
-                        std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
-                        std::memcpy(view.previousViewProjection.data(), &previousViewProjection[0][0],
-                                    sizeof(previousViewProjection));
                         std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
                         std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
                         std::memcpy(view.alignmentReference.data(), &inverseView[3][0], sizeof(glm::vec4));
@@ -5808,26 +5816,22 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         auto &encoder = ctx.GetGraphicsCommandEncoder();
                         const auto sceneDepth = particleSceneDepth.IsValid() ? ctx.GetTextureView(particleSceneDepth)
                                                                              : rhi::TextureViewHandle{};
-                        particle::GpuParticlePerViewBindings particlePerView;
                         const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
                         const auto &viewFrame = m_perViewFrames[frameIndex];
-                        if (m_perViewLayout.IsValid() && viewFrame.particleGroup.IsValid()) {
-                            particlePerView.layout = m_perViewLayout;
-                            particlePerView.group = viewFrame.particleGroup;
-                        }
+                        const ShaderViewBindings particlePerView{m_perViewLayout, viewFrame.particleGroup,
+                                                                 viewFrame.globals.buffer};
                         for (const auto &packet : particlePackets) {
                             const uint32_t cameraMask = m_cachedCameraView.cullingMask;
                             if ((packet.ownerLayerMask & cameraMask) == 0)
                                 continue;
                             auto packetView = view;
-                            std::memcpy(&packetView.lightingControl[3], &packet.ownerLayerMask,
-                                        sizeof(packet.ownerLayerMask));
-                            [[maybe_unused]] const bool recorded = packet.renderer->RecordDraw(
-                                encoder, particlePass, ctx.GetBufferHandle(packet.indirectArguments), packetView,
-                                packet.drawRenderIndices,
-                                packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
-                                particleSceneDepthIsDepth, particlePerView);
-                            ctx.RecordParticleDraw(true);
+                            packetView.objectData[2] = packet.ownerLayerMask;
+                            if (packet.renderer->RecordDraw(
+                                    encoder, particlePass, ctx.GetBufferHandle(packet.indirectArguments), packetView,
+                                    particlePerView, packet.drawRenderIndices,
+                                    packet.renderer->RequiresSceneDepth() ? sceneDepth : rhi::TextureViewHandle{},
+                                    particleSceneDepthIsDepth))
+                                ctx.RecordParticleDraw(true);
                         }
                     }
                 };

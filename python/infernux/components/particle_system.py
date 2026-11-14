@@ -2076,8 +2076,6 @@ class ParticleSystem(InxComponent):
                         parameter_overrides=parameter_overrides,
                     ),
                     "stages": decoded["stages"],
-                    "billboard": decoded["billboard"],
-                    "mesh_shaders": decoded["mesh"],
                     "outputs": [
                         {
                             "id": self._gpu_output_id(emitter.stable_id, output.output_id),

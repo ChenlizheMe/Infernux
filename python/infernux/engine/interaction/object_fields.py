@@ -137,8 +137,8 @@ class AssetReferenceCatalog:
                     continue
                 if metadata.get_bool("shader_hidden"):
                     continue
-                if (cache_key == "shader.fragment" and source_extension(candidate_path) == ".frag.py"
-                        and metadata.get_string("shader_domain") != "mesh"):
+                domain = {"shader.fragment": "mesh", "shader.particle": "particle"}.get(cache_key)
+                if domain and metadata.get_string("shader_domain") != domain:
                     continue
                 name = metadata.get_string("shader_id")
             else:

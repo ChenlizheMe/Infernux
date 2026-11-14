@@ -17,6 +17,7 @@ public struct InxFragmentOutput
     public float4 color : SV_Target0;
     public float depth : SV_Depth;
 };
+[ForceInline]
 public InxFragmentOutput inx_fragment_output(float4 color, float depth)
 {
     InxFragmentOutput result;
@@ -119,12 +120,14 @@ public struct InxShadingContext
     public float2 pixel_position;
     public uint layer_mask;
     public bool receives_shadows;
+    public uint light_domain;
 };
 public InxShadingContext inx_shading_context(float3 position_ws, float3 geometric_normal_ws,
                                             float view_depth, float2 pixel_position,
                                             uint layer_mask, bool receives_shadows)
 {
     InxShadingContext result;
+    result.light_domain = 1u;
     result.position_ws = position_ws;
     result.geometric_normal_ws = geometric_normal_ws;
     result.view_depth = view_depth;
@@ -143,6 +146,7 @@ public struct InxLight
 public InxShadingContext inx_shading_context(InxMeshInput input)
 {
     InxShadingContext result;
+    result.light_domain = 1u;
     result.position_ws = input.position_ws;
     result.geometric_normal_ws = input.normal_ws;
     result.view_depth = input.view_depth;
@@ -294,8 +298,9 @@ public struct InxGBufferOutput
     public float4 emission : SV_Target3;
     public uint4 metadata : SV_Target4;
 };
-public static const uint INX_PBR_MODEL_ID = )slang" +
-                                               std::to_string(ShadingModelId("PBR")) + R"slang(u;
+public static const uint INX_PBR_MODEL_ID =
+)slang" + std::to_string(ShadingModelId("PBR")) +
+                                               R"slang(u;
 public static const uint INX_UNLIT_MODEL_ID = )slang" +
                                                std::to_string(ShadingModelId("Unlit")) + R"slang(u;
 public static const uint INX_TOON_MODEL_ID = )slang" +
@@ -311,6 +316,60 @@ public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput in
     result.metadata = uint4(input.layer_mask, model_id,
                             receives_shadows && (input.object_flags & 2u) == 0u ? 1u : 0u, 0u);
     return result;
+}
+// Keep color and coverage lanes independently eliminable in every entry.
+[ForceInline]
+public float4 inx_make_float4(float v0)
+{
+    return float4(v0, v0, v0, v0);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float4 v0)
+{
+    return float4(v0.x, v0.y, v0.z, v0.w);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float3 v0, float v1)
+{
+    return float4(v0.x, v0.y, v0.z, v1);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float v0, float3 v1)
+{
+    return float4(v0, v1.x, v1.y, v1.z);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float2 v0, float2 v1)
+{
+    return float4(v0.x, v0.y, v1.x, v1.y);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float2 v0, float v1, float v2)
+{
+    return float4(v0.x, v0.y, v1, v2);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float v0, float2 v1, float v2)
+{
+    return float4(v0, v1.x, v1.y, v2);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float v0, float v1, float2 v2)
+{
+    return float4(v0, v1, v2.x, v2.y);
+}
+
+[ForceInline]
+public float4 inx_make_float4(float v0, float v1, float v2, float v3)
+{
+    return float4(v0, v1, v2, v3);
 }
 )slang"};
     return module;

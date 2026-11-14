@@ -1,14 +1,13 @@
 #pragma once
 
-#include "ParticleGpuBillboardRenderer.h"
 #include "ParticleGpuBounds.h"
 #include "ParticleGpuCollisionScene.h"
 #include "ParticleGpuCuller.h"
-#include "ParticleGpuMeshRenderer.h"
 #include "ParticleGpuMigrator.h"
-#include "ParticleGpuRibbonRenderer.h"
+#include "ParticleGpuOutputRenderer.h"
 #include "ParticleGpuRibbonTopology.h"
 #include "ParticleGpuSorter.h"
+#include "ParticleGpuSurfaceBinding.h"
 #include "ParticleOutputSemantics.h"
 #include "ParticleRenderGraph.h"
 
@@ -36,6 +35,7 @@ namespace infernux
 class GpuRetirementQueue;
 class FrameWorkOwner;
 class InxSkinnedMesh;
+class InxMesh;
 namespace rhi
 {
 class ComputeBuffer;
@@ -53,13 +53,6 @@ namespace particle
 {
 
 class ParticleGpuDrawRegistry;
-
-enum class GpuParticleOutputType : uint8_t
-{
-    Sprite,
-    Mesh,
-    Ribbon,
-};
 
 struct GpuParticleOutputProgram
 {
@@ -175,15 +168,6 @@ struct GpuParticleEmitterProgram
         continuationKernels;
     std::vector<GpuParticleMeshInterfaceProgram> meshInterfaces;
     GpuParticleVectorFieldLayoutProgram vectorFields;
-    std::vector<uint32_t> billboardVertexShader;
-    std::vector<uint32_t> billboardPickingFragmentShader;
-    std::vector<uint32_t> billboardMotionVertexShader;
-    std::vector<uint32_t> billboardMotionFragmentShader;
-    std::vector<uint32_t> meshVertexShader;
-    std::vector<uint32_t> meshShadowFragmentShader;
-    std::vector<uint32_t> meshPickingFragmentShader;
-    std::vector<uint32_t> meshMotionVertexShader;
-    std::vector<uint32_t> meshMotionFragmentShader;
     std::vector<GpuParticleOutputProgram> outputs;
 };
 
@@ -379,16 +363,17 @@ class ParticleGpuSystemManager
     ParticleGpuSystemManager(ParticleGpuSystemManager &&) = delete;
     ParticleGpuSystemManager &operator=(ParticleGpuSystemManager &&) = delete;
 
-    [[nodiscard]] bool Initialize(
-        vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
-        GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
-        GpuBillboardTextureResolver textureResolver = {},
-        GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
-        GpuParticleSkinnedMeshResolver skinnedMeshResolver = {}, const GpuParticleSortProgram &sortProgram = {},
-        const GpuParticleCullProgram &cullProgram = {}, const GpuParticleBoundsProgram &boundsProgram = {},
-        const GpuParticleMigrationProgram &migrationProgram = {}, const GpuParticleSpawnProgram &spawnProgram = {},
-        const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-        const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, CompiledParticleShader stateGatherShader = {});
+    [[nodiscard]] bool
+    Initialize(vk::VkDeviceContext &context, vk::VkPipelineManager &pipelines, vk::VkResourceManager &resources,
+               GpuRetirementQueue &deletionQueue, ParticleGpuDrawRegistry &drawRegistry,
+               GpuBillboardTextureResolver textureResolver = {},
+               GpuParticleVectorFieldTextureResolver vectorFieldTextureResolver = {},
+               GpuParticleSkinnedMeshResolver skinnedMeshResolver = {}, const GpuParticleSortProgram &sortProgram = {},
+               const GpuParticleCullProgram &cullProgram = {}, const GpuParticleBoundsProgram &boundsProgram = {},
+               const GpuParticleMigrationProgram &migrationProgram = {},
+               const GpuParticleSpawnProgram &spawnProgram = {},
+               const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
+               CompiledParticleShader stateGatherShader = {}, const GpuParticleGraphicsPrograms &graphicsPrograms = {});
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph

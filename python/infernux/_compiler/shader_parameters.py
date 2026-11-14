@@ -39,6 +39,21 @@ _DEFAULTS = {"float": 0.0, "int": 0, "uint": 0, "bool": False, "color": (1.0, 1.
              "mat4": tuple(tuple(float(row == column) for column in range(4)) for row in range(4))}
 
 
+def material_properties(parameters):
+    """Expose logical author fields to material and graph authoring."""
+    kinds = {"texture_2d": "Texture2D", "float": "Float", "int": "Int", "uint": "UInt", "bool": "Bool",
+             "vec2": "Float2", "vec3": "Float3", "vec4": "Float4", "color": "Color", "mat3": "Mat3", "mat4": "Mat4"}
+    fields = []
+    for parameter in parameters:
+        kind = parameter["kind"]
+        item = dict(parameter, type=kinds[kind])
+        if kind in ("mat3", "mat4"):
+            size = 3 if kind == "mat3" else 4
+            item["default"] = [parameter["default"][row][column] for column in range(size) for row in range(size)]
+        fields.append(item)
+    return fields
+
+
 class ParameterAuthor(ShaderEmitter):
     def __init__(self, source: str, path: str):
         super().__init__(source, path)
@@ -106,7 +121,7 @@ class ParameterAuthor(ShaderEmitter):
             self.fields[name] = ShaderInput(name, self.literal(call.args[0]), kind, metadata.get("domain"))
             self.types["self." + name] = RESOURCE_TYPES[kind]
             return
-        prefix = self.alias + (".material." if self.domain == "mesh" else ".parameter.")
+        prefix = self.alias + (".material." if self.domain in {"mesh", "particle"} else ".parameter.")
         if not declaration.startswith(prefix) or declaration[len(prefix):] not in {*_PARAMETER_TYPES, "texture_2d"}:
             self.error(call, "Expected " + prefix + " followed by a supported value type")
         kind = declaration[len(prefix):]
@@ -128,8 +143,8 @@ class ParameterAuthor(ShaderEmitter):
         numeric = lambda item: type(item) in (int, float)
         valid = True
         if kind == "texture_2d":
-            if self.domain != "mesh":
-                self.error(node, "Texture asset properties belong to mesh materials; fullscreen images use shader.input",
+            if self.domain not in {"mesh", "particle"}:
+                self.error(node, "Texture asset properties belong to materials; fullscreen images use shader.input",
                            code="author.parameter")
             valid = value in ("white", "black", "normal")
         elif kind == "float":
@@ -193,6 +208,6 @@ class ParameterAuthor(ShaderEmitter):
             for field in buffers:
                 code.extend(["    uint _inx_buffer_offset_" + field.name + ";",
                              "    uint _inx_buffer_count_" + field.name + ";"])
-            binding = "[[vk::binding(0, 0)]] " if self.domain == "mesh" else ""
+            binding = "[[vk::binding(0, 0)]] " if self.domain in {"mesh", "particle"} else ""
             code.extend(["};", binding + "ConstantBuffer<ShaderParameters> inx_parameters;"])
         return code

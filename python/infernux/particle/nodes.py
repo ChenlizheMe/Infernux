@@ -121,22 +121,31 @@ def particle_shader_property_port_id(name: str) -> str:
 
 def _particle_fragment_shader_catalog(shader_ids):
     """Prepare only the shader schemas consumed by this particle asset."""
+    from pathlib import Path
+    from infernux._compiler.shader import _prepare_source
+    from infernux._compiler.shader_parameters import material_properties
     from infernux.engine.ui.inspector_shader_utils import (
-        _get_shader_properties_cached,
         get_shader_candidates,
+        get_shader_file_path,
     )
 
     choices = tuple(
         (str(label), str(shader_id))
-        for label, shader_id in get_shader_candidates(".frag")
+        for label, shader_id in get_shader_candidates(".frag", domain="particle")
         if str(shader_id)
     )
     properties = {}
     for shader_id in sorted(shader_ids):
-        schema = _get_shader_properties_cached(shader_id, ".frag")
-        if schema is None:
+        path = get_shader_file_path(shader_id, ".frag")
+        if path is None:
             raise ValueError(f"Particle output shader is unavailable: {shader_id}")
-        properties[shader_id] = tuple(schema)
+        # A graph cook consumes a frozen author declaration, independently of
+        # the Editor facade and its published-material inspection cache.
+        source = Path(path).read_text(encoding="utf-8-sig")
+        schema = json.loads(_prepare_source(source, path, "particle_material_schema", None)[2])
+        if schema["domain"] != "particle":
+            raise ValueError(f"Particle output requires a particle shader: {shader_id}")
+        properties[shader_id] = tuple(material_properties(schema["parameters"]))
     return choices, properties
 
 

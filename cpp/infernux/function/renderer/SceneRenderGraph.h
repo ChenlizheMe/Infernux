@@ -41,6 +41,7 @@
 #include "vk/VkPipelineManager.h"
 #include <algorithm>
 #include <array>
+#include <function/renderer/shader/ShaderViewBindings.h>
 #include <functional>
 #include <map>
 #include <memory>
@@ -810,6 +811,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// @brief Get per-graph shadow descriptor set (set 1) for the current frame-in-flight
     [[nodiscard]] VkDescriptorSet GetPerViewDescriptorSet() const;
     [[nodiscard]] rhi::BindGroupHandle GetPerViewBindGroup() const;
+    [[nodiscard]] ShaderViewBindings GetPerViewBindings() const;
     [[nodiscard]] vk::ViewGlobalsBinding &GetViewGlobalsBinding();
     [[nodiscard]] rhi::BindGroupHandle GetEditorOverlayBindGroup() const;
 
@@ -1024,6 +1026,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         rhi::BufferHandle indices;
     };
     std::unordered_map<uint64_t, ParticleViewBinding> m_particleViewBindings;
+    void ReleaseParticleView(const std::shared_ptr<particle::ParticleGpuOutputRenderer> &renderer) noexcept;
     void ReleaseParticleViewBindings() noexcept;
     std::shared_ptr<ParticleViewDiagnosticState> m_particleViewDiagnosticState;
     std::vector<PendingParticleViewDiagnostic> m_pendingParticleViewDiagnostics;

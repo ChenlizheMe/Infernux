@@ -426,20 +426,11 @@ def parse_shader_properties(filepath: str) -> list:
     """
     if source_extension(filepath) in {".frag.py", ".vert.py"}:
         from infernux.core.shader import Shader
+        from infernux._compiler.shader_parameters import material_properties
         schema = Shader.get_schema(filepath)
-        if schema["domain"] not in {"mesh", "vertex"}:
+        if schema["domain"] not in {"mesh", "vertex", "particle"}:
             return []
-        kinds = {"texture_2d": "Texture2D", "float": "Float", "int": "Int", "vec2": "Float2", "vec3": "Float3",
-                 "vec4": "Float4", "color": "Color", "mat4": "Mat4",
-                 "mat3": "Mat3", "bool": "Bool", "uint": "UInt"}
-        fields = []
-        for parameter in schema["parameters"]:
-            item = dict(parameter, type=kinds[parameter["kind"]])
-            if parameter["kind"] in ("mat3", "mat4"):
-                size = 3 if parameter["kind"] == "mat3" else 4
-                item["default"] = [parameter["default"][row][column] for column in range(size) for row in range(size)]
-            fields.append(item)
-        return fields
+        return material_properties(schema["parameters"])
     import json
     metadata = _read_compiled_shader_metadata(filepath)
     if metadata is not None:
@@ -585,21 +576,26 @@ def shader_display_from_value(value, items):
     return shader_id
 
 
-def get_shader_candidates(ext: str, cache: dict = None):
+def get_shader_candidates(ext: str, cache: dict = None, *, domain: str | None = None):
     """Collect shader files from project and built-in shader folders.
     Only shaders with valid ShaderInfo names are listed.
     Each unique shader_id appears only once in the list.
     
-    If *cache* is provided and already contains entries for *ext*, the
-    cached result is returned immediately.
+    A typed consumer can request its domain from the same source index.
+    The default fragment menu remains the mesh-material menu.
     """
-    if cache is not None and cache.get(ext) is not None:
-        return cache[ext]
+    cache_key = ext if domain is None else (ext, domain)
+    if cache is not None and cache.get(cache_key) is not None:
+        return cache[cache_key]
 
-    items = _get_shader_catalog(ext).get("items", [("(No shaders found)", "")])
+    catalog = _get_shader_catalog(ext)
+    items = catalog["items"] if domain is None else [
+        (shader_id, shader_id) for shader_id, path in catalog["paths"].items()
+        if _read_source_shader_metadata(path).get("domain") == domain and shader_picker_name(path) is not None
+    ]
 
     if cache is not None:
-        cache[ext] = items
+        cache[cache_key] = items
     return items
 
 

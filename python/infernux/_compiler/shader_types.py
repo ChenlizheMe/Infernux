@@ -17,12 +17,13 @@ SURFACE_FIELDS = {
     "emission": ("float3", "float3(0.0)"), "alpha": ("float", "1.0"), "specular_highlights": ("float", "1.0"),
     "shading_param0": ("float", "0.0"), "shading_param1": ("float", "0.0"),
 }
-STRUCT_TYPES = {"fragment_input": "InxFragmentInput", "multisample_input": "InxMultisampleInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
+STRUCT_TYPES = {"ParticleContext": "InxParticleInput", "fragment_input": "InxFragmentInput", "multisample_input": "InxMultisampleInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
                 "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight",
                 "VertexData": "InxVertexData", "VertexContext": "InxVertexContext", "ViewContext": "InxViewContext",
                 "ProjectionContext": "InxProjectionContext", "CameraContext": "InxCameraContext",
                 "FragmentOutput": "InxFragmentOutput"}
-STRUCT_FIELDS = {"InxFragmentInput": {"position": "float4", "uv": "float2"},
+STRUCT_FIELDS = {"InxParticleInput": {'position': 'float4', 'position_ws': 'float3', 'normal_ws': 'float3', 'tangent_ws': 'float4', 'color': 'float3', 'uv0': 'float2', 'view_depth': 'float', 'line_color': 'float4', 'motion_vector': 'float2', 'flipbook_grid': 'float2', 'local_uv': 'float2', 'next_uv': 'float2', 'frame_blend': 'float', 'normalized_age': 'float', 'particle_id': 'uint', 'alpha': 'float', 'layer_mask': 'uint'},
+                 "InxFragmentInput": {"position": "float4", "uv": "float2"},
                  "InxMultisampleInput": {"position": "float4", "uv": "float2", "sample_index": "uint"},
                  "InxFragmentOutput": {"color": "float4", "depth": "float"},
                  "InxCameraContext": {"view_matrix": "float4x4", "projection_matrix": "float4x4",

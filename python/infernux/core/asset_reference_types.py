@@ -449,6 +449,7 @@ _register_builtin(
 )
 _register_builtin("Shader.Vertex", "Vertex Shader", SHADER_VERTEX_EXTENSIONS, ("SHADER_FILE",), "vert", aliases=("Vert",))
 _register_builtin("Shader.Fragment", "Fragment Shader", SHADER_FRAGMENT_EXTENSIONS, ("SHADER_FILE",), "frag", aliases=("Frag",))
+_register_builtin("Shader.Particle", "Particle Shader", SHADER_FRAGMENT_EXTENSIONS, ("SHADER_FILE",), "particle_frag")
 _register_builtin("Shader", "Shader", SHADER_EXTENSIONS, ("SHADER_FILE",), "shd")
 _register_builtin(
     "Mesh", "Mesh", MESH_EXTENSIONS, ("MODEL_GUID", "MODEL_FILE"), "mesh",

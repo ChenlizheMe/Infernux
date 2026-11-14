@@ -2,7 +2,6 @@
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
-#include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
 #include <function/renderer/shader/ShaderReflection.h>
@@ -1377,44 +1376,6 @@ void main() { }
             const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
             assert(program.entries.front().rootConstants && !program.entries.empty() &&
                    !program.entries.front().code.empty());
-        }
-    }
-
-    const std::array<std::string_view, 4> ribbonSources = {
-        infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex(),
-        infernux::particle::GpuParticleRibbonRenderShaderSources::PickingFragment(),
-        infernux::particle::GpuParticleRibbonRenderShaderSources::MotionVertex(),
-        infernux::particle::GpuParticleRibbonRenderShaderSources::MotionFragment(),
-    };
-    for (size_t index = 0; index < ribbonSources.size(); ++index) {
-        for (const auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
-            const auto compiled = infernux::CompileSlangNativeModule(
-                {"ribbon", "ParticleRibbon.slang", std::string(ribbonSources[index])}, target);
-            assert(compiled.entries.size() == 1 && compiled.entries[0].name == "main");
-            assert(index == 3 ? !compiled.entries.front().rootConstants
-                              : compiled.entries.front().rootConstants->byteSize == 240);
-            const auto &entry = compiled.entries[0];
-            if (index == 0 || index == 2) {
-                assert(entry.bindings.size() == 4);
-                assert(std::all_of(compiled.resources.begin(), compiled.resources.end(),
-                                   [](const auto &resource) { return resource.binding.readOnlyStorage; }));
-                assert(compiled.resources[0].elementStride == 112 && compiled.resources[3].elementStride == 16);
-            }
-            if (index == 0) {
-                const auto alpha = std::find_if(entry.outputs.begin(), entry.outputs.end(),
-                                                [](const auto &value) { return value.location == 14; });
-                assert(alpha != entry.outputs.end() && alpha->scalar == infernux::ShaderScalarKind::Float32 &&
-                       alpha->components == 1);
-                const auto id = std::find_if(entry.outputs.begin(), entry.outputs.end(),
-                                             [](const auto &value) { return value.location == 13; });
-                assert(id != entry.outputs.end() && id->scalar == infernux::ShaderScalarKind::UInt32);
-            } else if (index == 1) {
-                assert(entry.inputs.size() == 1 && entry.inputs[0].location == 14);
-                assert(entry.outputs.size() == 1 && entry.outputs[0].scalar == infernux::ShaderScalarKind::UInt32 &&
-                       entry.outputs[0].components == 2);
-            } else if (index == 3) {
-                assert(entry.outputs.size() == 1 && entry.outputs[0].components == 2);
-            }
         }
     }
 

@@ -213,16 +213,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         },
         py::arg("guid"), py::call_guard<py::gil_scoped_release>());
     m.def("_slang_version", [] { return SlangCompiler::Get().GetVersion(); }, py::call_guard<py::gil_scoped_release>());
-    m.def("_particle_graphics_sources", [] {
-        py::dict result;
-        for (const auto &source : GetSlangParticleGraphicsModules()) {
-            const auto renderer = py::str(source.renderer);
-            if (!result.contains(renderer))
-                result[renderer] = py::dict();
-            result[renderer].cast<py::dict>()[py::str(source.stage)] = source.module.source;
-        }
-        return result;
-    });
+
     m.def(
         "_compile_shader_program",
         [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,

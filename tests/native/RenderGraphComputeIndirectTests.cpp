@@ -1,12 +1,13 @@
+#include "ParticleGraphicsFixtures.h"
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/RendererList.h>
 #include <function/renderer/lighting/ForwardPlusLightGrid.h>
-#include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
+#include <function/renderer/particle/ParticleGpuRenderer.h>
 #include <function/renderer/particle/ParticleGpuSystemManager.h>
 #include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/particle/ParticleSceneSources.h>
@@ -942,25 +943,18 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!VerifyParticleSpawnInputSnapshots(resources, sortCompiler, spawnProgram))
         return false;
-    if (!VerifyParticleSurfaceSnapshots(resources, sortCompiler))
+    if (!VerifyParticleSurfaceSnapshots(resources))
         return false;
     if (!VerifyParticleCollisionUploads(resources, sortCompiler))
         return false;
-    auto initialLinkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
-    initialLinkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 10};
-    initialLinkedParticleProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
-    initialLinkedParticleProgram->compatibilitySignature = 41;
-    infernux::ShaderProgramArtifact::PassVariant initialLinkedParticleForward;
-    initialLinkedParticleForward.compatibilitySignature = initialLinkedParticleProgram->compatibilitySignature;
-    initialLinkedParticleForward.vertexSpirv = SpirvBytes(particleVertexCode);
-    initialLinkedParticleForward.fragmentSpirv = SpirvBytes(particleFragmentCode);
-    initialLinkedParticleProgram->variants.push_back(std::move(initialLinkedParticleForward));
-    infernux::ShaderProgramArtifact::PassVariant initialLinkedParticleMotion;
-    initialLinkedParticleMotion.target = infernux::ShaderCompileTarget::Motion;
-    initialLinkedParticleMotion.compatibilitySignature = initialLinkedParticleProgram->compatibilitySignature;
-    initialLinkedParticleMotion.vertexSpirv = SpirvBytes(particleVertexCode);
-    initialLinkedParticleMotion.fragmentSpirv = SpirvBytes(particleFragmentCode);
-    initialLinkedParticleProgram->variants.push_back(std::move(initialLinkedParticleMotion));
+    auto initialLinkedParticleProgram =
+        std::make_shared<infernux::ShaderProgramArtifact>(*infernux::particle_test::Surface());
+    initialLinkedParticleProgram->key.revision = 10;
+    initialLinkedParticleProgram->variants.erase(
+        std::remove_if(
+            initialLinkedParticleProgram->variants.begin(), initialLinkedParticleProgram->variants.end(),
+            [](const auto &variant) { return variant.target == infernux::ShaderCompileTarget::ForwardPlus; }),
+        initialLinkedParticleProgram->variants.end());
     if (!Require(initialLinkedParticleProgram->IsValid(), "Initial linked particle test artifact is invalid"))
         return false;
 
@@ -970,7 +964,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::particle::ParticleGpuSystemManager particleSystems;
     if (!Require(particleSystems.Initialize(resources.context, resources.pipelines, resources.resources,
                                             particleDeletionQueue, particleDrawRegistry, {}, {}, {}, sortProgram,
-                                            cullProgram, boundsProgram, migrationProgram, spawnProgram),
+                                            cullProgram, boundsProgram, migrationProgram, spawnProgram, {}, {},
+                                            infernux::particle_test::GeometryPrograms()),
                  "GPU particle system manager initialization failed"))
         return false;
     if (!Require(!particleSystems.HasPendingGpuWork(),
@@ -996,10 +991,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedProgram.stateStride = 16;
     for (auto &kernel : managedProgram.kernels)
         kernel = particleComputeCode;
-    managedProgram.billboardVertexShader = particleVertexCode;
-    managedProgram.billboardPickingFragmentShader = particleFragmentCode;
-    managedProgram.billboardMotionVertexShader = particleVertexCode;
-    managedProgram.billboardMotionFragmentShader = particleFragmentCode;
     infernux::particle::GpuParticleOutputProgram primaryOutput;
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
@@ -1094,21 +1085,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Custom lit ParticleSprite publication silently replaced the linked program"))
         return false;
 
-    auto linkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
-    linkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 11};
-    linkedParticleProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
-    linkedParticleProgram->compatibilitySignature = 41;
-    infernux::ShaderProgramArtifact::PassVariant linkedParticleForward;
-    linkedParticleForward.compatibilitySignature = linkedParticleProgram->compatibilitySignature;
-    linkedParticleForward.vertexSpirv = SpirvBytes(particleVertexCode);
-    linkedParticleForward.fragmentSpirv = SpirvBytes(particleFragmentCode);
-    linkedParticleProgram->variants.push_back(std::move(linkedParticleForward));
-    infernux::ShaderProgramArtifact::PassVariant linkedParticleMotion;
-    linkedParticleMotion.target = infernux::ShaderCompileTarget::Motion;
-    linkedParticleMotion.compatibilitySignature = linkedParticleProgram->compatibilitySignature;
-    linkedParticleMotion.vertexSpirv = SpirvBytes(particleVertexCode);
-    linkedParticleMotion.fragmentSpirv = SpirvBytes(particleFragmentCode);
-    linkedParticleProgram->variants.push_back(std::move(linkedParticleMotion));
+    auto linkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>(*infernux::particle_test::Surface());
+    linkedParticleProgram->key.revision = 11;
     if (!Require(linkedParticleProgram->IsValid(), "Linked particle test artifact is invalid"))
         return false;
     const uint64_t drawRevisionBeforeMaterialRefresh = particleDrawRegistry.Revision();
@@ -1132,6 +1110,16 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             "Invalid GPU particle material disturbed the last-known-good renderer")) {
         return false;
     }
+    auto incompleteParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>(*linkedParticleProgram);
+    incompleteParticleProgram->key.revision = 13;
+    incompleteParticleProgram->compilation.reset();
+    if (!Require(incompleteParticleProgram->IsValid() &&
+                     !particleSystems.RefreshMaterialProgram(primaryOutput.material, incompleteParticleProgram,
+                                                             &managedError) &&
+                     particleDrawRegistry.Revision() == drawRevisionBeforeRejectedMaterial &&
+                     particleSystems.ActiveArtifactRevision(managedProgram.id) == 1,
+                 "Incomplete GPU particle material changed the active renderer"))
+        return false;
     (void)particleDeletionQueue.Collect(1);
     if (!Require(particleDeletionQueue.PendingCount() == 0,
                  "GPU particle material retirement did not complete after its submission"))
@@ -1478,11 +1466,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     ResourceHandle managedSortGlobalOffsets;
     ResourceHandle particleTexture;
     ResourceHandle colorTarget;
-    infernux::particle::ParticleGpuBillboardRenderer billboardRenderer;
-    infernux::particle::GpuBillboardViewConstants billboardView;
+    infernux::particle::ParticleGpuRenderer billboardRenderer;
+    infernux::particle::GpuParticleViewConstants billboardView;
     infernux::MaterialPassPipelineDescriptor billboardPass;
     infernux::rhi::RenderTargetLayoutHandle billboardTargetLayout;
-    infernux::particle::GpuParticlePerViewBindings particlePerView;
+    infernux::particle_test::ViewResources particleView(rhi);
+    const auto particlePerView = particleView.bindings;
     bool billboardRecorded = false;
     RendererList emptyRendererList;
     std::vector<DrawCall> populatedDrawCalls(1);
@@ -1787,11 +1776,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
             auto &encoder = context.GetGraphicsCommandEncoder();
             billboardRecorded = billboardRenderer.RecordDraw(encoder, billboardPass,
                                                              context.GetBufferHandle(particleOutputs.indirectArguments),
-                                                             billboardView, {}, {}, true, particlePerView);
-            billboardRecorded = managedRenderer->RecordDraw(
-                                    encoder, billboardPass, context.GetBufferHandle(managedIndirectArguments),
-                                    billboardView, managedViewSorter.SortedIndices(), {}, true, particlePerView) &&
-                                billboardRecorded;
+                                                             billboardView, particlePerView);
+            billboardRecorded =
+                managedRenderer->RecordDraw(encoder, billboardPass, context.GetBufferHandle(managedIndirectArguments),
+                                            billboardView, particlePerView, managedViewSorter.SortedIndices()) &&
+                billboardRecorded;
             encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments));
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
@@ -2038,33 +2027,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.computeGroup.IsValid(), "RHI compute bind group creation failed"))
         return false;
 
-    infernux::particle::GpuBillboardRendererDesc billboardDesc;
-    auto billboardShaderProgram = std::make_shared<infernux::ShaderProgramArtifact>();
-    billboardShaderProgram->key = {{"Tests/ParticleTextured", "Tests/ParticleTexturedSurface"}, 1};
-    billboardShaderProgram->domain = infernux::ShaderProgramDomain::ParticleSprite;
-    billboardShaderProgram->compatibilitySignature = 42;
-    infernux::ShaderProgramPropertyBinding billboardTextureProperty;
-    billboardTextureProperty.name = "albedo_map";
-    billboardTextureProperty.type = "texture2d";
-    billboardTextureProperty.textureDefault = "white";
-    billboardTextureProperty.stages = infernux::ShaderProgramStageMask::Fragment;
-    billboardTextureProperty.textureSlot = 0;
-    billboardShaderProgram->properties.push_back(std::move(billboardTextureProperty));
-    infernux::ShaderProgramArtifact::PassVariant billboardForward;
-    billboardForward.compatibilitySignature = billboardShaderProgram->compatibilitySignature;
-    billboardForward.vertexSpirv = SpirvBytes(particleTexturedVertexCode);
-    billboardForward.fragmentSpirv = SpirvBytes(particleTexturedFragmentCode);
-    billboardShaderProgram->variants.push_back(billboardForward);
-    auto billboardMotion = billboardForward;
-    billboardMotion.target = infernux::ShaderCompileTarget::Motion;
-    billboardShaderProgram->variants.push_back(std::move(billboardMotion));
-    billboardDesc.vertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
-    billboardDesc.motionVertexShader = {particleTexturedVertexCode.data(), particleTexturedVertexCode.size()};
-    billboardDesc.motionFragmentShader = {particleTexturedFragmentCode.data(), particleTexturedFragmentCode.size()};
-    billboardDesc.shaderProgram = std::move(billboardShaderProgram);
+    infernux::particle::GpuParticleRendererDesc billboardDesc;
+    billboardDesc.geometry = infernux::particle_test::GeometryPrograms()[0];
+    billboardDesc.surface = infernux::particle_test::Surface(true);
     billboardDesc.instances = particleRuntime.InstanceBuffer();
     billboardDesc.renderIndices = particleRuntime.RenderIndexBuffer();
-    billboardDesc.fallbackMaterial.blendEnabled = false;
+    billboardDesc.materialState.blendEnabled = false;
     billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName,
                                         infernux::particle::GpuParticleTextureRequest request) {
         assert(request == infernux::particle::GpuParticleTextureRequest::Poll);
@@ -2086,21 +2054,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                                                             texture, sampler, std::move(slot), std::move(publication)};
     };
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
-    billboardView.viewProjection[0] = 1.0f;
-    billboardView.viewProjection[5] = 1.0f;
-    billboardView.viewProjection[10] = 1.0f;
-    billboardView.viewProjection[15] = 1.0f;
     billboardView.cameraRight[0] = 1.0f;
     billboardView.cameraUp[1] = 1.0f;
     if (!Require(resources.computeGroup.IsValid() && resources.computeHandle.IsValid() &&
                      billboardRenderer.Create(rhi, billboardDesc),
                  "Typed RHI particle billboard creation failed"))
         return false;
-    particlePerView.layout = rhi.CreateBindingLayout({});
-    infernux::rhi::BindGroupDesc particlePerViewGroupDesc;
-    particlePerViewGroupDesc.layout = particlePerView.layout;
-    particlePerView.group = rhi.CreateBindGroup(particlePerViewGroupDesc);
-    if (!Require(particlePerView.IsValid(), "Particle per-view fixture binding creation failed"))
+    if (!Require(particlePerView.layout.IsValid() && particlePerView.group.IsValid() &&
+                     particlePerView.globals.IsValid(),
+                 "Particle per-view fixture binding creation failed"))
         return false;
 
     rhi.Release(resources.computeShader);
@@ -2448,8 +2410,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     particleDeletionQueue.FlushAll();
 
     billboardRenderer.Destroy();
-    rhi.Release(particlePerView.group);
-    rhi.Release(particlePerView.layout);
     resources.graph.Destroy();
     particleSpawnDomain.Destroy();
     managedViewSorter.Destroy();

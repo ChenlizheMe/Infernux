@@ -226,6 +226,7 @@ public struct InxPbrLightResponse : IInxLightResponse
 struct InxLighting<let tiled_lighting : bool>
 {
     uint layer_mask;
+    uint light_domain;
     bool receives_shadows;
     float2 pixel_position;
     uint4 inx_forward_plus_tile_header()
@@ -442,7 +443,7 @@ if (tiled_lighting) {
     if (light_counts().x > 0u) {
         InxCanonicalLight dl = load_light(0);
         l.direction = normalize(-dl.direction_outer_cos.xyz);
-        bool affects_surface = (dl.metadata.w & 1u) != 0u && (dl.metadata.y & layer_mask) != 0u;
+        bool affects_surface = (dl.metadata.w & light_domain) != 0u && (dl.metadata.y & layer_mask) != 0u;
         l.color = affects_surface ? dl.color_intensity.rgb * dl.color_intensity.w : float3(0.0);
         l.attenuation = affects_surface ? 1.0 : 0.0;
         l.shadow = affects_surface ? calculate_shadow(world_pos, normal, frag_view_depth_val) : 1.0;
@@ -456,7 +457,7 @@ if (tiled_lighting) {
     if (lighting.light_counts.x > 0) {
         InxDirectionalLight dl = lighting.directional_lights[0];
         l.direction = normalize(-dl.direction.xyz);
-        bool affects_surface = (dl.metadata.y & 1u) != 0u && (dl.metadata.x & layer_mask) != 0u;
+        bool affects_surface = (dl.metadata.y & light_domain) != 0u && (dl.metadata.x & layer_mask) != 0u;
         l.color = affects_surface ? dl.color.rgb * dl.color.w : float3(0.0);
         l.attenuation = affects_surface ? 1.0 : 0.0;
         l.shadow = affects_surface ? calculate_shadow(world_pos, normal, frag_view_depth_val) : 1.0;
@@ -498,12 +499,11 @@ float3 evaluate_rectangle_area_light<T : IInxLightResponse>(float3 light_positio
 }
 float3 calculate_all_lighting<T : IInxLightResponse>(float3 world_pos, float3 N, float view_depth, float shadow, T response) {
     float3 lo = float3(0.0);
-    const uint current_light_domain = 1u;
 if (tiled_lighting) {
     uint directional_count = light_counts().x;
     for (uint i = 0u; i < directional_count; ++i) {
         InxCanonicalLight light = load_light(i);
-        if ((light.metadata.w & current_light_domain) == 0u) continue;
+        if ((light.metadata.w & light_domain) == 0u) continue;
         if ((light.metadata.y & layer_mask) == 0u) continue;
 )slang"
                                            R"slang(        float3 L = normalize(-light.direction_outer_cos.xyz);
@@ -524,7 +524,7 @@ if (tiled_lighting) {
             light_mask &= light_mask - 1u;
             if (local_index >= tile_header.z) continue;
             InxCanonicalLight light = load_light(directional_count + local_index);
-            if ((light.metadata.w & current_light_domain) == 0u) continue;
+            if ((light.metadata.w & light_domain) == 0u) continue;
             if ((light.metadata.y & layer_mask) == 0u) continue;
             if (light.metadata.x == 3u) {
                 lo += evaluate_rectangle_area_light(
@@ -557,7 +557,7 @@ if (tiled_lighting) {
 } else {
     for (int i = 0; i < lighting.light_counts.x && i < MAX_DIRECTIONAL_LIGHTS; ++i) {
         InxDirectionalLight light = lighting.directional_lights[i];
-        if ((light.metadata.y & current_light_domain) == 0u) continue;
+        if ((light.metadata.y & light_domain) == 0u) continue;
         if ((light.metadata.x & layer_mask) == 0u) continue;
         float3 L        = normalize(-light.direction.xyz);
         float3 radiance = light.color.rgb * light.color.w;
@@ -569,7 +569,7 @@ if (tiled_lighting) {
     }
     for (int i = 0; i < lighting.light_counts.y && i < MAX_POINT_LIGHTS; ++i) {
         InxPointLight light = lighting.point_lights[i];
-        if ((light.metadata.y & current_light_domain) == 0u) continue;
+        if ((light.metadata.y & light_domain) == 0u) continue;
         if ((light.metadata.x & layer_mask) == 0u) continue;
         float3  light_vec = light.position.xyz - world_pos;
         float distance = length(light_vec);
@@ -586,7 +586,7 @@ if (tiled_lighting) {
     }
     for (int i = 0; i < lighting.light_counts.z && i < MAX_SPOT_LIGHTS; ++i) {
         InxSpotLight light = lighting.spot_lights[i];
-        if ((light.metadata.y & current_light_domain) == 0u) continue;
+        if ((light.metadata.y & light_domain) == 0u) continue;
         if ((light.metadata.x & layer_mask) == 0u) continue;
         float3  light_vec = light.position.xyz - world_pos;
         float distance = length(light_vec);
@@ -607,7 +607,7 @@ if (tiled_lighting) {
     }
     for (int i = 0; i < lighting.light_counts.w && i < MAX_AREA_LIGHTS; ++i) {
         InxAreaLight light = lighting.area_lights[i];
-        if ((light.metadata.y & current_light_domain) == 0u) continue;
+        if ((light.metadata.y & light_domain) == 0u) continue;
         if ((light.metadata.x & layer_mask) == 0u) continue;
         lo += evaluate_rectangle_area_light(
             light.position_range.xyz, light.direction.xyz, light.right_width, light.up_height,
@@ -675,6 +675,7 @@ InxLighting<tiled_lighting> inx_lighting_context<let tiled_lighting : bool>(InxS
 {
     InxLighting<tiled_lighting> context;
     context.layer_mask = input.layer_mask;
+    context.light_domain = input.light_domain;
     context.receives_shadows = input.receives_shadows;
     context.pixel_position = input.pixel_position;
     return context;

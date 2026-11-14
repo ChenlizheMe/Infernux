@@ -56,10 +56,12 @@ class _Author(ParameterAuthor):
         if len(arguments) == 2:
             uv = arguments[1]
             kind = self.annotation(uv.annotation) if uv.annotation is not None else None
-            expected = {"InxMeshInput"} if self.domain == "mesh" else {"float2", "InxFragmentInput", "InxMultisampleInput"}
+            expected = ({"InxMeshInput"} if self.domain == "mesh" else {"InxParticleInput"} if self.domain == "particle"
+                        else {"float2", "InxFragmentInput", "InxMultisampleInput"})
             if kind not in expected:
-                self.error(uv, "Mesh input is shader.mesh_input" if self.domain == "mesh" else
-                           "Fullscreen input is shader.vec2, shader.fragment_input or shader.multisample_input")
+                self.error(uv, {"mesh": "Mesh input is shader.mesh_input",
+                                "particle": "Particle input is shader.ParticleContext"}.get(
+                                    self.domain, "Fullscreen input is shader.vec2, shader.fragment_input or shader.multisample_input"))
             signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
         result = self.annotation(main.returns) if main.returns is not None else None
@@ -72,18 +74,68 @@ class _Author(ParameterAuthor):
         self.local_declarations()
         self.block(main.body)
         semantic = " : SV_Target0" if result == "float4" else ""
-        if self.domain == "mesh" and not self.is_surface:
+        if self.domain in {"mesh", "particle"} and not self.is_surface:
             argument = arguments[1].arg if len(arguments) == 2 else ""
             alpha = "color.color.a" if result == "InxFragmentOutput" else "color.a"
-            return [self.source_directive(main), result + " inx_author_fragment(" + signature + ")",
-                    "{", *self.lines, "}", '[shader("fragment")]',
-                    result + " fragment_main(" + signature + ")" + semantic, "{",
+            entry = "inx_evaluate_particle" if self.domain == "particle" else "fragment_main"
+            marker = [] if self.domain == "particle" else ['[shader("fragment")]']
+            threshold = "max(inx_parameters._alpha_clip_threshold, 0.0001)" if self.domain == "particle" else "inx_parameters._alpha_clip_threshold"
+            evaluation_signature = signature or ("InxParticleInput inx_input" if self.domain == "particle" else "")
+            coverage = ["    if (!(" + (argument or "inx_input") + ".alpha > 0.0)) discard;"] if self.domain == "particle" else []
+            inline = ["[ForceInline]"] if self.domain == "particle" else []
+            return [self.source_directive(main), *inline, result + " inx_author_fragment(" + signature + ")",
+                    "{", *self.lines, "}", *marker, *inline,
+                    result + " " + entry + "(" + evaluation_signature + ")" + (semantic if marker else ""), "{", *coverage,
                     "    " + result + " color = inx_author_fragment(" + argument + ");",
-                    "    clip(" + alpha + " - inx_parameters._alpha_clip_threshold);", "    return color;", "}"]
+                    "    clip(" + alpha + " - " + threshold + ");", "    return color;", "}"]
         declaration = ("InxSurfaceData inx_author_surface(" + signature + ")" if self.is_surface else
                        result + " fragment_main(" + signature + ")" + semantic)
         return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
             declaration, "{", *self.lines, "}"]
+
+
+
+def _particle_passes(result):
+    call = "inx_evaluate_particle(input)"
+    depth = result == "InxFragmentOutput"
+    color_depth = "float depth : SV_Depth;" if depth else ""
+    picking_result = "InxParticlePickingOutput" if depth else "uint2"
+    motion_result = "InxParticleMotionOutput" if depth else "float2"
+    outputs = ("struct InxParticlePickingOutput { uint2 identity : SV_Target0; " + color_depth + " };\n"
+               "struct InxParticleMotionOutput { float2 motion : SV_Target0; " + color_depth + " };\n") if depth else ""
+    picking_value = ("InxParticlePickingOutput output; output.identity = inx_particle_owner_id(); "
+                     "output.depth = value.depth; return output;") if depth else "return inx_particle_owner_id();"
+    motion_value = ("InxParticleMotionOutput output; output.motion = input.motion_vector; "
+                    "output.depth = value.depth; return output;") if depth else "return input.motion_vector;"
+    color = "value.color" if depth else "value"
+    return outputs + f"""
+[shader("fragment")]
+{result} fragment_main(InxParticleInput input){"" if depth else " : SV_Target0"} {{ return {call}; }}
+[shader("fragment")]
+{result} fragment_soft_depth(InxParticleInput input){"" if depth else " : SV_Target0"} {{
+    {result} value = {call};
+    {color} = inx_particle_apply_soft_coverage({color}, inx_particle_soft_coverage<true>(input));
+    return value;
+}}
+[shader("fragment")]
+{result} fragment_soft_color(InxParticleInput input){"" if depth else " : SV_Target0"} {{
+    {result} value = {call};
+    {color} = inx_particle_apply_soft_coverage({color}, inx_particle_soft_coverage<false>(input));
+    return value;
+}}
+[shader("fragment")]
+{picking_result} fragment_picking(InxParticleInput input){"" if depth else " : SV_Target0"} {{
+    {result} value = {call}; {picking_value}
+}}
+[shader("fragment")]
+{motion_result} fragment_motion(InxParticleInput input){"" if depth else " : SV_Target0"} {{
+    {result} value = {call}; {motion_value}
+}}
+[shader("fragment")]
+{"float" if depth else "void"} fragment_depth(InxParticleInput input){" : SV_Depth" if depth else ""} {{
+    {result} value = {call}; {"return value.depth;" if depth else ""}
+}}
+"""
 
 
 _FULLSCREEN_VERTEX = """
@@ -304,9 +356,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if len(body) != 1 or not isinstance(body[0], ast.ClassDef):
         author.error(ast.Constant(lineno=1, col_offset=0), "Declare one shader class")
     declaration = body[0]
-    bases = {author.alias + ".fullscreen": "fullscreen", author.alias + ".frag": "mesh", author.alias + ".surface": "mesh"}
+    bases = {author.alias + ".fullscreen": "fullscreen", author.alias + ".frag": "mesh",
+             author.alias + ".surface": "mesh", author.alias + ".particle": "particle"}
     if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) not in bases:
-        author.error(declaration, "Declare shader.fullscreen, shader.frag or shader.surface")
+        author.error(declaration, "Declare shader.fullscreen, shader.frag, shader.surface or shader.particle")
     author.domain = bases[author.qualified(declaration.bases[0])]
     author.lighting_mode = "true" if author.domain == "fullscreen" else "false"
     author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
@@ -340,7 +393,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         for helper in helpers:
             name = "self." + helper.name
             author.functions[name] = replace(author.functions[name], lighting_specialization=True)
-    if author.domain == "mesh":
+    if author.domain in {"mesh", "particle"}:
         author.fields["_alpha_clip_threshold"] = ShaderParameter("_alpha_clip_threshold", "float", 0.0, "", internal=True)
         author.field_nodes["_alpha_clip_threshold"] = declaration
         author.field_sources["_alpha_clip_threshold"] = (author, declaration)
@@ -370,9 +423,9 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.types["self." + name] = vertex.author.types["self." + name]
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
-    if author.domain == "mesh":
+    if author.domain in {"mesh", "particle"}:
         if inputs:
-            author.error(declaration, "Mesh image resources are declared as material properties")
+            author.error(declaration, "Material image resources are declared as material properties")
     dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies)]
     code.extend(engine_imports(body, author.alias, graph=graph, owner=author))
@@ -380,6 +433,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.append("import inx_frame;")
     if author.domain == "mesh":
         code.append("import inx_camera;")
+    elif author.domain == "particle":
+        code.append("import inx_particle;")
     code = list(dict.fromkeys(code))
     if author.is_surface:
         code.insert(0, "import inx_surface_model;")
@@ -393,7 +448,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.extend([vertex_code, _VERTEX_DEFORM])
         code.append(_mesh_vertex(deform=True, project="self.project" in vertex.author.functions))
     else:
-        code.append(_mesh_vertex() if author.domain == "mesh" else _FULLSCREEN_VERTEX)
+        if author.domain == "mesh":
+            code.append(_mesh_vertex())
+        elif author.domain == "fullscreen":
+            code.append(_FULLSCREEN_VERTEX)
     for helper in helpers:
         emitter = _Author(source, source_path)
         emitter.alias = author.alias
@@ -405,6 +463,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
         author.source_ranges.extend(emitter.source_ranges)
     code.extend(author.function(main))
+    if author.domain == "particle":
+        code.append(_particle_passes(author.annotation(main.returns)))
     if author.is_surface:
         code.append("static const bool INX_RECEIVE_SHADOWS = " + ("true" if info["receive_shadows"] else "false") + ";")
         code.append(_SURFACE_LIGHTING)

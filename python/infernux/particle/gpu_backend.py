@@ -146,11 +146,6 @@ def _update_render_fusion_capability(
     return emitter.update_render_fusion_capability()
 
 
-@cache
-def _particle_graphics_sources() -> dict[str, dict[str, str]]:
-    from infernux.lib import _Infernux
-
-    return _Infernux._particle_graphics_sources()
 
 
 @dataclass(frozen=True)
@@ -546,22 +541,10 @@ def _compile_cached_programs(
     return result
 
 
-@cache
-def _particle_graphics_abi_hash() -> str:
-    digest = hashlib.sha256()
-    digest.update(b"infernux.particle.graphics-abi\0slang-spirv\0")
-    for renderer, sources in _particle_graphics_sources().items():
-        for stage, source in sources.items():
-            digest.update(f"{renderer}.{stage}\0{source}\0".encode("utf-8"))
-    digest.update(_curve_interpolation_slang().encode("utf-8"))
-    digest.update(
-        _ramp_parameter_slang({"curve": (0, TypeRef(ValueType.CURVE))}).encode("utf-8")
-    )
-    return digest.hexdigest()
 
 
 def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, Any]:
-    """Compile particle kernels and geometry with the resident Slang service."""
+    """Compile simulation kernels; the native renderer owns shared geometry."""
     from infernux.lib import _Infernux as native
 
     emitters = []
@@ -601,19 +584,13 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
                 "continuation": continuation,
             }
         )
-    graphics = _particle_graphics_sources()
     return {
         "$schema": "infernux.particle_gpu_spirv",
         "target": "vulkan1.2-spirv1.5",
-        "graphics_abi_hash": _particle_graphics_abi_hash(),
         "kernel_hash": program.kernel_hash,
         "parameters": [parameter.to_dict() for parameter in program.parameters],
         "parameter_words": list(pack_gpu_particle_parameters(program.parameters)),
         "emitters": emitters,
-        "billboard": _compile_cached_programs(
-            native, graphics["billboard"], "particle:billboard"
-        ),
-        "mesh": _compile_cached_programs(native, graphics["mesh"], "particle:mesh"),
     }
 
 
@@ -624,20 +601,16 @@ def validate_gpu_particle_spirv(
     expected_top = {
         "$schema",
         "target",
-        "graphics_abi_hash",
         "kernel_hash",
         "parameters",
         "parameter_words",
         "emitters",
-        "billboard",
-        "mesh",
     }
     if type(value) is not dict or set(value) != expected_top:
         raise GpuParticleCompileError("particle GPU SPIR-V payload is invalid")
     if (
         value["$schema"] != "infernux.particle_gpu_spirv"
         or value["target"] != "vulkan1.2-spirv1.5"
-        or value["graphics_abi_hash"] != _particle_graphics_abi_hash()
         or value["kernel_hash"] != program.kernel_hash
         or value["parameters"]
         != [parameter.to_dict() for parameter in program.parameters]
@@ -647,23 +620,6 @@ def validate_gpu_particle_spirv(
         or len(value["emitters"]) != len(program.emitters)
     ):
         raise GpuParticleCompileError("particle GPU SPIR-V header is incompatible")
-    billboard = value["billboard"]
-    if type(billboard) is not dict or set(billboard) != {
-        "vertex",
-        "picking_fragment",
-        "motion_vertex",
-        "motion_fragment",
-    }:
-        raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
-    mesh = value["mesh"]
-    if type(mesh) is not dict or set(mesh) != {
-        "vertex",
-        "shadow_fragment",
-        "picking_fragment",
-        "motion_vertex",
-        "motion_fragment",
-    }:
-        raise GpuParticleCompileError("particle GPU mesh binary is incomplete")
     for encoded, source in zip(value["emitters"], program.emitters):
         if type(encoded) is not dict or set(encoded) != {
             "stable_id",
@@ -723,10 +679,6 @@ def validate_gpu_particle_spirv(
                 )
             for stage, descriptor in continuation["stages"].items():
                 _validate_spirv_descriptor(descriptor, f"continuation.{stage}")
-    for stage, descriptor in billboard.items():
-        _validate_spirv_descriptor(descriptor, f"billboard.{stage}")
-    for stage, descriptor in mesh.items():
-        _validate_spirv_descriptor(descriptor, f"mesh.{stage}")
     return value
 
 
@@ -767,16 +719,12 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
     emitters = value.get("emitters") if type(value) is dict else None
     parameters = value.get("parameters") if type(value) is dict else None
     parameter_words = value.get("parameter_words") if type(value) is dict else None
-    billboard = value.get("billboard") if type(value) is dict else None
-    mesh = value.get("mesh") if type(value) is dict else None
     if (
         type(emitters) is not list
         or emitter_index >= len(emitters)
         or type(emitters[emitter_index]) is not dict
         or type(emitters[emitter_index].get("update_render_fusion")) is not dict
         or type(emitters[emitter_index].get("stages")) is not dict
-        or type(billboard) is not dict
-        or type(mesh) is not dict
         or type(parameters) is not list
         or type(parameter_words) is not list
         or any(
@@ -829,14 +777,7 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
             stage: decode(descriptor, stage)
             for stage, descriptor in emitter["stages"].items()
         },
-        "billboard": {
-            stage: decode(descriptor, f"billboard.{stage}")
-            for stage, descriptor in billboard.items()
-        },
-        "mesh": {
-            stage: decode(descriptor, f"mesh.{stage}")
-            for stage, descriptor in mesh.items()
-        },
+
     }
 
 

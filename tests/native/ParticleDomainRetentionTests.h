@@ -97,7 +97,7 @@ void main() { result = snapshot; }
     owner.retirement.BindSerialSource([] { return rhi::SubmissionSerial{1}; });
     if (!Require(owner.manager.Initialize(resources.context, resources.pipelines, resources.resources, owner.retirement,
                                           owner.draws, {}, {}, {}, sortProgram, cullProgram, boundsProgram,
-                                          migrationProgram, spawnProgram),
+                                          migrationProgram, spawnProgram, {}, {}, particle_test::GeometryPrograms()),
                  "Particle domain retention manager failed"))
         return false;
     auto a = prototype;
@@ -124,7 +124,8 @@ void main() { result = snapshot; }
     const auto removeB = [&] {
         return resources.PublishParticleGraph(owner.manager, {b.graphInstanceId, {}, {b.id}}, &error);
     };
-    if (!Require(publish(a), error.c_str()))
+    const bool published = publish(a);
+    if (!Require(published, error.c_str()))
         return false;
     const auto entries = owner.draws.SnapshotShared(0, 5000);
     const auto instances = entries->front().instances;

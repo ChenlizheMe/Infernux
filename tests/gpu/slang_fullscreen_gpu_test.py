@@ -45,7 +45,7 @@ class AuthorPipeline(RenderPipeline):
         graph.screen_ui_overlay_section(resources={"color"})
         graph.set_output(color)
 
-    def render_camera(self, context, camera, culling):
+    def render_view(self, context, view, culling):
         if not context.is_graph_revision_current(self._standalone_desc.source_revision):
             assert context.apply_graph(self._standalone_desc)
         update = GraphParameterBlockUpdate()

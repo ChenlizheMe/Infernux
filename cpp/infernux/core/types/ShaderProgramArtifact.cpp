@@ -1,4 +1,5 @@
 #include "ShaderProgramArtifact.h"
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <algorithm>
 #include <array>
@@ -117,6 +118,7 @@ bool ShaderProgramArtifact::IsValid() const noexcept
     for (const auto &variant : variants) {
         const int targetIndex = static_cast<int>(variant.target);
         if (targetIndex < 0 || targetIndex >= static_cast<int>(ShaderCompileTarget::Count) || !variant.IsValid() ||
+            (domain != ShaderProgramDomain::ParticleSprite && variant.vertexSpirv.empty()) ||
             variant.compatibilitySignature != compatibilitySignature) {
             return false;
         }
@@ -193,6 +195,18 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
         return static_cast<int>(lhs->target) < static_cast<int>(rhs->target);
     });
 
+    if (artifact.compilation) {
+        for (const auto &target : artifact.compilation->targets) {
+            const auto format = static_cast<uint8_t>(target.target);
+            hash = AppendBytes(hash, &format, sizeof(format));
+            for (const auto &entry : target.entries) {
+                hash = AppendString(hash, entry.name);
+                const uint64_t codeBytes = entry.code.size();
+                hash = AppendBytes(hash, &codeBytes, sizeof(codeBytes));
+                hash = AppendBytes(hash, entry.code.data(), entry.code.size());
+            }
+        }
+    }
     const uint64_t serializedVariantCount = variantCount;
     hash = AppendBytes(hash, &serializedVariantCount, sizeof(serializedVariantCount));
     for (size_t index = 0; index < variantCount; ++index) {

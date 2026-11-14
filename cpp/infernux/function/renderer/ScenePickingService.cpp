@@ -208,7 +208,7 @@ void ScenePickingService::DestroyTarget()
 }
 
 void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetWidth, uint32_t targetHeight,
-                                 rhi::BindGroupHandle perViewGroup, vk::ViewGlobalsBinding &viewGlobals,
+                                 const ShaderViewBindings &perView, vk::ViewGlobalsBinding &viewGlobals,
                                  const glm::mat4 &viewMatrix)
 {
     if (!m_hasPending || !m_core || commandBuffer == VK_NULL_HANDLE)
@@ -317,28 +317,23 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     pickingPass.depthFormat = rhi::FromVkFormat(target.depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
-    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewGlobals, viewMatrix, 0,
+    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perView.group, viewGlobals, viewMatrix, 0,
                               5000, "front_to_back", {}, {}, &pickingPass);
     if (particleEntries && !particleEntries->empty()) {
-        Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
-        if (camera) {
-            particle::GpuParticleViewConstants view;
-            const glm::mat4 cameraView = camera->GetViewMatrix();
-            const glm::mat4 viewProjection = camera->GetProjectionMatrix() * cameraView;
-            const glm::mat4 inverseView = glm::inverse(cameraView);
-            std::memcpy(view.viewProjection.data(), &viewProjection[0][0], sizeof(viewProjection));
-            std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
-            std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
-            std::memcpy(view.alignmentReference.data(), &inverseView[3][0], sizeof(glm::vec4));
-            vk::VulkanGraphicsCommandContext graphicsContext;
-            auto encoder =
-                m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(graphicsContext, commandBuffer);
-            for (const auto &entry : *particleEntries) {
-                if (!entry.renderer || entry.ownerObjectId == 0)
-                    continue;
-                [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(
-                    encoder, pickingPass, entry.indirectArguments, view, entry.ownerObjectId, entry.renderIndices);
-            }
+        particle::GpuParticleViewConstants view;
+        const glm::mat4 inverseView = glm::inverse(viewMatrix);
+        std::memcpy(view.cameraRight.data(), &inverseView[0][0], sizeof(glm::vec4));
+        std::memcpy(view.cameraUp.data(), &inverseView[1][0], sizeof(glm::vec4));
+        std::memcpy(view.alignmentReference.data(), &inverseView[3][0], sizeof(glm::vec4));
+        vk::VulkanGraphicsCommandContext graphicsContext;
+        auto encoder =
+            m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(graphicsContext, commandBuffer);
+        for (const auto &entry : *particleEntries) {
+            if (!entry.renderer || entry.ownerObjectId == 0)
+                continue;
+            view.objectData[2] = entry.ownerLayerMask;
+            [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(
+                encoder, pickingPass, entry.indirectArguments, view, entry.ownerObjectId, perView, entry.renderIndices);
         }
     }
     m_dynamicRenderingCommands.end(commandBuffer);

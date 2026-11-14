@@ -197,7 +197,7 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
     for (const char *field :
          {"id", "graph_instance_id", "graph_emitter_index", "owner_object_id", "owner_layer_mask", "artifact_revision",
           "stable_id", "capacity", "state_stride", "event_type_count", "collision_enabled", "parameter_words",
-          "continuation", "update_render_fusion", "stages", "billboard", "mesh_shaders", "outputs"}) {
+          "continuation", "update_render_fusion", "stages", "outputs"}) {
         if (!value.contains(field))
             throw std::invalid_argument(std::string("GPU particle program is missing ") + field);
     }
@@ -464,33 +464,6 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             throw std::invalid_argument(std::string("GPU particle program is missing stage ") + stage);
         program.kernels[index] = bindings::DecodeSpirvBytes(stages[stage], std::string("particle stage ") + stage);
     }
-    const py::dict billboard = py::cast<py::dict>(value["billboard"]);
-    if (!billboard.contains("vertex") || !billboard.contains("picking_fragment") ||
-        !billboard.contains("motion_vertex") || !billboard.contains("motion_fragment"))
-        throw std::invalid_argument("GPU particle billboard shaders are incomplete");
-    program.billboardVertexShader = bindings::DecodeSpirvBytes(billboard["vertex"], "particle billboard vertex shader");
-    program.billboardPickingFragmentShader =
-        bindings::DecodeSpirvBytes(billboard["picking_fragment"], "particle billboard picking fragment shader");
-    program.billboardMotionVertexShader =
-        bindings::DecodeSpirvBytes(billboard["motion_vertex"], "particle billboard motion vertex shader");
-    program.billboardMotionFragmentShader =
-        bindings::DecodeSpirvBytes(billboard["motion_fragment"], "particle billboard motion fragment shader");
-
-    const py::dict meshShaders = py::cast<py::dict>(value["mesh_shaders"]);
-    for (const char *field : {"vertex", "shadow_fragment", "picking_fragment", "motion_vertex", "motion_fragment"}) {
-        if (!meshShaders.contains(field))
-            throw std::invalid_argument(std::string("GPU particle mesh shaders are missing ") + field);
-    }
-    program.meshVertexShader = bindings::DecodeSpirvBytes(meshShaders["vertex"], "particle mesh vertex shader");
-    program.meshShadowFragmentShader =
-        bindings::DecodeSpirvBytes(meshShaders["shadow_fragment"], "particle mesh shadow fragment shader");
-    program.meshPickingFragmentShader =
-        bindings::DecodeSpirvBytes(meshShaders["picking_fragment"], "particle mesh picking fragment shader");
-    program.meshMotionVertexShader =
-        bindings::DecodeSpirvBytes(meshShaders["motion_vertex"], "particle mesh motion vertex shader");
-    program.meshMotionFragmentShader =
-        bindings::DecodeSpirvBytes(meshShaders["motion_fragment"], "particle mesh motion fragment shader");
-
     const py::sequence outputs = py::cast<py::sequence>(value["outputs"]);
     program.outputs.reserve(outputs.size());
     for (const py::handle item : outputs) {

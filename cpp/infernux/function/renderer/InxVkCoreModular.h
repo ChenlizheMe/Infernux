@@ -17,6 +17,7 @@
 #include "vk/VulkanBindlessTextureTable.h"
 #include "vk/VulkanComputeQueue.h"
 #include "vk/VulkanSubmissionExecutor.h"
+#include <function/renderer/shader/ShaderViewBindings.h>
 #if INFERNUX_FRAME_PROFILE
 #include "vk/GpuTimestampQueries.h"
 #endif
@@ -342,14 +343,15 @@ class InxVkCoreModular
      * Hard/soft selection lives on the Light component (shadowParams.w in the
      * lighting UBO), not on this pass — the shadow map itself is filter-agnostic.
      */
-    using ShadowViewDrawCallback = std::function<void(uint32_t viewIndex, const lighting::ShadowView &view)>;
+    using ShadowViewDrawCallback =
+        std::function<void(uint32_t viewIndex, const lighting::ShadowView &view, const ShaderViewBindings &bindings)>;
     using ShadowCameraResourceId = uint64_t;
 
     [[nodiscard]] ShadowCameraResourceId CreateShadowCameraResources();
     void DestroyShadowCameraResources(ShadowCameraResourceId resourceId) noexcept;
 
     void DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin, int queueMax,
-                           ShadowCameraResourceId resourceId, VkBuffer viewGlobalsBuffer,
+                           ShadowCameraResourceId resourceId, rhi::BufferHandle viewGlobals,
                            const lighting::ShadowFrame &shadowFrame, int lightIndex = 0,
                            VkFormat depthFormat = VK_FORMAT_D32_SFLOAT,
                            const ShadowViewDrawCallback &additionalDraws = {});
@@ -1819,6 +1821,8 @@ class InxVkCoreModular
             std::array<StaticViewUpload, lighting::MaxShadowViews> staticViewUploads;
         };
 
+        rhi::BindingLayoutHandle bindingLayout;
+        std::vector<rhi::BindGroupHandle> bindGroups;
         std::vector<vk::DescriptorLease> descriptorLeases;
         std::vector<VkDescriptorSet> descriptorSets;
         std::vector<VkBuffer> uniformBuffers;

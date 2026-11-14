@@ -27,7 +27,16 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
     result->vertex = vertex ? vertex->program : nullptr;
     try {
         if (!fragment->materialProgram)
-            throw std::invalid_argument("Material fragment must declare a mesh shader: " + fragment->filePath);
+            throw std::invalid_argument("Material fragment must declare a mesh or particle shader: " +
+                                        fragment->filePath);
+        if (fragment->programDomain == ShaderProgramDomain::ParticleSprite) {
+            if (!stages.vertexKey.empty())
+                throw std::invalid_argument(
+                    "Particle geometry is provided by its output; remove the material vertex selection: " +
+                    fragment->filePath);
+            result->program = fragment->materialProgram;
+            return result;
+        }
         const bool standard = stages.vertexKey == infernux::kStandardVertexShaderId ||
                               (vertex && vertex->shaderId == infernux::kStandardVertexShaderId);
         if (standard) {
@@ -142,6 +151,8 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
         asset->renderMeta.alphaClip = info.at("alpha_clip").is_null() ? std::string{} : info.at("alpha_clip").dump();
         if (schema.at("domain") == "fullscreen")
             asset->programDomain = ShaderProgramDomain::Fullscreen;
+        else if (schema.at("domain") == "particle")
+            asset->programDomain = ShaderProgramDomain::ParticleSprite;
         else if (schema.at("domain") == "mesh" || schema.at("domain") == "vertex")
             asset->programDomain = ShaderProgramDomain::Mesh;
         for (const auto &library : prepared.libraries) {
@@ -159,9 +170,10 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
             inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
         ApplyShaderAuthorInputs(*program, inputs);
         asset->program = std::move(program);
-        if (schema.at("domain") == "mesh") {
-            asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(
-                CreateShaderAuthorMaterial(guid, asset->program, prepared.schema, infernux::kStandardVertexShaderId));
+        if (schema.at("domain") == "mesh" || schema.at("domain") == "particle") {
+            asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(CreateShaderAuthorMaterial(
+                guid, asset->program, prepared.schema,
+                asset->programDomain == ShaderProgramDomain::ParticleSprite ? "" : infernux::kStandardVertexShaderId));
         }
         return asset;
     }

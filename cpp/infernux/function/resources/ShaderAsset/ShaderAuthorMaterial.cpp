@@ -1,4 +1,5 @@
 #include "ShaderAuthorMaterial.h"
+#include "SlangCompiler.h"
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -25,12 +26,14 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
         return *found;
     };
     ShaderProgramArtifact result;
+    result.compilation = compilation;
     result.key.stages = {std::move(vertexKey), std::move(guid)};
-    result.domain = ShaderProgramDomain::Mesh;
+    const bool particle = source.at("domain") == "particle";
+    result.domain = particle ? ShaderProgramDomain::ParticleSprite : ShaderProgramDomain::Mesh;
     const bool surface = source.value("surface", false);
     result.shadingModel = surface ? source.at("shading_model").get<std::string>() : "";
-    result.compatibilitySignature =
-        ComputeShaderProgramRevision(schema, "InxMeshInput", ShaderCompileTarget::Forward, 0);
+    result.compatibilitySignature = ComputeShaderProgramRevision(schema, particle ? "InxParticleInput" : "InxMeshInput",
+                                                                 ShaderCompileTarget::Forward, 0);
     result.materialLayoutSignature = result.compatibilitySignature;
     const auto uniform = std::find_if(target->resources.begin(), target->resources.end(), [](const auto &resource) {
         return resource.set == 0 && resource.binding.binding == 0 &&
@@ -88,19 +91,48 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     }
     const auto publication = std::shared_ptr<const ShaderTargetCode>(compilation, &*target);
     const auto addVariant = [&](ShaderCompileTarget pass, const char *vertexName, const char *fragmentName) {
-        const auto &vertex = entry(vertexName);
         const auto &fragment = entry(fragmentName);
         ShaderProgramArtifact::PassVariant variant;
         variant.target = pass;
         variant.compatibilitySignature = result.compatibilitySignature;
-        variant.vertexSpirv = vertex.code;
         variant.fragmentSpirv = fragment.code;
-        variant.vertexEntryPoint = vertex.name;
         variant.fragmentEntryPoint = fragment.name;
-        variant.vertexTarget = publication;
+        if (vertexName) {
+            const auto &vertex = entry(vertexName);
+            variant.vertexSpirv = vertex.code;
+            variant.vertexEntryPoint = vertex.name;
+            variant.vertexTarget = publication;
+        } else {
+            variant.vertexEntryPoint.clear();
+        }
         variant.fragmentTarget = publication;
         result.variants.push_back(std::move(variant));
     };
+    if (particle) {
+        addVariant(ShaderCompileTarget::Forward, nullptr, "fragment_main");
+        addVariant(ShaderCompileTarget::ForwardPlus, nullptr, "fragment_main");
+        addVariant(ShaderCompileTarget::Depth, nullptr, "fragment_depth");
+        addVariant(ShaderCompileTarget::Picking, nullptr, "fragment_picking");
+        addVariant(ShaderCompileTarget::Motion, nullptr, "fragment_motion");
+        if (source.at("info").at("cast_shadows").get<bool>()) {
+            // A caster cannot sample the atlas that this pass is writing.
+            // Check the compiled entry once, before publishing any device work.
+            for (const auto &code : compilation->targets) {
+                const auto coverage = std::find_if(code.entries.begin(), code.entries.end(),
+                                                   [](const auto &value) { return value.name == "fragment_depth"; });
+                for (const auto &binding : coverage->bindings)
+                    if (binding[0] == 1 && binding[1] != 5)
+                        throw ShaderCompilationError(
+                            {{"author.shadow_resources", "error", result.key.stages.fragmentKey, 0, 0, 0, 0,
+                              "Particle shadow coverage depends on scene lighting. Keep alpha, clip and depth "
+                              "independent of lighting, or set cast_shadows = False.",
+                              "shadow", code.target == ShaderCodeTarget::SpirV ? "spirv" : "wgsl"}});
+            }
+            addVariant(ShaderCompileTarget::Shadow, nullptr, "fragment_depth");
+        }
+        result.key.revision = ComputeShaderProgramArtifactRevision(result);
+        return result;
+    }
     addVariant(ShaderCompileTarget::Forward, "vertex_main", "fragment_main");
     addVariant(ShaderCompileTarget::ForwardPlus, "vertex_main", surface ? "fragment_forward_plus" : "fragment_main");
     if (surface) {

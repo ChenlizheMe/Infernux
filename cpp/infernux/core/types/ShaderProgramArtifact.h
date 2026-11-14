@@ -16,6 +16,7 @@ namespace infernux
 {
 
 struct ShaderTargetCode;
+struct ShaderCompilation;
 
 struct ShaderStagePair
 {
@@ -25,7 +26,7 @@ struct ShaderStagePair
 
     [[nodiscard]] bool IsValid() const noexcept
     {
-        return !vertexKey.empty() && !fragmentKey.empty();
+        return !fragmentKey.empty();
     }
 
     [[nodiscard]] std::string ToString() const
@@ -167,8 +168,7 @@ struct ShaderProgramArtifact
     uint64_t varyingInterfaceSignature = 0;
     uint64_t materialLayoutSignature = 0;
     uint64_t compatibilitySignature = 0;
-    // True when ParticleSprite shaders include the engine-owned set 2,
-    // binding 15 scene-depth contract.
+    // Scene-depth requirement of a linked particle material.
     bool usesParticleSceneDepthBinding = false;
     // True when surface variants consume the device-global sampled-texture
     // table. The per-domain descriptor set then carries uint texture indices
@@ -187,11 +187,14 @@ struct ShaderProgramArtifact
 
         [[nodiscard]] bool IsValid() const noexcept
         {
-            return compatibilitySignature != 0 && !vertexSpirv.empty() && !fragmentSpirv.empty() &&
+            return compatibilitySignature != 0 && !fragmentSpirv.empty() &&
                    vertexSpirv.size() % sizeof(uint32_t) == 0 && fragmentSpirv.size() % sizeof(uint32_t) == 0;
         }
     };
     std::vector<PassVariant> variants;
+    /// All target layouts/code of an authored module, retained once. Outputs
+    /// that provide native geometry compose its fragment entries directly.
+    std::shared_ptr<const ShaderCompilation> compilation;
 
     [[nodiscard]] INFERNUX_FOUNDATION_API const PassVariant *FindVariant(ShaderCompileTarget target) const noexcept;
 

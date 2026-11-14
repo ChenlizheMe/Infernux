@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <function/renderer/ScenePickingTypes.h>
 #include <function/renderer/rhi/RhiHandles.h>
+#include <function/renderer/shader/ShaderViewBindings.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <glm/glm.hpp>
 #include <memory>
@@ -51,7 +52,7 @@ class ScenePickingService
     /// Record one picking render and one-pixel copy into the current graphics
     /// command buffer. Completion is published after the frame fence retires.
     void Record(VkCommandBuffer commandBuffer, uint32_t targetWidth, uint32_t targetHeight,
-                rhi::BindGroupHandle perViewGroup, vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix);
+                const ShaderViewBindings &perView, vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix);
 
   private:
     struct TargetGeneration;

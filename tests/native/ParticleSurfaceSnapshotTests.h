@@ -1,24 +1,22 @@
-bool VerifyParticleSurfaceSnapshots(TestResources &resources, infernux::InxShaderLoader &compiler)
+bool VerifyParticleSurfaceSnapshots(TestResources &resources)
 {
     using namespace infernux;
     auto &device = resources.context.GetRhiDevice();
-    const auto vertex = SpirvWords(compiler.CompileVertexGlsl(R"glsl(
-#version 450
-void main() {
-    vec2 positions[3] = vec2[](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
-    gl_Position = vec4(positions[gl_VertexIndex], 0, 1);
+    const auto geometry = SlangCompiler::Get().Compile(
+        {"particle_surface_snapshot", "Tests/SurfaceSnapshot.slang", R"slang(import inx_particle;
+[shader("vertex")]
+InxParticleInput vertex_main(uint index : SV_VulkanVertexID)
+{
+    const float2 positions[3] = {float2(-1,-1), float2(3,-1), float2(-1,3)};
+    InxParticleInput output = (InxParticleInput)0;
+    output.position = float4(positions[index], 0, 1);
+    return output;
 }
-)glsl",
-                                                              "Tests/SurfaceSnapshot.vert"));
-    const auto fragment = SpirvWords(compiler.CompileFragmentGlsl(R"glsl(
-#version 450
-layout(std140, set=0, binding=14) uniform Material { vec4 color; };
-layout(location=0) out vec4 output_color;
-void main() { output_color = color; }
-)glsl",
-                                                                  "Tests/SurfaceSnapshot.frag"));
-    if (!Require(!vertex.empty() && !fragment.empty(), "Surface snapshot shader compilation failed"))
-        return false;
+)slang"},
+        {}, {ShaderCodeTarget::SpirV});
+    const auto artifact = particle_test::Surface();
+    const auto &vertex = geometry.targets.front().entries.front();
+    const auto &fragment = *artifact->FindVariant(ShaderCompileTarget::Forward);
     struct Owner
     {
         vk::VkDeviceContext &context;
@@ -67,26 +65,19 @@ void main() { output_color = color; }
     owner.retirement.BindSerialSource([&] { return owner.queues.GetLastReservedCompletionEpoch(); });
     auto material = std::make_shared<InxMaterial>("GPU surface snapshot");
     material->SetVector4("color", glm::vec4(1));
-    auto artifact = std::make_shared<ShaderProgramArtifact>();
-    artifact->key = {{"Tests/SurfaceSnapshot", "Tests/SurfaceSnapshot"}, 1};
-    artifact->domain = ShaderProgramDomain::ParticleSprite;
-    artifact->compatibilitySignature = 79;
-    artifact->materialBufferSize = 16;
-    artifact->properties = {{"color", "Float4", "[1,1,1,1]", "", ShaderProgramStageMask::Fragment, false, std::nullopt,
-                             0, std::nullopt, 16, 16}};
-    ShaderProgramArtifact::PassVariant variant;
-    variant.compatibilitySignature = 79;
-    variant.vertexSpirv = SpirvBytes(vertex);
-    variant.fragmentSpirv = SpirvBytes(fragment);
-    artifact->variants.push_back(std::move(variant));
     if (!Require(owner.surface.Create(device, artifact, material, {}, {}, {}, &owner.retirement),
                  "Surface snapshot creation failed"))
         return false;
-    owner.vertex = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(vertex.data(), vertex.size()));
-    owner.fragment = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(fragment.data(), fragment.size()));
+    const auto vertexWords = SpirvWords(vertex.code);
+    const auto fragmentWords = SpirvWords(fragment.fragmentSpirv);
+    owner.vertex = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(vertexWords.data(), vertexWords.size()));
+    owner.fragment =
+        device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(fragmentWords.data(), fragmentWords.size()));
     rhi::GraphicsPipelineDesc pipeline;
     pipeline.vertexShader = owner.vertex;
     pipeline.fragmentShader = owner.fragment;
+    pipeline.vertexEntryPoint = vertex.name.c_str();
+    pipeline.fragmentEntryPoint = fragment.fragmentEntryPoint.c_str();
     pipeline.raster.cullMode = rhi::CullMode::None;
     pipeline.bindingLayoutCount = 1;
     pipeline.bindingLayouts[0] = owner.surface.Layout();

@@ -490,7 +490,7 @@ struct SkyOutput {
 };
 
 [shader("vertex")]
-SkyOutput sky_vertex(uint index : SV_VertexID) {
+SkyOutput sky_vertex(uint index : SV_VulkanVertexID) {
     float2 positions[3] = {
         float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0)};
     SkyOutput output;

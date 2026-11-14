@@ -482,16 +482,29 @@ void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weigh
         for (const auto &source : GetSlangParticleGraphicsModules()) {
             for (const auto target : {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}) {
                 const auto particle = CompileSlangNativeModule(source.module, target);
-                const bool vertex = source.stage == "vertex" || source.stage == "motion_vertex";
-                const bool root = vertex || source.stage == "picking_fragment";
-                Require(particle.entries.size() == 1 && particle.entries[0].name == "main",
-                        "Particle module lost its graphics entry");
-                Require(bool(particle.entries.front().rootConstants) == root &&
-                            (!root || particle.entries.front().rootConstants->byteSize == 240),
-                        "Particle view constants differ from the shared host layout");
-                if (vertex)
-                    Require(particle.entries[0].bindings.size() == (source.renderer == "mesh" ? 4u : 2u),
-                            "Particle geometry must use its actual immutable inputs");
+                Require(particle.entries.size() == 3, "Particle geometry lost a material pass entry");
+                for (const auto &entry : particle.entries) {
+                    Require(entry.stage == rhi::ShaderStage::Vertex &&
+                                (entry.name == "vertex_main" || entry.name == "vertex_motion" ||
+                                 entry.name == "vertex_shadow"),
+                            "Particle geometry owns a fragment surface");
+                    Require(entry.rootConstants && entry.rootConstants->byteSize == 112,
+                            "Particle draw constants differ from the shared host layout");
+                    const bool shadow = entry.name == "vertex_shadow";
+                    Require((std::find(entry.bindings.begin(), entry.bindings.end(), std::array<uint32_t, 2>{1, 7}) !=
+                             entry.bindings.end()) == shadow,
+                            "Particle light-view parameters leaked into ordinary geometry");
+                    const auto alpha = std::find_if(entry.outputs.begin(), entry.outputs.end(),
+                                                    [](const auto &value) { return value.location == 14; });
+                    Require(alpha != entry.outputs.end() && alpha->scalar == ShaderScalarKind::Float32 &&
+                                alpha->components == 1,
+                            "Particle geometry lost interpolated coverage");
+                    const auto identity = std::find_if(entry.outputs.begin(), entry.outputs.end(),
+                                                       [](const auto &value) { return value.location == 13; });
+                    Require(identity != entry.outputs.end() && identity->scalar == ShaderScalarKind::UInt32 &&
+                                identity->components == 1,
+                            "Particle geometry lost integer identity");
+                }
                 for (const auto &resource : particle.resources) {
                     if (resource.binding.type != rhi::BindingType::StorageBuffer)
                         continue;

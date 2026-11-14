@@ -69,28 +69,24 @@ def test_gpu_particle_cook_uses_shared_slang_and_reuses_prepared_code(monkeypatc
     calls = []
     compile_program = native._compile_shader_program
 
-    def compile_graphics(source, *args, **kwargs):
+    def compile_program_spy(source, *args, **kwargs):
         calls.append(source)
         return compile_program(source, *args, **kwargs)
 
     def reject_graphics_glsl(*args, **kwargs):
         raise AssertionError("Particle graphics must use the common Slang compiler")
 
-    monkeypatch.setattr(native, "_compile_shader_program", compile_graphics)
+    monkeypatch.setattr(native, "_compile_shader_program", compile_program_spy)
     monkeypatch.setattr(native, "_compile_graphics_glsl_batch", reject_graphics_glsl)
     monkeypatch.setattr(native, "_compile_compute_glsl_batch", reject_graphics_glsl)
     gpu_backend._SPIRV_DESCRIPTOR_CACHE.clear()
     source = _gpu_source()
     first = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(first, source) is first
-    graphics = gpu_backend._particle_graphics_sources()
-    unique_sources = {text for stages in graphics.values() for text in stages.values()}
-    unique_sources.update(
-        text for emitter in source.emitters for text in emitter.stages().values()
-    )
-    assert len(calls) == len(unique_sources)
-    assert set(first["billboard"]) == set(graphics["billboard"])
-    assert set(first["mesh"]) == set(graphics["mesh"])
+    unique_sources = {text for emitter in source.emitters for text in emitter.stages().values()}
+    assert set(calls) == unique_sources and len(calls) == len(unique_sources)
+    assert {"billboard", "mesh", "ribbon"}.isdisjoint(first)
+    assert set(first["emitters"][0]["stages"]) == set(source.emitters[0].stages())
     calls.clear()
     assert compile_gpu_particle_spirv(source) == first
     assert calls == []

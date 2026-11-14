@@ -193,7 +193,8 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
 
     const auto existing = m_programArtifacts.find(artifact.key.stages);
     const bool sameRevision = existing != m_programArtifacts.end() && existing->second->key == artifact.key;
-    if (sameRevision && m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward})) {
+    if (sameRevision && (artifact.domain == ShaderProgramDomain::ParticleSprite ||
+                         m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward}))) {
         result.accepted = true;
         return result;
     }
@@ -219,6 +220,8 @@ bool VkShaderCache::PrepareProgramArtifact(const ShaderProgramArtifact &artifact
 {
     if (!artifact.IsValid())
         return false;
+    if (artifact.domain == ShaderProgramDomain::ParticleSprite)
+        return true;
     if (m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward}))
         return true;
     // Optional semantic passes stay as SPIR-V until their first real consumer.

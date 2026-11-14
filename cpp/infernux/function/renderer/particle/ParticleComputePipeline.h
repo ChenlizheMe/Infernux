@@ -29,6 +29,7 @@ class ParticleComputePipeline
     {
         rhi::ComputePipelineDesc description;
         m_shader.Apply(description);
+        m_rootConstantBytes = description.pushConstantBytes;
         m_pipeline = device.CreateComputePipeline(description);
         if (!m_pipeline.IsValid())
             throw std::runtime_error("Particle compute pipeline creation failed");
@@ -76,12 +77,15 @@ class ParticleComputePipeline
     {
         encoder.BindPipeline(m_pipeline);
         encoder.BindGroup(m_pipeline, 0, group);
-        encoder.PushConstants(m_pipeline, sizeof(constants), &constants);
+        // A compiled entry with no per-dispatch inputs has no root range.
+        if (m_rootConstantBytes != 0)
+            encoder.PushConstants(m_pipeline, m_rootConstantBytes, &constants);
     }
 
   private:
     rhi::Device &m_device;
     DeviceShaderProgram m_shader;
+    uint32_t m_rootConstantBytes = 0;
     rhi::ComputePipelineHandle m_pipeline;
     std::vector<rhi::BindGroupHandle> m_groups;
 };

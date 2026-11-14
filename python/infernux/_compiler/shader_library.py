@@ -14,11 +14,18 @@ from .shader_types import (
 from .diagnostics import parse_gpu_module
 
 
-_ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float"),
-                     "frame_delta_time": ("inx_frame_delta_time", "float"),
-                     "view": ("inx_view_context", "InxViewContext"),
-                     "camera": ("inx_camera_context", "InxCameraContext")}
-_ENGINE_MODULES = {"inx_frame": ("frame_time", "frame_delta_time", "view", "ViewContext"),
+_ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
+                     "frame_delta_time": ("inx_frame_delta_time", "float", ()),
+                     "view": ("inx_view_context", "InxViewContext", ()),
+                     "camera": ("inx_camera_context", "InxCameraContext", ())}
+_ENGINE_FUNCTIONS.update({
+    "lighting.particle_pbr": ("inx_particle_pbr", "float3", ("InxSurfaceData", "InxParticleInput")),
+    "lighting.six_way_smoke": ("inx_particle_six_way_smoke", "float3", (
+        "InxParticleInput", "float3", "float3", "float3", "float", "float", "float", "float", "float")),
+})
+_ENGINE_MODULES = {"inx_particle": ("ParticleContext",),
+                   "inx_particle_lighting": ("lighting.particle_pbr", "lighting.six_way_smoke"),
+                   "inx_frame": ("frame_time", "frame_delta_time", "view", "ViewContext"),
                    "inx_camera": ("camera", "CameraContext")}
 _CONSTRUCTORS = {"ShadingContext": ("InxShadingContext", "inx_shading_context"),
                  "FragmentOutput": ("InxFragmentOutput", "inx_fragment_output")}
@@ -125,6 +132,11 @@ class ShaderEmitter(SlangEmitter):
             return "inx_buffer_length(" + self.visit(node.args[0]) + ")"
         operation = self.symbol(qualified(node.func))
         intrinsic = operation != qualified(node.func)
+        if intrinsic and operation == "vec4":
+            # Each argument is evaluated once. Scalar lanes remain separable
+            # when an auxiliary pass needs alpha but not color.
+            value = super().visit_Call(node)
+            return "inx_make_float4" + value[len("float4"):]
         if intrinsic and operation == "lighting.shade":
             expected = ("InxSurfaceData", "InxShadingContext", "uint")
             if node.keywords or len(node.args) != len(expected):
@@ -148,9 +160,13 @@ class ShaderEmitter(SlangEmitter):
                 self.error(node, "shader.clip takes one signed clipping distance", code="author.type")
             return "clip(" + self.visit(node.args[0]) + ")"
         if operation in _ENGINE_FUNCTIONS and operation != qualified(node.func):
-            if node.args or node.keywords:
-                self.error(node, "shader." + operation + " takes no arguments", code="author.type")
-            return _ENGINE_FUNCTIONS[operation][0] + "()"
+            symbol, _, arguments = _ENGINE_FUNCTIONS[operation]
+            if node.keywords or len(node.args) != len(arguments):
+                self.error(node, "shader." + operation + " takes " + str(len(arguments)) + " arguments", code="author.type")
+            for value, kind in zip(node.args, arguments):
+                if self.infer(value) != kind:
+                    self.error(value, "shader." + operation + " requires " + kind, code="author.type")
+            return symbol + "(" + ", ".join(self.visit(value) for value in node.args) + ")"
         if operation == "SurfaceData" and operation != qualified(node.func):
             values = {keyword.arg: keyword.value for keyword in node.keywords}
             if node.args or values.keys() - SURFACE_FIELDS.keys() or len(values) != len(node.keywords):
@@ -248,7 +264,8 @@ class ShaderEmitter(SlangEmitter):
         self.block(definition.body)
         parameters = ", ".join(kind + " " + field.arg for field, kind in zip(fields, function.arguments))
         specialization = "<let tiled_lighting : bool>" if function.lighting_specialization else ""
-        return [self.source_directive(definition),
+        inline = ["[ForceInline]"] if function.result in {"float4", "InxFragmentOutput"} else []
+        return [self.source_directive(definition), *inline,
                 f'{"public " if public else ""}{function.result} {definition.name}{specialization}({parameters})',
                 "{", *self.lines, "}"]
 

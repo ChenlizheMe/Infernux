@@ -26,7 +26,6 @@
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuMigrator.h"
-#include "particle/ParticleGpuRibbonRenderer.h"
 #include "particle/ParticleGpuRibbonTopology.h"
 #include "particle/ParticleGpuSorter.h"
 #include "particle/ParticleGpuSystemManager.h"
@@ -55,6 +54,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/ShaderAsset/SlangNativeModule.h>
+#include <function/resources/ShaderAsset/SlangParticleModule.h>
 #include <function/scene/Camera.h>
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
@@ -108,15 +108,6 @@ using CompiledParticleBoundsProgram = CompiledParticleProgram<particle::GpuParti
 using CompiledParticleMigrationProgram = CompiledParticleProgram<particle::GpuParticleMigrationProgram, 2>;
 using CompiledParticleSpawnProgram = CompiledParticleProgram<particle::GpuParticleSpawnProgram, 2>;
 using CompiledParticleRibbonTopologyProgram = CompiledParticleProgram<particle::GpuParticleRibbonProgram, 5>;
-struct CompiledParticleRibbonRenderProgram
-{
-    std::array<particle::ShaderBytecodeStorage, 4> shaders;
-    particle::GpuParticleRibbonRenderProgram View() const noexcept
-    {
-        return {shaders[0].View(), shaders[1].View(), shaders[2].View(), shaders[3].View()};
-    }
-};
-
 particle::CompiledParticleShader CompileParticleShader(std::string_view source, const char *name,
                                                        ShaderCodeTarget target = ShaderCodeTarget::SpirV)
 {
@@ -132,14 +123,16 @@ struct CompiledParticleProgramBundle
     CompiledParticleMigrationProgram migration;
     CompiledParticleSpawnProgram spawn;
     CompiledParticleRibbonTopologyProgram ribbonTopology;
-    CompiledParticleRibbonRenderProgram ribbonRender;
+    particle::GpuParticleGraphicsPrograms graphics;
     particle::CompiledParticleShader stateGather;
 
     [[nodiscard]] bool IsValid() const noexcept
     {
         return sort.View().IsValid() && cull.View().IsValid() && bounds.View().IsValid() &&
                migration.View().IsValid() && spawn.View().IsValid() && ribbonTopology.View().IsValid() &&
-               ribbonRender.View().IsValid() && particle::IsCompiledParticleShaderValid(stateGather);
+               std::all_of(graphics.begin(), graphics.end(),
+                           [](const auto &code) { return code && !code->targets.empty(); }) &&
+               particle::IsCompiledParticleShaderValid(stateGather);
     }
 };
 
@@ -229,23 +222,14 @@ CompiledParticleRibbonTopologyProgram CompileParticleRibbonTopologyProgram()
     return result;
 }
 
-CompiledParticleRibbonRenderProgram CompileParticleRibbonRenderProgram()
+particle::GpuParticleGraphicsPrograms CompileParticleGraphicsPrograms()
 {
-    const std::array<std::pair<std::string_view, const char *>, 4> sources = {{
-        {particle::GpuParticleRibbonRenderShaderSources::Vertex(), "Infernux/ParticleRibbon.slang"},
-        {particle::GpuParticleRibbonRenderShaderSources::PickingFragment(), "Infernux/ParticleRibbonPicking.slang"},
-        {particle::GpuParticleRibbonRenderShaderSources::MotionVertex(), "Infernux/ParticleRibbonMotionVertex.slang"},
-        {particle::GpuParticleRibbonRenderShaderSources::MotionFragment(),
-         "Infernux/ParticleRibbonMotionFragment.slang"},
-    }};
-    CompiledParticleRibbonRenderProgram result;
-    for (size_t index = 0; index < sources.size(); ++index) {
-        const auto compiled = CompileParticleShader(sources[index].first, sources[index].second);
-        const auto &bytes = compiled->entries.front().code;
-        result.shaders[index].Assign(particle::ShaderBytecode::FromSpirV(
-            reinterpret_cast<const uint32_t *>(bytes.data()), bytes.size() / sizeof(uint32_t)));
-    }
-    return result;
+    particle::GpuParticleGraphicsPrograms programs;
+    const auto &modules = GetSlangParticleGraphicsModules();
+    for (size_t index = 0; index < modules.size(); ++index)
+        programs[index] = std::make_shared<const ShaderCompilation>(
+            SlangCompiler::Get().Compile(modules[index].module, {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
+    return programs;
 }
 
 CompiledParticleProgramBundle CompileParticleProgramBundle()
@@ -257,7 +241,7 @@ CompiledParticleProgramBundle CompileParticleProgramBundle()
     result.migration = CompileParticleMigrationProgram();
     result.spawn = CompileParticleSpawnProgram();
     result.ribbonTopology = CompileParticleRibbonTopologyProgram();
-    result.ribbonRender = CompileParticleRibbonRenderProgram();
+    result.graphics = CompileParticleGraphicsPrograms();
     result.stateGather =
         CompileParticleShader(particle::GpuParticleStateGatherShaderSource(), "Infernux/ParticleStateGather.slang");
     return result;
@@ -833,9 +817,9 @@ void InxRenderer::PreparePipeline()
                             return false;
                         if (sceneView && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
                             m_sceneRenderTarget) {
-                            m_scenePickingService->Record(
-                                commandBuffer, m_sceneRenderTarget->GetWidth(), m_sceneRenderTarget->GetHeight(),
-                                graph->GetPerViewBindGroup(), graph->GetViewGlobalsBinding(), graph->GetCachedView());
+                            m_scenePickingService->Record(commandBuffer, m_sceneRenderTarget->GetWidth(),
+                                                          m_sceneRenderTarget->GetHeight(), graph->GetPerViewBindings(),
+                                                          graph->GetViewGlobalsBinding(), graph->GetCachedView());
                         }
                         return true;
                     },
@@ -4072,7 +4056,7 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
                              std::move(particleTextureResolver), std::move(particleVectorFieldTextureResolver),
                              particle::ResolveSceneSkinnedMeshSource, programs.sort.View(), programs.cull.View(),
                              programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
-                             programs.ribbonTopology.View(), programs.ribbonRender.View(), programs.stateGather)) {
+                             programs.ribbonTopology.View(), programs.stateGather, programs.graphics)) {
         INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         return nullptr;
     }

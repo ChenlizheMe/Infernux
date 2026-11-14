@@ -172,7 +172,8 @@ void main() { result = snapshot; }
     owner.retirement.BindSerialSource([] { return rhi::SubmissionSerial{1}; });
     if (!Require(owner.manager.Initialize(resources.context, resources.pipelines, resources.resources, owner.retirement,
                                           owner.draws, {}, {}, ResolveSceneSkinnedMeshSource, sortProgram, cullProgram,
-                                          boundsProgram, migrationProgram, spawnProgram),
+                                          boundsProgram, migrationProgram, spawnProgram, {}, {},
+                                          particle_test::GeometryPrograms()),
                  "Scene source particle manager initialization failed"))
         return false;
     auto program = prototype;

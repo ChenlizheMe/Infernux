@@ -87,11 +87,11 @@ class NotMesh(shader.fullscreen):
             labels = ("baseline", "parameter_offset", "parameter_restore", "time_motion", "motion_restore",
                       "vertex_hot_edit", "vertex_restore", "vertex_switch", "switch_restore",
                       "domain_pair_rejected", "pair_recovered", "field_conflict_rejected", "field_conflict_recovered",
-                      "first_invalid_suspended", "first_invalid_recovered")
-            rejected = None
+                      "first_invalid_retained", "first_invalid_recovered")
+            rejected = rejected_sample = None
 
             def after_draw():
-                nonlocal frame, changed, phase, ticket, baseline, baseline_center, complete, rejected
+                nonlocal frame, changed, phase, ticket, baseline, baseline_center, complete, rejected, rejected_sample
                 try:
                     frame += 1
                     if ticket is None and frame >= changed + 8:
@@ -103,10 +103,7 @@ class NotMesh(shader.fullscreen):
                         covered = red | green
                         bad = (pixels[..., 0] > 0.9) & (pixels[..., 2] > 0.9)
                         assert not bad.any(), (labels[phase], np.unique(pixels[bad, 1]))
-                        if phase == 13:
-                            assert not covered.any(), labels[phase]
-                        else:
-                            assert covered.sum() > 100, labels[phase]
+                        assert covered.sum() > 100, labels[phase]
                         assert pipeline.builds == 1
                         errors = [row for row in console._get_visible_log_snapshot(2000) if row["level"] in ("ERROR", "FATAL")]
                         if phase < 9:
@@ -115,10 +112,24 @@ class NotMesh(shader.fullscreen):
                             assert any("domain mismatch" in row["message"] for row in errors), errors
                         elif phase == 11:
                             assert any("disagree on material field" in row["message"] for row in errors), errors
+                        elif phase == 13:
+                            owned = [row for row in errors if row.get("diagnostic_owner")]
+                            assert len(owned) == 1 and owned[0]["diagnostic_owner"] == "material.shader-domain", errors
+                            sample = native._acquire_game_screen(scene.world_id)
+                            assert sample is not None
+                            np.testing.assert_array_equal(pixels, baseline)
+                            if rejected_sample is None:
+                                rejected_sample = sample
+                                changed, ticket = frame - 6, None
+                                return
+                            assert (sample.sequence, sample.generation) == (rejected_sample.sequence, rejected_sample.generation)
+                        elif phase == 14:
+                            assert not any(row.get("diagnostic_owner") for row in errors), errors
+                            assert native._acquire_game_screen(scene.world_id).sequence > rejected_sample.sequence
                         center = float(np.nonzero(covered)[1].mean()) if covered.any() else 0.0
                         if phase == 0:
                             baseline, baseline_center = pixels, center
-                        elif phase in (2, 4, 6, 8, 9, 10, 11, 12, 14):
+                        elif phase in (2, 4, 6, 8, 9, 10, 11, 12, 13, 14):
                             np.testing.assert_array_equal(pixels, baseline)
                         elif phase in (1, 5, 7):
                             assert center > baseline_center + 3, (labels[phase], center, baseline_center)

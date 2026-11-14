@@ -1,15 +1,14 @@
+#include "ParticleGraphicsFixtures.h"
 #include <core/config/EngineConfig.h>
 #include <core/types/ColorSpace.h>
 #include <function/renderer/SceneDepthResolver.h>
 #include <function/renderer/VkTextureCache.h>
-#include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/particle/ParticleGpuCuller.h>
 #include <function/renderer/particle/ParticleGpuDrawRegistry.h>
-#include <function/renderer/particle/ParticleGpuMeshRenderer.h>
 #include <function/renderer/particle/ParticleGpuMigrator.h>
-#include <function/renderer/particle/ParticleGpuRibbonRenderer.h>
+#include <function/renderer/particle/ParticleGpuRenderer.h>
 #include <function/renderer/particle/ParticleGpuRibbonTopology.h>
 #include <function/renderer/particle/ParticleGpuRuntime.h>
 #include <function/renderer/particle/ParticleGpuSorter.h>
@@ -496,7 +495,7 @@ struct GraphicsTrace
     std::vector<rhi::GraphicsPipelineHandle> pipelines;
     std::vector<rhi::BindGroupHandle> groups;
     std::vector<uint32_t> groupSets;
-    std::vector<particle::GpuBillboardViewConstants> constants;
+    std::vector<particle::GpuParticleViewConstants> constants;
     std::vector<rhi::BufferHandle> indirectBuffers;
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline)
@@ -514,8 +513,8 @@ struct GraphicsTrace
                               const void *data)
     {
         assert(stages == (rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment) &&
-               byteSize == sizeof(particle::GpuBillboardViewConstants));
-        particle::GpuBillboardViewConstants value;
+               byteSize == sizeof(particle::GpuParticleViewConstants));
+        particle::GpuParticleViewConstants value;
         std::memcpy(&value, data, sizeof(value));
         static_cast<GraphicsTrace *>(context)->constants.push_back(value);
     }
@@ -705,371 +704,174 @@ struct BoundsTrace
     }
 };
 
-static std::shared_ptr<ShaderProgramArtifact> PassBindingArtifact(bool bindless)
+static void VerifyParticleGraphics()
 {
-    auto result = std::make_shared<ShaderProgramArtifact>();
-    result->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 1};
-    result->domain = ShaderProgramDomain::ParticleSprite;
-    result->compatibilitySignature = 1;
-    result->usesBindlessTextureABI = bindless;
-    result->properties = {{"albedo_map", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
-                           std::nullopt, std::nullopt, 0, 0, 0}};
-    for (const auto target :
-         {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus, ShaderCompileTarget::Motion}) {
-        ShaderProgramArtifact::PassVariant variant;
-        variant.target = target;
-        variant.compatibilitySignature = 1;
-        variant.vertexSpirv.resize(5 * sizeof(uint32_t));
-        variant.fragmentSpirv.resize(5 * sizeof(uint32_t));
-        const uint32_t magic = 0x07230203u;
-        std::memcpy(variant.vertexSpirv.data(), &magic, sizeof(magic));
-        std::memcpy(variant.fragmentSpirv.data(), &magic, sizeof(magic));
-        result->variants.push_back(std::move(variant));
-    }
-    assert(result->IsValid());
-    return result;
-}
+    {
+        FakeDevice device;
+        particle::GpuParticleRendererDesc desc;
+        desc.geometry = particle_test::GeometryPrograms()[0];
+        auto incomplete = std::make_shared<ShaderProgramArtifact>(*particle_test::Surface());
+        incomplete->compilation.reset();
+        assert(incomplete->IsValid());
+        desc.surface = incomplete;
+        desc.semantics.softParticles = true;
+        particle::ParticleGpuRenderer renderer;
+        assert(!renderer.Create(device, desc));
+        assert(device.buffers.empty() && device.groupCreates == 0 && device.layoutCreates == 0);
 
-static bool VerifyParticlePassBinding(const std::string &kind, bool bindless, ShaderCompileTarget target)
-{
-    FakeDevice device;
-    device.bindlessEnabled = bindless;
-    TestTextureSlots textureSlots;
-    std::array<uint32_t, 5> words{0x07230203u, 0u, 0u, 0u, 0u};
-    const particle::ShaderBytecode shader{words.data(), words.size()};
-    const auto instances =
-        device.CreateBuffer({64 * sizeof(particle::GpuParticleRenderInstance), rhi::BufferUsageFlags::Storage});
-    const auto indices = device.CreateBuffer({64 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-    const auto indirect = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect});
-    const auto control = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
-    const auto textureView = device.CreateTextureView({});
-    const auto sampler = device.CreateSampler({});
-    auto resolver = [&](const std::string &guid, const std::string &name, particle::GpuParticleTextureRequest request) {
-        assert(name == "albedo_map" && request == particle::GpuParticleTextureRequest::Poll);
-        return AcquireTestTexture(device, textureSlots, guid, 1, textureView, sampler);
-    };
-    auto material = std::make_shared<InxMaterial>("ParticlePassBinding");
-    material->SetTextureGuid("albedo_map", "white");
-    const auto artifact = PassBindingArtifact(bindless);
-    GraphicsTrace trace;
-    const rhi::GraphicsCommandEncoder::Dispatch dispatch = GraphicsTrace::Commands();
-    const rhi::GraphicsCommandEncoder encoder(&trace, &dispatch);
-    MaterialPassPipelineDescriptor pass;
-    pass.target = target;
-    if (target != ShaderCompileTarget::Shadow)
-        pass.colorFormats = {target == ShaderCompileTarget::Motion    ? rhi::PixelFormat::RG16SFloat
-                             : target == ShaderCompileTarget::Picking ? rhi::PixelFormat::RG32UInt
-                                                                      : rhi::PixelFormat::RGBA8UNorm};
-    pass.depthFormat = rhi::PixelFormat::D32SFloat;
-    pass.depthReadOnly = target == ShaderCompileTarget::Motion;
-    pass.samples = rhi::SampleCount::One;
-    assert(pass.IsValid());
-    const particle::GpuParticlePerViewBindings perView{{91000, 1}, {91001, 1}}; // borrowed caller-owned handles
-    particle::GpuParticleViewConstants view;
-    bool recorded = false;
-    if (kind == "billboard") {
-        particle::GpuBillboardRendererDesc desc;
-        desc.vertexShader = desc.pickingFragmentShader = desc.motionVertexShader = desc.motionFragmentShader = shader;
-        desc.instances = instances;
-        desc.renderIndices = indices;
-        desc.shaderProgram = artifact;
-        desc.material = material;
-        desc.semantics.receiveSceneLighting = true;
-        desc.textureResolver = resolver;
-        particle::ParticleGpuBillboardRenderer renderer;
+        desc.surface = particle_test::CreateSurface(false, true);
         assert(renderer.Create(device, desc));
-        recorded = renderer.RecordDraw(encoder, pass, indirect, view, {}, {}, true, perView);
-        renderer.Destroy();
-    } else if (kind == "ribbon") {
-        auto topology = std::make_shared<particle::ParticleGpuRibbonTopology>();
-        particle::GpuParticleRibbonDesc topologyDesc;
-        topologyDesc.capacity = 64;
-        topologyDesc.instances = instances;
-        topologyDesc.sourceIndices = indices;
-        topologyDesc.sourceIndirectArguments = indirect;
-        topologyDesc.simulationControl = control;
-        topologyDesc.program = {CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Reset()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Initialize()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Histogram()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scan()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scatter())};
-        assert(topology->Create(device, topologyDesc));
-        particle::GpuRibbonRendererDesc desc;
-        desc.program = {shader, shader, shader, shader};
-        desc.topology = topology;
-        desc.shaderProgram = artifact;
-        desc.material = material;
-        desc.semantics.receiveSceneLighting = true;
-        desc.textureResolver = resolver;
-        particle::ParticleGpuRibbonRenderer renderer;
-        assert(renderer.Create(device, desc));
-        recorded = renderer.RecordDraw(encoder, pass, topology->DrawIndirectBuffer(), view, {}, {}, true, perView);
-        renderer.Destroy();
-        topology->Destroy();
-    } else {
-        assert(kind == "mesh");
-        auto mesh = std::make_shared<InxMesh>("PassBindingTriangle");
-        std::vector<Vertex> vertices(3);
-        vertices[0].pos = {-0.5f, -0.5f, 0.0f};
-        vertices[1].pos = {0.5f, -0.5f, 0.0f};
-        vertices[2].pos = {0.0f, 0.5f, 0.0f};
-        for (auto &vertex : vertices) {
-            vertex.normal = {0.0f, 0.0f, 1.0f};
-            vertex.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
-        }
-        SubMesh subMesh;
-        subMesh.indexCount = subMesh.vertexCount = 3;
-        mesh->SetData(std::move(vertices), {0, 1, 2}, {subMesh});
-        particle::GpuMeshRendererDesc desc;
-        desc.vertexShader = desc.shadowFragmentShader = desc.pickingFragmentShader = desc.motionVertexShader =
-            desc.motionFragmentShader = shader;
-        desc.instances = instances;
-        desc.renderIndices = indices;
-        desc.mesh = mesh;
-        desc.meshVertices = device.CreateBuffer({3 * 5 * sizeof(glm::vec4), rhi::BufferUsageFlags::Storage});
-        desc.meshIndices = device.CreateBuffer({3 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-        desc.indexCount = 3;
-        desc.meshBufferKeepAlive = std::make_shared<int>(1);
-        desc.shaderProgram = artifact;
-        desc.material = material;
-        desc.semantics.receiveSceneLighting = true;
-        desc.textureResolver = resolver;
-        particle::ParticleGpuMeshRenderer renderer;
-        assert(renderer.Create(device, desc));
-        recorded = renderer.RecordDraw(encoder, pass, indirect, view, {}, {}, true, perView);
-        renderer.Destroy();
-        device.Release(desc.meshVertices);
-        device.Release(desc.meshIndices);
+        assert(!renderer.RequiresSceneDepth());
+        particle_test::ViewResources view(device);
+        GraphicsTrace trace;
+        const auto commands = GraphicsTrace::Commands();
+        const rhi::GraphicsCommandEncoder encoder(&trace, &commands);
+        MaterialPassPipelineDescriptor pass;
+        pass.colorFormats = {rhi::PixelFormat::RGBA8UNorm};
+        assert(renderer.RecordDraw(encoder, pass, {71, 1}, {}, view.bindings));
+        assert(device.bindGroups.back().textureCount == 0);
     }
-    assert(recorded && trace.indirectBuffers.size() == 1 && device.graphicsPipelineDescs.size() == 1);
-    const uint32_t layoutCount = device.graphicsPipelineDescs.front().bindingLayoutCount;
-    const bool inRange = std::all_of(trace.groupSets.begin(), trace.groupSets.end(),
-                                     [layoutCount](uint32_t set) { return set < layoutCount; });
-    textureSlots.clear();
-    device.Release(control);
-    device.Release(indirect);
-    device.Release(indices);
-    device.Release(instances);
-    const bool cleanup = device.buffers.size() == device.bufferReleases &&
-                         device.textures.size() + device.textureViews.size() == device.textureReleases &&
-                         device.samplers.size() == device.samplerReleases &&
-                         device.shaderCreates == device.shaderReleases &&
-                         device.layoutCreates == device.layoutReleases && device.groupCreates == device.groupReleases &&
-                         device.graphicsPipelineCreates == device.graphicsPipelineReleases &&
-                         device.pipelineCreates == device.pipelineReleases;
-    assert(cleanup);
-    if (!inRange)
-        std::cerr << kind << " bindless=" << bindless << " target=" << static_cast<int>(target)
-                  << " bound a descriptor set outside its " << layoutCount << " pipeline layouts\n";
-    return inRange;
-}
-
-static void VerifyParticlePassBindings()
-{
-    unsigned failures = 0;
-    for (const std::string kind : {"billboard", "ribbon", "mesh"}) {
-        for (const bool bindless : {false, true}) {
-            for (const auto target : {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus,
-                                      ShaderCompileTarget::Picking, ShaderCompileTarget::Motion})
-                failures += VerifyParticlePassBinding(kind, bindless, target) ? 0u : 1u;
-            if (kind == "mesh")
-                failures += VerifyParticlePassBinding(kind, bindless, ShaderCompileTarget::Shadow) ? 0u : 1u;
+    for (size_t kind = 0; kind < 3; ++kind) {
+        FakeDevice device;
+        TestTextureSlots textureSlots;
+        std::vector<rhi::BufferHandle> buffers;
+        const auto storage = [&](uint64_t bytes, bool indirect = false) {
+            const auto buffer =
+                device.CreateBuffer({bytes, indirect ? rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect
+                                                     : rhi::BufferUsageFlags::Storage});
+            buffers.push_back(buffer);
+            return buffer;
+        };
+        {
+            particle_test::ViewResources view(device);
+            particle::GpuParticleRendererDesc desc;
+            desc.type = static_cast<particle::GpuParticleOutputType>(kind);
+            desc.geometry = particle_test::GeometryPrograms()[kind];
+            desc.surface = particle_test::Surface(true);
+            desc.instances = storage(64 * sizeof(particle::GpuParticleRenderInstance));
+            desc.renderIndices = storage(64 * sizeof(uint32_t));
+            const auto indirect = storage(16, true);
+            desc.material = std::make_shared<InxMaterial>("Particle graphics");
+            desc.material->SetVector4("color", glm::vec4(0));
+            desc.semantics.softParticles = true;
+            const auto texture = device.CreateTextureView({});
+            const auto sampler = device.CreateSampler({});
+            desc.textureResolver = [&](const auto &guid, const auto &, auto) {
+                return AcquireTestTexture(device, textureSlots, guid, 1, texture, sampler);
+            };
+            if (desc.type == particle::GpuParticleOutputType::Mesh) {
+                desc.meshVertices = {storage(3 * 80), 3 * 80};
+                desc.meshIndices = {storage(3 * sizeof(uint32_t)), 3 * sizeof(uint32_t)};
+                desc.indexCount = 3;
+            } else if (desc.type == particle::GpuParticleOutputType::Ribbon) {
+                particle::GpuParticleRibbonDesc topology;
+                topology.capacity = 64;
+                topology.instances = desc.instances;
+                topology.sourceIndices = desc.renderIndices;
+                topology.sourceIndirectArguments = indirect;
+                topology.simulationControl = storage(16);
+                topology.program = {CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Reset()),
+                                    CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Initialize()),
+                                    CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Histogram()),
+                                    CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scan()),
+                                    CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scatter())};
+                desc.ribbon = std::make_shared<particle::ParticleGpuRibbonTopology>();
+                assert(desc.ribbon->Create(device, topology));
+            }
+            particle::ParticleGpuRenderer renderer;
+            assert(renderer.Create(device, desc));
+            GraphicsTrace trace;
+            const auto commands = GraphicsTrace::Commands();
+            const rhi::GraphicsCommandEncoder encoder(&trace, &commands);
+            particle::GpuParticleViewConstants values;
+            values.cameraRight = {1, 0, 0, 0};
+            values.cameraUp = {0, 1, 0, 0};
+            values.objectData[2] = 0x10;
+            auto bindings = view.bindings;
+            const auto draw = [&](ShaderCompileTarget target, rhi::BufferHandle indices = {}, bool depthPlane = true) {
+                MaterialPassPipelineDescriptor pass;
+                pass.target = target;
+                pass.depthFormat = rhi::PixelFormat::D32SFloat;
+                if (target != ShaderCompileTarget::Shadow && target != ShaderCompileTarget::Depth)
+                    pass.colorFormats = {target == ShaderCompileTarget::Picking  ? rhi::PixelFormat::RG32UInt
+                                         : target == ShaderCompileTarget::Motion ? rhi::PixelFormat::RG16SFloat
+                                                                                 : rhi::PixelFormat::RGBA8UNorm};
+                if (target == ShaderCompileTarget::Picking)
+                    return renderer.RecordPickingDraw(encoder, pass, indirect, values, 0x123456789abcdef0ull, bindings,
+                                                      indices);
+                return renderer.RecordDraw(encoder, pass, indirect, values, bindings, indices,
+                                           target == ShaderCompileTarget::Forward ||
+                                                   target == ShaderCompileTarget::ForwardPlus
+                                               ? texture
+                                               : rhi::TextureViewHandle{},
+                                           depthPlane);
+            };
+            for (const auto pass :
+                 {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus, ShaderCompileTarget::Picking,
+                  ShaderCompileTarget::Motion, ShaderCompileTarget::Depth, ShaderCompileTarget::Shadow})
+                assert(draw(pass));
+            assert(draw(ShaderCompileTarget::Forward, {}, false));
+            assert(trace.constants[2].objectData[0] == 0x9abcdef0u && trace.constants[2].objectData[1] == 0x12345678u &&
+                   trace.constants[2].objectData[2] == 0x10u);
+            assert(trace.groupSets ==
+                   std::vector<uint32_t>({0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2}));
+            const auto pipelines = device.graphicsPipelineCreates;
+            const auto oldMaterial = trace.groups[trace.groups.size() - 3];
+            const auto oldGeometry = trace.groups.back();
+            desc.material->SetVector4("color", glm::vec4(0.25f));
+            assert(draw(ShaderCompileTarget::Forward, {}, false));
+            assert(device.graphicsPipelineCreates == pipelines && trace.groups.back() == oldGeometry &&
+                   trace.groups[trace.groups.size() - 3] != oldMaterial);
+            const auto persistent = storage(64 * sizeof(uint32_t));
+            assert(draw(ShaderCompileTarget::Forward, persistent));
+            const auto baseline = renderer.ViewBindingCount();
+            for (unsigned index = 0; index < 16; ++index) {
+                const auto transient = storage(64 * sizeof(uint32_t));
+                assert(draw(ShaderCompileTarget::Forward, transient));
+                assert(renderer.ViewBindingCount() == baseline + 1);
+                renderer.ReleaseViewBinding(transient);
+                assert(renderer.ViewBindingCount() == baseline);
+            }
+            renderer.ReleaseViewBinding(persistent);
+            const auto baselinePipelines = device.graphicsPipelineCreates - device.graphicsPipelineReleases;
+            const auto baselineBindings = renderer.ViewBindingCount();
+            for (unsigned index = 0; index < 16; ++index) {
+                particle_test::ViewResources transientView(device);
+                bindings = transientView.bindings;
+                assert(draw(ShaderCompileTarget::Shadow));
+                assert(draw(ShaderCompileTarget::Forward));
+                assert(renderer.ViewBindingCount() == baselineBindings + 2);
+                renderer.ReleaseView(bindings.globals);
+                assert(renderer.ViewBindingCount() == baselineBindings);
+                assert(device.graphicsPipelineCreates - device.graphicsPipelineReleases == baselinePipelines);
+            }
+            bindings = view.bindings;
+            renderer.ReleaseView(bindings.globals);
+            assert(renderer.ViewBindingCount() == 0);
+            assert(device.graphicsPipelineCreates == device.graphicsPipelineReleases);
+            renderer.Destroy();
         }
+        textureSlots.clear();
+        for (const auto buffer : buffers)
+            device.Release(buffer);
+        assert(device.buffers.size() == device.bufferReleases);
+        assert(device.shaderCreates == device.shaderReleases);
+        assert(device.layoutCreates == device.layoutReleases);
+        assert(device.groupCreates == device.groupReleases);
+        assert(device.graphicsPipelineCreates == device.graphicsPipelineReleases);
+        assert(device.pipelineCreates == device.pipelineReleases);
+        assert(device.textureViews.size() == device.textureReleases &&
+               device.samplers.size() == device.samplerReleases);
     }
-    assert(failures == 0);
-    std::cout << "Particle pass binding contracts: 26 passed\n";
+    std::cout
+        << "Particle graphics: real compiled stages, typed depth, shared passes and bounded view ownership passed\n";
 }
 
 } // namespace
 
-// CPU command-recording checks; real GPU camera lifecycle is exercised by pytest.
-static std::shared_ptr<ShaderProgramArtifact> ViewBindingTestArtifact(bool bindless)
-{
-    auto result = std::make_shared<ShaderProgramArtifact>();
-    result->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 1};
-    result->domain = ShaderProgramDomain::ParticleSprite;
-    result->compatibilitySignature = 1;
-    result->usesBindlessTextureABI = bindless;
-    result->properties = {{"albedo_map", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
-                           std::nullopt, std::nullopt, 0, 0, 0}};
-    for (const auto target : {ShaderCompileTarget::Forward, ShaderCompileTarget::Motion}) {
-        ShaderProgramArtifact::PassVariant variant;
-        variant.target = target;
-        variant.compatibilitySignature = 1;
-        variant.vertexSpirv.resize(5 * sizeof(uint32_t));
-        variant.fragmentSpirv.resize(5 * sizeof(uint32_t));
-        const uint32_t magic = 0x07230203u;
-        std::memcpy(variant.vertexSpirv.data(), &magic, sizeof(magic));
-        std::memcpy(variant.fragmentSpirv.data(), &magic, sizeof(magic));
-        result->variants.push_back(std::move(variant));
-    }
-    assert(result->IsValid());
-    return result;
-}
-
-static void TestViewBindingRetirement(const std::string &kind)
-{
-    constexpr bool bindless = false;
-    constexpr auto target = ShaderCompileTarget::Forward;
-    FakeDevice device;
-    device.bindlessEnabled = bindless;
-    TestTextureSlots textureSlots;
-    std::array<uint32_t, 5> words{0x07230203u, 0u, 0u, 0u, 0u};
-    const particle::ShaderBytecode shader{words.data(), words.size()};
-    const auto instances =
-        device.CreateBuffer({64 * sizeof(particle::GpuParticleRenderInstance), rhi::BufferUsageFlags::Storage});
-    const auto indices = device.CreateBuffer({64 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-    const auto indirect = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect});
-    const auto control = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
-    const auto textureView = device.CreateTextureView({});
-    const auto sampler = device.CreateSampler({});
-    auto resolver = [&](const std::string &guid, const std::string &name, particle::GpuParticleTextureRequest request) {
-        assert(name == "albedo_map" && request == particle::GpuParticleTextureRequest::Poll);
-        return AcquireTestTexture(device, textureSlots, guid, 1, textureView, sampler);
-    };
-    auto material = std::make_shared<InxMaterial>("AuditMotionBinding");
-    material->SetTextureGuid("albedo_map", "white");
-    const auto artifact = ViewBindingTestArtifact(bindless);
-    GraphicsTrace trace;
-    const rhi::GraphicsCommandEncoder::Dispatch dispatch = GraphicsTrace::Commands();
-    const rhi::GraphicsCommandEncoder encoder(&trace, &dispatch);
-    MaterialPassPipelineDescriptor pass;
-    pass.target = target;
-    pass.colorFormats = {target == ShaderCompileTarget::Motion ? rhi::PixelFormat::RG16SFloat
-                                                               : rhi::PixelFormat::RGBA8UNorm};
-    pass.depthFormat = rhi::PixelFormat::D32SFloat;
-    pass.samples = rhi::SampleCount::One;
-    const particle::GpuParticlePerViewBindings perView{{91000, 1}, {91001, 1}}; // borrowed caller-owned handles
-    particle::GpuParticleViewConstants view;
-    auto recordViews = [&](auto &renderer, rhi::BufferHandle arguments) {
-        assert(renderer.RecordDraw(encoder, pass, arguments, view, {}, {}, true, perView));
-        const auto baseline = device.groupCreates - device.groupReleases;
-        const auto retained = device.CreateBuffer({256, rhi::BufferUsageFlags::Storage});
-        assert(renderer.RecordDraw(encoder, pass, arguments, view, retained, {}, true, perView));
-        assert(renderer.ViewBindingCount() == 1);
-        for (unsigned cycle = 0; cycle < 32; ++cycle) {
-            const auto transient = device.CreateBuffer({256, rhi::BufferUsageFlags::Storage});
-            for (unsigned repeat = 0; repeat < 3; ++repeat) {
-                assert(renderer.RecordDraw(encoder, pass, arguments, view, transient, {}, true, perView));
-                assert(renderer.ViewBindingCount() == 2);
-                assert(device.groupCreates - device.groupReleases == baseline + 2);
-            }
-            renderer.ReleaseViewBinding(transient);
-            assert(renderer.ViewBindingCount() == 1);
-            assert(device.groupCreates - device.groupReleases == baseline + 1);
-            const auto creates = device.groupCreates;
-            assert(renderer.RecordDraw(encoder, pass, arguments, view, retained, {}, true, perView));
-            assert(device.groupCreates == creates);                    // Retiring one camera preserves another.
-            renderer.ReleaseViewBinding(transient);                    // Idempotent; never releases another view.
-            renderer.ReleaseViewBinding(renderer.RenderIndexBuffer()); // Emitter binding is not view-owned.
-            assert(device.groupCreates - device.groupReleases == baseline + 1);
-            device.Release(transient);
-        }
-        renderer.ReleaseViewBinding(retained);
-        device.Release(retained);
-        assert(renderer.ViewBindingCount() == 0);
-        assert(device.groupCreates - device.groupReleases == baseline);
-        assert(renderer.RecordDraw(encoder, pass, arguments, view, {}, {}, true, perView));
-        assert(device.groupCreates - device.groupReleases == baseline);
-        return true;
-    };
-    bool recorded = false;
-    if (kind == "billboard") {
-        particle::GpuBillboardRendererDesc desc;
-        desc.vertexShader = desc.pickingFragmentShader = desc.motionVertexShader = desc.motionFragmentShader = shader;
-        desc.instances = instances;
-        desc.renderIndices = indices;
-        desc.shaderProgram = artifact;
-        desc.material = material;
-        desc.textureResolver = resolver;
-        particle::ParticleGpuBillboardRenderer renderer;
-        assert(renderer.Create(device, desc));
-        recorded = recordViews(renderer, indirect);
-        renderer.Destroy();
-    } else if (kind == "ribbon") {
-        auto topology = std::make_shared<particle::ParticleGpuRibbonTopology>();
-        particle::GpuParticleRibbonDesc topologyDesc;
-        topologyDesc.capacity = 64;
-        topologyDesc.instances = instances;
-        topologyDesc.sourceIndices = indices;
-        topologyDesc.sourceIndirectArguments = indirect;
-        topologyDesc.simulationControl = control;
-        topologyDesc.program = {CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Reset()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Initialize()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Histogram()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scan()),
-                                CompileParticleFixture(particle::GpuParticleRibbonShaderSources::Scatter())};
-        assert(topology->Create(device, topologyDesc));
-        particle::GpuRibbonRendererDesc desc;
-        desc.program = {shader, shader, shader, shader};
-        desc.topology = topology;
-        desc.shaderProgram = artifact;
-        desc.material = material;
-        desc.textureResolver = resolver;
-        particle::ParticleGpuRibbonRenderer renderer;
-        assert(renderer.Create(device, desc));
-        recorded = recordViews(renderer, topology->DrawIndirectBuffer());
-        renderer.Destroy();
-        topology->Destroy();
-    } else {
-        assert(kind == "mesh");
-        auto mesh = std::make_shared<InxMesh>("AuditTriangle");
-        std::vector<Vertex> vertices(3);
-        vertices[0].pos = {-0.5f, -0.5f, 0.0f};
-        vertices[1].pos = {0.5f, -0.5f, 0.0f};
-        vertices[2].pos = {0.0f, 0.5f, 0.0f};
-        for (auto &vertex : vertices) {
-            vertex.normal = {0.0f, 0.0f, 1.0f};
-            vertex.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
-        }
-        SubMesh subMesh;
-        subMesh.indexCount = subMesh.vertexCount = 3;
-        mesh->SetData(std::move(vertices), {0, 1, 2}, {subMesh});
-        particle::GpuMeshRendererDesc desc;
-        desc.vertexShader = desc.shadowFragmentShader = desc.pickingFragmentShader = desc.motionVertexShader =
-            desc.motionFragmentShader = shader;
-        desc.instances = instances;
-        desc.renderIndices = indices;
-        desc.mesh = mesh;
-        desc.meshVertices = device.CreateBuffer({3 * 5 * sizeof(glm::vec4), rhi::BufferUsageFlags::Storage});
-        desc.meshIndices = device.CreateBuffer({3 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-        desc.indexCount = 3;
-        desc.meshBufferKeepAlive = std::make_shared<int>(1);
-        desc.shaderProgram = artifact;
-        desc.material = material;
-        desc.textureResolver = resolver;
-        particle::ParticleGpuMeshRenderer renderer;
-        assert(renderer.Create(device, desc));
-        recorded = recordViews(renderer, indirect);
-        renderer.Destroy();
-        device.Release(desc.meshVertices);
-        device.Release(desc.meshIndices);
-    }
-    assert(recorded && device.graphicsPipelineDescs.size() == 1);
-    const uint32_t layoutCount = device.graphicsPipelineDescs.front().bindingLayoutCount;
-    const bool inRange = std::all_of(trace.groupSets.begin(), trace.groupSets.end(),
-                                     [layoutCount](uint32_t set) { return set < layoutCount; });
-    textureSlots.clear();
-    device.Release(control);
-    device.Release(indirect);
-    device.Release(indices);
-    device.Release(instances);
-    const bool cleanup = device.buffers.size() == device.bufferReleases &&
-                         device.textures.size() + device.textureViews.size() == device.textureReleases &&
-                         device.samplers.size() == device.samplerReleases &&
-                         device.shaderCreates == device.shaderReleases &&
-                         device.layoutCreates == device.layoutReleases && device.groupCreates == device.groupReleases &&
-                         device.graphicsPipelineCreates == device.graphicsPipelineReleases &&
-                         device.pipelineCreates == device.pipelineReleases;
-    assert(cleanup);
-    assert(inRange);
-}
-
 int main()
 {
-    for (const std::string kind : {"billboard", "ribbon", "mesh"})
-        TestViewBindingRetirement(kind);
-    VerifyParticlePassBindings();
+    VerifyParticleGraphics();
     {
         FakeDevice device;
         device.capabilities.limits.minStorageBufferOffsetAlignment = 256;
@@ -1520,7 +1322,9 @@ int main()
         migrator.RecordMigrate(encoder);
         migrator.RecordMigrate(encoder);
         assert(migrator.WasRecorded());
-        assert(trace.pipelines.size() == 2 && trace.constants.size() == 2);
+        // Reset has no per-dispatch input; only migration reads these values.
+        assert(trace.pipelines.size() == 2 && trace.constants.size() == 1);
+        assert(std::memcmp(&trace.constants.front(), &migrator.Constants(), sizeof(migrator.Constants())) == 0);
         assert(trace.dispatches == std::vector<uint32_t>({1, 2}));
         migrator.Destroy();
         assert(migrationDevice.bufferReleases == 2 && migrationDevice.pipelineReleases == 2 &&
@@ -2709,904 +2513,9 @@ int main()
            ribbonTrace.constants[6].keyField == 0 && ribbonTrace.constants[7].keyField == 0 &&
            ribbonTrace.constants[7].digitShift == 28);
 
-    std::array<std::array<uint32_t, 5>, 4> ribbonRenderWords{};
-    for (auto &shader : ribbonRenderWords)
-        shader[0] = 0x07230203u;
-    particle::GpuParticleRibbonRenderProgram ribbonRenderProgram = {
-        {ribbonRenderWords[0].data(), ribbonRenderWords[0].size()},
-        {ribbonRenderWords[1].data(), ribbonRenderWords[1].size()},
-        {ribbonRenderWords[2].data(), ribbonRenderWords[2].size()},
-        {ribbonRenderWords[3].data(), ribbonRenderWords[3].size()},
-    };
-    particle::GpuParticleRibbonRenderProgramStorage ribbonRenderStorage;
-    assert(ribbonRenderStorage.Assign(ribbonRenderProgram) && ribbonRenderStorage.IsValid());
-    particle::GpuRibbonRendererDesc ribbonRendererDesc;
-    ribbonRendererDesc.program = ribbonRenderStorage.View();
-    ribbonRendererDesc.topology = ribbonTopology;
-    auto ribbonArtifact = std::make_shared<ShaderProgramArtifact>();
-    ribbonArtifact->key = {{"Tests/ParticleRibbon", "Tests/ParticleUnlit"}, 1};
-    ribbonArtifact->domain = ShaderProgramDomain::ParticleSprite;
-    ribbonArtifact->compatibilitySignature = 1;
-    ribbonArtifact->materialBufferSize = 16;
-    ribbonArtifact->properties = {
-        {"opacity", "Float", "1.0", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 0, std::nullopt, 4, 4},
-    };
-    ShaderProgramArtifact::PassVariant ribbonForward;
-    ribbonForward.compatibilitySignature = ribbonArtifact->compatibilitySignature;
-    ribbonForward.vertexSpirv.resize(5 * sizeof(uint32_t));
-    ribbonForward.fragmentSpirv.resize(5 * sizeof(uint32_t));
-    const uint32_t ribbonSpirvMagic = 0x07230203u;
-    std::memcpy(ribbonForward.vertexSpirv.data(), &ribbonSpirvMagic, sizeof(ribbonSpirvMagic));
-    std::memcpy(ribbonForward.fragmentSpirv.data(), &ribbonSpirvMagic, sizeof(ribbonSpirvMagic));
-    ribbonArtifact->variants.push_back(ribbonForward);
-    auto ribbonMotion = ribbonForward;
-    ribbonMotion.target = ShaderCompileTarget::Motion;
-    ribbonArtifact->variants.push_back(std::move(ribbonMotion));
-    assert(ribbonArtifact->IsValid());
-    ribbonRendererDesc.shaderProgram = ribbonArtifact;
-    ribbonRendererDesc.material = std::make_shared<InxMaterial>("ribbon-surface-parameters");
-    ribbonRendererDesc.material->SetFloat("opacity", 0.625f);
-    ribbonRendererDesc.textureResolver = [](const std::string &, const std::string &,
-                                            particle::GpuParticleTextureRequest request) {
-        assert(request == particle::GpuParticleTextureRequest::Poll);
-        return particle::GpuBillboardTextureLease{};
-    };
-    ribbonRendererDesc.deletionQueue = &deletionQueue;
-    ribbonRendererDesc.semantics.sortMode = particle::ParticleSortMode::None;
-    ribbonRendererDesc.uvMode = particle::ParticleRibbonUvMode::Repeat;
-    ribbonRendererDesc.uvScale = 2.5f;
-    particle::ParticleGpuRibbonRenderer ribbonRenderer;
-    const uint32_t ribbonWritesBeforeCreate = ribbonDevice.writes;
-    assert(ribbonRenderer.Create(ribbonDevice, ribbonRendererDesc));
-    assert(ribbonDevice.writes == ribbonWritesBeforeCreate && ribbonDevice.initialBufferBytes.back().size() == 16);
-    float uploadedRibbonOpacity = 0.0f;
-    std::memcpy(&uploadedRibbonOpacity, ribbonDevice.initialBufferBytes.back().data(), sizeof(uploadedRibbonOpacity));
-    assert(uploadedRibbonOpacity == 0.625f);
-    assert(ribbonRenderer.IsValid() && !ribbonRenderer.CanCastShadows() &&
-           ribbonRenderer.InstanceBuffer() == runtime.InstanceBuffer() &&
-           ribbonRenderer.RenderIndexBuffer() == ribbonTopology->SortedIndexBuffer());
-    const auto ribbonViewIndices = ribbonCuller.VisibleIndexBuffer();
-
-    GraphicsTrace ribbonGraphicsTrace;
-    const rhi::GraphicsCommandEncoder::Dispatch ribbonGraphicsDispatch = GraphicsTrace::Commands();
-    const rhi::GraphicsCommandEncoder ribbonGraphicsEncoder(&ribbonGraphicsTrace, &ribbonGraphicsDispatch);
-    particle::GpuParticleViewConstants ribbonView;
-    MaterialPassPipelineDescriptor ribbonPass;
-    ribbonPass.target = ShaderCompileTarget::Forward;
-    ribbonPass.colorFormats = {rhi::PixelFormat::RGBA8UNorm};
-    ribbonPass.depthFormat = rhi::PixelFormat::D32SFloat;
-    ribbonPass.samples = rhi::SampleCount::One;
-    const rhi::RenderTargetLayoutHandle ribbonTarget{910, 1};
-    const particle::GpuParticlePerViewBindings ribbonPerView{{911, 1}, {912, 1}};
-    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(),
-                                     ribbonView, {}, {}, true, ribbonPerView));
-    assert(ribbonGraphicsTrace.groupSets == std::vector<uint32_t>({0, 1, 2}));
-    assert(ribbonGraphicsTrace.indirectBuffers ==
-           std::vector<rhi::BufferHandle>({ribbonTopology->DrawIndirectBuffer()}));
-    assert(ribbonGraphicsTrace.constants.size() == 1 &&
-           ribbonGraphicsTrace.constants[0].alignmentReference[0] == 2.5f &&
-           ribbonGraphicsTrace.constants[0].alignmentReference[1] == 1.0f &&
-           ribbonGraphicsTrace.constants[0].alignmentReference[3] == -1.0f);
-    assert(ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(),
-                                     ribbonView, ribbonViewIndices, {}, true, ribbonPerView));
-    assert(ribbonGraphicsTrace.groupSets == std::vector<uint32_t>({0, 1, 2, 0, 1, 2}));
-    assert(ribbonGraphicsTrace.constants.back().alignmentReference[2] == 1.0f);
-    ribbonPass.target = ShaderCompileTarget::Picking;
-    ribbonPass.colorFormats = {rhi::PixelFormat::RG32UInt};
-    assert(ribbonRenderer.RecordPickingDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(),
-                                            ribbonView, 0x123456789abcdef0ull));
-    ribbonPass.target = ShaderCompileTarget::Motion;
-    ribbonPass.colorFormats = {rhi::PixelFormat::RG16SFloat};
-    assert(
-        ribbonRenderer.RecordDraw(ribbonGraphicsEncoder, ribbonPass, ribbonTopology->DrawIndirectBuffer(), ribbonView));
-    const auto floatBits = [](float value) {
-        uint32_t bits = 0;
-        std::memcpy(&bits, &value, sizeof(bits));
-        return bits;
-    };
-    assert(ribbonGraphicsTrace.constants.size() == 4 &&
-           floatBits(ribbonGraphicsTrace.constants[2].materialTint[0]) == 0x9abcdef0u &&
-           floatBits(ribbonGraphicsTrace.constants[2].materialTint[1]) == 0x12345678u &&
-           ribbonGraphicsTrace.constants[2].materialTint[3] == 1.0f);
-    ribbonRenderer.Destroy();
     ribbonCuller.Destroy();
     ribbonTopology->Destroy();
-    assert(!ribbonRenderer.IsValid() && !ribbonTopology->IsValid());
-
-    const auto instanceBuffer = runtime.InstanceBuffer();
-    const auto renderIndexBuffer = runtime.RenderIndexBuffer();
-    const auto indirectBuffer = runtime.IndirectBuffer();
-    const uint32_t textureReleasesBeforeBillboard = device.textureReleases;
-    const uint32_t samplerReleasesBeforeBillboard = device.samplerReleases;
-    const size_t layoutsBeforeBillboard = device.layoutEntryCounts.size();
-    const size_t groupsBeforeBillboard = device.groupBufferCounts.size();
-    const uint32_t groupCreatesBeforeBillboard = device.groupCreates;
-    const uint32_t groupReleasesBeforeBillboard = device.groupReleases;
-    std::array<uint32_t, 4> billboardVertex = {0x07230203};
-    std::array<uint32_t, 4> billboardFragment = {0x07230203};
-    auto billboardArtifact = std::make_shared<ShaderProgramArtifact>();
-    billboardArtifact->key = {{"Tests/ParticleSprite", "Tests/ParticleUnlit"}, 1};
-    billboardArtifact->domain = ShaderProgramDomain::ParticleSprite;
-    billboardArtifact->usesParticleSceneDepthBinding = true;
-    billboardArtifact->compatibilitySignature = 1;
-    billboardArtifact->properties = {
-        {"albedo_map", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false, std::nullopt, std::nullopt, 0,
-         0, 0},
-    };
-    ShaderProgramArtifact::PassVariant billboardForward;
-    billboardForward.compatibilitySignature = billboardArtifact->compatibilitySignature;
-    billboardForward.vertexSpirv.resize(5 * sizeof(uint32_t));
-    billboardForward.fragmentSpirv.resize(5 * sizeof(uint32_t));
-    const uint32_t billboardSpirvMagic = 0x07230203u;
-    std::memcpy(billboardForward.vertexSpirv.data(), &billboardSpirvMagic, sizeof(billboardSpirvMagic));
-    std::memcpy(billboardForward.fragmentSpirv.data(), &billboardSpirvMagic, sizeof(billboardSpirvMagic));
-    billboardArtifact->variants.push_back(billboardForward);
-    auto billboardMotion = billboardForward;
-    billboardMotion.target = ShaderCompileTarget::Motion;
-    billboardArtifact->variants.push_back(std::move(billboardMotion));
-    assert(billboardArtifact->IsValid());
-    particle::GpuBillboardRendererDesc billboardDesc;
-    billboardDesc.shaderProgram = billboardArtifact;
-    billboardDesc.vertexShader = {billboardVertex.data(), billboardVertex.size()};
-    billboardDesc.motionVertexShader = {billboardVertex.data(), billboardVertex.size()};
-    billboardDesc.motionFragmentShader = {billboardFragment.data(), billboardFragment.size()};
-    billboardDesc.instances = instanceBuffer;
-    billboardDesc.renderIndices = renderIndexBuffer;
-    billboardDesc.flipbookColumns = 4;
-    billboardDesc.flipbookRows = 2;
-    billboardDesc.semantics.spriteAlignment = particle::ParticleSpriteAlignment::Axis;
-    billboardDesc.semantics.alignmentAxis = {0.0f, 0.0f, 1.0f};
-    billboardDesc.fallbackMaterial.renderQueue = 3100;
-    billboardDesc.material = std::make_shared<InxMaterial>("live-particle-material");
-    auto liveMaterialState = billboardDesc.material->GetRenderState();
-    liveMaterialState.renderQueue = 3100;
-    liveMaterialState.blendEnable = true;
-    liveMaterialState.depthWriteEnable = false;
-    billboardDesc.material->SetRenderState(liveMaterialState);
-    billboardDesc.material->SetTextureGuid("albedo_map", "white");
-    uint32_t textureResolveCount = 0;
-    bool normalTextureReady = false;
-    TestTextureSlots textureSlots;
-    billboardDesc.textureResolver = [&device, &textureResolveCount, &normalTextureReady,
-                                     &textureSlots](const std::string &textureGuid, const std::string &name,
-                                                    particle::GpuParticleTextureRequest request) {
-        assert(request == particle::GpuParticleTextureRequest::Poll);
-        assert(name == "albedo_map");
-        ++textureResolveCount;
-        if (textureGuid == "normal" && !normalTextureReady)
-            return particle::GpuBillboardTextureLease{particle::GpuBillboardTextureStatus::Pending};
-        const uint32_t identity = textureGuid == "normal" ? 2u : 1u;
-        return AcquireTestTexture(device, textureSlots, textureGuid, identity, {400u + identity, 1},
-                                  {500u + identity, 1});
-    };
-    billboardDesc.deletionQueue = &deletionQueue;
-
-    particle::ParticleGpuBillboardRenderer billboard;
-    assert(billboard.Create(device, billboardDesc));
-    assert(billboard.IsValid() && billboard.RenderQueue() == 3100 && billboard.InstanceBuffer() == instanceBuffer);
-    const std::array<uint32_t, 3> billboardLayoutEntryCounts = {2, 0, 2};
-    const std::array<uint32_t, 3> billboardGroupBufferCounts = {0, 0, 2};
-    const std::array<uint32_t, 3> billboardGroupTextureCounts = {0, 2, 0};
-    assert(device.layoutEntryCounts.size() == layoutsBeforeBillboard + billboardLayoutEntryCounts.size() &&
-           std::equal(billboardLayoutEntryCounts.begin(), billboardLayoutEntryCounts.end(),
-                      device.layoutEntryCounts.begin() + layoutsBeforeBillboard));
-    assert(device.groupBufferCounts.size() == groupsBeforeBillboard + billboardGroupBufferCounts.size() &&
-           device.groupTextureCounts.size() == groupsBeforeBillboard + billboardGroupTextureCounts.size() &&
-           std::equal(billboardGroupBufferCounts.begin(), billboardGroupBufferCounts.end(),
-                      device.groupBufferCounts.begin() + groupsBeforeBillboard) &&
-           std::equal(billboardGroupTextureCounts.begin(), billboardGroupTextureCounts.end(),
-                      device.groupTextureCounts.begin() + groupsBeforeBillboard));
-    const auto &billboardSurfaceGroup = device.bindGroups[device.bindGroups.size() - 2];
-    assert(billboardSurfaceGroup.textures[0].binding == 2 && billboardSurfaceGroup.textures[1].binding == 15 &&
-           !billboardSurfaceGroup.textures[1].depthRead);
-    assert(textureResolveCount == 1);
-
-    MaterialPassPipelineDescriptor forwardPass;
-    forwardPass.colorFormats = {rhi::PixelFormat::RGBA16SFloat};
-    forwardPass.depthFormat = rhi::PixelFormat::D32SFloat;
-    forwardPass.samples = rhi::SampleCount::Four;
-    GraphicsTrace graphicsTrace;
-    const rhi::GraphicsCommandEncoder::Dispatch graphicsDispatch = GraphicsTrace::Commands();
-    const rhi::GraphicsCommandEncoder graphicsEncoder(&graphicsTrace, &graphicsDispatch);
-    particle::GpuBillboardViewConstants view;
-    view.cameraRight[0] = 1.0f;
-    view.cameraUp[1] = 1.0f;
-    const rhi::RenderTargetLayoutHandle firstTarget{100, 1};
-    const particle::GpuParticlePerViewBindings perView{{800, 1}, {801, 1}};
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineDescs.size() == 1);
-    const auto &graphicsDesc = device.graphicsPipelineDescs.front();
-    assert(graphicsDesc.pushConstantBytes == sizeof(view));
-    assert(graphicsDesc.pushConstantStages == (rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment));
-    assert(graphicsDesc.bindingLayoutCount == 3 && graphicsDesc.bindingLayouts[1] == perView.layout);
-    assert(graphicsDesc.samples == rhi::SampleCount::Four);
-    assert(graphicsDesc.depth.testEnabled && !graphicsDesc.depth.writeEnabled);
-    assert(graphicsDesc.colorTargetCount == 1 && graphicsDesc.colorTargets[0].blendEnabled &&
-           !graphicsDesc.colorTargets[0].premultipliedAlpha);
-    assert(graphicsTrace.pipelines.size() == 2 && graphicsTrace.groups.size() == 6 &&
-           graphicsTrace.constants.size() == 2 && graphicsTrace.indirectBuffers.size() == 2);
-    assert(graphicsTrace.constants.back().renderingControl[2] == 4.0f &&
-           graphicsTrace.constants.back().renderingControl[3] == 2.0f);
-    assert((graphicsTrace.constants.back().alignmentReference == std::array<float, 4>{0.0f, 0.0f, 1.0f, 2.0f}));
-
-    billboardDesc.material->SetRenderQueue(3150);
-    billboardDesc.material->SetColor("base_color", glm::vec4(0.25f, 0.5f, 0.75f, 0.8f));
-    assert(billboard.RenderQueue() == 3150);
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(device.graphicsPipelineCreates == 1 && device.graphicsPipelineReleases == 0);
-    assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
-    assert(graphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
-    assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
-    billboardDesc.material->SetTextureGuid("albedo_map", "normal");
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 3 && device.groupCreates == groupCreatesBeforeBillboard + 4u &&
-           device.groupReleases == groupReleasesBeforeBillboard);
-    assert(device.textureReleases == textureReleasesBeforeBillboard &&
-           device.samplerReleases == samplerReleasesBeforeBillboard);
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 4 && device.groupCreates == groupCreatesBeforeBillboard + 4u);
-    normalTextureReady = true;
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 5 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
-           device.groupReleases == groupReleasesBeforeBillboard);
-    (void)deletionQueue.Collect(1);
-    assert(device.groupReleases == groupReleasesBeforeBillboard + 2u &&
-           device.textureReleases == textureReleasesBeforeBillboard &&
-           device.samplerReleases == samplerReleasesBeforeBillboard);
-
-    auto normalSlot = textureSlots.at("normal");
-    auto normalRevisionTwoOwner = normalSlot->Acquire();
-    assert(normalRevisionTwoOwner && normalRevisionTwoOwner->GetRevision() == 2);
-    std::weak_ptr<const rhi::TextureGpuView> normalRevisionTwo = normalRevisionTwoOwner;
-    normalSlot->RequestRevision(3);
-    normalTextureReady = false;
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 6 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
-           !normalRevisionTwo.expired());
-    auto normalRevisionThree = AcquireTestTexture(device, textureSlots, "normal", 3, {403, 1}, {503, 1});
-    assert(normalRevisionThree.gpuSlot == normalSlot && normalRevisionThree.gpuView->GetRevision() == 3);
-    normalRevisionTwoOwner.reset();
-    assert(!normalRevisionTwo.expired());
-    const uint32_t resolvesBeforeSlotPublication = textureResolveCount;
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == resolvesBeforeSlotPublication &&
-           device.groupCreates == groupCreatesBeforeBillboard + 6u && !normalRevisionTwo.expired());
-    (void)deletionQueue.Collect(1);
-    assert(device.groupReleases == groupReleasesBeforeBillboard + 3u && normalRevisionTwo.expired() &&
-           device.textureReleases == textureReleasesBeforeBillboard + 1 &&
-           device.samplerReleases == samplerReleasesBeforeBillboard + 1);
-    normalRevisionThree = {};
-    normalSlot.reset();
-    liveMaterialState = billboardDesc.material->GetRenderState();
-    liveMaterialState.blendEnable = false;
-    liveMaterialState.depthWriteEnable = true;
-    billboardDesc.material->SetRenderState(liveMaterialState);
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(device.graphicsPipelineCreates == 2 && device.graphicsPipelineReleases == 0);
-    const auto &updatedGraphicsDesc = device.graphicsPipelineDescs.back();
-    assert(!updatedGraphicsDesc.colorTargets[0].blendEnabled && updatedGraphicsDesc.depth.writeEnabled);
-    liveMaterialState.blendEnable = true;
-    liveMaterialState.depthWriteEnable = false;
-    liveMaterialState.srcColorBlendFactor = MaterialBlendFactor::One;
-    liveMaterialState.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
-    billboardDesc.material->SetRenderState(liveMaterialState);
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(device.graphicsPipelineCreates == 3 && device.graphicsPipelineReleases == 0);
-    assert(device.graphicsPipelineDescs.back().colorTargets[0].premultipliedAlpha);
-    assert(graphicsTrace.constants.back().renderingControl[1] == 1.0f);
-
-    MaterialPassPipelineDescriptor unsupportedPass = forwardPass;
-    unsupportedPass.target = ShaderCompileTarget::GBuffer;
-    assert(!billboard.RecordDraw(graphicsEncoder, unsupportedPass, indirectBuffer, view));
-    billboard.Destroy();
-    assert(!billboard.IsValid() && device.graphicsPipelineReleases == 3);
-
-    {
-        FakeDevice litDevice;
-        auto litDesc = billboardDesc;
-        auto litArtifact = std::make_shared<ShaderProgramArtifact>(*billboardArtifact);
-        litArtifact->key.revision = 2;
-        auto billboardForwardPlus = billboardForward;
-        billboardForwardPlus.target = ShaderCompileTarget::ForwardPlus;
-        litArtifact->variants.push_back(std::move(billboardForwardPlus));
-        assert(litArtifact->IsValid());
-        litDesc.shaderProgram = std::move(litArtifact);
-        litDesc.semantics.receiveSceneLighting = true;
-        litDesc.semantics.softParticles = true;
-        litDesc.semantics.softDistance = 0.25f;
-        litDesc.semantics.sortMode = particle::ParticleSortMode::BackToFront;
-        litDesc.material->SetFloat("softness", 0.3f);
-        litDesc.deletionQueue = nullptr;
-        particle::ParticleGpuBillboardRenderer litBillboard;
-        assert(litBillboard.Create(litDevice, litDesc));
-
-        auto forwardPlusPass = forwardPass;
-        forwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
-        GraphicsTrace litTrace;
-        const rhi::GraphicsCommandEncoder litEncoder(&litTrace, &graphicsDispatch);
-        const rhi::TextureViewHandle litSceneDepth{902, 1};
-        assert(!litBillboard.RecordDraw(litEncoder, forwardPlusPass, indirectBuffer, view, {}, litSceneDepth));
-        const particle::GpuParticlePerViewBindings lighting{{900, 1}, {901, 1}};
-        assert(litBillboard.RecordDraw(litEncoder, forwardPlusPass, indirectBuffer, view, {}, litSceneDepth, true,
-                                       lighting));
-        assert(litDevice.graphicsPipelineDescs.size() == 1);
-        const auto &litPipeline = litDevice.graphicsPipelineDescs.front();
-        assert(litPipeline.bindingLayoutCount == 3 && litPipeline.bindingLayouts[1] == lighting.layout);
-        assert(litTrace.groupSets == std::vector<uint32_t>({0, 1, 2}) && litTrace.groups[1] == lighting.group);
-        assert(litTrace.constants.size() == 1 && litTrace.constants[0].lightingControl[0] == 1.0f &&
-               litTrace.constants[0].lightingControl[1] == 1.0f && litTrace.constants[0].lightingControl[2] == 0.3f &&
-               litTrace.constants[0].cameraUp[3] == 1.0f && litTrace.constants[0].cameraRight[3] == 0.25f);
-        litBillboard.Destroy();
-    }
-
-    FakeDevice softDevice;
-    auto softDesc = billboardDesc;
-    softDesc.semantics.softParticles = true;
-    softDesc.semantics.softDistance = 0.5f;
-    softDesc.deletionQueue = nullptr;
-    particle::ParticleGpuBillboardRenderer softBillboard;
-    assert(softBillboard.Create(softDevice, softDesc) && softBillboard.RequiresSceneDepth());
-    liveMaterialState = billboardDesc.material->GetRenderState();
-    liveMaterialState.renderQueue = 2000;
-    liveMaterialState.blendEnable = false;
-    liveMaterialState.depthWriteEnable = true;
-    billboardDesc.material->SetRenderState(liveMaterialState);
-    assert(softBillboard.RenderQueue() == EngineConfig::Get().transparentQueueMin);
-    const rhi::TextureViewHandle sceneDepthView{990, 1};
-    assert(softBillboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, sceneDepthView, false,
-                                    perView));
-    assert(!softDevice.bindGroups.back().textures[1].depthRead);
-    auto singleSamplePass = forwardPass;
-    singleSamplePass.samples = rhi::SampleCount::One;
-    assert(!softBillboard.RecordDraw(graphicsEncoder, singleSamplePass, indirectBuffer, view));
-    GraphicsTrace softTrace;
-    const rhi::GraphicsCommandEncoder softEncoder(&softTrace, &graphicsDispatch);
-    assert(softBillboard.RecordDraw(softEncoder, singleSamplePass, indirectBuffer, view, {}, sceneDepthView, true,
-                                    perView));
-    assert(softDevice.bindGroups.size() == 5 && softDevice.bindGroups.back().textureCount == 2);
-    assert(softDevice.graphicsPipelineDescs.back().colorTargets[0].blendEnabled);
-    assert(!softDevice.graphicsPipelineDescs.back().depth.writeEnabled);
-    assert(softDevice.bindGroups.back().textures[1].binding == 15 &&
-           softDevice.bindGroups.back().textures[1].texture == sceneDepthView &&
-           softDevice.bindGroups.back().textures[1].depthRead);
-    assert(softTrace.constants.size() == 1 && softTrace.constants[0].cameraRight[3] == 0.5f &&
-           softTrace.constants[0].cameraUp[3] == 1.0f);
-    softBillboard.Destroy();
-
-    auto linkedArtifact = std::make_shared<ShaderProgramArtifact>();
-    linkedArtifact->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 7};
-    linkedArtifact->domain = ShaderProgramDomain::ParticleSprite;
-    linkedArtifact->usesParticleSceneDepthBinding = true;
-    linkedArtifact->materialBufferSize = 32;
-    linkedArtifact->alphaClipThresholdOffset = 20;
-    linkedArtifact->compatibilitySignature = 99;
-    linkedArtifact->properties = {
-        {"base_color", "Color", "[1.0, 1.0, 1.0, 1.0]", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 0,
-         std::nullopt, 16, 16},
-        {"intensity", "Float", "2.0", "", ShaderProgramStageMask::Fragment, false, std::nullopt, 16, std::nullopt, 4,
-         4},
-        {"albedo", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false, std::nullopt, std::nullopt, 0, 0,
-         0},
-        {"detail", "Texture2D", "", "white", ShaderProgramStageMask::Vertex | ShaderProgramStageMask::Fragment, false,
-         std::nullopt, std::nullopt, 1, 0, 0},
-    };
-    ShaderProgramArtifact::PassVariant linkedForward;
-    linkedForward.compatibilitySignature = linkedArtifact->compatibilitySignature;
-    linkedForward.vertexSpirv.resize(5 * sizeof(uint32_t));
-    linkedForward.fragmentSpirv.resize(5 * sizeof(uint32_t));
-    const uint32_t spirvMagic = 0x07230203u;
-    std::memcpy(linkedForward.vertexSpirv.data(), &spirvMagic, sizeof(spirvMagic));
-    std::memcpy(linkedForward.fragmentSpirv.data(), &spirvMagic, sizeof(spirvMagic));
-    linkedArtifact->variants.push_back(std::move(linkedForward));
-    auto linkedMotion = linkedArtifact->variants.front();
-    linkedMotion.target = ShaderCompileTarget::Motion;
-    linkedArtifact->variants.push_back(std::move(linkedMotion));
-    assert(linkedArtifact->IsValid());
-
-    FakeDevice linkedDevice;
-    GpuRetirementQueue linkedDeletionQueue;
-    linkedDeletionQueue.BindSerialSource([] { return rhi::SubmissionSerial{1}; });
-    particle::GpuBillboardRendererDesc linkedDesc;
-    linkedDesc.vertexShader = billboardDesc.vertexShader;
-    linkedDesc.motionVertexShader = billboardDesc.motionVertexShader;
-    linkedDesc.shaderProgram = linkedArtifact;
-    linkedDesc.instances = instanceBuffer;
-    linkedDesc.renderIndices = renderIndexBuffer;
-    linkedDesc.material = std::make_shared<InxMaterial>("linked-particle-material");
-    linkedDesc.material->SetColor("base_color", glm::vec4(0.2f, 0.4f, 0.6f, 0.8f));
-    linkedDesc.material->SetFloat("intensity", 3.5f);
-    linkedDesc.material->SetTextureGuid("albedo", "white");
-    linkedDesc.material->SetTextureGuid("detail", "normal");
-    uint32_t linkedTextureResolves = 0;
-    TestTextureSlots linkedTextureSlots;
-    linkedDesc.textureResolver = [&linkedDevice, &linkedTextureResolves,
-                                  &linkedTextureSlots](const std::string &guid, const std::string &name,
-                                                       particle::GpuParticleTextureRequest request) {
-        assert(request == particle::GpuParticleTextureRequest::Poll);
-        ++linkedTextureResolves;
-        const uint32_t identity = name == "albedo" ? 1u : 2u;
-        assert((name == "albedo" && (guid == "white" || guid == "black")) || (name == "detail" && guid == "normal"));
-        const uint64_t revision = guid == "black" ? 2u : 1u;
-        return AcquireTestTexture(linkedDevice, linkedTextureSlots, guid, revision, {600u + identity, 1},
-                                  {700u + identity, 1});
-    };
-    linkedDesc.deletionQueue = &linkedDeletionQueue;
-
-    auto linkedLitDesc = linkedDesc;
-    linkedLitDesc.semantics.receiveSceneLighting = true;
-    particle::ParticleGpuBillboardRenderer linkedLitBillboard;
-    assert(!linkedLitBillboard.Create(linkedDevice, linkedLitDesc));
-
-    particle::ParticleGpuBillboardRenderer linkedBillboard;
-    assert(linkedBillboard.Create(linkedDevice, linkedDesc));
-    assert(linkedDevice.shaderCreates == 4 && linkedDevice.buffers.size() == 1);
-    assert(linkedDevice.buffers[0].byteSize == 32 && linkedDevice.buffers[0].usage == rhi::BufferUsageFlags::Uniform &&
-           linkedDevice.buffers[0].memory == rhi::BufferMemory::Upload);
-    assert(linkedDevice.layouts.size() == 3 && linkedDevice.layouts[0].entryCount == 2 &&
-           linkedDevice.layouts[1].entryCount == 0 && linkedDevice.layouts[2].entryCount == 4);
-    assert(linkedDevice.layouts[0].entries[0].binding == 0 && linkedDevice.layouts[0].entries[1].binding == 1 &&
-           linkedDevice.layouts[2].entries[0].binding == 2 && linkedDevice.layouts[2].entries[1].binding == 3 &&
-           linkedDevice.layouts[2].entries[2].binding == 14 && linkedDevice.layouts[2].entries[3].binding == 15);
-    assert(linkedDevice.bindGroups.size() == 3 && linkedDevice.bindGroups[1].bufferCount == 1 &&
-           linkedDevice.bindGroups[1].textureCount == 3 && linkedDevice.bindGroups[2].bufferCount == 2);
-    assert(linkedDevice.bindGroups[1].buffers[0].binding == 14 && linkedDevice.bindGroups[2].buffers[0].binding == 0 &&
-           linkedDevice.bindGroups[2].buffers[1].binding == 1 &&
-           linkedDevice.bindGroups[2].buffers[1].buffer == renderIndexBuffer);
-    assert(linkedDevice.bindGroups[1].textures[0].binding == 2 && linkedDevice.bindGroups[1].textures[1].binding == 3 &&
-           linkedDevice.bindGroups[1].textures[2].binding == 15 && !linkedDevice.bindGroups[1].textures[2].depthRead);
-    assert(linkedTextureResolves == 2 && linkedDevice.writes == 0 && linkedDevice.initialBufferBytes[0].size() == 32);
-    glm::vec4 packedColor{};
-    float packedIntensity = 0.0f;
-    float packedAlphaClipThreshold = -1.0f;
-    std::memcpy(&packedColor, linkedDevice.initialBufferBytes[0].data(), sizeof(packedColor));
-    std::memcpy(&packedIntensity, linkedDevice.initialBufferBytes[0].data() + 16, sizeof(packedIntensity));
-    std::memcpy(&packedAlphaClipThreshold, linkedDevice.initialBufferBytes[0].data() + 20,
-                sizeof(packedAlphaClipThreshold));
-    assert(packedColor == inx::color::SrgbToLinear(glm::vec4(0.2f, 0.4f, 0.6f, 0.8f)) && packedIntensity == 3.5f &&
-           packedAlphaClipThreshold == 0.0f);
-
-    GraphicsTrace linkedGraphicsTrace;
-    const rhi::GraphicsCommandEncoder linkedGraphicsEncoder(&linkedGraphicsTrace, &graphicsDispatch);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(linkedDevice.writes == 0 && linkedDevice.groupCreates == 3 && linkedDevice.graphicsPipelineCreates == 1 &&
-           linkedTextureResolves == 2);
-    assert(linkedGraphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
-
-    const rhi::BufferHandle sceneViewIndices{901, 1};
-    const rhi::BufferHandle gameViewIndices{902, 1};
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, sceneViewIndices, {},
-                                      true, perView));
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, sceneViewIndices, {},
-                                      true, perView));
-    assert(linkedDevice.groupCreates == 4 && linkedDevice.bindGroups.back().buffers[1].buffer == sceneViewIndices);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, gameViewIndices, {},
-                                      true, perView));
-    assert(linkedDevice.groupCreates == 5 && linkedDevice.bindGroups.back().buffers[1].buffer == gameViewIndices);
-
-    linkedDesc.material->SetFloat("intensity", 8.0f);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(linkedDevice.writes == 0 && linkedDevice.buffers.size() == 2 && linkedDevice.groupCreates == 6 &&
-           linkedDevice.graphicsPipelineCreates == 1 && linkedTextureResolves == 2);
-    std::memcpy(&packedIntensity, linkedDevice.initialBufferBytes.back().data() + 16, sizeof(packedIntensity));
-    assert(packedIntensity == 8.0f);
-
-    linkedDesc.material->SetTextureGuid("albedo", "black");
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(linkedDevice.writes == 0 && linkedDevice.buffers.size() == 2 && linkedDevice.groupCreates == 7 &&
-           linkedDevice.graphicsPipelineCreates == 1 && linkedTextureResolves == 3);
-    (void)linkedDeletionQueue.Collect(1);
-    assert(linkedDevice.groupReleases == 2 && linkedDevice.textureReleases == 0 && linkedDevice.samplerReleases == 0);
-
-    auto linkedMaterialState = linkedDesc.material->GetRenderState();
-    linkedMaterialState.alphaClipEnabled = true;
-    linkedMaterialState.alphaClipThreshold = 0.35f;
-    linkedDesc.material->SetRenderState(linkedMaterialState);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    std::memcpy(&packedAlphaClipThreshold, linkedDevice.initialBufferBytes.back().data() + 20,
-                sizeof(packedAlphaClipThreshold));
-    assert(packedAlphaClipThreshold == 0.35f);
-
-    linkedMaterialState.alphaClipEnabled = false;
-    linkedDesc.material->SetRenderState(linkedMaterialState);
-    assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    std::memcpy(&packedAlphaClipThreshold, linkedDevice.initialBufferBytes.back().data() + 20,
-                sizeof(packedAlphaClipThreshold));
-    assert(packedAlphaClipThreshold == 0.0f);
-
-    linkedBillboard.Destroy();
-    (void)linkedDeletionQueue.Collect(1);
-    assert(linkedDevice.bufferReleases == 4 && linkedDevice.groupReleases == linkedDevice.groupCreates &&
-           linkedDevice.textureReleases == 0 && linkedDevice.samplerReleases == 0);
-
-    {
-        FakeDevice bindlessDevice;
-        bindlessDevice.bindlessEnabled = true;
-        auto bindlessArtifact = std::make_shared<ShaderProgramArtifact>(*linkedArtifact);
-        bindlessArtifact->key.revision = 9;
-        bindlessArtifact->usesBindlessTextureABI = true;
-        assert(bindlessArtifact->IsValid());
-
-        auto bindlessDesc = linkedDesc;
-        bindlessDesc.shaderProgram = bindlessArtifact;
-        bindlessDesc.material = std::make_shared<InxMaterial>("bindless-particle-material");
-        bindlessDesc.material->SetTextureGuid("albedo", "white");
-        bindlessDesc.material->SetTextureGuid("detail", "normal");
-        bindlessDesc.deletionQueue = nullptr;
-        TestTextureSlots bindlessTextureSlots;
-        bindlessDesc.textureResolver = [&bindlessDevice,
-                                        &bindlessTextureSlots](const std::string &guid, const std::string &name,
-                                                               particle::GpuParticleTextureRequest request) {
-            assert(request == particle::GpuParticleTextureRequest::Poll);
-            const uint32_t identity = name == "albedo" ? 1u : 2u;
-            const uint64_t revision = guid == "black" ? 2u : 1u;
-            return AcquireTestTexture(bindlessDevice, bindlessTextureSlots, guid, revision, {800u + identity, 1},
-                                      {850u + identity, 1});
-        };
-
-        particle::ParticleGpuBillboardRenderer bindlessBillboard;
-        assert(bindlessBillboard.Create(bindlessDevice, bindlessDesc));
-        assert(bindlessDevice.bindlessPublishes == 2 && bindlessDevice.buffers.size() == 2);
-        assert(bindlessDevice.layouts.size() == 3 && bindlessDevice.layouts[2].entryCount == 3);
-        assert(bindlessDevice.layouts[2].entries[0].binding == 2 &&
-               bindlessDevice.layouts[2].entries[0].type == rhi::BindingType::UniformBuffer &&
-               bindlessDevice.layouts[2].entries[1].binding == 14 &&
-               bindlessDevice.layouts[2].entries[2].binding == 15);
-        assert(bindlessDevice.bindGroups.size() == 3 && bindlessDevice.bindGroups[1].bufferCount == 2 &&
-               bindlessDevice.bindGroups[1].textureCount == 1);
-        assert(bindlessDevice.bindGroups[1].buffers[0].binding == 14 &&
-               bindlessDevice.bindGroups[1].buffers[1].binding == 2 &&
-               bindlessDevice.bindGroups[1].textures[0].binding == 15);
-
-        GraphicsTrace bindlessTrace;
-        const rhi::GraphicsCommandEncoder bindlessEncoder(&bindlessTrace, &graphicsDispatch);
-        assert(bindlessBillboard.RecordDraw(bindlessEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-        assert(bindlessDevice.graphicsPipelineDescs.size() == 1 &&
-               bindlessDevice.graphicsPipelineDescs[0].bindingLayoutCount == 4 &&
-               bindlessDevice.graphicsPipelineDescs[0].bindingLayouts[3] ==
-                   bindlessDevice.GetBindlessTextureTableBinding().layout);
-        assert(bindlessTrace.groupSets == std::vector<uint32_t>({0, 1, 2, 3}) &&
-               bindlessTrace.groups.back() == bindlessDevice.GetBindlessTextureTableBinding().group);
-        assert(bindlessDevice.bindlessMarks == 1 &&
-               bindlessDevice.markedBindlessResources == std::vector<rhi::ResourceIndex>({{1, 1}, {2, 1}}));
-
-        assert(bindlessBillboard.RecordDraw(bindlessEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-        assert(bindlessDevice.graphicsPipelineDescs.size() == 1);
-        const auto &particlePipeline = bindlessDevice.graphicsPipelineDescs.front();
-        assert(particlePipeline.useDynamicRendering && !particlePipeline.renderTargetLayout.IsValid());
-        assert(particlePipeline.renderingSignature.colorFormatCount == 1 &&
-               particlePipeline.renderingSignature.colorFormats[0] == rhi::PixelFormat::RGBA16SFloat &&
-               particlePipeline.renderingSignature.depthFormat == rhi::PixelFormat::D32SFloat &&
-               particlePipeline.renderingSignature.samples == rhi::SampleCount::Four);
-        assert(particlePipeline.HasValidRenderingContract());
-        assert(bindlessDevice.bindlessMarks == 2);
-
-        const uint32_t groupsBeforeTextureChange = bindlessDevice.groupCreates;
-        bindlessDesc.material->SetTextureGuid("albedo", "black");
-        assert(bindlessBillboard.RecordDraw(bindlessEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-        assert(bindlessDevice.bindlessPublishes == 3 && bindlessDevice.groupCreates == groupsBeforeTextureChange + 1 &&
-               bindlessDevice.bindlessMarks == 3 &&
-               bindlessDevice.markedBindlessResources == std::vector<rhi::ResourceIndex>({{3, 1}, {2, 1}}));
-        bindlessBillboard.Destroy();
-        bindlessTextureSlots.clear();
-    }
-
-    {
-        FakeDevice snapshotDevice;
-        snapshotDevice.bindlessEnabled = true;
-        GpuRetirementQueue retirement;
-        retirement.BindSerialSource([] { return rhi::SubmissionSerial{7}; });
-        auto artifact = std::make_shared<ShaderProgramArtifact>(*linkedArtifact);
-        artifact->usesBindlessTextureABI = true;
-        auto material = std::make_shared<InxMaterial>("surface-snapshot");
-        material->SetFloat("intensity", 2);
-        material->SetTextureGuid("albedo", "white");
-        material->SetTextureGuid("detail", "normal");
-        TestTextureSlots slots;
-        particle::ParticleGpuSurfaceBinding surface;
-        const auto resolver = [&](const std::string &guid, const std::string &name,
-                                  particle::GpuParticleTextureRequest) {
-            const uint32_t identity = name == "albedo" ? 1u : 2u;
-            return AcquireTestTexture(snapshotDevice, slots, guid, guid == "black" ? 2u : 1u, {800u + identity, 1},
-                                      {850u + identity, 1});
-        };
-        assert(surface.Create(snapshotDevice, artifact, material, {}, {}, resolver, &retirement));
-        const auto originalGroup = surface.ResolveBindGroup();
-        const auto originalViewGroup = surface.ResolveBindGroup({999, 1});
-        const auto originalBuffers = snapshotDevice.bindGroups.back().buffers;
-        const auto originalMaterialBytes = snapshotDevice.initialBufferBytes[0];
-        const auto originalIndexBytes = snapshotDevice.initialBufferBytes[1];
-        const auto unchangedAllocations = snapshotDevice.buffers.size();
-        assert(surface.RefreshMaterialBuffer(false) && surface.RefreshTextureBindings(false));
-        assert(snapshotDevice.buffers.size() == unchangedAllocations && snapshotDevice.writes == 0);
-        material->SetFloat("intensity", 9);
-        snapshotDevice.rejectNextBuffer = true;
-        assert(!surface.RefreshMaterialBuffer(false));
-        assert(surface.ResolveBindGroup() == originalGroup && surface.ResolveBindGroup({999, 1}) == originalViewGroup);
-        snapshotDevice.rejectNextGroup = true;
-        assert(!surface.RefreshMaterialBuffer(false));
-        assert(snapshotDevice.bufferReleases == 1 && retirement.GetStats().pending == 0);
-        assert(surface.ResolveBindGroup() == originalGroup && surface.ResolveBindGroup({999, 1}) == originalViewGroup);
-        assert(surface.RefreshMaterialBuffer(false));
-        const auto changedMaterialGroup = surface.ResolveBindGroup();
-        assert(changedMaterialGroup != originalGroup && surface.ResolveBindGroup({999, 1}) != originalViewGroup);
-        const auto materialView = snapshotDevice.bindGroups.back();
-        assert(materialView.buffers[0].buffer != originalBuffers[0].buffer);
-        assert(materialView.buffers[1].buffer == originalBuffers[1].buffer);
-        assert(retirement.Collect(6) == 0 && snapshotDevice.bufferReleases == 1);
-        material->SetTextureGuid("albedo", "black");
-        const auto materialAllocations = snapshotDevice.buffers.size();
-        assert(surface.RefreshMaterialBuffer(false) && snapshotDevice.buffers.size() == materialAllocations);
-        snapshotDevice.rejectNextBindlessPublication = true;
-        assert(!surface.RefreshTextureBindings(false));
-        assert(surface.ResolveBindGroup() == changedMaterialGroup);
-        snapshotDevice.rejectNextBuffer = true;
-        assert(!surface.RefreshTextureBindings(false));
-        assert(surface.ResolveBindGroup() == changedMaterialGroup);
-        assert(surface.RefreshTextureBindings(false));
-        assert(surface.ResolveBindGroup() != changedMaterialGroup);
-        (void)surface.ResolveBindGroup({999, 1});
-        const auto textureView = snapshotDevice.bindGroups.back();
-        assert(textureView.buffers[0].buffer == materialView.buffers[0].buffer);
-        assert(textureView.buffers[1].buffer != materialView.buffers[1].buffer);
-        assert(snapshotDevice.initialBufferBytes[0] == originalMaterialBytes);
-        assert(snapshotDevice.initialBufferBytes[1] == originalIndexBytes && snapshotDevice.writes == 0);
-        assert(retirement.Collect(6) == 0);
-        surface.Destroy();
-        assert(snapshotDevice.bufferReleases == 1);
-        (void)retirement.Collect(7);
-        assert(snapshotDevice.bufferReleases == snapshotDevice.buffers.size());
-        assert(snapshotDevice.groupReleases == snapshotDevice.groupCreates);
-    }
-
-    auto linkedForwardPlusArtifact = std::make_shared<ShaderProgramArtifact>(*linkedArtifact);
-    linkedForwardPlusArtifact->key.revision = 8;
-    auto linkedForwardPlusVariant = linkedForwardPlusArtifact->variants.front();
-    linkedForwardPlusVariant.target = ShaderCompileTarget::ForwardPlus;
-    linkedForwardPlusArtifact->variants.push_back(std::move(linkedForwardPlusVariant));
-    assert(linkedForwardPlusArtifact->IsValid());
-    FakeDevice linkedForwardPlusDevice;
-    auto linkedForwardPlusDesc = linkedDesc;
-    linkedForwardPlusDesc.shaderProgram = linkedForwardPlusArtifact;
-    linkedForwardPlusDesc.semantics.receiveSceneLighting = true;
-    linkedForwardPlusDesc.deletionQueue = nullptr;
-    particle::ParticleGpuBillboardRenderer linkedForwardPlusBillboard;
-    assert(linkedForwardPlusBillboard.Create(linkedForwardPlusDevice, linkedForwardPlusDesc));
-    assert(linkedForwardPlusDevice.shaderCreates == 5);
-    GraphicsTrace linkedForwardPlusTrace;
-    const rhi::GraphicsCommandEncoder linkedForwardPlusEncoder(&linkedForwardPlusTrace, &graphicsDispatch);
-    auto linkedForwardPlusPass = forwardPass;
-    linkedForwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
-    const particle::GpuParticlePerViewBindings linkedLighting{{930, 1}, {931, 1}};
-    assert(linkedForwardPlusBillboard.RecordDraw(linkedForwardPlusEncoder, linkedForwardPlusPass, indirectBuffer, view,
-                                                 {}, {}, true, linkedLighting));
-    assert(linkedForwardPlusDevice.graphicsPipelineDescs.size() == 1 &&
-           linkedForwardPlusDevice.graphicsPipelineDescs[0].bindingLayoutCount == 3 &&
-           linkedForwardPlusTrace.groupSets == std::vector<uint32_t>({0, 1, 2}));
-    linkedForwardPlusBillboard.Destroy();
-    linkedTextureSlots.clear();
-    assert(linkedDevice.textureReleases == 3 && linkedDevice.samplerReleases == 3);
-
-    {
-        FakeDevice meshDevice;
-        std::array<uint32_t, 4> meshVertexShader = {0x07230203};
-        std::array<uint32_t, 4> meshFragmentShader = {0x07230203};
-        std::array<uint32_t, 4> meshPickingShader = {0x07230203};
-        auto mesh = std::make_shared<InxMesh>("particle-triangle");
-        std::vector<Vertex> vertices(3);
-        vertices[0].pos = {-0.5f, -0.5f, 0.0f};
-        vertices[1].pos = {0.5f, -0.5f, 0.0f};
-        vertices[2].pos = {0.0f, 0.5f, 0.0f};
-        for (auto &vertex : vertices) {
-            vertex.normal = {0.0f, 0.0f, 1.0f};
-            vertex.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
-        }
-        SubMesh triangleSubMesh;
-        triangleSubMesh.indexCount = 3;
-        triangleSubMesh.vertexCount = 3;
-        mesh->SetData(std::move(vertices), {0, 1, 2}, {triangleSubMesh});
-
-        particle::GpuMeshRendererDesc meshDesc;
-        meshDesc.vertexShader = {meshVertexShader.data(), meshVertexShader.size()};
-        meshDesc.shadowFragmentShader = {meshFragmentShader.data(), meshFragmentShader.size()};
-        meshDesc.pickingFragmentShader = {meshPickingShader.data(), meshPickingShader.size()};
-        meshDesc.motionVertexShader = {meshVertexShader.data(), meshVertexShader.size()};
-        meshDesc.motionFragmentShader = {meshFragmentShader.data(), meshFragmentShader.size()};
-        meshDesc.instances = instanceBuffer;
-        meshDesc.renderIndices = renderIndexBuffer;
-        meshDesc.mesh = mesh;
-        meshDesc.meshVertices = meshDevice.CreateBuffer({3 * 5 * sizeof(glm::vec4), rhi::BufferUsageFlags::Storage});
-        meshDesc.meshIndices = meshDevice.CreateBuffer({3 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-        meshDesc.indexCount = 3;
-        meshDesc.meshBufferKeepAlive = std::make_shared<int>(1);
-        meshDesc.shaderProgram = billboardArtifact;
-        meshDesc.material = std::make_shared<InxMaterial>("particle-mesh-material");
-        meshDesc.material->SetRenderQueue(2450);
-        meshDesc.material->SetColor("base_color", glm::vec4(0.2f, 0.4f, 0.8f, 0.75f));
-        meshDesc.material->SetTextureGuid("albedo_map", "white");
-        TestTextureSlots meshTextureSlots;
-        meshDesc.textureResolver = [&meshDevice, &meshTextureSlots](const std::string &guid, const std::string &name,
-                                                                    particle::GpuParticleTextureRequest request) {
-            assert(request == particle::GpuParticleTextureRequest::Poll);
-            assert(name == "albedo_map");
-            return AcquireTestTexture(meshDevice, meshTextureSlots, guid, 1, {980, 1}, {981, 1});
-        };
-
-        particle::ParticleGpuMeshRenderer meshRenderer;
-        assert(meshRenderer.Create(meshDevice, meshDesc));
-        assert(meshRenderer.IsValid() && meshRenderer.VertexCount() == 3 && meshRenderer.RenderQueue() == 2450);
-        assert(meshRenderer.InstanceBuffer() == instanceBuffer &&
-               meshRenderer.RenderIndexBuffer() == renderIndexBuffer);
-        const auto staticMeshBuffers = meshRenderer.StaticVertexStorageBuffers();
-        assert(staticMeshBuffers.size() == 2 && staticMeshBuffers[0].buffer == meshDesc.meshVertices &&
-               staticMeshBuffers[0].byteSize == 3 * 5 * sizeof(glm::vec4) &&
-               staticMeshBuffers[1].buffer == meshDesc.meshIndices &&
-               staticMeshBuffers[1].byteSize == 3 * sizeof(uint32_t));
-        assert(meshDevice.buffers.size() == 2 && meshDevice.initialBufferBytes.size() == 2);
-        assert(meshDevice.buffers[0].usage == rhi::BufferUsageFlags::Storage &&
-               meshDevice.buffers[0].byteSize == 3 * 5 * sizeof(glm::vec4));
-        assert(meshDevice.buffers[1].usage == rhi::BufferUsageFlags::Storage &&
-               meshDevice.buffers[1].byteSize == 3 * sizeof(uint32_t));
-        assert(meshDevice.initialBufferBytes[0].empty() && meshDevice.initialBufferBytes[1].empty());
-        assert(meshDevice.layoutEntryCounts == std::vector<uint32_t>({4, 0, 2}) &&
-               meshDevice.groupBufferCounts == std::vector<uint32_t>({0, 0, 4}));
-
-        GraphicsTrace meshTrace;
-        const rhi::GraphicsCommandEncoder::Dispatch meshGraphicsDispatch = GraphicsTrace::Commands();
-        const rhi::GraphicsCommandEncoder meshEncoder(&meshTrace, &meshGraphicsDispatch);
-        assert(meshRenderer.RecordDraw(meshEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-        assert(meshTrace.indirectBuffers == std::vector<rhi::BufferHandle>({indirectBuffer}));
-        // Simulation/rendering writes instance attributes and indirect counts
-        // into GPU-resident buffers. The mesh output consumes the exact same
-        // handles; normal frames do not materialize either stream on the CPU.
-        assert(meshRenderer.InstanceBuffer() == runtime.InstanceBuffer() &&
-               meshRenderer.RenderIndexBuffer() == runtime.RenderIndexBuffer() && meshDevice.readbacks == 0u &&
-               device.readbacks == 0u);
-        assert(meshDevice.graphicsPipelineDescs.size() == 1 &&
-               meshDevice.graphicsPipelineDescs[0].raster.cullMode == rhi::CullMode::Back &&
-               meshDevice.graphicsPipelineDescs[0].raster.frontFace == rhi::FrontFace::Clockwise);
-        assert(meshTrace.constants.size() == 1 &&
-               meshTrace.constants[0].materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
-
-        const auto sortedRenderIndexBuffer =
-            meshDevice.CreateBuffer({runtime.Capacity() * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
-        assert(meshRenderer.RecordDraw(meshEncoder, forwardPass, indirectBuffer, view, sortedRenderIndexBuffer, {},
-                                       true, perView));
-        assert(meshDevice.groupBufferCounts == std::vector<uint32_t>({0, 0, 4, 4}) &&
-               meshDevice.bindGroups.back().buffers[1].buffer == sortedRenderIndexBuffer);
-        assert(meshTrace.groups.size() == 6 && meshTrace.groups[0] != meshTrace.groups[3]);
-
-        auto pickingPass = forwardPass;
-        pickingPass.target = ShaderCompileTarget::Picking;
-        pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
-        pickingPass.samples = rhi::SampleCount::One;
-        assert(meshRenderer.RecordPickingDraw(meshEncoder, pickingPass, indirectBuffer, view, 0x123456789abcdef0ull));
-        assert(meshDevice.graphicsPipelineCreates == 2 && meshTrace.indirectBuffers.size() == 3);
-        std::array<uint32_t, 4> encodedObjectId{};
-        std::memcpy(encodedObjectId.data(), meshTrace.constants.back().materialTint.data(), sizeof(encodedObjectId));
-        assert(encodedObjectId[0] == 0x9abcdef0u && encodedObjectId[1] == 0x12345678u);
-
-        meshRenderer.Destroy();
-        assert(!meshRenderer.IsValid() && meshDevice.bufferReleases == 0 && meshDevice.shaderReleases == 6 &&
-               meshDevice.layoutReleases == 3 && meshDevice.groupReleases == 4 &&
-               meshDevice.graphicsPipelineReleases == 2);
-        meshDevice.Release(sortedRenderIndexBuffer);
-
-        {
-            FakeDevice litMeshDevice;
-            auto litMeshDesc = meshDesc;
-            auto litMeshArtifact = std::make_shared<ShaderProgramArtifact>(*billboardArtifact);
-            litMeshArtifact->key.revision = 3;
-            auto meshForwardPlus = billboardForward;
-            meshForwardPlus.target = ShaderCompileTarget::ForwardPlus;
-            litMeshArtifact->variants.push_back(std::move(meshForwardPlus));
-            assert(litMeshArtifact->IsValid());
-            litMeshDesc.shaderProgram = std::move(litMeshArtifact);
-            litMeshDesc.semantics.receiveSceneLighting = true;
-            particle::ParticleGpuMeshRenderer litMeshRenderer;
-            assert(litMeshRenderer.Create(litMeshDevice, litMeshDesc));
-
-            auto forwardPlusPass = forwardPass;
-            forwardPlusPass.target = ShaderCompileTarget::ForwardPlus;
-            GraphicsTrace litMeshTrace;
-            const rhi::GraphicsCommandEncoder litMeshEncoder(&litMeshTrace, &meshGraphicsDispatch);
-            assert(!litMeshRenderer.RecordDraw(litMeshEncoder, forwardPlusPass, indirectBuffer, view));
-            const particle::GpuParticlePerViewBindings lighting{{910, 1}, {911, 1}};
-            assert(litMeshRenderer.RecordDraw(litMeshEncoder, forwardPlusPass, indirectBuffer, view, {}, {}, true,
-                                              lighting));
-            assert(litMeshDevice.graphicsPipelineDescs.size() == 1);
-            const auto &litMeshPipeline = litMeshDevice.graphicsPipelineDescs.front();
-            assert(litMeshPipeline.bindingLayoutCount == 3 && litMeshPipeline.bindingLayouts[1] == lighting.layout);
-            assert(litMeshTrace.groupSets == std::vector<uint32_t>({0, 1, 2}) &&
-                   litMeshTrace.groups[1] == lighting.group);
-            assert(litMeshTrace.constants.size() == 1 && litMeshTrace.constants[0].lightingControl[0] == 1.0f);
-            litMeshRenderer.Destroy();
-        }
-
-        auto invalidMesh = std::make_shared<InxMesh>("invalid-particle-mesh");
-        invalidMesh->SetData(std::vector<Vertex>(1), {1}, {});
-        meshDesc.mesh = invalidMesh;
-        meshDesc.indexCount = 1;
-        assert(!meshRenderer.Create(meshDevice, meshDesc));
-        meshDevice.Release(meshDesc.meshIndices);
-        meshDevice.Release(meshDesc.meshVertices);
-    }
-
-    {
-        auto registryBillboardDesc = billboardDesc;
-        registryBillboardDesc.renderIndices = renderIndexBuffer;
-        registryBillboardDesc.material->SetRenderQueue(3150);
-        auto registeredBillboard = std::make_shared<particle::ParticleGpuBillboardRenderer>();
-        assert(registeredBillboard->Create(device, registryBillboardDesc));
-        particle::ParticleGpuDrawRegistry registry;
-        const uint64_t initialRevision = registry.Revision();
-        particle::GpuParticleDrawEntry registryEntry;
-        registryEntry.id = 77;
-        registryEntry.emitterId = 701;
-        registryEntry.graphInstanceId = 702;
-        registryEntry.ownerLayerMask = 1u << 6u;
-        registryEntry.capacity = runtime.Capacity();
-        registryEntry.instances = instanceBuffer;
-        registryEntry.visibility = runtime.VisibilityBuffer();
-        registryEntry.renderIndices = renderIndexBuffer;
-        registryEntry.indirectArguments = indirectBuffer;
-        registryEntry.bounds = {999, 1};
-        registryEntry.simulationControl = runtime.SimulationControlBuffer();
-        registryEntry.renderer = registeredBillboard;
-        assert(registry.Set(std::move(registryEntry)));
-        assert(registry.Revision() == initialRevision + 1 && registry.Size() == 1);
-        const auto cachedVisibleEntries = registry.SnapshotShared(3000, 3200);
-        const auto cachedVisibleEntriesAgain = registry.SnapshotShared(3000, 3200);
-        assert(cachedVisibleEntries && cachedVisibleEntriesAgain && cachedVisibleEntries == cachedVisibleEntriesAgain &&
-               cachedVisibleEntries->size() == 1);
-        const auto visibleEntries = registry.SnapshotShared(3000, 3200);
-        assert(visibleEntries->size() == 1 && (*visibleEntries)[0].id == 77 &&
-               (*visibleEntries)[0].ownerLayerMask == 1u << 6u);
-        assert(registry.SnapshotShared(0, 2999)->empty());
-
-        // The material queue is intentionally mutable without a registry
-        // publication. The cache must observe that live routing state while
-        // still keeping the registry revision unchanged.
-        registryBillboardDesc.material->SetRenderQueue(3005);
-        const auto movedQueueEntries = registry.SnapshotShared(3000, 3200);
-        assert(movedQueueEntries && movedQueueEntries != cachedVisibleEntries && movedQueueEntries->size() == 1 &&
-               (*movedQueueEntries)[0].renderer->RenderQueue() == 3005 && registry.Revision() == initialRevision + 1);
-        registryBillboardDesc.material->SetRenderQueue(3150);
-
-        std::atomic<bool> readerFailed{false};
-        std::thread snapshotReader([&registry, &readerFailed] {
-            for (uint32_t iteration = 0; iteration < 128; ++iteration) {
-                const auto snapshot = registry.SnapshotShared(3000, 3200);
-                if (!snapshot || snapshot->size() > 1 || (!snapshot->empty() && (*snapshot)[0].id != 77))
-                    readerFailed.store(true, std::memory_order_relaxed);
-            }
-        });
-        for (uint32_t iteration = 0; iteration < 128; ++iteration) {
-            particle::GpuParticleDrawEntry replacement;
-            replacement.id = 77;
-            replacement.emitterId = 701;
-            replacement.graphInstanceId = 702;
-            replacement.ownerLayerMask = 1u << 6u;
-            replacement.capacity = runtime.Capacity();
-            replacement.instances = instanceBuffer;
-            replacement.visibility = runtime.VisibilityBuffer();
-            replacement.renderIndices = renderIndexBuffer;
-            replacement.indirectArguments = indirectBuffer;
-            replacement.bounds = {999, 1};
-            replacement.simulationControl = runtime.SimulationControlBuffer();
-            replacement.renderer = registeredBillboard;
-            assert(registry.Set(std::move(replacement)));
-        }
-        snapshotReader.join();
-        assert(!readerFailed.load(std::memory_order_relaxed));
-        assert(registry.Remove(77) && !registry.Remove(77) && registry.Size() == 0);
-    }
-    const uint32_t textureReleasesBeforeSlotsClear = device.textureReleases;
-    const uint32_t samplerReleasesBeforeSlotsClear = device.samplerReleases;
-    textureSlots.clear();
-    assert(device.textureReleases == textureReleasesBeforeSlotsClear + 2u);
-    assert(device.samplerReleases == samplerReleasesBeforeSlotsClear + 2u);
+    assert(!ribbonTopology->IsValid());
 
     const uint32_t bufferReleasesBeforeRuntimeDestroy = device.bufferReleases;
     const uint32_t pipelineReleasesBeforeRuntimeDestroy = device.pipelineReleases;

@@ -1,3 +1,4 @@
+#include "ParticleGraphicsFixtures.h"
 #include <cassert>
 #include <cstring>
 #include <function/renderer/particle/ParticleGpuSurfaceBinding.h>
@@ -96,25 +97,11 @@ int main()
             auto document = json::parse(material->Serialize());
             // A bare InxMaterial has no shader pair; the persisted document
             // requires one. Use the same authored pair as the linked artifact.
-            document["shaders"]["vertex"]["shader_id"] = "Tests/ParticleSprite";
+            document["shaders"]["vertex"]["shader_id"] = "";
             document["shaders"]["fragment"]["shader_id"] = "Tests/ParticleUnlit";
             document["properties"]["albedo_map"]["guid"] = guid;
             assert(material->DeserializeDocument(document));
-            auto artifact = std::make_shared<ShaderProgramArtifact>();
-            artifact->key = {{"Tests/ParticleSprite", "Tests/ParticleUnlit"}, 1};
-            artifact->domain = ShaderProgramDomain::ParticleSprite;
-            artifact->compatibilitySignature = 1;
-            artifact->properties = {{"albedo_map", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
-                                     std::nullopt, std::nullopt, 0, 0, 0}};
-            ShaderProgramArtifact::PassVariant pass;
-            pass.compatibilitySignature = 1;
-            pass.vertexSpirv.resize(5 * sizeof(uint32_t));
-            pass.fragmentSpirv.resize(5 * sizeof(uint32_t));
-            const uint32_t magic = 0x07230203u;
-            std::memcpy(pass.vertexSpirv.data(), &magic, sizeof(magic));
-            std::memcpy(pass.fragmentSpirv.data(), &magic, sizeof(magic));
-            artifact->variants.push_back(std::move(pass));
-            assert(artifact->IsValid());
+            const auto artifact = particle_test::Surface(true);
             auto white = MakeSlot(device, "white");
             auto real = MakeSlot(device, guid);
             auto status = mode == "already_ready"        ? particle::GpuBillboardTextureStatus::Ready
@@ -140,7 +127,8 @@ int main()
             assert(surface.Create(device, artifact, material, {}, {}, resolver, nullptr));
             auto bound = [&]() {
                 const auto &d = device.groups.at(surface.ResolveBindGroup().index);
-                assert(d.textureCount == 1 && d.textures[0].binding == 2);
+                assert(d.textureCount == 2 && d.textures[0].binding == 1 &&
+                       d.textures[1].type == rhi::BindingType::Sampler);
                 return d.textures[0].texture;
             };
             const auto before = bound();
@@ -149,7 +137,7 @@ int main()
             bool unchangedFailureIsCached = true, invalidationRetriesOnce = true;
             if (mode == "failed_then_ready") {
                 for (unsigned frame = 0; frame < 3; ++frame) {
-                    material->SetFloat("animatedIntensity", static_cast<float>(frame));
+                    material->SetVector4("color", glm::vec4(static_cast<float>(frame)));
                     assert(surface.RefreshTextureBindings(false));
                 }
                 unchangedFailureIsCached = realCalls == callsBefore;

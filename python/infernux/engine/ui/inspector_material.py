@@ -422,6 +422,11 @@ def _get_material_shader_ui_cache(state, vert_ref, frag_ref):
         "vertex_path": _shader_reference_path(vert_ref, ".vert"),
         "fragment_path": _shader_reference_path(frag_ref, ".frag"),
     }
+    from infernux.core.assets import AssetManager
+
+    metadata = (AssetManager.require_asset_database().get_meta_by_path(cache["fragment_path"])
+                if cache["fragment_path"] else None)
+    cache["fragment_domain"] = metadata.get_string("shader_domain") if metadata is not None else "mesh"
     state.extra["_material_shader_ui_cache"] = cache
     return cache
 
@@ -541,21 +546,23 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
 
         # Vertex shader
         shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
+        particle = shader_ui["fragment_domain"] == "particle"
         shader_labels = (
             layout_cache["shader_labels"]
             if isinstance(layout_cache, dict)
             else (t("material.vertex"), t("material.fragment"))
         )
-        field_label(ctx, shader_labels[0], s_lw)
-        vert_display = shader_ui["vertex_display"]
+        if not particle:
+            field_label(ctx, shader_labels[0], s_lw)
+            vert_display = shader_ui["vertex_display"]
 
-        _render_obj_field(
-            ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
-            lambda p: _apply_shader("vertex", p, "fragment"),
-            ping_path=shader_ui["vertex_path"] or None,
-            has_value=bool(shader_ui["vertex_id"]),
-            semantic_id="asset.material.shader.vertex",
-        )
+            _render_obj_field(
+                ctx, "mat_vert", vert_display, "Vert", "SHADER_FILE",
+                lambda p: _apply_shader("vertex", p, "fragment"),
+                ping_path=shader_ui["vertex_path"] or None,
+                has_value=bool(shader_ui["vertex_id"]),
+                semantic_id="asset.material.shader.vertex",
+            )
 
         # Fragment shader
         field_label(ctx, shader_labels[1], s_lw)
@@ -567,6 +574,7 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
             ping_path=shader_ui["fragment_path"] or None,
             has_value=bool(shader_ui["fragment_id"]),
             semantic_id="asset.material.shader.fragment",
+            asset_type="Shader.Particle" if particle else "Shader.Fragment",
         )
     _record_profile_timing("materialShader", section_t0)
     if is_builtin:

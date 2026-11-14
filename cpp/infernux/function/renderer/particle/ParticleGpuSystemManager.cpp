@@ -3,7 +3,7 @@
 
 #include "ParticleGpuCollisionScene.h"
 #include "ParticleGpuDrawRegistry.h"
-#include "ParticleGpuMeshRenderer.h"
+#include "ParticleGpuRenderer.h"
 
 #include <core/log/InxLog.h>
 #include <core/threading/FrameWorkOwner.h>
@@ -12,12 +12,14 @@
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 
 #include <algorithm>
@@ -344,15 +346,6 @@ struct ParticleGpuSystemManager::Impl
         std::vector<uint64_t> observedVectorFieldGenerations;
         std::vector<std::shared_ptr<InxMesh>> meshes;
         std::vector<uint64_t> observedMeshGenerations;
-        std::vector<uint32_t> billboardVertexShader;
-        std::vector<uint32_t> billboardPickingFragmentShader;
-        std::vector<uint32_t> billboardMotionVertexShader;
-        std::vector<uint32_t> billboardMotionFragmentShader;
-        std::vector<uint32_t> meshVertexShader;
-        std::vector<uint32_t> meshShadowFragmentShader;
-        std::vector<uint32_t> meshPickingFragmentShader;
-        std::vector<uint32_t> meshMotionVertexShader;
-        std::vector<uint32_t> meshMotionFragmentShader;
         std::vector<Output> outputs;
         bool hasFrameRequest = false;
         uint64_t lastFrameIndex = 0;
@@ -461,7 +454,7 @@ struct ParticleGpuSystemManager::Impl
     std::shared_ptr<const GpuParticleMigrationProgramStorage> migrationProgram;
     std::shared_ptr<const GpuParticleSpawnProgramStorage> spawnProgram;
     std::shared_ptr<const GpuParticleRibbonProgramStorage> ribbonTopologyProgram;
-    std::shared_ptr<const GpuParticleRibbonRenderProgramStorage> ribbonRenderProgram;
+    GpuParticleGraphicsPrograms graphicsPrograms;
     std::unique_ptr<StateGatherProgram> stateGatherProgram;
     std::unique_ptr<ParticleGpuCollisionScene> collisionScene;
     EmitterMap emitters;
@@ -1176,7 +1169,7 @@ struct ParticleGpuSystemManager::Impl
         upload.samplingEdgeCount = payload.samplingEdgeCount;
         // Inline simulation runs on Graphics while large systems may use Compute.
         constexpr auto queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-        const auto makeTicket = [this](size_t bytes) {
+        const auto makeTicket = [this, queueAccess](size_t bytes) {
             return resources->CreateBufferUpload(bytes, rhi::BufferUsageFlags::Storage, queueAccess);
         };
         upload.tickets[MeshUpload::Vertices] = makeTicket(payload.vertices.size() * sizeof(PackedParticleMeshVertex));
@@ -1570,74 +1563,33 @@ struct ParticleGpuSystemManager::Impl
     CreateOutputRenderer(const Emitter &emitter, const GpuParticleOutputProgram &output, bool &uploadPending,
                          std::string *error) const
     {
-        if (output.type == GpuParticleOutputType::Ribbon) {
-            if (!emitter.ribbonTopology || !ribbonRenderProgram || !ribbonRenderProgram->IsValid()) {
-                SetError(error, "GPU particle Ribbon resources are unavailable");
-                return {};
-            }
-            auto renderer = std::make_shared<ParticleGpuRibbonRenderer>();
-            GpuRibbonRendererDesc desc;
-            desc.program = ribbonRenderProgram->View();
-            desc.topology = emitter.ribbonTopology;
-            desc.shaderProgram = output.shaderProgram;
-            desc.material = output.material;
-            desc.fallbackMaterial = output.fallbackMaterial;
-            desc.semantics = output.semantics;
-            desc.uvMode = output.ribbonUvMode;
-            desc.uvScale = output.ribbonUvScale;
-            desc.textureResolver = textureResolver;
-            desc.deletionQueue = deletionQueue;
-            return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
-        }
+        GpuParticleRendererDesc desc;
+        desc.type = output.type;
+        desc.geometry = graphicsPrograms.at(static_cast<size_t>(output.type));
+        desc.surface = output.shaderProgram;
+        desc.material = output.material;
+        desc.materialState = output.fallbackMaterial;
+        desc.semantics = output.semantics;
+        desc.instances = emitter.runtime->InstanceBuffer();
+        desc.renderIndices = emitter.runtime->RenderIndexBuffer();
+        desc.flipbookColumns = output.flipbookColumns;
+        desc.flipbookRows = output.flipbookRows;
+        desc.ribbon = emitter.ribbonTopology;
+        desc.ribbonUvMode = output.ribbonUvMode;
+        desc.ribbonUvScale = output.ribbonUvScale;
+        desc.textureResolver = textureResolver;
+        desc.retirement = deletionQueue;
         if (output.type == GpuParticleOutputType::Mesh) {
-            const auto meshResources = ResolveMeshResources(output.mesh, uploadPending, error);
-            if (!meshResources)
+            const auto mesh = ResolveMeshResources(output.mesh, uploadPending, error);
+            if (!mesh)
                 return {};
-            auto renderer = std::make_shared<ParticleGpuMeshRenderer>();
-            GpuMeshRendererDesc desc;
-            desc.vertexShader = {emitter.meshVertexShader.data(), emitter.meshVertexShader.size()};
-            desc.shadowFragmentShader = {emitter.meshShadowFragmentShader.data(),
-                                         emitter.meshShadowFragmentShader.size()};
-            desc.pickingFragmentShader = {emitter.meshPickingFragmentShader.data(),
-                                          emitter.meshPickingFragmentShader.size()};
-            desc.motionVertexShader = {emitter.meshMotionVertexShader.data(), emitter.meshMotionVertexShader.size()};
-            desc.motionFragmentShader = {emitter.meshMotionFragmentShader.data(),
-                                         emitter.meshMotionFragmentShader.size()};
-            desc.instances = emitter.runtime->InstanceBuffer();
-            desc.renderIndices = emitter.runtime->RenderIndexBuffer();
-            desc.mesh = output.mesh;
-            desc.meshVertices = meshResources->vertices->GetBuffer();
-            desc.meshIndices = meshResources->indices->GetBuffer();
-            desc.indexCount = meshResources->indexCount;
-            desc.meshBufferKeepAlive = meshResources;
-            desc.shaderProgram = output.shaderProgram;
-            desc.material = output.material;
-            desc.fallbackMaterial = output.fallbackMaterial;
-            desc.semantics = output.semantics;
-            desc.textureResolver = textureResolver;
-            desc.deletionQueue = deletionQueue;
-            return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
+            desc.meshOwner = mesh;
+            desc.meshVertices = {mesh->vertices->GetBuffer(), mesh->vertices->GetByteSize()};
+            desc.meshIndices = {mesh->indices->GetBuffer(), mesh->indices->GetByteSize()};
+            desc.indexCount = mesh->indexCount;
         }
-        auto renderer = std::make_shared<ParticleGpuBillboardRenderer>();
-        GpuBillboardRendererDesc rendererDesc;
-        rendererDesc.vertexShader = {emitter.billboardVertexShader.data(), emitter.billboardVertexShader.size()};
-        rendererDesc.pickingFragmentShader = {emitter.billboardPickingFragmentShader.data(),
-                                              emitter.billboardPickingFragmentShader.size()};
-        rendererDesc.motionVertexShader = {emitter.billboardMotionVertexShader.data(),
-                                           emitter.billboardMotionVertexShader.size()};
-        rendererDesc.motionFragmentShader = {emitter.billboardMotionFragmentShader.data(),
-                                             emitter.billboardMotionFragmentShader.size()};
-        rendererDesc.shaderProgram = output.shaderProgram;
-        rendererDesc.instances = emitter.runtime->InstanceBuffer();
-        rendererDesc.renderIndices = emitter.runtime->RenderIndexBuffer();
-        rendererDesc.material = output.material;
-        rendererDesc.fallbackMaterial = output.fallbackMaterial;
-        rendererDesc.semantics = output.semantics;
-        rendererDesc.flipbookColumns = output.flipbookColumns;
-        rendererDesc.flipbookRows = output.flipbookRows;
-        rendererDesc.textureResolver = textureResolver;
-        rendererDesc.deletionQueue = deletionQueue;
-        return renderer->Create(context->GetRhiDevice(), rendererDesc) ? renderer : nullptr;
+        auto renderer = std::make_shared<ParticleGpuRenderer>();
+        return renderer->Create(context->GetRhiDevice(), desc) ? renderer : nullptr;
     }
 
     [[nodiscard]] bool PreflightEmitterProgram(const GpuParticleEmitterProgram &program,
@@ -1687,21 +1639,11 @@ struct ParticleGpuSystemManager::Impl
             return false;
         }
 
-        const bool needsMesh = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
-            return output.type == GpuParticleOutputType::Mesh;
-        });
         const bool needsRibbon = std::any_of(program.outputs.begin(), program.outputs.end(), [](const auto &output) {
             return output.type == GpuParticleOutputType::Ribbon;
         });
-        if (needsMesh && (!IsSpirv(program.meshVertexShader) || !IsSpirv(program.meshShadowFragmentShader) ||
-                          !IsSpirv(program.meshPickingFragmentShader) || !IsSpirv(program.meshMotionVertexShader) ||
-                          !IsSpirv(program.meshMotionFragmentShader))) {
-            SetError(error, "GPU particle program contains invalid mesh output SPIR-V");
-            return false;
-        }
-        if (needsRibbon && (!ribbonTopologyProgram || !ribbonTopologyProgram->IsValid() || !ribbonRenderProgram ||
-                            !ribbonRenderProgram->IsValid())) {
-            SetError(error, "GPU particle Ribbon topology or render shaders are unavailable");
+        if (needsRibbon && (!ribbonTopologyProgram || !ribbonTopologyProgram->IsValid())) {
+            SetError(error, "GPU particle Ribbon topology is unavailable");
             return false;
         }
 
@@ -1715,13 +1657,11 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle output identity must be valid and unique per emitter");
                 return false;
             }
-            if (!output.shaderProgram || !output.shaderProgram->IsValid() ||
+            if (static_cast<size_t>(output.type) >= graphicsPrograms.size() ||
+                !graphicsPrograms[static_cast<size_t>(output.type)] || !output.shaderProgram ||
+                !output.shaderProgram->IsValid() || !output.shaderProgram->compilation ||
                 output.shaderProgram->domain != ShaderProgramDomain::ParticleSprite) {
-                SetError(error, "GPU particle surface outputs require a valid linked ParticleSprite shader");
-                return false;
-            }
-            if (output.semantics.castShadows && output.type != GpuParticleOutputType::Mesh) {
-                SetError(error, "only static mesh particle outputs can cast shadows");
+                SetError(error, "GPU particle outputs require prepared geometry and a compiled particle material");
                 return false;
             }
             if (!output.semantics.IsValid()) {
@@ -1735,16 +1675,14 @@ struct ParticleGpuSystemManager::Impl
                                     "Lighting is enabled");
                 return false;
             }
-            if (output.type == GpuParticleOutputType::Mesh && (!output.mesh || output.semantics.softParticles)) {
-                SetError(error, "GPU particle mesh output '" + output.stableId +
-                                    "' requires a loaded mesh and currently does not support soft fading");
+            if (output.type == GpuParticleOutputType::Mesh && !output.mesh) {
+                SetError(error, "GPU particle mesh output '" + output.stableId + "' requires a loaded mesh");
                 return false;
             }
             if (output.type == GpuParticleOutputType::Ribbon &&
-                (output.semantics.castShadows || !std::isfinite(output.ribbonUvScale) ||
-                 output.ribbonUvScale <= 0.0f)) {
-                SetError(error, "GPU particle Ribbon output '" + output.stableId +
-                                    "' cannot cast shadows and requires a positive finite UV scale");
+                (!std::isfinite(output.ribbonUvScale) || output.ribbonUvScale <= 0.0f)) {
+                SetError(error,
+                         "GPU particle Ribbon output '" + output.stableId + "' requires a positive finite UV scale");
                 return false;
             }
             if (output.type != GpuParticleOutputType::Ribbon && output.semantics.sortMode != ParticleSortMode::None &&
@@ -1782,15 +1720,6 @@ struct ParticleGpuSystemManager::Impl
         emitter->artifactRevision = program.artifactRevision;
         emitter->stableId = program.stableId;
         emitter->statePreservedOnPublish = program.preserveState;
-        emitter->billboardVertexShader = program.billboardVertexShader;
-        emitter->billboardPickingFragmentShader = program.billboardPickingFragmentShader;
-        emitter->billboardMotionVertexShader = program.billboardMotionVertexShader;
-        emitter->billboardMotionFragmentShader = program.billboardMotionFragmentShader;
-        emitter->meshVertexShader = program.meshVertexShader;
-        emitter->meshShadowFragmentShader = program.meshShadowFragmentShader;
-        emitter->meshPickingFragmentShader = program.meshPickingFragmentShader;
-        emitter->meshMotionVertexShader = program.meshMotionVertexShader;
-        emitter->meshMotionFragmentShader = program.meshMotionFragmentShader;
         emitter->runtime = std::make_unique<ParticleGpuRuntime>();
 
         GpuEmitterDesc runtimeDesc;
@@ -2314,16 +2243,15 @@ bool ParticleGpuSystemManager::Initialize(
     GpuParticleSkinnedMeshResolver skinnedMeshResolver, const GpuParticleSortProgram &sortProgram,
     const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
     const GpuParticleMigrationProgram &migrationProgram, const GpuParticleSpawnProgram &spawnProgram,
-    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram,
-    CompiledParticleShader stateGatherShader)
+    const GpuParticleRibbonProgram &ribbonTopologyProgram, CompiledParticleShader stateGatherShader,
+    const GpuParticleGraphicsPrograms &graphicsPrograms)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
-        !spawnProgram.IsValid() || ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid()) {
+        !spawnProgram.IsValid()) {
         INXLOG_ERROR("ParticleGpuSystemManager initialization contract rejected: impl=", m_impl != nullptr,
                      " already_initialized=", m_impl && m_impl->context != nullptr, " context=", context.IsValid(),
                      " bounds=", boundsProgram.IsValid(), " migration=", migrationProgram.IsValid(),
-                     " spawn=", spawnProgram.IsValid(), " ribbon_topology=", ribbonTopologyProgram.IsValid(),
-                     " ribbon_render=", ribbonRenderProgram.IsValid());
+                     " spawn=", spawnProgram.IsValid());
         return false;
     }
     m_impl->context = &context;
@@ -2334,6 +2262,7 @@ bool ParticleGpuSystemManager::Initialize(
     m_impl->textureResolver = std::move(textureResolver);
     m_impl->vectorFieldTextureResolver = std::move(vectorFieldTextureResolver);
     m_impl->skinnedMeshResolver = std::move(skinnedMeshResolver);
+    m_impl->graphicsPrograms = graphicsPrograms;
     m_impl->collisionScene = std::make_unique<ParticleGpuCollisionScene>();
     if (!m_impl->collisionScene->Create(context.GetRhiDevice(), ParticleGpuCollisionScene::DefaultCapacity)) {
         INXLOG_ERROR("ParticleGpuSystemManager failed to create the collision scene");
@@ -2366,15 +2295,12 @@ bool ParticleGpuSystemManager::Initialize(
     }
     if (ribbonTopologyProgram.IsValid()) {
         auto ribbonTopologyStorage = std::make_shared<GpuParticleRibbonProgramStorage>();
-        auto ribbonRenderStorage = std::make_shared<GpuParticleRibbonRenderProgramStorage>();
-        if (!ribbonTopologyStorage->Assign(ribbonTopologyProgram) ||
-            !ribbonRenderStorage->Assign(ribbonRenderProgram)) {
+        if (!ribbonTopologyStorage->Assign(ribbonTopologyProgram)) {
             INXLOG_ERROR("ParticleGpuSystemManager failed to retain the ribbon programs");
             Shutdown();
             return false;
         }
         m_impl->ribbonTopologyProgram = std::move(ribbonTopologyStorage);
-        m_impl->ribbonRenderProgram = std::move(ribbonRenderStorage);
     }
     if (cullProgram.IsValid()) {
         auto storage = std::make_shared<GpuParticleCullProgramStorage>();
@@ -2436,7 +2362,7 @@ void ParticleGpuSystemManager::Shutdown() noexcept
     m_impl->migrationProgram.reset();
     m_impl->spawnProgram.reset();
     m_impl->ribbonTopologyProgram.reset();
-    m_impl->ribbonRenderProgram.reset();
+    m_impl->graphicsPrograms = {};
     m_impl->stateGatherProgram.reset();
     m_impl->deletionQueue = nullptr;
     m_impl->pipelines = nullptr;

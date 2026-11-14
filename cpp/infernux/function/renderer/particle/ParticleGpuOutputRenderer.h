@@ -2,41 +2,49 @@
 
 #include <function/renderer/MaterialPassPipeline.h>
 #include <function/renderer/rhi/RhiCommand.h>
+#include <function/renderer/shader/ShaderViewBindings.h>
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
+
+namespace infernux
+{
+struct ShaderCompilation;
+}
 
 namespace infernux::particle
 {
 
+using GpuParticleGraphicsPrograms = std::array<std::shared_ptr<const ShaderCompilation>, 3>;
+
+enum class GpuParticleOutputType : uint8_t
+{
+    Sprite,
+    Mesh,
+    Ribbon,
+};
+
+enum class ParticleRibbonUvMode : uint8_t
+{
+    Stretch,
+    Repeat,
+};
+
+/// Only per-draw values. Matrices and shadow parameters belong to the shared
+/// camera/light binding, including picking, motion and depth passes.
 struct alignas(16) GpuParticleViewConstants
 {
-    std::array<float, 16> viewProjection{};
-    std::array<float, 16> previousViewProjection{};
-    // During a shadow pass these hold the current view's light vector and
-    // bias data. Surface and picking passes keep their camera-space meaning.
     std::array<float, 4> cameraRight{};
     std::array<float, 4> cameraUp{};
-    std::array<float, 4> materialTint{1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<uint32_t, 4> objectData{};
     std::array<float, 4> depthReconstruct{};
     std::array<float, 4> lightingControl{};
-    // y is set when the vertex shader is recording a shadow caster pass.
     std::array<float, 4> renderingControl{};
     // xyz is the camera position or an authored world axis; w selects the
     // Sprite Output alignment mode.
     std::array<float, 4> alignmentReference{};
-};
-
-struct GpuParticlePerViewBindings
-{
-    rhi::BindingLayoutHandle layout;
-    rhi::BindGroupHandle group;
-
-    [[nodiscard]] bool IsValid() const noexcept
-    {
-        return layout.IsValid() && group.IsValid();
-    }
 };
 
 struct GpuParticleStaticBuffer
@@ -63,6 +71,7 @@ class ParticleGpuOutputRenderer
     // A view owns its cull/sort indices. Remove its cached geometry binding when
     // those indices retire; Device::Release keeps submitted descriptor leases alive.
     virtual void ReleaseViewBinding(rhi::BufferHandle renderIndices) noexcept = 0;
+    virtual void ReleaseView(rhi::BufferHandle globals) noexcept = 0;
     [[nodiscard]] virtual size_t ViewBindingCount() const noexcept = 0;
     [[nodiscard]] virtual const std::vector<GpuParticleStaticBuffer> &StaticVertexStorageBuffers() const noexcept
     {
@@ -73,16 +82,14 @@ class ParticleGpuOutputRenderer
     [[nodiscard]] virtual bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                           const MaterialPassPipelineDescriptor &pass,
                                           rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
-                                          rhi::BufferHandle renderIndices = {}, rhi::TextureViewHandle sceneDepth = {},
-                                          bool sceneDepthIsDepth = true,
-                                          const GpuParticlePerViewBindings &perView = {}) = 0;
-    [[nodiscard]] virtual bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                                 const MaterialPassPipelineDescriptor &pass,
-                                                 rhi::BufferHandle indirectArguments,
-                                                 const GpuParticleViewConstants &view, uint64_t ownerObjectId,
-                                                 rhi::BufferHandle renderIndices = {}) = 0;
+                                          const ShaderViewBindings &perView, rhi::BufferHandle renderIndices = {},
+                                          rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true) = 0;
+    [[nodiscard]] virtual bool
+    RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder, const MaterialPassPipelineDescriptor &pass,
+                      rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view, uint64_t ownerObjectId,
+                      const ShaderViewBindings &perView, rhi::BufferHandle renderIndices = {}) = 0;
 };
 
-static_assert(sizeof(GpuParticleViewConstants) == 240);
+static_assert(sizeof(GpuParticleViewConstants) == 112);
 
 } // namespace infernux::particle

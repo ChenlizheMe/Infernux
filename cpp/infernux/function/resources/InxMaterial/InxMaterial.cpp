@@ -1574,7 +1574,14 @@ ShaderAssetReference InxMaterial::ResolveShaderReference(ShaderAssetReference re
 void InxMaterial::SetShader(const std::string &name)
 {
     auto fragment = ResolveShaderReference({"", name, ""}, "fragment");
-    const ShaderAssetReference vertex{"", fragment.guid.empty() ? name : infernux::kStandardVertexShaderId, ""};
+    ShaderAssetReference vertex{"", fragment.guid.empty() ? name : infernux::kStandardVertexShaderId, ""};
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+    if (!fragment.guid.empty()) {
+        const auto metadata = AssetRegistry::Instance().GetAssetDatabase()->GetMetaByGuid(fragment.guid);
+        if (metadata->GetDataAs<std::string>("shader_domain") != "mesh")
+            vertex = {};
+    }
+#endif
     if (m_vertexShader == vertex && m_fragmentShader == fragment)
         return;
     const bool switched =
@@ -1613,8 +1620,12 @@ void InxMaterial::PrepareShaderDefaults()
                                 : registry.LoadAsset<ShaderAsset>(m_vertexShader.guid, ResourceType::Shader);
         const auto prepared =
             ShaderLoader::PrepareMaterialProgram(shader, vertex, GetShaderStages(), registry.GetAssetDatabase());
-        if (prepared->program)
+        if (prepared->program) {
             SynchronizeShaderPropertyDefaults(*prepared->program);
+            const auto &meta = shader->renderMeta;
+            ApplyShaderRenderMeta(meta.cullMode, meta.depthWrite, meta.depthTest, meta.blend, meta.queue, meta.passTag,
+                                  meta.stencil, meta.alphaClip);
+        }
     }
 #endif
 }
@@ -1960,26 +1971,9 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLineMaterial()
 std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleSpriteMaterial");
-    material->SetVertShader("infernux/particle/vertex");
+    material->SetVertShaderReference({});
     material->SetFragShader("infernux/particle/unlit");
-
-    RenderState state;
-    state.cullMode = MaterialCullMode::None;
-    state.frontFace = MaterialFrontFace::Clockwise;
-    state.depthTestEnable = true;
-    state.depthWriteEnable = false;
-    state.blendEnable = true;
-    state.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
-    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
-    state.colorBlendOp = MaterialBlendOp::Add;
-    state.srcAlphaBlendFactor = MaterialBlendFactor::One;
-    state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
-    state.alphaBlendOp = MaterialBlendOp::Add;
-    state.renderQueue = 3000;
-    material->SetRenderState(state);
-    material->SetColor("base_color", glm::vec4(1.0f));
-    material->SetTextureGuid("albedo_map", "white");
-    material->SetFloat("softness", 0.18f);
+    material->PrepareShaderDefaults();
     material->SetBuiltin(true);
     return material;
 }
@@ -1987,41 +1981,9 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSixWaySmokeMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleSixWaySmokeMaterial");
-    material->SetVertShader("infernux/particle/vertex");
+    material->SetVertShaderReference({});
     material->SetFragShader("infernux/particle/six_way_smoke");
-
-    RenderState state;
-    state.cullMode = MaterialCullMode::None;
-    state.frontFace = MaterialFrontFace::Clockwise;
-    state.depthTestEnable = true;
-    state.depthWriteEnable = false;
-    state.blendEnable = true;
-    state.srcColorBlendFactor = MaterialBlendFactor::One;
-    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
-    state.colorBlendOp = MaterialBlendOp::Add;
-    state.srcAlphaBlendFactor = MaterialBlendFactor::One;
-    state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
-    state.alphaBlendOp = MaterialBlendOp::Add;
-    state.renderQueue = 3000;
-    material->SetRenderState(state);
-
-    material->SetColor("base_color", glm::vec4(0.66f, 0.66f, 0.66f, 1.0f));
-    material->SetColor("emission_color", glm::vec4(1.0f, 0.28f, 0.04f, 1.0f));
-    material->SetFloat("lightingIntensity", 1.0f);
-    material->SetFloat("ambientIntensity", 0.0f);
-    material->SetFloat("ambientSaturation", 0.0f);
-    material->SetFloat("emissionIntensity", 0.0f);
-    material->SetFloat("absorption", 0.5f);
-    material->SetFloat("alphaScale", 1.0f);
-    material->SetFloat("flipbookColumns", 1.0f);
-    material->SetFloat("flipbookRows", 1.0f);
-    material->SetFloat("flipbookFrameJitter", 0.0f);
-    material->SetFloat("flipbookFrameOffset", 0.0f);
-    material->SetFloat("fadeInFraction", 0.08f);
-    material->SetFloat("fadeOutStart", 0.68f);
-    material->SetFloat("densityClipThreshold", 0.025f);
-    material->SetTextureGuid("positiveAxesMap", "white");
-    material->SetTextureGuid("negativeAxesMap", "black");
+    material->PrepareShaderDefaults();
     material->SetBuiltin(true);
     return material;
 }

@@ -1793,7 +1793,7 @@ void InxVkCoreModular::DrawSceneFiltered(
 // ============================================================================
 
 void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, int queueMin,
-                                         int queueMax, ShadowCameraResourceId resourceId, VkBuffer viewGlobalsBuffer,
+                                         int queueMax, ShadowCameraResourceId resourceId, rhi::BufferHandle viewGlobals,
                                          const lighting::ShadowFrame &shadowFrame, int lightIndex, VkFormat depthFormat,
                                          const ShadowViewDrawCallback &additionalDraws)
 {
@@ -1830,6 +1830,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
     const uint32_t frameIndex = m_currentFrame % m_maxFramesInFlight;
 
     auto &stream = cameraResources.streamFrames[frameIndex];
+    const VkBuffer viewGlobalsBuffer = m_backend.Device().GetRhiDevice().Resolve(viewGlobals);
     if (stream.globalsBuffer != viewGlobalsBuffer) {
         stream.globalsBuffer = viewGlobalsBuffer;
         UpdateShadowCameraStreamDescriptor(stream);
@@ -2324,7 +2325,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         const uint32_t visibleCount = static_cast<uint32_t>(visibleIndices->size());
         if (visibleCount == 0) {
             if (additionalDraws) {
-                additionalDraws(viewIndex, shadowView);
+                additionalDraws(viewIndex, shadowView,
+                                {cameraResources.bindingLayout, cameraResources.bindGroups[descIdx], viewGlobals});
                 lastBoundPipeline = VK_NULL_HANDLE;
             }
             continue;
@@ -2501,7 +2503,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         emitShadowBatch();
 
         if (additionalDraws) {
-            additionalDraws(viewIndex, shadowView);
+            additionalDraws(viewIndex, shadowView,
+                            {cameraResources.bindingLayout, cameraResources.bindGroups[descIdx], viewGlobals});
             // The callback owns its RHI pipeline state. Geometry must bind its
             // pipeline again before recording the next cascade.
             lastBoundPipeline = VK_NULL_HANDLE;
@@ -2544,12 +2547,18 @@ void InxVkCoreModular::DestroyShadowCameraResources(ShadowCameraResources &resou
     resources.mappedPointers.clear();
     resources.descriptorSets.clear();
     if (device != VK_NULL_HANDLE) {
-        auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+        auto &rhiDevice = m_backend.Device().GetRhiDevice();
+        for (const auto group : resources.bindGroups)
+            rhiDevice.Release(group);
+        rhiDevice.Release(resources.bindingLayout);
+        auto &descriptorManager = rhiDevice.GetDescriptorManager();
         for (const auto &lease : resources.descriptorLeases)
             descriptorManager.Retire(lease);
         for (const auto &lease : resources.streamDescriptorLeases)
             descriptorManager.Retire(lease);
     }
+    resources.bindGroups.clear();
+    resources.bindingLayout = {};
     resources.descriptorLeases.clear();
     resources.streamDescriptorLeases.clear();
     resources.staticSubmissionCache = {};
@@ -2585,7 +2594,10 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
         return true;
 
     const uint32_t totalSets = m_maxFramesInFlight * lighting::MaxShadowViews;
-    auto &descriptorManager = m_backend.Device().GetRhiDevice().GetDescriptorManager();
+    auto &rhiDevice = m_backend.Device().GetRhiDevice();
+    auto &descriptorManager = rhiDevice.GetDescriptorManager();
+    resources.bindingLayout = rhiDevice.RegisterBindingLayout(m_perViewDescSetLayout);
+    resources.bindGroups.reserve(totalSets);
     resources.descriptorSets.resize(totalSets, VK_NULL_HANDLE);
     resources.descriptorLeases.reserve(totalSets);
     for (uint32_t index = 0; index < totalSets; ++index) {
@@ -2596,6 +2608,7 @@ bool InxVkCoreModular::EnsureShadowCameraResources(ShadowCameraResourceId resour
             return false;
         }
         resources.descriptorSets[index] = lease.set;
+        resources.bindGroups.push_back(rhiDevice.RegisterBindGroup(lease.set));
         resources.descriptorLeases.push_back(lease);
     }
 
