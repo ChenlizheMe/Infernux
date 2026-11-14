@@ -378,9 +378,9 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
     const auto &captured = *prepared.snapshot;
     std::unordered_map<PhysicsActorHandle, std::shared_ptr<const JoltGpuScene::PublishedActor>, ActorHandleHash>
         actorByHandle;
-    actorByHandle.reserve(publication.actors.size());
+    actorByHandle.reserve(publication.bodyCount);
     for (uint32_t local = 0; local < publication.bodyCount; ++local) {
-        const auto &actor = publication.actors[publication.bodyBase + local];
+        const auto &actor = publication.directory->actors[publication.bodyBase + local];
         if (actor)
             actorByHandle.emplace(actor->actor, actor);
     }

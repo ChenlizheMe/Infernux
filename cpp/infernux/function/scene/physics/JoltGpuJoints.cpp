@@ -173,8 +173,8 @@ struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
     JointStatusExecution(rhi::ComputeHost source, std::shared_ptr<rhi::ComputeKernel> program,
                          std::vector<uint8_t> bindings, std::shared_ptr<const JoltGpuScene::Publication> value)
         : host(std::move(source)), kernel(std::move(program)), ports(std::move(bindings)),
-          publication(std::move(value)), count(static_cast<uint32_t>(publication->joints.size())), inputCount(count),
-          motion(Allocate(host, ScratchBytes(count)))
+          publication(std::move(value)), count(static_cast<uint32_t>(publication->GetJoints().size())),
+          inputCount(count), motion(Allocate(host, ScratchBytes(count)))
     {
     }
 
@@ -238,8 +238,8 @@ struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
                         throw std::runtime_error("Jolt GPU joint publication returned a malformed numerical status");
                     if (value.x != JointStatusSuccess)
                         throw std::runtime_error("Jolt GPU joint numerical failure blocks publication at joint " +
-                                                 std::to_string(self->publication->joints[value.y].id) + " (status " +
-                                                 std::to_string(value.x) + ")");
+                                                 std::to_string(self->publication->GetJoints()[value.y].id) +
+                                                 " (status " + std::to_string(value.x) + ")");
                     return {};
                 }};
     }
@@ -478,7 +478,7 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
     if (rows.empty())
         return {std::move(result), {}};
     const auto &source = *result->publication;
-    ValidateFrozen(m_host, source.jointStream, StreamBytes(source.joints.size()),
+    ValidateFrozen(m_host, source.jointStream, StreamBytes(source.GetJoints().size()),
                    "Jolt GPU joint motion stream differs from its retained catalog");
     ValidateFrozen(m_host, source.bodyStates, uint64_t(source.bodyCount) * sizeof(BodyState),
                    "Jolt GPU joint motion body states differ from their retained catalog");
@@ -487,9 +487,9 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         throw JoltGpuQueryRequestError("Jolt GPU joint motion requires its retained world ranges");
     const uint64_t worldCount = source.worlds->GetByteSize() / sizeof(WorldRange);
     for (const auto row : rows) {
-        if (row >= source.joints.size())
+        if (row >= source.GetJoints().size())
             throw JoltGpuQueryRequestError("Jolt GPU joint motion row is absent from its retained catalog");
-        const auto &joint = source.joints[row];
+        const auto &joint = source.GetJoints()[row];
         if (joint.row != row || joint.kind != JointHinge || joint.author.bodies.z != JointHinge || !joint.id ||
             !(joint.author.bodies.w & JointEnabled) || joint.author.identity.x != static_cast<uint32_t>(joint.id) ||
             joint.author.identity.y != static_cast<uint32_t>(joint.id >> 32) ||
@@ -498,9 +498,9 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
             throw JoltGpuQueryRequestError("Jolt GPU joint motion identity differs from its retained catalog");
         const auto endpoint = [&](uint32_t slot, uint32_t id) {
             return slot >= source.bodyBase && slot - source.bodyBase < source.bodyCount &&
-                   slot < source.actors.size() && source.actors[slot] && source.actors[slot]->slot == slot &&
-                   source.actors[slot]->bodyId == id && slot < source.residentBodies.size() &&
-                   source.residentBodies[slot];
+                   slot < source.directory->actors.size() && source.directory->actors[slot] &&
+                   source.directory->actors[slot]->slot == slot && source.directory->actors[slot]->bodyId == id &&
+                   slot < source.directory->residentBodies.size() && source.directory->residentBodies[slot];
         };
         if (!endpoint(joint.author.bodies.y, joint.bodyIdA) ||
             (joint.author.bodies.x == InvalidQueryBodySlot ? joint.bodyIdB != JoltGpuScene::InvalidBodyId
@@ -548,9 +548,9 @@ JoltGpuControlWork JoltGpuJoints::PrepareStatus(std::shared_ptr<const JoltGpuSce
 {
     if (!publication)
         throw std::runtime_error("Jolt GPU joint status requires its final publication identity");
-    if (publication->joints.empty())
+    if (publication->GetJoints().empty())
         return {};
-    const auto streamBytes = StreamBytes(publication->joints.size());
+    const auto streamBytes = StreamBytes(publication->GetJoints().size());
     const auto &stream = publication->jointStream;
     if (!stream || !stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
         stream->GetByteSize() != streamBytes)

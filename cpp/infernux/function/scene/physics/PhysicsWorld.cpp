@@ -87,10 +87,10 @@ JoltGpuControlWork PrepareQueryWork(std::function<JoltGpuControlWork()> prepare,
 }
 PhysicsBodyMotionState DecodeMotion(const JoltGpuScene::Publication &publication, const QueryMotionState &record)
 {
-    if (record.meta.x >= publication.actors.size() || !publication.actors[record.meta.x] ||
-        publication.actors[record.meta.x]->bodyId != record.meta.z)
+    if (record.meta.x >= publication.directory->actors.size() || !publication.directory->actors[record.meta.x] ||
+        publication.directory->actors[record.meta.x]->bodyId != record.meta.z)
         throw std::runtime_error("GPU motion state differs from its retained body identity");
-    const auto &actor = *publication.actors[record.meta.x];
+    const auto &actor = *publication.directory->actors[record.meta.x];
     PhysicsBodyMotionState result;
     result.bodyId = actor.bodyId;
     result.shapeRevision = actor.shapeRevision;
@@ -989,7 +989,7 @@ PhysicsWorld::RunQuery(PhysicsDomain &domain, const std::vector<QueryInput> &req
                     sweepInputs = requests;
                     // Only this accepted publication can name the source slot.
                     // An unregistered Collider still excludes its GameObject.
-                    for (const auto &actor : publication->actors) {
+                    for (const auto &actor : publication->directory->actors) {
                         if (!actor || !std::any_of(actor->leaves.begin(), actor->leaves.end(), [&](const auto &leaf) {
                                 return leaf.colliderId == sweepColliderId;
                             }))
@@ -1057,11 +1057,11 @@ RaycastHit PhysicsWorld::DecodeQueryHit(const JoltGpuQueryResult &result, const 
     if (!record.meta.y)
         return hit;
     const auto &publication = *result.publication;
-    if (record.meta.x >= publication.actors.size() || !publication.actors[record.meta.x] ||
-        record.meta.z >= publication.leaves.size())
+    if (record.meta.x >= publication.directory->actors.size() || !publication.directory->actors[record.meta.x] ||
+        record.meta.z >= publication.directory->leaves.size())
         throw std::runtime_error("GPU query address is absent from its retained publication");
-    const auto &identity = *publication.actors[record.meta.x];
-    const auto &address = publication.leaves[record.meta.z];
+    const auto &identity = *publication.directory->actors[record.meta.x];
+    const auto &address = publication.directory->leaves[record.meta.z];
     if (address.bodySlot != record.meta.x || address.actorLeaf >= identity.leaves.size())
         throw std::runtime_error("GPU query leaf belongs to a different published actor");
     const auto &leaf = identity.leaves[address.actorLeaf];
@@ -1451,10 +1451,10 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
                 if (!body || !body->IsEnabled() || body->IsDestroyed() || !body->GetGameObject())
                     throw JoltGpuQueryRequestError("Physics batch requires live enabled Rigidbody components");
                 const auto allocation = m_gpuScene->FindBody(body->GetBodyId());
-                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
-                    !publication->actors[allocation.slot])
+                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->directory->actors.size() ||
+                    !publication->directory->actors[allocation.slot])
                     throw JoltGpuQueryRequestError("Physics batch requires accepted body identities");
-                const auto &identity = *publication->actors[allocation.slot];
+                const auto &identity = *publication->directory->actors[allocation.slot];
                 if (identity.bodyId != allocation.bodyId || identity.rigidbodyComponentId != body->GetComponentID() ||
                     identity.rigidbody != body->GetECSHandle())
                     throw JoltGpuQueryRequestError("Physics batch Rigidbody differs from its retained publication");
@@ -1547,10 +1547,11 @@ void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbody
             for (size_t input = 0; input < spans.size(); ++input)
                 for (uint32_t local = 0; local < spans[input].range.y; ++local) {
                     const auto &record = records[spans[input].range.x + local];
-                    const auto &address = shapes->publication->leaves.at(record.meta.z);
+                    const auto &address = shapes->publication->directory->leaves.at(record.meta.z);
                     if (address.bodySlot != record.meta.x)
                         throw std::runtime_error("GPU box batch differs from its published leaf owner");
-                    const auto &leaf = shapes->publication->actors.at(record.meta.x)->leaves.at(address.actorLeaf);
+                    const auto &leaf =
+                        shapes->publication->directory->actors.at(record.meta.x)->leaves.at(address.actorLeaf);
                     PhysicsBoxShapeState box;
                     box.memberIndex = leaf.memberIndex;
                     box.center = Vector(record.center);
@@ -1712,7 +1713,7 @@ PhysicsWorld::GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm:
                     std::vector<Rigidbody *> bodies;
                     auto &store = PhysicsECSStore::Instance();
                     for (const auto &record : bounds->ReadHits()) {
-                        const auto &identity = *publication->actors.at(record.meta.x);
+                        const auto &identity = *publication->directory->actors.at(record.meta.x);
                         if (!store.IsValid(identity.rigidbody))
                             throw JoltGpuQueryRequestError("Bounds result Rigidbody no longer exists");
                         bodies.push_back(store.GetRigidbody(identity.rigidbody).owner);
@@ -1749,10 +1750,11 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
         return PrepareQueryWork(
             [&]() -> JoltGpuControlWork {
                 const auto allocation = m_gpuScene->FindBody(id);
-                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
-                    !publication->actors[allocation.slot] || publication->actors[allocation.slot]->bodyId != id)
+                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->directory->actors.size() ||
+                    !publication->directory->actors[allocation.slot] ||
+                    publication->directory->actors[allocation.slot]->bodyId != id)
                     throw JoltGpuQueryRequestError("Physics state requires an accepted live body");
-                const auto &identity = *publication->actors[allocation.slot];
+                const auto &identity = *publication->directory->actors[allocation.slot];
                 result.bodyId = id;
                 result.shapeRevision = identity.shapeRevision;
                 if ((static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) == 0)
@@ -1893,7 +1895,7 @@ Collider *PhysicsWorld::FindColliderByBodyId(uint32_t id) const
     auto &domain = DomainForBody(id);
     if (!m_gpuScene->GetPublished(domain.owner))
         return nullptr;
-    for (const auto &actor : m_gpuScene->GetPublished(domain.owner)->actors)
+    for (const auto &actor : m_gpuScene->GetPublished(domain.owner)->directory->actors)
         if (actor && actor->bodyId == id)
             for (const auto &leaf : actor->leaves)
                 if (auto *collider = leaf.surfaceTarget.GetCollider())
@@ -1907,7 +1909,7 @@ Collider *PhysicsWorld::ResolveColliderForSubShape(uint32_t id, uint32_t subShap
     auto &domain = DomainForBody(id);
     if (!m_gpuScene->GetPublished(domain.owner))
         return nullptr;
-    for (const auto &actor : m_gpuScene->GetPublished(domain.owner)->actors)
+    for (const auto &actor : m_gpuScene->GetPublished(domain.owner)->directory->actors)
         if (actor && actor->bodyId == id)
             for (const auto &leaf : actor->leaves) {
                 const auto prefixMask = leaf.subShapeBits == 32 ? UINT32_MAX : (uint32_t(1) << leaf.subShapeBits) - 1;
@@ -1983,7 +1985,7 @@ bool PhysicsWorld::IsBodySensor(uint32_t id) const
     const auto body = m_gpuScene->FindBody(id);
     if (body.bodyId == UINT32_MAX)
         return false;
-    const auto &actor = m_gpuScene->GetPublished(domain.owner)->actors[body.slot];
+    const auto &actor = m_gpuScene->GetPublished(domain.owner)->directory->actors[body.slot];
     return actor && !actor->leaves.empty() &&
            std::all_of(actor->leaves.begin(), actor->leaves.end(), [](const auto &leaf) { return leaf.sensor; });
 }
@@ -2187,7 +2189,7 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
     auto &store = PhysicsECSStore::Instance();
     std::vector<Rigidbody *> bodies;
     for (const auto &record : result->ReadHits()) {
-        const auto &identity = *result->publication->actors[record.meta.x];
+        const auto &identity = *result->publication->directory->actors[record.meta.x];
         if (store.IsValid(identity.rigidbody))
             bodies.push_back(store.GetRigidbody(identity.rigidbody).owner);
     }
@@ -2319,8 +2321,9 @@ std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::GatherBodyShapes(PhysicsDomain
         return PrepareQueryWork(
             [&] {
                 const auto allocation = m_gpuScene->FindBody(id);
-                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->actors.size() ||
-                    !publication->actors[allocation.slot] || publication->actors[allocation.slot]->bodyId != id)
+                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->directory->actors.size() ||
+                    !publication->directory->actors[allocation.slot] ||
+                    publication->directory->actors[allocation.slot]->bodyId != id)
                     throw JoltGpuQueryRequestError("Shape gathering requires an accepted body identity");
                 auto input = Query(QueryGatherShapes, QueryAll, UINT32_MAX, triggers);
                 input.meta.z = QueryAllShapeTypes;
@@ -2346,8 +2349,8 @@ std::vector<PhysicsShapeState> PhysicsWorld::GetBodyShapeStates(uint32_t id, boo
     const auto &records = query->ReadShapes();
     result.reserve(records.size());
     for (const auto &record : records) {
-        const auto &address = query->publication->leaves.at(record.meta.z);
-        const auto &identity = *query->publication->actors.at(record.meta.x);
+        const auto &address = query->publication->directory->leaves.at(record.meta.z);
+        const auto &identity = *query->publication->directory->actors.at(record.meta.x);
         if (address.bodySlot != record.meta.x)
             throw std::runtime_error("GPU shape state has a different published leaf owner");
         const auto &leaf = identity.leaves.at(address.actorLeaf);
@@ -2403,10 +2406,10 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
                 std::vector<QueryInput> requests;
                 std::array<std::vector<Row>, 2> rows;
                 uint32_t sourceRow = 0;
-                for (uint32_t slot = 0; slot < publication->actors.size(); ++slot) {
-                    const auto &actor = publication->actors[slot];
+                for (uint32_t slot = 0; slot < publication->directory->actors.size(); ++slot) {
+                    const auto &actor = publication->directory->actors[slot];
                     auto *owner = actor ? actor->owner.target.GetGameObject() : nullptr;
-                    if (!owner || owner->GetScene() != &scene || !publication->residentBodies.at(slot))
+                    if (!owner || owner->GetScene() != &scene || !publication->directory->residentBodies.at(slot))
                         continue;
                     auto input = Query(QueryGatherShapes, QueryAll);
                     input.meta.z = QueryAllShapeTypes;

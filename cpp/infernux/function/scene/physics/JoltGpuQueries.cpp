@@ -467,10 +467,10 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         buffers[Models] = publication->bodyModels;
         buffers[Shapes] = publication->shapeModels;
         buffers[States] = publication->bodyStates;
-        if (publication->actors.size() > UINT32_MAX || publication->leaves.size() > UINT32_MAX)
+        if (publication->directory->actors.size() > UINT32_MAX || publication->directory->leaves.size() > UINT32_MAX)
             throw JoltGpuQueryRequestError("GPU query author directory exceeds global indexing");
-        totalBodies = static_cast<uint32_t>(publication->actors.size());
-        totalLeaves = static_cast<uint32_t>(publication->leaves.size());
+        totalBodies = static_cast<uint32_t>(publication->directory->actors.size());
+        totalLeaves = static_cast<uint32_t>(publication->directory->leaves.size());
         if (bodyBase > totalBodies || bodyCount > totalBodies - bodyBase || leafBase > totalLeaves ||
             leafCount > totalLeaves - leafBase)
             throw std::invalid_argument("GPU query ranges differ from their exact author directory");
@@ -502,7 +502,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         if (OutputFormat(query) != format)
             throw JoltGpuQueryRequestError("Jolt GPU query batch must use one typed output family");
         if ((query.meta.x == QueryGatherMotion || query.meta.x == QueryGatherShapes) &&
-            query.source.y != InvalidQueryBodySlot && !publication->actors[query.source.y])
+            query.source.y != InvalidQueryBodySlot && !publication->directory->actors[query.source.y])
             throw JoltGpuQueryRequestError("Jolt GPU gather body slot has no retained actor identity");
     }
     const bool hasCasts =
@@ -573,15 +573,15 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     std::vector<QueryBodyIdentity> identities(static_cast<size_t>(std::max(uint64_t(1), identityCount)));
     identities.front().ids.x = InvalidQueryBodySlot;
     for (uint32_t slot = 0; slot < totalBodies; ++slot) {
-        const auto actor = result->publication->actors[slot];
+        const auto actor = result->publication->directory->actors[slot];
         const uint64_t rigidbodyId = actor ? actor->rigidbodyComponentId : 0;
         identities[slot].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, rigidbodyId ? 1u : 0u,
                                 static_cast<uint32_t>(rigidbodyId), static_cast<uint32_t>(rigidbodyId >> 32)};
     }
     if (hasSweep) {
         for (uint32_t leaf = 0; leaf < totalLeaves; ++leaf) {
-            const auto &address = result->publication->leaves[leaf];
-            const auto &actor = result->publication->actors[address.bodySlot];
+            const auto &address = result->publication->directory->leaves[leaf];
+            const auto &actor = result->publication->directory->actors[address.bodySlot];
             const auto id = actor->leaves[address.actorLeaf].surfaceGameObjectId;
             identities[totalBodies + leaf].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
         }

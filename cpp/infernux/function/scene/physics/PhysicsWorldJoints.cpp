@@ -274,8 +274,8 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
         return PrepareJointReadWork(
             [&]() -> JoltGpuControlWork {
                 std::unordered_map<uint64_t, const JoltGpuScene::PublishedJoint *> identities;
-                identities.reserve(publication->joints.size());
-                for (const auto &joint : publication->joints)
+                identities.reserve(publication->GetJoints().size());
+                for (const auto &joint : publication->GetJoints())
                     identities.emplace(joint.id, &joint);
                 std::vector<uint32_t> rows;
                 rows.reserve(ids.size());

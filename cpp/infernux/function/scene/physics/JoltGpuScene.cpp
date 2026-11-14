@@ -326,7 +326,10 @@ class JoltGpuScene::Impl
             return storage.PrepareJointReplacement(std::move(authors), std::move(prepared.stream),
                                                    std::move(prepared.updates), std::move(prepared.dispatches));
         };
-        group.modelAccepted = [this, catalog]() noexcept { acceptedJoints.swap(*catalog); };
+        group.modelAccepted = [this, catalog]() noexcept {
+            acceptedJoints.swap(*catalog);
+            publicationDirectory.reset();
+        };
         domain.pending.push_back(std::move(group));
     }
 
@@ -394,6 +397,7 @@ class JoltGpuScene::Impl
         group.modelAccepted = [this, values]() noexcept {
             for (const auto &value : *values)
                 acceptedJoints[value.row].author = value.author;
+            publicationDirectory.reset();
         };
         pending.push_back(std::move(group));
         for (const auto &value : *values)
@@ -537,6 +541,7 @@ class JoltGpuScene::Impl
                 slots[record].accepted = identity;
             acceptedJoints.swap((*plan)->catalog);
             ++layoutGeneration;
+            publicationDirectory.reset();
         };
         domain.pending.push_back(std::move(prepare));
         domain.pending.push_back(std::move(commit));
@@ -601,6 +606,7 @@ class JoltGpuScene::Impl
     {
         auto &slot = slots[change->slot];
         slot.accepted = change->identity;
+        publicationDirectory.reset();
         if (!actors.IsValid(change->identity->actor))
             return;
         auto &actor = actors.GetActor(change->identity->actor);
@@ -821,6 +827,7 @@ class JoltGpuScene::Impl
             model.meta.z = (model.meta.z & ~MotionNotResident) | (resident ? 0 : MotionNotResident);
             return storage.PrepareModelUpdate({{packed, model}}, {});
         };
+        group.modelAccepted = [this]() noexcept { publicationDirectory.reset(); };
         if (!resident) {
             pendingCompletions.reserve(pendingCompletions.size() + 2);
             BodyCommand boundary{};
@@ -930,6 +937,7 @@ class JoltGpuScene::Impl
             // initial Rigidbody generation, actor model or command provenance.
             slot = Slot{};
             freeRecords.push_back(index);
+            publicationDirectory.reset();
         };
         pendingCompletions.reserve(pendingCompletions.size() + 2);
         pending.push_back(std::move(group));
@@ -948,11 +956,44 @@ class JoltGpuScene::Impl
         Retirement
     };
 
+    std::shared_ptr<const PublicationDirectory> CapturePublicationDirectory()
+    {
+        if (publicationDirectory)
+            return publicationDirectory;
+        auto directory = std::make_shared<PublicationDirectory>();
+        directory->actors.resize(storage.GetBodyCount());
+        directory->residentBodies.resize(storage.GetBodyCount());
+        directory->leaves.resize(storage.GetShapeCount());
+        directory->worldJoints.resize(storage.GetWorldCount());
+        for (const auto &[id, index] : byId) {
+            const auto &slot = slots[index];
+            if (!slot.accepted)
+                continue;
+            const auto packed = Packed(index);
+            directory->actors[packed] = slot.accepted;
+            const auto &model = storage.GetModel().bodies[packed];
+            directory->residentBodies[packed] = (model.meta.z & MotionNotResident) == 0u;
+            if (slot.accepted->leaves.size() != model.meta.y)
+                throw std::logic_error("GPU publication actor directory differs from accepted leaf layout");
+            for (uint32_t leaf = 0; leaf < model.meta.y; ++leaf)
+                directory->leaves[model.meta.x + leaf] = {packed, leaf};
+        }
+        for (const auto &joint : acceptedJoints) {
+            auto &local = directory->worldJoints.at(joint.author.identity.z);
+            auto value = joint;
+            value.row = static_cast<uint32_t>(local.size());
+            local.push_back(std::move(value));
+        }
+        publicationDirectory = std::move(directory);
+        return publicationDirectory;
+    }
+
     JoltGpuTickControl PrepareControl(Partition &domain, uint64_t epoch, uint64_t step, bool controlOnly,
                                       Consumer consumer, Consumer finalConsumer)
     {
         auto publication = std::make_shared<Publication>();
         publication->worldId = domain.id;
+        publication->worldRow = domain.row;
         publication->simulationEpoch = epoch;
         publication->fixedStepIndex = step;
         auto prefix = std::make_shared<std::vector<PrefixTarget>>();
@@ -968,28 +1009,7 @@ class JoltGpuScene::Impl
             publication->bodyModels = storage.Get(Resource::BodyModels)->Freeze();
             publication->shapeModels = storage.Get(Resource::ShapeModels)->Freeze();
             publication->worlds = storage.Get(Resource::Worlds)->Freeze();
-            publication->actors.resize(storage.GetBodyCount());
-            publication->residentBodies.resize(storage.GetBodyCount());
-            publication->leaves.resize(storage.GetShapeCount());
-            for (const auto &[id, index] : byId) {
-                const auto &slot = slots[index];
-                if (!slot.accepted)
-                    continue;
-                const auto packed = Packed(index);
-                publication->actors[packed] = slot.accepted;
-                const auto &model = storage.GetModel().bodies[packed];
-                publication->residentBodies[packed] = (model.meta.z & MotionNotResident) == 0u;
-                if (slot.accepted->leaves.size() != model.meta.y)
-                    throw std::logic_error("GPU publication actor directory differs from accepted leaf layout");
-                for (uint32_t leaf = 0; leaf < model.meta.y; ++leaf)
-                    publication->leaves[model.meta.x + leaf] = {packed, leaf};
-            }
-            for (const auto &joint : acceptedJoints)
-                if (joint.author.identity.z == domain.row) {
-                    auto local = joint;
-                    local.row = static_cast<uint32_t>(publication->joints.size());
-                    publication->joints.push_back(local);
-                }
+            publication->directory = CapturePublicationDirectory();
             for (const auto &input : *prefix) {
                 const auto found = byId.find(input.bodyId);
                 if (found == byId.end() || !slots[found->second].accepted)
@@ -1206,6 +1226,7 @@ class JoltGpuScene::Impl
             index = UINT32_MAX;
         }
         domain.liveCount = 0;
+        publicationDirectory.reset();
     }
 
     bool ReleaseRetiredPartition(Partition &domain) noexcept
@@ -1343,6 +1364,7 @@ class JoltGpuScene::Impl
     std::map<uint64_t, JointRecord> authoredJoints;
     std::vector<PublishedJoint> acceptedJoints;
     uint64_t nextJointId = 1, layoutGeneration = 0;
+    std::shared_ptr<const PublicationDirectory> publicationDirectory;
     std::vector<Slot> slots;
     std::vector<uint32_t> freeRecords;
     std::unordered_map<uint32_t, uint32_t> byId;

@@ -102,6 +102,17 @@ class JoltGpuScene final
         JPH::GPU::JointAuthor author;
     };
 
+    /// Immutable accepted author directory, shared by numerical publications.
+    /// Global body/leaf addresses stay unchanged; per-world joint rows are local.
+    /// No live numerical storage or RuntimeWorld/Partition pointer is retained.
+    struct PublicationDirectory
+    {
+        std::vector<std::shared_ptr<const PublishedActor>> actors;
+        std::vector<uint8_t> residentBodies;
+        std::vector<LeafAddress> leaves;
+        std::vector<std::vector<PublishedJoint>> worldJoints;
+    };
+
     /// All arrays/resources describe the same completed numerical generation.
     /// actors is indexed by GPU slot; null entries are unowned tombstones.
     /// Retained results resolve through these identities after slot reuse.
@@ -115,14 +126,15 @@ class JoltGpuScene final
         std::shared_ptr<rhi::ComputeBuffer> bodyModels;
         std::shared_ptr<rhi::ComputeBuffer> shapeModels;
         std::shared_ptr<rhi::ComputeBuffer> worlds;
-        std::vector<std::shared_ptr<const PublishedActor>> actors;
-        /// Accepted author participation for this publication, not motion state.
-        std::vector<uint8_t> residentBodies;
-        /// Global leaf ordinal -> immutable actor catalog in this publication.
-        /// Addresses own no individual allocation and never refer to live slots.
-        std::vector<LeafAddress> leaves;
+        /// Owns exact global body/leaf vectors for this accepted author layout.
+        std::shared_ptr<const PublicationDirectory> directory;
         std::shared_ptr<rhi::ComputeBuffer> jointStream;
-        std::vector<PublishedJoint> joints;
+
+        /// Joint rows are local to this publication's real accepted world row.
+        [[nodiscard]] const std::vector<PublishedJoint> &GetJoints() const
+        {
+            return directory->worldJoints.at(worldRow);
+        }
     };
     /// The retained publication travels with every result/continuation. A
     /// consumer must resolve hit identities through this exact shared value.
