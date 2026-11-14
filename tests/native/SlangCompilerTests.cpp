@@ -383,7 +383,7 @@ void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weigh
                 if (editor)
                     Require(ui.rootConstants->fields[0].offset == 0 && ui.rootConstants->fields[1].offset == 8 &&
                                 ui.rootConstants->fields[2].offset == 16,
-                            "Editor UI must retain the backend's vertex and fragment root ranges");
+                            "Editor UI must retain the backend's shared root block offsets");
                 else
                     Require(ui.rootConstants->fields[world ? 1 : 6].offset == (world ? 64u : 32u),
                             "UI material color offset differs between targets");

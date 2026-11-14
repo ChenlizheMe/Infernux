@@ -68,8 +68,8 @@ float4 fragment_main(VertexOutput input) : SV_Target0 {
     return module;
 }
 
-/// Editor draw data retains the Vulkan backend's 16-byte vertex and
-/// four-byte fragment root ranges; source and bytecode live with the GUI.
+/// Editor draw data shares one root block across vertex and fragment entries:
+/// scale at byte 0, translation at byte 8, and texture encoding at byte 16.
 inline const ShaderSourceModule &GetSlangEditorUIModule()
 {
     static const ShaderSourceModule module{"inx_editor_ui", "<infernux/renderer/editor_ui>",
