@@ -659,8 +659,9 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
                 domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::RetireControl;
             } else {
                 AdmissionScope admission(*m_gpuScene, domain.owner);
-                domain.solverStarted = m_gpuScene->TryBeginTick(
-                    domain.owner, epoch, index, dt, *domain.admittedParameters, PrepareRenderConsumer(domain, true));
+                domain.solverStarted =
+                    m_gpuScene->TryBeginTick(domain.owner, epoch, index, dt, *domain.admittedParameters,
+                                             [this, &domain] { return PrepareRenderConsumer(domain, true); });
                 domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Solver;
             }
         }
@@ -690,7 +691,7 @@ bool PhysicsWorld::AdvanceFixedStep(PhysicsDomain &domain, bool synchronous)
                 } else {
                     domain.solverStarted = m_gpuScene->TryBeginTick(
                         domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime,
-                        *domain.admittedParameters, PrepareRenderConsumer(domain, true));
+                        *domain.admittedParameters, [this, &domain] { return PrepareRenderConsumer(domain, true); });
                     domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Solver;
                 }
             }
@@ -708,9 +709,10 @@ bool PhysicsWorld::AdvanceFixedStep(PhysicsDomain &domain, bool synchronous)
                 continue;
             }
             if (!domain.solverStarted) {
-                if (!(domain.solverStarted = m_gpuScene->TryBeginTick(
-                          domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime,
-                          *domain.admittedParameters, PrepareRenderConsumer(domain, true)))) {
+                if (!(domain.solverStarted =
+                          m_gpuScene->TryBeginTick(domain.owner, domain.stepEpoch, domain.stepIndex,
+                                                   domain.admittedDeltaTime, *domain.admittedParameters,
+                                                   [this, &domain] { return PrepareRenderConsumer(domain, true); }))) {
                     if (synchronous) {
                         DrainGpuSource(domain);
                         continue;

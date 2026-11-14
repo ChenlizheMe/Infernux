@@ -567,27 +567,29 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     }
     const bool hasSweep = std::any_of(queries.begin(), queries.end(),
                                       [](const auto &query) { return (query.meta.w & QuerySweepPolicy) != 0; });
-    const uint64_t identityCount = uint64_t(totalBodies) + (hasSweep ? totalLeaves : 0u);
+    // Identity records are compact for this retained publication's world.
+    // Author model/shape addresses and query result addresses remain global.
+    const uint64_t identityCount = uint64_t(bodyCount) + (hasSweep ? leafCount : 0u);
     if (identityCount > std::numeric_limits<uint32_t>::max())
         throw JoltGpuQueryRequestError("Jolt GPU query identity words exceed device indexing");
     std::vector<QueryBodyIdentity> identities(static_cast<size_t>(std::max(uint64_t(1), identityCount)));
     identities.front().ids.x = InvalidQueryBodySlot;
-    for (uint32_t slot = 0; slot < totalBodies; ++slot) {
-        const auto actor = result->publication->directory->actors[slot];
+    for (uint32_t local = 0; local < bodyCount; ++local) {
+        const auto &actor = result->publication->directory->actors[bodyBase + local];
         const uint64_t rigidbodyId = actor ? actor->rigidbodyComponentId : 0;
-        identities[slot].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, rigidbodyId ? 1u : 0u,
-                                static_cast<uint32_t>(rigidbodyId), static_cast<uint32_t>(rigidbodyId >> 32)};
+        identities[local].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, rigidbodyId ? 1u : 0u,
+                                 static_cast<uint32_t>(rigidbodyId), static_cast<uint32_t>(rigidbodyId >> 32)};
     }
     if (hasSweep) {
-        for (uint32_t leaf = 0; leaf < totalLeaves; ++leaf) {
-            const auto &address = result->publication->directory->leaves[leaf];
+        for (uint32_t local = 0; local < leafCount; ++local) {
+            const auto &address = result->publication->directory->leaves[leafBase + local];
             const auto &actor = result->publication->directory->actors[address.bodySlot];
             const auto id = actor->leaves[address.actorLeaf].surfaceGameObjectId;
-            identities[totalBodies + leaf].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
+            identities[bodyCount + local].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
         }
     }
     upload(BodyIdentities, Bytes(identities.data(), identities.size()));
-    const QueryCastParams castParameters{{castIterationQuantum, totalBodies, 0, 0}};
+    const QueryCastParams castParameters{{castIterationQuantum, bodyCount, 0, 0}};
     upload(CastParameters, Bytes(&castParameters, 1));
     const QueryParams parameters{
         {result->queryCount, bodyBase, bodyCount, leafCount},

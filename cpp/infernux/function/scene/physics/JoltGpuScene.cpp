@@ -1087,12 +1087,14 @@ class JoltGpuScene::Impl
         return control;
     }
 
+    template <typename FinalConsumerFactory>
     bool TryBegin(Partition &domain, uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters *parameters,
-                  Consumer consumer, Consumer finalConsumer)
+                  Consumer consumer, FinalConsumerFactory prepareFinalConsumer)
     {
         Service();
         if (writer || domain.closed || !domain.admission)
             return false;
+        auto finalConsumer = prepareFinalConsumer();
         auto control =
             PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer), std::move(finalConsumer));
         writer = &domain;
@@ -1509,9 +1511,11 @@ bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
     return !domain.pending.empty() || (m_impl->writer == &domain && !m_impl->tick.AreControlInputsAccepted());
 }
 bool JoltGpuScene::TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
-                                const JoltGpuStepParameters &parameters, Consumer finalConsumer)
+                                const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer)
 {
-    return m_impl->TryBegin(m_impl->Domain(world), epoch, step, dt, &parameters, {}, std::move(finalConsumer));
+    return m_impl->TryBegin(m_impl->Domain(world), epoch, step, dt, &parameters, {}, [&prepareFinalConsumer] {
+        return prepareFinalConsumer ? prepareFinalConsumer() : Consumer{};
+    });
 }
 bool JoltGpuScene::TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer, Consumer finalConsumer)
 {
@@ -1519,7 +1523,8 @@ bool JoltGpuScene::TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer
     auto &domain = m_impl->Domain(world);
     const auto step =
         domain.published && domain.published->simulationEpoch == epoch ? domain.published->fixedStepIndex : 0u;
-    return m_impl->TryBegin(domain, epoch, step, 0.0f, nullptr, std::move(consumer), std::move(finalConsumer));
+    return m_impl->TryBegin(domain, epoch, step, 0.0f, nullptr, std::move(consumer),
+                            [&finalConsumer] { return std::move(finalConsumer); });
 }
 bool JoltGpuScene::TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &value)
 {

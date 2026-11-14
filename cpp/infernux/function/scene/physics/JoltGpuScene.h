@@ -139,6 +139,9 @@ class JoltGpuScene final
     /// The retained publication travels with every result/continuation. A
     /// consumer must resolve hit identities through this exact shared value.
     using Consumer = std::function<JoltGpuControlWork(const std::shared_ptr<const Publication> &)>;
+    /// Synchronous host capture at successful tick writer admission, never on Busy.
+    /// Must not submit work, drive the owner or reenter this scene.
+    using ConsumerFactory = std::function<Consumer()>;
 
     /// One shared numerical arena/source, never one scene per RuntimeWorld.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
@@ -176,7 +179,7 @@ class JoltGpuScene final
 
     /// Busy preserves the complete per-world FIFO and logical tick identity.
     [[nodiscard]] bool TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
-                                    const JoltGpuStepParameters &parameters, Consumer finalConsumer = {});
+                                    const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer = {});
     [[nodiscard]] bool TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer = {},
                                        Consumer finalConsumer = {});
     [[nodiscard]] bool TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &work);
