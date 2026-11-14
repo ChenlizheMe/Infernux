@@ -127,8 +127,22 @@ class GameScreenOutputs final
         for (auto &[world, output] : m_outputs)
             if (output->samples != samples) {
                 output->samples = samples;
+                // No commands from this admission have been submitted. The
+                // new pipeline generation cannot use its older raster images.
+                output->work.reset();
+                output->admission.reset();
                 Reconfigure(*output);
+                output->forceSample = true;
             }
+    }
+
+    void InvalidatePresentation()
+    {
+        for (auto &[world, output] : m_outputs) {
+            output->work.reset();
+            output->admission.reset();
+            output->forceSample = true;
+        }
     }
 
     std::shared_ptr<Output> Find(uint64_t worldId) const

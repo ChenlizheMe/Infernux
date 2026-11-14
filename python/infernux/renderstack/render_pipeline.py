@@ -309,9 +309,10 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
     def render(self, context, view):
         """Render one view through its dedicated context.
 
-        The base implementation builds the graph once from
-        ``define_topology()``, filters the view via
-        ``should_render_view()``, then calls ``render_view()``.
+        The native view entry selects participation through
+        ``should_render_view()`` before UI capture. This method builds the
+        selected view's graph from ``define_topology()``, then calls
+        ``render_view()``.
 
         The renderer owns multi-view enumeration and creates a distinct
         context and RenderView for every view. Pipelines must never loop
@@ -320,8 +321,6 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         """
         from infernux.rendergraph.graph import RenderGraph, _rejected_render_texture_inputs
 
-        if not self.should_render_view(view):
-            return
         samples = context.output_samples
         rejected = self._standalone_rejected_textures.get(samples)
         if rejected:

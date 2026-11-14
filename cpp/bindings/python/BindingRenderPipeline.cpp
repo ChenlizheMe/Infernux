@@ -18,6 +18,14 @@ class PyRenderPipelineCallback : public RenderPipelineCallback
   public:
     using RenderPipelineCallback::RenderPipelineCallback;
 
+    bool ShouldRenderView(const RenderViewData &view) override
+    {
+        py::gil_scoped_acquire gil;
+        py::function select = py::get_override(static_cast<const RenderPipelineCallback *>(this), "should_render_view");
+        // A callback may retain the read-only selection value after returning.
+        return select ? select(std::make_shared<RenderViewData>(view)).cast<bool>()
+                      : RenderPipelineCallback::ShouldRenderView(view);
+    }
     void Render(ScriptableRenderContext &context, const RenderViewData &view) override
     {
         py::gil_scoped_acquire gil;
@@ -117,6 +125,11 @@ void RegisterRenderPipelineBindings(py::module_ &m)
                                "Get the scene associated with this render context")
         .def_property_readonly("view", &ScriptableRenderContext::GetViewPublication)
         .def_property_readonly("capturing_completed_world", &ScriptableRenderContext::IsCapturingCompletedWorld)
+        .def_property_readonly("_has_screen_ui_snapshot",
+                               [](const ScriptableRenderContext &self) {
+                                   const auto plan = self.CapturePlan();
+                                   return plan && static_cast<bool>(plan->ui);
+                               })
         .def("capture_screen_ui", &ScriptableRenderContext::CaptureScreenUI, py::arg("renderer"))
         .def("cull", &ScriptableRenderContext::Cull, py::return_value_policy::reference_internal,
              "Cull this context's retained RenderView") // RenderGraph-driven API
@@ -145,6 +158,8 @@ void RegisterRenderPipelineBindings(py::module_ &m)
     py::class_<RenderPipelineCallback, PyRenderPipelineCallback, std::shared_ptr<RenderPipelineCallback>>(
         m, "RenderPipelineCallback")
         .def(py::init<>())
+        .def("should_render_view", &RenderPipelineCallback::ShouldRenderView, py::arg("view"),
+             "Select participation before capturing a new World frame; False is a legal omission")
         .def("render", &RenderPipelineCallback::Render, py::arg("context"), py::arg("view"),
              "Render one camera through its dedicated context and RenderView")
         .def("dispose", &RenderPipelineCallback::Dispose, "Called when the pipeline is being replaced");

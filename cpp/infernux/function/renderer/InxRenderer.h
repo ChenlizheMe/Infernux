@@ -30,6 +30,7 @@ namespace infernux
 {
 struct RenderViewData;
 class RenderWorldFrame;
+struct RenderWorldPublication;
 class RuntimeWorld;
 struct TextureCpuData;
 class FrameWorkOwner;
@@ -1033,6 +1034,10 @@ class InxRenderer
     [[nodiscard]] uint32_t GetSupportedMsaaSampleMask() const;
     [[nodiscard]] bool ApplyMsaaSamples(int samples, const char *source);
     void SetEffectiveGraphMsaaSamples(int samples);
+    bool CaptureRuntimeViewPlans(RenderWorldPublication &publication, const RenderWorldPublication *previous);
+    void RefreshRuntimeViewPlans();
+    bool m_runtimeViewPlansDirty = false;
+    uint64_t m_renderPolicyRevision = 1;
 
     int m_sceneRequestedMsaaSamples = 0;
     int m_gameRequestedMsaaSamples = 0;

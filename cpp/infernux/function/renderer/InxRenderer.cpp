@@ -1261,6 +1261,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         return {};
     if (!sceneManager.IsRuntimeWorldManagementActive())
         PrepareWorldRenderInputs();
+    if (m_runtimeViewPlansDirty)
+        RefreshRuntimeViewPlans();
     bridge.PrepareFrame(sceneViewActive);
     SyncPrimaryScreenRequest();
     const bool gameViewActive = HasActiveGameViews(allowViewportViews);
@@ -1321,7 +1323,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             if (const auto *view = frame ? frame->FindView(editorCam->GetComponentID()) : nullptr) {
                 ScriptableRenderContext capture(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
                                                 frame, *view, true);
-                m_renderPipeline->Render(capture, capture.GetView());
+                m_renderPipeline->RenderSelectedView(capture, capture.GetView());
                 ScriptableRenderContext context(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
                                                 frame, *view);
                 context.ExecutePlan(capture.CapturePlan());
@@ -1338,6 +1340,16 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             for (const auto *view : FindGameCamerasCached()) {
                 if (!ShouldRenderGameCamera(view, allowViewportViews))
                     continue;
+                if (sceneManager.IsRuntimeWorldManagementActive()) {
+                    const auto &publication = m_gamePublications.at(view->worldId);
+                    if (publication->renderPolicyRevision != m_renderPolicyRevision ||
+                        (!view->renderToTexture && publication->screenConfig->samples != GameScreens().Samples())) {
+                        GameScreens().WaitForPublication(
+                            view->worldId,
+                            "Waiting for this World's render plan to match the current pipeline and sample count");
+                        continue;
+                    }
+                }
                 if (!view->renderToTexture) {
                     const auto owner = m_gameSources.at(view->worldId);
                     const auto publication = m_gamePublications.find(view->worldId);
@@ -1365,7 +1377,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                 } else {
                     ScriptableRenderContext capture(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, *view,
                                                     true);
-                    m_renderPipeline->Render(capture, capture.GetView());
+                    m_renderPipeline->RenderSelectedView(capture, capture.GetView());
                     plan = capture.CapturePlan();
                 }
                 ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, *view);
@@ -4398,6 +4410,10 @@ void InxRenderer::SetRenderPipeline(std::shared_ptr<RenderPipelineCallback> pipe
         m_renderPipeline->Dispose();
     }
     m_renderPipeline = std::move(pipeline);
+    ++m_renderPolicyRevision;
+    if (m_gameScreenOutputs)
+        m_gameScreenOutputs->InvalidatePresentation();
+    m_runtimeViewPlansDirty = true;
 
     if (m_renderPipeline) {
         INXLOG_INFO("Render pipeline set (Python SRP path active)");
@@ -4452,24 +4468,77 @@ bool InxRenderer::PublishRuntimeRenderFrame(RuntimeWorld &world)
     PrepareWorldRenderInputs();
     return SceneRenderBridge::Instance().PublishRuntimeFrame(
         world,
-        [this, &world](const auto &frame, auto &plans) {
-            for (const auto &view : frame->Views()) {
-                if (view.editorView || plans.find(view.cameraId) != plans.end())
-                    continue;
-                const auto existing = m_gameRenderGraphs.find(view.cameraId);
-                auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
-                EditorGizmosContext content;
-                content.activeScene = world.scenes.active;
-                ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, view, true,
-                                                true);
-                m_renderPipeline->Render(context, context.GetView());
-                if (!context.CapturePlan()->ui)
-                    return false;
-                plans.emplace(view.cameraId, context.CapturePlan());
+        [this](auto &publication, const auto *previous) { return CaptureRuntimeViewPlans(publication, previous); },
+        m_renderPolicyRevision, raster);
+}
+
+bool InxRenderer::CaptureRuntimeViewPlans(RenderWorldPublication &publication, const RenderWorldPublication *previous)
+{
+    const auto &frame = publication.world;
+    for (const auto &view : frame->Views()) {
+        if (view.editorView || publication.plans.find(view.cameraId) != publication.plans.end())
+            continue;
+        const auto existing = m_gameRenderGraphs.find(view.cameraId);
+        auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
+        // The capture constructor selects the retained view's actual World
+        // and assigns both scene and gizmo scene before invoking its delegate.
+        ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true, true);
+        std::shared_ptr<const RenderViewPlan> retained;
+        if (previous) {
+            const auto found = previous->plans.find(view.cameraId);
+            if (found != previous->plans.end())
+                retained = found->second;
+        }
+        // A pending producer may have sealed only a prefix of its views.
+        if (retained) {
+            // A presentation variant preserves this sealed F's participating
+            // cameras, including a legal omission. New selection belongs to
+            // the next real World frame, never to a paused live Scene.
+            if (retained->state == RenderViewPlanState::Skipped) {
+                publication.plans.emplace(view.cameraId, retained);
+                continue;
             }
-            return true;
-        },
-        raster);
+            context.SetScreenUISnapshot(retained->ui);
+            m_renderPipeline->Render(context, context.GetView());
+        } else {
+            m_renderPipeline->RenderSelectedView(context, context.GetView());
+        }
+        const auto plan = context.CapturePlan();
+        if (plan->state == RenderViewPlanState::Pending || (plan->state == RenderViewPlanState::Submitted && !plan->ui))
+            return false;
+        publication.plans.emplace(view.cameraId, plan);
+    }
+    return true;
+}
+
+void InxRenderer::RefreshRuntimeViewPlans()
+{
+    auto &manager = SceneManager::Instance();
+    bool pending = false;
+    if (m_renderPipeline && manager.IsRuntimeWorldManagementActive()) {
+        auto &bridge = SceneRenderBridge::Instance();
+        for (const auto worldId : manager.GetRuntimeWorldIds()) {
+            const auto previous = bridge.AcquireLatestRuntimePublication(worldId);
+            if (!previous || !previous->screenConfig)
+                continue;
+            const auto output = GameScreens().Touch(worldId);
+            if (previous->renderPolicyRevision == m_renderPolicyRevision &&
+                previous->screenConfig->samples == output->samples)
+                continue;
+            auto raster = *previous->screenConfig;
+            raster.samples = output->samples;
+            // Projection, viewport and UI layout still belong to the sealed F.
+            // A simultaneous desired resize is adopted by a later real F.
+            if (raster.config == output->config)
+                raster.generation = output->generation;
+            if (!bridge.RefreshRuntimeViewPlans(previous, m_renderPolicyRevision, raster,
+                                                [this](auto &publication, const auto *retained) {
+                                                    return CaptureRuntimeViewPlans(publication, retained);
+                                                }))
+                pending = true;
+        }
+    }
+    m_runtimeViewPlansDirty = pending;
 }
 
 bool InxRenderer::IsStepScreenComplete(RuntimeWorld &world)
@@ -4479,11 +4548,12 @@ bool InxRenderer::IsStepScreenComplete(RuntimeWorld &world)
         return true;
     }
     const auto publication = SceneRenderBridge::Instance().AcquireLatestRuntimePublication(world.id);
-    if (!publication)
+    if (!publication || publication->world->WorldId() != world.id ||
+        publication->world->SimulationEpoch() != world.simulation.simulationEpoch ||
+        publication->world->CompletedWorldFrame() != world.simulation.frameTime.frameCount)
         return false;
-    if (std::none_of(publication->world->Views().begin(), publication->world->Views().end(),
-                     [](const auto &view) { return !view.editorView && !view.renderToTexture; }))
-        return true; // A legal empty/no-screen Camera has no raster consumer.
+    if (!publication->HasScreenViews())
+        return true; // This exact completed Step has no participating screen view.
     auto &sample = m_stepScreenSamples[world.id];
     const auto matches = [&world](const auto &value) {
         return value && value->worldId == world.id && value->simulationEpoch == world.simulation.simulationEpoch &&
@@ -4688,6 +4758,9 @@ SceneRenderGraph *InxRenderer::EnsureGameRenderGraph(const RenderViewData *camer
 
 bool InxRenderer::ShouldRenderGameCamera(const RenderViewData *camera, bool allowScreen) const
 {
+    if (SceneManager::Instance().IsRuntimeWorldManagementActive() &&
+        !m_gamePublications.at(camera->worldId)->Participates(camera->cameraId))
+        return false;
     if (camera->renderToTexture) {
         const auto request = m_cameraRenderRequests.find(camera->cameraId);
         return camera->outputGeneration && (!camera->renderOnDemand ||
@@ -4968,9 +5041,11 @@ GameScreenOutputStatus InxRenderer::GetGameScreenOutputStatus(uint64_t worldId) 
                        : worldId == SceneManager::Instance().AuthoringWorld().id ? bridge.AcquirePreparedGameFrame()
                                                                                  : nullptr;
     result.sourcePublished = frame && frame->WorldId() == worldId;
-    result.hasScreenCamera = result.sourcePublished &&
-                             std::any_of(frame->Views().begin(), frame->Views().end(),
-                                         [](const auto &view) { return !view.editorView && !view.renderToTexture; });
+    result.hasScreenCamera =
+        runtime ? runtime->HasScreenViews()
+                : result.sourcePublished &&
+                      std::any_of(frame->Views().begin(), frame->Views().end(),
+                                  [](const auto &view) { return !view.editorView && !view.renderToTexture; });
     return result;
 }
 
@@ -5422,6 +5497,7 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
         m_gui->RequestFrame();
 
     SetEffectiveGraphMsaaSamples(samples);
+    m_runtimeViewPlansDirty = true;
     ++m_msaaReconfigurationCount;
     INXLOG_INFO("Applied ", samples, "x MSAA from ", source,
                 " to Scene, Game, material, preview, and Screen UI paths.");

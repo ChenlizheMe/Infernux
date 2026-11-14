@@ -3,10 +3,23 @@
 #include "SceneManager.h"
 #include <algorithm>
 #include <core/types/ShaderTypes.h>
+#include <function/renderer/ScriptableRenderContext.h>
 #include <stdexcept>
 
 namespace infernux
 {
+
+bool RenderWorldPublication::Participates(uint64_t cameraId) const
+{
+    return plans.at(cameraId)->state == RenderViewPlanState::Submitted;
+}
+
+bool RenderWorldPublication::HasScreenViews() const
+{
+    return std::any_of(world->Views().begin(), world->Views().end(), [this](const auto &view) {
+        return !view.editorView && !view.renderToTexture && Participates(view.cameraId);
+    });
+}
 
 SceneRenderBridge &SceneRenderBridge::Instance()
 {
@@ -50,6 +63,7 @@ void SceneRenderBridge::OnWindowResize(uint32_t width, uint32_t height)
 }
 
 bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureViews &capture,
+                                            uint64_t renderPolicyRevision,
                                             const std::optional<GameScreenSourceConfig> &screenConfig)
 {
     WorldExecutionScope scope(&world);
@@ -63,8 +77,23 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
             state->pending = std::make_shared<RenderWorldPublication>();
             state->pending->world = state->staging.Acquire();
             state->pending->screenConfig = screenConfig;
+            state->pending->renderPolicyRevision = renderPolicyRevision;
         }
-        if (!capture(state->pending->world, state->pending->plans))
+        std::shared_ptr<const RenderWorldPublication> retained;
+        if (state->pending->renderPolicyRevision != renderPolicyRevision ||
+            (state->pending->screenConfig && screenConfig &&
+             state->pending->screenConfig->samples != screenConfig->samples)) {
+            retained = std::make_shared<const RenderWorldPublication>(*state->pending);
+            state->pending->plans.clear();
+            state->pending->renderPolicyRevision = renderPolicyRevision;
+            if (state->pending->screenConfig && screenConfig) {
+                auto &raster = *state->pending->screenConfig;
+                raster.samples = screenConfig->samples;
+                if (raster.config == screenConfig->config)
+                    raster.generation = screenConfig->generation;
+            }
+        }
+        if (!capture(*state->pending, retained.get()))
             return false;
         std::atomic_store_explicit(&state->completed,
                                    std::shared_ptr<const RenderWorldPublication>(std::move(state->pending)),
@@ -76,6 +105,31 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
         return false;
     }
     return true;
+}
+
+bool SceneRenderBridge::RefreshRuntimeViewPlans(const std::shared_ptr<const RenderWorldPublication> &source,
+                                                uint64_t renderPolicyRevision,
+                                                const GameScreenSourceConfig &screenConfig, const CaptureViews &capture)
+{
+    auto candidate = std::make_shared<RenderWorldPublication>();
+    candidate->world = source->world;
+    candidate->screenConfig = screenConfig;
+    candidate->renderPolicyRevision = renderPolicyRevision;
+    try {
+        if (!capture(*candidate, source.get()))
+            return false;
+    } catch (const ShaderProgramSelectionError &) {
+        return false;
+    }
+    // A source may retire while authored render work is prepared. Publish only
+    // against that exact complete source, never over a newer World completion.
+    const auto found = m_runtimePublications.find(source->world->WorldId());
+    if (found == m_runtimePublications.end())
+        return false;
+    auto expected = source;
+    return std::atomic_compare_exchange_strong_explicit(
+        &found->second->completed, &expected, std::shared_ptr<const RenderWorldPublication>(std::move(candidate)),
+        std::memory_order_acq_rel, std::memory_order_acquire);
 }
 
 std::shared_ptr<const RenderWorldPublication> SceneRenderBridge::AcquireLatestRuntimePublication(uint64_t worldId) const

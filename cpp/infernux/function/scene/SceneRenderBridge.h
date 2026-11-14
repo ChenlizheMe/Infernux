@@ -20,6 +20,10 @@ struct RenderWorldPublication
     std::shared_ptr<const RenderWorldFrame> world;
     RenderViewPlans plans;
     std::optional<GameScreenSourceConfig> screenConfig;
+    uint64_t renderPolicyRevision = 0;
+
+    [[nodiscard]] bool Participates(uint64_t cameraId) const;
+    [[nodiscard]] bool HasScreenViews() const;
 };
 
 /// Scene-side adapter that publishes extracted frames to the renderer
@@ -47,9 +51,15 @@ class SceneRenderBridge final
     }
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedGameFrame() const;
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> CapturePreview(Camera &camera);
-    using CaptureViews = std::function<bool(const std::shared_ptr<const RenderWorldFrame> &, RenderViewPlans &)>;
+    using CaptureViews = std::function<bool(RenderWorldPublication &, const RenderWorldPublication *)>;
     [[nodiscard]] bool PublishRuntimeFrame(RuntimeWorld &world, const CaptureViews &capture,
-                                           const std::optional<GameScreenSourceConfig> &screenConfig = std::nullopt);
+                                           uint64_t renderPolicyRevision,
+                                           const std::optional<GameScreenSourceConfig> &screenConfig);
+    /// Rebuild only render work from a complete World, retaining its exact
+    /// geometry, camera, pose, lighting and UI owners. Never extracts or steps.
+    [[nodiscard]] bool RefreshRuntimeViewPlans(const std::shared_ptr<const RenderWorldPublication> &source,
+                                               uint64_t renderPolicyRevision,
+                                               const GameScreenSourceConfig &screenConfig, const CaptureViews &capture);
     void RetireRuntimeWorld(uint64_t worldId);
     /// Latest complete producer value, before this Host's prepared view index.
     [[nodiscard]] std::shared_ptr<const RenderWorldPublication> AcquireLatestRuntimePublication(uint64_t worldId) const;

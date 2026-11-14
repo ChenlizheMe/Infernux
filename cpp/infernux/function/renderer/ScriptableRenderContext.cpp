@@ -219,7 +219,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         m_recordedPlan->culling = culling;
         m_recordedPlan->draws = std::move(m_orderedDrawCalls);
         m_recordedPlan->commands = std::move(m_pendingCommands);
-        m_recordedPlan->submitted = true;
+        m_recordedPlan->state = RenderViewPlanState::Submitted;
         m_submitted = true;
         return;
     }
@@ -568,7 +568,11 @@ void ScriptableRenderContext::SetScreenUISnapshot(InxScreenUIRenderer::Snapshot 
 
 bool ScriptableRenderContext::ExecutePlan(const std::shared_ptr<const RenderViewPlan> &plan)
 {
-    if (!plan || (plan->ui && plan->ui->World() != m_renderWorldOwner))
+    if (!plan)
+        throw std::logic_error("A view execution requires its captured plan");
+    if (plan->state != RenderViewPlanState::Submitted)
+        return false;
+    if (plan->ui && plan->ui->World() != m_renderWorldOwner)
         throw std::logic_error("Game UI plan does not own the selected completed World");
     if (!m_cachedCameraView->editorView && m_renderWorldOwner->CompletedWorldFrame() && !plan->ui)
         throw std::logic_error("Completed Game view plan has no UI publication owner");
@@ -580,8 +584,6 @@ bool ScriptableRenderContext::ExecutePlan(const std::shared_ptr<const RenderView
         UpdateParameterBlocks(plan->parameters);
         m_graph->SetAppliedPlan(plan);
     }
-    if (!plan->submitted)
-        return true;
     m_orderedDrawCalls = plan->draws;
     m_pendingCommands = plan->commands;
     CullingResults culling = plan->culling;

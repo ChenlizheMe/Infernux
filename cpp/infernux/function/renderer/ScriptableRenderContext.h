@@ -61,6 +61,13 @@ struct CullingResults
 
 /// CPU-authored work for one completed World view. GPU recording, private
 /// Work state, temporal history and shader time stay on actual Host executions.
+enum class RenderViewPlanState : uint8_t
+{
+    Pending,
+    Skipped,
+    Submitted,
+};
+
 struct RenderViewPlan
 {
     std::optional<RenderGraphDescription> graph;
@@ -68,7 +75,7 @@ struct RenderViewPlan
     CullingResults culling;
     std::vector<DrawCall> draws;
     std::vector<RenderCommand> commands;
-    bool submitted = false;
+    RenderViewPlanState state = RenderViewPlanState::Pending;
     InxScreenUIRenderer::Snapshot ui;
 };
 
@@ -165,6 +172,12 @@ class ScriptableRenderContext
         return m_cachedCameraView;
     }
     CullingResults &Cull();
+    /// Select a legal omission before any view/UI work is captured.
+    void SkipView()
+    {
+        if (m_recordedPlan)
+            m_recordedPlan->state = RenderViewPlanState::Skipped;
+    }
     // ====================================================================
     // RenderGraph-driven API (replaces DrawRenderers + Submit combo)
     // ====================================================================
@@ -307,6 +320,19 @@ class RenderPipelineCallback
 {
   public:
     virtual ~RenderPipelineCallback() = default;
+
+    /// Participation is selected once when the World frame is sealed.
+    virtual bool ShouldRenderView(const RenderViewData &view)
+    {
+        return true;
+    }
+    void RenderSelectedView(ScriptableRenderContext &context, const RenderViewData &view)
+    {
+        if (ShouldRenderView(view))
+            Render(context, view);
+        else
+            context.SkipView();
+    }
 
     /// @brief Render one camera through its dedicated context and RenderView.
     virtual void Render(ScriptableRenderContext &context, const RenderViewData &view) = 0;

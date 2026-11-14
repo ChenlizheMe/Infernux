@@ -58,11 +58,22 @@ class RenderStackPipeline(RenderPipeline):
         else:
             self._render_default(context, view)
 
+    def should_render_view(self, view) -> bool:
+        # Selection runs inside this new view's native WorldExecutionScope.
+        # A presentation variant bypasses selection and keeps its sealed F.
+        from infernux.lib import SceneManager
+
+        stack = self._find_scene_render_stack(SceneManager.instance().get_active_scene())
+        return stack.pipeline.should_render_view(view) if stack is not None else True
+
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
 
     def _find_render_stack(self, context):
+        return self._find_scene_render_stack(context.scene)
+
+    def _find_scene_render_stack(self, scene):
         """Find the active RenderStack in the current scene.
 
         Lookup order:
@@ -73,7 +84,6 @@ class RenderStackPipeline(RenderPipeline):
         """
         from infernux.renderstack.render_stack import RenderStack
 
-        scene = context.scene
         if scene is None:
             return None
 
