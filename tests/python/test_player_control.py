@@ -166,6 +166,8 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     monkeypatch.setattr(Input, "get_game_mouse_frame_state", lambda button: samples.append(button) or mouse_frame)
 
     def ui_events(width, height, *, mouse_frame):
+        assert player._active_pointer_world == input_sample._read_world_id
+        assert Input.frame_index == input_sample.frame_index
         dispatched.append((width, height))
         routed.append(mouse_frame)
         return hit
@@ -188,6 +190,32 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
         player._render_game(_Context(), 1280.0, 720.0)
         player._engine.game_presentation_ready = False
         player._render_game(_Context(), 1280.0, 720.0)
+        assert not dispatched and not samples and not routed
+
+        # Native World.Input supplies the admitted owner/sample. Presentation
+        # above only publishes the viewport, including its fixed-output mapping.
+        import infernux.input as input_module
+        import infernux.lib as native_module
+        from infernux.engine import runtime_input_state
+
+        input_sample = SimpleNamespace(
+            _read_world_id=7,
+            _read_owner=SimpleNamespace(retired=False),
+            frame_index=101,
+            _sampled_game_render_size=native_input._sampled_game_render_size,
+            _sampled_game_viewport_size=native_input._sampled_game_viewport_size,
+            _sampled_touch_viewport=native_input._sampled_touch_viewport,
+        )
+        provider = SimpleNamespace(instance=lambda: input_sample)
+        monkeypatch.setattr(native_module, "InputManager", provider)
+        monkeypatch.setattr(player_gui_module, "InputManager", provider)
+        monkeypatch.setattr(runtime_input_state, "InputManager", provider)
+        monkeypatch.setattr(input_module, "_NativeInputManager", provider)
+        for expected_count, identity in enumerate((101, 102), start=1):
+            input_sample.frame_index = identity
+            player.process_runtime_input()
+            player.process_runtime_input()
+            assert len(samples) == len(dispatched) == expected_count
         assert native_input.is_cursor_locked
     finally:
         native_input.set_cursor_locked(False)
@@ -200,6 +228,7 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     assert samples == [0, 0]
     expected = (16.0, 24.0, *mouse_frame[2:]) if fixed else mouse_frame
     assert routed == [expected] * 4
+    assert routed[0] is routed[1] and routed[2] is routed[3]
     assert player._touch_pixels((0.5, 0.5), player._last_w, player._last_h, player._touch_viewport) == (
         player._last_w / 2, player._last_h / 2,
     )

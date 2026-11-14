@@ -456,11 +456,11 @@ bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu, bool interac
                                                       static_cast<uint64_t>((std::max)(int64_t{0}, Remaining(true))));
     };
     const auto gpuClaimsHostCredit = [&] {
-        return gpuAvailable && std::any_of(choices.begin(), choices.end(), [&](const auto &choice) {
+        return m_late && gpuAvailable && std::any_of(choices.begin(), choices.end(), [&](const auto &choice) {
                    return !choice.source->callbacks.interactive && choice.facts.gpu.reserved && fits(choice.facts.gpu);
                });
     };
-    if (!interactive && !gpu && m_preferGpu && gpuAvailable &&
+    if (m_late && !interactive && !gpu && m_preferGpu && gpuAvailable &&
         std::any_of(choices.begin(), choices.end(), [&](const auto &choice) {
             const auto &candidate = choice.facts.gpu;
             return !choice.source->callbacks.interactive && (!gpuReserved || candidate.reserved) && fits(candidate);
@@ -479,6 +479,12 @@ bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu, bool interac
         if (!choice.source->awake || choice.source->callbacks.interactive != interactive)
             continue;
         auto &candidate = gpu ? choice.facts.gpu : choice.facts.host;
+        // Early service precedes runtime/foreground continuation. Only an
+        // explicit host reservation may spend that credit speculatively;
+        // ordinary throughput uses the remaining allowance in late service.
+        // Required dependencies enter through AdvanceRequired, not this lane.
+        if (!m_late && !interactive && !candidate.reserved)
+            continue;
         if (!fits(candidate) || (!interactive && !candidate.reserved && (gpu ? gpuReserved : gpuClaimsHostCredit())))
             continue;
         next = choice.source->id + 1;
@@ -578,6 +584,40 @@ bool FrameWorkOwner::AdvanceRequired(SourceId id, const std::function<FrameGpuAv
     return DriveRequired(id, ServiceKind::Required, gpuAvailability, {});
 }
 
+bool FrameWorkOwner::AdvanceDependency(SourceId id, const std::function<FrameGpuAvailability()> &gpuAvailability)
+{
+    if (!m_active)
+        throw std::logic_error("An asynchronous dependency needs an active frame opportunity");
+    if (!m_late)
+        return DriveRequired(id, ServiceKind::Required, gpuAvailability, {});
+    const auto outerGpu = m_gpuAvailability;
+    struct RestoreGpu
+    {
+        FrameGpuAvailability &current;
+        FrameGpuAvailability previous;
+        ~RestoreGpu()
+        {
+            current = previous;
+        }
+    } restore{m_gpuAvailability, outerGpu};
+    const auto available = [outerGpu, &gpuAvailability] {
+        const auto foregroundBlocked = [](FrameGpuAvailability value) {
+            return value == FrameGpuAvailability::ForegroundDeferred ||
+                   value == FrameGpuAvailability::ForegroundRecording ||
+                   value == FrameGpuAvailability::ForegroundBacklog;
+        };
+        if (foregroundBlocked(outerGpu))
+            return outerGpu;
+        const auto dependencyGpu = gpuAvailability();
+        if (foregroundBlocked(dependencyGpu))
+            return dependencyGpu;
+        // Accepted compute predecessors do not prohibit this exact source's
+        // ready successor. Existing queue slots/resource credits still admit it.
+        return FrameGpuAvailability::Ready;
+    };
+    return DriveRequired(id, ServiceKind::Background, available, {});
+}
+
 void FrameWorkOwner::DrainRequired(SourceId id, const std::function<FrameGpuAvailability()> &gpuAvailability,
                                    const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress)
 {
@@ -639,13 +679,14 @@ bool FrameWorkOwner::DriveRequired(SourceId id, ServiceKind kind,
             requireAdmission();
         if (!pending)
             return false;
-        if (!IsAccepting() || (!synchronous && Remaining() <= 0))
+        if (!IsAccepting() || (!synchronous && ServiceRemaining() <= 0))
             return pending;
         const auto fits = [this, synchronous](const FrameWorkCandidate &candidate) {
-            return candidate.ready && (synchronous || candidate.hostNanoseconds <=
-                                                          static_cast<uint64_t>((std::max)(int64_t{0}, Remaining())));
+            return candidate.ready &&
+                   (synchronous ||
+                    candidate.hostNanoseconds <= static_cast<uint64_t>((std::max)(int64_t{0}, ServiceRemaining())));
         };
-        if (m_gpuAvailability == FrameGpuAvailability::Ready && choice.facts.gpuBusy)
+        if (m_gpuAvailability == FrameGpuAvailability::Ready && choice.facts.gpuBusy && !choice.facts.gpu.ready)
             m_gpuAvailability = FrameGpuAvailability::BackgroundPending;
         if (m_gpuAvailability == FrameGpuAvailability::Ready && fits(choice.facts.gpu) &&
             AdvanceChoice(choice, true, false))

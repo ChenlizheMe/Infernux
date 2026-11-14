@@ -30,7 +30,13 @@ void RuntimeWorld::SceneCollection::Clear()
     retiringPersistent.reset();
     retiringScenes.clear();
 }
-RuntimeWorld::RuntimeWorld() : id(s_nextRuntimeWorldId.fetch_add(1, std::memory_order_relaxed))
+std::shared_ptr<RuntimeWorldHandle> RuntimeWorld::ReserveHandle()
+{
+    return std::make_shared<RuntimeWorldHandle>(s_nextRuntimeWorldId.fetch_add(1, std::memory_order_relaxed));
+}
+
+RuntimeWorld::RuntimeWorld(std::shared_ptr<RuntimeWorldHandle> reserved)
+    : handle(reserved ? std::move(reserved) : ReserveHandle()), id(handle->id)
 {
     // Input must outlive every World, including the SceneManager default World.
     (void)InputManager::Instance();
@@ -49,8 +55,10 @@ RuntimeWorld::~RuntimeWorld()
 
 WorldExecutionScope::WorldExecutionScope(RuntimeWorld *world) noexcept : m_previous(s_currentWorld), m_world(world)
 {
-    if (world)
+    if (world) {
         ++world->executionScopes;
+        m_randomScope.emplace(world->random);
+    }
     if (world && world != m_previous) {
         m_inputScope.emplace(world->frame.input, world->id);
         s_currentWorld = world;

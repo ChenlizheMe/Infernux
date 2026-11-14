@@ -289,14 +289,15 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         bootstrap.run()
         bootstrap.engine._set_process_owned_exit()
 
-        bootstrap.engine.set_window_title(title)
-        if display_mode == "fullscreen_borderless":
-            bootstrap.engine.set_fullscreen(True)
-        bootstrap.engine.set_window_icon(window_icon)
+        if not bootstrap.engine.get_native_engine().exit_requested:
+            bootstrap.engine.set_window_title(title)
+            if display_mode == "fullscreen_borderless":
+                bootstrap.engine.set_fullscreen(True)
+            bootstrap.engine.set_window_icon(window_icon)
 
-        _signal_engine_loaded()
-        bootstrap.engine.show()
-        bootstrap.engine.run()
+            _signal_engine_loaded()
+            bootstrap.engine.show()
+            bootstrap.engine.run()
         exit_code = Application._requested_exit_code()
     finally:
         if lock_path and lock_token:

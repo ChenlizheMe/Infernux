@@ -113,6 +113,8 @@ class PlayerBootstrap:
         # Splash products activate from PlayerGUI after the authored splash.
         if not self.splash_items:
             phase("activate runtime scene", self._enter_play_mode)
+            if self.engine.get_native_engine().exit_requested:
+                return
             self._pump_startup_events()
         phase("finish project CPU and GPU declarations", self._finish_project_warmup)
         _plog(
@@ -592,8 +594,8 @@ class PlayerBootstrap:
             )
 
     def _enter_play_mode(self):
-        """Activate the loaded Player scene once the window can present it."""
-        if not self._activate_initial_scene_for_play():
+        """Use the same activation owner as the first visible GUI frame."""
+        if not self._player_gui.begin_play_when_ready() and not self._player_gui._play_start_cancelled:
             raise RuntimeError("Cannot activate the initial Player scene")
 
     def _activate_initial_scene_for_play(self):

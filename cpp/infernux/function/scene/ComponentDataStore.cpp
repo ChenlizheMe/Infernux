@@ -873,8 +873,8 @@ INX_CDS_VECTOR_ACCESSORS(4, Vec4)
                                           CppType *out) const                                                          \
     {                                                                                                                  \
         const auto &storage = RequireClass(classId);                                                                   \
-        const auto &field = RequireField(classId, fieldId, DataType::StoreType);                                       \
         RequireAllAlive(storage, handles, count);                                                                      \
+        const auto &field = RequireField(classId, fieldId, DataType::StoreType);                                       \
         for (size_t i = 0; i < count; ++i) {                                                                           \
             out[i] = field.At<CppType>(handles[i].index);                                                              \
         }                                                                                                              \
@@ -883,8 +883,8 @@ INX_CDS_VECTOR_ACCESSORS(4, Vec4)
                                            size_t count, const CppType *in)                                            \
     {                                                                                                                  \
         auto &storage = RequireClass(classId);                                                                         \
-        auto &field = RequireField(classId, fieldId, DataType::StoreType);                                             \
         RequireAllAlive(storage, handles, count);                                                                      \
+        auto &field = RequireField(classId, fieldId, DataType::StoreType);                                             \
         for (size_t i = 0; i < count; ++i) {                                                                           \
             field.At<CppType>(handles[i].index) = in[i];                                                               \
         }                                                                                                              \
@@ -901,8 +901,8 @@ INX_CDS_SCALAR_BATCH(Bool, uint8_t, Bool)
                                             size_t count, float *out) const                                            \
     {                                                                                                                  \
         const auto &storage = RequireClass(classId);                                                                   \
-        const auto &field = RequireField(classId, fieldId, DataType::StoreType);                                       \
         RequireAllAlive(storage, handles, count);                                                                      \
+        const auto &field = RequireField(classId, fieldId, DataType::StoreType);                                       \
         for (size_t i = 0; i < count; ++i) {                                                                           \
             std::copy_n(field.FloatsAt(handles[i].index), Dim, out + i * Dim);                                         \
         }                                                                                                              \
@@ -911,8 +911,8 @@ INX_CDS_SCALAR_BATCH(Bool, uint8_t, Bool)
                                              size_t count, const float *in)                                            \
     {                                                                                                                  \
         auto &storage = RequireClass(classId);                                                                         \
-        auto &field = RequireField(classId, fieldId, DataType::StoreType);                                             \
         RequireAllAlive(storage, handles, count);                                                                      \
+        auto &field = RequireField(classId, fieldId, DataType::StoreType);                                             \
         for (size_t i = 0; i < count; ++i) {                                                                           \
             std::copy_n(in + i * Dim, Dim, field.FloatsAt(handles[i].index));                                          \
         }                                                                                                              \

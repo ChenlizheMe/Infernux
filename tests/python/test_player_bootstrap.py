@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import types
 import ast
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -59,7 +60,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
     from infernux.engine.player_bootstrap import PlayerBootstrap
     from infernux.engine.player_runtime import PlayerRuntimeSession
     from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
-    from infernux.engine.project_context import set_project_root
+    from infernux.engine.project_context import using_project_root
     from infernux.plugins import PluginManager
 
     cooked = tmp_path / "Library/Artifacts/Blob/preload-guid.txt"
@@ -148,7 +149,16 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
         raise PreloadObserved
 
     monkeypatch.setattr(PluginManager, "startup", preload)
-    set_project_root(str(tmp_path))
+    from infernux.core.assets import AssetManager
+    import infernux.application as application_state
+
+    state = ExitStack()
+    state.enter_context(using_project_root(str(tmp_path)))
+    globals_state = state.enter_context(monkeypatch.context())
+    for name in ("_engine_ref", "_runtime_kind", "_exit_code", "_player_install_root"):
+        globals_state.setattr(application_state, name, getattr(application_state, name))
+    for name in ("_engine", "_asset_database", "_registry"):
+        globals_state.setattr(AssetManager, name, getattr(AssetManager, name))
     try:
         if host == "desktop":
             bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
@@ -175,12 +185,19 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
                 if isinstance(node, ast.FunctionDef) and node.name == "_prepare_player_runtime"
             )
             from infernux.resources import engine_font_cjk_path, engine_font_path
+            from infernux.lib import _Infernux
 
             fonts = []
+            frame_work = _Infernux._FrameWorkOwner()
+            compute_host = object()
             monkeypatch.setitem(
                 sys.modules,
                 "_InfernuxWebHost",
-                types.SimpleNamespace(screen_ui_set_default_font=lambda *paths: fonts.append(paths)),
+                types.SimpleNamespace(
+                    screen_ui_set_default_font=lambda *paths: fonts.append(paths),
+                    frame_work=lambda: frame_work,
+                    acquire_compute_host=lambda: compute_host,
+                ),
             )
             namespace = {
                 "_player_session": None,
@@ -190,9 +207,17 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
                 "_player_runtime_manifest": manifest,
                 "_player_runtime_catalog": catalog,
             }
+
+            def create_session(**kwargs):
+                assert kwargs == {
+                    "asset_database": session.get_asset_database(),
+                    "frame_work": frame_work,
+                }
+                return session
+
             monkeypatch.setattr(
                 "infernux.engine.player_runtime.PlayerRuntimeSession",
-                lambda **_kwargs: session,
+                create_session,
             )
             exec(
                 compile(ast.Module(body=[function], type_ignores=[]), str(template), "exec"),
@@ -203,24 +228,44 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
             run()
         if host == "web":
             assert fonts == [(engine_font_path, engine_font_cjk_path)]
+            assert session._infernux_compute_host is compute_host
     finally:
-        from infernux.core.assets import AssetManager
-
-        AssetManager.release_engine()
-        Application._unbind_engine(session)
-        set_project_root(None)
+        try:
+            AssetManager.release_engine(session)
+            Application._unbind_engine(session)
+            session._shutdown_work_runtime()
+            session.release_content()
+            session._frame_work.stop()
+        finally:
+            state.close()
 
 
 def test_player_activates_initial_scene_without_editor_deferred_tasks(monkeypatch):
     from infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_gui import PlayerGUI
+    from infernux.engine.deferred_task import DeferredTaskRunner
 
     _stub_engine_status(monkeypatch)
+
+    def reject_deferred(*_args, **_kwargs):
+        pytest.fail("Player activation must not submit an Editor deferred task")
+
+    monkeypatch.setattr(DeferredTaskRunner, "submit", reject_deferred)
     activated = []
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap._activate_initial_scene_for_play = lambda: activated.append(True) or True
+    bootstrap._player_gui = PlayerGUI(
+        types.SimpleNamespace(_track_runtime_input_view=lambda _view: None),
+        activate_play=bootstrap._activate_initial_scene_for_play,
+    )
 
     bootstrap._enter_play_mode()
     assert activated == [True]
+    # The first visible frame reaches the same gate after no-splash startup.
+    assert bootstrap._player_gui.begin_play_when_ready()
+    assert activated == [True]
+    assert bootstrap._player_gui._play_started
+    assert not bootstrap._player_gui._play_start_failed
 
 
 def test_player_runtime_session_does_not_construct_editor_managers(tmp_path):
@@ -255,6 +300,9 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
     class Engine:
         def prepare_startup_refresh(self):
             calls.append("prepare")
+
+        def get_native_engine(self):
+            return types.SimpleNamespace(exit_requested=False)
 
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap.engine = Engine()

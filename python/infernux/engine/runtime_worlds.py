@@ -274,6 +274,7 @@ class WorldRuntime:
         from infernux.components.registry import _author_type_registrations
         from infernux.components.serializable_object import _AUTHOR_SERIALIZABLE_REGISTRY
         self.identity = int(identity)
+        self.initializing = True
         self.type_registrations = {key: value for key, value in _author_type_registrations.items()
                                    if not value.project_script}
         self.script_registrations = {}
@@ -283,8 +284,10 @@ class WorldRuntime:
         from infernux.scene import RuntimeSceneLoadState
         self.scene_loads = RuntimeSceneLoadState()
         self.data_assets = {}
-        from .runtime_dispatch import RuntimeRevisionEpoch
-        self.epoch = RuntimeRevisionEpoch(0, {})
+        from .runtime_dispatch import initial_runtime_world_epoch
+        self.epoch = initial_runtime_world_epoch(
+            registration.component_type for registration in self.type_registrations.values()
+            if registration.component_type is not None)
         from infernux.runtime_services import _author_update_callbacks
         self.updates = {phase: () for phase in _author_update_callbacks}
         from infernux.execution import ExecutionScope
@@ -310,6 +313,7 @@ class WorldRuntime:
         self.epoch = RuntimeRevisionEpoch(0, {})
 
     def begin_retirement(self):
+        self.initializing = False
         transaction = self.scene_loads._active_scene_transaction
         if transaction is not None and not transaction.is_complete:
             transaction.cancel()
@@ -322,39 +326,139 @@ class WorldRuntime:
                 registration.close()
 
 
+class RuntimeWorldInitializationCancelled(Exception):
+    """A lifecycle callback cancelled initialization without a preparation failure."""
+
+
 class RuntimeWorldSession:
-    """One Play snapshot set; native owns every actual world and scene."""
+    """One immutable initial template; native owns identity, order and membership."""
 
     def __init__(self, engine, snapshots, *, scene_service=None):
+        from collections import deque
+        from infernux.lib import SceneManager
         self.engine = engine
-        self.snapshots = tuple(snapshots)
+        self.snapshots = tuple(RuntimeSceneSource(item.name, item.snapshot, item.was_active, item.scene)
+                               for item in snapshots)
+        persistent = SceneManager.instance().get_runtime_persistent_scene()
+        self.persistent_source = (RuntimeSceneSource(persistent.name, persistent._capture_play_mode_snapshot(),
+                                                     False, persistent) if persistent is not None else None)
+        self.sources = self.snapshots + ((self.persistent_source,) if self.persistent_source else ())
+        # Template descriptors are gathered once for the entire Play, never from
+        # live worlds. Each materialization still creates its own Python realm.
+        self.records = tuple(item.snapshot._python_component_records() for item in self.sources)
         self.scene_service = scene_service
-        self.identities = []
+        self._preparations = deque()
+        self.closed = False
+        if engine._runtime_world_session is not None:
+            raise RuntimeError('an initial-world template is already installed')
+        self.identity = int(SceneManager.instance()._begin_runtime_world_management_session())
+        engine._runtime_world_session = self
+        # The existing owner selects this ordinary background source between
+        # peer sources, repeats ready work while credit remains and retains its
+        # foreground reserve. Callbacks never keep a closed session alive.
+        import weakref
+        reference = weakref.ref(self)
+        from infernux.lib import _Infernux
 
-    def create(self):
+        def describe():
+            session = reference()
+            return session._describe_preparations() if session is not None else _Infernux._FrameWorkFacts()
+
+        def advance(gpu, token):
+            session = reference()
+            return session._advance_preparation(gpu, token) if session is not None else False
+
+        self._source = engine._frame_work.add_source(None, describe, advance)
+
+    def reserve(self):
+        from infernux.lib import SceneManager
+        if self.closed:
+            raise RuntimeError('the Play session is closing')
+        return SceneManager.instance()._reserve_runtime_world()
+
+    def create(self, count=1):
+        """Reserve the initial total before the first publication can call Awake."""
+        if type(count) is not int or count < 1:
+            raise ValueError('initial world count must be a positive integer')
+        handles = tuple(self.reserve() for _ in range(count))
+        self.request_create(handles[1:])
+        handle = handles[0]
+        for _ in self._prepare(handle, start_play=False):
+            pass
+        if self.closed or handle.destroy_requested or handle.retirement_outcome == 'cancelled':
+            raise RuntimeWorldInitializationCancelled(handle.error)
+        if handle.state != 'ready':
+            raise RuntimeError(handle.error or 'initial world preparation failed')
+        return int(handle.id)
+
+    def initialization_current(self, handle, *, started=False):
+        """Check the captured owner after a user lifecycle callback returns."""
+        if (self.closed or self.engine._runtime_world_session is not self
+                or handle.state != 'ready' or handle.destroy_requested
+                or self.engine.get_native_engine().exit_requested):
+            return False
+        if started:
+            from infernux.lib import SceneManager, _Infernux
+            with _Infernux._RuntimeWorldScope(int(handle.id)):
+                return SceneManager.instance().is_playing()
+        return True
+
+    def cancel_initialization(self, handle):
+        from infernux.lib import SceneManager
+        if handle.state not in {'preparing', 'ready', 'retiring'}:
+            return
+        handle.error = 'RuntimeWorld initialization was cancelled'
+        handle.retirement_outcome = 'cancelled'
+        if handle.state in {'preparing', 'ready'}:
+            SceneManager.instance()._begin_runtime_world_retirement(handle.id)
+
+    def request_create(self, handles):
+        """Register an accepted batch in order, without materializing its graphs."""
+        for handle in handles:
+            if self.closed or handle.destroy_requested:
+                self._cancel_reservation(handle, 'Play session closed' if self.closed else 'creation cancelled')
+            else:
+                self._preparations.append((handle, self._prepare(handle, start_play=True)))
+        self.pump()
+
+    def _cancel_reservation(self, handle, reason):
+        from infernux.lib import SceneManager
+        if handle.state == 'preparing':
+            SceneManager.instance()._cancel_reserved_runtime_world(handle, 'cancelled', reason)
+
+    def _prepare(self, handle, *, start_play):
         from infernux.lib import SceneManager, _Infernux
         from infernux.engine.component_restore import (
             _prepare_python_component_records, PreparedPythonComponentGraph,
             publish_prepared_scene_python_components,
         )
         manager = SceneManager.instance()
-        identity = int(manager._begin_runtime_world())
+        identity = int(handle.id)
         tokens = []
         prepared = None
+        materialized = False
         try:
+            if self.closed or handle.destroy_requested:
+                self._cancel_reservation(handle, 'creation cancelled')
+                return
+            manager._begin_reserved_runtime_world(handle)
+            materialized = True
             domain = WorldRuntime(identity)
             self.engine._world_runtimes[identity] = domain
+            yield
             with _Infernux._RuntimeWorldScope(identity):
-                records = [item.snapshot._python_component_records() for item in self.snapshots]
-                object_ids = set().union(*(set(record[0]) for record in records))
-                native_types = set().union(*(set(record[1]) for record in records))
-                descriptors = [item for record in records for item in record[2]]
+                object_ids = set().union(*(set(record[0]) for record in self.records))
+                native_types = set().union(*(set(record[1]) for record in self.records))
+                descriptors = [item for record in self.records for item in record[2]]
                 prepared = _prepare_python_component_records(object_ids, native_types, descriptors,
                     self.engine.get_asset_database(), allow_missing_scripts=False)
-                scenes = []
-                object_map, component_map = {}, {}
-                for item in self.snapshots:
-                    scene = manager.create_scene(item.name)
+            yield
+            scenes = []
+            object_map, component_map = {}, {}
+            for item in self.sources:
+                with _Infernux._RuntimeWorldScope(identity):
+                    scene = (manager._create_preparing_persistent_scene() if item is self.persistent_source
+                             else manager.create_scene(item.name))
                     token = scene._commit_play_mode_snapshot_retaining_world(item.snapshot, new_instance_ids=True)
                     if token is None:
                         raise RuntimeError(f'cannot clone Scene {item.name}')
@@ -364,55 +468,197 @@ class RuntimeWorldSession:
                     scenes.append(scene)
                     if item.was_active:
                         manager.set_active_scene(scene)
+                yield
+            with _Infernux._RuntimeWorldScope(identity):
                 manager._remap_preparing_world_references(identity, component_map)
-                attached = []
-                cursor = 0
-                for scene, record in zip(scenes, records):
+            yield
+            attached = []
+            cursor = 0
+            for scene, record in zip(scenes, self.records):
+                with _Infernux._RuntimeWorldScope(identity):
                     count = len(record[2])
                     graph = PreparedPythonComponentGraph(prepared.components[cursor:cursor + count])
                     cursor += count
                     attached.extend(publish_prepared_scene_python_components(scene, graph,
                         clear_registries=False, object_id_map=object_map, component_id_map=component_map,
                         defer_lifecycle=True))
+                yield
+            with _Infernux._RuntimeWorldScope(identity):
                 prepared.consume()
-                # All proxies now exist before any project deserialization/lifecycle hook.
-                for _target, instance, _native in attached:
+            # No yield retains a native scope. No partially attached graph is
+            # publicly accessible; all proxies exist before deserialization hooks.
+            for _target, instance, _native in attached:
+                with _Infernux._RuntimeWorldScope(identity):
                     instance._call_on_after_deserialize()
+                yield
+            with _Infernux._RuntimeWorldScope(identity):
                 if self.scene_service is not None:
                     domain.scene_loads._runtime_scene_service = self.scene_service.clone_for_runtime(
-                        {int(item.scene.world_id): scene for item, scene in zip(self.snapshots, scenes)})
+                        {int(item.scene.world_id): scene for item, scene in zip(self.sources, scenes)})
                 for token in tokens:
                     token.finalize()
                 tokens.clear()
                 domain.scheduler.bind_native_bridge(manager)
-                if not manager._publish_runtime_world(identity):
-                    raise RuntimeError('RuntimeWorld publication was cancelled by its lifecycle callback')
-            self.identities.append(identity)
-            return identity
-        except BaseException:
+            yield
+            # Publication, Awake, and initial Start form one existing synchronous
+            # lifecycle quantum. Commands issued inside them are always posted.
+            if self.closed or handle.destroy_requested:
+                raise GeneratorExit
+            paused = self._is_paused()
             with _Infernux._RuntimeWorldScope(identity):
-                for token in reversed(tokens):
-                    token.rollback()
-                if prepared is not None:
-                    prepared.discard()
-            manager._begin_runtime_world_retirement(identity)
-            self._finish(identity)
-            raise
+                if not manager._publish_runtime_world(identity):
+                    handle.error = 'RuntimeWorld publication was cancelled'
+                    handle.retirement_outcome = 'cancelled'
+                    manager._begin_runtime_world_retirement(identity)
+                    return
+                if not self.initialization_current(handle):
+                    self.cancel_initialization(handle)
+                    return
+                if start_play:
+                    manager.play()
+                    if not self.initialization_current(handle, started=True):
+                        self.cancel_initialization(handle)
+                        return
+                    if paused:
+                        manager.pause()
+                    from infernux.components.component import InxComponent
+                    from infernux.engine.startup_warmup import run_component_warmups
+                    from infernux.engine.project_context import get_project_root
+                    run_component_warmups(
+                        (component for values in InxComponent._active_instances.values() for component in values
+                         if component_world_id(component) == identity),
+                        scope='runtime-world', project_path=get_project_root(),
+                        can_continue=lambda: self.initialization_current(handle, started=True))
+                    if not self.initialization_current(handle, started=True):
+                        self.cancel_initialization(handle)
+                        return
+            if handle.pending_primary:
+                self.apply_primary(handle)
+            if start_play:
+                domain.initializing = False
+        except BaseException as error:
+            if materialized:
+                with _Infernux._RuntimeWorldScope(identity):
+                    for token in reversed(tokens):
+                        token.rollback()
+                    if prepared is not None:
+                        prepared.discard()
+                handle.error = ('creation cancelled' if isinstance(error, GeneratorExit) else str(error))
+                handle.retirement_outcome = 'cancelled' if isinstance(error, GeneratorExit) else 'failed'
+                manager._begin_runtime_world_retirement(identity)
+            else:
+                manager._cancel_reserved_runtime_world(handle, 'failed', str(error))
+            if not isinstance(error, GeneratorExit):
+                from infernux.debug import Debug
+                Debug.log_error(f'World {identity} preparation failed: {handle.error}')
+            if isinstance(error, GeneratorExit):
+                raise
 
-    def _finish(self, identity):
+    def _is_paused(self):
+        player = self.engine._player_runtime
+        if player is not None:
+            return player.is_paused
+        manager = self.engine._play_mode_manager
+        return manager is not None and manager.is_paused
+
+    def finish_initialization(self):
+        """Seal the cold world's first Awake/Start/warmup declaration window."""
         from infernux.lib import SceneManager
-        manager = SceneManager.instance()
-        if manager._retire_runtime_world_scenes(identity):
-            return manager._finish_runtime_world_retirement(identity)
-        return False
+        for identity in SceneManager.instance()._runtime_world_ids:
+            self.engine._world_runtimes[int(identity)].initializing = False
+
+    def apply_primary(self, handle):
+        from infernux.lib import SceneManager
+        if self.closed or handle.destroy_requested:
+            return
+        if handle.state == 'ready':
+            SceneManager.instance()._set_primary_runtime_world(handle.id)
+
+    def destroy(self, handle):
+        from infernux.lib import SceneManager
+        if self.closed or handle.state in {'failed', 'cancelled', 'destroyed', 'retiring'}:
+            return
+        for candidate, preparation in tuple(self._preparations):
+            if candidate.id == handle.id:
+                self._preparations.remove((candidate, preparation))
+                # Closing a suspended generator rolls back that world's staging
+                # tokens and transitions it to retirement without touching peers.
+                if handle.id in self.engine._world_runtimes:
+                    preparation.close()
+                else:
+                    self._cancel_reservation(handle, 'creation cancelled')
+                return
+        if handle.state == 'preparing':
+            self._cancel_reservation(handle, 'creation cancelled')
+        else:
+            SceneManager.instance()._begin_runtime_world_retirement(handle.id)
+
+    def _describe_preparations(self):
+        from infernux.lib import _Infernux
+        pending = not self.closed and bool(self._preparations)
+        candidate = (_Infernux._FrameWorkCandidate(self._preparations[0][0].id, 0, True)
+                     if pending else _Infernux._FrameWorkCandidate())
+        return _Infernux._FrameWorkFacts(host=candidate, pending=pending)
+
+    def _advance_preparation(self, gpu, token):
+        from infernux.engine.runtime_dispatch import assert_runtime_owner_thread, _assert_world_dispatch_safe_point
+        assert_runtime_owner_thread()
+        work = self.engine._frame_work
+        if (self.closed or gpu or not self._preparations or not work.active or not work.accepting
+                or work.remaining(background=True) <= 0 or self._preparations[0][0].id != token):
+            return False
+        handle, preparation = self._preparations[0]
+        domain = self.engine._world_runtimes.get(int(handle.id))
+        if domain is not None:
+            _assert_world_dispatch_safe_point(domain)
+        self._preparations.popleft()
+        if handle.destroy_requested:
+            if handle.id in self.engine._world_runtimes:
+                preparation.close()
+            else:
+                self._cancel_reservation(handle, 'creation cancelled')
+            return True
+        # FrameWorkOwner accounts this complete synchronous quantum, then
+        # chooses a peer source before it can choose our next world again.
+        try:
+            next(preparation)
+        except StopIteration:
+            pass
+        else:
+            self._preparations.append((handle, preparation))
+        return True
+
+    def pump(self):
+        """Advertise ready preparation to the existing Host work driver."""
+        from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
+        assert_runtime_owner_thread()
+        if not self.closed and self._preparations:
+            self.engine._frame_work.wake(self._source)
 
     def close(self):
-        # manager.stop() has already removed published domains from scheduling.
-        for identity in self.identities:
-            if identity in self.engine._world_runtimes:
-                self._finish(identity)
-        self.identities.clear()
-
+        from infernux.lib import SceneManager
+        if self.closed:
+            return
+        self.closed = True
+        self.engine._frame_work.remove_source(self._source)
+        manager = SceneManager.instance()
+        for handle, preparation in self._preparations:
+            if handle.id in self.engine._world_runtimes:
+                preparation.close()
+            else:
+                self._cancel_reservation(handle, 'Play session closed')
+        self._preparations.clear()
+        for handle in manager._managed_runtime_world_handles:
+            if handle.state == 'preparing':
+                self._cancel_reservation(handle, 'Play session closed')
+            elif handle.state == 'ready':
+                manager._begin_runtime_world_retirement(handle.id)
+        manager._collect_retired_runtime_worlds()
+        manager._end_runtime_world_management_session()
+        if self.engine._runtime_world_session is self:
+            self.engine._runtime_world_session = None
+        self.snapshots = self.sources = self.records = ()
+        self.persistent_source = self.scene_service = None
 
 class WorldScriptPublication:
     """Compose existing per-owner reload transactions under one source publication."""

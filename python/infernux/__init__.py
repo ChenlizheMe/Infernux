@@ -45,6 +45,7 @@ from infernux.lib import (
 from infernux.debug import Debug, debug, log, log_warning, log_error, log_exception
 from infernux import scene
 from infernux.scene import GameObjectQuery, LayerMask, SceneManager
+from infernux.world import World, WorldManager
 from infernux.timing import Time
 from infernux.mathf import Mathf
 from infernux.ui import (
@@ -124,6 +125,8 @@ __all__ = [
     # Engine
     "Engine",
     "Application",
+    "World",
+    "WorldManager",
     "Screen",
     "Rect",
     "RectOffset",

@@ -7,6 +7,10 @@ import pytest
 
 from infernux.components.ref_wrappers import GameObjectRef, PrefabRef, ComponentRef
 from infernux.components import ref_wrappers
+from tests.python.test_player_resident_scene_api import (
+    _configure_player_contract,
+    player_runtime,
+)
 
 
 def test_component_ref_rebinds_invalidated_wrapper_when_native_identity_survives(scene):
@@ -129,30 +133,41 @@ def test_prefab_missing_guid_does_not_promote_a_path_hint(monkeypatch):
     assert not empty and empty.path_hint == "" and empty.name == "None"
 
 
-def test_reference_resolution_tracks_live_persistent_scene_lifetime(scene):
-    from infernux.lib import SceneManager
+def test_reference_resolution_tracks_live_persistent_scene_lifetime(scene, player_runtime, tmp_path):
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.lib import SceneManager, _Infernux
 
     manager = SceneManager.instance()
-    target = scene.create_game_object("PersistentReferenceTarget")
-    target.add_component("Camera")
-    object_reference = GameObjectRef(target)
-    component_reference = ComponentRef(go_id=target.id, component_type="Camera")
-    assert component_reference.resolve().game_object is target
-    manager.play()
+    authored_target = scene.create_game_object("PersistentReferenceTarget")
+    authored_target.add_component("Camera")
+    session = player_runtime.session
+    catalog = PlayerRuntimeAssetCatalog.from_documents(
+        str(tmp_path), {"artifacts": []}, {"entries": []})
+    _configure_player_contract(session, catalog)
     try:
-        manager.dont_destroy_on_load(target)
-        manager.prepare_active_scene_replacement()
-        persistent = manager.get_runtime_persistent_scene()
-        assert target.scene is persistent and persistent is not scene
-        assert object_reference.resolve() is target
-        with ref_wrappers.retiring_scene_references(scene.world_id):
-            assert object_reference.resolve() is target
+        assert session.activate()
+        with _Infernux._RuntimeWorldScope(session._runtime_world_id):
+            source = manager.get_active_scene()
+            target = source.find("PersistentReferenceTarget")
+            assert source is not scene and target is not authored_target
+            object_reference = GameObjectRef(target)
+            component_reference = ComponentRef(go_id=target.id, component_type="Camera")
             assert component_reference.resolve().game_object is target
-        assert target.game_object is target
-        assert component_reference.resolve().game_object is target
-        persistent.destroy_game_object(target)
-        persistent.process_pending_destroys()
-        assert object_reference.resolve() is None
-        assert component_reference.resolve() is None
+            manager.dont_destroy_on_load(target)
+            manager.prepare_active_scene_replacement()
+            persistent = manager.get_runtime_persistent_scene()
+            assert target.scene is persistent and persistent is not source
+            assert object_reference.resolve() is target
+            with ref_wrappers.retiring_scene_references(source.world_id):
+                assert object_reference.resolve() is target
+                assert component_reference.resolve().game_object is target
+            assert target.game_object is target
+            assert component_reference.resolve().game_object is target
+            persistent.destroy_game_object(target)
+            persistent.process_pending_destroys()
+            assert object_reference.resolve() is None
+            assert component_reference.resolve() is None
     finally:
-        manager.stop()
+        session.shutdown()
+    assert manager.get_scene_by_world_id(scene.world_id) is scene
+    assert scene.find("PersistentReferenceTarget") is authored_target

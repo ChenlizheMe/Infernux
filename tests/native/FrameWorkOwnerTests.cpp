@@ -86,7 +86,7 @@ static void ForegroundReserveAndWait()
     target.observe = [&] { ++observations; };
     target.describe = [&] {
         FrameWorkFacts facts;
-        facts.host = {0, 50, executions == 0};
+        facts.host = {0, 50, executions == 0, true};
         facts.pending = facts.host.ready;
         return facts;
     };
@@ -190,7 +190,8 @@ static void CallbackServiceBudgets()
     bool ready = true;
     const auto describe = [&] {
         FrameWorkFacts facts;
-        facts.host = {0, 1, ready};
+        // This test compares early/reserved, required and late service scopes.
+        facts.host = {0, 1, ready, true};
         return facts;
     };
     FrameWorkSource target;
@@ -564,6 +565,360 @@ static void SynchronousDependenciesAndReentry()
     assert(dependencyComplete && !owner.IsActive() && owner.Opportunity() == 0);
 }
 
+static void ForegroundBeforeBackgroundWithNoReserve()
+{
+    uint64_t now = 0;
+    FrameWorkOwner owner([&] { return now; });
+    owner.Configure(100, 0);
+    unsigned completed[2]{}, foreground = 0;
+    std::vector<unsigned> order;
+    for (unsigned index = 0; index < 2; ++index) {
+        FrameWorkSource source;
+        source.describe = [&, index] {
+            FrameWorkFacts facts;
+            facts.host = {index, 0, completed[index] < 3, false};
+            facts.pending = facts.host.ready;
+            return facts;
+        };
+        source.advance = [&, index](bool gpu, uint64_t token) {
+            assert(!gpu && token == index);
+            order.push_back(index);
+            ++completed[index];
+            now += 20; // One indivisible, actually charged background quantum.
+            return true;
+        };
+        owner.AddSource(std::move(source));
+    }
+    const auto ready = [] { return FrameGpuAvailability::Ready; };
+    const auto runtimeContinuation = [&] {
+        FrameWorkOwner::Scope runtime(owner);
+        assert(owner.Remaining() == 100);
+        ++foreground;
+        now += 10;
+    };
+    owner.BeginOpportunity();
+    assert(owner.AdvanceEarly());
+    assert(order.empty() && owner.Remaining() == 100);
+    runtimeContinuation();
+    assert(owner.AdvanceLate(ready));
+    // Late repeats while credit remains, with source round-robin, and stops
+    // after one indivisible overrun instead of admitting another quantum.
+    assert((order == std::vector<unsigned>{0, 1, 0, 1, 0}));
+    assert(owner.Remaining() == -10 && owner.OverrunNanoseconds() == 10);
+    owner.EndOpportunity();
+    owner.BeginOpportunity();
+    assert(owner.AdvanceEarly());
+    assert(order.size() == 5);
+    runtimeContinuation();
+    assert(!owner.AdvanceLate(ready));
+    assert(foreground == 2 && completed[0] == 3 && completed[1] == 3);
+    assert(order.back() == 1 && owner.Remaining() == 70);
+    owner.EndOpportunity();
+}
+
+static void EarlyPrerequisitesAndGpuPreference()
+{
+    uint64_t now = 0;
+    FrameWorkOwner owner([&] { return now; });
+    owner.Configure(100, 0);
+    unsigned reserved = 0, background = 0, gpuSteps = 0;
+    FrameWorkSource gpu;
+    gpu.describe = [&] {
+        FrameWorkFacts facts;
+        facts.gpu = {0, 0, gpuSteps == 0, false};
+        facts.pending = facts.gpu.ready;
+        return facts;
+    };
+    gpu.advance = [&](bool isGpu, uint64_t) {
+        assert(isGpu);
+        ++gpuSteps;
+        ++now;
+        return true;
+    };
+    const auto gpuId = owner.AddSource(std::move(gpu));
+    FrameWorkSource prerequisite;
+    prerequisite.describe = [&] {
+        FrameWorkFacts facts;
+        facts.host = {reserved, 0, reserved < 2, true};
+        facts.pending = facts.host.ready;
+        return facts;
+    };
+    prerequisite.advance = [&](bool isGpu, uint64_t token) {
+        assert(!isGpu && token == reserved);
+        ++reserved;
+        now += 2;
+        return true;
+    };
+    owner.AddSource(std::move(prerequisite));
+    FrameWorkSource throughput;
+    throughput.describe = [&] {
+        FrameWorkFacts facts;
+        facts.host = {0, 0, background == 0, false};
+        facts.pending = facts.host.ready;
+        // A source-wide GPU reservation does not make an arbitrary selected
+        // host candidate a known foreground prerequisite.
+        facts.reservation = true;
+        return facts;
+    };
+    throughput.advance = [&](bool isGpu, uint64_t) {
+        assert(!isGpu);
+        ++background;
+        ++now;
+        return true;
+    };
+    owner.AddSource(std::move(throughput));
+    owner.BeginOpportunity();
+    assert(owner.AdvanceEarly());
+    assert(reserved == 2 && background == 0 && gpuSteps == 0);
+    // A real consumer can still explicitly service its GPU dependency before
+    // the foreground phase; this does not open a new opportunity or drain peers.
+    const auto opportunity = owner.Opportunity();
+    const auto ready = [] { return FrameGpuAvailability::Ready; };
+    assert(!owner.AdvanceRequired(gpuId, ready));
+    assert(gpuSteps == 1 && background == 0 && !owner.IsLate());
+    assert(!owner.AdvanceLate(ready));
+    assert(background == 1 && owner.Opportunity() == opportunity);
+    owner.EndOpportunity();
+}
+
+static void EarlyObservationAndSameHostLateIo()
+{
+    uint64_t now = 0;
+    FrameWorkOwner owner([&] { return now; });
+    owner.Configure(100, 0);
+    unsigned observed = 0, refreshed = 0;
+    bool started = false, complete = false;
+    FrameWorkSource io;
+    io.observe = [&] { ++observed; };
+    io.refresh = [&] {
+        ++refreshed;
+        if (started)
+            complete = true;
+    };
+    io.describe = [&] {
+        FrameWorkFacts facts;
+        facts.pending = !complete;
+        facts.host = {0, 0, !started, false};
+        facts.ioReady = facts.host.ready;
+        return facts;
+    };
+    io.advance = [&](bool gpu, uint64_t) {
+        assert(!gpu && !started);
+        started = true;
+        now += 2;
+        return true;
+    };
+    owner.AddSource(std::move(io));
+    owner.BeginOpportunity();
+    const auto opportunity = owner.Opportunity();
+    assert(owner.AdvanceEarly());
+    assert(observed == 1 && !started);
+    assert(!owner.AdvanceLate([] { return FrameGpuAvailability::Ready; }));
+    assert(started && complete && refreshed >= 2 && owner.Opportunity() == opportunity);
+    owner.EndOpportunity();
+}
+
+static void LateDependencySharesBackgroundCredit()
+{
+    uint64_t now = 0;
+    FrameWorkOwner owner([&] { return now; });
+    owner.Configure(100, 60);
+    owner.ConfigureResources(100, 10, 100, 100);
+    bool inDependency = false, parentComplete = false;
+    unsigned childSteps = 0;
+    FrameWorkSource child;
+    child.describe = [&] {
+        FrameWorkFacts facts;
+        facts.pending = childSteps < 2;
+        facts.host = {childSteps, 20,
+                      inDependency && facts.pending && owner.CanAdmitResource(FrameWorkResource::Cpu, 3) &&
+                          owner.CanAdmitResource(FrameWorkResource::Gpu, 2)};
+        return facts;
+    };
+    child.advance = [&](bool gpu, uint64_t token) {
+        assert(!gpu && token == childSteps);
+        assert(owner.ServiceRemaining() == 30);
+        owner.AdmitResource(FrameWorkResource::Cpu, 3);
+        owner.AdmitResource(FrameWorkResource::Gpu, 2);
+        ++childSteps;
+        now += 20;
+        return true;
+    };
+    const auto childId = owner.AddSource(std::move(child));
+    const auto ready = [] { return FrameGpuAvailability::Ready; };
+    FrameWorkSource parent;
+    parent.describe = [&] {
+        FrameWorkFacts facts;
+        facts.host = {0, 0, !parentComplete};
+        facts.pending = facts.host.ready;
+        return facts;
+    };
+    parent.advance = [&](bool gpu, uint64_t) {
+        assert(!gpu && owner.IsLate() && owner.ServiceRemaining() == 40);
+        now += 10;
+        owner.AdmitResource(FrameWorkResource::Cpu, 2);
+        owner.AdmitResource(FrameWorkResource::Gpu, 6);
+        inDependency = true;
+        // Parent + one child spend 30 of the same 40 background ns. The next
+        // 20 ns child cannot borrow the 60 ns foreground reserve.
+        assert(owner.AdvanceDependency(childId, ready));
+        inDependency = false;
+        assert(childSteps == 1 && owner.ServiceRemaining() == 10 && owner.Remaining() == 70);
+        parentComplete = true;
+        return true;
+    };
+    owner.AddSource(std::move(parent));
+    owner.BeginOpportunity();
+    const auto opportunity = owner.Opportunity();
+    assert(owner.AdvanceEarly());
+    assert(owner.AdvanceLate(ready));
+    assert(childSteps == 1 && parentComplete && owner.Remaining(true) == 10);
+    assert(owner.ResourceState(FrameWorkResource::Cpu).admitted == 5);
+    assert(owner.ResourceState(FrameWorkResource::Gpu).admitted == 8);
+    assert(owner.ResourceRemaining(FrameWorkResource::Cpu) == 95);
+    assert(owner.ResourceRemaining(FrameWorkResource::Gpu) == 2);
+    const auto serial = owner.ProgressSerial();
+    inDependency = true;
+    assert(owner.AdvanceDependency(childId, ready));
+    inDependency = false;
+    assert(childSteps == 1 && now == 30 && owner.Remaining(true) == 10);
+    assert(owner.ProgressSerial() == serial && owner.Opportunity() == opportunity);
+    assert(owner.ResourceState(FrameWorkResource::Cpu).admitted == 5);
+    assert(owner.ResourceState(FrameWorkResource::Gpu).admitted == 8);
+    owner.EndOpportunity();
+}
+
+static void LateDependencyPreservesForegroundPressure()
+{
+    for (const auto pressure : {FrameGpuAvailability::ForegroundDeferred, FrameGpuAvailability::ForegroundRecording,
+                                FrameGpuAvailability::ForegroundBacklog}) {
+        for (const bool outerBlocked : {false, true}) {
+            FrameWorkOwner owner([] { return uint64_t{0}; });
+            owner.Configure(100, 0);
+            bool inDependency = false, parentComplete = false;
+            unsigned gpuAttempts = 0;
+            FrameWorkSource child;
+            child.describe = [&] {
+                FrameWorkFacts facts;
+                facts.pending = true;
+                facts.gpu = {0, 0, inDependency};
+                facts.gpuBusy = inDependency;
+                return facts;
+            };
+            child.advance = [&](bool gpu, uint64_t) {
+                assert(gpu);
+                ++gpuAttempts;
+                return false;
+            };
+            const auto childId = owner.AddSource(std::move(child));
+            const auto outer = [&] { return outerBlocked ? pressure : FrameGpuAvailability::Ready; };
+            const auto dependency = [&] { return outerBlocked ? FrameGpuAvailability::Ready : pressure; };
+            FrameWorkSource parent;
+            parent.describe = [&] {
+                FrameWorkFacts facts;
+                facts.host = {0, 0, !parentComplete};
+                facts.pending = facts.host.ready;
+                return facts;
+            };
+            parent.advance = [&](bool gpu, uint64_t) {
+                assert(!gpu && owner.IsLate());
+                const std::string outerReason = owner.GpuUnavailableReason();
+                const auto serial = owner.ProgressSerial();
+                const auto opportunity = owner.Opportunity();
+                inDependency = true;
+                assert(owner.AdvanceDependency(childId, dependency)); // Pending is not progress.
+                inDependency = false;
+                assert(gpuAttempts == 0 && owner.ProgressSerial() == serial);
+                assert(owner.Remaining() == 100 && owner.Opportunity() == opportunity);
+                // Check inside the parent, before another owner round could
+                // refresh and accidentally hide a leaked child GPU decision.
+                assert(std::string(owner.GpuUnavailableReason()) == outerReason);
+                assert(owner.IsGpuForegroundBlocked() == outerBlocked);
+                parentComplete = true;
+                return true;
+            };
+            owner.AddSource(std::move(parent));
+            owner.BeginOpportunity();
+            assert(owner.AdvanceEarly());
+            assert(owner.AdvanceLate(outer));
+            assert(parentComplete && gpuAttempts == 0);
+            owner.EndOpportunity();
+        }
+    }
+}
+
+static void LateDependencySuccessorAndBlockedProgress()
+{
+    uint64_t now = 0;
+    FrameWorkOwner owner([&] { return now; });
+    owner.Configure(100, 0);
+    owner.ConfigureResources(100, 12, 100, 100);
+    bool inDependency = false, parentComplete = false;
+    unsigned attempts = 0, accepted = 0;
+    FrameWorkSource child;
+    child.describe = [&] {
+        FrameWorkFacts facts;
+        facts.pending = accepted < 2;
+        // One accepted predecessor can coexist with its ready exact successor.
+        facts.gpuBusy = inDependency && facts.pending;
+        facts.gpu = {accepted, 1, inDependency && facts.pending && owner.CanAdmitResource(FrameWorkResource::Gpu, 2)};
+        return facts;
+    };
+    child.advance = [&](bool gpu, uint64_t token) {
+        assert(gpu && token == accepted);
+        ++attempts;
+        ++now; // Even a rejected submission costs actual shared host time.
+        if (accepted)
+            return false;
+        owner.AdmitResource(FrameWorkResource::Gpu, 2);
+        ++accepted;
+        now += 2;
+        return true;
+    };
+    const auto childId = owner.AddSource(std::move(child));
+    const auto ready = [] { return FrameGpuAvailability::Ready; };
+    FrameWorkSource parent;
+    parent.describe = [&] {
+        FrameWorkFacts facts;
+        facts.host = {0, 0, !parentComplete};
+        facts.pending = facts.host.ready;
+        return facts;
+    };
+    parent.advance = [&](bool gpu, uint64_t) {
+        assert(!gpu && owner.IsLate());
+        const std::string outerReason = owner.GpuUnavailableReason();
+        assert(!outerReason.empty() && !owner.IsGpuForegroundBlocked());
+        now += 5;
+        owner.AdmitResource(FrameWorkResource::Gpu, 8);
+        const auto opportunity = owner.Opportunity();
+        inDependency = true;
+        assert(owner.AdvanceDependency(childId, ready));
+        assert(accepted == 1 && attempts == 2 && now == 9);
+        assert(owner.ResourceState(FrameWorkResource::Gpu).admitted == 10);
+        assert(owner.ResourceRemaining(FrameWorkResource::Gpu) == 2);
+        assert(std::string(owner.GpuUnavailableReason()) == outerReason);
+        const auto serial = owner.ProgressSerial();
+        const auto remaining = owner.ServiceRemaining();
+        assert(owner.AdvanceDependency(childId, ready));
+        inDependency = false;
+        // The still-blocked successor is attempted once, honestly returns no
+        // progress, keeps its GPU credit and cannot spin/refill this Host.
+        assert(accepted == 1 && attempts == 3 && now == 10);
+        assert(owner.ProgressSerial() == serial && owner.Opportunity() == opportunity);
+        assert(owner.ServiceRemaining() == remaining - 1);
+        assert(owner.ResourceState(FrameWorkResource::Gpu).admitted == 10);
+        assert(std::string(owner.GpuUnavailableReason()) == outerReason);
+        parentComplete = true;
+        return true;
+    };
+    owner.AddSource(std::move(parent));
+    owner.BeginOpportunity();
+    assert(owner.AdvanceEarly());
+    assert(owner.AdvanceLate([] { return FrameGpuAvailability::BackgroundPending; }));
+    assert(parentComplete && accepted == 1 && attempts == 3 && owner.Remaining() == 90);
+    owner.EndOpportunity();
+}
+
 int main()
 {
     SameOpportunityTicks();
@@ -573,5 +928,11 @@ int main()
     SynchronousOutsideAndInsideHost();
     SynchronousWaitAndDiagnostics();
     SynchronousDependenciesAndReentry();
+    ForegroundBeforeBackgroundWithNoReserve();
+    EarlyPrerequisitesAndGpuPreference();
+    EarlyObservationAndSameHostLateIo();
+    LateDependencySharesBackgroundCredit();
+    LateDependencyPreservesForegroundPressure();
+    LateDependencySuccessorAndBlockedProgress();
     std::cout << "FRAME_WORK_REQUIRED_OK\n";
 }

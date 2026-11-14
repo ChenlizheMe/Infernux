@@ -431,6 +431,15 @@ void BindScene(py::module_ &m)
 
 void BindSceneManager(py::module_ &m)
 {
+    py::class_<RuntimeWorldHandle, std::shared_ptr<RuntimeWorldHandle>>(m, "_RuntimeWorldHandle")
+        .def_readonly("id", &RuntimeWorldHandle::id)
+        .def_readonly("management_session", &RuntimeWorldHandle::managementSession)
+        .def_readonly("state", &RuntimeWorldHandle::state)
+        .def_readwrite("error", &RuntimeWorldHandle::error)
+        .def_readwrite("retirement_outcome", &RuntimeWorldHandle::retirementOutcome)
+        .def_readwrite("display_in_game", &RuntimeWorldHandle::displayInGame)
+        .def_readonly("pending_primary", &RuntimeWorldHandle::pendingPrimary)
+        .def_readwrite("destroy_requested", &RuntimeWorldHandle::destroyRequested);
     py::enum_<SceneManager::RuntimeFrameBarrier>(m, "NativeRuntimeFrameBarrier")
         .value("FIXED_SCRIPT", SceneManager::RuntimeFrameBarrier::FixedScript)
         .value("PHYSICS_POST_SCRIPT", SceneManager::RuntimeFrameBarrier::PhysicsPostScript)
@@ -477,6 +486,19 @@ void BindSceneManager(py::module_ &m)
         .def("_ensure_authoring_world", &SceneManager::EnsureAuthoringWorld)
         .def("_collect_retired_runtime_worlds", &SceneManager::CollectRetiredRuntimeWorlds)
         .def("_begin_runtime_world", [](SceneManager &manager) { return manager.BeginRuntimeWorld().id; })
+        .def("_reserve_runtime_world", &SceneManager::ReserveRuntimeWorld)
+        .def("_begin_runtime_world_management_session", &SceneManager::BeginRuntimeWorldManagementSession)
+        .def("_end_runtime_world_management_session", &SceneManager::EndRuntimeWorldManagementSession)
+        .def_property_readonly("_runtime_world_management_active", &SceneManager::IsRuntimeWorldManagementActive)
+        .def("_begin_reserved_runtime_world",
+             [](SceneManager &manager, const std::shared_ptr<RuntimeWorldHandle> &handle) {
+                 return manager.BeginReservedRuntimeWorld(handle).id;
+             })
+        .def("_get_runtime_world_handle", &SceneManager::GetRuntimeWorldHandle)
+        .def_property_readonly("_managed_runtime_world_handles", &SceneManager::GetManagedRuntimeWorldHandles)
+        .def("_cancel_reserved_runtime_world", &SceneManager::CancelReservedRuntimeWorld)
+        .def("_request_runtime_world_primary", &SceneManager::RequestRuntimeWorldPrimary)
+        .def("_create_preparing_persistent_scene", &SceneManager::CreatePreparingPersistentScene)
         .def("_remap_preparing_world_references", &SceneManager::RemapPreparingWorldReferences)
         .def("_publish_runtime_world", &SceneManager::PublishRuntimeWorld)
         .def("_begin_runtime_world_retirement", &SceneManager::BeginRuntimeWorldRetirement)
@@ -532,6 +554,7 @@ void BindSceneManager(py::module_ &m)
         .def("is_playing", &SceneManager::IsPlaying, "Check if in play mode")
         .def("set_runtime_input_callback", &SceneManager::SetRuntimeInputCallback, py::arg("callback"))
         .def("_can_continue_runtime_frame", &SceneManager::CanContinueRuntimeFrame)
+        .def("_report_runtime_frame_progress", &SceneManager::ReportRuntimeFrameProgress)
         .def_property_readonly("_runtime_frame_generation",
                                [](const SceneManager &manager) { return std::get<3>(manager.GetSimulationState()); })
         .def("set_runtime_lifecycle_callbacks", &SceneManager::SetRuntimeLifecycleCallbacks, py::arg("begin_frame"),

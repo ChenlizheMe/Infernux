@@ -1,12 +1,14 @@
 #pragma once
 
 #include <core/math/FrameTimeSmoothing.h>
+#include <core/math/Random.h>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <optional>
 #include <platform/input/InputManager.h>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -21,6 +23,23 @@ class Transform;
 class SkeletonInstance;
 class Light;
 struct PhysicsDomain;
+
+/// Stable management identity. Survives graph/domain retirement while scripts retain it.
+/// Reserved handles contain no Scene, PhysicsDomain, GPU allocation or Python graph.
+struct RuntimeWorldHandle final
+{
+    const uint64_t id;
+    std::string state = "preparing";
+    std::string error;
+    std::string retirementOutcome = "destroyed";
+    bool displayInGame = true;
+    bool pendingPrimary = false;
+    bool destroyRequested = false;
+    uint64_t managementSession = 0;
+    explicit RuntimeWorldHandle(uint64_t identity) : id(identity)
+    {
+    }
+};
 
 /// Scene ownership and simulation state; device and submission services stay shared.
 class RuntimeWorld final
@@ -165,14 +184,17 @@ class RuntimeWorld final
         std::vector<Light *> activeLights;
     };
 
-    RuntimeWorld();
+    static std::shared_ptr<RuntimeWorldHandle> ReserveHandle();
+    explicit RuntimeWorld(std::shared_ptr<RuntimeWorldHandle> handle = nullptr);
     ~RuntimeWorld();
     RuntimeWorld(const RuntimeWorld &) = delete;
     RuntimeWorld &operator=(const RuntimeWorld &) = delete;
     RuntimeWorld(RuntimeWorld &&) = delete;
     RuntimeWorld &operator=(RuntimeWorld &&) = delete;
 
+    const std::shared_ptr<RuntimeWorldHandle> handle;
     const uint64_t id;
+    std::shared_ptr<Random::Storage> random = std::make_shared<Random::Storage>();
     size_t executionScopes = 0;
     bool retirementScenesComplete = false;
     std::unique_ptr<PhysicsDomain> physics;
@@ -198,6 +220,7 @@ class WorldExecutionScope final
     RuntimeWorld *m_previous;
     RuntimeWorld *m_world;
     std::optional<InputReadScope> m_inputScope;
+    std::optional<Random::StorageScope> m_randomScope;
 };
 
 } // namespace infernux

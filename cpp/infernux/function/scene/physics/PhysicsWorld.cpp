@@ -779,11 +779,11 @@ bool PhysicsWorld::AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const
     if (synchronous) {
         DrainGpuSource(domain);
     } else {
-        if (!m_gpuWork->IsActive() || m_gpuWork->IsLate())
+        if (!m_gpuWork->IsActive())
             return false;
         AdmissionScope admission(*m_gpuScene, domain.owner);
-        (void)m_gpuWork->AdvanceRequired(m_gpuScene->GetSourceId(),
-                                         [this, &domain] { return Availability(*m_gpuHost); });
+        (void)m_gpuWork->AdvanceDependency(m_gpuScene->GetSourceId(),
+                                           [this, &domain] { return Availability(*m_gpuHost); });
     }
     if (m_gpuScene->GetTickStatus(domain.owner) == JoltGpuTick::Status::Failed)
         throw std::runtime_error("GPU physics step failed; stop the runtime before restarting");

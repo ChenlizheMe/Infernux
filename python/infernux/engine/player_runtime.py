@@ -29,6 +29,7 @@ class PlayerRuntimeSession(WorkRuntime):
         scheduler: Any = None,
         scene_service: Any = None,
         frame_work: Any = None,
+        initial_world_count: int = 1,
     ):
         from infernux.engine.runtime_dispatch import bind_runtime_dispatch_owner
 
@@ -52,6 +53,9 @@ class PlayerRuntimeSession(WorkRuntime):
         self._scene_service_installed = False
         self._runtime_world_session = None
         self._runtime_world_id = None
+        if type(initial_world_count) is not int or initial_world_count < 1:
+            raise ValueError('Player initial world count must be a positive integer')
+        self._initial_world_count = initial_world_count
         self._runtime_manifest: Optional[RuntimeProductManifest] = None
         self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
         self._content_workspace: Optional[tempfile.TemporaryDirectory] = None
@@ -60,6 +64,31 @@ class PlayerRuntimeSession(WorkRuntime):
         self._state = "stopped"
         self._membership_warmup_frames = 0
         self._startup_warmup = None
+
+    @property
+    def initial_world_count(self) -> int:
+        """Packaged launch quantity; Editor temporary Play quantity is separate."""
+        return self._initial_world_count
+
+    @initial_world_count.setter
+    def initial_world_count(self, count: int):
+        if type(count) is not int or count < 1:
+            raise ValueError('Player initial world count must be a positive integer')
+        if self._state != 'stopped':
+            raise RuntimeError('set the Player initial count before activation')
+        self._initial_world_count = count
+
+    def _current_scene_service(self):
+        from infernux.engine.runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        if domain is None and self.is_playing:
+            from infernux.application import Application
+            from infernux.lib import SceneManager
+            identities = SceneManager.instance()._runtime_world_ids
+            if not identities:
+                return None
+            domain = Application._current_engine()._world_runtimes[int(identities[0])]
+        return domain.scene_loads._runtime_scene_service if domain is not None else self._scene_service
 
     def _request_full_speed_frame(self):
         # Browser frames already run continuously; desktop sessions borrow the
@@ -91,7 +120,7 @@ class PlayerRuntimeSession(WorkRuntime):
         # The native pre-scene callback may run while a frame transaction is
         # active.  Only mark the registry scan here; the scheduler consumes it
         # at its next owner safe point and publishes the immutable phase plan.
-        scheduler = self._execution_scheduler
+        scheduler = self.execution_scheduler
         scheduler._registry_scan_pending = True
         # Advertise that Python work exists immediately.  This only changes
         # the cheap native gate; the phase counts are published by
@@ -113,16 +142,26 @@ class PlayerRuntimeSession(WorkRuntime):
 
     @property
     def active_scene_path(self) -> Optional[str]:
-        return self._scene_service.active_scene_path
+        service = self._current_scene_service()
+        return service.active_scene_path if service is not None else None
 
     @property
     def last_scene_error(self) -> str:
-        return str(getattr(self._scene_service, "last_error", ""))
+        service = self._current_scene_service()
+        return str(service.last_error) if service is not None else ""
 
     @property
     def execution_scheduler(self) -> Any:
         """Return the shared on-demand phase-plan service for diagnostics."""
-        return self._execution_scheduler
+        from infernux.engine.runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        if domain is None and self.is_playing:
+            from infernux.application import Application
+            from infernux.lib import SceneManager
+            identities = SceneManager.instance()._runtime_world_ids
+            return (Application._current_engine()._world_runtimes[int(identities[0])].scheduler
+                    if identities else None)
+        return domain.scheduler if domain is not None else self._execution_scheduler
 
     def get_asset_database(self) -> Any:
         """Return the Player's already-published runtime asset database.
@@ -274,6 +313,16 @@ class PlayerRuntimeSession(WorkRuntime):
             types.publish()
             database._publish_runtime_asset_catalog()
             self._scene_service.bind_runtime_catalog(merged)
+            if self._runtime_world_session is not None:
+                from infernux.lib import SceneManager
+                from infernux.application import Application
+                engine = Application._current_engine()
+                for handle in SceneManager.instance()._managed_runtime_world_handles:
+                    domain = engine._world_runtimes.get(int(handle.id))
+                    if domain is not None and handle.state in {'preparing', 'ready'}:
+                        service = domain.scene_loads._runtime_scene_service
+                        if service is not None:
+                            service.bind_runtime_catalog(merged)
             self._set_runtime_catalog(merged)
             set_runtime_content_roots(roots, modules)
             self._content_roots = roots
@@ -307,6 +356,17 @@ class PlayerRuntimeSession(WorkRuntime):
         if self._runtime_manifest is None or self._runtime_catalog is None:
             Debug.log_error("Player scene load rejected: runtime contract is not configured")
             return False
+        if self.is_playing:
+            from infernux.lib import SceneManager, _Infernux
+            manager = SceneManager.instance()
+            identities = manager._runtime_world_ids
+            if not identities:
+                raise RuntimeError('Player scene load requires a published world')
+            identity = int(manager._current_runtime_world_id)
+            if identity == int(manager._authoring_runtime_world_id):
+                identity = int(identities[0])
+            with _Infernux._RuntimeWorldScope(identity):
+                return bool(self._current_scene_service().request_load(path))
         loaded = bool(
             self._scene_service.load_initial(path, on_tick=self._pump_startup_events)
         )
@@ -342,22 +402,28 @@ class PlayerRuntimeSession(WorkRuntime):
         from infernux.scene import SceneManager as RuntimeSceneManager
 
         from infernux.application import Application
-        from infernux.engine.runtime_worlds import RuntimeWorldSession, capture_runtime_sources, component_world_id
+        from infernux.engine.runtime_worlds import (
+            RuntimeWorldSession, RuntimeWorldInitializationCancelled,
+            capture_runtime_sources, component_world_id,
+        )
         engine = Application._current_engine()
-        self._runtime_world_session = RuntimeWorldSession(engine, capture_runtime_sources(),
-                                                         scene_service=self._scene_service)
+        session = RuntimeWorldSession(engine, capture_runtime_sources(), scene_service=self._scene_service)
+        self._runtime_world_session = session
+        identity = None
         try:
-            identity = self._runtime_world_session.create()
+            identity = session.create(self.initial_world_count)
             self._runtime_world_id = identity
             domain = engine._world_runtimes[identity]
-            self._execution_scheduler = domain.scheduler
-            self._scene_service = domain.scene_loads._runtime_scene_service
             self._scene_service_installed = True
             with native_module._RuntimeWorldScope(identity):
                 scene = SceneManager.instance().get_active_scene()
                 self._refresh_loaded_scene(scene)
                 self._refresh_execution_membership()
-                SceneManager.instance().play()
+                manager = SceneManager.instance()
+                handle = manager._get_runtime_world_handle(identity)
+                manager.play()
+                if not session.initialization_current(handle, started=True):
+                    raise RuntimeWorldInitializationCancelled('Player Start cancelled activation')
                 self._refresh_execution_membership()
                 from infernux.components.component import InxComponent
                 from infernux.engine.startup_warmup import run_component_warmups
@@ -365,16 +431,23 @@ class PlayerRuntimeSession(WorkRuntime):
                 run_component_warmups(
                     (component for values in InxComponent._active_instances.values() for component in values
                      if component_world_id(component) == identity),
-                    scope="player", project_path=get_project_root())
+                    scope="player", project_path=get_project_root(),
+                    can_continue=lambda: session.initialization_current(handle, started=True))
+                if not session.initialization_current(handle, started=True):
+                    raise RuntimeWorldInitializationCancelled('Player warmup cancelled activation')
+                session.finish_initialization()
         except BaseException:
-            if self._runtime_world_id is not None:
+            # A callback can close this session. Never stop or clear its successor.
+            if not session.closed and identity is not None:
                 from infernux.lib import _Infernux
-                with _Infernux._RuntimeWorldScope(self._runtime_world_id):
+                with _Infernux._RuntimeWorldScope(identity):
                     SceneManager.instance().stop()
-            self._runtime_world_session.close()
-            self._runtime_world_session = None
-            self._runtime_world_id = None
-            self._scene_service_installed = False
+            session.close()
+            if self._runtime_world_session is session:
+                self._runtime_world_session = None
+                self._runtime_world_id = None
+                self._scene_service_installed = False
+                self._state = "stopped"
             raise
         self._state = "playing"
         # Native Start may publish Python component mirrors one frame later
@@ -384,31 +457,24 @@ class PlayerRuntimeSession(WorkRuntime):
         return True
 
     def prepare_frame(self) -> None:
+        """Service every published world's own scene loader, including after reorder/delete."""
         if not self.is_playing:
             return
-        from infernux.lib import _Infernux
-        with _Infernux._RuntimeWorldScope(self._runtime_world_id):
-            self._prepare_runtime_world()
-
-    def _prepare_runtime_world(self) -> None:
-        """Prepare one Player frame at the safe pre-scene boundary.
-
-        Scene callbacks can queue a runtime load while the native scene is
-        being iterated. The editor advances that transaction before the next
-        native scene tick; Player must do the same without constructing any
-        editor-only scene services.
-        """
-        if not self.is_playing:
-            return
+        from infernux.lib import SceneManager, _Infernux
+        from infernux.application import Application
         self.pump_startup_warmup()
         self._publish_ready_content()
+        engine = Application._current_engine()
+        manager = SceneManager.instance()
+        for identity in manager._runtime_world_ids:
+            with _Infernux._RuntimeWorldScope(identity):
+                domain = engine._world_runtimes[int(identity)]
+                if self._membership_warmup_frames > 0:
+                    domain.scheduler._registry_scan_pending = True
+                    domain.scheduler._sync_native_work_availability()
+                domain.scene_loads._runtime_scene_service.process_pending_load()
         if self._membership_warmup_frames > 0:
-            self._refresh_execution_membership()
             self._membership_warmup_frames -= 1
-        previous_scene_path = self._scene_service.active_scene_path
-        self._scene_service.process_pending_load()
-        if self._scene_service.active_scene_path != previous_scene_path:
-            self._refresh_execution_membership()
 
     def shutdown(self) -> None:
         """Retire Player scenes while their resource catalog is still bound."""

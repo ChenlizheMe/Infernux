@@ -132,7 +132,7 @@ class MainThreadCommandQueue:
     _instance: "MainThreadCommandQueue | None" = None
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[tuple[str, Callable[[], Any], CommandFuture]] = (
+        self._queue: queue.Queue[tuple[str, Callable[[], Any], CommandFuture | None]] = (
             queue.Queue()
         )
         self._main_thread_id: int | None = None
@@ -171,6 +171,14 @@ class MainThreadCommandQueue:
                 future.cancel(f"Host command could not wake its owner thread: {exc}")
         return future
 
+    def post(self, name: str, fn: Callable[[], Any]) -> None:
+        """Post engine-owned work to the next drain, even from its owner thread."""
+        self._queue.put((str(name), fn, None))
+        with self._owner_lock:
+            wake_callback = self._wake_callback
+        if wake_callback is not None:
+            wake_callback()
+
     def set_wake_callback(self, callback: Callable[[], None] | None) -> None:
         """Set the owner-loop wake edge used after background submissions."""
         if callback is not None and not callable(callback):
@@ -188,16 +196,28 @@ class MainThreadCommandQueue:
             timeout=max(timeout_ms, 1) / 1000.0
         )
 
-    def drain(self, max_commands: int = 16) -> int:
+    def drain(self, max_commands: int | None = 16, *, can_continue=None) -> int:
         with self._owner_lock:
             self._main_thread_id = threading.get_ident()
         processed = 0
-        for _ in range(max(int(max_commands), 0)):
+        # Callback-posted commands wait for another safe point; never recurse
+        # through Awake/Start/OnDestroy in this drain.
+        queued = self._queue.qsize()
+        admitted = queued if max_commands is None else min(max(int(max_commands), 0), queued)
+        for _ in range(admitted):
+            if can_continue is not None and not can_continue():
+                break
             try:
                 _name, fn, future = self._queue.get_nowait()
             except queue.Empty:
                 break
-            if future._begin_execute():
+            if future is None:
+                try:
+                    fn()
+                except Exception as error:
+                    from infernux.debug import Debug
+                    Debug.log_error(f'Host command {_name} failed: {error}')
+            elif future._begin_execute():
                 try:
                     future.set_result(fn())
                 except BaseException as exc:
@@ -212,7 +232,8 @@ class MainThreadCommandQueue:
                 _name, _fn, future = self._queue.get_nowait()
             except queue.Empty:
                 break
-            cancelled += int(future.cancel(reason))
+            if future is not None:
+                cancelled += int(future.cancel(reason))
         return cancelled
 
     def wait_until_ready(self, timeout: float = 5.0) -> bool:

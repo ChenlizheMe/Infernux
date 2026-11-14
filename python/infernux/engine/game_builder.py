@@ -395,6 +395,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         window_height: int = 720,
         window_resizable: bool = True,
         render_output: Optional[dict] = None,
+        player_initial_world_count: int = 1,
         splash_items: Optional[List[Dict]] = None,
         debug_mode: bool = False,
         lto: bool = True,
@@ -414,6 +415,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.render_output = normalize_render_output(
             BUILD_SETTINGS_DEFAULTS["render_output"] if render_output is None else render_output,
         )
+        if type(player_initial_world_count) is not int or player_initial_world_count < 1:
+            raise ValueError('Player initial world count must be a positive integer')
+        self.player_initial_world_count = player_initial_world_count
         self.splash_items = list(splash_items) if splash_items else []
         self.debug_mode = debug_mode
         self.lto = lto
@@ -4463,10 +4467,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         )
         scene_guids = list(self._build_scene_guids())
         # BuildSettings is an authoring document.  The Player needs only the
-        # ordered scene identities; output paths, compiler switches, editor icon
+        # ordered scene identities and initial world count; compiler switches, icon
         # sources and cook roots belong to BuildManifest/catalog generation
         # and must never leak workstation paths into the shipped content.
-        _write_json_atomic(bs, {"scene_guids": scene_guids})
+        _write_json_atomic(bs, {"scene_guids": scene_guids,
+                                "player_initial_world_count": self.player_initial_world_count})
 
     # ------------------------------------------------------------------
     # Generate BuildManifest.json

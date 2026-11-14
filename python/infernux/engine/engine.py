@@ -59,6 +59,7 @@ class Engine(WorkRuntime):
         from infernux.lib import SceneManager
         SceneManager.instance()._ensure_authoring_world()
         self._world_runtimes = {}
+        self._runtime_world_session = None
         self._authoring_scheduler = RuntimeExecutionScheduler(
             name=self._application_role,
             native_bridge=True,
@@ -204,10 +205,15 @@ class Engine(WorkRuntime):
             if player:
                 from infernux.engine.player_runtime import PlayerRuntimeSession
 
+                from infernux.host.commands import MainThreadCommandQueue
+                MainThreadCommandQueue.instance().set_wake_callback(self._engine.request_full_speed_frame)
+                from infernux.engine.build_settings import load_build_settings, normalize_build_settings
+                player_settings = normalize_build_settings(load_build_settings(project_path))
                 self._player_runtime = PlayerRuntimeSession(
                     asset_database=self.get_asset_database(),
                     native_engine=self._engine,
                     scheduler=self._runtime_scheduler,
+                    initial_world_count=player_settings['player_initial_world_count'],
                 )
             else:
                 from infernux.engine.play_mode import PlayModeManager
@@ -312,7 +318,7 @@ class Engine(WorkRuntime):
                             # MCP authoring can retire script dispatch entries.
                             # Drain before begin_native_frame, never from pre-GUI
                             # while that frame still owns the old dispatch epoch.
-                            MainThreadCommandQueue.instance().drain()
+                            # The shared queue drains below for both host roles.
                             from infernux.engine.undo import UndoManager
 
                             # History may restore a scene and publish script types.
@@ -323,6 +329,20 @@ class Engine(WorkRuntime):
                                 undo.process_pending_replay()
                         if engine._mode == RuntimeMode.Headless:
                             engine._tick_headless_maintenance()
+                from infernux.host.commands import MainThreadCommandQueue
+                work = engine._frame_work
+                work.begin_scope()
+                try:
+                    with _Infernux._RuntimeWorldScope(SceneManager.instance()._authoring_runtime_world_id):
+                        with engine._authoring_scheduler.change_journal.transaction():
+                            MainThreadCommandQueue.instance().drain(
+                                max_commands=None,
+                                can_continue=lambda: work.active and work.accepting and work.remaining(background=True) > 0)
+                finally:
+                    work.end_scope()
+                session = engine._runtime_world_session
+                if session is not None:
+                    session.pump()
                 engine.tick_play_mode(float(delta_time))
                 # The native frame owner drives registered sources after this
                 # authoring point, before runtime phase preparation below.
@@ -350,7 +370,9 @@ class Engine(WorkRuntime):
                 AssetManager.flush_model_instance_sync()
             from infernux.lib import _Infernux, SceneManager
             manager = SceneManager.instance()
-            identities = manager._runtime_world_ids or [manager._authoring_runtime_world_id]
+            identities = manager._runtime_world_ids
+            if not identities and engine._runtime_world_session is None:
+                identities = [manager._authoring_runtime_world_id]
             for identity in identities:
                 with _Infernux._RuntimeWorldScope(identity):
                     engine._runtime_scheduler.prepare_frame()

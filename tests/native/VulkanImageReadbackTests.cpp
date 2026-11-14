@@ -1,8 +1,8 @@
+#include <SDL3/SDL.h>
 #include <core/threading/FrameWorkOwner.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/renderer/vk/VulkanQueueManager.h>
-#include <SDL3/SDL.h>
 
 #include <cassert>
 #include <iostream>
@@ -23,14 +23,15 @@ static bool HasNoData(const std::shared_ptr<vk::ImageReadbackTicket> &ticket)
     }
 }
 
-static bool Run(vk::VkDeviceContext &device, vk::VulkanQueueManager &queues,
-                vk::VkResourceManager &resources, FrameWorkOwner &owner, const std::string &scenario)
+static bool Run(vk::VkDeviceContext &device, vk::VulkanQueueManager &queues, vk::VkResourceManager &resources,
+                FrameWorkOwner &owner, const std::string &scenario)
 {
     using Status = vk::ImageReadbackStatus;
     const std::vector<uint8_t> blue{0, 0, 255, 255};
     const auto publish = [&] {
         owner.BeginOpportunity();
         owner.AdvanceEarly();
+        owner.AdvanceLate([] { return FrameGpuAvailability::Ready; });
         owner.EndOpportunity();
     };
     if (scenario == "recorder_abandon") {
@@ -72,7 +73,7 @@ static bool Run(vk::VkDeviceContext &device, vk::VulkanQueueManager &queues,
     }
 
     auto source = resources.CreateImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM,
-                                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     assert(source && source->IsValid());
     const auto allocation = resources.AllocatePrimaryCommandBuffer();
     assert(allocation.cmdBuffer != VK_NULL_HANDLE);
@@ -86,17 +87,18 @@ static bool Run(vk::VkDeviceContext &device, vk::VulkanQueueManager &queues,
     barrier.image = source->GetImage();
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(allocation.cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(allocation.cmdBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
     const VkClearColorValue color{{0, 0, 1, 1}};
-    vkCmdClearColorImage(allocation.cmdBuffer, source->GetImage(), barrier.newLayout, &color, 1, &barrier.subresourceRange);
+    vkCmdClearColorImage(allocation.cmdBuffer, source->GetImage(), barrier.newLayout, &color, 1,
+                         &barrier.subresourceRange);
     const bool invalid = scenario == "invalid_epoch";
     const auto epoch = invalid ? rhi::InvalidSubmissionSerial : queues.ReserveCompletionEpoch();
     std::shared_ptr<vk::ImageReadbackTicket> ticket;
     try {
-        ticket = resources.RecordFrameImageReadback(allocation.cmdBuffer, source->GetImage(), barrier.newLayout,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-            1, 1, VK_FORMAT_R8G8B8A8_UNORM, epoch);
+        ticket = resources.RecordFrameImageReadback(
+            allocation.cmdBuffer, source->GetImage(), barrier.newLayout, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, epoch);
         assert(!invalid);
     } catch (const std::invalid_argument &) {
         assert(invalid && resources.GetPendingImageReadbackCount() == 0);

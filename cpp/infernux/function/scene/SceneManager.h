@@ -11,6 +11,7 @@
 #include <core/math/FrameTimeSmoothing.h>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -26,6 +27,7 @@ class MeshRenderer;
 class SkinnedMeshRenderer;
 class SkeletonInstance;
 class FrameWorkOwner;
+struct FrameWorkFacts;
 // Forward declaration for Light registry
 class Light;
 
@@ -88,6 +90,20 @@ class SceneManager
 
     /// Internal scene-transaction entry points, not the public multi-world API.
     RuntimeWorld &BeginRuntimeWorld();
+    std::shared_ptr<RuntimeWorldHandle> ReserveRuntimeWorld();
+    RuntimeWorld &BeginReservedRuntimeWorld(const std::shared_ptr<RuntimeWorldHandle> &handle);
+    std::shared_ptr<RuntimeWorldHandle> GetRuntimeWorldHandle(uint64_t id) const;
+    std::vector<std::shared_ptr<RuntimeWorldHandle>> GetManagedRuntimeWorldHandles() const;
+    void CancelReservedRuntimeWorld(const std::shared_ptr<RuntimeWorldHandle> &handle, const std::string &state,
+                                    const std::string &reason);
+    void RequestRuntimeWorldPrimary(const std::shared_ptr<RuntimeWorldHandle> &handle);
+    Scene *CreatePreparingPersistentScene();
+    uint64_t BeginRuntimeWorldManagementSession();
+    void EndRuntimeWorldManagementSession();
+    [[nodiscard]] bool IsRuntimeWorldManagementActive() const noexcept
+    {
+        return m_activeManagementSession != 0;
+    }
     bool PublishRuntimeWorld(uint64_t id);
     void RemapPreparingWorldReferences(uint64_t id, const std::unordered_map<uint64_t, uint64_t> &components);
     void BeginRuntimeWorldRetirement(uint64_t id);
@@ -187,11 +203,12 @@ class SceneManager
 
     /// One Host admission, then all ready logical phases within the existing allowance.
     void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta = false);
-    void BindRuntimeFrameWork(FrameWorkOwner &work) noexcept;
+    void BindRuntimeFrameWork(FrameWorkOwner &work);
     void SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
                                              std::function<void(uint64_t)> retire);
     void RecordHostFrame(float deltaTime);
     [[nodiscard]] bool CanContinueRuntimeFrame() const noexcept;
+    void ReportRuntimeFrameProgress() noexcept;
     void SetRuntimeInputCallback(std::function<void()> callback);
     void FinishStepPresentation(bool completeStep) noexcept;
 
@@ -654,6 +671,9 @@ class SceneManager
     void UpdateHostFrame(float deltaTime);
     void UpdateCurrentWorld(float deltaTime);
     bool ServiceCurrentWorldFrame();
+    FrameWorkFacts DescribeRuntimeFrames();
+    bool AdvanceRuntimeFrame(bool gpu, uint64_t worldId);
+    void UnbindRuntimeFrameWork() noexcept;
     void PauseCurrentWorld();
     void PlayCurrentWorld();
     void StopCurrentWorld();
@@ -698,14 +718,33 @@ class SceneManager
     void RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt = nullptr);
     void UpdateRuntimeScenePlayingState(bool playing);
 
+    struct RuntimeWorldInitialSettings
+    {
+        float fixedTimeStep;
+        float maxFixedDeltaTime;
+        float timeScale;
+        glm::vec3 gravity;
+        Random::Snapshot random;
+    };
+    [[nodiscard]] RuntimeWorldInitialSettings CaptureAuthoringWorldSettings() const;
+    void RefreshThreadDefaultRandomStorage() const;
+    std::optional<RuntimeWorldInitialSettings> m_initialRuntimeWorldSettings;
     std::unique_ptr<RuntimeWorld> m_authoringWorld;
     std::vector<std::unique_ptr<RuntimeWorld>> m_runtimeWorlds;
     std::vector<std::unique_ptr<RuntimeWorld>> m_preparingWorlds;
+    // Preparing identities that have not materialized a graph/domain yet.
+    // This is the native collection's reservation phase, never a Python world table.
+    std::vector<std::shared_ptr<RuntimeWorldHandle>> m_reservedWorlds;
+    // Lightweight terminal metadata for status panels in the current Play only.
+    std::vector<std::shared_ptr<RuntimeWorldHandle>> m_terminalWorldHandles;
+    uint64_t m_managementSessionSequence = 0;
+    uint64_t m_activeManagementSession = 0;
     std::vector<std::unique_ptr<RuntimeWorld>> m_retiringWorlds;
     std::function<void(uint64_t)> m_runtimeWorldBeginRetirementCallback;
     std::function<void(uint64_t)> m_runtimeWorldRetirementCallback;
     uint64_t m_nextRuntimeWorldId = 0;
     FrameWorkOwner *m_runtimeFrameWork = nullptr;
+    uint64_t m_runtimeFrameSource = 0;
     std::function<void()> m_runtimeInput;
     std::function<bool(RuntimeWorld &)> m_runtimeFramePublication;
     std::function<void(uint64_t)> m_runtimeFrameRetirement;

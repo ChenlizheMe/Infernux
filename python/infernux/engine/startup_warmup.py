@@ -12,7 +12,7 @@ import threading
 import time
 import ast
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from infernux.debug import Debug
 from infernux._source_kinds import is_host_python_source
@@ -516,7 +516,8 @@ def invalidate_source(file_path: str, *, project_path: str | None = None) -> int
 
 
 def run_component_warmups(
-    components: Iterable[object], *, scope: str, project_path: str | None = None
+    components: Iterable[object], *, scope: str, project_path: str | None = None,
+    can_continue: Callable[[], bool] | None = None,
 ) -> int:
     """Scan persisted results and execute only missing or changed warmups."""
     started = time.perf_counter()
@@ -527,6 +528,8 @@ def run_component_warmups(
     cached = 0
     current_platform = _platform_identity()
     for component in tuple(components):
+        if can_continue is not None and not can_continue():
+            return executed
         hook = getattr(component, "_infernux_startup_warmup", None)
         if not callable(hook):
             continue
@@ -540,7 +543,11 @@ def run_component_warmups(
             cached += 1
             continue
         hook_started = time.perf_counter()
-        ready = hook()
+        from infernux.execution import component_execution
+        with component_execution(component):
+            ready = hook()
+        if can_continue is not None and not can_continue():
+            return executed
         hook_elapsed = (time.perf_counter() - hook_started) * 1000.0
         # A component may not be ready to prepare its native resources until
         # its authored scene has created the required buffers/renderers.  Such
@@ -569,7 +576,9 @@ def run_component_warmups(
     return executed
 
 
-def run_project_script_warmups(*, project_path: str | None, scope: str) -> int:
+def run_project_script_warmups(
+    *, project_path: str | None, scope: str, can_continue: Callable[[], bool] | None = None,
+) -> int:
     """Discover warmups from the host's explicit Editor/Player contract.
 
     An Editor project with no scripts has no script warmups. A synchronous
@@ -617,14 +626,19 @@ def run_project_script_warmups(*, project_path: str | None, scope: str) -> int:
 
     components: list[object] = []
     for path in paths:
+        if can_continue is not None and not can_continue():
+            return 0
         source = lexical_path(path)
         types = component_types_for_script_path(source)
         if not types:
             types = tuple(load_all_components_from_file(path, register=True))
         for component_type in types:
+            if can_continue is not None and not can_continue():
+                return 0
             component = component_type()
             components.append(component)
-    return run_component_warmups(components, scope=scope, project_path=project_path)
+    return run_component_warmups(components, scope=scope, project_path=project_path,
+                                 can_continue=can_continue)
 
 
 def run_script_warmup(

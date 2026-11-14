@@ -325,6 +325,13 @@ class SerializedFieldDescriptor:
                 FieldType.ENUM,
             )
         )
+        # Scene references resolve in their receiver's real native World.
+        # Leave numeric/CDS and catalog asset reads on their existing fast path.
+        self._owner_scene_reference = (
+            metadata.field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT)
+            or (metadata.field_type == FieldType.LIST
+                and metadata.element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT))
+        )
         # CDS backing (set by _cds_bridge when the class is published; None =
         # Python storage).  Native accessors are cached on the descriptor so the
         # hot path never resolves the extension module or imports the bridge.
@@ -394,7 +401,16 @@ class SerializedFieldDescriptor:
         value = self._python_value(instance)
         # Reference wrappers own their caches and lifetime checks. Bypassing
         # resolve() here can expose a retired native wrapper after scene reload.
-        return value if self._direct_value else resolve_runtime_field_value(value, self.metadata)
+        if self._direct_value:
+            return value
+        if self._owner_scene_reference:
+            from infernux.engine.runtime_worlds import component_world_id
+            identity = component_world_id(instance)
+            if identity:
+                from infernux.lib import _Infernux
+                with _Infernux._RuntimeWorldScope(identity):
+                    return resolve_runtime_field_value(value, self.metadata)
+        return resolve_runtime_field_value(value, self.metadata)
     
     def __set__(self, instance: 'InxComponent', value: Any):
         # ``readonly`` is an authoring/Inspector contract.  Runtime component

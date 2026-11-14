@@ -88,6 +88,8 @@ const RuntimeWorld &SceneManager::CurrentWorld() const noexcept
 
 SceneManager::SceneManager() : m_authoringWorld(std::make_unique<RuntimeWorld>())
 {
+    m_authoringWorld->random = Random::ToolStorage();
+    RefreshThreadDefaultRandomStorage();
     TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform, const Transform *physicsSource,
                                                                  const Transform *authoredSource,
                                                                  bool rotationAuthored) {
@@ -154,17 +156,139 @@ RuntimeWorld *SceneManager::FindRuntimeWorld(uint64_t id) const noexcept
     return nullptr;
 }
 
+void SceneManager::RefreshThreadDefaultRandomStorage() const
+{
+    const auto *world = m_runtimeWorlds.empty() ? m_authoringWorld.get() : m_runtimeWorlds.front().get();
+    Random::SetThreadDefaultStorage(world ? world->random : nullptr);
+}
+
+SceneManager::RuntimeWorldInitialSettings SceneManager::CaptureAuthoringWorldSettings() const
+{
+    return {m_authoringWorld->simulation.fixedTimeStep, m_authoringWorld->simulation.maxFixedDeltaTime,
+            m_authoringWorld->simulation.timeScale, m_authoringWorld->physics->gravity,
+            Random::CaptureStorage(*m_authoringWorld->random)};
+}
+
+uint64_t SceneManager::BeginRuntimeWorldManagementSession()
+{
+    if (m_activeManagementSession)
+        throw std::logic_error("a RuntimeWorld management session is already active");
+    m_initialRuntimeWorldSettings = CaptureAuthoringWorldSettings();
+    m_terminalWorldHandles.clear();
+    m_activeManagementSession = ++m_managementSessionSequence;
+    return m_activeManagementSession;
+}
+
+void SceneManager::EndRuntimeWorldManagementSession()
+{
+    m_terminalWorldHandles.clear();
+    m_activeManagementSession = 0;
+    m_initialRuntimeWorldSettings.reset();
+    RefreshThreadDefaultRandomStorage();
+}
+
+std::shared_ptr<RuntimeWorldHandle> SceneManager::ReserveRuntimeWorld()
+{
+    // Safe even inside OnDestroy: reserve metadata only, without world/ECS mutation.
+    auto handle = RuntimeWorld::ReserveHandle();
+    handle->managementSession = m_activeManagementSession;
+    m_reservedWorlds.push_back(handle);
+    return handle;
+}
+
 RuntimeWorld &SceneManager::BeginRuntimeWorld()
 {
+    return BeginReservedRuntimeWorld(ReserveRuntimeWorld());
+}
+
+RuntimeWorld &SceneManager::BeginReservedRuntimeWorld(const std::shared_ptr<RuntimeWorldHandle> &handle)
+{
     Scene::RequireNoWorldRetirement();
-    auto world = std::make_unique<RuntimeWorld>();
+    const auto it = std::find(m_reservedWorlds.begin(), m_reservedWorlds.end(), handle);
+    if (it == m_reservedWorlds.end() || handle->destroyRequested || handle->state != "preparing")
+        throw std::invalid_argument("RuntimeWorld reservation is not available");
+    if (handle->managementSession != m_activeManagementSession)
+        throw std::invalid_argument("RuntimeWorld reservation belongs to a different management session");
+    // A managed clone always starts from this Play's frozen initial settings.
+    // Standalone native fixtures retain their existing authoring-copy contract.
+    const auto initial =
+        handle->managementSession ? m_initialRuntimeWorldSettings.value() : CaptureAuthoringWorldSettings();
+    auto world = std::make_unique<RuntimeWorld>(handle);
     auto &result = *world;
-    result.simulation.fixedTimeStep = m_authoringWorld->simulation.fixedTimeStep;
-    result.simulation.maxFixedDeltaTime = m_authoringWorld->simulation.maxFixedDeltaTime;
-    result.simulation.timeScale = m_authoringWorld->simulation.timeScale;
-    result.physics->gravity = m_authoringWorld->physics->gravity;
+    result.simulation.fixedTimeStep = initial.fixedTimeStep;
+    result.simulation.maxFixedDeltaTime = initial.maxFixedDeltaTime;
+    result.simulation.timeScale = initial.timeScale;
+    result.physics->gravity = initial.gravity;
+    Random::RestoreStorage(*result.random, initial.random);
     m_preparingWorlds.push_back(std::move(world));
+    m_reservedWorlds.erase(it);
     return result;
+}
+
+std::shared_ptr<RuntimeWorldHandle> SceneManager::GetRuntimeWorldHandle(uint64_t id) const
+{
+    for (const auto &handle : m_reservedWorlds)
+        if (handle->id == id)
+            return handle;
+    auto *world = FindRuntimeWorld(id);
+    if (!world || world == m_authoringWorld.get())
+        throw std::invalid_argument("RuntimeWorld identity is not managed");
+    return world->handle;
+}
+
+std::vector<std::shared_ptr<RuntimeWorldHandle>> SceneManager::GetManagedRuntimeWorldHandles() const
+{
+    std::vector<std::shared_ptr<RuntimeWorldHandle>> handles;
+    for (const auto *worlds : {&m_runtimeWorlds, &m_preparingWorlds, &m_retiringWorlds})
+        for (const auto &world : *worlds)
+            if (world->handle->managementSession == m_activeManagementSession)
+                handles.push_back(world->handle);
+    for (const auto &handle : m_reservedWorlds)
+        if (handle->managementSession == m_activeManagementSession)
+            handles.push_back(handle);
+    handles.insert(handles.end(), m_terminalWorldHandles.begin(), m_terminalWorldHandles.end());
+    return handles;
+}
+
+void SceneManager::CancelReservedRuntimeWorld(const std::shared_ptr<RuntimeWorldHandle> &handle,
+                                              const std::string &state, const std::string &reason)
+{
+    if (state != "cancelled" && state != "failed")
+        throw std::invalid_argument("invalid reservation terminal state");
+    const auto it = std::find(m_reservedWorlds.begin(), m_reservedWorlds.end(), handle);
+    if (it == m_reservedWorlds.end())
+        throw std::invalid_argument("RuntimeWorld reservation has already materialized");
+    handle->state = state;
+    handle->error = reason;
+    handle->pendingPrimary = false;
+    if (m_activeManagementSession && handle->managementSession == m_activeManagementSession)
+        m_terminalWorldHandles.push_back(handle);
+    m_reservedWorlds.erase(it);
+}
+
+void SceneManager::RequestRuntimeWorldPrimary(const std::shared_ptr<RuntimeWorldHandle> &handle)
+{
+    if (!handle || handle->destroyRequested || (handle->state != "ready" && handle->state != "preparing"))
+        throw std::invalid_argument("primary target must be preparing or ready");
+    if (GetRuntimeWorldHandle(handle->id) != handle)
+        throw std::invalid_argument("primary target is not in this runtime collection");
+    for (const auto &candidate : GetManagedRuntimeWorldHandles())
+        candidate->pendingPrimary = false;
+    handle->pendingPrimary = true;
+}
+
+Scene *SceneManager::CreatePreparingPersistentScene()
+{
+    Scene::RequireNoWorldRetirement();
+    if (!IsPreparingRuntimeWorld(CurrentWorld()))
+        throw std::logic_error("persistent template restore requires a preparing world");
+    auto &world = CurrentWorld();
+    if (!world.scenes.persistent) {
+        world.scenes.persistent = std::make_unique<Scene>("DontDestroyOnLoad");
+        world.scenes.persistent->m_runtimeWorld = &world;
+        world.scenes.persistent->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+    }
+    return world.scenes.persistent.get();
 }
 
 void SceneManager::RemapPreparingWorldReferences(uint64_t id, const std::unordered_map<uint64_t, uint64_t> &components)
@@ -173,7 +297,12 @@ void SceneManager::RemapPreparingWorldReferences(uint64_t id, const std::unorder
     if (!world || !IsPreparingRuntimeWorld(*world))
         throw std::invalid_argument("reference remap requires a preparing RuntimeWorld");
     const WorldExecutionScope scope(world);
+    std::vector<Scene *> initialScenes;
     for (const auto &scene : world->scenes.loaded)
+        initialScenes.push_back(scene.get());
+    if (world->scenes.persistent)
+        initialScenes.push_back(world->scenes.persistent.get());
+    for (auto *scene : initialScenes)
         for (auto *object : scene->GetAllObjects()) {
             object->GetTransform()->RemapComponentReferences(components);
             for (const auto &component : object->GetAllComponents())
@@ -191,9 +320,12 @@ bool SceneManager::PublishRuntimeWorld(uint64_t id)
     for (const auto &scene : (*it)->scenes.loaded)
         if (scene->HasPendingPyComponents())
             throw std::logic_error("RuntimeWorld Python graph must be attached before publication");
+    if ((*it)->scenes.persistent && (*it)->scenes.persistent->HasPendingPyComponents())
+        throw std::logic_error("RuntimeWorld persistent Python graph must be attached before publication");
     auto &world = **it;
     m_runtimeWorlds.push_back(std::move(*it));
     m_preparingWorlds.erase(it);
+    RefreshThreadDefaultRandomStorage();
     const WorldExecutionScope scope(&world);
     const auto admittedState = GetSimulationState();
     const auto current = [&] {
@@ -201,8 +333,14 @@ bool SceneManager::PublishRuntimeWorld(uint64_t id)
                std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
                            [id](const auto &candidate) { return candidate->id == id; });
     };
+    world.handle->state = "ready";
     std::vector<std::pair<uint64_t, std::vector<ObjectHandle>>> published;
-    for (const auto &scene : world.scenes.loaded) {
+    std::vector<Scene *> initialScenes;
+    for (const auto &scene : world.scenes.loaded)
+        initialScenes.push_back(scene.get());
+    if (world.scenes.persistent)
+        initialScenes.push_back(world.scenes.persistent.get());
+    for (auto *scene : initialScenes) {
         auto &roots = published.emplace_back(scene->GetWorldId(), std::vector<ObjectHandle>{}).second;
         for (const auto &root : scene->GetRootObjects())
             roots.push_back(root->GetHandle());
@@ -225,6 +363,8 @@ void SceneManager::SetPrimaryRuntimeWorld(uint64_t id)
     if (it == m_runtimeWorlds.end())
         throw std::invalid_argument("primary RuntimeWorld must be published");
     std::rotate(m_runtimeWorlds.begin(), it, std::next(it));
+    (*m_runtimeWorlds.begin())->handle->pendingPrimary = false;
+    RefreshThreadDefaultRandomStorage();
 }
 
 void SceneManager::BeginRuntimeWorldRetirement(uint64_t id)
@@ -242,6 +382,8 @@ void SceneManager::BeginRuntimeWorldRetirement(uint64_t id)
             continue;
         const WorldExecutionScope scope(it->get());
         auto &world = **it;
+        world.handle->state = "retiring";
+        world.handle->pendingPrimary = false;
         PhysicsWorld::Instance().BeginRetireDomain(world);
         world.frame.pending.clear();
         CloseRuntimeFrame(false);
@@ -253,6 +395,7 @@ void SceneManager::BeginRuntimeWorldRetirement(uint64_t id)
             m_runtimeWorldBeginRetirementCallback(id);
         m_retiringWorlds.push_back(std::move(*it));
         worlds->erase(it);
+        RefreshThreadDefaultRandomStorage();
         const bool playing = std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
                                          [](const auto &candidate) { return candidate->simulation.isPlaying; });
         if (playing != wasPlaying && m_onPlayStateChanged)
@@ -325,6 +468,9 @@ bool SceneManager::FinishRuntimeWorldRetirement(uint64_t id)
         if (m_runtimeWorldRetirementCallback)
             m_runtimeWorldRetirementCallback(id);
     }
+    world.handle->state = world.handle->retirementOutcome;
+    if (m_activeManagementSession && world.handle->managementSession == m_activeManagementSession)
+        m_terminalWorldHandles.push_back(world.handle);
     m_retiringWorlds.erase(it);
     return true;
 }
@@ -337,7 +483,7 @@ bool SceneManager::CollectRetiredRuntimeWorlds()
     for (uint64_t id : ids) {
         if (!RetireRuntimeWorldScenes(id))
             continue;
-        if (m_runtimeFrameWork && m_runtimeFrameWork->IsActive() && m_runtimeFrameWork->Remaining() == 0)
+        if (m_runtimeFrameWork && m_runtimeFrameWork->IsActive() && m_runtimeFrameWork->Remaining() <= 0)
             break;
         FinishRuntimeWorldRetirement(id);
     }
@@ -346,9 +492,13 @@ bool SceneManager::CollectRetiredRuntimeWorlds()
 
 void SceneManager::EnsureAuthoringWorld()
 {
-    if (m_authoringWorld)
+    if (m_authoringWorld) {
+        RefreshThreadDefaultRandomStorage();
         return;
+    }
     m_authoringWorld = std::make_unique<RuntimeWorld>();
+    m_authoringWorld->random = Random::ToolStorage();
+    RefreshThreadDefaultRandomStorage();
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     m_editorCameraObject = std::make_unique<GameObject>("Editor Camera");
     m_editorCameraComponent = m_editorCameraObject->AddComponent<Camera>();
@@ -369,11 +519,12 @@ void SceneManager::CompleteShutdown()
     }
     ClearRuntimeLifecycleCallbacks();
     m_authoringWorld.reset();
+    RefreshThreadDefaultRandomStorage();
     m_runtimeFramePublication = nullptr;
     m_runtimeFrameRetirement = nullptr;
     m_runtimeWorldBeginRetirementCallback = nullptr;
     m_runtimeWorldRetirementCallback = nullptr;
-    m_runtimeFrameWork = nullptr;
+    UnbindRuntimeFrameWork();
     m_onSceneLoaded = nullptr;
     m_onSceneUnloaded = nullptr;
     m_onPlayStateChanged = nullptr;
@@ -604,7 +755,7 @@ void SceneManager::Shutdown()
     const WorldExecutionScope worldScope(m_authoringWorld.get());
     auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
-    m_runtimeFrameWork = nullptr;
+    UnbindRuntimeFrameWork();
     auto ids = GetRuntimeWorldIds();
     for (const auto &candidate : m_preparingWorlds)
         ids.push_back(candidate->id);
@@ -832,12 +983,116 @@ bool SceneManager::CanContinueRuntimeFrame() const noexcept
 {
     return !m_runtimeFrameWork || (m_runtimeFrameWork->IsAccepting() &&
                                    (!CurrentWorld().simulation.isPlaying || !m_runtimeFrameWork->IsActive() ||
-                                    m_runtimeFrameWork->Remaining() > 0));
+                                    m_runtimeFrameWork->ServiceRemaining() > 0));
 }
 
-void SceneManager::BindRuntimeFrameWork(FrameWorkOwner &work) noexcept
+void SceneManager::ReportRuntimeFrameProgress() noexcept
 {
+    if (m_runtimeFrameWork && m_runtimeFrameWork->IsActive())
+        m_runtimeFrameWork->ReportProgress();
+}
+
+void SceneManager::BindRuntimeFrameWork(FrameWorkOwner &work)
+{
+    if (m_runtimeFrameWork == &work && m_runtimeFrameSource)
+        return;
+    UnbindRuntimeFrameWork();
     m_runtimeFrameWork = &work;
+    FrameWorkSource source;
+    source.describe = [this] { return DescribeRuntimeFrames(); };
+    source.advance = [this](bool gpu, uint64_t worldId) { return AdvanceRuntimeFrame(gpu, worldId); };
+    m_runtimeFrameSource = work.AddSource(std::move(source));
+}
+
+void SceneManager::UnbindRuntimeFrameWork() noexcept
+{
+    if (m_runtimeFrameWork && m_runtimeFrameSource)
+        m_runtimeFrameWork->RemoveSource(m_runtimeFrameSource);
+    m_runtimeFrameSource = 0;
+    m_runtimeFrameWork = nullptr;
+}
+
+FrameWorkFacts SceneManager::DescribeRuntimeFrames()
+{
+    FrameWorkFacts facts;
+    auto ids = GetRuntimeWorldIds();
+    const auto first = std::find(ids.begin(), ids.end(), m_nextRuntimeWorldId);
+    if (first != ids.end())
+        std::rotate(ids.begin(), first, ids.end());
+    for (uint64_t id : ids) {
+        const auto *world = FindRuntimeWorld(id);
+        if (!world || !world->simulation.isPlaying)
+            continue;
+        const bool step = world->simulation.isPaused && world->simulation.pausedStepPending;
+        const bool frame = !world->simulation.isPaused &&
+                           (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty());
+        if (!step && !frame)
+            continue;
+        facts.pending = true;
+        facts.host = {id, 0, m_runtimeFrameWork && m_runtimeFrameWork->IsLate(), false};
+        break;
+    }
+    return facts;
+}
+
+bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
+{
+    auto *work = m_runtimeFrameWork;
+    if (gpu || !work || !work->IsActive() || !work->IsLate() || !work->IsAccepting() || work->ServiceRemaining() <= 0)
+        return false;
+    // A blocked World must not hide ready peers behind this aggregate source.
+    // Probe this stable published-ID snapshot at most once; return immediately
+    // after the first real quantum, never after cursor rotation alone.
+    auto ids = GetRuntimeWorldIds();
+    auto first = std::find(ids.begin(), ids.end(), worldId);
+    if (first == ids.end())
+        first = std::find(ids.begin(), ids.end(), m_nextRuntimeWorldId);
+    if (first != ids.end())
+        std::rotate(ids.begin(), first, ids.end());
+    for (auto selected = ids.begin(); selected != ids.end(); ++selected) {
+        if (m_runtimeFrameWork != work || !work->IsActive() || !work->IsLate() || !work->IsAccepting() ||
+            work->ServiceRemaining() <= 0)
+            return false;
+        const auto live = std::find_if(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                                       [id = *selected](const auto &candidate) { return candidate->id == id; });
+        if (live == m_runtimeWorlds.end())
+            continue;
+        auto *world = live->get();
+        if (!world->simulation.isPlaying)
+            continue;
+        const bool step = world->simulation.isPaused && world->simulation.pausedStepPending;
+        const bool frame = !world->simulation.isPaused &&
+                           (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty());
+        if (!step && !frame)
+            continue;
+        const auto next = std::next(selected);
+        m_nextRuntimeWorldId = next == ids.end() ? ids.front() : *next;
+        const WorldExecutionScope scope(world);
+        const auto cursor = [&] {
+            return std::make_tuple(world->frame.phase, world->frame.generation, world->frame.sceneCursor,
+                                   world->frame.pending.size(), world->simulation.fixedPhase,
+                                   world->simulation.fixedStepIndex, world->simulation.completedFixedStepIndex,
+                                   world->simulation.publishedFixedStepIndex, world->simulation.runtimeFrameCount,
+                                   world->simulation.pausedStepPending, world->physics->fixedGpuPhase,
+                                   world->physics->controlPending, world->physics->stepPending,
+                                   world->physics->stepCompleted, world->physics->solverStarted);
+        };
+        const auto before = cursor();
+        const auto progress = work->ProgressSerial();
+        const bool published = ServiceCurrentWorldFrame();
+        const bool accepted = published || work->ProgressSerial() != progress;
+        // Callbacks may Stop/retire this owner or detach the source. Do not
+        // inspect the old World cursor after it leaves the published collection.
+        const bool stillPublished = std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                                                [world](const auto &candidate) { return candidate.get() == world; });
+        if (!stillPublished || m_runtimeFrameWork != work || !work->IsAccepting())
+            return accepted || !stillPublished;
+        if (accepted || cursor() != before)
+            return true;
+        // No retained change: try the next World while the same credit remains.
+        // Every pointer/cursor reference above expires with this real scope.
+    }
+    return false;
 }
 
 void SceneManager::SetRuntimeInputCallback(std::function<void()> callback)
@@ -1259,37 +1514,21 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
     m_lastFrameProfile.audioMs += ProfileMsSince(audioStart);
 #endif
     if (m_runtimeWorlds.empty()) {
+        if (m_activeManagementSession)
+            return; // An empty Play collection still owns its live preparation source.
         const WorldExecutionScope authorScope(m_authoringWorld.get());
         TransformECSStore::Instance().BeginFrameCache();
         UpdateCurrentWorld(consumeDelta());
         EndRuntimeFrame(false);
         return;
     }
-    // Every World observes this Host before any callbacks may exhaust its allowance.
-    auto ids = GetRuntimeWorldIds();
-    const auto first = std::find(ids.begin(), ids.end(), m_nextRuntimeWorldId);
-    if (first != ids.end())
-        std::rotate(ids.begin(), first, ids.end());
-    for (uint64_t id : ids) {
+    // Admission stays at the original Host/input boundary. Actual runtime work
+    // competes with preparation/physics through the same late owner chooser.
+    for (uint64_t id : GetRuntimeWorldIds()) {
         const WorldExecutionScope scope(FindRuntimeWorld(id));
         RecordHostFrame(consumeDelta());
     }
-    bool ready;
-    do {
-        ready = false;
-        for (uint64_t id : ids) {
-            auto *world = FindRuntimeWorld(id);
-            if (!world || !world->simulation.isPlaying)
-                continue;
-            const WorldExecutionScope scope(world);
-            if (!CanContinueRuntimeFrame())
-                return;
-            const auto next = std::next(std::find(ids.begin(), ids.end(), id));
-            m_nextRuntimeWorldId = next == ids.end() ? ids.front() : *next;
-            const bool published = ServiceCurrentWorldFrame();
-            ready |= published && !world->simulation.isPaused && !world->frame.pending.empty();
-        }
-    } while (ready && work.Remaining() > 0);
+    work.Wake(m_runtimeFrameSource);
 }
 
 void SceneManager::CompleteRuntimeFrame()
@@ -1406,7 +1645,6 @@ void SceneManager::PlayCurrentWorld()
     if (fresh) {
         if (m_runtimeFrameRetirement)
             m_runtimeFrameRetirement(world.id);
-        ClearRuntimePersistentScene();
         world.simulation.fixedTimeAccumulator = 0.0f;
         world.simulation.fixedTime = 0.0;
         world.simulation.fixedUnscaledTime = 0.0;
@@ -1443,11 +1681,16 @@ void SceneManager::StartActiveSceneForPlay()
 {
     const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
-    if (world.scenes.loaded.empty()) {
+    if (world.scenes.loaded.empty() && !world.scenes.persistent) {
         world.simulation.startupPending = false;
         return;
     }
     const auto admittedState = GetSimulationState();
+    std::vector<Scene *> initialScenes;
+    for (const auto &scene : world.scenes.loaded)
+        initialScenes.push_back(scene.get());
+    if (world.scenes.persistent)
+        initialScenes.push_back(world.scenes.persistent.get());
 
     // Scene-relative frame numbering is the useful contract for deterministic
     // capture and diagnostics. A transactional scene replacement therefore
@@ -1455,7 +1698,7 @@ void SceneManager::StartActiveSceneForPlay()
     world.simulation.runtimeFrameCount = 0;
 
     const auto transitionStart = ProfileClock::now();
-    for (const auto &scene : world.scenes.loaded)
+    for (auto *scene : initialScenes)
         if (scene)
             scene->SetPlaying(true);
 
@@ -1464,13 +1707,13 @@ void SceneManager::StartActiveSceneForPlay()
     // values from recycled ECS slots. Jolt shapes consume world scale during
     // body creation, so synchronize the graph before Collider::RegisterBody.
     auto phaseStart = ProfileClock::now();
-    for (const auto &scene : world.scenes.loaded)
+    for (auto *scene : initialScenes)
         if (scene)
-            TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
+            TransformECSStore::Instance().SyncSceneWorldMatrices(scene);
     const double initialTransformMs = ProfileMsSince(phaseStart);
 
     phaseStart = ProfileClock::now();
-    for (const auto &scene : world.scenes.loaded) {
+    for (auto *scene : initialScenes) {
         if (GetSimulationState() != admittedState)
             return;
         if (scene)
@@ -1484,9 +1727,9 @@ void SceneManager::StartActiveSceneForPlay()
     // Start callbacks may author transforms. Publish those edits before shape
     // creation as well, matching the transform state visible to gameplay.
     phaseStart = ProfileClock::now();
-    for (const auto &scene : world.scenes.loaded)
+    for (auto *scene : initialScenes)
         if (scene)
-            TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
+            TransformECSStore::Instance().SyncSceneWorldMatrices(scene);
     const double postStartTransformMs = ProfileMsSince(phaseStart);
 
     // Start callbacks can author transforms. The transform observer already

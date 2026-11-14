@@ -236,6 +236,7 @@ class CoroutineScheduler:
     __slots__ = (
         "_coroutines", "_on_active_changed", "_creation_epoch",
         "_creation_epoch_id", "_observed_epoch_id", "_stale_epoch_count", "__weakref__",
+        "_world_domain_ref",
     )
 
     def __init__(self, on_active_changed=None, *, creation_epoch: Any = None) -> None:
@@ -247,12 +248,19 @@ class CoroutineScheduler:
         self._creation_epoch_id = int(getattr(self._creation_epoch, "epoch_id", 0))
         self._observed_epoch_id = self._creation_epoch_id
         self._stale_epoch_count = 0
+        from infernux.engine.runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        self._world_domain_ref = weakref.ref(domain) if domain is not None else None
         self._live_schedulers.add(self)
 
     @classmethod
-    def _notify_runtime_epoch_published(cls, epoch: Any) -> None:
+    def _notify_runtime_epoch_published(cls, epoch: Any, *, world_domain=None) -> None:
         """Refresh epoch diagnostics at an owner safe point, not per frame."""
         for scheduler in tuple(cls._live_schedulers):
+            reference = scheduler._world_domain_ref
+            if (world_domain is None and reference is not None
+                    or world_domain is not None and (reference is None or reference() is not world_domain)):
+                continue
             scheduler._observe_epoch(epoch)
 
     def _observe_epoch(self, epoch: Any) -> None:
@@ -526,6 +534,6 @@ class CoroutineScheduler:
             co._phase = "update"
 
 
-def notify_runtime_epoch_published(epoch: Any) -> None:
+def notify_runtime_epoch_published(epoch: Any, *, world_domain=None) -> None:
     """Notify live coroutine schedulers of a newly published runtime epoch."""
-    CoroutineScheduler._notify_runtime_epoch_published(epoch)
+    CoroutineScheduler._notify_runtime_epoch_published(epoch, world_domain=world_domain)

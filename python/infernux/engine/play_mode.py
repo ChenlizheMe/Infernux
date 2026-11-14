@@ -532,6 +532,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._scene_backup: Optional[Any] = None
         self._scene_backups: tuple[_PlaySceneBackup, ...] = ()
         self._runtime_world_session = None
+        self._initial_world_count = 1
         self._prefab_sources_during_play: dict[str, dict] = {}
         # Original scene file path (to restore correct scene on Stop)
         self._scene_path_backup: Optional[str] = None
@@ -561,6 +562,19 @@ class PlayModeManager(PlayModeSerializationMixin):
         """Get the singleton instance if it exists."""
         return cls._instance
     
+    @property
+    def initial_world_count(self) -> int:
+        """Temporary Editor Play quantity, independent of Player launch settings."""
+        return self._initial_world_count
+
+    @initial_world_count.setter
+    def initial_world_count(self, count: int):
+        if type(count) is not int or count < 1:
+            raise ValueError('initial world count must be a positive integer')
+        if self._state != PlayModeState.EDIT:
+            raise RuntimeError('set the initial world count before entering Play')
+        self._initial_world_count = count
+
     def _get_scene_manager(self):
         """Get the SceneManager singleton."""
         return _get_scene_manager()
@@ -796,12 +810,20 @@ class PlayModeManager(PlayModeSerializationMixin):
                 self._invalidate_native_gpu_view_state()
                 from infernux.engine.startup_warmup import run_project_script_warmups, run_component_warmups
                 from infernux.engine.project_context import get_project_root
+                from infernux.engine.runtime_worlds import RuntimeWorldInitializationCancelled
+                session = self._runtime_world_session
+                handle = scene_manager._get_runtime_world_handle(scene_manager._runtime_world_ids[0])
                 report_progress(0.6, "Warming project scripts")
                 run_project_script_warmups(
-                    project_path=get_project_root(), scope="editor-startup"
+                    project_path=get_project_root(), scope="editor-startup",
+                    can_continue=lambda: session.initialization_current(handle),
                 )
+                if not session.initialization_current(handle):
+                    raise RuntimeWorldInitializationCancelled('Editor project warmup cancelled Play')
                 report_progress(0.75, "Starting scene components")
                 scene_manager.play()
+                if not session.initialization_current(handle, started=True):
+                    raise RuntimeWorldInitializationCancelled('Editor Start cancelled Play')
                 from infernux.components.component import InxComponent
                 from infernux.engine.runtime_worlds import component_world_id
                 report_progress(0.9, "Warming component resources")
@@ -814,7 +836,11 @@ class PlayModeManager(PlayModeSerializationMixin):
                     ),
                     scope="editor-play",
                     project_path=get_project_root(),
+                    can_continue=lambda: session.initialization_current(handle, started=True),
                 )
+                if not session.initialization_current(handle, started=True):
+                    raise RuntimeWorldInitializationCancelled('Editor warmup cancelled Play')
+                session.finish_initialization()
                 self._mark_native_scene_temporal_discontinuity()
                 native_start_ms = (time.perf_counter() - native_start_started) * 1000.0
                 notify_started = time.perf_counter()
@@ -854,6 +880,9 @@ class PlayModeManager(PlayModeSerializationMixin):
                         f"Play initialization failed ({enter_error}); authored scene recovery "
                         f"also failed ({restore_error}). Snapshot retained; repair and use Stop."
                     ) from restore_error
+                from infernux.engine.runtime_worlds import RuntimeWorldInitializationCancelled
+                if isinstance(enter_error, RuntimeWorldInitializationCancelled):
+                    return
                 raise
             total_ms = (time.perf_counter() - transition_started) * 1000.0
             self._last_transition_timings_ms = {
@@ -893,9 +922,9 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         def on_done(ok):
             from infernux.engine.ui.engine_status import EngineStatus
-            if ok:
+            if ok and self.is_playing:
                 EngineStatus.flash(t("editor.status.playing"), 1.0, duration=1.5)
-            else:
+            elif not ok:
                 EngineStatus.flash(t("editor.status.play_failed"), 0.0, duration=2.0)
 
         runner.submit("Enter Play Mode", [
@@ -1153,7 +1182,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         from infernux.engine.runtime_worlds import RuntimeWorldSession
         self.clear_runtime_hidden_object_ids()
         self._runtime_world_session = RuntimeWorldSession(Application._current_engine(), self._scene_backups)
-        self._runtime_world_session.create()
+        self._runtime_world_session.create(self.initial_world_count)
         return True
 
     @staticmethod

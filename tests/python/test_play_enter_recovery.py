@@ -12,12 +12,61 @@ from infernux.engine.interaction import EditorInteractionCore
 from infernux.engine.play_mode import PlayModeManager, PlayModeState
 from infernux.engine.scene_manager import SceneFileManager
 from infernux.engine.undo import UndoManager
-from infernux.lib import SceneManager
+from infernux.lib import SceneManager, _Infernux
 from infernux.renderstack.render_effect import RenderEffect
 
 
 @pytest.fixture
-def authoring_project(engine, scene, tmp_path, monkeypatch):
+def play_host(engine, monkeypatch):
+    """Attach the production Python owner to CI's existing native Engine."""
+    import infernux.application as application_state
+    from infernux.application import Application
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.engine.engine import Engine
+    from infernux.lib import RuntimeMode
+    from infernux.renderstack.render_stack import RenderStack
+
+    host = Engine.__new__(Engine)
+    host._engine = engine
+    host._mode = RuntimeMode.Graphical
+    host._application_role = "editor"
+    host._play_mode_manager = None
+    host._player_runtime = None
+    host._world_runtimes = {}
+    host._runtime_world_session = None
+    host._authoring_scheduler = RuntimeExecutionScheduler(name="pytest-play-recovery", native_bridge=True)
+    host._initialize_work_runtime(engine.frame_work, accepting=True)
+    native = SceneManager.instance()
+    with monkeypatch.context() as globals_state:
+        for name in ("_engine_ref", "_runtime_kind", "_exit_code", "_player_install_root"):
+            globals_state.setattr(application_state, name, getattr(application_state, name))
+        globals_state.setattr(RenderStack, "_scene_instances", dict(RenderStack._scene_instances))
+        Application._bind_engine(host, "editor")
+        try:
+            host._install_pre_scene_time_callback()
+            yield host
+        finally:
+            try:
+                if host._runtime_world_session is not None:
+                    host._runtime_world_session.close()
+                host._shutdown_work_runtime()
+                assert native._collect_retired_runtime_worlds()
+                assert host._runtime_world_session is None
+                assert not host._world_runtimes
+            finally:
+                engine._set_runtime_frame_callbacks(None, None)
+                native._set_runtime_world_retirement_callbacks(None, None)
+                native.clear_runtime_lifecycle_callbacks()
+                host._authoring_scheduler.end_native_frame()
+                host._authoring_scheduler.unbind_native_bridge()
+                host._authoring_scheduler.clear()
+                host._runtime_scene_manager = None
+                Application._unbind_engine(host)
+                host._engine = None
+
+
+@pytest.fixture
+def authoring_project(engine, scene, tmp_path, monkeypatch, play_host):
     from infernux.components import script_loader
 
     monkeypatch.setattr(script_loader, "_script_errors", {})
@@ -47,15 +96,19 @@ def authoring_project(engine, scene, tmp_path, monkeypatch):
     manager = PlayModeManager()
     manager.set_asset_database(database)
     manager._native_engine = engine
+    play_host._play_mode_manager = manager
     native = SceneManager.instance()
     try:
         yield SimpleNamespace(manager=manager, runner=runner, files=files, scene=scene,
-                              native=native, object_id=object_id, path=path,
+                              native=native, host=play_host, obj=obj, object_id=object_id, path=path,
+                              runtime_domains=[],
                               original_bytes=path.read_bytes())
     finally:
         runner.cancel()
         native.stop()
-        AssetManager._end_play_data_asset_isolation()
+        if manager._runtime_world_session is not None:
+            manager._runtime_world_session.close()
+            manager._runtime_world_session = None
         Material._suppress_auto_save = False
         RenderEffect._suppress_auto_save = False
         engine.set_play_mode_rendering(False)
@@ -67,9 +120,35 @@ def assert_authoring_restored(state):
     assert state.manager.is_edit_mode and not state.native.is_playing()
     assert not state.runner.is_busy
     assert not Material._suppress_auto_save and not RenderEffect._suppress_auto_save
-    assert AssetManager._play_data_asset_cache is None
-    assert state.scene.find_by_id(state.object_id).name == "AuthorEnterWitness"
+    assert AssetManager._runtime_data_asset_cache() is None
+    assert state.host._runtime_world_session is None
+    assert not state.host._world_runtimes
+    assert not state.native._runtime_world_ids
+    assert all(not domain.data_assets for domain in state.runtime_domains)
+    assert state.native.get_scene_by_world_id(state.scene.world_id) is state.scene
+    assert state.scene.find_by_id(state.object_id) is state.obj
+    assert state.obj.name == "AuthorEnterWitness"
     assert state.path.read_bytes() == state.original_bytes
+
+
+def remember_runtime_domains(state):
+    for domain in state.host._world_runtimes.values():
+        if all(domain is not known for known in state.runtime_domains):
+            state.runtime_domains.append(domain)
+
+
+def mutate_runtime_clone(state):
+    """Failure may leave runtime changes, while the retained author graph stays intact."""
+    remember_runtime_domains(state)
+    identities = state.native._runtime_world_ids
+    assert identities
+    identity = int(identities[0])
+    with _Infernux._RuntimeWorldScope(identity):
+        runtime_scene = state.native.get_scene(state.scene.name)
+        assert runtime_scene is not None and runtime_scene is not state.scene
+        runtime_obj = runtime_scene.find("AuthorEnterWitness")
+        assert runtime_obj is not None and runtime_obj is not state.obj
+        runtime_obj.name = "PartialRuntimeMutation"
 
 
 @pytest.mark.parametrize("phase", [
@@ -84,9 +163,12 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
     Debug.clear_console()
 
     def fail(*args, **kwargs):
-        # Snapshot capture fails before runtime ownership and must not mutate.
-        if phase != "snapshot":
-            state.scene.find_by_id(state.object_id).name = "PartialRuntimeMutation"
+        if phase in ("snapshot", "sprite", "enter_notification", "isolation"):
+            # These boundaries precede graph materialization; never mutate authoring.
+            remember_runtime_domains(state)
+            assert not state.native._runtime_world_ids
+        else:
+            mutate_runtime_clone(state)
         raise RuntimeError(f"injected {phase} failure")
 
     with monkeypatch.context() as fault:
@@ -101,13 +183,20 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
 
             fault.setattr(SpriteRenderer, "init_all_in_scene", initialize_once)
         elif phase == "isolation":
-            begin = AssetManager._begin_play_data_asset_isolation
+            from infernux.engine import component_restore
 
-            def begin_then_fail():
-                begin()
+            def isolated_domain_then_fail(*args, **kwargs):
+                from infernux.engine.runtime_worlds import current_world_runtime
+
+                domain = current_world_runtime()
+                assert domain is not None
+                assert state.host._world_runtimes[domain.identity] is domain
+                assert AssetManager._runtime_data_asset_cache() is domain.data_assets
+                domain.data_assets["recovery-witness"] = object()
                 fail()
 
-            fault.setattr(AssetManager, "_begin_play_data_asset_isolation", begin_then_fail)
+            # The real realm exists before the runtime component graph is prepared.
+            fault.setattr(component_restore, "_prepare_python_component_records", isolated_domain_then_fail)
         elif phase in ("enter_notification", "play_notification"):
             notify = state.manager._notify_state_change
 
@@ -123,6 +212,7 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
             def prepare_then_fail():
                 prepare()
                 if phase == "domain_rejected":
+                    mutate_runtime_clone(state)
                     return False
                 fail()
 
@@ -277,9 +367,10 @@ def test_failed_second_scene_preparation_restores_every_resident(authoring_proje
     from infernux.engine.interaction import DocumentRegistry
 
     secondary = state.native.create_scene("SecondEnterScene")
-    secondary.create_game_object("SecondAuthorWitness")
+    secondary_obj = secondary.create_game_object("SecondAuthorWitness")
     path = state.path.parent / "Second.scene"
     path.write_text(secondary.serialize_asset(), encoding="utf-8")
+    original_bytes = path.read_bytes()
     database = AssetManager._asset_database
     assert database.import_asset(str(path)).succeeded
     state.files.register_loaded_scene(secondary, str(path))
@@ -290,23 +381,36 @@ def test_failed_second_scene_preparation_restores_every_resident(authoring_proje
     revision = (document.revision, document.saved_revision)
     authored = secondary.serialize_asset()
     assert state.files.activate_loaded_scene(state.scene)
-    prepare = state.manager._prepare_scene_for_play
-    created = []
+    from infernux.engine import component_restore
 
-    def prepare_then_fail(scene, snapshot):
-        result = prepare(scene, snapshot)
-        if scene is secondary:
-            state.scene.find_by_id(state.object_id).name = "PartialPrimary"
-            secondary.find("SecondAuthorWitness").name = "PartialSecondary"
+    prepare = component_restore.publish_prepared_scene_python_components
+    created = []
+    runtime_worlds = []
+
+    def prepare_then_fail(runtime_scene, *args, **kwargs):
+        result = prepare(runtime_scene, *args, **kwargs)
+        if runtime_scene.name == secondary.name:
+            assert runtime_scene is not secondary
+            assert int(state.native._current_runtime_world_id) != int(state.native._authoring_runtime_world_id)
+            primary = state.native.get_scene(state.scene.name)
+            assert primary is not state.scene
+            primary.find("AuthorEnterWitness").name = "PartialPrimary"
+            runtime_scene.find("SecondAuthorWitness").name = "PartialSecondary"
             created.append(state.native.create_scene("RuntimeSceneDuringEnter").world_id)
+            runtime_worlds.append(int(state.native._current_runtime_world_id))
+            remember_runtime_domains(state)
             raise RuntimeError("second resident preparation failed after mutation")
         return result
 
-    monkeypatch.setattr(state.manager, "_prepare_scene_for_play", prepare_then_fail)
+    monkeypatch.setattr(component_restore, "publish_prepared_scene_python_components", prepare_then_fail)
     assert state.manager.enter_play_mode()
     state.runner.tick()
     assert_authoring_restored(state)
+    assert created and runtime_worlds
+    assert state.native.get_scene_by_world_id(secondary.world_id) is secondary
+    assert secondary.find("SecondAuthorWitness") is secondary_obj
     assert secondary.serialize_asset() == authored
+    assert path.read_bytes() == original_bytes
     assert (document.revision, document.saved_revision) == revision
     assert all(state.native.get_scene_by_world_id(world_id) is None for world_id in created)
     assert state.native.get_active_scene() is state.scene

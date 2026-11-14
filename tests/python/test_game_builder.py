@@ -1253,7 +1253,8 @@ class TestGameBuilderAnimationClipPreflight:
 def test_requested_build_scene_guids_override_disk_and_remain_a_snapshot(tmp_path):
     project = _make_project(tmp_path)
     selected = ["requested-guid", "scene-guid"]
-    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scene_guids=selected)
+    builder = GameBuilder(str(project), str(tmp_path / "output"), build_scene_guids=selected,
+                          player_initial_world_count=4)
     selected.clear()
     final = tmp_path / "dist"
     settings = final / "Data/ProjectSettings/BuildSettings.json"
@@ -1262,6 +1263,7 @@ def test_requested_build_scene_guids_override_disk_and_remain_a_snapshot(tmp_pat
     builder._relativize_scenes(str(final))
     assert json.loads(settings.read_text(encoding="utf-8")) == {
         "scene_guids": ["requested-guid", "scene-guid"],
+        "player_initial_world_count": 4,
     }
     assert json.loads((project / "ProjectSettings/BuildSettings.json").read_text(encoding="utf-8")) == {
         "scene_guids": ["scene-guid"],

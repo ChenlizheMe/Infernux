@@ -3,9 +3,11 @@
 #include "core/FoundationApi.h"
 
 #include <array>
-#include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -20,17 +22,61 @@ struct RandomState
     }
 };
 
-/// Shared gameplay stream. Unsigned arithmetic fixes the state transition on
+/// Owner-selected gameplay stream. Unsigned arithmetic fixes the state transition on
 /// all targets; snapshots and batches own their data and never borrow Python.
 class Random
 {
   public:
+    // Internal native context. The public RandomState/pickle stays four words.
+    // Scrambling is lazy so worlds without string tweens allocate no tables.
+    struct ScrambleState
+    {
+        std::array<std::u16string, 4> text{u"ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz1234567890",
+                                           u"ABCDEFGHIJKLMNOPQRSTUVXYZ", u"abcdefghijklmnopqrstuvxyz", u"1234567890"};
+        bool initialized = false;
+        int last = 0;
+    };
+
+    struct Snapshot
+    {
+        RandomState state;
+        std::optional<ScrambleState> scramble;
+    };
+
+    struct Storage
+    {
+        INFERNUX_FOUNDATION_API Storage();
+        std::mutex mutex;
+        RandomState state;
+        std::optional<ScrambleState> scramble;
+    };
+
+    // One authoring/tool context also supports standalone Foundation callers.
+    // Engine ownership sets a per-thread default; explicit scopes override it.
+    INFERNUX_FOUNDATION_API static std::shared_ptr<Storage> ToolStorage();
+    INFERNUX_FOUNDATION_API static void SetThreadDefaultStorage(std::shared_ptr<Storage> storage);
+    INFERNUX_FOUNDATION_API static Snapshot CaptureStorage(Storage &storage);
+    INFERNUX_FOUNDATION_API static void RestoreStorage(Storage &storage, const Snapshot &snapshot);
+
+    class StorageScope
+    {
+      public:
+        INFERNUX_FOUNDATION_API explicit StorageScope(std::shared_ptr<Storage> storage) noexcept;
+        INFERNUX_FOUNDATION_API ~StorageScope();
+        StorageScope(const StorageScope &) = delete;
+        StorageScope &operator=(const StorageScope &) = delete;
+
+      private:
+        std::shared_ptr<Storage> m_storage;
+        Storage *m_previous;
+    };
+
     // A native operation can draw/shuffle under one lock instead of locking
     // once per element. No Python or user callbacks execute in this scope.
     class Scope
     {
       public:
-        Scope() : lock_(Shared().mutex), state_(Shared().state)
+        Scope() : storage_(Shared()), lock_(storage_.mutex), state_(storage_.state)
         {
         }
         int32_t Range(int32_t minimum, int32_t maximum)
@@ -42,8 +88,15 @@ class Random
             for (size_t i = 0; i < count; ++i)
                 std::swap(values[i], values[Range(static_cast<int32_t>(i), static_cast<int32_t>(count))]);
         }
+        ScrambleState &Scramble()
+        {
+            if (!storage_.scramble)
+                storage_.scramble.emplace();
+            return *storage_.scramble;
+        }
 
       private:
+        Storage &storage_;
         std::lock_guard<std::mutex> lock_;
         RandomState &state_;
     };
@@ -146,15 +199,8 @@ class Random
         return first + second;
     }
 
-    struct Storage
-    {
-        std::mutex mutex;
-        RandomState state =
-            Seed(static_cast<uint32_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
-    };
-
-    // Defined once in Foundation, so callers in different engine DLLs share
-    // one stream rather than each instantiating a header-local singleton.
+    // TLS is defined once in Foundation, so every engine DLL observes the same
+    // scoped/default owner on a thread, without a dependency on SceneManager.
     INFERNUX_FOUNDATION_API static Storage &Shared();
 };
 } // namespace infernux

@@ -26,6 +26,7 @@ BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
     "icon_guid": "",
     "platform_options": {},
     "render_output": {"width": 0, "height": 0, "filter": "linear"},
+    "player_initial_world_count": 1,
     "debug_mode": False,
     "lto": True,
     "splash_items": [],
@@ -64,6 +65,8 @@ def normalize_build_settings(value: Any, *, project_path: Optional[str] = None) 
     result = copy.deepcopy(BUILD_SETTINGS_DEFAULTS)
     result.update(copy.deepcopy(value))
     result["render_output"] = normalize_render_output(result["render_output"])
+    if type(result['player_initial_world_count']) is not int or result['player_initial_world_count'] < 1:
+        raise ValueError('player_initial_world_count must be a positive integer')
     if not isinstance(result["scene_guids"], list) or not all(
         isinstance(item, str) and item for item in result["scene_guids"]
     ):

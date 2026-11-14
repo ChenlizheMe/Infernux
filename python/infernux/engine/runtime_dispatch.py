@@ -718,7 +718,7 @@ class RuntimeDispatchPublication:
                 self._published = True
         self._committed = True
         self._notify_scheduler_changes()
-        _notify_coroutine_epoch(self.after)
+        _notify_coroutine_epoch(self.after, self._world_domain)
 
     def _notify_scheduler_changes(self) -> None:
         if self._scheduler_notified:
@@ -756,7 +756,7 @@ class RuntimeDispatchPublication:
             self._scheduler_notified = False
         self._committed = False
         self._rolled_back = True
-        _notify_coroutine_epoch(self.before)
+        _notify_coroutine_epoch(self.before, self._world_domain)
 
 
 _EPOCH_LOCK = threading.RLock()
@@ -801,7 +801,11 @@ def assert_runtime_dispatch_safe_point() -> None:
         from infernux.components._component_lifecycle import RuntimeExecutionScheduler
     except ImportError:
         return
-    for scheduler in tuple(RuntimeExecutionScheduler._live_schedulers):
+    _assert_dispatch_schedulers_idle(tuple(RuntimeExecutionScheduler._live_schedulers))
+
+
+def _assert_dispatch_schedulers_idle(schedulers) -> None:
+    for scheduler in schedulers:
         if getattr(scheduler, "_native_frame", None) is not None:
             raise RuntimeError(
                 "runtime dispatch publication requires an owner safe point; "
@@ -813,6 +817,42 @@ def assert_runtime_dispatch_safe_point() -> None:
                 "runtime dispatch publication requires an owner safe point; "
                 "an execution frame is still active"
             )
+
+
+def _assert_world_dispatch_safe_point(domain) -> None:
+    """Private realm creation may coexist with unrelated worlds' pinned frames."""
+    assert_runtime_owner_thread()
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    _assert_dispatch_schedulers_idle(scheduler for scheduler in tuple(RuntimeExecutionScheduler._live_schedulers)
+                                    if scheduler.world_id == domain.identity)
+
+
+def initial_runtime_world_epoch(shared_types) -> RuntimeRevisionEpoch:
+    """Copy accepted engine descriptors into a fresh, world-owned epoch zero."""
+    with _EPOCH_LOCK:
+        return RuntimeRevisionEpoch(0, {component_type: descriptor
+            for component_type in shared_types
+            if (descriptor := _current_epoch.descriptor_for(component_type)) is not None})
+
+
+def _private_initial_publication_domain(types, retired, before):
+    """Recognize add-only private declarations, never a published class body edit."""
+    from .runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    if domain is None or not domain.initializing or not types or retired:
+        return None
+    from infernux.lib import SceneManager
+    handle = SceneManager.instance()._get_runtime_world_handle(domain.identity)
+    if handle.state not in {'preparing', 'ready'} or handle.destroy_requested:
+        return None
+    prefix = domain.modules.prefix + '.'
+    existing_identities = {component_type._get_type_guid() for component_type in before.descriptors}
+    existing_identities.update(component_type._get_type_guid() for component_type in before.retired_types)
+    if any(not component_type.__module__.startswith(prefix)
+           or component_type in before.descriptors or component_type in before.retired_types
+           or component_type._get_type_guid() in existing_identities for component_type in types):
+        return None
+    return domain
 
 
 def build_type_dispatch_descriptor(
@@ -915,12 +955,12 @@ def _set_current_epoch(epoch: RuntimeRevisionEpoch) -> None:
         _current_epoch = epoch
 
 
-def _notify_coroutine_epoch(epoch: RuntimeRevisionEpoch) -> None:
+def _notify_coroutine_epoch(epoch: RuntimeRevisionEpoch, world_domain) -> None:
     """Publish committed epoch state to coroutine diagnostics."""
     try:
         from infernux.coroutine import notify_runtime_epoch_published
 
-        notify_runtime_epoch_published(epoch)
+        notify_runtime_epoch_published(epoch, world_domain=world_domain)
     except Exception as exc:
         # Coroutine epoch observation is diagnostic/cache state, not the
         # publication authority.  It must never make commit/rollback partial.
@@ -959,16 +999,22 @@ def publish_runtime_dispatch_epoch(
     use this so a failed transaction cannot retire a type early.
     """
     types = tuple(dict.fromkeys(component_types))
+    requested_retirements = tuple(retired_types)
     retired = tuple(
         component_type
-        for component_type in dict.fromkeys(retired_types)
+        for component_type in dict.fromkeys(requested_retirements)
         if component_type not in types
     )
     changed_types = tuple(dict.fromkeys((*types, *retired)))
-    if changed_types:
-        assert_runtime_dispatch_safe_point()
+    assert_runtime_owner_thread()
     with _EPOCH_LOCK:
         before = current_runtime_epoch()
+        private_domain = _private_initial_publication_domain(types, requested_retirements, before)
+        if changed_types:
+            if private_domain is not None:
+                _assert_world_dispatch_safe_point(private_domain)
+            else:
+                assert_runtime_dispatch_safe_point()
         if not changed_types:
             return RuntimeDispatchPublication(before, before, published=True)
         next_id = before.epoch_id + 1
@@ -991,8 +1037,14 @@ def publish_runtime_dispatch_epoch(
     scheduler_changes = []
     try:
         from infernux.components._component_lifecycle import RuntimeExecutionScheduler
-
-        for scheduler in tuple(RuntimeExecutionScheduler._live_schedulers):
+        from .runtime_worlds import current_world_runtime
+        from infernux.lib import SceneManager
+        domain = current_world_runtime()
+        owner_world_ids = ((domain.identity,) if domain is not None
+                           else (int(SceneManager.instance()._authoring_runtime_world_id), 0))
+        schedulers = tuple(scheduler for identity in owner_world_ids
+                           for scheduler in RuntimeExecutionScheduler._schedulers_by_world.get(identity, ()))
+        for scheduler in schedulers:
             for component_type in changed_types:
                 before_descriptor = before.descriptor_for(component_type)
                 after_descriptor = after.descriptor_for(component_type)
@@ -1004,7 +1056,7 @@ def publish_runtime_dispatch_epoch(
                 scheduler_changes.append(
                     (scheduler, component_type, phase_changed)
                 )
-    except (ImportError, AttributeError):
+    except ImportError:
         pass
     return RuntimeDispatchPublication(
         before,

@@ -105,26 +105,13 @@ struct Text
     std::vector<Tag> tags, closing;
 };
 
-struct Tables
+void InitializeTables(Random::Scope &random, Random::ScrambleState &tables)
 {
-    std::array<std::u16string, 4> text{u"ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz1234567890",
-                                       u"ABCDEFGHIJKLMNOPQRSTUVXYZ", u"abcdefghijklmnopqrstuvxyz", u"1234567890"};
-    bool initialized = false;
-    int last = 0;
-    void Initialize(Random::Scope &random)
-    {
-        if (initialized)
-            return;
-        for (auto &alphabet : text)
-            random.Shuffle(alphabet.data(), alphabet.size());
-        initialized = true;
-    }
-};
-
-Tables &SharedTables()
-{
-    static Tables tables;
-    return tables;
+    if (tables.initialized)
+        return;
+    for (auto &alphabet : tables.text)
+        random.Shuffle(alphabet.data(), alphabet.size());
+    tables.initialized = true;
 }
 
 size_t ShownCount(size_t length, double factor)
@@ -160,7 +147,7 @@ StringAlphabet::StringAlphabet(std::u16string text, bool shuffle) : text_(std::m
     if (text_.size() == 1)
         text_ += text_;
     Random::Scope random;
-    SharedTables().Initialize(random);
+    InitializeTables(random, random.Scramble());
     random.Shuffle(text_.data(), text_.size());
 }
 
@@ -228,8 +215,8 @@ std::u16string StringSampler::Interpolate(double factor, int cycles) const
         int offset = 0;
         {
             Random::Scope random;
-            auto &tables = SharedTables();
-            tables.Initialize(random);
+            auto &tables = random.Scramble();
+            InitializeTables(random, tables);
             if (shown < length) {
                 if (mode_ == 5) {
                     if (!alphabet_)

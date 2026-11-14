@@ -145,6 +145,7 @@ class PlayerGUI(InxGUIRenderable):
         self._activate_play = activate_play
         self._play_started = False
         self._play_start_failed = False
+        self._play_start_cancelled = False
         self._profile_frames = os.environ.get(
             "_INFERNUX_PLAYER_PROFILE_FRAMES", ""
         ).strip() == "1"
@@ -216,7 +217,7 @@ class PlayerGUI(InxGUIRenderable):
         """Start Play only after loading is done and splash (if any) has finished."""
         if self._play_started:
             return True
-        if self._play_start_failed:
+        if self._play_start_failed or self._play_start_cancelled:
             return False
         if self._splash is not None and not self._splash.is_finished:
             return False
@@ -234,7 +235,13 @@ class PlayerGUI(InxGUIRenderable):
                 self._play_started = True
                 return True
             activate = getattr(session, "activate", None)
-        if not callable(activate) or not activate():
+        from infernux.engine.runtime_worlds import RuntimeWorldInitializationCancelled
+        try:
+            activated = activate() if callable(activate) else False
+        except RuntimeWorldInitializationCancelled:
+            self._play_start_cancelled = True
+            return False
+        if not activated:
             self._play_start_failed = True
             Debug.log_error("Player cannot start Play: initial scene is not ready")
             return False

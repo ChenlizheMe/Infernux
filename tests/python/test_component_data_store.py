@@ -29,7 +29,7 @@ def test_batch_write_preserves_field_ranges_and_publishes_changes(native_storage
         pass
 
     journal = RuntimeChangeJournal()
-    scheduler = RuntimeExecutionScheduler(name="batch-values", change_journal=journal)
+    scheduler = RuntimeExecutionScheduler(name="batch-values", change_journal=journal, world_id=0)
     components = [Derived(), Derived()]
     try:
         cursor = journal.create_cursor("batch-values")
@@ -66,7 +66,10 @@ def test_batch_rejects_mixed_classes_before_accessing_colliding_slots():
     first, second = First(), Second()
     try:
         assert first._cds_class_id != second._cds_class_id
-        assert first._cds_slot == second._cds_slot
+        # Different layouts can reuse the same row index. Slot generations are
+        # store-wide identities and must stay distinct across layout reuse.
+        assert first._cds_slot[0] == second._cds_slot[0]
+        assert first._cds_slot[1] != second._cds_slot[1]
         with pytest.raises(TypeError, match="same concrete type"):
             batch_read([first, second], "value")
         with pytest.raises(TypeError, match="same concrete type"):

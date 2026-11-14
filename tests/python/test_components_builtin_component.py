@@ -290,6 +290,7 @@ class TestBuiltinComponent:
             enabled = True
             execution_order = 0
             handle = object()
+            game_object = None
 
             @property
             def component_id(self):
@@ -411,6 +412,7 @@ class TestInxComponentSceneMutation:
                 self.seen_id = int(self.game_object.id)
 
         class _Scene:
+            _runtime_world_id = 0  # Explicit unbound native-owner double.
             structure_version = 4
 
             def _resolve_native_component(self, _handle, _owner):

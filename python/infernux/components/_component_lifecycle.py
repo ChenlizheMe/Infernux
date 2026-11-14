@@ -61,7 +61,7 @@ class RuntimeExecutionScheduler:
     """
 
     _live_schedulers = weakref.WeakSet()
-    _primary_scheduler: Any = None
+    _schedulers_by_world = weakref.WeakValueDictionary()
 
     def __init__(
         self,
@@ -71,15 +71,19 @@ class RuntimeExecutionScheduler:
         native_bridge: bool = False,
         world_id: int | None = None,
     ) -> None:
-        if change_journal is None:
-            from infernux.engine.runtime_change_journal import runtime_change_journal
-
-            change_journal = runtime_change_journal()
         self.name = str(name)
         if world_id is None:
             from infernux.lib import SceneManager
             world_id = int(SceneManager.instance()._current_runtime_world_id)
         self.world_id = int(world_id)
+        if change_journal is None:
+            from infernux.engine.runtime_change_journal import RuntimeChangeJournal, runtime_change_journal
+            if self.world_id == 0:
+                change_journal = RuntimeChangeJournal()
+            else:
+                from infernux.lib import _Infernux
+                with _Infernux._RuntimeWorldScope(self.world_id):
+                    change_journal = runtime_change_journal()
         self._runtime_service_phases = {}
         self._native_bridge = bool(native_bridge)
         self._native_scene_manager = None
@@ -115,9 +119,13 @@ class RuntimeExecutionScheduler:
         self._last_completed_frame_changes: dict[Any, Any] = {}
         self._last_completed_barrier_sequence: tuple[tuple[Any, Any], ...] = ()
         self._live_schedulers.add(self)
-        primary = RuntimeExecutionScheduler._primary_scheduler
-        if primary is None or primary() is None:
-            RuntimeExecutionScheduler._primary_scheduler = weakref.ref(self)
+        bucket = self._schedulers_by_world.get(self.world_id)
+        if bucket is None:
+            bucket = weakref.WeakSet()
+            self._schedulers_by_world[self.world_id] = bucket
+        # The index owns neither schedulers nor historical empty world buckets.
+        self._world_scheduler_bucket = bucket
+        bucket.add(self)
 
     def _component_has_runtime_work(self, component: Any) -> bool:
         if self._active_coroutine_scheduler(component) is not None:
@@ -173,9 +181,7 @@ class RuntimeExecutionScheduler:
         name = str(service).strip()
         if not name:
             raise ValueError("runtime service name must not be empty")
-        for scheduler in tuple(cls._live_schedulers):
-            if scheduler.world_id != world_id:
-                continue
+        for scheduler in tuple(cls._schedulers_by_world.get(world_id, ())):
             services = scheduler._runtime_service_phases.setdefault(phase, set())
             before = bool(services)
             if active:
@@ -242,21 +248,33 @@ class RuntimeExecutionScheduler:
         self._sync_native_work_availability(force=True)
 
     @classmethod
+    def _update_component_owner(cls, component: Any) -> int:
+        from infernux.engine.runtime_worlds import component_world_id
+        owner = component_world_id(component)
+        if owner != getattr(component, "_runtime_scheduler_world_id", 0):
+            # Native rebind normally sends removed first. Direct unbound SDK
+            # registrations have no active-registry entry, so retire their
+            # actual old membership here before publishing the new owner.
+            previous = tuple(scheduler for scheduler in cls._component_schedulers(component)
+                             if id(component) in scheduler._component_tokens)
+            if previous:
+                from infernux.engine.runtime_change_journal import RuntimeChangeDomain
+                cls._publish_to_scheduler_journals(
+                    previous, RuntimeChangeDomain.COMPONENT_STRUCTURE,
+                    stable_id=cls._component_token(component))
+                for scheduler in previous:
+                    scheduler._on_component_structure(component, present=False)
+        component._runtime_scheduler_world_id = owner
+        return owner
+
+    @classmethod
     def _notify_component_structure(cls, component: Any, *, present: bool) -> None:
         from infernux.engine.runtime_change_journal import RuntimeChangeDomain
-
-        primary_ref = cls._primary_scheduler
-        primary = primary_ref() if primary_ref is not None else None
-        if primary is not None and len(cls._live_schedulers) == 1:
-            # Scene load registers one component at a time; the single-scheduler
-            # case must not iterate the WeakSet or dedupe journals per call.
-            primary._change_journal.publish(
-                RuntimeChangeDomain.COMPONENT_STRUCTURE,
-                stable_id=cls._component_token(component),
-            )
-            primary._on_component_structure(component, present=present)
-            return
-        schedulers = tuple(cls._live_schedulers)
+        if present:
+            cls._update_component_owner(component)
+        # Native invalidation can clear the proxy before notifying removal.
+        # Retain its registration owner until every removal observer has run.
+        schedulers = cls._component_schedulers(component)
         cls._publish_to_scheduler_journals(
             schedulers,
             RuntimeChangeDomain.COMPONENT_STRUCTURE,
@@ -264,10 +282,12 @@ class RuntimeExecutionScheduler:
         )
         for scheduler in schedulers:
             scheduler._on_component_structure(component, present=present)
+        if not present:
+            component._runtime_scheduler_world_id = 0
 
     @classmethod
     def _notify_component_revision(cls, component: Any, domain: Any) -> None:
-        schedulers = tuple(cls._live_schedulers)
+        schedulers = cls._component_schedulers(component)
         cls._publish_to_scheduler_journals(
             schedulers,
             domain,
@@ -278,17 +298,24 @@ class RuntimeExecutionScheduler:
 
     @classmethod
     def _notify_component_runtime_work(cls, component: Any) -> None:
-        for scheduler in tuple(cls._live_schedulers):
+        for scheduler in cls._component_schedulers(component):
             scheduler._on_component_runtime_work(component)
 
     def _on_component_runtime_work(self, component: Any) -> None:
         """Invalidate phase membership when coroutine work starts or ends."""
         token = self._component_tokens.get(id(component))
-        if token is not None and self._components.get(token) is component:
-            self._structure_revision += 1
-            self._execution_snapshot = None
-            self._counters["coroutine_plan_invalidations"] += 1
+        if token is None or self._components.get(token) is not component:
+            return
+        self._structure_revision += 1
+        self._execution_snapshot = None
+        self._counters["coroutine_plan_invalidations"] += 1
         self._note_component_work(component, present=True)
+
+    @classmethod
+    def _component_schedulers(cls, component: Any) -> tuple[Any, ...]:
+        # Zero is an explicit unbound domain, never the current/primary World.
+        owner = getattr(component, "_runtime_scheduler_world_id", 0)
+        return tuple(cls._schedulers_by_world.get(owner, ()))
 
     @staticmethod
     def _journal_type_id(component_type: type) -> str:
@@ -312,31 +339,14 @@ class RuntimeExecutionScheduler:
         component: Any,
         field_id: Any,
     ) -> None:
+        schedulers = cls._component_schedulers(component)
+        if not schedulers:
+            return
         type_id = cls._journal_type_id(type(component))
         component_id = component._component_id or id(component)
-        primary_ref = cls._primary_scheduler
-        primary = primary_ref() if primary_ref is not None else None
-        if primary is not None and len(cls._live_schedulers) == 1:
-            # Steady state: one scheduler owns one journal. Avoid iterating the
-            # WeakSet and the generic per-publish validation below. When no
-            # consumer subscribes to field domains the write is journal-free.
-            journal = primary._change_journal
+        for journal in cls._scheduler_journals(schedulers):
             if journal._field_tracking:
-                journal.publish_component_field_value(
-                    type_id, component_id, field_id
-                )
-            return
-        from infernux.engine.runtime_change_journal import RuntimeChangeDomain
-
-        journals = cls._scheduler_journals(tuple(cls._live_schedulers))
-        for journal in journals:
-            if not journal._field_tracking:
-                continue
-            journal.publish_component_field(type_id, component_id, field_id)
-            journal.publish(
-                RuntimeChangeDomain.SCRIPT_VALUE,
-                stable_id=component_id,
-            )
+                journal.publish_component_field_value(type_id, component_id, field_id)
 
     @classmethod
     def _notify_component_values(
@@ -348,28 +358,23 @@ class RuntimeExecutionScheduler:
         if not components:
             return
         type_id = cls._journal_type_id(type(components[0]))
-        # Unregistered candidates are private: their values must not invalidate
-        # runtime consumers even though the native scatter already succeeded.
-        component_ids = [
-            component._component_id or id(component)
-            for component in components
-            if component._registered_go_id is not None
-        ]
-        if not component_ids:
-            return
-        primary_ref = cls._primary_scheduler
-        primary = primary_ref() if primary_ref is not None else None
-        if primary is not None and len(cls._live_schedulers) == 1:
-            journal = primary._change_journal
-            if journal._field_tracking:
-                journal.publish_component_fields(type_id, component_ids, field_id)
-            return
-        for journal in cls._scheduler_journals(tuple(cls._live_schedulers)):
-            if journal._field_tracking:
-                journal.publish_component_fields(type_id, component_ids, field_id)
+        by_owner = {}
+        for component in components:
+            # Candidates have CDS slots too, but no published registration.
+            if component._registered_go_id is None:
+                continue
+            owner = getattr(component, "_runtime_scheduler_world_id", 0)
+            by_owner.setdefault(owner, []).append(component._component_id or id(component))
+        for owner, component_ids in by_owner.items():
+            schedulers = tuple(cls._schedulers_by_world.get(owner, ()))
+            for journal in cls._scheduler_journals(schedulers):
+                if journal._field_tracking:
+                    journal.publish_component_fields(type_id, component_ids, field_id)
 
     @staticmethod
     def _scheduler_journals(schedulers: tuple[Any, ...]) -> tuple[Any, ...]:
+        if len(schedulers) == 1:
+            return (schedulers[0]._change_journal,)
         journals = []
         seen = set()
         for scheduler in schedulers:
@@ -379,10 +384,6 @@ class RuntimeExecutionScheduler:
                 continue
             seen.add(identity)
             journals.append(journal)
-        if not journals:
-            from infernux.engine.runtime_change_journal import runtime_change_journal
-
-            journals.append(runtime_change_journal())
         return tuple(journals)
 
     @classmethod
@@ -422,8 +423,7 @@ class RuntimeExecutionScheduler:
         self._counters["plan_invalidations"] += 1
 
     def _on_component_structure(self, component: Any, *, present: bool) -> None:
-        from infernux.engine.runtime_worlds import component_world_id
-        if present and component_world_id(component) != self.world_id:
+        if present and component._runtime_scheduler_world_id != self.world_id:
             return
         self._registry_scan_pending = False
         self._dispatch_types_dirty = True
@@ -452,6 +452,8 @@ class RuntimeExecutionScheduler:
     def register_component(self, component: Any) -> None:
         """Register a component for direct scheduler users and tests."""
         from infernux.engine.runtime_change_journal import RuntimeChangeDomain
+        if self._update_component_owner(component) != self.world_id:
+            return
 
         self._change_journal.publish(
             RuntimeChangeDomain.COMPONENT_STRUCTURE,
@@ -461,6 +463,9 @@ class RuntimeExecutionScheduler:
 
     def unregister_component(self, component: Any) -> None:
         from infernux.engine.runtime_change_journal import RuntimeChangeDomain
+
+        if id(component) not in self._component_tokens:
+            return
 
         self._change_journal.publish(
             RuntimeChangeDomain.COMPONENT_STRUCTURE,
@@ -1151,10 +1156,22 @@ class RuntimeExecutionFrame:
         # notify_runtime_component_value_changed(), which accumulates here
         # without taking the journal lock per write. The next barrier publishes
         # one coalesced revision for the whole phase.
-        with self._scheduler.change_journal.transaction():
-            self._scheduler._execute_frame_phase(
-                dispatch_frame or self, phase, delta_time, cursor=cursor, execution_epoch=self.epoch,
-            )
+        def position():
+            # The fixed coroutine tail owns a second retained cursor. Snapshot
+            # its counters, not its mutable list identity or captured receivers.
+            tail = cursor[3]
+            return (*cursor[:3], tuple(tail[1:]) if tail else None)
+
+        before = position() if cursor is not None else None
+        try:
+            with self._scheduler.change_journal.transaction():
+                self._scheduler._execute_frame_phase(
+                    dispatch_frame or self, phase, delta_time, cursor=cursor, execution_epoch=self.epoch,
+                )
+        finally:
+            if cursor is not None and position() != before:
+                from infernux.lib import SceneManager
+                SceneManager.instance()._report_runtime_frame_progress()
 
     def resolve_method(self, component: Any, name: str) -> Any:
         """Resolve a helper against this frame's captured dispatch epoch."""
@@ -1254,6 +1271,7 @@ class ComponentLifecycleMixin:
     _cds_key = None
     _component_id = 0
     _registered_go_id = None
+    _runtime_scheduler_world_id = 0
 
     def _resolve_runtime_method(self, name: str, *, epoch: Any = None) -> Any:
         """Resolve a helper through the owner-published runtime epoch."""

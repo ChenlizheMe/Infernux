@@ -81,8 +81,9 @@ def test_failed_or_cancelled_retirement_restores_current_descriptor():
 def test_deferred_retirement_does_not_notify_scheduler_before_commit():
     from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 
-    class _SchedulerSpy:
+    class _SchedulerSpy(RuntimeExecutionScheduler):
         def __init__(self):
+            super().__init__()
             self.calls = []
 
         def mark_type_body_reload(self, component_type, *, phase_presence_changed):
