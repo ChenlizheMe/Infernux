@@ -11,7 +11,7 @@ import builtins
 import importlib.machinery
 import importlib.util
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass
 from types import CodeType
@@ -70,6 +70,19 @@ def clear_module_codes():
     _accepted_module_codes.clear()
 
 
+def _is_shared_serializable_source(name, path):
+    """Positive host-provider authority, never 'outside project therefore shared'."""
+    if not path:
+        return False
+    from infernux.engine.project_context import is_preload_python_library
+    if is_preload_python_library(path):
+        return True
+    if name == 'infernux' or name.startswith('infernux.'):
+        package = sys.modules['infernux']
+        return any(is_path_within(path, root, allow_root=False) for root in package.__path__)
+    return False
+
+
 class SourceFileLoader(importlib.machinery.SourceFileLoader):
     def get_code(self, fullname):
         if self.path.endswith('.pyc'):
@@ -89,6 +102,12 @@ class SourceFileLoader(importlib.machinery.SourceFileLoader):
             _candidate_serializable_scope, _publish_serializable_types,
         )
 
+        from infernux.components.serializable_object import (
+            _declaration_catalog, _AUTHOR_SERIALIZABLE_REGISTRY, _SHARED_SERIALIZABLE_REGISTRY,
+        )
+        catalog = _declaration_catalog(module.__name__, {module.__name__: module})
+        module.__infernux_serializable_catalog__ = catalog
+        shared = catalog is _SHARED_SERIALIZABLE_REGISTRY
         code = self.get_code(module.__name__)
         module.__infernux_source__ = (path_key(self.path), self.source_sha256)
         # Copy facts, not live modules: a dependent can retain a constant or
@@ -123,7 +142,13 @@ class SourceFileLoader(importlib.machinery.SourceFileLoader):
         remember(module)
         token = _executing_sources.set((*_executing_sources.get(), namespace))
         try:
-            with _candidate_serializable_scope(types, module.__name__):
+            from infernux.components.value_ownership import value_world
+            # _import_roots is the existing Preload provider-import window.
+            # Before-own helpers are still source declarations at module exec;
+            # the preload() business hook itself retains ordinary caller owner.
+            source_module = shared or (catalog is _AUTHOR_SERIALIZABLE_REGISTRY
+                and any(is_path_within(self.path, root, allow_root=False) for root in _import_roots.get()))
+            with (value_world(None) if source_module else nullcontext()), _candidate_serializable_scope(types, module.__name__):
                 exec(code, namespace)
         finally:
             _executing_sources.reset(token)
@@ -152,7 +177,7 @@ class _PreloadSourceFinder:
         if (spec is not None
                 and isinstance(spec.loader, (importlib.machinery.SourceFileLoader,
                                              importlib.machinery.SourcelessFileLoader))
-                and (is_preload_python_library(spec.origin)
+                and (_is_shared_serializable_source(fullname, spec.origin)
                      or any(is_path_within(spec.origin, root, allow_root=False)
                             for root in (*_import_roots.get(), *get_project_script_roots(_script_project_root(spec.origin)))))):
             spec.loader = SourceFileLoader(fullname, spec.origin)

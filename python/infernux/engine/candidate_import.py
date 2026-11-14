@@ -575,6 +575,7 @@ class CandidateImportTransaction:
         module = importlib.util.module_from_spec(import_spec)
         if self._world_domain is not None:
             module.__infernux_source_name__ = self._world_domain.modules._canonical(spec.name)
+            module.__infernux_serializable_catalog__ = self._world_domain.serializable_types.maps[0]
         self._modules[spec.name] = module
         module.__builtins__ = self._builtins_for(module)
         try:
@@ -608,7 +609,11 @@ class CandidateImportTransaction:
             from infernux.components.serializable_object import _candidate_serializable_scope
             from infernux.renderstack.render_effect_compiler import _capture_source_effect_features
 
-            with _candidate_serializable_scope(self._serializable_types, spec.name), _capture_source_effect_features(
+            from contextlib import nullcontext
+            from infernux.components.value_ownership import value_world
+            execution = (value_world(self._world_domain.identity)
+                         if self._world_domain is not None else nullcontext())
+            with execution, _candidate_serializable_scope(self._serializable_types, spec.name), _capture_source_effect_features(
                 spec.file_path, self._effect_features, self._effect_module_sources,
             ):
                 exec(code, module.__dict__)
@@ -748,7 +753,7 @@ class CandidateImportTransaction:
             from infernux.components.serializable_object import _publish_serializable_types
 
             self._serializable_before = _publish_serializable_types(
-                self._serializable_types, published_set,
+                self._serializable_types, published_set, modules=self._modules,
             )
             from infernux.components.script_loader import _carry_module_literal_state
 

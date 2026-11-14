@@ -99,8 +99,10 @@ class HostModuleView(Mapping):
 class ProjectModules:
     """Persistent private project import table, including helper dependency cycles."""
 
-    def __init__(self, identity):
+    def __init__(self, identity, serializable_catalog):
         from .project_context import get_project_script_roots
+        self.identity = int(identity)
+        self.serializable_catalog = serializable_catalog
         self.prefix = f'_infernux_runtime_{identity}'
         self.roots = tuple(Path(root).resolve() for root in get_project_script_roots())
         self.modules = {}
@@ -194,6 +196,7 @@ class ProjectModules:
             accepted_code = prepare_module_code(name, str(path))
             code = accepted_code.code
         module.__infernux_source_name__ = name
+        module.__infernux_serializable_catalog__ = self.serializable_catalog
         self.modules[name] = module
         sys.modules[qualified] = module
         self.published.append(qualified)
@@ -204,7 +207,9 @@ class ProjectModules:
         module.__dict__['__builtins__'] = namespace
         try:
             if code is not None:
-                exec(code, vars(module))
+                from infernux.components.value_ownership import value_world
+                with value_world(self.identity):
+                    exec(code, vars(module))
                 if any(path.is_relative_to(root) for root in self.roots):
                     from infernux.components.script_loader import (
                         _class_literal_defaults, _declared_class_literals, _remember_module_literals,
@@ -272,14 +277,13 @@ class WorldRuntime:
         from infernux.components._component_lifecycle import RuntimeExecutionScheduler
         from .runtime_change_journal import RuntimeChangeJournal
         from infernux.components.registry import _author_type_registrations
-        from infernux.components.serializable_object import _AUTHOR_SERIALIZABLE_REGISTRY
+        from infernux.components.serializable_object import _SHARED_SERIALIZABLE_REGISTRY
         self.identity = int(identity)
         self.initializing = True
         self.type_registrations = {key: value for key, value in _author_type_registrations.items()
                                    if not value.project_script}
         self.script_registrations = {}
-        self.serializable_types = {key: value for key, value in _AUTHOR_SERIALIZABLE_REGISTRY.items()
-                                   if value.__module__.startswith('infernux.')}
+        self.serializable_types = ChainMap({}, _SHARED_SERIALIZABLE_REGISTRY)
         self.journal = RuntimeChangeJournal()
         from infernux.scene import RuntimeSceneLoadState
         self.scene_loads = RuntimeSceneLoadState()
@@ -295,7 +299,7 @@ class WorldRuntime:
         self.scope._world_id = self.identity
         self.scheduler = RuntimeExecutionScheduler(name=f'world:{identity}', change_journal=self.journal,
                                                    native_bridge=True, world_id=self.identity)
-        self.modules = ProjectModules(self.identity)
+        self.modules = ProjectModules(self.identity, self.serializable_types.maps[0])
 
     def close(self):
         self.begin_retirement()
@@ -306,7 +310,7 @@ class WorldRuntime:
         self.modules.close()
         self.type_registrations.clear()
         self.script_registrations.clear()
-        self.serializable_types.clear()
+        self.serializable_types.maps[0].clear()
         self.data_assets.clear()
         self.updates.clear()
         from .runtime_dispatch import RuntimeRevisionEpoch

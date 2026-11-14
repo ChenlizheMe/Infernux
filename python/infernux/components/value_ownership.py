@@ -136,6 +136,31 @@ def bind_scene_value(value, metadata, owner):
     return _bind_scene_ref(value, owner, GameObjectRef, ComponentRef, DataAssetRef)
 
 
+def bind_default_reference_copy(source, value, metadata, owner, memo):
+    """Formal defaults only: replace source refs inside the existing deepcopy.
+
+    Preserve the copied list and update deepcopy's source-ref memo so aliases
+    to the same immutable wrapper remain aliases after binding.
+    """
+    from .fields import FieldType
+    from .ref_wrappers import GameObjectRef, ComponentRef
+    from infernux.core.asset_ref import DataAssetRef
+
+    def bound(source_ref, copied_ref):
+        # Another field/list slot may already have bound this exact source ref.
+        current = memo.get(id(source_ref), copied_ref)
+        result = _bind_scene_ref(current, owner, GameObjectRef, ComponentRef, DataAssetRef)
+        if result is not current:
+            memo[id(source_ref)] = result
+        return result
+
+    if metadata.field_type == FieldType.LIST:
+        for index, source_ref in enumerate(source):
+            value[index] = bound(source_ref, value[index])
+        return value
+    return bound(source, value)
+
+
 def _bind_scene_ref(value, owner, object_type, component_type, data_asset_type):
     if isinstance(value, data_asset_type):
         current = value._value_owner_world_id

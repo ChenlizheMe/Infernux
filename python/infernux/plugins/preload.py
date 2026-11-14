@@ -1354,7 +1354,7 @@ def _execute_module_file(module_name: str, path: str) -> types.ModuleType:
     """Execute one selected source/bytecode module without stale source bytecode."""
     from infernux.engine.script_source import SourceFileLoader
 
-    loader = None if path.casefold().endswith(".pyc") else SourceFileLoader(module_name, path)
+    loader = SourceFileLoader(module_name, path)
     spec = importlib.util.spec_from_file_location(module_name, path, loader=loader)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load InxPreload candidate: {path}")
@@ -1368,10 +1368,11 @@ def _execute_module_file(module_name: str, path: str) -> types.ModuleType:
 
 
 def _unpublish_module(name: str) -> None:
-    module = sys.modules.pop(name, None)
+    module = sys.modules.get(name)
     if module is not None:
         from infernux.components.serializable_object import _publish_serializable_types
         _publish_serializable_types({}, {name})
+        sys.modules.pop(name, None)
     parent_name, _, child_name = name.rpartition(".")
     parent = sys.modules.get(parent_name)
     if module is not None and parent is not None and getattr(parent, child_name, None) is module:

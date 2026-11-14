@@ -434,6 +434,8 @@ def register_preload_python_library(owner: str, path: str) -> None:
     root = resolved_path(path)
     if not os.path.isdir(root):
         raise ValueError("A preload Python library must be an existing directory")
+    from infernux.components.serializable_object import _promote_shared_library_types
+    _promote_shared_library_types(root)
     roots = _preload_python_libraries.get(owner, ())
     if root not in roots:
         _preload_python_libraries[owner] = (*roots, root)

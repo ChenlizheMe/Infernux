@@ -23,6 +23,8 @@ Example::
 from __future__ import annotations
 
 import copy
+import sys
+from collections import ChainMap
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
@@ -31,16 +33,81 @@ from .value_ownership import typed_creation_owner, value_world, source_values, o
 if TYPE_CHECKING:
     from .fields import FieldMetadata
 
-# Global registry: module:qualname → class. Populated by __init_subclass__.
+# Shared host declarations have interpreter/provider lifetime. Project source and
+# private realm declarations retain their existing independent lifetimes.
+_SHARED_SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
 _AUTHOR_SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
+_AUTHOR_SERIALIZABLE_TYPES = ChainMap(_AUTHOR_SERIALIZABLE_REGISTRY,
+                                    _SHARED_SERIALIZABLE_REGISTRY)
 
 
 def _serializable_types():
     if source_values():
-        return _AUTHOR_SERIALIZABLE_REGISTRY
+        return _AUTHOR_SERIALIZABLE_TYPES
     from infernux.engine.runtime_worlds import current_world_runtime
     domain = current_world_runtime()
-    return domain.serializable_types if domain is not None else _AUTHOR_SERIALIZABLE_REGISTRY
+    return domain.serializable_types if domain is not None else _AUTHOR_SERIALIZABLE_TYPES
+
+
+def _declaration_catalog(module_name, modules=None):
+    module = (sys.modules if modules is None else modules).get(module_name)
+    if module is not None:
+        catalog = vars(module).get('__infernux_serializable_catalog__')
+        if catalog is not None:
+            return catalog
+        from infernux.engine.script_source import _is_shared_serializable_source
+        if _is_shared_serializable_source(module_name, vars(module).get('__file__')):
+            return _SHARED_SERIALIZABLE_REGISTRY
+    # Loose authored declarations and source-only tools are source catalogs.
+    # Only the real private loader can provide a private publication target.
+    if module_name.startswith('_infernux_runtime_'):
+        raise RuntimeError(f"Cannot publish from retired private module {module_name!r}")
+    return _AUTHOR_SERIALIZABLE_REGISTRY
+
+
+def _lookup_serializable_type(identity, view=None):
+    if view is None:
+        view = _serializable_types()
+    local = view.maps[0].get(identity)
+    shared = _SHARED_SERIALIZABLE_REGISTRY.get(identity)
+    if local is not None and shared is not None and local is not shared:
+        raise ValueError(f"serialized type ID {identity!r} conflicts with shared module {shared.__module__!r}")
+    return local if local is not None else shared
+
+
+def _promote_shared_library_types(root):
+    """Registration owns the provider transition, including imports before own().
+
+    Preload module execution has already constructed source templates. Move their
+    declarations by identity; never rewrite values or reexecute their module.
+    """
+    from types import ModuleType
+    from infernux.engine.path_utils import is_path_within
+
+    modules = {}
+    for name, module in tuple(sys.modules.items()):
+        if not isinstance(module, ModuleType) or name.startswith('_infernux_runtime_'):
+            continue
+        path = vars(module).get('__file__')
+        if not path or not is_path_within(path, root, allow_root=False):
+            continue
+        catalog = vars(module).get('__infernux_serializable_catalog__')
+        if (catalog is not None and catalog is not _SHARED_SERIALIZABLE_REGISTRY
+                and catalog is not _AUTHOR_SERIALIZABLE_REGISTRY):
+            continue  # A real private loader retains its publication authority.
+        modules[name] = module
+    promoted = {identity: cls for identity, cls in _AUTHOR_SERIALIZABLE_REGISTRY.items()
+                if cls.__module__ in modules}
+    for identity, cls in promoted.items():
+        previous = _SHARED_SERIALIZABLE_REGISTRY.get(identity)
+        if previous is not None and previous is not cls:
+            raise ValueError(f"serialized type ID {identity!r} is owned by module {previous.__module__!r}")
+    # All claims are checked before the source table or module authority changes.
+    _SHARED_SERIALIZABLE_REGISTRY.update(promoted)
+    for identity in promoted:
+        del _AUTHOR_SERIALIZABLE_REGISTRY[identity]
+    for module in modules.values():
+        module.__infernux_serializable_catalog__ = _SHARED_SERIALIZABLE_REGISTRY
 
 
 # The importer owns this temporary write set, just like its private modules.
@@ -59,42 +126,63 @@ def _candidate_serializable_scope(types: dict[str, type], module_name: str):
         _CANDIDATE_TYPES.reset(token)
 
 
-def _require_serializable_type_owner(identity: str, module_names: set[str]) -> None:
-    previous = _serializable_types().get(identity)
-    if previous is not None and previous.__module__ not in module_names:
-        raise ValueError(
-            f"serialized type ID {identity!r} is owned by module {previous.__module__!r}"
-        )
+def _require_serializable_type_owner(identity, module_names, catalog):
+    previous = catalog.get(identity)
+    other = (_AUTHOR_SERIALIZABLE_REGISTRY if catalog is _SHARED_SERIALIZABLE_REGISTRY
+             else _SHARED_SERIALIZABLE_REGISTRY)
+    collision = other.get(identity)
+    if collision is not None or (previous is not None and previous.__module__ not in module_names):
+        owner = collision if collision is not None else previous
+        raise ValueError(f"serialized type ID {identity!r} is owned by module {owner.__module__!r}")
 
 
-def _publish_serializable_types(
-    types: dict[str, type], module_names: set[str],
-) -> dict[str, type | None]:
-    """Replace the published modules' data types; return their exact before-image."""
-    published = {
-        identity: cls for identity, cls in types.items()
-        if cls.__module__ in module_names
-    }
-    for identity in published:
-        _require_serializable_type_owner(identity, module_names)
-    before = {
-        identity: cls for identity, cls in _serializable_types().items()
-        if cls.__module__ in module_names
-    }
-    for identity in published:
-        before.setdefault(identity, _serializable_types().get(identity))
-    for identity in before:
-        _serializable_types().pop(identity, None)
-    _serializable_types().update(published)
-    return before
+class _SerializablePublication(dict):
+    """A before-image owns its destination; rollback never consults ambient World."""
+    def __init__(self):
+        super().__init__()
+        self.catalogs = []
+
+    def clear(self):
+        super().clear()
+        self.catalogs.clear()
 
 
-def _restore_serializable_types(before: dict[str, type | None]) -> None:
-    for identity, cls in before.items():
-        if cls is None:
-            _serializable_types().pop(identity, None)
-        else:
-            _serializable_types()[identity] = cls
+def _publish_serializable_types(types, module_names, *, modules=None):
+    """Atomically replace declarations in their loader/provider-owned catalogs."""
+    groups = {}
+    for name in module_names:
+        catalog = _declaration_catalog(name, modules)
+        groups.setdefault(id(catalog), (catalog, set()))[1].add(name)
+    plans = []
+    for catalog, names in groups.values():
+        published = {identity: cls for identity, cls in types.items() if cls.__module__ in names}
+        for identity in published:
+            _require_serializable_type_owner(identity, names, catalog)
+        before = {identity: cls for identity, cls in catalog.items() if cls.__module__ in names}
+        for identity in published:
+            before.setdefault(identity, catalog.get(identity))
+        plans.append((catalog, before, published))
+    result = _SerializablePublication()
+    for catalog, before, published in plans:
+        result.catalogs.append((catalog, before))
+        result.update(before)
+        for identity in before:
+            catalog.pop(identity, None)
+        catalog.update(published)
+    return result
+
+
+def _restore_serializable_types(before):
+    # A plain mapping is the pre-existing source-author cleanup operation.
+    # All importer publications now carry exact catalog destinations.
+    catalogs = (before.catalogs if isinstance(before, _SerializablePublication)
+                else ((_AUTHOR_SERIALIZABLE_REGISTRY, before),))
+    for catalog, entries in reversed(tuple(catalogs)):
+        for identity, cls in entries.items():
+            if cls is None:
+                catalog.pop(identity, None)
+            else:
+                catalog[identity] = cls
 
 
 def get_serializable_type_id(value: type | "SerializableObject") -> str:
@@ -114,7 +202,7 @@ def get_serializable_class(type_id: str) -> Optional[Type["SerializableObject"]]
     candidate = _CANDIDATE_TYPES.get()
     if candidate is not None and type_id in candidate[0]:
         return candidate[0][type_id]
-    resolved = _serializable_types().get(type_id)
+    resolved = _lookup_serializable_type(type_id)
     if resolved is not None:
         return resolved
     from infernux.engine.runtime_worlds import current_world_runtime, source_module_name
@@ -132,7 +220,9 @@ def get_serializable_class(type_id: str) -> Optional[Type["SerializableObject"]]
 
 def get_registered_serializable_types() -> tuple[tuple[str, Type["SerializableObject"]], ...]:
     """Return the published type catalog in stable identity order."""
-    return tuple(sorted(_serializable_types().items(), key=lambda item: item[0]))
+    view = _serializable_types()
+    return tuple((identity, _lookup_serializable_type(identity, view))
+                 for identity in sorted(view))
 
 
 class SerializableObject:
@@ -174,8 +264,9 @@ class SerializableObject:
         else:
             # Trusted engine modules materialized during a candidate import
             # still own their ordinary declarations, not the project transaction.
-            _require_serializable_type_owner(current_type_id, {cls.__module__})
-            _serializable_types()[current_type_id] = cls
+            catalog = _declaration_catalog(cls.__module__)
+            _require_serializable_type_owner(current_type_id, {cls.__module__}, catalog)
+            catalog[current_type_id] = cls
 
     # ------------------------------------------------------------------
     # Construction
@@ -192,7 +283,8 @@ class SerializableObject:
                 data = object.__getattribute__(self, "__dict__")
                 if name not in data:
                     from .fields import copy_serialized_field_default
-                    setattr(self, name, copy_serialized_field_default(meta))
+                    setattr(self, name, copy_serialized_field_default(
+                        meta, _owner_world_id=data.get("_value_owner_world_id")))
                 raw = data[name]
                 return resolve_runtime_field_value(raw, meta)
         return object.__getattribute__(self, name)
@@ -222,7 +314,8 @@ class SerializableObject:
             if name in kwargs:
                 setattr(self, name, kwargs[name])
             else:
-                setattr(self, name, copy_serialized_field_default(meta))
+                setattr(self, name, copy_serialized_field_default(
+                    meta, _owner_world_id=self.__dict__["_value_owner_world_id"]))
 
     # ------------------------------------------------------------------
     # Serialization helpers (used by InxComponent._serialize_value)
@@ -368,14 +461,30 @@ class SerializableObject:
         cls = self.__class__
         result = cls.__new__(cls)
         memo[id(self)] = result
-        object.__setattr__(result, "_value_owner_world_id", self.__dict__.get("_value_owner_world_id"))
+        from .fields import _DEFAULT_VALUE_OWNER
+        from .value_ownership import UNSET
+        target = memo.get(_DEFAULT_VALUE_OWNER, UNSET)
+        owner = self.__dict__.get("_value_owner_world_id")
+        if owner is None and target is not UNSET:
+            owner = target
+        object.__setattr__(result, "_value_owner_world_id", owner)
         fields = get_serialized_fields(cls)
-        for name in fields:
-            # Serialized asset/reference fields resolve through __getattribute__
-            # for runtime use. Copies used by Undo and list editing must retain
-            # their raw GUID/path wrapper instead of copying the resolved asset.
-            value = get_raw_field_value(self, name)
-            object.__setattr__(result, name, copy.deepcopy(value, memo))
+        if target is not UNSET:
+            memo[_DEFAULT_VALUE_OWNER] = owner
+        try:
+            for name, metadata in fields.items():
+                # The ordinary deepcopy traversal preserves memo aliases/cycles.
+                # Only formal default materialization binds source reference leaves.
+                source = get_raw_field_value(self, name)
+                value = copy.deepcopy(source, memo)
+                if target is not UNSET:
+                    from .value_ownership import bind_default_reference_copy, is_owned_reference_field
+                    if is_owned_reference_field(metadata):
+                        value = bind_default_reference_copy(source, value, metadata, owner, memo)
+                object.__setattr__(result, name, value)
+        finally:
+            if target is not UNSET:
+                memo[_DEFAULT_VALUE_OWNER] = target
         return result
 
 

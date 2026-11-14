@@ -284,10 +284,28 @@ class FieldMetadata:
         self.asset_type = descriptor.type_id
 
 
-def copy_serialized_field_default(metadata: FieldMetadata) -> Any:
+# An explicit formal-default operation, never ordinary copy/assignment.
+_DEFAULT_VALUE_OWNER = object()
+_DEFAULT_OWNER_UNSET = object()
+
+
+def _is_object_default(metadata):
+    return (metadata.field_type == FieldType.SERIALIZABLE_OBJECT
+            or metadata.field_type == FieldType.LIST and metadata.element_type == FieldType.SERIALIZABLE_OBJECT)
+
+
+def copy_serialized_field_default(metadata: FieldMetadata, *, _owner_world_id=_DEFAULT_OWNER_UNSET) -> Any:
     """Copy and normalize the default using the ordinary field-write contract."""
     if metadata.field_type in (FieldType.VEC2, FieldType.VEC3, FieldType.VEC4):
         return normalize_runtime_field_value(metadata.default, metadata)
+    if _is_object_default(metadata):
+        # Known SO defaults are Python data. Do not swallow their copy/binding
+        # errors and silently reuse the shared mutable declaration object.
+        if _owner_world_id is _DEFAULT_OWNER_UNSET:
+            from .value_ownership import typed_creation_owner
+            _owner_world_id = typed_creation_owner()
+        value = copy.deepcopy(metadata.default, {_DEFAULT_VALUE_OWNER: _owner_world_id})
+        return normalize_runtime_field_value(value, metadata)
     try:
         value = copy.deepcopy(metadata.default)
     except Exception:
@@ -367,7 +385,12 @@ class SerializedFieldDescriptor:
             value = values.get(self.metadata.name, _MISSING)
             if value is not _MISSING:
                 return value
-        value = copy_serialized_field_default(self.metadata)
+        if _is_object_default(self.metadata):
+            from .value_ownership import receiver_owner
+            value = copy_serialized_field_default(
+                self.metadata, _owner_world_id=receiver_owner(instance))
+        else:
+            value = copy_serialized_field_default(self.metadata)
         if self._owner_value_boundary:
             from .value_ownership import bind_scene_value, receiver_owner
             value = bind_scene_value(value, self.metadata, receiver_owner(instance))
