@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <glm/gtc/constants.hpp>
 #include <stdexcept>
 #include <unordered_map>
@@ -50,6 +51,67 @@ void ApplySwingSettings(JointAuthor &author, const SwingTwistJointSettings &s)
     author.angularTorque() = {s.swingMotorMaxTorque, s.twistMotorMaxTorque, s.frictionTorque, 0.0f};
     author.angularTarget() = {target.x, target.y, target.z, target.w};
     author.angularVelocity() = JointVector(glm::radians(s.targetAngularVelocity));
+}
+
+void ApplySixSettings(JointAuthor &author, const SixDOFJointSettings &s)
+{
+    const auto finite = [](const auto &v) {
+        for (int i = 0; i < v.length(); ++i)
+            if (!std::isfinite(v[i]))
+                return false;
+        return true;
+    };
+    if (!finite(s.axis) || !finite(s.secondaryAxis) || glm::dot(s.axis, s.axis) < 1e-12f ||
+        glm::dot(s.secondaryAxis, s.secondaryAxis) < 1e-12f || !finite(s.targetOrientation) ||
+        glm::dot(s.targetOrientation, s.targetOrientation) < 1e-12f || !finite(s.targetPosition) ||
+        !finite(s.targetVelocity) || !finite(s.targetAngularVelocity))
+        throw std::invalid_argument("SixDOF requires finite nonzero frame/orientation and finite targets");
+    glm::vec3 x = glm::normalize(s.axis), y = s.secondaryAxis - x * glm::dot(x, s.secondaryAxis);
+    if (glm::dot(y, y) < 1e-8f * glm::dot(s.secondaryAxis, s.secondaryAxis))
+        throw std::invalid_argument("SixDOF frame axes must be nonparallel");
+    y = glm::normalize(y);
+    const auto frame = glm::normalize(glm::quat_cast(glm::mat3(x, y, glm::cross(x, y))));
+    const auto target = glm::normalize(s.targetOrientation);
+    const uint32_t motions[] = {uint32_t(s.xMotion),        uint32_t(s.yMotion),        uint32_t(s.zMotion),
+                                uint32_t(s.angularXMotion), uint32_t(s.angularYMotion), uint32_t(s.angularZMotion)};
+    const uint32_t motors[] = {uint32_t(s.xMotorMode),        uint32_t(s.yMotorMode),
+                               uint32_t(s.zMotorMode),        uint32_t(s.angularXMotorMode),
+                               uint32_t(s.angularYMotorMode), uint32_t(s.angularZMotorMode)};
+    uint32_t motionBits = 0, motorBits = 0;
+    for (uint32_t i = 0; i < 6; ++i) {
+        const float lo = i < 3 ? s.linearLimitMinimum[i] : s.angularLimitMinimum[i - 3];
+        const float hi = i < 3 ? s.linearLimitMaximum[i] : s.angularLimitMaximum[i - 3];
+        if (motions[i] > 2 || motors[i] > 3 || !std::isfinite(lo) || !std::isfinite(hi) || lo > hi ||
+            (motions[i] == 1 && lo == hi) || (i >= 3 && (lo < -180 || hi > 180)))
+            throw std::invalid_argument("SixDOF motion/motor modes or limits are invalid");
+        motionBits |= motions[i] << (2 * i);
+        motorBits |= motors[i] << (2 * i);
+    }
+    for (const auto &v : {s.linearLimitStiffness, s.linearLimitDamping, s.linearFrictionForce, s.angularFrictionTorque,
+                          s.linearMotorStiffness, s.linearMotorDamping, s.linearMotorMaxForce, s.angularMotorStiffness,
+                          s.angularMotorDamping, s.angularMotorMaxTorque})
+        if (!finite(v) || glm::any(glm::lessThan(v, glm::vec3(0))))
+            throw std::invalid_argument("SixDOF coefficients must be finite and nonnegative");
+    author.angularFrame() = {frame.x, frame.y, frame.z, frame.w};
+    author.angularTarget() = {target.x, target.y, target.z, target.w};
+    author.angularVelocity() = JointVector(glm::radians(s.targetAngularVelocity));
+    author.sixModes() = {motionBits, motorBits, 0, 0};
+    author.sixLinearMin() = JointVector(s.linearLimitMinimum);
+    author.sixLinearMax() = JointVector(s.linearLimitMaximum);
+    author.sixAngularMin() = JointVector(glm::radians(s.angularLimitMinimum));
+    author.sixAngularMax() = JointVector(glm::radians(s.angularLimitMaximum));
+    author.sixLimitStiffness() = JointVector(s.linearLimitStiffness);
+    author.sixLimitDamping() = JointVector(s.linearLimitDamping);
+    author.sixLinearFriction() = JointVector(s.linearFrictionForce);
+    author.sixAngularFriction() = JointVector(s.angularFrictionTorque);
+    author.sixLinearMotorK() = JointVector(s.linearMotorStiffness);
+    author.sixLinearMotorC() = JointVector(s.linearMotorDamping);
+    author.sixLinearMotorForce() = JointVector(s.linearMotorMaxForce);
+    author.sixAngularMotorK() = JointVector(s.angularMotorStiffness);
+    author.sixAngularMotorC() = JointVector(s.angularMotorDamping);
+    author.sixAngularMotorTorque() = JointVector(s.angularMotorMaxTorque);
+    author.sixTargetPosition() = JointVector(s.targetPosition);
+    author.sixTargetVelocity() = JointVector(s.targetVelocity);
 }
 
 void ValidateHingeLimits(float minimum, float maximum)
@@ -396,7 +458,9 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
     if (!prepared.result)
         throw std::runtime_error("GPU joint motion did not produce a result");
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    prepared.result->CopyMotion(output, ids.size() * (kind == JPH::GPU::JointSwingTwist ? 4 : 2));
+    prepared.result->CopyMotion(output, ids.size() * (kind == JPH::GPU::JointSixDOF       ? 7
+                                                      : kind == JPH::GPU::JointSwingTwist ? 4
+                                                                                          : 2));
 }
 
 void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
@@ -498,28 +562,58 @@ void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t constraintId, const Swing
     });
 }
 
-glm::quat PhysicsWorld::GetAngularConstraintOrientation(uint64_t constraintId) const
+glm::quat PhysicsWorld::GetAngularConstraintOrientation(uint64_t id) const
 {
-    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
+    const auto &joint = m_gpuScene->GetAuthoredJoint(id);
+    auto &domain = DomainForBody(joint.bodyIdA);
+    if (joint.kind == JPH::GPU::JointSixDOF) {
+        float values[7];
+        ReadJointMotion(domain, {id}, values, JPH::GPU::JointSixDOF);
+        return {values[6], values[3], values[4], values[5]};
+    }
+    if (joint.kind != JPH::GPU::JointSwingTwist)
+        throw std::logic_error("Constraint has no angular orientation output");
     float values[4];
-    ReadJointMotion(domain, {constraintId}, values, JPH::GPU::JointSwingTwist);
+    ReadJointMotion(domain, {id}, values, JPH::GPU::JointSwingTwist);
     return {values[3], values[0], values[1], values[2]};
 }
 
-uint64_t PhysicsWorld::CreateSixDOFConstraint(PhysicsConstraintOwner &, uint32_t, uint32_t, const glm::vec3 &,
-                                              const SixDOFJointSettings &, bool)
+uint64_t PhysicsWorld::CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
+                                              const glm::vec3 &baked, const glm::vec3 &raw,
+                                              const SixDOFJointSettings &settings, bool collision)
 {
-    throw std::logic_error("GPU CreateSixDOFConstraint has not been implemented");
+    RequireOwnerThread();
+    auto &domain = DomainForBody(ownerBody);
+    JointAuthor author(JPH::GPU::JointSixDOF);
+    author.bodies.w = JPH::GPU::JointEnabled | (collision ? JPH::GPU::JointCollisionEnabled : 0u);
+    author.ownerAnchor() = JointVector(baked);
+    author.ownerLocalAnchor() = JointVector(raw);
+    ApplySixSettings(author, settings);
+    RequireGpu(domain);
+    return m_gpuScene->CreateJoint(owner, ownerBody, connectedBody, std::move(author));
 }
-
-void PhysicsWorld::UpdateSixDOFConstraint(uint64_t, const SixDOFJointSettings &, bool)
+void PhysicsWorld::UpdateSixDOFConstraint(uint64_t id, const SixDOFJointSettings &settings, bool collision)
 {
-    throw std::logic_error("GPU UpdateSixDOFConstraint has not been implemented");
+    RequireOwnerThread();
+    const auto &joint = m_gpuScene->GetAuthoredJoint(id);
+    if (joint.kind != JPH::GPU::JointSixDOF)
+        throw std::logic_error("Constraint is not SixDOF");
+    auto updated = joint.author;
+    ApplySixSettings(updated, settings);
+    if (std::memcmp(&updated.angularFrame(), &joint.author.angularFrame(), sizeof(JPH::GPU::Float4)))
+        throw std::logic_error("SixDOF frame changes require rebuilding the constraint");
+    SetJointFlag(updated, JPH::GPU::JointCollisionEnabled, collision);
+    RequireGpu(DomainForBody(joint.bodyIdA));
+    m_gpuScene->UpdateJoint(id, [updated = std::move(updated)](JointAuthor &author) { author = updated; });
 }
-
-glm::vec3 PhysicsWorld::GetSixDOFConstraintPosition(uint64_t) const
+glm::vec3 PhysicsWorld::GetSixDOFConstraintPosition(uint64_t id) const
 {
-    throw std::logic_error("GPU GetSixDOFConstraintPosition has not been implemented");
+    const auto &joint = m_gpuScene->GetAuthoredJoint(id);
+    if (joint.kind != JPH::GPU::JointSixDOF)
+        throw std::logic_error("Constraint is not SixDOF");
+    float values[7];
+    ReadJointMotion(DomainForBody(joint.bodyIdA), {id}, values, JPH::GPU::JointSixDOF);
+    return {values[0], values[1], values[2]};
 }
 
 } // namespace infernux

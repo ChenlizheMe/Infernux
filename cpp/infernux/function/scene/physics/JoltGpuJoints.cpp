@@ -56,7 +56,7 @@ constexpr PortLayout Ports[] = {
      false,
      true},
     {"joint_query_rows", sizeof(uint32_t), {}, true, true, true},
-    {"joint_motion", sizeof(JointReadback), {"values", "status"}, false, false, false},
+    {"joint_motion", sizeof(JointReadback), {"values", "orientation", "status"}, false, false, false},
 };
 constexpr std::array<std::string_view, StageCount> Entries{"initialize_joints", "read_joint_motion",
                                                            "read_joint_status", "update_joint_state"};
@@ -118,7 +118,7 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
         const auto &field = value.fields[index];
         if (field.name != expected.fields[index] || field.offset != index * sizeof(UInt4) ||
             field.byteSize != sizeof(UInt4) || field.kind != ShaderValueKind::Vector ||
-            field.scalar != ((expected.integer || (port == Motion && index == 1)) ? ShaderScalarKind::UInt32
+            field.scalar != ((expected.integer || (port == Motion && index == 2)) ? ShaderScalarKind::UInt32
                                                                                   : ShaderScalarKind::Float32) ||
             field.rows != 1 || field.columns != 4)
             throw std::invalid_argument("Jolt GPU joint target field differs from its shared device record");
@@ -133,7 +133,7 @@ void ValidateFrozen(const rhi::ComputeHost &host, const std::shared_ptr<rhi::Com
 }
 
 // The final publication gate scans finite packets through the same source as
-// the solve. Only the final typed 32-byte reduction reaches the host.
+// the solve. Only the final typed 48-byte reduction reaches the host.
 struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
 {
     static uint32_t OutputCount(uint32_t input)
@@ -384,7 +384,42 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
         const auto &old = accepted[change.index];
         const auto &author = change.author;
         uint32_t flags = 0;
-        if (author.bodies.z == JointSwingTwist) {
+        if (author.bodies.z == JointSixDOF) {
+            const auto changed = [](const Float4 &a, const Float4 &b) {
+                return std::memcmp(&a, &b, sizeof(Float4)) != 0;
+            };
+            const auto pointBlock = [](const JointAuthor &a) {
+                const auto k = a.sixLimitStiffness();
+                return (a.sixModes().x & 63u) == 0u && k.x == 0 && k.y == 0 && k.z == 0;
+            };
+            const auto lane = [](const Float4 &v, uint32_t i) { return i == 0 ? v.x : i == 1 ? v.y : v.z; };
+            if (changed(old.angularFrame(), author.angularFrame()))
+                throw std::invalid_argument("SixDOF frame update requires rebuild");
+            if (old.sixModes().x != author.sixModes().x || pointBlock(old) != pointBlock(author))
+                flags |= JointResetSixClassification;
+            if (changed(old.sixAngularMin(), author.sixAngularMin()) ||
+                changed(old.sixAngularMax(), author.sixAngularMax()))
+                flags |= JointResetSwingLimits;
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                if (lane(old.sixLinearMin(), axis) != lane(author.sixLinearMin(), axis) ||
+                    lane(old.sixLinearMax(), axis) != lane(author.sixLinearMax(), axis) ||
+                    lane(old.sixLimitStiffness(), axis) != lane(author.sixLimitStiffness(), axis) ||
+                    lane(old.sixLimitDamping(), axis) != lane(author.sixLimitDamping(), axis))
+                    flags |= 1u << (JointResetSixLimitShift + axis);
+                if (((old.sixModes().y ^ author.sixModes().y) & (3u << (2u * axis))) ||
+                    lane(old.sixLinearMotorK(), axis) != lane(author.sixLinearMotorK(), axis) ||
+                    lane(old.sixLinearMotorC(), axis) != lane(author.sixLinearMotorC(), axis) ||
+                    lane(old.sixLinearMotorForce(), axis) != lane(author.sixLinearMotorForce(), axis) ||
+                    lane(old.sixLinearFriction(), axis) != lane(author.sixLinearFriction(), axis))
+                    flags |= 1u << (JointResetSixLinearMotorShift + axis);
+                if (((old.sixModes().y ^ author.sixModes().y) & (3u << (2u * (axis + 3u)))) ||
+                    lane(old.sixAngularMotorK(), axis) != lane(author.sixAngularMotorK(), axis) ||
+                    lane(old.sixAngularMotorC(), axis) != lane(author.sixAngularMotorC(), axis) ||
+                    lane(old.sixAngularMotorTorque(), axis) != lane(author.sixAngularMotorTorque(), axis) ||
+                    lane(old.sixAngularFriction(), axis) != lane(author.sixAngularFriction(), axis))
+                    flags |= 1u << (JointResetSixAngularMotorShift + axis);
+            }
+        } else if (author.bodies.z == JointSwingTwist) {
             const auto changed = [](const Float4 &a, const Float4 &b) {
                 return a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w;
             };
@@ -577,7 +612,7 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
     auto result = std::make_shared<JoltGpuJointMotionResult>();
     result->publication = std::move(publication);
     result->count = static_cast<uint32_t>(rows.size());
-    if (kind < JointHinge || kind > JointSwingTwist)
+    if (kind < JointHinge || kind > JointSixDOF)
         throw JoltGpuQueryRequestError("Jolt GPU motion kind has no readable coordinate");
     result->kind = kind;
     if (rows.empty())
@@ -671,39 +706,52 @@ JoltGpuControlWork JoltGpuJoints::PrepareStatus(std::shared_ptr<const JoltGpuSce
 
 void JoltGpuJointMotionResult::CopyMotion(float *output, size_t valueCount)
 {
-    const size_t width = kind == JointSwingTwist ? 4 : 2;
+    const size_t width = kind == JointSixDOF ? 7 : kind == JointSwingTwist ? 4 : 2;
     if (valueCount != size_t(count) * width || (valueCount && !output))
-        throw JoltGpuQueryRequestError("Jolt GPU joint motion output differs from its requested kind");
+        throw JoltGpuQueryRequestError("Joint motion output width differs from requested kind");
     if (!materialized) {
         if (count) {
             if (!packet)
-                throw std::logic_error("Jolt GPU joint motion has no readback packet");
-            const auto readback = packet->Readback(0);
-            if (!readback || !readback->IsComplete())
-                throw std::logic_error("Jolt GPU joint motion requires its completed source receipt");
+                throw std::logic_error("Joint motion has no packet");
+            auto read = packet->Readback(0);
+            if (!read || !read->IsComplete())
+                throw std::logic_error("Joint motion needs its completed source receipt");
             values.resize(count);
-            readback->ReadInto(values.data(), uint64_t(count) * sizeof(JointReadback));
+            read->ReadInto(values.data(), uint64_t(count) * sizeof(JointReadback));
         }
         materialized = true;
     }
-    // A failed row must not leave a partly updated caller-owned ndarray. The
-    // cached values also make a repeated consume independent of staging lifetime.
-    for (const auto &record : values) {
-        const auto &v = record.values;
-        const auto &s = record.status;
-        const float norm = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
-        if (s.x != JointStatusSuccess || s.y || s.z || s.w || !std::isfinite(v.x) || !std::isfinite(v.y) ||
-            !std::isfinite(v.z) || !std::isfinite(v.w) ||
-            (kind == JointSwingTwist ? std::abs(norm - 1.0f) > 1e-4f : (v.z != 0.0f || v.w != 0.0f)))
-            throw JoltGpuQueryRequestError("Jolt GPU joint motion contains an invalid or failed numerical row");
+    const auto finite = [](const Float4 &v) {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) && std::isfinite(v.w);
+    };
+    for (const auto &r : values) {
+        const auto &v = r.values, &q = r.orientation;
+        const auto &status = r.status;
+        const bool angular = kind == JointSwingTwist || kind == JointSixDOF;
+        const float norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+        if (status.x != JointStatusSuccess || status.y || status.z || status.w || !finite(v) || !finite(q) ||
+            (angular ? std::abs(norm - 1.0f) > 1e-4f : (q.x || q.y || q.z || q.w)) ||
+            (kind == JointSwingTwist ? (v.x || v.y || v.z || v.w)
+             : kind == JointSixDOF   ? v.w != 0.0f
+                                     : (v.z || v.w)))
+            throw JoltGpuQueryRequestError("Joint motion has an invalid/failed numerical row");
     }
     for (size_t row = 0; row < values.size(); ++row) {
-        const auto &v = values[row].values;
-        output[row * width] = v.x;
-        output[row * width + 1] = v.y;
-        if (width == 4) {
+        const auto &v = values[row].values, &q = values[row].orientation;
+        if (kind == JointSixDOF) {
+            output[row * width] = v.x;
+            output[row * width + 1] = v.y;
             output[row * width + 2] = v.z;
-            output[row * width + 3] = v.w;
+        }
+        if (kind == JointSixDOF || kind == JointSwingTwist) {
+            const size_t first = row * width + (kind == JointSixDOF ? 3 : 0);
+            output[first] = q.x;
+            output[first + 1] = q.y;
+            output[first + 2] = q.z;
+            output[first + 3] = q.w;
+        } else {
+            output[row * width] = v.x;
+            output[row * width + 1] = v.y;
         }
     }
 }

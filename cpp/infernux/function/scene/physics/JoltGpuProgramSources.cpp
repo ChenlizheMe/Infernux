@@ -47,6 +47,7 @@ std::vector<ShaderSourceModule> GetJoltGpuProgramLibraries()
             {"jph_gpu_rigid_psd", "Jolt/GPU/Shaders/rigid_psd.slang", jolt_gpu_sources::Psd},
             {"jph_gpu_rigid_joints", "Jolt/GPU/Shaders/rigid_joints.slang", jolt_gpu_sources::Joints},
             {"jph_gpu_swing_twist", "Jolt/GPU/Shaders/rigid_swing_twist.slang", jolt_gpu_sources::SwingTwist},
+            {"jph_gpu_six_dof", "Jolt/GPU/Shaders/rigid_six_dof.slang", jolt_gpu_sources::SixDOF},
             {"inx_particle_collision_export", "infernux/renderer/particle/collision_export.slang",
              jolt_gpu_sources::ParticleExport}};
 }

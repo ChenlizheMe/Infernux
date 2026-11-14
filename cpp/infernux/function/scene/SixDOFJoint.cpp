@@ -1,6 +1,8 @@
 #include "SixDOFJoint.h"
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
+#include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <cmath>
 #include <stdexcept>
@@ -467,7 +469,10 @@ void SixDOFJoint::SetTargetAngularVelocity(glm::vec3 value)
 
 uint64_t SixDOFJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
-    return world.CreateSixDOFConstraint(*this, bodyId, connectedBodyId, m_anchor, m_settings, m_enableCollision);
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    const auto *transform = GetTransform();
+    const auto baked = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
+    return world.CreateSixDOFConstraint(*this, bodyId, connectedBodyId, baked, m_anchor, m_settings, m_enableCollision);
 }
 
 void SixDOFJoint::UpdateConstraintSettings()

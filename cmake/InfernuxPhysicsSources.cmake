@@ -17,6 +17,7 @@ function(infernux_embed_physics_sources target)
         "${_physics_root}/Shaders/rigid_psd.slang"
         "${_physics_root}/Shaders/rigid_joints.slang"
         "${_physics_root}/Shaders/rigid_swing_twist.slang"
+        "${_physics_root}/Shaders/rigid_six_dof.slang"
         "${_physics_root}/Shaders/joint_commands.slang"
         "${_physics_root}/Shaders/rigid_step.slang"
         "${_physics_root}/Shaders/rigid_body_mutations.slang"
@@ -40,6 +41,7 @@ function(infernux_embed_physics_sources target)
     file(READ "${_physics_root}/Shaders/rigid_psd.slang" JOLT_GPU_PSD_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_joints.slang" JOLT_GPU_JOINTS_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_swing_twist.slang" JOLT_GPU_SWING_TWIST_SOURCE)
+    file(READ "${_physics_root}/Shaders/rigid_six_dof.slang" JOLT_GPU_SIX_DOF_SOURCE)
     file(READ "${_physics_root}/Shaders/joint_commands.slang" JOLT_GPU_JOINT_COMMANDS_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_step.slang" JOLT_GPU_STEP_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_body_mutations.slang" JOLT_GPU_BODY_MUTATIONS_SOURCE)
@@ -54,7 +56,7 @@ function(infernux_embed_physics_sources target)
             JOLT_GPU_BROADPHASE_TYPES_SOURCE JOLT_GPU_BROADPHASE_SOURCE
             JOLT_GPU_CONSTRAINT_TYPES_SOURCE JOLT_GPU_CONSTRAINT_SOURCE JOLT_GPU_ISLAND_OWNER_SOURCE
             JOLT_GPU_BODY_MUTATIONS_SOURCE JOLT_GPU_BODY_COMMANDS_SOURCE
-            JOLT_GPU_JOINTS_SOURCE JOLT_GPU_SWING_TWIST_SOURCE JOLT_GPU_JOINT_COMMANDS_SOURCE
+            JOLT_GPU_JOINTS_SOURCE JOLT_GPU_SIX_DOF_SOURCE JOLT_GPU_SWING_TWIST_SOURCE JOLT_GPU_JOINT_COMMANDS_SOURCE
             JOLT_GPU_QUERIES_SOURCE JOLT_GPU_RENDER_POSES_SOURCE INFERNUX_PARTICLE_EXPORT_SOURCE)
         string(REPLACE "\n" "\n)INX_JPH_GPU\"\nR\"INX_JPH_GPU(" ${_source} "${${_source}}")
     endforeach()

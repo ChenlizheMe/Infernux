@@ -40,6 +40,8 @@ class JoltGpuJointLayout final
             return JointDistanceAuthorWords;
         case JointSwingTwist:
             return JointSwingAuthorWords;
+        case JointSixDOF:
+            return JointSixAuthorWords;
         default:
             throw std::invalid_argument("Unknown compact joint author kind");
         }
@@ -58,6 +60,8 @@ class JoltGpuJointLayout final
             return JointDistanceStateWords;
         case JointSwingTwist:
             return JointSwingStateWords;
+        case JointSixDOF:
+            return JointSixStateWords;
         default:
             throw std::invalid_argument("Unknown compact joint state kind");
         }

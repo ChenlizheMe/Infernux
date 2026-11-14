@@ -279,7 +279,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             if (joint.identity.z != world || joint.identity.w || (!joint.identity.x && !joint.identity.y) ||
                 !inWorld(joint.bodies.y) ||
                 (joint.bodies.x != UINT32_MAX && (!inWorld(joint.bodies.x) || joint.bodies.x == joint.bodies.y)) ||
-                joint.bodies.z > JointSwingTwist ||
+                joint.bodies.z > JointSixDOF ||
                 (joint.bodies.w &
                  ~(JointEnabled | JointCollisionEnabled | JointLimitsEnabled | JointMotorEnabled | JointAutoDistance)))
                 throw std::invalid_argument("Jolt GPU joint identity, endpoints or world range is invalid");
@@ -300,7 +300,34 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             const auto nonnegative = [](const Float4 &v) {
                 return Finite4(v) && v.x >= 0 && v.y >= 0 && v.z >= 0 && v.w >= 0;
             };
-            if (swingTwist) {
+            if (joint.bodies.z == JointSixDOF) {
+                const auto &m = joint.sixModes();
+                if (!normalized(joint.angularFrame()) || !normalized(joint.angularTarget()) || m.x & ~4095u ||
+                    m.y & ~4095u || m.z || m.w || (joint.bodies.w & ~(JointEnabled | JointCollisionEnabled)))
+                    throw std::invalid_argument("SixDOF frame/mode metadata differs from typed contract");
+                for (const auto &v :
+                     {joint.sixLinearMin(), joint.sixLinearMax(), joint.sixAngularMin(), joint.sixAngularMax(),
+                      joint.sixTargetPosition(), joint.sixTargetVelocity(), joint.angularVelocity()})
+                    if (!Finite4(v) || v.w)
+                        throw std::invalid_argument("SixDOF vector must be finite with zero padding");
+                for (const auto &v : {joint.sixLimitStiffness(), joint.sixLimitDamping(), joint.sixLinearFriction(),
+                                      joint.sixAngularFriction(), joint.sixLinearMotorK(), joint.sixLinearMotorC(),
+                                      joint.sixLinearMotorForce(), joint.sixAngularMotorK(), joint.sixAngularMotorC(),
+                                      joint.sixAngularMotorTorque()})
+                    if (!nonnegative(v) || v.w)
+                        throw std::invalid_argument("SixDOF SI coefficients must be nonnegative and finite");
+                for (uint32_t axis = 0; axis < 6; ++axis) {
+                    const auto lane = [](const Float4 &v, uint32_t i) { return i == 0 ? v.x : i == 1 ? v.y : v.z; };
+                    const auto motion = (m.x >> (2u * axis)) & 3u;
+                    const float lo =
+                        axis < 3 ? lane(joint.sixLinearMin(), axis) : lane(joint.sixAngularMin(), axis - 3);
+                    const float hi =
+                        axis < 3 ? lane(joint.sixLinearMax(), axis) : lane(joint.sixAngularMax(), axis - 3);
+                    if (motion > 2 || lo > hi || (motion == 1 && lo == hi) ||
+                        (axis >= 3 && (lo < -3.14159265358979323846f || hi > 3.14159265358979323846f)))
+                        throw std::invalid_argument("SixDOF effective axis limits are invalid");
+                }
+            } else if (swingTwist) {
                 const auto &v = joint.angularLimits();
                 if (!normalized(joint.angularFrame()) || !normalized(joint.angularTarget()) || !Finite4(v) ||
                     v.x < -3.14159265358979323846f || v.y > 3.14159265358979323846f || v.x > v.y || v.z < 0 ||
@@ -675,7 +702,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
         const auto &old = m_model.joints[change.index];
         if (std::memcmp(&old.bodies, &change.author.bodies, 3 * sizeof(uint32_t)) ||
             std::memcmp(&old.identity, &change.author.identity, sizeof(UInt4)) ||
-            (old.bodies.z == JointSwingTwist &&
+            ((old.bodies.z == JointSwingTwist || old.bodies.z == JointSixDOF) &&
              std::memcmp(&old.angularFrame(), &change.author.angularFrame(), sizeof(Float4))))
             throw std::invalid_argument("Jolt GPU joint endpoint or identity changes require topology replacement");
     }

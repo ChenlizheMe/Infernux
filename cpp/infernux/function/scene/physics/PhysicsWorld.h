@@ -481,8 +481,8 @@ class PhysicsWorld
                                     bool enableCollision);
     glm::quat GetAngularConstraintOrientation(uint64_t constraintId) const;
     uint64_t CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                    const glm::vec3 &localAnchor, const SixDOFJointSettings &settings,
-                                    bool enableCollision);
+                                    const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
+                                    const SixDOFJointSettings &settings, bool enableCollision);
     void UpdateSixDOFConstraint(uint64_t constraintId, const SixDOFJointSettings &settings, bool enableCollision);
     glm::vec3 GetSixDOFConstraintPosition(uint64_t constraintId) const;
     void UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
