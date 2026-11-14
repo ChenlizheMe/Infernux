@@ -80,10 +80,14 @@ class UICommandPackets:
         self.texture_cache = texture_cache
         self.texture_generation = None
         self.has_pending_textures = False
+        self.selected_textures_pending = False
+        self._texture_engine = None
 
-    def prepare(self, epoch, *, font_epoch=None):
+    def prepare(self, epoch, *, font_epoch=None, texture_engine=None):
         self.pending.clear()
         self.pending_opacities.clear()
+        self._texture_engine = texture_engine
+        self.selected_textures_pending = False
         if font_epoch is not None:
             self.font_epoch = font_epoch
         if epoch != self.epoch:
@@ -114,6 +118,14 @@ class UICommandPackets:
         if group is None:
             group = self.groups[scope] = _CommandGroup(elements, self.texture_cache)
         try:
+            if self._texture_engine is not None:
+                from infernux.core.asset_ref import TextureRef
+                for index, bindings in group.textures.items():
+                    for guid, previous in bindings.items():
+                        self.texture_cache.get(self._texture_engine, TextureRef(guid))
+                        current = self.texture_cache.binding_state(guid)
+                        if current[1] or current != previous:
+                            group.dirty.add(index)
             for index in sorted(group.dirty | group.custom):
                 self.measure(group.elements[index], renderer, scale)
             layout_revision = _get_layout_revision()
@@ -165,6 +177,9 @@ class UICommandPackets:
             self.pending.clear()
             self.pending_opacities.clear()
             raise
+        finally:
+            self.selected_textures_pending |= any(
+                state[1] for bindings in group.textures.values() for state in bindings.values())
 
     def flush(self, renderer):
         if self.pending:

@@ -233,6 +233,10 @@ void SceneRenderExtractor::SetAspectRatio(float aspect)
 RenderViewData SceneRenderExtractor::CaptureCameraView(const Camera &camera)
 {
     RenderViewData view;
+    // An empty raster viewport has no render consumer and may have zero aspect.
+    // Reject it before asking the camera to construct a projection matrix.
+    if (camera.GetPixelWidth() == 0 || camera.GetPixelHeight() == 0)
+        return view;
     view.view = camera.GetViewMatrix();
     view.projection = camera.GetProjectionMatrix();
     view.viewProjection = view.projection * view.view;
@@ -251,6 +255,8 @@ RenderViewData SceneRenderExtractor::CaptureCameraView(const Camera &camera)
     view.farClip = camera.GetFarClip();
     view.depth = camera.GetDepth();
     view.rect = camera.GetRect();
+    view.outputWidth = camera.GetOutputWidth();
+    view.outputHeight = camera.GetOutputHeight();
     view.pixelWidth = camera.GetPixelWidth();
     view.pixelHeight = camera.GetPixelHeight();
     view.clearFlags = camera.GetClearFlags();
@@ -292,6 +298,8 @@ void SceneRenderExtractor::CaptureViews(RenderWorldFrame &frame, Camera *primary
     const auto *gamePrimary = scene ? scene->FindGameCamera(editorCamera) : nullptr;
     const auto append = [&](Camera &camera, bool editor) {
         RenderViewData view = CaptureCameraView(camera);
+        if (!view.valid)
+            return;
         view.editorView = editor;
         view.isMainCamera = !editor && &camera == gamePrimary;
         frame.m_viewIndices.emplace(view.cameraId, frame.m_views.size());

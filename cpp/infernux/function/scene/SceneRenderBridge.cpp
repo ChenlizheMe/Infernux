@@ -1,7 +1,9 @@
 #include "SceneRenderBridge.h"
 
 #include "SceneManager.h"
+#include <algorithm>
 #include <core/types/ShaderTypes.h>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -55,15 +57,18 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
         state = std::make_unique<RuntimePublication>();
     state->extractor.SetMaterialPreparation(m_prepareMaterial);
     try {
-        (void)state->extractor.ExtractRuntimeFrame(state->staging, world);
-        auto candidate = std::make_shared<RenderWorldPublication>();
-        candidate->world = state->staging.Acquire();
-        if (!capture(candidate->world, candidate->plans))
+        if (!state->pending) {
+            (void)state->extractor.ExtractRuntimeFrame(state->staging, world);
+            state->pending = std::make_shared<RenderWorldPublication>();
+            state->pending->world = state->staging.Acquire();
+        }
+        if (!capture(state->pending->world, state->pending->plans))
             return false;
         std::atomic_store_explicit(&state->completed,
-                                   std::shared_ptr<const RenderWorldPublication>(std::move(candidate)),
+                                   std::shared_ptr<const RenderWorldPublication>(std::move(state->pending)),
                                    std::memory_order_release);
     } catch (const ShaderProgramSelectionError &) {
+        state->pending.reset();
         // The author service owns the source diagnostic. Publish no part of
         // this replacement; a corrected author retries this same logical F.
         return false;
@@ -78,32 +83,60 @@ void SceneRenderBridge::RetireRuntimeWorld(uint64_t worldId)
         m_preparedRuntime.reset();
         m_preparedRuntimePublication.reset();
     }
-    // Editor extraction during Play can also retain this World's pose,
-    // material and geometry leases. Shutdown has no later PrepareFrame to
-    // recycle them, so explicitly retire these producer/cache owners as well.
-    m_preparedEditor.reset();
-    m_editorPublication.Reset();
-    m_extractor = SceneRenderExtractor{};
-    m_previewPublication.Reset();
-    m_previewExtractor = SceneRenderExtractor{};
-    m_sceneRenderer.m_cameraCullCaches.clear();
-    m_sceneRenderer.m_buildOwner.reset();
-    m_sceneRenderer.WritableRenderWorld().Reset();
-    m_editorCameraId = 0;
+    m_preparedRuntimeByWorld.erase(worldId);
+    m_preparedRuntimePublications.erase(
+        std::remove_if(m_preparedRuntimePublications.begin(), m_preparedRuntimePublications.end(),
+                       [worldId](const auto &entry) { return entry->world->WorldId() == worldId; }),
+        m_preparedRuntimePublications.end());
+    if ((m_preparedEditor && m_preparedEditor->WorldId() == worldId) || m_editorPublication.WorldId() == worldId) {
+        m_preparedEditor.reset();
+        m_editorPublication.Reset();
+        m_extractor = SceneRenderExtractor{};
+        m_editorCameraId = 0;
+    }
+    // Authoring extraction is a different owner. Retiring a runtime World
+    // cannot discard its Scene View or another World's camera cull cache.
+    if (m_previewPublication.WorldId() == worldId) {
+        m_previewPublication.Reset();
+        m_previewExtractor = SceneRenderExtractor{};
+    }
+    auto &caches = m_sceneRenderer.m_cameraCullCaches;
+    for (auto it = caches.begin(); it != caches.end();) {
+        if (it->second->worldId == worldId)
+            it = caches.erase(it);
+        else
+            ++it;
+    }
+    if (m_sceneRenderer.m_buildOwner && m_sceneRenderer.m_buildOwner->WorldId() == worldId)
+        m_sceneRenderer.m_buildOwner.reset();
+    if (m_sceneRenderer.WritableRenderWorld().WorldId() == worldId)
+        m_sceneRenderer.WritableRenderWorld().Reset();
 }
 void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
 {
     SceneManager &manager = SceneManager::Instance();
-    m_runtimePrepared = manager.IsPlaying();
+    m_runtimePrepared = manager.IsRuntimeWorldManagementActive();
     m_preparedRuntime.reset();
     m_preparedRuntimePublication.reset();
+    m_preparedRuntimePublications.clear();
+    m_preparedRuntimeByWorld.clear();
     if (m_runtimePrepared) {
-        const auto found = m_runtimePublications.find(manager.CurrentWorld().id);
-        if (found != m_runtimePublications.end()) {
-            m_preparedRuntimePublication =
-                std::atomic_load_explicit(&found->second->completed, std::memory_order_acquire);
-            if (m_preparedRuntimePublication)
-                m_preparedRuntime = m_preparedRuntimePublication->world;
+        const auto *primary = manager.GetPrimaryRuntimeWorld();
+        for (const auto worldId : manager.GetRuntimeWorldIds()) {
+            const auto found = m_runtimePublications.find(worldId);
+            if (found == m_runtimePublications.end())
+                continue;
+            auto completed = std::atomic_load_explicit(&found->second->completed, std::memory_order_acquire);
+            if (!completed)
+                continue;
+            if (!completed->world || completed->world->WorldId() != worldId)
+                throw std::logic_error("Runtime publication has the wrong World owner: " + std::to_string(worldId));
+            m_preparedRuntimePublications.push_back(completed);
+            m_preparedRuntimeByWorld.emplace(worldId, completed);
+            if (primary && primary->id == worldId) {
+                m_preparedRuntimePublication = completed;
+                m_preparedRuntime = completed->world;
+            }
         }
     } else {
         // Stop releases producer state. Acquired graphs may still retain the
@@ -128,8 +161,10 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
     };
     auto &caches = m_sceneRenderer.m_cameraCullCaches;
     for (auto it = caches.begin(); it != caches.end();) {
-        if (!retainedBy(m_preparedEditor, it->first, *it->second) &&
-            !retainedBy(m_preparedRuntime, it->first, *it->second))
+        const auto owner = m_preparedRuntimeByWorld.find(it->second->worldId);
+        const bool runtimeRetains =
+            owner != m_preparedRuntimeByWorld.end() && retainedBy(owner->second->world, it->first, *it->second);
+        if (!retainedBy(m_preparedEditor, it->first, *it->second) && !runtimeRetains)
             it = caches.erase(it);
         else
             ++it;
@@ -142,7 +177,7 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
 
 std::shared_ptr<const RenderWorldFrame> SceneRenderBridge::AcquirePreparedGameFrame() const
 {
-    return SceneManager::Instance().IsPlaying() ? m_preparedRuntime : m_preparedEditor;
+    return SceneManager::Instance().IsRuntimeWorldManagementActive() ? m_preparedRuntime : m_preparedEditor;
 }
 
 std::shared_ptr<const RenderWorldFrame> SceneRenderBridge::CapturePreview(Camera &camera)
@@ -152,10 +187,37 @@ std::shared_ptr<const RenderWorldFrame> SceneRenderBridge::CapturePreview(Camera
     return m_previewPublication.Acquire();
 }
 
+std::shared_ptr<const RenderWorldPublication>
+SceneRenderBridge::AcquirePreparedRuntimePublication(uint64_t worldId) const noexcept
+{
+    const auto found = m_preparedRuntimeByWorld.find(worldId);
+    return found == m_preparedRuntimeByWorld.end() ? nullptr : found->second;
+}
+
+std::shared_ptr<const RenderWorldFrame> SceneRenderBridge::AcquirePreparedFrameForCamera(uint64_t worldId,
+                                                                                         uint64_t cameraId) const
+{
+    if (m_preparedEditor && m_preparedEditor->WorldId() == worldId && m_preparedEditor->FindView(cameraId))
+        return m_preparedEditor;
+    const auto publication = AcquirePreparedRuntimePublication(worldId);
+    const auto frame = publication ? publication->world : nullptr;
+    const auto *view = frame ? frame->FindView(cameraId) : nullptr;
+    if (view && view->worldId != worldId)
+        throw std::logic_error("Published camera has the wrong World owner: " + std::to_string(worldId) + "/" +
+                               std::to_string(cameraId));
+    return view ? frame : nullptr;
+}
+
 std::shared_ptr<const RenderWorldFrame> SceneRenderBridge::AcquirePreparedFrameForCamera(uint64_t cameraId) const
 {
-    const auto &frame = m_runtimePrepared && cameraId != m_editorCameraId ? m_preparedRuntime : m_preparedEditor;
-    return frame && frame->FindView(cameraId) ? frame : nullptr;
+    if (m_preparedEditor && m_preparedEditor->FindView(cameraId))
+        return m_preparedEditor;
+    // Component IDs are process-unique today; callers carrying a World must
+    // use the explicit overload so accidental owner mismatches fail closed.
+    for (const auto &entry : m_preparedRuntimePublications)
+        if (entry->world->FindView(cameraId))
+            return entry->world;
+    return nullptr;
 }
 
 CameraDrawCallResult SceneRenderBridge::CullAndBuildForView(const RenderViewData &view,
@@ -165,6 +227,8 @@ CameraDrawCallResult SceneRenderBridge::CullAndBuildForView(const RenderViewData
     const RenderViewData *publishedView = owner ? owner->FindView(view.cameraId) : nullptr;
     if (!publishedView)
         return {};
+    if (owner->WorldId() != view.worldId || publishedView->worldId != view.worldId)
+        throw std::logic_error("Render view World owner does not match its published source");
     m_sceneRenderer.WritableRenderWorld().SelectPublication(std::move(owner));
     return m_sceneRenderer.BuildDrawCallsForCamera(view, includeShadowDrawCalls);
 }

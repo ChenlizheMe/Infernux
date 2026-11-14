@@ -194,6 +194,14 @@ class Camera : public Component
     void SetRect(const glm::vec4 &rect);
     [[nodiscard]] glm::vec4 GetPixelRect() const;
     void SetPixelRect(const glm::vec4 &rect);
+    [[nodiscard]] uint32_t GetOutputWidth() const
+    {
+        return static_cast<uint32_t>(GetOutputDimensions().x);
+    }
+    [[nodiscard]] uint32_t GetOutputHeight() const
+    {
+        return static_cast<uint32_t>(GetOutputDimensions().y);
+    }
     [[nodiscard]] uint32_t GetPixelWidth() const;
     [[nodiscard]] uint32_t GetPixelHeight() const;
     [[nodiscard]] bool HasCustomAspectRatio() const
@@ -412,6 +420,7 @@ class Camera : public Component
     void InvalidateOutput();
     void UpdateProjectionMatrix() const;
     [[nodiscard]] glm::vec2 GetOutputDimensions() const;
+    [[nodiscard]] glm::uvec4 GetRasterRect() const;
     void RefreshViewportAspect();
     [[nodiscard]] glm::dmat4 BuildProjectionMatrix(double aspect) const;
     [[nodiscard]] const glm::dmat4 &GetInverseRayProjection(float aspect) const;

@@ -14,7 +14,15 @@ class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
         self._delegate = delegate
 
     def render(self, context, camera) -> None:
-        self._submission.submit()
+        completed = context.capturing_completed_world
+        self._submission.submit(
+            force=completed,
+            world_id=context.view.world_id,
+            target_size=(context.view.output_width, context.view.output_height),
+            camera_size=(context.view.pixel_width, context.view.pixel_height),
+        )
+        if completed and not self._submission.capture_completed(context):
+            return
         self._delegate.render(context, camera)
 
     def dispose(self) -> None:

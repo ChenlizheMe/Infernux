@@ -68,6 +68,16 @@ def test_slider_pointer_updates_value_and_emits_only_real_changes(scene):
     assert slider.value == pytest.approx(10.0)
     assert values == pytest.approx([5.0, 10.0])
 
+    # A drag already captured before collapse must not map NaN through min/max
+    # into a fabricated end value or emit another value-changed callback.
+    from infernux.lib import Vector3
+    slider.set_value_without_notify(4.0)
+    slider.game_object.transform.local_scale = Vector3(0, 1, 1)
+    slider.on_drag(_pointer(110.0, 20.0))
+    assert slider.value == pytest.approx(4.0)
+    assert values == pytest.approx([5.0, 10.0])
+    assert slider.get_canvas().raycast(60.0, 20.0) is None
+
 
 def test_slider_silent_set_preserves_clamping_without_event():
     slider = UISlider()
@@ -130,20 +140,26 @@ def test_current_ui_scene_roundtrip_uses_transform_as_sole_pose(scene, world):
     assert tuple(restored.transform.local_euler_angles) == pytest.approx((6.0, 7.0, 28.0))
 
 
-def test_slider_pointer_mapping_respects_rotation_and_fill_direction(scene):
+@pytest.mark.parametrize("scale", [(1, 1), (.7, .7), (2, .5), (-1, .5)])
+def test_slider_pointer_mapping_respects_rotation_and_fill_direction(scene, scale):
     slider = _screen_slider(scene)
     slider.width = 100.0
     slider.height = 40.0
     slider.set_rect(10.0, 0.0, 100.0, 40.0, 1920.0, 1080.0)
     slider.set_layout_rotation(90.0)
+    from infernux.lib import Vector3
+    slider.game_object.transform.local_scale = Vector3(*scale, 1)
     slider.minimum = 0.0
     slider.maximum = 1.0
 
-    slider.on_pointer_down(_pointer(60.0, 70.0))
+    # Existing endpoint assertion at the actual rotated/scaled right edge.
+    # Center=(60,20), local +50X becomes +50*sx screen Y at 90 degrees.
+    pointer = _pointer(60.0, 20.0 + 50.0 * scale[0])
+    slider.on_pointer_down(pointer)
     assert slider.value == pytest.approx(1.0)
 
     slider.fill_direction = UIFillDirection.RightToLeft
-    slider.on_pointer_down(_pointer(60.0, 70.0))
+    slider.on_pointer_down(pointer)
     assert slider.value == pytest.approx(0.0)
 
 

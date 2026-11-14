@@ -149,11 +149,13 @@ class _Engine:
 def _install_scene_manager(monkeypatch, scene, persistent_scene=None) -> None:
     import infernux.lib as lib
 
+    owner = int(lib.SceneManager.instance()._current_runtime_world_id)
     monkeypatch.setattr(
         lib,
         "SceneManager",
         SimpleNamespace(
             instance=lambda: SimpleNamespace(
+                _current_runtime_world_id=owner,
                 get_active_scene=lambda: scene,
                 get_runtime_persistent_scene=lambda: persistent_scene,
                 scene_count=int(scene is not None),
@@ -174,6 +176,9 @@ class _UIElementStub:
 
     def get_layout_rotation(self):
         return 0.0
+
+    def get_layout_scale(self):
+        return (1.0, 1.0)
 
 
 def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatch):
@@ -583,6 +588,7 @@ def test_world_ui_pointer_uses_the_element_coordinate_contract(scene, monkeypatc
     ray_arguments = []
     camera = SimpleNamespace(
         culling_mask=1 << 30,
+        _raster_viewport_rect=lambda width, height: (0, 0, int(width), int(height)),
         screen_point_to_ray=lambda *args: (
             ray_arguments.append(args)
             or (
@@ -683,6 +689,7 @@ def test_world_ui_pointer_is_rejected_behind_a_physics_occluder(scene, monkeypat
     root.height = 100.0
     camera = SimpleNamespace(
         culling_mask=0xFFFFFFFF,
+        _raster_viewport_rect=lambda width, height: (0, 0, int(width), int(height)),
         screen_point_to_ray=lambda *_args: (
             vector(0.0, 0.0, 3.0),
             vector(0.0, 0.0, -1.0),
@@ -741,8 +748,13 @@ def test_script_free_physics_barriers_do_not_open_an_unowned_native_frame(monkey
     monkeypatch.setattr(compute, "_poll_transform_bindings", lambda: anchors.append("pose"))
     engine = Engine.__new__(Engine)
     scheduler = RuntimeExecutionScheduler(name="script-free-barrier")
-    engine._runtime_scheduler = scheduler
+    from infernux.lib import SceneManager
+    owner = int(SceneManager.instance()._current_runtime_world_id)
+    engine._authoring_scheduler = scheduler
+    engine._world_runtimes = {}
     engine._runtime_scene_manager = SimpleNamespace(get_fixed_time_step=lambda: 0.02,
+                                                   _current_runtime_world_id=owner,
+                                                   _authoring_runtime_world_id=owner,
                                                    is_playing=lambda: False, is_paused=lambda: False)
     try:
         for _ in range(3):

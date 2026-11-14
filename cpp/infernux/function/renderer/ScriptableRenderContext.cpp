@@ -55,7 +55,7 @@ int ScriptableRenderContext::GetOutputSamples() const noexcept
 ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
                                                  const EditorGizmosContext &gizmoCtx,
                                                  std::shared_ptr<const RenderWorldFrame> world,
-                                                 const RenderViewData &view, bool capture)
+                                                 const RenderViewData &view, bool capture, bool completedWorld)
     : m_vkCore(vkCore), m_graph(graph), m_draw(draw), m_gizmoCtx(gizmoCtx)
 {
     const auto *published = world ? world->FindView(view.cameraId) : nullptr;
@@ -64,8 +64,20 @@ ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, Scene
     m_renderWorldOwner = std::move(world);
     m_cachedCameraView = std::make_shared<RenderViewData>(view);
     m_scene = capture ? gizmoCtx.activeScene : nullptr;
-    if (capture)
+    if (capture) {
+        auto &manager = SceneManager::Instance();
+        auto *source = manager.AuthoringWorld().id == view.worldId ? &manager.AuthoringWorld()
+                                                                   : manager.FindRuntimeWorld(view.worldId);
+        if (!source)
+            throw std::logic_error("UI capture requires the actual retained view's source World");
+        m_captureWorldScope = std::make_unique<WorldExecutionScope>(source);
+        m_scene = source->scenes.active;
+        m_gizmoCtx.activeScene = source->scenes.active;
         m_recordedPlan = std::make_shared<RenderViewPlan>();
+    }
+    m_captureCompletedWorld = completedWorld;
+    if (completedWorld && (!capture || view.editorView))
+        throw std::logic_error("Completed World capture requires a runtime view plan");
     SetupCameraProperties();
 }
 // ============================================================================
@@ -536,8 +548,31 @@ bool ScriptableRenderContext::RenderWithGraph(const RenderGraphDescription &desc
     return true;
 }
 
+bool ScriptableRenderContext::CaptureScreenUI(InxScreenUIRenderer &renderer)
+{
+    if (!m_captureCompletedWorld || !m_recordedPlan || m_recordedPlan->ui)
+        throw std::logic_error("Completed UI must be sealed exactly once during its owning view capture");
+    if (auto snapshot = renderer.CaptureCompletedWorld(m_renderWorldOwner)) {
+        SetScreenUISnapshot(std::move(snapshot));
+        return true;
+    }
+    return false;
+}
+
+void ScriptableRenderContext::SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot)
+{
+    if (!m_captureCompletedWorld || !m_recordedPlan || !snapshot || snapshot->World() != m_renderWorldOwner)
+        throw std::logic_error("Completed UI snapshot must belong to this exact captured World publication");
+    m_recordedPlan->ui = std::move(snapshot);
+}
+
 bool ScriptableRenderContext::ExecutePlan(const std::shared_ptr<const RenderViewPlan> &plan)
 {
+    if (!plan || (plan->ui && plan->ui->World() != m_renderWorldOwner))
+        throw std::logic_error("Game UI plan does not own the selected completed World");
+    if (!m_cachedCameraView->editorView && m_renderWorldOwner->CompletedWorldFrame() && !plan->ui)
+        throw std::logic_error("Completed Game view plan has no UI publication owner");
+    m_graph->SetScreenUISnapshot(plan->ui);
     if (plan->graph &&
         (m_graph->GetAppliedPlan() != plan || !m_graph->IsPythonGraphCurrent(plan->graph->sourceRevision))) {
         if (!ApplyGraph(*plan->graph))

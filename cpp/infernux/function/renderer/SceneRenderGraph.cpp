@@ -1780,7 +1780,8 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         const GraphMaterialFilter materialFilter = command->materialFilter;
         MaterialPassPipelineDescriptor materialPass;
         if (commandType == GraphCommandType::DrawRenderers || commandType == GraphCommandType::DrawShadowCasters ||
-            commandType == GraphCommandType::DrawSkybox || commandType == GraphCommandType::DrawWorldUI) {
+            commandType == GraphCommandType::DrawSkybox || commandType == GraphCommandType::DrawWorldUI ||
+            commandType == GraphCommandType::DrawScreenUI) {
             materialPass = ResolveMaterialPass(normalizedDesc, passDesc, m_renderView, m_cameraInvertCulling);
             m_pythonMaterialPasses[passDesc.name] = materialPass;
         }
@@ -1819,12 +1820,15 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                     m_screenUIRenderer->RenderWorld(ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView,
                                                     materialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
                                                     worldUILayerMask & (m_cachedCameraView.cullingMask), m_drawView,
-                                                    m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView);
+                                                    m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView, 0,
+                                                    0xffffffffu, m_screenUISnapshot);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {
                     auto list = (screenUIListIndex == 0) ? ScreenUIList::Camera : ScreenUIList::Overlay;
-                    m_screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h, vkCore->GetCurrentFrameSlot());
+                    const auto target = materialPass.RenderingSignature();
+                    m_screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h, vkCore->GetCurrentFrameSlot(),
+                                               m_screenUISnapshot, &target);
                 }
                 break;
             case GraphCommandType::FullscreenQuad:
@@ -2060,8 +2064,9 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
             auto mask = m_cachedCameraView.cullingMask;
             if (command->type == GraphCommandType::DrawWorldUI)
                 mask &= command->worldUILayerMask;
-            for (const auto &texture : m_screenUIRenderer->GetRenderTextureReads(list, mask))
-                reads.push_back({pass.name, texture, texture->Acquire()});
+            for (const auto &texture : m_screenUIRenderer->GetRenderTextureReads(list, mask, m_screenUISnapshot))
+                reads.push_back({pass.name, texture,
+                                 m_screenUIRenderer->GetRenderTextureReadGeneration(texture, m_screenUISnapshot)});
             continue;
         }
         if (!command ||
@@ -2344,9 +2349,10 @@ void SceneRenderGraph::EnsureGraphBuilt()
             if (!command || command->type != GraphCommandType::DrawWorldUI)
                 continue;
             const uint32_t mask = cameraMask & command->worldUILayerMask;
-            if (!m_screenUIRenderer->HasSelectiveWorldOcclusion(mask))
+            if (!m_screenUIRenderer->HasSelectiveWorldOcclusion(mask, m_screenUISnapshot))
                 continue;
-            const auto runs = m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, mask);
+            const auto runs =
+                m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, mask, m_screenUISnapshot);
             if (!worldUIDepthSignature)
                 worldUIDepthSignature = 1469598103934665603ull;
             worldUIDepthSignature = (worldUIDepthSignature ^ passIndex) * 1099511628211ull;
@@ -2369,7 +2375,8 @@ void SceneRenderGraph::EnsureGraphBuilt()
         for (const auto &pass : m_pythonGraphDesc.passes) {
             const auto *command = pass.PrimaryCommand();
             if (!command || command->type != GraphCommandType::DrawWorldUI ||
-                !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraMask & command->worldUILayerMask))
+                !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraMask & command->worldUILayerMask,
+                                                                m_screenUISnapshot))
                 continue;
             auto candidate = BuildWorldUIDepthReplay(m_pythonGraphDesc,
                                                      m_cameraClearFlags == CameraClearFlags::DontClear, pass.name);
@@ -3565,6 +3572,11 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
 
     if (displayTarget.IsValid()) {
         const bool preserveMsaaAttachment = m_sceneTarget->IsMsaaEnabled() && msaaSource.IsValid();
+        const auto viewportWork = m_viewportGeneration
+                                      ? m_renderGraph->ImportRenderTexture("ViewportWork", m_viewportGeneration)
+                                      : vk::RenderGraph::RenderTextureResources{};
+        const bool sampledViewportDepth = m_viewportGeneration && m_viewportGeneration->description.sampledDepth &&
+                                          m_viewportGeneration->description.samples == rhi::SampleCount::One;
         m_renderGraph->AddPresentPass("__SceneOutputExport", [=](vk::PassBuilder &builder) {
             // Scene/Game targets are sampled by ImGui, capture and later view
             // consumers. The graph, not an out-of-band Vulkan barrier, owns
@@ -3581,6 +3593,23 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
                     builder.ReadSampledDepth(exportDepth, rhi::RenderTextureSampleStages);
                 else
                     builder.PrepareDepthStencilAttachment(exportDepth);
+            }
+            // The camera-local allocation is persistent too. Compositing its
+            // rectangle reads it as transfer source; return every attachment
+            // to the same handoff contract used by its next graph import.
+            if (viewportWork.color.IsValid()) {
+                if (viewportWork.resolve.IsValid()) {
+                    builder.PrepareColorAttachment(viewportWork.color);
+                    builder.Read(viewportWork.resolve, rhi::RenderTextureSampleStages);
+                } else {
+                    builder.Read(viewportWork.color, rhi::RenderTextureSampleStages);
+                }
+                if (viewportWork.depth.IsValid()) {
+                    if (sampledViewportDepth)
+                        builder.ReadSampledDepth(viewportWork.depth, rhi::RenderTextureSampleStages);
+                    else
+                        builder.PrepareDepthStencilAttachment(viewportWork.depth);
+                }
             }
             builder.SetSideEffect();
             return [](vk::RenderContext &) {};
@@ -3861,7 +3890,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
         for (const auto &candidate : sortedPasses) {
             const auto *candidateCommand = candidate.PrimaryCommand();
             if (!candidateCommand || candidateCommand->type != GraphCommandType::DrawWorldUI || !m_screenUIRenderer ||
-                !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraWorldUIMask & candidateCommand->worldUILayerMask))
+                !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraWorldUIMask & candidateCommand->worldUILayerMask,
+                                                                m_screenUISnapshot))
                 continue;
             auto source = BuildWorldUIDepthReplay(m_pythonGraphDesc, m_cameraClearFlags == CameraClearFlags::DontClear,
                                                   candidate.name);
@@ -5353,7 +5383,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 }
                 const auto &worldUIOpaqueSource = selectiveSource->second;
                 const auto worldUIDepthRuns = m_screenUIRenderer->GetWorldDepthRuns(
-                    m_cachedProj * m_drawView, cameraWorldUIMask & command->worldUILayerMask);
+                    m_cachedProj * m_drawView, cameraWorldUIMask & command->worldUILayerMask, m_screenUISnapshot);
                 const auto opaqueCommand = worldUIOpaqueSource.draw;
                 auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource.passName);
                 const auto uiMaterialPass = m_pythonMaterialPasses.at(passDesc.name);
@@ -5414,26 +5444,27 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     const bool lastRun = runIndex + 1 == worldUIDepthRuns.size();
                     vk::ResourceHandle writtenColor;
                     vk::ResourceHandle writtenResolve;
-                    const auto pass = m_renderGraph->AddPass(runName, [=, &writtenColor,
-                                                                       &writtenResolve](vk::PassBuilder &builder) {
-                        builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
-                        builder.ReadDepth(runDepth);
-                        for (const auto texture : drawTextureReads)
-                            builder.Read(texture,
-                                         rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
-                        writtenColor = builder.WriteColor(currentColor, 0);
-                        if (lastRun && resolveTarget.IsValid())
-                            writtenResolve = builder.WriteResolve(resolveTarget);
-                        builder.SetRenderArea(width, height);
-                        return [this, vkCore, uiMaterialPass, worldUILayerMask, run, width,
-                                height](vk::RenderContext &ctx) {
-                            m_screenUIRenderer->RenderWorld(
-                                ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
-                                uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
-                                worldUILayerMask & (m_cachedCameraView.cullingMask), m_drawView, m_cachedProj,
-                                m_hasBillboardView ? m_billboardView : m_drawView, run.firstOrdinal, run.endOrdinal);
-                        };
-                    });
+                    const auto pass =
+                        m_renderGraph->AddPass(runName, [=, &writtenColor, &writtenResolve](vk::PassBuilder &builder) {
+                            builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
+                            builder.ReadDepth(runDepth);
+                            for (const auto texture : drawTextureReads)
+                                builder.Read(texture,
+                                             rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                            writtenColor = builder.WriteColor(currentColor, 0);
+                            if (lastRun && resolveTarget.IsValid())
+                                writtenResolve = builder.WriteResolve(resolveTarget);
+                            builder.SetRenderArea(width, height);
+                            return [this, vkCore, uiMaterialPass, worldUILayerMask, run, width,
+                                    height](vk::RenderContext &ctx) {
+                                m_screenUIRenderer->RenderWorld(
+                                    ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
+                                    uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
+                                    worldUILayerMask & (m_cachedCameraView.cullingMask), m_drawView, m_cachedProj,
+                                    m_hasBillboardView ? m_billboardView : m_drawView, run.firstOrdinal, run.endOrdinal,
+                                    m_screenUISnapshot);
+                            };
+                        });
                     trackAuthorPass(pass);
                     currentColor = writtenColor;
                     publishResourceVersion(writtenColor);

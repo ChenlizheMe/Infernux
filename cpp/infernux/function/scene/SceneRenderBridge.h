@@ -56,7 +56,11 @@ class SceneRenderBridge final
     {
         return m_preparedRuntimePublication;
     }
+    [[nodiscard]] std::shared_ptr<const RenderWorldPublication>
+    AcquirePreparedRuntimePublication(uint64_t worldId) const noexcept;
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedFrameForCamera(uint64_t cameraId) const;
+    [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedFrameForCamera(uint64_t worldId,
+                                                                                        uint64_t cameraId) const;
     [[nodiscard]] CameraDrawCallResult CullAndBuildForView(const RenderViewData &view,
                                                            std::shared_ptr<const RenderWorldFrame> owner,
                                                            bool includeShadowDrawCalls);
@@ -76,6 +80,7 @@ class SceneRenderBridge final
     {
         SceneRenderExtractor extractor;
         RenderWorldSnapshot staging;
+        std::shared_ptr<RenderWorldPublication> pending;
         std::shared_ptr<const RenderWorldPublication> completed;
     };
     SceneRenderExtractor m_extractor;
@@ -87,6 +92,8 @@ class SceneRenderBridge final
     std::shared_ptr<const RenderWorldFrame> m_preparedEditor;
     std::shared_ptr<const RenderWorldFrame> m_preparedRuntime;
     std::shared_ptr<const RenderWorldPublication> m_preparedRuntimePublication;
+    std::vector<std::shared_ptr<const RenderWorldPublication>> m_preparedRuntimePublications;
+    std::unordered_map<uint64_t, std::shared_ptr<const RenderWorldPublication>> m_preparedRuntimeByWorld;
     uint64_t m_editorCameraId = 0;
     bool m_runtimePrepared = false;
     SceneRenderer m_sceneRenderer;

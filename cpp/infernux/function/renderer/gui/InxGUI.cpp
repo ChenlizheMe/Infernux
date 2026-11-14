@@ -243,6 +243,9 @@ void InxGUI::Init(SDL_Window *window)
         return;
     }
 
+    ImGui_ImplVulkan_SetTextureRetirement(
+        [this](std::function<void()> destroy) { m_vkCore_ptr->GetRetirementQueue().Retire(std::move(destroy)); });
+
     // Font texture is now created automatically by the backend
 
     // Initialize resource preview manager
@@ -362,8 +365,48 @@ void InxGUI::RefreshDisplayScale()
     INXLOG_DIAGNOSTIC("Display scale changed from ", previousScale, " to ", nextScale);
 }
 
+void InxGUI::SealTexturePublication(ImGuiTextureResource &resource)
+{
+    if (resource.publication)
+        throw std::logic_error("GUI texture generation was already sealed");
+    auto publication = std::make_shared<ScreenUITexturePublication>();
+    publication->textureId = reinterpret_cast<uint64_t>(resource.descriptorSet);
+    publication->generation = resource.uploadGeneration;
+    publication->requiresDisplayEncoding = resource.requiresDisplayEncoding;
+    resource.publicationRetiring = std::make_shared<bool>(false);
+    auto &descriptors = m_vkCore_ptr->GetDeviceContext().GetRhiDevice().GetDescriptorManager();
+    auto retire = [this](std::function<void()> destroy) {
+        m_vkCore_ptr->GetRetirementQueue().Retire(std::move(destroy));
+    };
+    auto destroy = [texture = resource.texture, view = resource.externalView, descriptor = resource.descriptorSet,
+                    bytes = resource.residentBytes, retiring = resource.publicationRetiring,
+                    residency = m_textureResidency, &descriptors] {
+        descriptors.SetExternalUploadSource(descriptor, {});
+        ImGui_ImplVulkan_RemoveTexture(descriptor);
+        residency->heldBytes -= bytes;
+        if (*retiring)
+            residency->retiringBytes -= bytes;
+    };
+    publication->allocation = std::make_shared<ImGuiTextureAllocationLease>(std::move(retire), std::move(destroy));
+    m_textureAllocationLeases.erase(std::remove_if(m_textureAllocationLeases.begin(), m_textureAllocationLeases.end(),
+                                                   [](const auto &weak) { return weak.expired(); }),
+                                    m_textureAllocationLeases.end());
+    m_textureAllocationLeases.push_back(publication->allocation);
+    resource.publication = std::move(publication);
+}
+
 void InxGUI::ReleaseTextureResource(ImGuiTextureResource &resource)
 {
+    if (resource.publication) {
+        if (resource.residentBytes > m_textureResidency->heldBytes)
+            throw std::logic_error("ImGui texture residency byte counter underflow");
+        m_textureResidency->retiringBytes += resource.residentBytes;
+        *resource.publicationRetiring = true;
+        // The resource's publication also belongs to retained UI packets.
+        // Their final lease, not GUI table membership, retires this descriptor.
+        resource = {};
+        return;
+    }
     if (resource.residentBytes > m_textureResidency->heldBytes)
         throw std::logic_error("ImGui texture residency byte counter underflow");
     m_textureResidency->retiringBytes += resource.residentBytes;
@@ -581,6 +624,7 @@ void InxGUI::PublishCompletedTextureUploads()
         resource.requiresDisplayEncoding = pending.requiresDisplayEncoding;
         ImGui_ImplVulkan_SetTextureLinearColor(descriptor, resource.requiresDisplayEncoding);
         rhiDevice.GetDescriptorManager().SetExternalUploadSource(descriptor, resource.GetUploadSubmission());
+        SealTexturePublication(resource);
         m_textures_umap.emplace(pending.name, std::move(resource));
         m_textureNamesByDescriptor[descriptor] = pending.name;
         RequestFrame();
@@ -1105,6 +1149,12 @@ void InxGUI::Shutdown()
     m_textures_umap.clear();
     m_textureNamesByDescriptor.clear();
 
+    for (const auto &weak : m_textureAllocationLeases)
+        if (const auto lease = weak.lock())
+            lease->Release();
+    m_textureAllocationLeases.clear();
+    ImGui_ImplVulkan_ReleaseAtlasAllocations();
+
     // The device is idle, so queued ImGui descriptor retirements are safe to
     // execute now. They must run before ImGui_ImplVulkan_Shutdown tears down
     // the backend state used by ImGui_ImplVulkan_RemoveTexture.
@@ -1346,6 +1396,7 @@ uint64_t InxGUI::PublishTextureViewForImGui(const std::string &name, std::shared
     resource.residentBytes = ownedBytes;
     rhiDevice.GetDescriptorManager().SetExternalUploadSource(descriptor, resource.GetUploadSubmission());
     m_textureNamesByDescriptor[descriptor] = name;
+    SealTexturePublication(resource);
     m_textures_umap.emplace(name, std::move(resource));
     m_textureResidency->heldBytes += ownedBytes;
     m_pendingTextureRemovals.erase(std::remove(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name),
@@ -1448,7 +1499,14 @@ uint64_t InxGUI::PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderT
     const auto &sampled = generation->sampledColor;
     const std::string name = "RenderTextureUI/" + sampled->GetSourceId();
     const auto id = PublishTextureViewForImGui(name, sampled);
-    m_textures_umap.at(name).renderTexture = texture;
+    auto &resource = m_textures_umap.at(name);
+    resource.renderTexture = texture;
+    if (resource.publication->renderTexture != texture || resource.publication->renderTextureGeneration != generation) {
+        auto publication = std::make_shared<ScreenUITexturePublication>(*resource.publication);
+        publication->renderTexture = texture;
+        publication->renderTextureGeneration = generation;
+        resource.publication = std::move(publication);
+    }
     vk::RenderGraph::AddPersistentImageInitialization(m_renderTextureInitializations, generation);
     return id;
 }
@@ -1472,6 +1530,22 @@ std::shared_ptr<rhi::RenderTexture> InxGUI::ResolveImGuiRenderTexture(uint64_t t
     if (name == m_textureNamesByDescriptor.end())
         return nullptr;
     return m_textures_umap.at(name->second).renderTexture.lock();
+}
+
+std::shared_ptr<const ScreenUITexturePublication> InxGUI::AcquireScreenUITexturePublication(uint64_t textureId) const
+{
+    const auto descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
+    const auto name = m_textureNamesByDescriptor.find(descriptor);
+    if (name != m_textureNamesByDescriptor.end())
+        return m_textures_umap.at(name->second).publication;
+    if (auto allocation = ImGui_ImplVulkan_AcquireAtlasAllocation(descriptor)) {
+        auto publication = std::make_shared<ScreenUITexturePublication>();
+        publication->textureId = textureId;
+        publication->allocation = std::move(allocation);
+        return publication;
+    }
+    // Foreign raw TexIDs retain their existing caller-owned lifetime contract.
+    return {};
 }
 
 bool InxGUI::TouchImGuiTextureId(uint64_t textureId)

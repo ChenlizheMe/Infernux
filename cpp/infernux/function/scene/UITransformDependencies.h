@@ -154,18 +154,21 @@ class UITransformDependencies
             if (!entry.world || checkPose || store.GetWorldMatrixDirty(entry.handle) || store.IsFrameCacheActive()) {
                 glm::vec3 position;
                 glm::quat rotation;
+                glm::vec2 scale(1.0f);
                 if (entry.world) {
                     position = transform->GetPosition();
                     rotation = transform->GetRotation();
                 } else {
-                    // Screen geometry ignores Z, X/Y tilt and Scale by contract.
+                    // Screen geometry uses only its own local XY scale, XY position and Z rotation.
                     const auto local = transform->GetLocalPosition();
                     position = {local.x, local.y, transform->GetLocalEulerAngles().z};
+                    scale = glm::vec2(transform->GetLocalScale());
                     rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
                 }
-                entryChanged |= position != entry.position || rotation != entry.rotation;
+                entryChanged |= position != entry.position || rotation != entry.rotation || scale != entry.scale;
                 entry.position = position;
                 entry.rotation = rotation;
+                entry.scale = scale;
             }
             if (entryChanged) {
                 changed = true;
@@ -282,6 +285,7 @@ class UITransformDependencies
         uint64_t layoutRevision = 0;
         glm::vec3 position{0.0f};
         glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        glm::vec2 scale{1.0f};
     };
 
     void Add(GameObject *object, bool world)

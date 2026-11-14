@@ -93,15 +93,18 @@ class UITextureCache:
             if not callable(query):
                 raise RuntimeError("The current engine lacks GUID-backed UI texture binding")
             key = f"ui_img|{guid}"
-            tid = int(query(key, guid))
+            tid, pending = query(key, guid)
+            tid = int(tid)
             if tid != self._cache.get(guid, 0):
                 self._generation += 1
             if tid:
                 self._cache[guid] = tid
-                self._pending_keys.discard(guid)
             else:
                 self._cache.pop(guid, None)
+            if pending:
                 self._pending_keys.add(guid)
+            else:
+                self._pending_keys.discard(guid)
             if self._packet_bindings is not None:
                 self._packet_bindings[guid] = self.binding_state(guid)
             return tid

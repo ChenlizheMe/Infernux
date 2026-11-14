@@ -625,13 +625,21 @@ class InxUIScreenComponent(InxUIComponent):
         """
         return tuple(self._resolved_rect_geometry(canvas_width, canvas_height).visual_rect)
 
+    def get_layout_scale(self):
+        """Element-local XY visual scale; layout and World UI stay unscaled."""
+        owner = self._try_get_game_object()
+        if owner is None or self._canvas_for_owner(owner) is None:
+            return (1.0, 1.0)
+        scale = owner.transform.local_scale
+        return float(scale.x), float(scale.y)
+
     def _resolved_rect_geometry(self, canvas_width=None, canvas_height=None):
         """One immutable view of the current layout, shared by its consumers."""
         from infernux.lib._Infernux import _ScreenRectGeometry
 
         rect = tuple(self.get_rect(canvas_width, canvas_height))
         pivot = self.pivot
-        key = rect, self.get_layout_rotation(), (float(pivot.x), 1 - float(pivot.y))
+        key = rect, self.get_layout_rotation(), (float(pivot.x), 1 - float(pivot.y)), self.get_layout_scale()
         if self.__dict__.get('_screen_rect_geometry_key') != key:
             self.__dict__['_screen_rect_geometry'] = _ScreenRectGeometry(*key)
             self.__dict__['_screen_rect_geometry_key'] = key
@@ -641,22 +649,11 @@ class InxUIScreenComponent(InxUIComponent):
         from infernux.lib._Infernux import _ScreenRectGeometry
         pivot = self.pivot
         return _ScreenRectGeometry((0, 0, float(width), float(height)), self.get_layout_rotation(),
-                                   (float(pivot.x), 1 - float(pivot.y)))
+                                   (float(pivot.x), 1 - float(pivot.y)), self.get_layout_scale())
 
     def calc_visual_size(self, width: float, height: float):
         """Return rotated AABB size for the given unrotated width/height."""
-        rot = self.get_layout_rotation() % 360.0
-        width = float(width)
-        height = float(height)
-        if abs(rot) < 0.001:
-            return (width, height)
-        sin_a, cos_a = self._rot_sincos()
-        acos = abs(cos_a)
-        asin = abs(sin_a)
-        return (
-            width * acos + height * asin,
-            width * asin + height * acos,
-        )
+        return tuple(self._rect_geometry_for_size(width, height).visual_rect[2:])
 
     def _rotated_corner_offset(self, width: float, height: float, corner_index: int,
                                 _sincos=None):

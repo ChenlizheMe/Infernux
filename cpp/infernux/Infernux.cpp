@@ -2185,15 +2185,24 @@ bool Infernux::AdvancePreviewTasks(bool gpu, uint64_t lane)
         m_lastImportedPreviewKey = publication.key;
         auto &registry = AssetRegistry::Instance();
         const auto content = registry.GetAssetContentGeneration(publication.guid);
+        bool pending = false;
         const uint64_t textureId =
-            m_renderer->QueryImportedTextureForImGui(publication.textureName, publication.guid, progressed);
+            m_renderer->QueryImportedTextureForImGui(publication.textureName, publication.guid, progressed, pending);
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
         const auto stateIt = m_texturePreviewStates.find(publication.key);
         if (stateIt == m_texturePreviewStates.end() || stateIt->second.importedTextureGuid != publication.guid)
             break;
-        if (textureId == 0) {
+        if (pending) {
             m_hasPreviewPumpWork.store(true, std::memory_order_release);
             m_renderer->RequestFullSpeedFrame();
+            break;
+        }
+        if (textureId == 0) {
+            stateIt->second.failedGeneration = stateIt->second.generation;
+            stateIt->second.importedGpuPending = false;
+            stateIt->second.importedContentGeneration = content;
+            stateIt->second.importedRuntimeVersion = registry.GetAssetVersion(publication.guid);
+            progressed = true;
             break;
         }
         stateIt->second.readyGeneration = stateIt->second.generation;
@@ -2771,7 +2780,8 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
             state.authoring = state.authoring || authoring;
             if (contentStampHint != 0)
                 state.lastContentStamp = contentStampHint;
-            if (changed || !published.textureId || state.importedGpuPending) {
+            if (changed || state.importedGpuPending ||
+                (!published.textureId && state.failedGeneration != state.generation)) {
                 if (!differentSource && !state.importedGpuPending)
                     ++state.generation;
                 state.importedGpuPending = true;

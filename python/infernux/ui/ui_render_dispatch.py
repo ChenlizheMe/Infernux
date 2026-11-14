@@ -561,17 +561,27 @@ def dispatch(elem, backend: str, *, defer_group_alpha=False, **kwargs):
     fn = _resolve_renderer(type(elem), backend)
     if fn is None:
         return False
-    if backend == 'editor':
-        from infernux.lib._Infernux import _ScreenRectGeometry
-        pivot = elem.pivot
-        rect = _ScreenRectGeometry(
-            (kwargs['base_sx'], kwargs['base_sy'], kwargs['base_sw'], kwargs['base_sh']),
-            elem.get_layout_rotation(), (float(pivot.x), 1 - float(pivot.y)),
-        ).render_rect
-        kwargs['base_sx'], kwargs['base_sy'] = rect[:2]
     if defer_group_alpha:
         kwargs["defer_group_alpha"] = True
-    fn(elem, **kwargs)
+    if backend != 'editor':
+        fn(elem, **kwargs)
+        return True
+    from infernux.lib._Infernux import _ScreenRectGeometry
+    pivot = elem.pivot
+    source_rect = (kwargs['base_sx'], kwargs['base_sy'], kwargs['base_sw'], kwargs['base_sh'])
+    rotation = elem.get_layout_rotation()
+    geometry = _ScreenRectGeometry(source_rect, rotation, (float(pivot.x), 1 - float(pivot.y)))
+    kwargs['base_sx'], kwargs['base_sy'] = geometry.render_rect[:2]
+    scale = elem.get_layout_scale()
+    if scale == (1.0, 1.0):
+        fn(elem, **kwargs)
+        return True
+    context = kwargs['ctx']
+    first = context._draw_vertex_cursor()
+    try:
+        fn(elem, **kwargs)
+    finally:
+        context._scale_draw_vertices(first, *geometry.pivot_position, rotation, *scale)
     return True
 
 

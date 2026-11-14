@@ -126,93 +126,67 @@ class UIEditorAlignmentMixin:
         self._active_alignment_guides = guides
         return vis_x, vis_y
 
+    @staticmethod
+    def _resize_visual_bounds(elem, width, height, fixed_idx, fixed_x, fixed_y):
+        geometry = elem._rect_geometry_for_size(width, height)
+        corner_x, corner_y = geometry.corners[fixed_idx]
+        x, y, w, h = geometry.visual_rect
+        return fixed_x - corner_x + x, fixed_y - corner_y + y, w, h
+
     def _snap_resize_x(self, elem, w_sign, new_w, new_h, fixed_idx,
-                        fixed_cx, fixed_cy, candidates_x, snap_tol):
-        """Snap horizontal resize edges. Returns *(new_w, guides)*."""
-        if w_sign == 0:
+                       fixed_cx, fixed_cy, candidates_x, snap_tol):
+        scale_x, _ = elem.get_layout_scale()
+        response = w_sign * scale_x
+        if response == 0.0:
             return new_w, []
-        off_x, off_y = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        rect_x = fixed_cx - off_x
-        rect_left = rect_x
-        rect_right = rect_x + new_w
-        rect_cx = rect_x + new_w * 0.5
-        check_points = [rect_right, rect_cx] if w_sign > 0 else [rect_left, rect_cx]
-
-        best_dx = None
-        for edge_pos in check_points:
-            for _ck, cand_pos, _s0, _s1 in candidates_x:
-                delta = cand_pos - edge_pos
-                if abs(delta) <= snap_tol and (best_dx is None or abs(delta) < abs(best_dx)):
-                    best_dx = delta
-
-        if best_dx is None:
+        left, top, width, height = self._resize_visual_bounds(
+            elem, new_w, new_h, fixed_idx, fixed_cx, fixed_cy)
+        points = ((left + width if response > 0 else left, 1.0), (left + width * .5, .5))
+        best = None
+        for point, fraction in points:
+            for _kind, target, _begin, _end in candidates_x:
+                delta = target - point
+                if abs(delta) <= snap_tol and (best is None or abs(delta) < abs(best[0])):
+                    best = delta, fraction
+        if best is None:
             return new_w, []
-
-        new_w += best_dx * w_sign
-        new_w = max(new_w, Theme.UI_EDITOR_MIN_ELEM_SIZE)
-        off_xa, off_ya = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        snapped_left = fixed_cx - off_xa
-        snapped_right = snapped_left + new_w
-        snapped_cx = snapped_left + new_w * 0.5
-        snapped_top = fixed_cy - off_ya
-        snapped_bot = snapped_top + new_h
-        snap_pts = [snapped_left, snapped_cx, snapped_right]
-        _eps = 0.5
-        guides = []
-        seen_x = set()
-        for sp in snap_pts:
-            for _ck, cand_pos, span0, span1 in candidates_x:
-                if abs(cand_pos - sp) < _eps and cand_pos not in seen_x:
-                    seen_x.add(cand_pos)
-                    top = min(snapped_top, span0)
-                    bottom = max(snapped_bot, span1)
-                    guides.append(("v", cand_pos, top, bottom))
+        new_w = max(new_w + best[0] / (response * best[1]), Theme.UI_EDITOR_MIN_ELEM_SIZE)
+        left, top, width, height = self._resize_visual_bounds(
+            elem, new_w, new_h, fixed_idx, fixed_cx, fixed_cy)
+        guides, seen = [], set()
+        for point in (left, left + width * .5, left + width):
+            for _kind, target, begin, end in candidates_x:
+                if abs(target - point) < .5 and target not in seen:
+                    seen.add(target)
+                    guides.append(("v", target, min(top, begin), max(top + height, end)))
         return new_w, guides
 
     def _snap_resize_y(self, elem, h_sign, new_w, new_h, fixed_idx,
-                        fixed_cx, fixed_cy, candidates_y, snap_tol):
-        """Snap vertical resize edges. Returns *(new_h, guides)*."""
-        if h_sign == 0:
+                       fixed_cx, fixed_cy, candidates_y, snap_tol):
+        _, scale_y = elem.get_layout_scale()
+        response = h_sign * scale_y
+        if response == 0.0:
             return new_h, []
-        off_x2, off_y2 = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        rect_x2 = fixed_cx - off_x2
-        rect_y2 = fixed_cy - off_y2
-        rect_top2 = rect_y2
-        rect_bottom2 = rect_y2 + new_h
-        rect_cy2 = rect_y2 + new_h * 0.5
-        rect_left2 = rect_x2
-        rect_right2 = rect_x2 + new_w
-        check_points = [rect_bottom2, rect_cy2] if h_sign > 0 else [rect_top2, rect_cy2]
-
-        best_dy = None
-        for edge_pos in check_points:
-            for _ck, cand_pos, _s0, _s1 in candidates_y:
-                delta = cand_pos - edge_pos
-                if abs(delta) <= snap_tol and (best_dy is None or abs(delta) < abs(best_dy)):
-                    best_dy = delta
-
-        if best_dy is None:
+        left, top, width, height = self._resize_visual_bounds(
+            elem, new_w, new_h, fixed_idx, fixed_cx, fixed_cy)
+        points = ((top + height if response > 0 else top, 1.0), (top + height * .5, .5))
+        best = None
+        for point, fraction in points:
+            for _kind, target, _begin, _end in candidates_y:
+                delta = target - point
+                if abs(delta) <= snap_tol and (best is None or abs(delta) < abs(best[0])):
+                    best = delta, fraction
+        if best is None:
             return new_h, []
-
-        new_h += best_dy * h_sign
-        new_h = max(new_h, Theme.UI_EDITOR_MIN_ELEM_SIZE)
-        off_x3, off_y3 = elem._rotated_corner_offset(new_w, new_h, fixed_idx)
-        snapped_left2 = fixed_cx - off_x3
-        snapped_right2 = snapped_left2 + new_w
-        snapped_top2 = fixed_cy - off_y3
-        snapped_bot2 = snapped_top2 + new_h
-        snapped_cy2 = snapped_top2 + new_h * 0.5
-        snap_pts = [snapped_top2, snapped_cy2, snapped_bot2]
-        _eps = 0.5
-        guides = []
-        seen_y = set()
-        for sp in snap_pts:
-            for _ck, cand_pos, span0, span1 in candidates_y:
-                if abs(cand_pos - sp) < _eps and cand_pos not in seen_y:
-                    seen_y.add(cand_pos)
-                    left = min(snapped_left2, span0)
-                    right = max(snapped_right2, span1)
-                    guides.append(("h", cand_pos, left, right))
+        new_h = max(new_h + best[0] / (response * best[1]), Theme.UI_EDITOR_MIN_ELEM_SIZE)
+        left, top, width, height = self._resize_visual_bounds(
+            elem, new_w, new_h, fixed_idx, fixed_cx, fixed_cy)
+        guides, seen = [], set()
+        for point in (top, top + height * .5, top + height):
+            for _kind, target, begin, end in candidates_y:
+                if abs(target - point) < .5 and target not in seen:
+                    seen.add(target)
+                    guides.append(("h", target, min(left, begin), max(left + width, end)))
         return new_h, guides
 
     def _apply_resize_alignment_snapping(self, canvas, elem, new_w, new_h,

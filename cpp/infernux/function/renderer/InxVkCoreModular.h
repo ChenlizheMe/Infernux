@@ -785,10 +785,10 @@ class InxVkCoreModular
     }
 
     /// Resolve the same final imported GPU texture used by materials for an
-    /// editor preview. Pending uploads return an empty pointer and are polled
-    /// on following frames.
+    /// editor preview. The pending output distinguishes an asynchronous wait
+    /// from terminal failure (which the texture resolver diagnoses and memoizes).
     [[nodiscard]] std::shared_ptr<const rhi::TextureGpuView>
-    ResolveTextureForEditorPreview(const std::string &textureGuid, bool &progressed);
+    ResolveTextureForEditorPreview(const std::string &textureGuid, bool &progressed, bool &pending);
 
     /// Resolve a GUID-backed texture for an explicit render-graph sample binding.
     /// The returned immutable publication owns the texture, view, and authored sampler.

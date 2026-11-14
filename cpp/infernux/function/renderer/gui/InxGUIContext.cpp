@@ -26,6 +26,27 @@ namespace infernux
 float InxGUIContext::s_dpiScale = 1.0f;
 ImFont *InxGUIContext::s_monoFont = nullptr;
 
+int InxGUIContext::DrawVertexCursor() const
+{
+    return ImGui::GetWindowDrawList()->VtxBuffer.Size;
+}
+
+void InxGUIContext::ScaleDrawVertices(int first, float pivotX, float pivotY, float rotation, float scaleX, float scaleY)
+{
+    auto *draw = ImGui::GetWindowDrawList();
+    if (first < 0 || first > draw->VtxBuffer.Size || !std::isfinite(scaleX) || !std::isfinite(scaleY))
+        throw std::invalid_argument("Invalid UI-editor vertex scale range");
+    const float angle = rotation * 0.017453292519943295f;
+    const float cs = std::cos(angle), sn = std::sin(angle);
+    for (int index = first; index < draw->VtxBuffer.Size; ++index) {
+        auto &p = draw->VtxBuffer[index].pos;
+        const float dx = p.x - pivotX, dy = p.y - pivotY;
+        const float x = (dx * cs + dy * sn) * scaleX;
+        const float y = (-dx * sn + dy * cs) * scaleY;
+        p = ImVec2(pivotX + x * cs - y * sn, pivotY + x * sn + y * cs);
+    }
+}
+
 float InxGUIContext::GetDpiScale() const
 {
     return s_dpiScale;

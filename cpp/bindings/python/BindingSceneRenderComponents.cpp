@@ -1,5 +1,6 @@
 #include "BindingSceneInternal.h"
 #include "MatrixPyBridge.h"
+#include "core/math/ViewportRect.h"
 #include "function/renderer/rhi/RhiRenderTexture.h"
 #include "function/scene/Camera.h"
 #include "function/scene/Light.h"
@@ -560,6 +561,14 @@ void BindCamera(py::module_ &m)
         // Screen dimensions (read-only, set by renderer)
         .def_property_readonly("pixel_width", &Camera::GetPixelWidth, "Render target width in pixels")
         .def_property_readonly("pixel_height", &Camera::GetPixelHeight, "Render target height in pixels")
+        // Internal World.Input metadata; no ambient/global render target lookup.
+        .def(
+            "_raster_viewport_rect",
+            [](const Camera &c, uint32_t width, uint32_t height) {
+                const auto rect = RasterViewportRect(c.GetRect(), width, height);
+                return py::make_tuple(rect.x, rect.y, rect.z, rect.w);
+            },
+            py::arg("output_width"), py::arg("output_height"))
         // Coordinate conversion
         .def(
             "screen_to_world_point",

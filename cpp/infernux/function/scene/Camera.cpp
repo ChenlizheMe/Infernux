@@ -403,8 +403,11 @@ void Camera::UpdateAutomaticAspectRatio(float aspect)
 
 void Camera::RefreshViewportAspect()
 {
-    const auto rect = ClipViewportRect(m_rect);
-    m_automaticAspectRatio = rect.w > 0 ? m_outputAspectRatio * rect.z / rect.w : 0.0f;
+    const auto size = GetOutputDimensions();
+    const auto rect = GetRasterRect();
+    m_automaticAspectRatio = rect.z && rect.w ? m_outputAspectRatio * (static_cast<float>(rect.z) / size.x) /
+                                                    (static_cast<float>(rect.w) / size.y)
+                                              : 0.0f;
     if (!m_hasCustomAspectRatio && m_aspectRatio != m_automaticAspectRatio) {
         m_aspectRatio = m_automaticAspectRatio;
         m_projectionDirty = true;
@@ -419,6 +422,12 @@ glm::vec2 Camera::GetOutputDimensions() const
             return glm::vec2(allocation->width, allocation->height);
     }
     return glm::vec2(m_screenWidth, m_screenHeight);
+}
+
+glm::uvec4 Camera::GetRasterRect() const
+{
+    const auto size = GetOutputDimensions();
+    return RasterViewportRect(m_rect, static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y));
 }
 
 void Camera::SetRect(const glm::vec4 &rect)
@@ -453,12 +462,12 @@ void Camera::SetPixelRect(const glm::vec4 &rect)
 
 uint32_t Camera::GetPixelWidth() const
 {
-    return static_cast<uint32_t>(std::round(GetPixelRect().z));
+    return GetRasterRect().z;
 }
 
 uint32_t Camera::GetPixelHeight() const
 {
-    return static_cast<uint32_t>(std::round(GetPixelRect().w));
+    return GetRasterRect().w;
 }
 
 void Camera::SetScreenDimensions(uint32_t width, uint32_t height)
@@ -469,6 +478,8 @@ void Camera::SetScreenDimensions(uint32_t width, uint32_t height)
     m_screenHeight = height;
     if (width && height)
         UpdateAutomaticAspectRatio(static_cast<float>(width) / height);
+    else
+        RefreshViewportAspect();
 }
 
 void Camera::SetOrthographicSize(float size)
@@ -841,18 +852,13 @@ glm::mat4 Camera::CalculateObliqueMatrix(const glm::vec4 &clipPlane) const
 
 glm::vec3 Camera::ScreenToWorldPoint(const glm::vec2 &screenPos, float depth) const
 {
-    if (m_screenWidth == 0 || m_screenHeight == 0) {
-        return glm::vec3(0.0f);
-    }
-
     // Normalise screen coords to NDC [-1, 1]
     // Vulkan uses top-left origin → invert Y in projection (already done),
     // so we keep standard NDC conversion here.
-    const auto rect = GetPixelRect();
-    const auto output = GetOutputDimensions();
-    if (rect.z <= 0 || rect.w <= 0)
+    const auto rect = GetRasterRect();
+    if (rect.z == 0 || rect.w == 0)
         throw std::invalid_argument("Camera unprojection requires a non-empty viewport");
-    const float top = output.y - rect.y - rect.w;
+    const float top = static_cast<float>(rect.y);
     float ndcX = (2.0f * (screenPos.x - rect.x) / rect.z) - 1.0f;
     float ndcY = (2.0f * (screenPos.y - top) / rect.w) - 1.0f;
 
@@ -874,10 +880,9 @@ glm::vec3 Camera::ScreenToWorldPoint(const glm::vec2 &screenPos, float depth) co
 
 glm::vec2 Camera::WorldToScreenPoint(const glm::vec3 &worldPos) const
 {
-    if (m_screenWidth == 0 || m_screenHeight == 0) {
-        return glm::vec2(0.0f);
-    }
-
+    const auto rect = GetRasterRect();
+    if (rect.z == 0 || rect.w == 0)
+        throw std::invalid_argument("Camera projection requires a non-empty viewport");
     glm::vec4 clipPos = GetProjectionMatrix() * GetViewMatrix() * glm::vec4(worldPos, 1.0f);
 
     if (std::abs(clipPos.w) < 1e-8f) {
@@ -888,8 +893,7 @@ glm::vec2 Camera::WorldToScreenPoint(const glm::vec3 &worldPos) const
     glm::vec3 ndc = glm::vec3(clipPos) / clipPos.w;
 
     // NDC → top-left screen coordinates (projection already contains Y-flip).
-    const auto rect = GetPixelRect();
-    const float top = GetOutputDimensions().y - rect.y - rect.w;
+    const float top = static_cast<float>(rect.y);
     float screenX = rect.x + (ndc.x + 1.0f) * 0.5f * rect.z;
     float screenY = top + (ndc.y + 1.0f) * 0.5f * rect.w;
 
@@ -909,14 +913,18 @@ std::pair<glm::vec3, glm::vec3> Camera::ScreenPointToRay(const glm::vec2 &screen
     RequirePositive(viewportHeight, "ray viewport height");
     if (!m_gameObject)
         throw std::logic_error("Camera ray requires an attached camera");
-    const auto rect = ClipViewportRect(m_rect);
-    const double width = viewportWidth * rect.z;
-    const double height = viewportHeight * rect.w;
-    if (width <= 0 || height <= 0)
+    if (static_cast<double>(viewportWidth) > std::numeric_limits<uint32_t>::max() ||
+        static_cast<double>(viewportHeight) > std::numeric_limits<uint32_t>::max())
+        throw std::invalid_argument("Camera ray viewport exceeds the raster extent range");
+    const auto rect =
+        RasterViewportRect(m_rect, static_cast<uint32_t>(viewportWidth), static_cast<uint32_t>(viewportHeight));
+    if (rect.z == 0 || rect.w == 0)
         throw std::invalid_argument("Camera ray requires a non-empty viewport");
+    const double width = rect.z;
+    const double height = rect.w;
     const auto &inverse = GetInverseRayProjection(static_cast<float>(width / height));
-    const double x = 2.0 * (screenPos.x - viewportWidth * rect.x) / width - 1.0;
-    const double y = 2.0 * (screenPos.y - viewportHeight * (1.0 - rect.y - rect.w)) / height - 1.0;
+    const double x = 2.0 * (screenPos.x - rect.x) / width - 1.0;
+    const double y = 2.0 * (screenPos.y - rect.y) / height - 1.0;
     const glm::dvec4 nearH = inverse * glm::dvec4(x, y, depth::Near, 1.0);
     const glm::dvec4 middleH = inverse * glm::dvec4(x, y, 0.5, 1.0);
     if (nearH.w == 0.0 || middleH.w == 0.0)

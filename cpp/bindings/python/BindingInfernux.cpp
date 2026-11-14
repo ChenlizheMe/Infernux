@@ -1052,9 +1052,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         }, py::arg("guid"))
         .def("_get_imported_texture_ui_texture_id", [](Infernux &engine, const std::string &name,
                                                        const std::string &textureGuid) {
-            auto *renderer = engine.GetRenderer();
             bool progressed = false;
-            return renderer ? renderer->QueryImportedTextureForImGui(name, textureGuid, progressed) : uint64_t{0};
+            bool pending = false;
+            const auto textureId = RequireRenderer(engine).QueryImportedTextureForImGui(name, textureGuid,
+                                                                                     progressed, pending);
+            return py::make_tuple(textureId, pending);
         }, py::arg("name"), py::arg("texture_guid"))
         .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
              py::arg("material_guids"),

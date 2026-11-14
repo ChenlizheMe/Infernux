@@ -15,11 +15,11 @@ bool CameraViewportTarget::Prepare(Device &device, const std::string &identity,
         Reset();
         return previous != nullptr || previousOutput != nullptr;
     }
-    const auto visible = ClipViewportRect(rect);
-    m_x = static_cast<uint32_t>(std::round(visible.x * m_output->width));
-    m_y = static_cast<uint32_t>(std::round((1.0f - visible.y - visible.w) * m_output->height));
-    m_width = std::min(static_cast<uint32_t>(std::round(visible.z * m_output->width)), m_output->width - m_x);
-    m_height = std::min(static_cast<uint32_t>(std::round(visible.w * m_output->height)), m_output->height - m_y);
+    const auto pixels = RasterViewportRect(rect, m_output->width, m_output->height);
+    m_x = pixels.x;
+    m_y = pixels.y;
+    m_width = pixels.z;
+    m_height = pixels.w;
     if (IsEmpty() || (m_x == 0 && m_y == 0 && m_width == m_output->width && m_height == m_output->height)) {
         m_work.reset();
         return previous != nullptr || previousOutput != m_output;

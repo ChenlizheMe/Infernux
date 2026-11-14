@@ -518,10 +518,11 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
 }
 
 std::shared_ptr<const rhi::TextureGpuView>
-InxVkCoreModular::ResolveTextureForEditorPreview(const std::string &textureGuid, bool &progressed)
+InxVkCoreModular::ResolveTextureForEditorPreview(const std::string &textureGuid, bool &progressed, bool &pending)
 {
     TextureResolveResult resolved = ResolveTextureAsset(
         textureGuid, "EditorTexturePreview", TextureDimension::Texture2D, nullptr, nullptr, nullptr, progressed);
+    pending = resolved.status == TextureResolveStatus::Pending;
     return resolved.status == TextureResolveStatus::Ready ? std::move(resolved.binding.gpuView) : nullptr;
 }
 

@@ -1,8 +1,8 @@
 """Runtime-owned Screen UI command submission.
 
 Screen-space UI is render data, not presentation-panel data.  This service
-builds the native ScreenUI command lists at the camera-submission boundary so
-Game captures and hidden Game tabs consume the same current-frame HUD.
+assembles native commands from the explicit source World. Runtime view plans
+seal those values at World completion; live editor views use their own source.
 """
 
 from __future__ import annotations
@@ -333,6 +333,11 @@ def _map_runtime_ui_pointer_geometry(
     # neither world projection nor the physical broad phase can affect the
     # event result. This is also materially cheaper than projecting every
     # world target only to discard those positions afterwards.
+    from infernux.ui.enums import RenderMode
+    raster = camera._raster_viewport_rect(int(viewport_width), int(viewport_height)) if camera is not None else None
+    in_camera = raster is not None and (
+        raster[0] <= screen_x < raster[0] + raster[2] and
+        raster[1] <= screen_y < raster[1] + raster[3])
     positions = [None] * len(surfaces)
     world_intersections = []
     ray_origin = ray_direction = None
@@ -355,18 +360,28 @@ def _map_runtime_ui_pointer_geometry(
             positions[index] = (float("nan"), float("nan"))
             continue
 
+        if surface.render_mode == RenderMode.CameraOverlay:
+            if not in_camera:
+                positions[index] = (float("nan"), float("nan"))
+                continue
+            surface_width, surface_height = raster[2], raster[3]
+            pointer_x, pointer_y = screen_x - raster[0], screen_y - raster[1]
+        else:
+            surface_width, surface_height = viewport_width, viewport_height
+            pointer_x, pointer_y = screen_x, screen_y
         scale_x, scale_y, _, logical_width, logical_height = _canvas_metrics(
-            surface, viewport_width, viewport_height
+            surface, surface_width, surface_height
         )
         set_input_logical_size = getattr(surface, "set_input_logical_size", None)
         if callable(set_input_logical_size):
             set_input_logical_size(logical_width, logical_height)
         positions[index] = (
-            float(screen_x) / max(scale_x, 1e-6),
-            float(screen_y) / max(scale_y, 1e-6),
+            float(pointer_x) / max(scale_x, 1e-6),
+            float(pointer_y) / max(scale_y, 1e-6),
         )
 
-    screen_blocks_scene = not (0 <= screen_x < viewport_width and 0 <= screen_y < viewport_height)
+    screen_blocks_scene = (not (0 <= screen_x < viewport_width and 0 <= screen_y < viewport_height)
+                           or (camera is not None and not in_camera))
     screen_blocks_scene = screen_blocks_scene or (check_screen_block and _screen_ui_blocks_scene_query(
         surfaces, positions
     ))
@@ -380,7 +395,7 @@ def _map_runtime_ui_pointer_geometry(
     world_targets = tuple(surface for _index, surface in world_entries)
     projected = _project_world_ui_targets(
         world_targets, ray_origin, ray_direction, camera.culling_mask,
-        camera, viewport_height,
+        camera, raster[3],
     )
     for (index, surface), position in zip(world_entries, projected):
         positions[index] = position
@@ -698,7 +713,7 @@ def _collect_world_ui_elements(*scenes):
 
 
 class RuntimeScreenUISubmission:
-    """Own the GPU Screen UI command snapshot for the active game target."""
+    """Assemble native UI values; each completed native view plan owns its snapshot."""
 
     DEFAULT_CAPTURE_WIDTH = 1920
     DEFAULT_CAPTURE_HEIGHT = 1080
@@ -724,7 +739,7 @@ class RuntimeScreenUISubmission:
         self._target_width = width
         self._target_height = height
 
-    def submit(self) -> bool:
+    def submit(self, *, force=False, world_id=None, target_size=None, camera_size=None) -> bool:
         """Publish current-frame UI commands before camera RenderGraph submission.
 
         Returns ``True`` when commands were rebuilt and ``False`` when the
@@ -733,18 +748,24 @@ class RuntimeScreenUISubmission:
         from infernux.lib import SceneManager, ScreenUIList
         from infernux.ui.enums import RenderMode
 
+        if force:
+            self._last_submission_frame = -1
         engine = self._engine_ref()
         if engine is None:
             return False
-        frame_token = int(getattr(engine, "_service_opportunity", -1))
-        if frame_token >= 0 and frame_token == self._last_submission_frame:
+        opportunity = int(getattr(engine, "_service_opportunity", -1))
+        width, height = self.target_size if target_size is None else target_size
+        camera_size = (width, height) if camera_size is None else camera_size
+        scene_manager = SceneManager.instance()
+        source_world = int(scene_manager._current_runtime_world_id)
+        if world_id is not None and source_world != int(world_id):
+            raise RuntimeError("UI capture is outside its owning World execution scope")
+        frame_token = (opportunity, source_world, width, height, camera_size)
+        if not force and opportunity >= 0 and frame_token == self._last_submission_frame:
             return False
         renderer = engine.get_screen_ui_renderer()
         if renderer is None:
             return False
-
-        width, height = self.target_size
-        scene_manager = SceneManager.instance()
         scenes = runtime_ui_scenes(scene_manager)
         canvas_token = runtime_canvas_snapshot_token(*scenes)
         if canvas_token != self._canvas_snapshot_token:
@@ -752,7 +773,7 @@ class RuntimeScreenUISubmission:
             self._canvas_snapshot_token = canvas_token
         canvases = self._canvas_snapshot
         world_elements = _collect_world_ui_elements(*scenes)
-        self._prepare_native_layouts(canvases, world_elements, renderer, width, height)
+        self._prepare_native_layouts(canvases, world_elements, renderer, width, height, camera_size)
 
         packets = self._command_packets
         texture_cache = packets.texture_cache
@@ -760,18 +781,22 @@ class RuntimeScreenUISubmission:
             None, canvases, width, height, texture_cache.generation,
             world_elements, None, scenes,
         )
+        revision = hash((revision, camera_size)) & ((1 << 63) - 1) or 1
         font_epoch = renderer.command_packet_epoch()
-        packets.prepare((renderer, width, height, font_epoch,
-                         _runtime_command_epoch()), font_epoch=font_epoch)
-        if packets.has_pending_textures:
+        packets.prepare((renderer, source_world, width, height, camera_size, font_epoch,
+                         _runtime_command_epoch()), font_epoch=font_epoch,
+                        texture_engine=engine if force else None)
+        if force or packets.has_pending_textures:
             renderer.begin_frame(width, height)
         else:
             if renderer.begin_frame_cached(width, height, revision):
-                self._last_submission_frame = frame_token
+                if not force:
+                    self._last_submission_frame = frame_token
                 return False
 
         if not canvases and not world_elements:
-            self._last_submission_frame = frame_token
+            if not force:
+                self._last_submission_frame = frame_token
             return True
 
         get_texture_id = texture_cache.get_bound(engine)
@@ -780,21 +805,39 @@ class RuntimeScreenUISubmission:
             get_texture_id, ScreenUIList,
         )
         for canvas in canvases:
+            canvas_width, canvas_height = self._canvas_size(canvas, (width, height), camera_size)
             self._submit_canvas(
                 canvas,
                 renderer,
                 get_texture_id,
-                width,
-                height,
+                canvas_width,
+                canvas_height,
                 ScreenUIList,
                 RenderMode,
                 packets,
             )
         packets.flush(renderer)
-        self._last_submission_frame = frame_token
+        if not force:
+            self._last_submission_frame = frame_token
         return True
 
-    def _prepare_native_layouts(self, canvases, world_elements, renderer, width, height):
+    def capture_completed(self, context) -> bool:
+        """Prepare this view's resources before running authored render work."""
+        if self._command_packets.selected_textures_pending:
+            return False
+        engine = self._engine_ref()
+        if engine is not None:
+            renderer = engine.get_screen_ui_renderer()
+            if renderer is not None:
+                return context.capture_screen_ui(renderer)
+        return False
+
+    @staticmethod
+    def _canvas_size(canvas, output_size, camera_size):
+        from infernux.ui.enums import RenderMode
+        return camera_size if canvas.render_mode == RenderMode.CameraOverlay else output_size
+
+    def _prepare_native_layouts(self, canvases, world_elements, renderer, width, height, camera_size):
         """Publish layout before geometry dependencies and command keys are read."""
         from infernux.ui import UIFrame, UILayoutDirection
         from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
@@ -802,7 +845,8 @@ class RuntimeScreenUISubmission:
         for canvas in canvases:
             prepare = getattr(canvas, '_prepare_native_layout', None)
             if prepare is not None:
-                _, _, scale, cw, ch = _canvas_metrics(canvas, width, height)
+                canvas_width, canvas_height = self._canvas_size(canvas, (width, height), camera_size)
+                _, _, scale, cw, ch = _canvas_metrics(canvas, canvas_width, canvas_height)
                 prepare(renderer.measure_text, cw, ch, scale)
         if self.__dict__.get('_world_layout_members') is not world_elements:
             by_owner = {element.game_object.id: element for element in world_elements

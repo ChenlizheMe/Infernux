@@ -32,7 +32,9 @@ def control(scene, kind=UIButton, position=(0, 0, 0)):
 
 
 def camera(origin=(0, 0, 5), direction=(0, 0, -1), mask=0xFFFFFFFF):
-    return SimpleNamespace(culling_mask=mask, screen_point_to_ray=lambda *_: (Vector3(*origin), Vector3(*direction)))
+    return SimpleNamespace(culling_mask=mask,
+                           _raster_viewport_rect=lambda width, height: (0, 0, int(width), int(height)),
+                           screen_point_to_ray=lambda *_: (Vector3(*origin), Vector3(*direction)))
 
 
 def map_pointer(surfaces, view=None):
@@ -141,6 +143,7 @@ def test_touch_batch_keeps_each_pointers_own_max_distance(scene, monkeypatch):
     surfaces = collect_runtime_ui_input_surfaces(scene)
     view = SimpleNamespace(
         culling_mask=0xFFFFFFFF,
+        _raster_viewport_rect=lambda width, height: (0, 0, int(width), int(height)),
         screen_point_to_ray=lambda screen_x, *_args: (
             Vector3(0, 0, 5 if screen_x == 0 else 10),
             Vector3(0, 0, -1),

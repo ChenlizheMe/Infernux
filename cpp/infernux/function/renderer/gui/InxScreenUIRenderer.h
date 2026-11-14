@@ -20,8 +20,10 @@
 #include <function/scene/NativeLifetime.h>
 
 #include "../MaterialDescriptor.h"
+#include "../RenderWorld.h"
 #include "../rhi/GpuRetirementQueue.h"
 #include "../rhi/RhiRenderTexture.h"
+#include "ScreenUITexturePublication.h"
 #include "WorldUIOcclusionPlan.h"
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/scene/TransformECSStore.h>
@@ -123,6 +125,9 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
     friend struct ScreenUIVulkanTestAccess;
 
   public:
+    class CompletedSnapshot;
+    using Snapshot = std::shared_ptr<const CompletedSnapshot>;
+
     InxScreenUIRenderer();
     ~InxScreenUIRenderer();
 
@@ -146,6 +151,12 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         m_deletionQueue = queue;
     }
 
+    using TexturePublications = std::unordered_map<uint64_t, std::shared_ptr<const ScreenUITexturePublication>>;
+    void
+    SetTexturePublicationAcquire(std::function<std::shared_ptr<const ScreenUITexturePublication>(uint64_t)> acquire)
+    {
+        m_texturePublicationAcquire = std::move(acquire);
+    }
     void SetTextureUsageValidator(std::function<bool(uint64_t)> validator)
     {
         m_textureUsageValidator = std::move(validator);
@@ -204,8 +215,10 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
     {
         return m_materialPipelineVariants.size();
     }
-    std::vector<std::shared_ptr<rhi::RenderTexture>> GetRenderTextureReads(ScreenUIList list,
-                                                                           uint32_t cullingMask = 0xffffffffu) const;
+    std::vector<std::shared_ptr<rhi::RenderTexture>>
+    GetRenderTextureReads(ScreenUIList list, uint32_t cullingMask = 0xffffffffu, const Snapshot &snapshot = {}) const;
+    [[nodiscard]] std::shared_ptr<const rhi::RenderTextureGeneration>
+    GetRenderTextureReadGeneration(const std::shared_ptr<rhi::RenderTexture> &texture, const Snapshot &snapshot) const;
 
     /**
      * @brief Cleanup all resources
@@ -233,8 +246,9 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
      */
     bool BeginFrameCached(uint32_t width, uint32_t height, uint64_t contentRevision);
 
-    // Immutable CPU geometry for one retained UI element. It owns no ImGui
-    // context or GPU objects and may be released after renderer shutdown.
+    // Immutable geometry and shared producer allocation leases for one UI
+    // element. It owns no ImGui context. Explicit producer shutdown releases
+    // GPU storage before any surviving CPU packet references are destroyed.
     class CommandPacket
     {
       public:
@@ -246,6 +260,26 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         struct Data;
         std::unique_ptr<Data> m_data;
     };
+    // Completed CPU draw values plus publication-private GPU slot storage.
+    // Material descriptors/programs are resolved while the source World is
+    // installed; draw-time validation cannot consult the next simulation F.
+    class CompletedSnapshot
+    {
+      public:
+        ~CompletedSnapshot();
+        [[nodiscard]] const std::shared_ptr<const RenderWorldFrame> &World() const noexcept;
+
+      private:
+        friend class InxScreenUIRenderer;
+        CompletedSnapshot();
+        struct Data;
+        std::unique_ptr<Data> m_data;
+    };
+    [[nodiscard]] Snapshot CaptureCompletedWorld(std::shared_ptr<const RenderWorldFrame> world);
+    // MSAA/target replacement keeps the completed CPU values and sampled
+    // allocation leases; only attachment-dependent pipeline variants retire.
+    void AdoptCompletedSnapshots(InxScreenUIRenderer &previous);
+
     void BeginCommandPacket();
     std::shared_ptr<CommandPacket> EndCommandPacket();
     void AbortCommandPacket();
@@ -386,20 +420,27 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
      */
     // frameSlot is owned by VkCore: its previous GPU submission must be complete.
     // Publish UI commands before rendering; all cameras consume that snapshot.
-    void Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height, uint32_t frameSlot);
+    void Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height, uint32_t frameSlot,
+                const Snapshot &snapshot = {}, const rhi::GraphicsRenderingSignature *target = nullptr);
 
     /// Draw world-space UI against the current camera depth attachment.
     void RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, const glm::mat4 &viewProjection,
                      const rhi::GraphicsRenderingSignature &target, uint32_t frameSlot, uint32_t cullingMask,
                      const glm::mat4 &view, const glm::mat4 &projection, const glm::mat4 &billboardView,
-                     uint32_t firstOrdinal = 0, uint32_t endOrdinal = 0xffffffffu);
+                     uint32_t firstOrdinal = 0, uint32_t endOrdinal = 0xffffffffu, const Snapshot &snapshot = {});
 
     using WorldDepthRun = WorldUIOcclusionRun;
-    [[nodiscard]] bool HasSelectiveWorldOcclusion(uint32_t cullingMask = 0xffffffffu) const;
+    [[nodiscard]] bool HasSelectiveWorldOcclusion(uint32_t cullingMask = 0xffffffffu,
+                                                  const Snapshot &snapshot = {}) const;
     [[nodiscard]] std::vector<WorldDepthRun> GetWorldDepthRuns(const glm::mat4 &viewProjection,
-                                                               uint32_t cullingMask = 0xffffffffu) const;
+                                                               uint32_t cullingMask = 0xffffffffu,
+                                                               const Snapshot &snapshot = {}) const;
 
   private:
+    class SnapshotScope;
+    void RetireCompletedSnapshot(CompletedSnapshot::Data &data);
+    const CompletedSnapshot::Data *m_selectedSnapshot = nullptr;
+    std::vector<std::weak_ptr<const CompletedSnapshot>> m_completedSnapshots;
     static constexpr int ListIndex(ScreenUIList list) noexcept
     {
         return list == ScreenUIList::Camera ? 0 : (list == ScreenUIList::Overlay ? 1 : 2);
@@ -409,7 +450,9 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
      * @brief Create Vulkan pipeline objects (shader modules, layouts, pipeline)
      */
     bool CreatePipeline();
-    bool CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline);
+    bool CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline,
+                              const rhi::GraphicsRenderingSignature *target = nullptr);
+    VkPipeline GetScreenPipeline(const rhi::GraphicsRenderingSignature *target);
     bool CreateWorldPipeline();
     bool CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &pipeline,
                              bool alwaysOnTop = false, VkShaderModule vertex = VK_NULL_HANDLE,
@@ -508,8 +551,6 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         float pivotY = 0.0f;
         float scaleX = 1.0f;
         float scaleY = 1.0f;
-        float transformScaleX = 1.0f;
-        float transformScaleY = 1.0f;
         float currentScaleX = 1.0f;
         float currentScaleY = 1.0f;
     };
@@ -562,6 +603,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         VkPipeline pipeline = VK_NULL_HANDLE;
     };
     std::vector<WorldPipelineVariant> m_worldPipelineVariants;
+    std::vector<WorldPipelineVariant> m_screenPipelineVariants;
     struct MaterialPipelineKey
     {
         ShaderProgramKey key;
@@ -650,6 +692,11 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
     uint64_t m_cachedContentRevision = 0;
     std::array<uint64_t, 3> m_cachedPacketEpoch{};
     GpuRetirementQueue *m_deletionQueue = nullptr;
+    TexturePublications m_texturePublications;
+    std::function<std::shared_ptr<const ScreenUITexturePublication>(uint64_t)> m_texturePublicationAcquire;
+    void RetainTexturePublication(uint64_t textureId);
+    bool ValidateTextureUsage(uint64_t textureId) const;
+    bool TextureNeedsDisplayEncoding(uint64_t textureId) const;
     std::function<bool(uint64_t)> m_textureUsageValidator;
     std::function<std::shared_ptr<rhi::RenderTexture>(uint64_t)> m_renderTextureResolver;
     std::function<bool(uint64_t)> m_textureColorSpaceQuery;

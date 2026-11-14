@@ -6,8 +6,10 @@
 #include "RenderGraphDescription.h"
 #include "RenderWorld.h"
 #include "RendererList.h"
+#include "gui/InxScreenUIRenderer.h"
 #include <function/scene/Camera.h>
 #include <function/scene/PrimitiveMeshes.h>
+#include <function/scene/RuntimeWorld.h>
 #include <function/scene/SceneSystem.h>
 
 #include <array>
@@ -67,6 +69,7 @@ struct RenderViewPlan
     std::vector<DrawCall> draws;
     std::vector<RenderCommand> commands;
     bool submitted = false;
+    InxScreenUIRenderer::Snapshot ui;
 };
 
 // ============================================================================
@@ -151,7 +154,7 @@ class ScriptableRenderContext
 
     ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
                             const EditorGizmosContext &gizmoCtx, std::shared_ptr<const RenderWorldFrame> world,
-                            const RenderViewData &view, bool capture = false);
+                            const RenderViewData &view, bool capture = false, bool completedWorld = false);
 
     [[nodiscard]] const RenderViewData &GetView() const noexcept
     {
@@ -233,6 +236,12 @@ class ScriptableRenderContext
         return m_recordedPlan;
     }
     bool ExecutePlan(const std::shared_ptr<const RenderViewPlan> &plan);
+    [[nodiscard]] bool IsCapturingCompletedWorld() const noexcept
+    {
+        return m_captureCompletedWorld;
+    }
+    void SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot);
+    bool CaptureScreenUI(InxScreenUIRenderer &renderer);
 
     /// @brief Get the scene associated with this render context.
     /// Returns the gizmo context's active scene, or falls back to
@@ -263,6 +272,8 @@ class ScriptableRenderContext
     CullingResults m_cachedCullingResults; ///< Cached for repeated Cull() calls
     bool m_submitted = false;
     std::shared_ptr<RenderViewPlan> m_recordedPlan;
+    bool m_captureCompletedWorld = false;
+    std::unique_ptr<WorldExecutionScope> m_captureWorldScope;
 
     // Deferred CommandBuffer execution state
     // ExecuteCommandBuffer captures commands immediately; the Python/local

@@ -103,6 +103,10 @@ class UISlider(UISelectable):
         if rect_width <= 0.0 or rect_height <= 0.0:
             return
         local_x, local_y = geometry.to_local(event_data.position)
+        # A captured drag may survive an element becoming zero-scale.
+        # The inverse is undefined; it must not turn into a clamped value edit.
+        if not math.isfinite(local_x) or not math.isfinite(local_y):
+            return
         if self.fill_direction == UIFillDirection.LeftToRight:
             normalized = local_x / rect_width
         elif self.fill_direction == UIFillDirection.RightToLeft:

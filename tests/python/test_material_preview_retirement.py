@@ -74,7 +74,7 @@ def test_imported_texture_staging_has_a_terminal_result_without_repeated_resolve
                    and engine.pending_texture_gpu_upload_count == 0)
         assert console.get_error_count() == errors_before + 1
         for _ in range(10):
-            assert engine._get_imported_texture_ui_texture_id(key, guid) == 0
+            assert engine._get_imported_texture_ui_texture_id(key, guid) == (0, False)
             assert engine.pending_texture_cpu_load_count == 0
         assert console.get_error_count() == errors_before + 1
 
@@ -93,6 +93,8 @@ def test_imported_texture_staging_has_a_terminal_result_without_repeated_resolve
         resident = next(record for record in engine.asset_runtime_records if record.guid == guid)
         assert resident.runtime_version == version
         assert resident.gpu_resident_bytes > 0 and resident.gpu_pending_bytes == 0
+        texture_id, pending = engine._get_imported_texture_ui_texture_id(key, guid)
+        assert texture_id > 0 and pending is False
         assert console.get_error_count() == errors_before + 1
     finally:
         engine.remove_imgui_texture(key)

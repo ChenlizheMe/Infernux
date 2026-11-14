@@ -84,6 +84,8 @@ struct RenderViewData
     float farClip = 1000.0f;
     float depth = 0.0f;
     glm::vec4 rect{0.0f, 0.0f, 1.0f, 1.0f};
+    uint32_t outputWidth = 0;
+    uint32_t outputHeight = 0;
     uint32_t pixelWidth = 0;
     uint32_t pixelHeight = 0;
     CameraClearFlags clearFlags = static_cast<CameraClearFlags>(0);

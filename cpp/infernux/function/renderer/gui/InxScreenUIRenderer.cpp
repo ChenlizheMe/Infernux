@@ -34,6 +34,7 @@
 #include <function/resources/ShaderAsset/SlangNativeModule.h>
 #include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/SceneManager.h>
 #include <function/scene/WorldUIProjection.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui_internal.h> // for ImGui::GetDrawListSharedData()
@@ -482,7 +483,274 @@ struct InxScreenUIRenderer::CommandPacket::Data
     std::array<List, 3> lists;
     std::vector<WorldElementSpan> worlds;
     std::vector<ScreenElementSpan> screens;
+    TexturePublications textures;
 };
+
+// One native renderer still owns the device and pipelines. A retained UI
+// publication owns its values and upload buffers; scoped selection lets the
+// established draw path consume them without replacing the editor's live data.
+struct InxScreenUIRenderer::CompletedSnapshot::Data
+{
+    std::shared_ptr<const RenderWorldFrame> world;
+    TexturePublications textures;
+    InxScreenUIRenderer *renderer = nullptr;
+    std::array<ImDrawList *, 3> lists{};
+    std::array<std::vector<UIShaderMaterialBinding>, 3> bindings;
+    std::array<std::vector<HDRColorRange>, 3> hdr;
+    std::vector<WorldElementSpan> worlds;
+    std::vector<ScreenElementSpan> screens;
+    bool selective = false;
+    bool enabled = true;
+    bool commandCacheValid = false;
+    uint32_t width = 0, height = 0;
+    std::array<uint64_t, 3> revisions{1, 1, 1};
+    std::array<uint64_t, 3> prepared{};
+    std::array<std::vector<GPUVertex>, 2> screenVertices;
+    std::array<std::vector<ImVec2>, 2> screenLocalPositions;
+    std::vector<WorldGPUVertex> worldVertices;
+    std::vector<std::array<ListBuffers, 3>> frameBuffers;
+    std::unordered_map<std::string, ResolvedMaterialProgram> programs;
+    std::unordered_map<std::string, std::shared_ptr<UIMaterialDescriptor>> descriptors;
+    std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> ownedPrograms;
+    std::unordered_map<std::string, std::array<RejectedMaterial, 2>> rejected;
+    std::unordered_map<uint64_t, std::shared_ptr<rhi::RenderTexture>> renderTextures;
+    std::unordered_map<rhi::RenderTexture *, std::shared_ptr<const rhi::RenderTextureGeneration>> generations;
+    std::function<void(Data &)> retire;
+
+    ~Data()
+    {
+        auto release = std::move(retire);
+        if (release)
+            release(*this);
+        for (auto *list : lists)
+            IM_DELETE(list);
+    }
+};
+
+InxScreenUIRenderer::CompletedSnapshot::CompletedSnapshot() : m_data(std::make_unique<Data>())
+{
+}
+InxScreenUIRenderer::CompletedSnapshot::~CompletedSnapshot() = default;
+const std::shared_ptr<const RenderWorldFrame> &InxScreenUIRenderer::CompletedSnapshot::World() const noexcept
+{
+    return m_data->world;
+}
+
+class InxScreenUIRenderer::SnapshotScope
+{
+  public:
+    SnapshotScope(InxScreenUIRenderer &renderer, const Snapshot &snapshot) : m_renderer(renderer), m_owner(snapshot)
+    {
+        if (!snapshot)
+            return;
+        m_data = snapshot->m_data.get();
+        if (m_data->renderer != &renderer || renderer.m_selectedSnapshot)
+            throw std::logic_error("Completed UI snapshot belongs to a retired renderer or a nested consumer");
+        Swap();
+        renderer.m_selectedSnapshot = m_data;
+    }
+    ~SnapshotScope()
+    {
+        if (m_data) {
+            m_renderer.m_selectedSnapshot = nullptr;
+            Swap();
+        }
+    }
+    SnapshotScope(const SnapshotScope &) = delete;
+    SnapshotScope &operator=(const SnapshotScope &) = delete;
+
+  private:
+    void Swap() noexcept
+    {
+        using std::swap;
+        swap(m_renderer.m_cameraDrawList, m_data->lists[0]);
+        swap(m_renderer.m_overlayDrawList, m_data->lists[1]);
+        swap(m_renderer.m_worldDrawList, m_data->lists[2]);
+        swap(m_renderer.m_commandBindings, m_data->bindings);
+        swap(m_renderer.m_texturePublications, m_data->textures);
+        swap(m_renderer.m_cameraHDRRanges, m_data->hdr[0]);
+        swap(m_renderer.m_overlayHDRRanges, m_data->hdr[1]);
+        swap(m_renderer.m_worldHDRRanges, m_data->hdr[2]);
+        swap(m_renderer.m_worldElementSpans, m_data->worlds);
+        swap(m_renderer.m_screenElementSpans, m_data->screens);
+        swap(m_renderer.m_hasSelectiveWorldOcclusion, m_data->selective);
+        swap(m_renderer.m_enabled, m_data->enabled);
+        swap(m_renderer.m_cachedWidth, m_data->width);
+        swap(m_renderer.m_cachedHeight, m_data->height);
+        swap(m_renderer.m_commandCacheValid, m_data->commandCacheValid);
+        swap(m_renderer.m_geometryRevision, m_data->revisions);
+        swap(m_renderer.m_preparedRevision, m_data->prepared);
+        swap(m_renderer.m_screenVertices, m_data->screenVertices);
+        swap(m_renderer.m_screenLocalPositions, m_data->screenLocalPositions);
+        swap(m_renderer.m_worldVertices, m_data->worldVertices);
+        swap(m_renderer.m_frameBuffers, m_data->frameBuffers);
+        swap(m_renderer.m_resolvedMaterialPrograms, m_data->programs);
+        swap(m_renderer.m_materialDescriptors, m_data->descriptors);
+        swap(m_renderer.m_ownedMaterialPrograms, m_data->ownedPrograms);
+        swap(m_renderer.m_rejectedMaterialGenerations, m_data->rejected);
+    }
+    InxScreenUIRenderer &m_renderer;
+    Snapshot m_owner;
+    CompletedSnapshot::Data *m_data = nullptr;
+};
+
+InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureCompletedWorld(std::shared_ptr<const RenderWorldFrame> world)
+{
+    if (!world || !m_initialized || m_recordingPacket || m_worldElementStart >= 0 || m_selectedSnapshot)
+        throw std::logic_error("Completed UI capture requires a sealed native command submission");
+    if (SceneManager::Instance().CurrentWorld().id != world->WorldId())
+        throw std::logic_error("Completed UI capture requires its actual World execution owner");
+    if (!m_deletionQueue || !m_descriptorManager)
+        throw std::logic_error("Completed UI capture requires existing GPU resource owners");
+    auto snapshot = std::shared_ptr<CompletedSnapshot>(new CompletedSnapshot());
+    auto &data = *snapshot->m_data;
+    data.world = std::move(world);
+    data.renderer = this;
+    data.retire = [this](auto &resources) { RetireCompletedSnapshot(resources); };
+    data.width = m_cachedWidth;
+    data.height = m_cachedHeight;
+    data.enabled = m_enabled;
+    data.selective = m_hasSelectiveWorldOcclusion;
+    data.frameBuffers.resize(m_frameBuffers.size());
+    data.bindings = m_commandBindings;
+    data.textures = m_texturePublications;
+    data.hdr = {m_cameraHDRRanges, m_overlayHDRRanges, m_worldHDRRanges};
+    data.worlds = m_worldElementSpans;
+    data.screens = m_screenElementSpans;
+    for (int index = 0; index < 3; ++index) {
+        const auto list = index == 0 ? ScreenUIList::Camera : index == 1 ? ScreenUIList::Overlay : ScreenUIList::World;
+        data.lists[index] = GetDrawList(list)->CloneOutput();
+        for (auto &command : data.lists[index]->CmdBuffer) {
+            command.TexRef = ImTextureRef(command.GetTexID());
+            const auto retained = data.textures.find(static_cast<uint64_t>(command.GetTexID()));
+            if (command.ElemCount && !command.UserCallback && retained != data.textures.end()) {
+                const auto &publication = retained->second;
+                if (!publication->allocation || !publication->allocation->IsAlive())
+                    return {}; // Producer teardown invalidated this old CPU packet.
+                if (publication->renderTexture) {
+                    data.generations.try_emplace(publication->renderTexture.get(),
+                                                 publication->renderTextureGeneration);
+                    data.renderTextures.emplace(publication->textureId, publication->renderTexture);
+                }
+            }
+        }
+    }
+    for (auto &span : data.worlds) {
+        ResolveWorldPose(span);
+        span.transform = {}; // Completed consumers have no ECS lookup capability.
+    }
+    for (auto &span : data.screens) {
+        ResolveScreenPose(span);
+        span.transform = {};
+    }
+
+    // Resolve each selected material while source assets still belong to F.
+    // The resulting UBO, sampled views, artifact and descriptor lease remain
+    // private to this publication. Pipeline variants use the existing shared
+    // renderer cache, keyed by immutable shader artifact and actual attachments.
+    {
+        SnapshotScope selected(*this, snapshot);
+        for (size_t index = 0; index < m_commandBindings.size(); ++index) {
+            const auto domain = index == 2 ? ShaderProgramDomain::WorldUI : ShaderProgramDomain::ScreenUI;
+            for (const auto &binding : m_commandBindings[index]) {
+                if (binding.materialGuid.empty())
+                    continue;
+                const auto rejected = m_rejectedMaterialGenerations.find(binding.materialGuid);
+                if (rejected != m_rejectedMaterialGenerations.end() &&
+                    rejected->second[index == 2 ? 1 : 0].generation == binding.generation)
+                    continue;
+                try {
+                    auto found = m_resolvedMaterialPrograms.find(binding.materialGuid);
+                    if (found == m_resolvedMaterialPrograms.end()) {
+                        auto artifact = m_materialProgramResolver(binding.materialGuid, binding.generation, domain);
+                        if (artifact &&
+                            (!artifact->IsValid() || artifact->domain != domain || artifact->usesBindlessTextureABI))
+                            throw UIShaderMaterialError("Completed UI material has an incompatible shader artifact");
+                        found = m_resolvedMaterialPrograms
+                                    .emplace(binding.materialGuid,
+                                             ResolvedMaterialProgram{binding.generation, m_materialRenderSerial,
+                                                                     std::move(artifact)})
+                                    .first;
+                        if (found->second.artifact &&
+                            m_ownedMaterialPrograms.insert(found->second.artifact->key).second) {
+                            try {
+                                m_materialProgramAcquire(found->second.artifact->key);
+                            } catch (...) {
+                                m_ownedMaterialPrograms.erase(found->second.artifact->key);
+                                throw;
+                            }
+                        }
+                        if (found->second.artifact && !found->second.artifact->properties.empty() &&
+                            GetMaterialDescriptor(binding, *found->second.artifact) == VK_NULL_HANDLE)
+                            return {}; // Retry this completed publication after its pending texture becomes ready.
+                    }
+                    if (found->second.generation != binding.generation ||
+                        (found->second.artifact && found->second.artifact->domain != domain))
+                        throw UIShaderMaterialError(
+                            "Completed UI snapshot contains conflicting material generations or domains");
+                } catch (const UIShaderMaterialError &error) {
+                    m_rejectedMaterialGenerations[binding.materialGuid][index == 2 ? 1 : 0] = {
+                        binding.generation, error.textureGuid, error.textureGeneration};
+                    INXLOG_ERROR(error.what(), ". This completed UI draw is disabled until a new World publication.");
+                }
+            }
+        }
+    }
+    m_completedSnapshots.erase(std::remove_if(m_completedSnapshots.begin(), m_completedSnapshots.end(),
+                                              [](const auto &weak) { return weak.expired(); }),
+                               m_completedSnapshots.end());
+    m_completedSnapshots.push_back(snapshot);
+    return snapshot;
+}
+
+void InxScreenUIRenderer::AdoptCompletedSnapshots(InxScreenUIRenderer &previous)
+{
+    if (m_device != previous.m_device || m_allocator != previous.m_allocator ||
+        m_descriptorManager != previous.m_descriptorManager ||
+        m_frameBuffers.size() != previous.m_frameBuffers.size() || m_selectedSnapshot || previous.m_selectedSnapshot)
+        throw std::logic_error("UI snapshot adoption requires the same existing device and frame slots");
+    for (const auto &weak : previous.m_completedSnapshots) {
+        if (const auto snapshot = weak.lock()) {
+            auto &data = *snapshot->m_data;
+            data.renderer = this;
+            data.retire = [this](auto &resources) { RetireCompletedSnapshot(resources); };
+            m_completedSnapshots.push_back(snapshot);
+        }
+    }
+    previous.m_completedSnapshots.clear();
+}
+
+void InxScreenUIRenderer::RetireCompletedSnapshot(CompletedSnapshot::Data &data)
+{
+    // Destruction is tied to the renderer's submission retirement serial.
+    // Destroy() drains this registry before device/descriptor-manager teardown;
+    // retained CPU values can then outlive the original native renderer.
+    for (auto &frame : data.frameBuffers) {
+        for (auto &buffer : frame) {
+            DestroyBufferWithQueue(m_allocator, m_deletionQueue, buffer.vertexBuffer, buffer.vertexAlloc,
+                                   buffer.vertexBufferSize);
+            DestroyBufferWithQueue(m_allocator, m_deletionQueue, buffer.indexBuffer, buffer.indexAlloc,
+                                   buffer.indexBufferSize);
+        }
+    }
+    data.frameBuffers.clear();
+    for (auto &[guid, descriptor] : data.descriptors) {
+        m_descriptorManager->Retire(descriptor->descriptorLease);
+        m_deletionQueue->Retire([resource = std::move(descriptor)] {});
+    }
+    data.descriptors.clear();
+    for (const auto &key : data.ownedPrograms)
+        m_materialProgramRelease(key);
+    data.ownedPrograms.clear();
+    data.programs.clear();
+    auto generations = std::move(data.generations);
+    auto publications = std::move(data.textures);
+    auto textures = std::move(data.renderTextures);
+    m_deletionQueue->Retire([generations = std::move(generations), textures = std::move(textures),
+                             publications = std::move(publications)] {});
+    data.renderer = nullptr;
+    data.retire = {};
+}
 
 InxScreenUIRenderer::CommandPacket::CommandPacket() : m_data(std::make_unique<Data>())
 {
@@ -576,6 +844,8 @@ std::shared_ptr<InxScreenUIRenderer::CommandPacket> InxScreenUIRenderer::EndComm
             if (command.TexRef._TexData && command.GetTexID() == 0 && command.ElemCount != 0)
                 throw std::logic_error("UI command packet atlas texture was not published before sealing");
             command.TexRef = ImTextureRef(command.GetTexID());
+            if (command.ElemCount && !command.UserCallback)
+                RetainTexturePublication(static_cast<uint64_t>(command.GetTexID()));
             output.hasVertexOffsets |= command.VtxOffset != 0;
         }
         output.bindings.assign(output.commands.size(), {});
@@ -603,6 +873,8 @@ void InxScreenUIRenderer::AppendCommandPackets(const std::vector<std::shared_ptr
         const float opacity = opacities.empty() ? 1.0f : opacities[packetIndex];
         if (opacity <= 0.0f)
             continue;
+        for (const auto &[textureId, publication] : packet->m_data->textures)
+            m_texturePublications.emplace(textureId, publication);
         for (int index = 0; index < 3; ++index) {
             const auto &source = packet->m_data->lists[index];
             if (source.vertices.empty())
@@ -750,6 +1022,13 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator,
 
 void InxScreenUIRenderer::Destroy()
 {
+    if (m_selectedSnapshot)
+        throw std::logic_error("UI renderer cannot be destroyed during a completed snapshot draw");
+    for (const auto &weak : m_completedSnapshots) {
+        if (const auto snapshot = weak.lock())
+            RetireCompletedSnapshot(*snapshot->m_data);
+    }
+    m_completedSnapshots.clear();
     m_commandCacheValid = false;
     AbortCommandPacket();
     m_worldElementSpans.clear();
@@ -805,6 +1084,9 @@ void InxScreenUIRenderer::Destroy()
         for (const auto &variant : m_worldPipelineVariants)
             vkDestroyPipeline(m_device, variant.pipeline, nullptr);
         m_worldPipelineVariants.clear();
+        for (const auto &variant : m_screenPipelineVariants)
+            vkDestroyPipeline(m_device, variant.pipeline, nullptr);
+        m_screenPipelineVariants.clear();
         if (m_worldPipeline)
             vkDestroyPipeline(m_device, m_worldPipeline, nullptr);
         if (m_worldTopPipeline)
@@ -833,6 +1115,7 @@ void InxScreenUIRenderer::Destroy()
     m_screenVertices = {};
     m_worldVertices.clear();
     m_commandBindings = {};
+    m_texturePublications.clear();
     m_pipeline = VK_NULL_HANDLE;
     m_worldPipeline = VK_NULL_HANDLE;
     m_worldTopPipeline = VK_NULL_HANDLE;
@@ -864,6 +1147,7 @@ void InxScreenUIRenderer::BeginFrame(uint32_t width, uint32_t height)
     ++m_materialBindingsRevision;
     m_cachedWidth = width;
     m_cachedHeight = height;
+    m_texturePublications.clear();
 
     m_cameraHDRRanges.clear();
     m_overlayHDRRanges.clear();
@@ -1021,8 +1305,9 @@ bool InxScreenUIRenderer::ResolveScreenPose(ScreenElementSpan &span)
     const glm::vec3 nextDelta{(position.x - span.position.x) * span.scaleX,
                               -(position.y - span.position.y) * span.scaleY, 0.0f};
     const float nextDeltaRotation = glm::radians(angles.z - span.rotation);
-    const float nextScaleX = transformScale.x / span.transformScaleX;
-    const float nextScaleY = transformScale.y / span.transformScaleY;
+    // Packet vertices contain unscaled layout, even when recorded at scale 0.
+    const float nextScaleX = transformScale.x;
+    const float nextScaleY = transformScale.y;
     const bool changed =
         glm::length(nextDelta - span.delta) > 1.0e-6f || std::fabs(nextDeltaRotation - span.deltaRotation) > 1.0e-6f ||
         std::fabs(nextScaleX - span.currentScaleX) > 1.0e-6f || std::fabs(nextScaleY - span.currentScaleY) > 1.0e-6f;
@@ -1035,10 +1320,22 @@ bool InxScreenUIRenderer::ResolveScreenPose(ScreenElementSpan &span)
 
 void InxScreenUIRenderer::ApplyScreenPose(const ScreenElementSpan &span, const ImVec2 &source, ImVec2 &target)
 {
-    const float cs = std::cos(span.deltaRotation);
-    const float sn = std::sin(span.deltaRotation);
-    const float x = (source.x - span.pivotX) * span.currentScaleX;
-    const float y = (source.y - span.pivotY) * span.currentScaleY;
+    if (span.currentScaleX == 1.0f && span.currentScaleY == 1.0f) {
+        // R(current) * I * inverse(R(capture)) is the existing delta rotation.
+        const float cs = std::cos(span.deltaRotation), sn = std::sin(span.deltaRotation);
+        const float x = source.x - span.pivotX, y = source.y - span.pivotY;
+        target = ImVec2(span.pivotX + x * cs - y * sn + span.delta.x, span.pivotY + x * sn + y * cs + span.delta.y);
+        return;
+    }
+    // Source vertices already include capture rotation. Undo that rotation
+    // before nonuniform local scale, then apply the actual current rotation.
+    const float captured = glm::radians(span.rotation);
+    const float oldCos = std::cos(captured), oldSin = std::sin(captured);
+    const float dx = source.x - span.pivotX, dy = source.y - span.pivotY;
+    const float x = (dx * oldCos + dy * oldSin) * span.currentScaleX;
+    const float y = (-dx * oldSin + dy * oldCos) * span.currentScaleY;
+    const float current = captured + span.deltaRotation;
+    const float cs = std::cos(current), sn = std::sin(current);
     target = ImVec2(span.pivotX + x * cs - y * sn + span.delta.x, span.pivotY + x * sn + y * cs + span.delta.y);
 }
 
@@ -1059,9 +1356,6 @@ void InxScreenUIRenderer::BeginScreenObject(GameObject *object, ScreenUIList lis
     const auto position = object->GetTransform()->GetLocalPosition();
     span.position = position;
     span.rotation = object->GetTransform()->GetLocalEulerAngles().z;
-    const auto transformScale = object->GetTransform()->GetLocalScale();
-    span.transformScaleX = transformScale.x;
-    span.transformScaleY = transformScale.y;
     span.pivotX = pivotX;
     span.pivotY = pivotY;
     span.scaleX = scaleX;
@@ -1134,6 +1428,7 @@ void InxScreenUIRenderer::AddImage(ScreenUIList list, uint64_t textureId, float 
     ImDrawList *dl = GetDrawList(list);
     if (!dl || textureId == 0)
         return;
+    RetainTexturePublication(textureId);
 
     const int vtxStart = dl->VtxBuffer.Size;
     const float hdrScale = ExtractHDRScale(r, g, b);
@@ -1158,6 +1453,7 @@ void InxScreenUIRenderer::AddFilledImage(ScreenUIList list, uint64_t textureId, 
     auto *draw = GetDrawList(list);
     if (!draw)
         return;
+    RetainTexturePublication(textureId);
     const int first = draw->VtxBuffer.Size;
     const float hdrScale = ExtractHDRScale(r, g, b);
     AppendFilledImage(*draw, ToImTextureID(textureId), minX, minY, maxX, maxY, u0, v0, u1, v1,
@@ -1237,8 +1533,22 @@ bool InxScreenUIRenderer::HasCommands(ScreenUIList list) const
 
 void InxScreenUIRenderer::TrackHDRColorRange(ScreenUIList list, int vertexStart, int vertexEnd, float rgbScale)
 {
-    if (vertexEnd > vertexStart)
+    if (vertexEnd > vertexStart) {
         ++m_geometryRevision[ListIndex(list)];
+        // Immediate native command authors share the same producer ownership
+        // contract as retained packets. Capture sources when commands are
+        // emitted, before a later atlas/source replacement can detach them.
+        if (!m_recordingPacket && m_texturePublicationAcquire) {
+            if (m_fontTexturePublisher)
+                m_fontTexturePublisher();
+            for (auto &command : GetDrawList(list)->CmdBuffer) {
+                if (command.ElemCount && !command.UserCallback) {
+                    RetainTexturePublication(static_cast<uint64_t>(command.GetTexID()));
+                    command.TexRef = ImTextureRef(command.GetTexID());
+                }
+            }
+        }
+    }
     if (rgbScale <= 1.0f || vertexEnd <= vertexStart) {
         return;
     }
@@ -1271,6 +1581,32 @@ const std::vector<InxScreenUIRenderer::HDRColorRange> &InxScreenUIRenderer::GetH
 // Rendering
 // ============================================================================
 
+void InxScreenUIRenderer::RetainTexturePublication(uint64_t textureId)
+{
+    auto &textures = m_recordingPacket ? m_recordingPacket->m_data->textures : m_texturePublications;
+    if (!textureId || textures.find(textureId) != textures.end() || !m_texturePublicationAcquire)
+        return;
+    if (auto publication = m_texturePublicationAcquire(textureId))
+        textures.emplace(textureId, std::move(publication));
+}
+
+bool InxScreenUIRenderer::ValidateTextureUsage(uint64_t textureId) const
+{
+    const auto retained = m_texturePublications.find(textureId);
+    if (retained != m_texturePublications.end())
+        return retained->second->allocation && retained->second->allocation->IsAlive();
+    if (!m_selectedSnapshot && textureId == static_cast<uint64_t>(reinterpret_cast<uintptr_t>(m_fontDescriptorSet)))
+        return true;
+    return !m_textureUsageValidator || m_textureUsageValidator(textureId);
+}
+
+bool InxScreenUIRenderer::TextureNeedsDisplayEncoding(uint64_t textureId) const
+{
+    const auto retained = m_texturePublications.find(textureId);
+    return retained != m_texturePublications.end() ? retained->second->requiresDisplayEncoding
+                                                   : m_textureColorSpaceQuery && m_textureColorSpaceQuery(textureId);
+}
+
 bool InxScreenUIRenderer::UploadGeometry(ListBuffers &buf, ScreenUIList list, const void *vertices, size_t vertexBytes)
 {
     const int index = ListIndex(list);
@@ -1292,8 +1628,10 @@ bool InxScreenUIRenderer::UploadGeometry(ListBuffers &buf, ScreenUIList list, co
 }
 
 void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height,
-                                 uint32_t frameSlot)
+                                 uint32_t frameSlot, const Snapshot &snapshot,
+                                 const rhi::GraphicsRenderingSignature *target)
 {
+    SnapshotScope selected(*this, snapshot);
     if (list == ScreenUIList::World)
         throw std::invalid_argument("World UI requires RenderWorld with the active camera matrix");
     const int listIndex = ListIndex(list);
@@ -1310,7 +1648,7 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 
     // With ImGui 1.92+ dynamic font atlas, the texture may be recreated
     // at any time. Always pull the current descriptor set before drawing.
-    if (!RefreshFontDescriptorSet(m_fontDescriptorSet)) {
+    if (!m_selectedSnapshot && !RefreshFontDescriptorSet(m_fontDescriptorSet)) {
         return;
     }
 
@@ -1455,7 +1793,7 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
                                   ? m_commandBindings[listIndex][static_cast<size_t>(cmdI)]
                                   : emptyBinding;
         if (!resolvedBinding || binding != *resolvedBinding) {
-            if (!TryResolveMaterial(binding, ShaderProgramDomain::ScreenUI, pipeline, materialDescSet)) {
+            if (!TryResolveMaterial(binding, ShaderProgramDomain::ScreenUI, pipeline, materialDescSet, target)) {
                 resolvedBinding = nullptr;
                 continue;
             }
@@ -1474,14 +1812,12 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
         }
         if (texDescSet != checkedTexture) {
             const uint64_t textureId = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(texDescSet));
-            if (texDescSet != m_fontDescriptorSet && m_textureUsageValidator && !m_textureUsageValidator(textureId)) {
+            if (!ValidateTextureUsage(textureId)) {
                 m_commandCacheValid = false;
                 continue;
             }
             checkedTexture = texDescSet;
-            encodeSample =
-                list == ScreenUIList::Overlay && m_textureColorSpaceQuery && m_textureColorSpaceQuery(textureId) ? 1.0f
-                                                                                                                 : 0.0f;
+            encodeSample = list == ScreenUIList::Overlay && TextureNeedsDisplayEncoding(textureId) ? 1.0f : 0.0f;
         }
         if (texDescSet != lastBoundDescSet) {
             vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set0Tex", cmdBuf,
@@ -1575,7 +1911,22 @@ bool InxScreenUIRenderer::CreatePipeline()
     return CreateScreenPipeline(m_vertShader, m_fragShader, m_pipeline);
 }
 
-bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline)
+VkPipeline InxScreenUIRenderer::GetScreenPipeline(const rhi::GraphicsRenderingSignature *target)
+{
+    if (!target)
+        return m_pipeline;
+    for (const auto &variant : m_screenPipelineVariants)
+        if (variant.target == *target)
+            return variant.pipeline;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (!CreateScreenPipeline(m_vertShader, m_fragShader, pipeline, target))
+        throw std::runtime_error("Failed to create Screen UI pipeline for the actual target attachments");
+    m_screenPipelineVariants.push_back({*target, false, pipeline});
+    return pipeline;
+}
+
+bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline,
+                                               const rhi::GraphicsRenderingSignature *target)
 {
     // ---- Graphics pipeline (replicates ImGui's pipeline for scene render target) ----
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
@@ -1603,7 +1954,8 @@ bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderMo
     const VkPipelineInputAssemblyStateCreateInfo iaInfo = MakeTriangleListInputAssembly();
     const VkPipelineViewportStateCreateInfo vpInfo = MakeDynamicViewportState();
     const VkPipelineRasterizationStateCreateInfo rsInfo = MakeRasterizationState();
-    const VkPipelineMultisampleStateCreateInfo msInfo = MakeMultisampleState(m_msaaSamples);
+    const VkPipelineMultisampleStateCreateInfo msInfo =
+        MakeMultisampleState(target ? rhi::ToVkSampleCount(target->samples) : m_msaaSamples);
     const VkPipelineColorBlendAttachmentState blendAttach = MakeAlphaBlendAttachment();
     const VkPipelineColorBlendStateCreateInfo cbInfo = MakeColorBlendState(blendAttach);
     const VkPipelineDepthStencilStateCreateInfo dsInfo = MakeDisabledDepthStencilState();
@@ -1625,8 +1977,16 @@ bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderMo
     pipeInfo.layout = m_pipelineLayout;
     VkPipelineRenderingCreateInfo renderingInfo{};
     renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    const VkFormat colorFormat = target ? rhi::ToVkFormat(target->colorFormats[0]) : m_colorFormat;
     renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachmentFormats = &m_colorFormat;
+    renderingInfo.pColorAttachmentFormats = &colorFormat;
+    if (target) {
+        if (target->colorFormatCount != 1)
+            throw std::logic_error("Screen UI requires one color attachment");
+        renderingInfo.depthAttachmentFormat = rhi::ToVkFormat(target->depthFormat);
+        renderingInfo.stencilAttachmentFormat = rhi::ToVkFormat(target->stencilFormat);
+        renderingInfo.viewMask = target->viewMask;
+    }
     pipeInfo.pNext = &renderingInfo;
     pipeInfo.renderPass = VK_NULL_HANDLE;
     pipeInfo.subpass = 0;
@@ -1838,6 +2198,8 @@ void InxScreenUIRenderer::InvalidateMaterialProgram(const ShaderStagePair &stage
 
 void InxScreenUIRenderer::PruneUnusedMaterialPrograms()
 {
+    if (m_selectedSnapshot)
+        return;
     if (m_materialProgramReleaseSweep)
         m_materialProgramReleaseSweep();
     if (m_prunedMaterialBindingsRevision == m_materialBindingsRevision)
@@ -1885,7 +2247,7 @@ bool InxScreenUIRenderer::TryResolveMaterial(const UIShaderMaterialBinding &bind
     if (rejected != m_rejectedMaterialGenerations.end()) {
         const auto &failure = rejected->second[domainIndex];
         if (failure.generation == binding.generation &&
-            (failure.textureGuid.empty() ||
+            (m_selectedSnapshot || failure.textureGuid.empty() ||
              m_materialTextureGenerationResolver(failure.textureGuid) == failure.textureGeneration))
             return false;
     }
@@ -1913,7 +2275,8 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
                                                     const rhi::GraphicsRenderingSignature *target, bool alwaysOnTop)
 {
     if (binding.materialGuid.empty())
-        return domain == ShaderProgramDomain::ScreenUI ? m_pipeline : GetWorldPipeline(*target, alwaysOnTop);
+        return domain == ShaderProgramDomain::ScreenUI ? GetScreenPipeline(target)
+                                                       : GetWorldPipeline(*target, alwaysOnTop);
     if (!binding.IsValid() || !m_materialProgramResolver)
         throw std::runtime_error("UI material binding has no valid GUID, generation or shader resolver");
 
@@ -1933,6 +2296,9 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
     // A retained draw command repeats across cameras and frames. Resolve its
     // immutable artifact once per material generation, not once per draw.
     auto cached = m_resolvedMaterialPrograms.find(binding.materialGuid);
+    if (m_selectedSnapshot &&
+        (cached == m_resolvedMaterialPrograms.end() || cached->second.generation != binding.generation))
+        throw std::logic_error("Completed UI material was not sealed with its shader artifact");
     if (cached != m_resolvedMaterialPrograms.end() && cached->second.generation != binding.generation) {
         RetireMaterialDescriptor(binding.materialGuid);
         const ShaderProgramKey previousKey =
@@ -1967,7 +2333,8 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
                               ResolvedMaterialProgram{binding.generation, m_materialRenderSerial, std::move(artifact)})
                      .first;
     }
-    if (m_materialIdentityValidator && cached->second.validatedRender != m_materialRenderSerial) {
+    if (!m_selectedSnapshot && m_materialIdentityValidator &&
+        cached->second.validatedRender != m_materialRenderSerial) {
         if (!m_materialIdentityValidator(binding.materialGuid, binding.generation)) {
             RetireMaterialDescriptor(binding.materialGuid);
             const ShaderProgramKey staleKey =
@@ -1985,7 +2352,8 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
     }
     const auto &artifact = cached->second.artifact;
     if (!artifact)
-        return domain == ShaderProgramDomain::ScreenUI ? m_pipeline : GetWorldPipeline(*target, alwaysOnTop);
+        return domain == ShaderProgramDomain::ScreenUI ? GetScreenPipeline(target)
+                                                       : GetWorldPipeline(*target, alwaysOnTop);
     if (artifact->domain != domain)
         throw UIShaderMaterialError("UI material shader domain mismatch for GUID " + binding.materialGuid +
                                     ": expected " + ShaderProgramDomainName(domain) + ", got " +
@@ -2021,7 +2389,7 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
                          CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->fragmentSpirv.data()),
                                             forward->fragmentSpirv.size(), fragment) &&
                          (domain == ShaderProgramDomain::ScreenUI
-                              ? CreateScreenPipeline(vertex, fragment, pipeline)
+                              ? CreateScreenPipeline(vertex, fragment, pipeline, target)
                               : CreateWorldPipeline(*target, pipeline, alwaysOnTop, vertex, fragment));
     if (vertex)
         vkDestroyShaderModule(m_device, vertex, nullptr);
@@ -2048,7 +2416,7 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     if (previous != m_materialDescriptors.end() && previous->second->generation == binding.generation &&
         previous->second->program == artifact.key) {
         auto &cached = *previous->second;
-        if (cached.validatedRender == m_materialRenderSerial)
+        if (m_selectedSnapshot || cached.validatedRender == m_materialRenderSerial)
             return cached.set;
         const bool texturesUnchanged =
             std::all_of(cached.textureVersions.begin(), cached.textureVersions.end(), [&](const auto &entry) {
@@ -2235,8 +2603,9 @@ ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list)
     return m_worldDrawList;
 }
 
-bool InxScreenUIRenderer::HasSelectiveWorldOcclusion(uint32_t cullingMask) const
+bool InxScreenUIRenderer::HasSelectiveWorldOcclusion(uint32_t cullingMask, const Snapshot &snapshot) const
 {
+    SnapshotScope selected(*const_cast<InxScreenUIRenderer *>(this), snapshot);
     if (!m_initialized || !m_hasSelectiveWorldOcclusion)
         return false;
     return std::any_of(m_worldElementSpans.begin(), m_worldElementSpans.end(), [cullingMask](const auto &element) {
@@ -2245,8 +2614,10 @@ bool InxScreenUIRenderer::HasSelectiveWorldOcclusion(uint32_t cullingMask) const
 }
 
 std::vector<InxScreenUIRenderer::WorldDepthRun> InxScreenUIRenderer::GetWorldDepthRuns(const glm::mat4 &viewProjection,
-                                                                                       uint32_t cullingMask) const
+                                                                                       uint32_t cullingMask,
+                                                                                       const Snapshot &snapshot) const
 {
+    SnapshotScope selected(*const_cast<InxScreenUIRenderer *>(this), snapshot);
     struct OrderedElement
     {
         size_t index;
@@ -2279,8 +2650,9 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
                                       const glm::mat4 &viewProjection, const rhi::GraphicsRenderingSignature &target,
                                       uint32_t frameSlot, uint32_t cullingMask, const glm::mat4 &view,
                                       const glm::mat4 &projection, const glm::mat4 &billboardView,
-                                      uint32_t firstOrdinal, uint32_t endOrdinal)
+                                      uint32_t firstOrdinal, uint32_t endOrdinal, const Snapshot &snapshot)
 {
+    SnapshotScope selected(*this, snapshot);
     constexpr ScreenUIList list = ScreenUIList::World;
     constexpr int listIndex = 2;
     if (firstOrdinal == 0) {
@@ -2313,7 +2685,7 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     }
     if (elementOrder.empty())
         return;
-    if (!RefreshFontDescriptorSet(m_fontDescriptorSet))
+    if (!m_selectedSnapshot && !RefreshFontDescriptorSet(m_fontDescriptorSet))
         return;
     auto &vertices = m_worldVertices;
     if (m_preparedRevision[listIndex] != m_geometryRevision[listIndex]) {
@@ -2449,8 +2821,7 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
             vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             lastPipeline = pipeline;
         }
-        if (descriptor != m_fontDescriptorSet && m_textureUsageValidator &&
-            !m_textureUsageValidator(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptor))))
+        if (!ValidateTextureUsage(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptor))))
             return;
         if (descriptor != lastDescriptor) {
             vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.Set0", cmdBuf,
@@ -2516,9 +2887,10 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     m_lastSubmittedIndexCounts[listIndex] += submittedIndices;
 }
 
-std::vector<std::shared_ptr<rhi::RenderTexture>> InxScreenUIRenderer::GetRenderTextureReads(ScreenUIList list,
-                                                                                            uint32_t cullingMask) const
+std::vector<std::shared_ptr<rhi::RenderTexture>>
+InxScreenUIRenderer::GetRenderTextureReads(ScreenUIList list, uint32_t cullingMask, const Snapshot &snapshot) const
 {
+    SnapshotScope selected(*const_cast<InxScreenUIRenderer *>(this), snapshot);
     std::vector<std::shared_ptr<rhi::RenderTexture>> reads;
     const auto *drawList = GetDrawList(list);
     if (!m_enabled || !drawList || !m_renderTextureResolver)
@@ -2527,7 +2899,12 @@ std::vector<std::shared_ptr<rhi::RenderTexture>> InxScreenUIRenderer::GetRenderT
         const auto &command = drawList->CmdBuffer[index];
         if (!command.ElemCount || command.UserCallback)
             return;
-        auto texture = m_renderTextureResolver(static_cast<uint64_t>(command.GetTexID()));
+        const auto textureId = static_cast<uint64_t>(command.GetTexID());
+        const auto retained = m_selectedSnapshot ? m_selectedSnapshot->renderTextures.find(textureId)
+                                                 : decltype(m_selectedSnapshot->renderTextures)::const_iterator{};
+        auto texture = m_selectedSnapshot
+                           ? (retained == m_selectedSnapshot->renderTextures.end() ? nullptr : retained->second)
+                           : m_renderTextureResolver(textureId);
         if (texture && std::find(reads.begin(), reads.end(), texture) == reads.end())
             reads.push_back(std::move(texture));
     };
@@ -2543,6 +2920,19 @@ std::vector<std::shared_ptr<rhi::RenderTexture>> InxScreenUIRenderer::GetRenderT
             add(index);
     }
     return reads;
+}
+
+std::shared_ptr<const rhi::RenderTextureGeneration>
+InxScreenUIRenderer::GetRenderTextureReadGeneration(const std::shared_ptr<rhi::RenderTexture> &texture,
+                                                    const Snapshot &snapshot) const
+{
+    if (!snapshot)
+        return texture->Acquire();
+    const auto &generations = snapshot->m_data->generations;
+    const auto found = generations.find(texture.get());
+    if (found == generations.end())
+        throw std::logic_error("UI texture dependency is absent from its completed publication");
+    return found->second;
 }
 
 const ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list) const

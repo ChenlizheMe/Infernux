@@ -17,6 +17,7 @@
 #pragma once
 #include "RenderViewSchedule.h"
 #include "RenderWorld.h"
+#include "gui/InxScreenUIRenderer.h"
 #include <core/config/EngineConfig.h>
 #include <function/scene/NativeLifetime.h>
 
@@ -250,6 +251,16 @@ class SceneRenderGraph : public NativeLifetimeOwner
             m_needsRebuild = true;
         m_screenUIRenderer = renderer;
         m_screenUIOutput = screenOutput;
+    }
+
+    void SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot)
+    {
+        if (m_screenUISnapshot != snapshot) {
+            m_screenUISnapshot = std::move(snapshot);
+            // Selective occlusion runs and texture dependencies are values in
+            // this UI publication, not merely in the author's graph topology.
+            m_needsRebuild = true;
+        }
     }
 
     /// Attach the Scene-only editor outline renderer. The graph topology only
@@ -905,6 +916,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     bool m_viewportColorPublished = false;
     rhi::RenderViewContext m_renderView;
     InxScreenUIRenderer *m_screenUIRenderer = nullptr;
+    InxScreenUIRenderer::Snapshot m_screenUISnapshot;
     bool m_screenUIOutput = true;
     OutlineRenderer *m_outlineRenderer = nullptr;
     bool m_outlinePassesEnabled = false;

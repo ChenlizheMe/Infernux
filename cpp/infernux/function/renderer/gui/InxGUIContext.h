@@ -458,6 +458,9 @@ class InxGUIContext
     void DrawFilledRectRotated(float minX, float minY, float maxX, float maxY, float r, float g, float b, float a,
                                float rotation = 0.0f, bool mirrorH = false, bool mirrorV = false,
                                float rounding = 0.0f);
+    // Internal UI-editor geometry boundary; existing drawing APIs stay unscaled.
+    int DrawVertexCursor() const;
+    void ScaleDrawVertices(int first, float pivotX, float pivotY, float rotation, float scaleX, float scaleY);
     void DrawLine(float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness = 1.0f);
     void DrawCircle(float centerX, float centerY, float radius, float r, float g, float b, float a,
                     float thickness = 1.0f, int segments = 0);

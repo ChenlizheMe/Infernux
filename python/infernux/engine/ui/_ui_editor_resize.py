@@ -57,6 +57,11 @@ class UIEditorResizeMixin:
         dlx = dx_canvas * cos_r + dy_canvas * sin_r   # delta along local X
         dly = -dx_canvas * sin_r + dy_canvas * cos_r  # delta along local Y
 
+        scale_x, scale_y = elem.get_layout_scale()
+        if scale_x == 0.0 or scale_y == 0.0:
+            return
+        dlx /= scale_x
+        dly /= scale_y
         snap = self._drag_snap_step()
         dlx = round(dlx / snap) * snap
         dly = round(dly / snap) * snap

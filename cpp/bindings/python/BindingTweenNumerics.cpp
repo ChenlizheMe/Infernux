@@ -231,8 +231,9 @@ void RegisterTweenNumericsBindings(py::module_ &module)
 {
     py::register_exception<tween::NumericOverflow>(module, "_TweenNumericOverflow", PyExc_OverflowError);
     py::class_<ui::ScreenRect>(module, "_ScreenRectGeometry")
-        .def(py::init<ui::ScreenRect::Rect, double, ui::ScreenRect::Point>(), py::arg("rect"), py::arg("rotation"),
-             py::arg("pivot") = ui::ScreenRect::Point{.5, .5})
+        .def(py::init<ui::ScreenRect::Rect, double, ui::ScreenRect::Point, ui::ScreenRect::Point>(), py::arg("rect"),
+             py::arg("rotation"), py::arg("pivot") = ui::ScreenRect::Point{.5, .5},
+             py::arg("scale") = ui::ScreenRect::Point{1, 1})
         .def_property_readonly("rect", &ui::ScreenRect::GetRect)
         .def_property_readonly("center", &ui::ScreenRect::Center)
         .def_property_readonly("pivot_position", &ui::ScreenRect::PivotPosition)

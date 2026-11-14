@@ -3,6 +3,7 @@
 #include "../GpuResidency.h"
 #include "../InxRenderStruct.h"
 #include "../rhi/RhiRenderTexture.h"
+#include "ScreenUITexturePublication.h"
 
 #include "InxVkCoreModular.h"
 #include "gui/EditorGuiFrameScheduler.h"
@@ -150,6 +151,7 @@ class InxGUI
     /// @brief Validate and mark a descriptor-backed ImGui texture as used by cached native UI commands.
     /// @return false when the descriptor is no longer owned by the live texture registry.
     bool TouchImGuiTextureId(uint64_t textureId);
+    std::shared_ptr<const ScreenUITexturePublication> AcquireScreenUITexturePublication(uint64_t textureId) const;
     bool ImGuiTextureNeedsDisplayEncoding(uint64_t textureId) const;
     /// Return whether the current ImDrawData publication still contains a
     /// draw command that samples @p textureId. Render-target generations use
@@ -232,6 +234,8 @@ class InxGUI
         bool requiresDisplayEncoding = false;
         std::shared_ptr<const rhi::TextureGpuView> externalView;
         std::weak_ptr<rhi::RenderTexture> renderTexture;
+        std::shared_ptr<const ScreenUITexturePublication> publication;
+        std::shared_ptr<bool> publicationRetiring;
 
         [[nodiscard]] rhi::SubmissionTicket GetUploadSubmission() const noexcept
         {
@@ -322,6 +326,8 @@ class InxGUI
     void PromoteActiveModal();
     void DeferTextureRelease(ImGuiTextureResource resource);
     void ReleaseTextureResource(ImGuiTextureResource &resource);
+    void SealTexturePublication(ImGuiTextureResource &resource);
+    std::vector<std::weak_ptr<ImGuiTextureAllocationLease>> m_textureAllocationLeases;
 };
 
 } // namespace infernux

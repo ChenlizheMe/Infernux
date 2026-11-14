@@ -959,6 +959,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def("draw_filled_circle", &InxGUIContext::DrawFilledCircle, py::arg("center_x"), py::arg("center_y"),
              py::arg("radius"), py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("segments") = 0,
              "Draw a filled circle on the current window's draw list (screen coords)")
+        .def("_draw_vertex_cursor", &InxGUIContext::DrawVertexCursor)
+        .def("_scale_draw_vertices", &InxGUIContext::ScaleDrawVertices)
         .def("draw_image_rect", &InxGUIContext::DrawImageRect, py::arg("texture_id"), py::arg("min_x"),
              py::arg("min_y"), py::arg("max_x"), py::arg("max_y"), py::arg("uv0_x") = 0.0f, py::arg("uv0_y") = 0.0f,
              py::arg("uv1_x") = 1.0f, py::arg("uv1_y") = 1.0f, py::arg("tint_r") = 1.0f, py::arg("tint_g") = 1.0f,

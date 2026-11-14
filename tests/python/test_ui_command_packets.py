@@ -147,7 +147,7 @@ def test_ui_material_generation_rebuilds_screen_and_world_packets(ui):
     assert any(
         command[0] == "set_material_binding" and command[1][1:3] == ("ui-authored-guid", 4) for command in commands
     )
-    ui.published_textures["material-texture"] = 89
+    ui.published_textures["material-texture"] = (89, False)
     ui.textures.invalidate("material-texture")
     commands = ui.frame()[1]
     assert ui.extracted == [image]
@@ -176,6 +176,9 @@ def ui(scene, monkeypatch, request):
 
     engine = Engine()
     manager = SimpleNamespace(
+        _current_runtime_world_id=int(scene._runtime_world_id),
+        _authoring_runtime_world_id=int(scene._runtime_world_id),
+        _runtime_frame_generation=1,
         get_active_scene=lambda: scene,
         simulation_epoch=1,
         is_playing=lambda: False,
@@ -188,7 +191,7 @@ def ui(scene, monkeypatch, request):
     texture_cache = UITextureCache()
     published_textures = {}
     native = SimpleNamespace(
-        _get_imported_texture_ui_texture_id=lambda _key, guid: published_textures.get(guid, 71),
+        _get_imported_texture_ui_texture_id=lambda _key, guid: published_textures.get(guid, (71, False)),
     )
     engine.get_native_engine = lambda: native
     monkeypatch.setattr(module, "_get_tex_cache", lambda: texture_cache)
@@ -330,21 +333,31 @@ def test_image_packets_track_atlas_region_and_async_texture_publication(ui):
     unrelated = ui.add(UIImage)
     unrelated.texture = TextureRef(guid="other-texture")
     ui.frame()
-    ui.published_textures["atlas-texture"] = 0
+    ui.published_textures["atlas-texture"] = (0, True)
     ui.textures.invalidate("atlas-texture")
     for _ in range(2):
         commands = ui.frame()[1]
         assert set(ui.extracted) == {image, alias}
         assert sum(name == "add_image" for name, _, _ in commands) == 1
-    ui.published_textures["atlas-texture"] = 83
+    ui.published_textures["atlas-texture"] = (83, False)
     commands = ui.frame()[1]
     assert set(ui.extracted) == {image, alias}
     assert [args[1] for name, args, _ in commands if name == "add_image"] == [83, 83, 71]
     _assert_current_commands_match_fresh(ui, commands)
     assert ui.frame() == (False, [])
-    ui.published_textures["unrelated-preview"] = 0
+    ui.published_textures["unrelated-preview"] = (0, True)
     ui.textures.get(ui.submission._engine_ref(), TextureRef(guid="unrelated-preview"))
     assert ui.textures.has_pending
+    assert ui.frame() == (False, [])
+
+    failed = ui.add(UIImage)
+    failed.texture = TextureRef(guid="failed-texture")
+    ui.published_textures["failed-texture"] = (0, False)
+    commands = ui.frame()[1]
+    assert sum(name == "add_image" for name, _, _ in commands) == 3
+    assert ui.textures.binding_state("failed-texture") == (0, False)
+    assert ui.submission._command_packets.selected_textures_pending is False
+    assert ui.textures.has_pending  # The unrelated preview still cannot block this view.
     assert ui.frame() == (False, [])
 
 

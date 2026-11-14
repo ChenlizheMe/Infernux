@@ -97,10 +97,34 @@ int main()
     sibling->GetTransform()->SetPosition(3, 4, 9);
     mixed.Poll();
     assert(mixed.GetChangedEntries() == std::vector<uint32_t>{3});
+    const auto beforeScale = mixed.Poll();
     sibling->GetTransform()->SetLocalScale(2, 3, 4);
     revision = mixed.Poll();
-    assert(mixed.GetChangedEntries().empty());
+    assert(revision != beforeScale);
+    assert(mixed.GetChangedEntries() == std::vector<uint32_t>{1}); // Screen entry only.
     assert(mixed.Poll() == revision);
+    assert(mixed.GetChangedEntries().empty());
+    // Local Z scale remains outside screen geometry, just like World UI scale.
+    sibling->GetTransform()->SetLocalScale(2, 3, 9);
+    assert(mixed.Poll() == revision);
+    assert(mixed.GetChangedEntries().empty());
+    UITransformDependencies scaleIgnoredWorld({}, {sibling});
+    const auto worldBeforeScale = scaleIgnoredWorld.Poll();
+    store.BeginFrameCache();
+    for (const auto &scale : {glm::vec3(.7f, .7f, 9), glm::vec3(2, .5f, 9), glm::vec3(0, .5f, 9)}) {
+        sibling->GetTransform()->SetLocalScale(scale);
+        const auto current = mixed.Poll();
+        assert(current != revision);
+        assert(mixed.GetChangedEntries() == std::vector<uint32_t>{1});
+        assert(mixed.Poll() == current);
+        assert(mixed.GetChangedEntries().empty());
+        assert(scaleIgnoredWorld.Poll() == worldBeforeScale);
+        assert(scaleIgnoredWorld.GetChangedEntries().empty());
+        revision = current;
+    }
+    (void)store.EndFrameCache();
+    assert(mixed.Poll() == revision);
+    assert(mixed.GetChangedEntries().empty());
     auto *cameraPolicyObject = scene->CreateGameObject("Billboard UI");
     cameraPolicyObject->GetTransform()->SetPosition(0, 0, -2);
     cameraPolicyObject->GetTransform()->SetLocalEulerAngles(0, 90, 0);

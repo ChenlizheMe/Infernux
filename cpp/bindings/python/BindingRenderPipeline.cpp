@@ -57,6 +57,8 @@ void RegisterRenderPipelineBindings(py::module_ &m)
         .def_readonly("near_clip", &RenderViewData::nearClip)
         .def_readonly("far_clip", &RenderViewData::farClip)
         .def_readonly("depth", &RenderViewData::depth)
+        .def_readonly("output_width", &RenderViewData::outputWidth)
+        .def_readonly("output_height", &RenderViewData::outputHeight)
         .def_readonly("pixel_width", &RenderViewData::pixelWidth)
         .def_readonly("pixel_height", &RenderViewData::pixelHeight)
         .def_readonly("culling_mask", &RenderViewData::cullingMask)
@@ -114,6 +116,8 @@ void RegisterRenderPipelineBindings(py::module_ &m)
         .def_property_readonly("scene", &ScriptableRenderContext::GetScene, py::return_value_policy::reference,
                                "Get the scene associated with this render context")
         .def_property_readonly("view", &ScriptableRenderContext::GetViewPublication)
+        .def_property_readonly("capturing_completed_world", &ScriptableRenderContext::IsCapturingCompletedWorld)
+        .def("capture_screen_ui", &ScriptableRenderContext::CaptureScreenUI, py::arg("renderer"))
         .def("cull", &ScriptableRenderContext::Cull, py::return_value_policy::reference_internal,
              "Cull this context's retained RenderView") // RenderGraph-driven API
         .def("apply_graph", &ScriptableRenderContext::ApplyGraph, py::arg("description"),

@@ -450,7 +450,8 @@ class InxRenderer
     uint64_t SubmitTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
                                    rhi::FilterMode filter, bool pinned, std::function<bool()> canPublish,
                                    std::shared_ptr<FrameCpuStorageClaim> storage = {});
-    uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid, bool &progressed);
+    uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid, bool &progressed,
+                                          bool &pending);
     uint64_t SubmitDocumentTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
                                            std::function<bool()> canPublish,
                                            std::shared_ptr<FrameCpuStorageClaim> storage = {});

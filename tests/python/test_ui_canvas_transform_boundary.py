@@ -1,8 +1,10 @@
 """Screen Canvas is a layout boundary, not an inherited world pose."""
 
+import math
+
 import pytest
 
-from infernux.lib import Vector3
+from infernux.lib import Vector2, Vector3
 from infernux.ui import UICanvas, UIButton, UIFrame, RenderMode
 from infernux.ui.inx_ui_screen_component import clear_rect_cache
 from infernux.ui.ui_render_dispatch import runtime_ui_revision
@@ -52,6 +54,51 @@ def test_screen_canvas_pose_does_not_move_geometry_or_hit_target(scene, mode):
     assert canvas.raycast(230, 40) is button
 
 
+@pytest.mark.parametrize("scale,rotation", [
+    ((1, 1), 0), ((.7, .7), 0), ((2, .5), 37), ((-1, .5), 37), ((0, 1), 37),
+])
+def test_element_scale_shares_visual_corners_hit_and_inverse_without_resizing_layout(scene, scale, rotation):
+    owner, canvas = _canvas(scene)
+    button = _button(scene, owner)
+    button.pivot = Vector2(.25, .75)
+    button.set_rect(20, 30, 100, 40, 800, 600)
+    before = runtime_ui_revision(scene, (canvas,), 800, 600)
+    button.game_object.transform.local_scale = Vector3(*scale, 1)
+    button.set_layout_rotation(rotation)
+    assert button.get_rect(800, 600) == pytest.approx((20, 30, 100, 40))
+    assert (button.width, button.height) == pytest.approx((100, 40))
+    after = runtime_ui_revision(scene, (canvas,), 800, 600)
+    if scale != (1, 1) or rotation:
+        assert after != before
+
+    # Independent affine expectation, not ScreenRect.to_canvas as its own oracle.
+    angle = math.radians(rotation)
+    c, s = math.cos(angle), math.sin(angle)
+    def project(x, y):
+        dx, dy = (x - 25) * scale[0], (y - 10) * scale[1]
+        return 45 + c * dx - s * dy, 40 + s * dx + c * dy
+
+    expected = [project(x, y) for x, y in ((0, 0), (100, 0), (100, 40), (0, 40))]
+    for actual, point in zip(button.get_rotated_corners(800, 600), expected):
+        assert actual == pytest.approx(point, abs=5e-5)
+    left, top = min(p[0] for p in expected), min(p[1] for p in expected)
+    assert button.get_visual_rect(800, 600) == pytest.approx((
+        left, top, max(p[0] for p in expected)-left, max(p[1] for p in expected)-top), abs=5e-5)
+    geometry = button._resolved_rect_geometry(800, 600)
+    center = project(50, 20)
+    if 0 in scale:
+        assert not button.contains_point(*center, 800, 600, tolerance=5)
+        assert canvas.raycast(*center) is None
+        assert all(math.isnan(value) for value in geometry.to_local(center))
+    else:
+        assert button.contains_point(*center, 800, 600)
+        assert canvas.raycast(*center) is button
+        assert geometry.to_local(project(25, 20)) == pytest.approx((25, 20), abs=5e-5)
+        outside = project(-5, 20)
+        assert not button.contains_point(*outside, 800, 600)
+        assert canvas.raycast(*outside) is None
+
+
 def test_canvas_anchors_follow_viewport_and_live_rect_edits_roundtrip(scene):
     from infernux.ui.enums import ScreenAlignH, ScreenAlignV
 
@@ -92,6 +139,10 @@ def test_world_ui_still_inherits_parent_pose(scene):
     parent.transform.local_position = Vector3(4, 5, 6)
     parent.transform.local_euler_angles = Vector3(0, 0, 45)
     assert button.world_ui_matrix() != before
+    # Canvas-free World UI keeps its existing scale-independent geometry law.
+    pose = button.world_ui_matrix()
+    button.game_object.transform.local_scale = Vector3(.7, 2, 0)
+    assert button.world_ui_matrix() == pose
 
 
 def test_host_rect_edit_uses_canvas_layout_and_one_replayable_transaction(scene, monkeypatch):

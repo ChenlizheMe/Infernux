@@ -1296,7 +1296,6 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         // ---- Game View: one context and one RenderView per active camera ----
         if (gameViewActive) {
             const auto _srpT2 = std::chrono::high_resolution_clock::now();
-            const auto completed = bridge.AcquirePreparedRuntimePublication();
             for (const auto *view : FindGameCamerasCached()) {
                 if (!ShouldRenderGameCamera(view, allowViewportViews))
                     continue;
@@ -1304,12 +1303,16 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                 if (!graph)
                     continue;
                 graph->SetBillboardViewMatrix(view->view);
-                const auto frame = m_cachedGameFrame;
+                const auto frame = bridge.AcquirePreparedFrameForCamera(view->worldId, view->cameraId);
+                if (!frame)
+                    throw std::logic_error("Published Game view has no matching World/camera source: " +
+                                           std::to_string(view->worldId) + "/" + std::to_string(view->cameraId));
                 EditorGizmosContext content;
-                if (!sceneManager.IsPlaying())
+                if (!sceneManager.IsRuntimeWorldManagementActive())
                     content.activeScene = sceneManager.GetActiveScene();
                 std::shared_ptr<const RenderViewPlan> plan;
-                if (sceneManager.IsPlaying()) {
+                if (sceneManager.IsRuntimeWorldManagementActive()) {
+                    const auto completed = bridge.AcquirePreparedRuntimePublication(view->worldId);
                     if (!completed || completed->world != frame)
                         continue;
                     plan = completed->plans.at(view->cameraId);
@@ -2565,12 +2568,8 @@ bool InxRenderer::CanPreviewMaterialOnMesh(const std::shared_ptr<InxMaterial> &m
 {
     if (!material)
         return false;
-    try {
-        const auto domain = m_materialShaderDomainInspector ? m_materialShaderDomainInspector(material) : std::nullopt;
-        return !domain || *domain == ShaderProgramDomain::Mesh;
-    } catch (const ShaderProgramSelectionError &) {
-        return false;
-    }
+    const auto domain = m_materialShaderDomainInspector ? m_materialShaderDomainInspector(material) : std::nullopt;
+    return !domain || *domain == ShaderProgramDomain::Mesh;
 }
 
 void InxRenderer::SetUIMaterialShaderValidator(
@@ -2803,11 +2802,12 @@ uint64_t InxRenderer::SubmitTextureForImGui(const std::string &name, std::shared
 }
 
 uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid,
-                                                   bool &progressed)
+                                                   bool &progressed, bool &pending)
 {
+    pending = false;
     if (!m_gui || !m_vkCore || textureGuid.empty())
         return 0;
-    auto texture = m_vkCore->ResolveTextureForEditorPreview(textureGuid, progressed);
+    auto texture = m_vkCore->ResolveTextureForEditorPreview(textureGuid, progressed, pending);
     return texture ? m_gui->PublishTextureViewForImGui(name, std::move(texture)) : 0;
 }
 
@@ -3147,7 +3147,7 @@ void InxRenderer::UpdateSceneLighting()
               m_cameraPreviewFrame->FindView(m_sceneCameraPreviewId));
     for (const auto *view : FindGameCamerasCached())
         if (const auto graph = m_gameRenderGraphs.find(view->cameraId); graph != m_gameRenderGraphs.end())
-            stage(graph->second.get(), m_cachedGameFrame, view);
+            stage(graph->second.get(), bridge.AcquirePreparedFrameForCamera(view->worldId, view->cameraId), view);
     const auto frame = bridge.AcquirePreparedGameFrame();
     if (frame && frame->Lighting())
         m_vkCore->GetLightCollector().CollectLights(*frame->Lighting(), frame->PrimaryView().position);
@@ -4344,14 +4344,17 @@ bool InxRenderer::PublishRuntimeRenderFrame(RuntimeWorld &world)
     PrepareWorldRenderInputs();
     return SceneRenderBridge::Instance().PublishRuntimeFrame(world, [this, &world](const auto &frame, auto &plans) {
         for (const auto &view : frame->Views()) {
-            if (view.editorView)
+            if (view.editorView || plans.find(view.cameraId) != plans.end())
                 continue;
             const auto existing = m_gameRenderGraphs.find(view.cameraId);
             auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
             EditorGizmosContext content;
             content.activeScene = world.scenes.active;
-            ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, view, true);
+            ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, view, true,
+                                            true);
             m_renderPipeline->Render(context, context.GetView());
+            if (!context.CapturePlan()->ui)
+                return false;
             plans.emplace(view.cameraId, context.CapturePlan());
         }
         return true;
@@ -4783,6 +4786,8 @@ void InxRenderer::SetSceneViewVisible(bool visible)
 void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &renderer)
 {
     renderer.SetFontTexturePublisher([this] { m_gui->PrepareRuntimeFontTextures(); });
+    renderer.SetTexturePublicationAcquire(
+        [this](uint64_t textureId) { return m_gui->AcquireScreenUITexturePublication(textureId); });
     renderer.SetMaterialAssetResolver([](const std::string &guid, uint64_t generation) {
         auto material = AssetRegistry::Instance().GetAsset<InxMaterial>(guid);
         if (!material || material->IsDeleted() || material->GetVersion() != generation)
@@ -5055,6 +5060,7 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
             m_captureService->InvalidateSource(CaptureSource::Game, m_gameRenderTargetGeneration);
     }
     if (replacementScreenUI) {
+        replacementScreenUI->AdoptCompletedSnapshots(*m_screenUIRenderer);
         retiredScreenUI = std::move(m_screenUIRenderer);
         m_screenUIRenderer = std::move(replacementScreenUI);
         if (m_sceneRenderGraph)
