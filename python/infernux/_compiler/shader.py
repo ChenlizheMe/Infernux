@@ -371,10 +371,6 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
     if author.domain == "mesh":
-        for field in parameters:
-            if field.kind in {"bool", "uint", "mat3"}:
-                author.error(author.field_nodes[field.name], "This material value type is not supported by the material owner yet",
-                             code="author.parameter")
         if inputs:
             author.error(declaration, "Mesh image resources are declared as material properties")
     dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))

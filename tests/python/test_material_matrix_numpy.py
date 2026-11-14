@@ -87,8 +87,44 @@ def test_camera_matrix_passes_directly_to_material_renderer_and_draw(scene, mate
     block.set_matrix("projection", camera.projection_matrix)
     assert block.size == 1
     with pytest.raises(ValueError, match="matrix"):
-        block.set_matrix("projection", np.eye(3))
+        block.set_matrix("projection", np.eye(2))
     assert block.size == 1
     with pytest.raises(ValueError, match="matrix"):
         block.set_matrix("projection", changed.flatten(order="F").tolist())
     assert block.size == 1
+
+
+def test_unsigned_bool_and_matrix3_share_material_and_renderer_paths(scene, material):
+    material.set_bool("enabled", True)
+    material.set_uint("mask", 0xFEDCBA98)
+    basis = np.arange(9, dtype=np.float64).reshape(3, 3).T[::-1]
+    material.set_matrix("basis", basis)
+    material.set_param("mask", 0xFFFFFFFF)
+    material.set_param("enabled", False)
+    np.testing.assert_array_equal(material.get_matrix("basis"), basis)
+    assert material.get_uint("mask") == 0xFFFFFFFF
+    assert material.get_bool("enabled") is False
+    renderer = scene.create_game_object("Typed material overrides").add_component("MeshRenderer")
+    renderer.material = material
+    renderer.set_parameter("enabled", True, persistent=True)
+    renderer.set_parameter("mask", 0x80000001, persistent=True)
+    renderer.set_parameter("basis", basis[:, ::-1], persistent=True)
+    assert renderer.get_parameter("enabled") is True
+    assert renderer.get_parameter("mask") == 0x80000001
+    np.testing.assert_array_equal(np.asarray(renderer.get_parameter("basis")).reshape(3, 3, order="F"), basis[:, ::-1])
+    document = renderer.serialize_document()["parameterOverrides"][0]
+    assert document["enabled"]["type"] == 10 and document["enabled"]["value"] is True
+    assert document["mask"]["type"] == 11 and document["mask"]["value"] == 0x80000001
+    np.testing.assert_array_equal(document["basis"]["value"], basis[:, ::-1].flatten(order="F"))
+    block = DrawParameterBlock()
+    block.set_bool("enabled", True)
+    block.set_uint("mask", 0x80000001)
+    block.set_matrix("basis", basis)
+    assert block.size == 3
+    before = material.to_dict()
+    for invalid in (-1, 0x100000000):
+        with pytest.raises((TypeError, ValueError, RuntimeError, OverflowError)):
+            material.set_param("mask", invalid)
+    with pytest.raises(TypeError):
+        material.set_param("enabled", 1)
+    assert material.to_dict() == before

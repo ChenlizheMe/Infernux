@@ -28,92 +28,17 @@ std::atomic<uint64_t> g_nextExplicitDrawId{1};
 
 bool PropertyValueIsFinite(const MaterialProperty &property)
 {
-    const auto finiteVector = [](const auto &value) {
-        for (glm::length_t component = 0; component < value.length(); ++component) {
-            if (!std::isfinite(value[component]))
-                return false;
-        }
-        return true;
-    };
-    switch (property.type) {
-    case MaterialPropertyType::Float:
-        return std::isfinite(std::get<float>(property.value));
-    case MaterialPropertyType::Float2:
-        return finiteVector(std::get<glm::vec2>(property.value));
-    case MaterialPropertyType::Float3:
-        return finiteVector(std::get<glm::vec3>(property.value));
-    case MaterialPropertyType::Float4:
-    case MaterialPropertyType::Color:
-        return finiteVector(std::get<glm::vec4>(property.value));
-    case MaterialPropertyType::Mat4: {
-        const auto &matrix = std::get<glm::mat4>(property.value);
-        for (glm::length_t column = 0; column < matrix.length(); ++column) {
-            if (!finiteVector(matrix[column]))
-                return false;
-        }
-        return true;
-    }
-    case MaterialPropertyType::Int:
-    case MaterialPropertyType::Texture2D:
-        return true;
-    case MaterialPropertyType::FloatArray: {
-        const auto &values = std::get<std::vector<float>>(property.value);
-        return !values.empty() &&
-               std::all_of(values.begin(), values.end(), [](float value) { return std::isfinite(value); });
-    }
-    case MaterialPropertyType::Float4Array: {
-        const auto &values = std::get<std::vector<glm::vec4>>(property.value);
-        return !values.empty() && std::all_of(values.begin(), values.end(), finiteVector);
-    }
-    }
-    return false;
+    if (property.type == MaterialPropertyType::FloatArray && std::get<std::vector<float>>(property.value).empty())
+        return false;
+    if (property.type == MaterialPropertyType::Float4Array && std::get<std::vector<glm::vec4>>(property.value).empty())
+        return false;
+    return MaterialPropertyValueIsFinite(property.value);
 }
 
 bool SamePropertyValue(const MaterialProperty &lhs, const MaterialProperty &rhs)
 {
-    if (lhs.name != rhs.name || lhs.type != rhs.type || lhs.hdr != rhs.hdr || lhs.range != rhs.range)
-        return false;
-    const auto sameVector = [](const auto &a, const auto &b) {
-        for (glm::length_t component = 0; component < a.length(); ++component) {
-            if (a[component] != b[component])
-                return false;
-        }
-        return true;
-    };
-    switch (lhs.type) {
-    case MaterialPropertyType::Float:
-        return std::get<float>(lhs.value) == std::get<float>(rhs.value);
-    case MaterialPropertyType::Float2:
-        return sameVector(std::get<glm::vec2>(lhs.value), std::get<glm::vec2>(rhs.value));
-    case MaterialPropertyType::Float3:
-        return sameVector(std::get<glm::vec3>(lhs.value), std::get<glm::vec3>(rhs.value));
-    case MaterialPropertyType::Float4:
-    case MaterialPropertyType::Color:
-        return sameVector(std::get<glm::vec4>(lhs.value), std::get<glm::vec4>(rhs.value));
-    case MaterialPropertyType::Int:
-        return std::get<int>(lhs.value) == std::get<int>(rhs.value);
-    case MaterialPropertyType::Mat4: {
-        const auto &a = std::get<glm::mat4>(lhs.value);
-        const auto &b = std::get<glm::mat4>(rhs.value);
-        for (glm::length_t column = 0; column < a.length(); ++column) {
-            if (!sameVector(a[column], b[column]))
-                return false;
-        }
-        return true;
-    }
-    case MaterialPropertyType::Texture2D:
-        return std::get<std::string>(lhs.value) == std::get<std::string>(rhs.value);
-    case MaterialPropertyType::FloatArray:
-        return std::get<std::vector<float>>(lhs.value) == std::get<std::vector<float>>(rhs.value);
-    case MaterialPropertyType::Float4Array: {
-        const auto &a = std::get<std::vector<glm::vec4>>(lhs.value);
-        const auto &b = std::get<std::vector<glm::vec4>>(rhs.value);
-        return a.size() == b.size() &&
-               std::equal(a.begin(), a.end(), b.begin(),
-                          [&](const auto &left, const auto &right) { return sameVector(left, right); });
-    }
-    }
-    return false;
+    return lhs.name == rhs.name && lhs.type == rhs.type && lhs.hdr == rhs.hdr && lhs.range == rhs.range &&
+           lhs.value == rhs.value;
 }
 } // namespace
 
@@ -154,9 +79,24 @@ void DrawParameterBlock::SetColor(const std::string &name, const glm::vec4 &valu
     Set({name, MaterialPropertyType::Color, value});
 }
 
+void DrawParameterBlock::SetBool(const std::string &name, bool value)
+{
+    Set({name, MaterialPropertyType::Bool, value});
+}
+
+void DrawParameterBlock::SetUInt(const std::string &name, uint32_t value)
+{
+    Set({name, MaterialPropertyType::UInt, value});
+}
+
 void DrawParameterBlock::SetInt(const std::string &name, int value)
 {
     Set({name, MaterialPropertyType::Int, value});
+}
+
+void DrawParameterBlock::SetMatrix(const std::string &name, const glm::mat3 &value)
+{
+    Set({name, MaterialPropertyType::Mat3, value});
 }
 
 void DrawParameterBlock::SetMatrix(const std::string &name, const glm::mat4 &value)

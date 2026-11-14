@@ -2080,24 +2080,10 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     for (const auto &property : artifact.properties) {
         const MaterialProperty *authored = material->GetProperty(property.name);
         const auto expectedType = [&]() -> MaterialPropertyType {
-            const auto &type = property.type;
-            if (type == "Float")
-                return MaterialPropertyType::Float;
-            if (type == "Float2")
-                return MaterialPropertyType::Float2;
-            if (type == "Float3")
-                return MaterialPropertyType::Float3;
-            if (type == "Float4")
-                return MaterialPropertyType::Float4;
-            if (type == "Color")
-                return MaterialPropertyType::Color;
-            if (type == "Int")
-                return MaterialPropertyType::Int;
-            if (type == "Mat4")
-                return MaterialPropertyType::Mat4;
-            if (type == "Texture2D")
-                return MaterialPropertyType::Texture2D;
-            throw UIShaderMaterialError("Unsupported UI material property type: " + type);
+            const auto type = MaterialPropertyTypeFromName(property.type);
+            if (!type)
+                throw UIShaderMaterialError("Unsupported UI material property type: " + property.type);
+            return *type;
         }();
         if (authored && authored->type != expectedType)
             throw UIShaderMaterialError("UI material property has a mismatched type: " + property.name);

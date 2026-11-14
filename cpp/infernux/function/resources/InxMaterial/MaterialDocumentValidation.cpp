@@ -174,8 +174,7 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     if (!document.is_object() || !document.contains("type") || !document["type"].is_number_integer())
         Fail(path, "property must contain an integer type");
     const int type = RequireInteger(document, "type", path);
-    if (type < static_cast<int>(MaterialPropertyType::Float) ||
-        type > static_cast<int>(MaterialPropertyType::Float4Array)) {
+    if (type < static_cast<int>(MaterialPropertyType::Float) || type > static_cast<int>(MaterialPropertyType::Mat3)) {
         Fail(path, "property type is out of range");
     }
 
@@ -184,17 +183,21 @@ void ValidateProperty(const std::string &name, const json &document, std::string
         Fail(path, "hdr must be a boolean");
     if (document.contains("range")) {
         const auto &range = document["range"];
-        if (propertyType != MaterialPropertyType::Float && propertyType != MaterialPropertyType::Int)
-            Fail(path, "range is only valid for Float and Int properties");
+        if (propertyType != MaterialPropertyType::Float && propertyType != MaterialPropertyType::Int &&
+            propertyType != MaterialPropertyType::UInt)
+            Fail(path, "range is only valid for numeric scalar properties");
         if (!range.is_array() || range.size() != 2 || !range[0].is_number() || !range[1].is_number())
             Fail(path, "range must contain exactly two numbers");
         const double minimum = range[0].get<double>();
         const double maximum = range[1].get<double>();
         if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum >= maximum)
             Fail(path, "range bounds must be finite and strictly increasing");
-        if (propertyType == MaterialPropertyType::Int &&
+        if ((propertyType == MaterialPropertyType::Int || propertyType == MaterialPropertyType::UInt) &&
             (!range[0].is_number_integer() || !range[1].is_number_integer()))
-            Fail(path, "Int property range bounds must be integers");
+            Fail(path, "Integer property range bounds must be integers");
+        if (propertyType == MaterialPropertyType::UInt &&
+            (minimum < 0 || maximum > std::numeric_limits<uint32_t>::max()))
+            Fail(path, "UInt property range bounds must fit uint32");
     }
     if (propertyType == MaterialPropertyType::Texture2D) {
         RequireFields(document, textureFields, path);
@@ -204,6 +207,17 @@ void ValidateProperty(const std::string &name, const json &document, std::string
     }
 
     RequireFields(document, valueFields, path);
+    if (propertyType == MaterialPropertyType::Bool) {
+        if (!document["value"].is_boolean())
+            Fail(path, "Bool value must be a boolean");
+        return;
+    }
+    if (propertyType == MaterialPropertyType::UInt) {
+        const auto &value = document["value"];
+        if (!value.is_number_integer() || value < 0 || value.get<uint64_t>() > std::numeric_limits<uint32_t>::max())
+            Fail(path, "UInt value must fit uint32");
+        return;
+    }
     if (propertyType == MaterialPropertyType::Int) {
         RequireInteger(document, "value", path);
         return;
@@ -251,6 +265,9 @@ void ValidateProperty(const std::string &name, const json &document, std::string
         break;
     case MaterialPropertyType::Mat4:
         expectedSize = 16;
+        break;
+    case MaterialPropertyType::Mat3:
+        expectedSize = 9;
         break;
     default:
         Fail(path, "unsupported property type");

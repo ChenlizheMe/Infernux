@@ -628,8 +628,18 @@ class Material(ResourceProxy):
         self._native.set_texture_guid(name, texture_guid)
         self._auto_save()
 
+    def set_bool(self, name: str | int, value: bool) -> None:
+        """Set a declared boolean shader property."""
+        self._native.set_bool(name, value)
+        self._auto_save()
+
+    def set_uint(self, name: str | int, value: int) -> None:
+        """Set an unsigned 32-bit shader property."""
+        self._native.set_uint(name, value)
+        self._auto_save()
+
     def set_matrix(self, name: str | int, value):
-        """Set a matrix from a NumPy (4,4) array indexed [row, column].
+        """Set a (3,3) or (4,4) matrix indexed [row, column].
 
         Camera matrices can be passed directly, with no transpose or flatten.
         """
@@ -687,6 +697,14 @@ class Material(ResourceProxy):
         """Read a declared float field; missing or mismatched fields raise."""
         return self._native.get_float(name)
 
+    def get_bool(self, name: str | int) -> bool:
+        """Read a declared boolean shader property."""
+        return self._native.get_bool(name)
+
+    def get_uint(self, name: str | int) -> int:
+        """Read an unsigned 32-bit shader property without signed conversion."""
+        return self._native.get_uint(name)
+
     def get_int(self, name: str | int) -> int:
         """Read a declared integer field without truncating a float field."""
         return self._native.get_int(name)
@@ -716,7 +734,7 @@ class Material(ResourceProxy):
         return self._native.get_texture(name) or None
 
     def get_matrix(self, name: str | int):
-        """Read a matrix as a NumPy (4, 4) array indexed [row, column]."""
+        """Read a mat3 or mat4 array indexed [row, column]."""
         return self._native.get_matrix(name)
 
     def has_property(self, name: str | int) -> bool:

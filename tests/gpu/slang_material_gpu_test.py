@@ -22,8 +22,16 @@ class Painted(shader.frag):
                                              (0.1, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0)))
     image = shader.material.texture_2d(default="white", label="底色纹理")
     detail = shader.material.texture_2d(default="black")
+    enabled = shader.material.bool(default=True)
+    marker = shader.material.uint(default=4275878552, range=(0, 4294967295))
+    basis = shader.material.mat3(default=((1.0, 0.12, 0.0), (0.0, 0.8, 0.1), (0.05, 0.0, 0.9)))
     def main(self, ctx: shader.mesh_input) -> shader.vec4:
         transformed = self.transform @ shader.vec4(self.tint.rgb, 0.0)
+        transformed = shader.vec4(self.basis @ transformed.rgb, 0.0)
+        if not self.enabled:
+            transformed = shader.vec4(0.0)
+        if self.marker == 0:
+            transformed = shader.vec4(0.0)
         image = shader.sample(self.image, ctx.uv0).rgb
         detail = shader.sample_level(self.detail, ctx.uv0, 0.0).rgb
         surface = shader.SurfaceData(albedo=transformed.rgb * self.gain * image + detail * 0.08,
@@ -44,8 +52,8 @@ class MeshPipeline(RenderPipelineCallback):
         graph.set_output(color)
         self.description = graph.build()
 
-    def render(self, context, camera):
-        context.render_with_graph(camera, self.description)
+    def render(self, context, view):
+        context.render_with_graph(self.description)
 
 
 def main():
@@ -121,6 +129,9 @@ def main():
                 assert imported, imported.error
                 material = inx.Material.load(str(saved))
                 assert material is not None and material.get_float("gain") == 0.75
+                assert material.get_bool("enabled") is True and material.get_uint("marker") == 0xFEDCBA98
+                np.testing.assert_allclose(material.get_matrix("basis"),
+                                           ((1.0, 0.12, 0.0), (0.0, 0.8, 0.1), (0.05, 0.0, 0.9)), atol=1e-7)
                 assert material.to_dict()["properties"]["image"]["guid"] == ""
                 renderer.set_material(0, material)
                 materials.append(material)
@@ -134,19 +145,14 @@ class Fill(shader.fullscreen):
 ''', encoding="utf-8")
             imported_post = AssetManager.import_asset(str(post), database=frontend.get_asset_database())
             assert imported_post, imported_post.error
-            bad_path = project / "Assets/错误渲染域.mat"
-            bad_document = materials[0].to_dict()
-            bad_document["shaders"]["fragment"] = {"guid": imported_post.guid, "shader_id": "后处理"}
-            bad_path.write_text(json.dumps(bad_document, ensure_ascii=False), encoding="utf-8")
-            imported_bad = AssetManager.import_asset(str(bad_path), database=frontend.get_asset_database())
-            assert imported_bad, imported_bad.error
             try:
-                inx.Material.load(str(bad_path))
+                inx.Material.from_shader(str(post))
             except ValueError as error:
                 assert "mesh shader author" in str(error)
             else:
                 raise AssertionError("A fullscreen author was accepted as a mesh material")
-            assert AssetRegistry.instance().get_asset_runtime_type_name(imported_bad.guid) == ""
+            # Runtime rejection and automatic diagnostic resolution are exercised
+            # by mesh_shader_domain_reload_gpu_test.py at the draw boundary.
             frontend.set_render_pipeline(MeshPipeline(options.material_pass))
             native.set_game_camera_enabled(True)
             frame = changed = phase = 0
@@ -173,7 +179,8 @@ class Fill(shader.fullscreen):
                             transform = matrix.T if phase >= 2 and index == 0 else matrix
                             gain = 0.25 if phase >= 1 and index == 0 else 0.75
                             multiplier = 0.6 if index else (0.5 if phase == 3 else 1.0)
-                            linear = (transform @ np.array(tint))[:3] * gain * multiplier
+                            basis = np.array(((1.0, 0.12, 0.0), (0.0, 0.8, 0.1), (0.05, 0.0, 0.9)))
+                            linear = basis @ (transform @ np.array(tint))[:3] * gain * multiplier
                             if index == 0 and phase in (5, 6):
                                 samples = texture_rgb if phase == 6 else np.where(
                                     texture_rgb <= 0.04045, texture_rgb / 12.92, ((texture_rgb + 0.055) / 1.055) ** 2.4)
@@ -187,13 +194,7 @@ class Fill(shader.fullscreen):
                             assert rows.mean() < 59.5 if index == 0 else rows.mean() > 59.5
                             np.testing.assert_allclose(visible, np.broadcast_to(linear, visible.shape), atol=0.006)
                         errors = [item for item in console._get_visible_log_snapshot(3000) if item["level"] in ("ERROR", "FATAL")]
-                        # The Project preview may also attempt the deliberately
-                        # invalid document. Only that exact rejection is expected.
-                        errors = [item for item in errors if not (
-                            "Material preview rejected" in item["message"] and "错误渲染域.mat" in item["message"]
-                            and "Material requires a compiled mesh shader author" in item["message"])]
                         assert not errors, errors
-                        assert AssetRegistry.instance().get_asset_runtime_type_name(imported_bad.guid) == ""
                         print("MESH_AUTHOR", phase, "passed", flush=True)
                         if phase == 0:
                             assert inx.Shader.is_loaded(shader_guid, "fragment")

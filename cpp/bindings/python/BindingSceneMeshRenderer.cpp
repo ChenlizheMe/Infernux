@@ -1,5 +1,5 @@
 #include "BindingSceneInternal.h"
-#include "MatrixPyBridge.h"
+#include "MaterialPropertyPyBridge.h"
 #include "function/renderer/rhi/RhiComputeBuffer.h"
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
@@ -77,73 +77,7 @@ static void BindRendererParameters(NativeClass<MeshRenderer, Component> &cls)
                if (!property)
                    throw py::key_error("material shader has no parameter named '" + name + "'");
 
-               MaterialPropertyValue nativeValue;
-               switch (property->type) {
-               case MaterialPropertyType::Float:
-                   if ((!py::isinstance<py::float_>(value) && !py::isinstance<py::int_>(value)) ||
-                       py::isinstance<py::bool_>(value))
-                       throw py::type_error("float renderer parameters require one number");
-                   nativeValue = value.cast<float>();
-                   break;
-               case MaterialPropertyType::Int:
-                   if (!py::isinstance<py::int_>(value) || py::isinstance<py::bool_>(value))
-                       throw py::type_error("int renderer parameters require one integer");
-                   nativeValue = value.cast<int>();
-                   break;
-               case MaterialPropertyType::Float2:
-               case MaterialPropertyType::Float3:
-               case MaterialPropertyType::Float4:
-               case MaterialPropertyType::Color: {
-                   if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
-                       throw py::type_error("vector and color renderer parameters require a numeric sequence");
-                   py::sequence sequence = value.cast<py::sequence>();
-                   const size_t expected = property->type == MaterialPropertyType::Float2
-                                               ? 2
-                                               : (property->type == MaterialPropertyType::Float3 ? 3 : 4);
-                   if (static_cast<size_t>(py::len(sequence)) != expected)
-                       throw py::value_error("renderer parameter vector has the wrong number of channels");
-                   if (expected == 2)
-                       nativeValue = glm::vec2(sequence[0].cast<float>(), sequence[1].cast<float>());
-                   else if (expected == 3)
-                       nativeValue =
-                           glm::vec3(sequence[0].cast<float>(), sequence[1].cast<float>(), sequence[2].cast<float>());
-                   else
-                       nativeValue = glm::vec4(sequence[0].cast<float>(), sequence[1].cast<float>(),
-                                               sequence[2].cast<float>(), sequence[3].cast<float>());
-                   break;
-               }
-               case MaterialPropertyType::Mat4: {
-                   nativeValue = binding::Matrix4FromPython(value, "Renderer matrix");
-                   break;
-               }
-               case MaterialPropertyType::Texture2D:
-                   if (py::isinstance<py::str>(value))
-                       nativeValue = value.cast<std::string>();
-                   else if (py::hasattr(value, "guid"))
-                       nativeValue = value.attr("guid").cast<std::string>();
-                   else
-                       throw py::type_error("texture renderer parameters require a texture GUID or Texture object");
-                   break;
-               case MaterialPropertyType::FloatArray:
-                   if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
-                       throw py::type_error("float array renderer parameters require a numeric sequence");
-                   nativeValue = value.cast<std::vector<float>>();
-                   break;
-               case MaterialPropertyType::Float4Array: {
-                   if (!py::isinstance<py::sequence>(value) || py::isinstance<py::str>(value))
-                       throw py::type_error("float4 array renderer parameters require a vector sequence");
-                   std::vector<glm::vec4> values;
-                   for (py::handle item : value.cast<py::sequence>()) {
-                       py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
-                       if (py::len(vector) != 4)
-                           throw py::value_error("float4 array renderer parameters require four-component vectors");
-                       values.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(), vector[2].cast<float>(),
-                                           vector[3].cast<float>());
-                   }
-                   nativeValue = std::move(values);
-                   break;
-               }
-               }
+               auto nativeValue = binding::MaterialPropertyFromPython(property->type, value);
                // Custom sequence/texture conversion above can retire the
                // renderer. Resolve the original wrapper immediately before use.
                renderer.cast<MeshRenderer &>().SetParameter(materialSlot, name, std::move(nativeValue), persistent,
@@ -177,13 +111,14 @@ static void BindRendererParameters(NativeClass<MeshRenderer, Component> &cls)
                     const auto value = std::get<glm::vec4>(property->value);
                     return py::make_tuple(value.x, value.y, value.z, value.w);
                 }
-                case MaterialPropertyType::Mat4: {
-                    const auto value = std::get<glm::mat4>(property->value);
-                    py::tuple result(16);
-                    for (int index = 0; index < 16; ++index)
-                        result[index] = value[index / 4][index % 4];
-                    return result;
-                }
+                case MaterialPropertyType::Bool:
+                    return py::bool_(std::get<bool>(property->value));
+                case MaterialPropertyType::UInt:
+                    return py::int_(std::get<uint32_t>(property->value));
+                case MaterialPropertyType::Mat3:
+                    return binding::MaterialMatrixColumnsToPython(std::get<glm::mat3>(property->value));
+                case MaterialPropertyType::Mat4:
+                    return binding::MaterialMatrixColumnsToPython(std::get<glm::mat4>(property->value));
                 case MaterialPropertyType::Texture2D:
                     return py::str(std::get<std::string>(property->value));
                 case MaterialPropertyType::FloatArray:

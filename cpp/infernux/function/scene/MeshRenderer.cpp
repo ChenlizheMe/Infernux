@@ -30,67 +30,12 @@ namespace
 
 bool RendererParameterValueIsFinite(const MaterialPropertyValue &value)
 {
-    const auto finiteVector = [](const auto &vector) {
-        for (glm::length_t component = 0; component < vector.length(); ++component) {
-            if (!std::isfinite(vector[component]))
-                return false;
-        }
-        return true;
-    };
-    if (const auto *number = std::get_if<float>(&value))
-        return std::isfinite(*number);
-    if (const auto *vector = std::get_if<glm::vec2>(&value))
-        return finiteVector(*vector);
-    if (const auto *vector = std::get_if<glm::vec3>(&value))
-        return finiteVector(*vector);
-    if (const auto *vector = std::get_if<glm::vec4>(&value))
-        return finiteVector(*vector);
-    if (const auto *matrix = std::get_if<glm::mat4>(&value)) {
-        for (glm::length_t column = 0; column < matrix->length(); ++column) {
-            if (!finiteVector((*matrix)[column]))
-                return false;
-        }
-    }
-    if (const auto *values = std::get_if<std::vector<float>>(&value))
-        return std::all_of(values->begin(), values->end(), [](float number) { return std::isfinite(number); });
-    if (const auto *values = std::get_if<std::vector<glm::vec4>>(&value))
-        return std::all_of(values->begin(), values->end(), finiteVector);
-    return true;
+    return MaterialPropertyValueIsFinite(value);
 }
 
 bool RendererParameterValueEquals(const MaterialPropertyValue &left, const MaterialPropertyValue &right)
 {
-    if (left.index() != right.index())
-        return false;
-    if (const auto *value = std::get_if<float>(&left))
-        return *value == std::get<float>(right);
-    if (const auto *value = std::get_if<glm::vec2>(&left))
-        return glm::all(glm::equal(*value, std::get<glm::vec2>(right)));
-    if (const auto *value = std::get_if<glm::vec3>(&left))
-        return glm::all(glm::equal(*value, std::get<glm::vec3>(right)));
-    if (const auto *value = std::get_if<glm::vec4>(&left))
-        return glm::all(glm::equal(*value, std::get<glm::vec4>(right)));
-    if (const auto *value = std::get_if<int>(&left))
-        return *value == std::get<int>(right);
-    if (const auto *value = std::get_if<glm::mat4>(&left)) {
-        const auto &other = std::get<glm::mat4>(right);
-        for (glm::length_t column = 0; column < value->length(); ++column) {
-            if (!glm::all(glm::equal((*value)[column], other[column])))
-                return false;
-        }
-        return true;
-    }
-    if (const auto *value = std::get_if<std::string>(&left))
-        return *value == std::get<std::string>(right);
-    if (const auto *value = std::get_if<std::vector<float>>(&left))
-        return *value == std::get<std::vector<float>>(right);
-    if (const auto *value = std::get_if<std::vector<glm::vec4>>(&left)) {
-        const auto &other = std::get<std::vector<glm::vec4>>(right);
-        return value->size() == other.size() &&
-               std::equal(value->begin(), value->end(), other.begin(),
-                          [](const glm::vec4 &a, const glm::vec4 &b) { return glm::all(glm::equal(a, b)); });
-    }
-    return false;
+    return left == right;
 }
 
 bool RendererParameterEquals(const MaterialProperty &left, const MaterialProperty &right)
@@ -197,6 +142,20 @@ json SerializeRendererParameter(const MaterialProperty &property)
     case MaterialPropertyType::Int:
         result["value"] = std::get<int>(property.value);
         break;
+    case MaterialPropertyType::Bool:
+        result["value"] = std::get<bool>(property.value);
+        break;
+    case MaterialPropertyType::UInt:
+        result["value"] = std::get<uint32_t>(property.value);
+        break;
+    case MaterialPropertyType::Mat3: {
+        const auto &matrix = std::get<glm::mat3>(property.value);
+        result["value"] = json::array();
+        for (int column = 0; column < 3; ++column)
+            for (int row = 0; row < 3; ++row)
+                result["value"].push_back(matrix[column][row]);
+        break;
+    }
     case MaterialPropertyType::Mat4: {
         const auto value = std::get<glm::mat4>(property.value);
         result["value"] = json::array();
@@ -226,7 +185,7 @@ MaterialProperty DeserializeRendererParameter(const std::string &name, const jso
         throw std::invalid_argument("renderer parameter '" + name + "' requires an integer type");
     const int typeValue = document["type"].get<int>();
     if (typeValue < static_cast<int>(MaterialPropertyType::Float) ||
-        typeValue > static_cast<int>(MaterialPropertyType::Float4Array))
+        typeValue > static_cast<int>(MaterialPropertyType::Mat3))
         throw std::invalid_argument("renderer parameter '" + name + "' has an invalid type");
 
     MaterialProperty property{name, static_cast<MaterialPropertyType>(typeValue), 0.0f};
@@ -270,6 +229,26 @@ MaterialProperty DeserializeRendererParameter(const std::string &name, const jso
             throw std::invalid_argument("renderer int parameter '" + name + "' requires one integer");
         property.value = document["value"].get<int>();
         break;
+    case MaterialPropertyType::Bool:
+        if (document.size() != 2 || !document.contains("value") || !document["value"].is_boolean())
+            throw std::invalid_argument("renderer bool parameter '" + name + "' requires one boolean");
+        property.value = document["value"].get<bool>();
+        break;
+    case MaterialPropertyType::UInt:
+        if (document.size() != 2 || !document.contains("value") || !document["value"].is_number_integer() ||
+            document["value"] < 0 || document["value"].get<uint64_t>() > std::numeric_limits<uint32_t>::max())
+            throw std::invalid_argument("renderer uint parameter '" + name + "' requires one uint32 integer");
+        property.value = document["value"].get<uint32_t>();
+        break;
+    case MaterialPropertyType::Mat3: {
+        const auto &value = requireFiniteArray(9);
+        glm::mat3 matrix;
+        for (int column = 0; column < 3; ++column)
+            for (int row = 0; row < 3; ++row)
+                matrix[column][row] = value[column * 3 + row].get<float>();
+        property.value = matrix;
+        break;
+    }
     case MaterialPropertyType::Mat4: {
         const auto &value = requireFiniteArray(16);
         glm::mat4 matrix{};
@@ -1036,18 +1015,7 @@ void MeshRenderer::SetParameter(uint32_t slot, const std::string &name, Material
     if (!declaration)
         throw std::invalid_argument("material shader has no parameter named '" + name + "'");
 
-    const bool typeMatches =
-        (declaration->type == MaterialPropertyType::Float && std::holds_alternative<float>(value)) ||
-        (declaration->type == MaterialPropertyType::Float2 && std::holds_alternative<glm::vec2>(value)) ||
-        (declaration->type == MaterialPropertyType::Float3 && std::holds_alternative<glm::vec3>(value)) ||
-        ((declaration->type == MaterialPropertyType::Float4 || declaration->type == MaterialPropertyType::Color) &&
-         std::holds_alternative<glm::vec4>(value)) ||
-        (declaration->type == MaterialPropertyType::Int && std::holds_alternative<int>(value)) ||
-        (declaration->type == MaterialPropertyType::Mat4 && std::holds_alternative<glm::mat4>(value)) ||
-        (declaration->type == MaterialPropertyType::Texture2D && std::holds_alternative<std::string>(value)) ||
-        (declaration->type == MaterialPropertyType::FloatArray && std::holds_alternative<std::vector<float>>(value)) ||
-        (declaration->type == MaterialPropertyType::Float4Array &&
-         std::holds_alternative<std::vector<glm::vec4>>(value));
+    const bool typeMatches = MaterialPropertyValueMatchesType(declaration->type, value);
     if (!typeMatches)
         throw std::invalid_argument("renderer parameter '" + name + "' does not match the reflected shader type");
     if (!RendererParameterValueIsFinite(value))

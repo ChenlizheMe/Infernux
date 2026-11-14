@@ -54,53 +54,13 @@ std::optional<MaterialPropertyType> ShaderMaterialPropertyType(const ShaderProgr
 {
     if (binding.IsTexture() || binding.type == "Texture2D")
         return MaterialPropertyType::Texture2D;
-    if (binding.type == "Float")
-        return MaterialPropertyType::Float;
-    if (binding.type == "Float2")
-        return MaterialPropertyType::Float2;
-    if (binding.type == "Float3")
-        return MaterialPropertyType::Float3;
-    if (binding.type == "Float4")
-        return MaterialPropertyType::Float4;
-    if (binding.type == "Color")
-        return MaterialPropertyType::Color;
-    if (binding.type == "Int")
-        return MaterialPropertyType::Int;
-    if (binding.type == "Mat4")
-        return MaterialPropertyType::Mat4;
-    if (binding.type == "FloatArray")
-        return MaterialPropertyType::FloatArray;
-    if (binding.type == "Float4Array")
-        return MaterialPropertyType::Float4Array;
-    return std::nullopt;
+    return MaterialPropertyTypeFromName(binding.type);
 }
 
 bool MaterialValueMatchesType(const MaterialProperty &property, MaterialPropertyType type)
 {
-    if (!MaterialPropertyTypesCompatible(type, property.type))
-        return false;
-    switch (type) {
-    case MaterialPropertyType::Float:
-        return std::holds_alternative<float>(property.value);
-    case MaterialPropertyType::Float2:
-        return std::holds_alternative<glm::vec2>(property.value);
-    case MaterialPropertyType::Float3:
-        return std::holds_alternative<glm::vec3>(property.value);
-    case MaterialPropertyType::Float4:
-    case MaterialPropertyType::Color:
-        return std::holds_alternative<glm::vec4>(property.value);
-    case MaterialPropertyType::Int:
-        return std::holds_alternative<int>(property.value);
-    case MaterialPropertyType::Mat4:
-        return std::holds_alternative<glm::mat4>(property.value);
-    case MaterialPropertyType::Texture2D:
-        return std::holds_alternative<std::string>(property.value);
-    case MaterialPropertyType::FloatArray:
-        return std::holds_alternative<std::vector<float>>(property.value);
-    case MaterialPropertyType::Float4Array:
-        return std::holds_alternative<std::vector<glm::vec4>>(property.value);
-    }
-    return false;
+    return MaterialPropertyTypesCompatible(type, property.type) &&
+           MaterialPropertyValueMatchesType(type, property.value);
 }
 
 MaterialPropertyValue ShaderPropertyFallback(MaterialPropertyType type)
@@ -118,6 +78,12 @@ MaterialPropertyValue ShaderPropertyFallback(MaterialPropertyType type)
         return glm::vec4(1.0f);
     case MaterialPropertyType::Int:
         return 0;
+    case MaterialPropertyType::Bool:
+        return false;
+    case MaterialPropertyType::UInt:
+        return uint32_t{0};
+    case MaterialPropertyType::Mat3:
+        return glm::mat3(1.0f);
     case MaterialPropertyType::Mat4:
         return glm::mat4(1.0f);
     case MaterialPropertyType::Texture2D:
@@ -144,6 +110,10 @@ MaterialPropertyValue ParseShaderPropertyDefault(const ShaderProgramPropertyBind
             return value.get<float>();
         if (type == MaterialPropertyType::Int && value.is_number_integer())
             return value.get<int>();
+        if (type == MaterialPropertyType::Bool && value.is_boolean())
+            return value.get<bool>();
+        if (type == MaterialPropertyType::UInt && value.is_number_integer())
+            return value.get<uint32_t>();
 
         const auto readVector = [&value](float *destination, size_t count) {
             if (!value.is_array() || value.size() != count)
@@ -167,6 +137,15 @@ MaterialPropertyValue ParseShaderPropertyDefault(const ShaderProgramPropertyBind
             glm::vec4 result{};
             if (readVector(&result[0], 4))
                 return result;
+        } else if (type == MaterialPropertyType::Mat3) {
+            std::array<float, 9> values;
+            if (readVector(values.data(), values.size())) {
+                glm::mat3 result;
+                for (glm::length_t column = 0; column < 3; ++column)
+                    for (glm::length_t row = 0; row < 3; ++row)
+                        result[column][row] = values[column * 3 + row];
+                return result;
+            }
         } else if (type == MaterialPropertyType::Mat4) {
             glm::mat4 result{0.0f};
             if (readVector(&result[0][0], 16))
@@ -764,6 +743,16 @@ int InxMaterial::GetInt(const std::string &name) const
     return std::get<int>(RequireProperty(name, MaterialPropertyType::Int).value);
 }
 
+bool InxMaterial::GetBool(const std::string &name) const
+{
+    return std::get<bool>(RequireProperty(name, MaterialPropertyType::Bool).value);
+}
+
+uint32_t InxMaterial::GetUInt(const std::string &name) const
+{
+    return std::get<uint32_t>(RequireProperty(name, MaterialPropertyType::UInt).value);
+}
+
 glm::vec2 InxMaterial::GetVector2(const std::string &name) const
 {
     return std::get<glm::vec2>(RequireProperty(name, MaterialPropertyType::Float2).value);
@@ -787,6 +776,11 @@ glm::vec4 InxMaterial::GetColor(const std::string &name) const
 glm::mat4 InxMaterial::GetMatrix(const std::string &name) const
 {
     return std::get<glm::mat4>(RequireProperty(name, MaterialPropertyType::Mat4).value);
+}
+
+glm::mat3 InxMaterial::GetMatrix3(const std::string &name) const
+{
+    return std::get<glm::mat3>(RequireProperty(name, MaterialPropertyType::Mat3).value);
 }
 
 const std::string &InxMaterial::GetTextureGuid(const std::string &name) const
@@ -819,14 +813,39 @@ void InxMaterial::SetColor(const std::string &name, const glm::vec4 &color)
     SetPropertyValue(name, MaterialPropertyType::Color, color);
 }
 
+void InxMaterial::SetParameter(const std::string &name, MaterialPropertyValue value)
+{
+    const auto *property = GetProperty(name);
+    if (!property)
+        throw std::out_of_range("material has no property '" + name + "'");
+    if (!MaterialPropertyValueMatchesType(property->type, value))
+        throw std::invalid_argument("material property '" + name + "' has a different declared type");
+    SetPropertyValue(name, property->type, std::move(value));
+}
+
 void InxMaterial::SetInt(const std::string &name, int value)
 {
     SetPropertyValue(name, MaterialPropertyType::Int, value);
 }
 
+void InxMaterial::SetBool(const std::string &name, bool value)
+{
+    SetPropertyValue(name, MaterialPropertyType::Bool, value);
+}
+
+void InxMaterial::SetUInt(const std::string &name, uint32_t value)
+{
+    SetPropertyValue(name, MaterialPropertyType::UInt, value);
+}
+
 void InxMaterial::SetMatrix(const std::string &name, const glm::mat4 &matrix)
 {
     SetPropertyValue(name, MaterialPropertyType::Mat4, matrix);
+}
+
+void InxMaterial::SetMatrix(const std::string &name, const glm::mat3 &matrix)
+{
+    SetPropertyValue(name, MaterialPropertyType::Mat3, matrix);
 }
 
 std::string InxMaterial::RequireTextureGuid(const std::string &textureGuid, bool allowRenderTexture)
@@ -1408,6 +1427,20 @@ nlohmann::json InxMaterial::SerializeDocument() const
         case MaterialPropertyType::Int:
             propJson["value"] = std::get<int>(prop.value);
             break;
+        case MaterialPropertyType::Bool:
+            propJson["value"] = std::get<bool>(prop.value);
+            break;
+        case MaterialPropertyType::UInt:
+            propJson["value"] = std::get<uint32_t>(prop.value);
+            break;
+        case MaterialPropertyType::Mat3: {
+            const auto &matrix = std::get<glm::mat3>(prop.value);
+            propJson["value"] = json::array();
+            for (glm::length_t column = 0; column < 3; ++column)
+                for (glm::length_t row = 0; row < 3; ++row)
+                    propJson["value"].push_back(matrix[column][row]);
+            break;
+        }
         case MaterialPropertyType::Mat4: {
             auto m = std::get<glm::mat4>(prop.value);
             json matArr = json::array();
@@ -1776,6 +1809,21 @@ void InxMaterial::ApplyDocument(const nlohmann::json &document)
         case MaterialPropertyType::Int:
             prop.value = propJson["value"].get<int>();
             break;
+        case MaterialPropertyType::Bool:
+            prop.value = propJson["value"].get<bool>();
+            break;
+        case MaterialPropertyType::UInt:
+            prop.value = propJson["value"].get<uint32_t>();
+            break;
+        case MaterialPropertyType::Mat3: {
+            glm::mat3 matrix;
+            const auto &value = propJson["value"];
+            for (glm::length_t column = 0; column < 3; ++column)
+                for (glm::length_t row = 0; row < 3; ++row)
+                    matrix[column][row] = value[column * 3 + row].get<float>();
+            prop.value = matrix;
+            break;
+        }
         case MaterialPropertyType::Mat4: {
             glm::mat4 m;
             const auto &value = propJson["value"];

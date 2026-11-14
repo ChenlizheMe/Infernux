@@ -10,7 +10,7 @@
  */
 
 #include "BindingRegistration.h"
-#include "MatrixPyBridge.h"
+#include "MaterialPropertyPyBridge.h"
 #include <function/renderer/CommandBuffer.h>
 #include <function/renderer/RendererSelection.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
@@ -34,6 +34,8 @@ void RegisterCommandBufferBindings(py::module_ &m)
         .def(py::init<>())
         .def("set_float", &DrawParameterBlock::SetFloat, py::arg("name"), py::arg("value"))
         .def("set_int", &DrawParameterBlock::SetInt, py::arg("name"), py::arg("value"))
+        .def("set_bool", &DrawParameterBlock::SetBool, py::arg("name"), py::arg("value"))
+        .def("set_uint", &DrawParameterBlock::SetUInt, py::arg("name"), py::arg("value"))
         .def(
             "set_vector2",
             [](DrawParameterBlock &self, const std::string &name, py::sequence value) {
@@ -71,7 +73,8 @@ void RegisterCommandBufferBindings(py::module_ &m)
         .def(
             "set_matrix",
             [](DrawParameterBlock &self, const std::string &name, py::handle value) {
-                self.SetMatrix(name, binding::Matrix4FromPython(value, "Draw matrix"));
+                binding::ApplyMaterialMatrixFromPython(value,
+                                                       [&](const auto &matrix) { self.SetMatrix(name, matrix); });
             },
             py::arg("name"), py::arg("value"))
         .def(

@@ -39,8 +39,8 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     if (uniform != target->resources.end())
         result.materialBufferSize = static_cast<uint32_t>((uniform->value.byteSize + 15u) & ~uint64_t{15u});
     static const std::unordered_map<std::string, std::string> propertyTypes = {
-        {"float", "Float"}, {"int", "Int"},     {"vec2", "Float2"}, {"vec3", "Float3"},
-        {"vec4", "Float4"}, {"color", "Color"}, {"mat4", "Mat4"},
+        {"float", "Float"}, {"int", "Int"},   {"vec2", "Float2"}, {"vec3", "Float3"}, {"vec4", "Float4"},
+        {"color", "Color"}, {"mat4", "Mat4"}, {"bool", "Bool"},   {"uint", "UInt"},   {"mat3", "Mat3"},
     };
     uint32_t textureSlot = 0;
     for (const auto &parameter : source.at("parameters")) {
@@ -65,10 +65,11 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
                 throw std::logic_error("Mesh author field is absent from the compiler layout: " + property.name);
             property.type = propertyTypes.at(kind);
             auto value = parameter.at("default");
-            if (property.type == "Mat4") {
+            if (property.type == "Mat3" || property.type == "Mat4") {
                 nlohmann::json columns = nlohmann::json::array();
-                for (size_t column = 0; column < 4; ++column)
-                    for (size_t row = 0; row < 4; ++row)
+                const size_t dimension = property.type == "Mat3" ? 3 : 4;
+                for (size_t column = 0; column < dimension; ++column)
+                    for (size_t row = 0; row < dimension; ++row)
                         columns.push_back(value.at(row).at(column));
                 value = std::move(columns);
             }

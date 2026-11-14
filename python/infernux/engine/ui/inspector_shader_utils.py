@@ -430,12 +430,14 @@ def parse_shader_properties(filepath: str) -> list:
         if schema["domain"] not in {"mesh", "vertex"}:
             return []
         kinds = {"texture_2d": "Texture2D", "float": "Float", "int": "Int", "vec2": "Float2", "vec3": "Float3",
-                 "vec4": "Float4", "color": "Color", "mat4": "Mat4"}
+                 "vec4": "Float4", "color": "Color", "mat4": "Mat4",
+                 "mat3": "Mat3", "bool": "Bool", "uint": "UInt"}
         fields = []
         for parameter in schema["parameters"]:
             item = dict(parameter, type=kinds[parameter["kind"]])
-            if parameter["kind"] == "mat4":
-                item["default"] = [parameter["default"][row][column] for column in range(4) for row in range(4)]
+            if parameter["kind"] in ("mat3", "mat4"):
+                size = 3 if parameter["kind"] == "mat3" else 4
+                item["default"] = [parameter["default"][row][column] for column in range(size) for row in range(size)]
             fields.append(item)
         return fields
     import json
@@ -610,6 +612,9 @@ _SHADER_TYPE_MAP = {
     'Int': 4,
     'Mat4': 5,
     'Texture2D': 6,
+    'Bool': 10,
+    'UInt': 11,
+    'Mat3': 12,
 }
 
 
@@ -620,6 +625,9 @@ _PROPERTY_VALUE_DEFAULTS = {
     "Float4": [0.0, 0.0, 0.0, 0.0],
     "Color": [1.0, 1.0, 1.0, 1.0],
     "Int": 0,
+    "UInt": 0,
+    "Bool": False,
+    "Mat3": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
     "Mat4": [
         1.0, 0.0, 0.0, 0.0,
         0.0, 1.0, 0.0, 0.0,
@@ -636,6 +644,10 @@ def _coerce_property_value(property_type: str, value):
             if isinstance(value, (list, tuple, dict, bool)):
                 return None
             return float(value)
+        if property_type == "Bool":
+            return value if isinstance(value, bool) else None
+        if property_type == "UInt":
+            return value if type(value) is int and 0 <= value <= 0xFFFFFFFF else None
         if property_type == "Int":
             if isinstance(value, (list, tuple, dict, bool)):
                 return None
@@ -647,6 +659,7 @@ def _coerce_property_value(property_type: str, value):
             "Float4": 4,
             "Color": 4,
             "Mat4": 16,
+            "Mat3": 9,
         }
         expected = lengths.get(property_type)
         if expected is None or not isinstance(value, (list, tuple)) or len(value) != expected:

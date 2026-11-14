@@ -23,6 +23,25 @@ class Tint(shader.fullscreen):
 '''
 
 
+def test_material_scalar_and_matrix_types_compile_for_both_targets():
+    definition = parse_shader('''import infernux.shader as shader
+class TypedMaterial(shader.frag):
+    enabled = shader.material.bool(default=True)
+    mask = shader.material.uint(default=2147483649, range=(0, 4294967295))
+    basis = shader.material.mat3(default=((1.0, 0.2, 0.0), (0.0, 0.8, 0.1), (0.3, 0.0, 0.9)))
+    def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        color = self.basis @ shader.vec3(0.2, 0.4, 0.6)
+        if self.enabled and self.mask == shader.uint(2147483649):
+            return shader.vec4(color, 1.0)
+        return shader.vec4(0.0)
+''', "typed_material.frag.py", "typed_material")
+    fields = {field.name: field for field in definition.parameters}
+    assert fields["enabled"].kind == "bool" and fields["enabled"].default is True
+    assert fields["mask"].kind == "uint" and fields["mask"].default == 0x80000001
+    assert fields["basis"].kind == "mat3"
+    assert {target["target"] for target in definition.compile()["targets"]} == {"spirv", "wgsl"}
+
+
 @pytest.mark.parametrize("expression,kind", [
     ("shader.sin(1) + shader.sqrt(2) + 1 / 2", "float"),
     ("shader.sin(shader.ivec3(1, 2, 3))", "float3"),

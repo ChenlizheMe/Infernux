@@ -395,8 +395,8 @@ void VerifyBuiltinSixWaySmokeMaterial()
     const auto material = InxMaterial::CreateParticleSixWaySmokeMaterial();
     assert(material);
     assert(material->IsBuiltin());
-    assert(material->GetVertShaderName() == "Particle Sprite");
-    assert(material->GetFragShaderName() == "Particle Six-Way Smoke");
+    assert(material->GetVertShaderName() == "infernux/particle/vertex");
+    assert(material->GetFragShaderName() == "infernux/particle/six_way_smoke");
 
     const auto document = material->SerializeDocument();
     assert(document.at("builtin").get<bool>());
@@ -688,6 +688,40 @@ void VerifyDocumentRepublishesTextureReadiness()
     assert(std::get<std::string>(material.GetProperty("albedo_map")->value) == "black");
 }
 
+void VerifyBoolUnsignedAndMatrix3Documents()
+{
+    InxMaterial material("Typed shader values", "Unlit");
+    const glm::mat3 basis(glm::vec3(1, 2, 3), glm::vec3(4, 5, 6), glm::vec3(7, 8, 9));
+    material.SetBool("enabled", true);
+    material.SetUInt("mask", 0xfedcba98u);
+    material.SetMatrix("basis", basis);
+    auto document = material.SerializeDocument();
+    document["properties"]["mask"]["range"] = {0u, 0xffffffffu};
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(document));
+    assert(restored.GetBool("enabled"));
+    assert(restored.GetUInt("mask") == 0xfedcba98u);
+    assert(restored.GetMatrix3("basis") == basis);
+    assert(restored.Clone()->GetMatrix3("basis") == basis);
+    assert(restored.SerializeDocument() == document);
+    const auto version = restored.GetVersion();
+    for (const nlohmann::json invalid : {-1ll, 0x100000000ll}) {
+        auto bad = document;
+        bad["properties"]["mask"]["value"] = invalid;
+        assert(!restored.DeserializeDocument(bad));
+        assert(restored.GetVersion() == version && restored.SerializeDocument() == document);
+    }
+    auto bad = document;
+    bad["properties"]["enabled"]["value"] = 1;
+    assert(!restored.DeserializeDocument(bad));
+    assert(restored.SerializeDocument() == document);
+    restored.SetParameter("enabled", false);
+    restored.SetParameter("mask", uint32_t{7});
+    restored.SetParameter("basis", basis * 2.0f);
+    assert(!restored.GetBool("enabled") && restored.GetUInt("mask") == 7);
+    assert(restored.GetMatrix3("basis") == basis * 2.0f);
+}
+
 } // namespace
 
 int main()
@@ -714,6 +748,7 @@ int main()
     VerifyTextureDefaultsAreDerivedSchema();
     VerifyColorVectorShaderTransitionsPreserveAuthoredValues();
     VerifyReflectedArrayRoundTripAndLengthAuthority();
+    VerifyBoolUnsignedAndMatrix3Documents();
     std::cout << "Material document tests passed\n";
     return 0;
 }

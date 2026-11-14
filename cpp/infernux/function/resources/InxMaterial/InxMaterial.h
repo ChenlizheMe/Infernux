@@ -547,8 +547,12 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void SetVector3(const std::string &name, const glm::vec3 &value);
     void SetVector4(const std::string &name, const glm::vec4 &value);
     void SetColor(const std::string &name, const glm::vec4 &color);
+    void SetParameter(const std::string &name, MaterialPropertyValue value);
     void SetInt(const std::string &name, int value);
+    void SetBool(const std::string &name, bool value);
+    void SetUInt(const std::string &name, uint32_t value);
     void SetMatrix(const std::string &name, const glm::mat4 &matrix);
+    void SetMatrix(const std::string &name, const glm::mat3 &matrix);
     void SetFloatArray(const std::string &name, const std::vector<float> &values);
     void SetVector4Array(const std::string &name, const std::vector<glm::vec4> &values);
     void SetTextureGuid(const std::string &name, const std::string &textureGuid);
@@ -606,11 +610,14 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     [[nodiscard]] const MaterialProperty &RequireProperty(const std::string &name, MaterialPropertyType type) const;
     [[nodiscard]] float GetFloat(const std::string &name) const;
     [[nodiscard]] int GetInt(const std::string &name) const;
+    [[nodiscard]] bool GetBool(const std::string &name) const;
+    [[nodiscard]] uint32_t GetUInt(const std::string &name) const;
     [[nodiscard]] glm::vec2 GetVector2(const std::string &name) const;
     [[nodiscard]] glm::vec3 GetVector3(const std::string &name) const;
     [[nodiscard]] glm::vec4 GetVector4(const std::string &name) const;
     [[nodiscard]] glm::vec4 GetColor(const std::string &name) const;
     [[nodiscard]] glm::mat4 GetMatrix(const std::string &name) const;
+    [[nodiscard]] glm::mat3 GetMatrix3(const std::string &name) const;
     [[nodiscard]] const std::string &GetTextureGuid(const std::string &name) const;
     [[nodiscard]] std::string_view GetTextureDefault(const std::string &name) const;
     [[nodiscard]] const std::unordered_map<std::string, MaterialProperty> &GetAllProperties() const

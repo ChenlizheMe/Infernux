@@ -213,6 +213,15 @@ void MaterialUBO::WriteProperty(const std::string &name, MaterialPropertyType ty
     case MaterialPropertyType::Int:
         SetInt(name, std::get<int>(value));
         break;
+    case MaterialPropertyType::Bool:
+        SetBool(name, std::get<bool>(value));
+        break;
+    case MaterialPropertyType::UInt:
+        SetUInt(name, std::get<uint32_t>(value));
+        break;
+    case MaterialPropertyType::Mat3:
+        SetMat3(name, std::get<glm::mat3>(value));
+        break;
     case MaterialPropertyType::Mat4:
         SetMat4(name, std::get<glm::mat4>(value));
         break;
@@ -271,6 +280,26 @@ void MaterialUBO::SetVec4(const std::string &name, const glm::vec4 &value)
 void MaterialUBO::SetInt(const std::string &name, int value)
 {
     WriteValue(name, &value);
+}
+
+void MaterialUBO::SetBool(const std::string &name, bool value)
+{
+    const uint32_t word = value ? 1u : 0u;
+    WriteValue(name, &word);
+}
+
+void MaterialUBO::SetUInt(const std::string &name, uint32_t value)
+{
+    WriteValue(name, &value);
+}
+
+void MaterialUBO::SetMat3(const std::string &name, const glm::mat3 &value)
+{
+    std::array<float, 9> columns;
+    for (glm::length_t column = 0; column < 3; ++column)
+        for (glm::length_t row = 0; row < 3; ++row)
+            columns[column * 3 + row] = value[column][row];
+    WriteValue(name, columns.data());
 }
 
 void MaterialUBO::SetMat4(const std::string &name, const glm::mat4 &value)

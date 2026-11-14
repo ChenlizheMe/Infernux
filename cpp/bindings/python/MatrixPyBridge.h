@@ -7,23 +7,29 @@
 
 namespace infernux::binding
 {
-// Public 4x4 arrays use [row, column], independently of their NumPy strides.
-inline glm::mat4 Matrix4FromPython(pybind11::handle value, const char *label)
+// Public matrices use [row, column], independently of their NumPy strides.
+template <glm::length_t Size> glm::mat<Size, Size, float> MatrixFromPython(pybind11::handle value, const char *label)
 {
     using Array = pybind11::array_t<float, pybind11::array::forcecast>;
     const auto array = Array::ensure(value);
     if (!array)
         throw pybind11::type_error(std::string(label) + " requires a numeric matrix");
-    glm::mat4 result;
-    if (array.ndim() == 2 && array.shape(0) == 4 && array.shape(1) == 4) {
+    glm::mat<Size, Size, float> result;
+    if (array.ndim() == 2 && array.shape(0) == Size && array.shape(1) == Size) {
         const auto values = array.unchecked<2>();
-        for (int row = 0; row < 4; ++row)
-            for (int column = 0; column < 4; ++column)
+        for (glm::length_t row = 0; row < Size; ++row)
+            for (glm::length_t column = 0; column < Size; ++column)
                 result[column][row] = values(row, column);
     } else {
-        throw pybind11::value_error(std::string(label) + " must have shape (4, 4)");
+        throw pybind11::value_error(std::string(label) + " must have shape (" + std::to_string(Size) + ", " +
+                                    std::to_string(Size) + ")");
     }
     return result;
+}
+
+inline glm::mat4 Matrix4FromPython(pybind11::handle value, const char *label)
+{
+    return MatrixFromPython<4>(value, label);
 }
 
 inline pybind11::array_t<float> Matrix4ArrayToPython(const std::vector<glm::mat4> &matrices)
@@ -38,13 +44,18 @@ inline pybind11::array_t<float> Matrix4ArrayToPython(const std::vector<glm::mat4
     return result;
 }
 
-inline pybind11::array_t<float> Matrix4ToPython(const glm::mat4 &matrix)
+template <glm::length_t Size> pybind11::array_t<float> MatrixToPython(const glm::mat<Size, Size, float> &matrix)
 {
-    pybind11::array_t<float> result({4, 4});
+    pybind11::array_t<float> result({Size, Size});
     auto values = result.mutable_unchecked<2>();
-    for (int row = 0; row < 4; ++row)
-        for (int column = 0; column < 4; ++column)
+    for (glm::length_t row = 0; row < Size; ++row)
+        for (glm::length_t column = 0; column < Size; ++column)
             values(row, column) = matrix[column][row];
     return result;
+}
+
+inline pybind11::array_t<float> Matrix4ToPython(const glm::mat4 &matrix)
+{
+    return MatrixToPython(matrix);
 }
 } // namespace infernux::binding

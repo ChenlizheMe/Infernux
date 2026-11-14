@@ -45,7 +45,10 @@ class DrawParameterBlock
     void SetVector3(const std::string &name, const glm::vec3 &value);
     void SetVector4(const std::string &name, const glm::vec4 &value);
     void SetColor(const std::string &name, const glm::vec4 &value);
+    void SetBool(const std::string &name, bool value);
+    void SetUInt(const std::string &name, uint32_t value);
     void SetInt(const std::string &name, int value);
+    void SetMatrix(const std::string &name, const glm::mat3 &value);
     void SetMatrix(const std::string &name, const glm::mat4 &value);
     void SetFloatArray(const std::string &name, const std::vector<float> &values);
     void SetVector4Array(const std::string &name, const std::vector<glm::vec4> &values);

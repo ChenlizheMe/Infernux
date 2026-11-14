@@ -1,6 +1,7 @@
 #include "InxPackPyBridge.h"
 #include "JsonPyBridge.h"
 #include "MaterialPropertyName.h"
+#include "MaterialPropertyPyBridge.h"
 #include "MatrixPyBridge.h"
 #include "ResourceMetaPyView.h"
 #include <array>
@@ -44,35 +45,11 @@ namespace infernux
 namespace
 {
 
-template <glm::length_t Size> glm::vec<Size, float> MaterialVectorFromPython(py::handle value)
-{
-    // Registered engine vectors and Python/NumPy sequences share one boundary.
-    if (!PySequence_Check(value.ptr()))
-        return py::cast<glm::vec<Size, float>>(value);
-    const auto sequence = py::reinterpret_borrow<py::sequence>(value);
-    if (py::len(sequence) != Size)
-        throw py::value_error("Material vector has a different declared component count");
-    glm::vec<Size, float> result;
-    for (glm::length_t index = 0; index < Size; ++index)
-        result[index] = py::cast<float>(sequence[index]);
-    return result;
-}
-
-std::vector<glm::vec4> MaterialVectorArrayFromPython(py::handle value)
-{
-    const auto sequence = py::reinterpret_borrow<py::sequence>(value);
-    std::vector<glm::vec4> result;
-    result.reserve(py::len(sequence));
-    for (const auto item : sequence)
-        result.push_back(MaterialVectorFromPython<4>(item));
-    return result;
-}
-
 /// Shared conversion from one reflected material property to its Python value.
 ///
 /// The single-property and bulk getters both use this so their two switches
 /// cannot drift apart. The returned shapes are a public binding contract:
-/// Mat4 is a flat 16-float list in GLM column-major order, Float4Array is a
+/// Matrices are flat column lists in GLM column-major order, Float4Array is a
 /// list of 4-tuples, and Color shares the Float4 branch.
 py::object PyValueFromMaterialProperty(const MaterialProperty &prop)
 {
@@ -88,16 +65,14 @@ py::object PyValueFromMaterialProperty(const MaterialProperty &prop)
         return py::cast(std::get<glm::vec4>(prop.value));
     case MaterialPropertyType::Int:
         return py::cast(std::get<int>(prop.value));
-    case MaterialPropertyType::Mat4: {
-        // mat4 is not registered as a pybind11 type: expose the GLM storage
-        // order (column-major) as 16 floats.
-        auto &matrix = std::get<glm::mat4>(prop.value);
-        py::list result;
-        const float *data = &matrix[0][0];
-        for (int index = 0; index < 16; ++index)
-            result.append(data[index]);
-        return result;
-    }
+    case MaterialPropertyType::Bool:
+        return py::bool_(std::get<bool>(prop.value));
+    case MaterialPropertyType::UInt:
+        return py::int_(std::get<uint32_t>(prop.value));
+    case MaterialPropertyType::Mat3:
+        return binding::MaterialMatrixColumnsToPython(std::get<glm::mat3>(prop.value));
+    case MaterialPropertyType::Mat4:
+        return binding::MaterialMatrixColumnsToPython(std::get<glm::mat4>(prop.value));
     case MaterialPropertyType::Texture2D:
         return py::cast(std::get<std::string>(prop.value));
     case MaterialPropertyType::FloatArray:
@@ -862,20 +837,29 @@ void RegisterResourceBindings(py::module_ &m)
                 mat.SetColor(name, color);
             },
             py::arg("name"), "Set a color property: set_color(name, r, g, b[, a]) or set_color(name, (r,g,b,a))")
+        .def("set_bool", bindings::MaterialNameMethod(&InxMaterial::SetBool), py::arg("name"), py::arg("value"))
+        .def("set_uint", bindings::MaterialNameMethod(&InxMaterial::SetUInt), py::arg("name"), py::arg("value"))
         .def("set_int", bindings::MaterialNameMethod(&InxMaterial::SetInt), py::arg("name"), py::arg("value"),
              "Set an int property")
         .def(
             "set_matrix",
             [](InxMaterial &mat, const bindings::MaterialPropertyName &name, py::handle value) {
-                mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix"));
+                const auto *property = mat.GetProperty(name);
+                if (property && property->type == MaterialPropertyType::Mat3)
+                    mat.SetMatrix(name, binding::MatrixFromPython<3>(value, "Material matrix"));
+                else if (property)
+                    mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix"));
+                else
+                    binding::ApplyMaterialMatrixFromPython(value,
+                                                           [&](const auto &matrix) { mat.SetMatrix(name, matrix); });
             },
-            py::arg("name"), py::arg("value"), "Set a mat4 from a [row, column] array")
+            py::arg("name"), py::arg("value"), "Set a mat3 or mat4 from a [row, column] array")
         .def("set_float_array", bindings::MaterialNameMethod(&InxMaterial::SetFloatArray), py::arg("name"),
              py::arg("values"), "Set a reflected float array property")
         .def(
             "set_vector4_array",
             [](InxMaterial &material, const bindings::MaterialPropertyName &name, py::sequence values) {
-                material.SetVector4Array(name, MaterialVectorArrayFromPython(values));
+                material.SetVector4Array(name, binding::MaterialVectorArrayFromPython(values));
             },
             py::arg("name"), py::arg("values"), "Set a reflected vec4 array property")
         .def("set_texture_guid", bindings::MaterialNameMethod(&InxMaterial::SetTextureGuid), py::arg("name"),
@@ -890,37 +874,9 @@ void RegisterResourceBindings(py::module_ &m)
                 const auto *property = mat.GetProperty(name);
                 if (!property)
                     throw py::key_error("Material has no declared property: " + name);
-                switch (property->type) {
-                case MaterialPropertyType::Float:
-                    mat.SetFloat(name, py::cast<float>(value));
-                    break;
-                case MaterialPropertyType::Int:
-                    mat.SetInt(name, py::cast<int>(value));
-                    break;
-                case MaterialPropertyType::Float2:
-                    mat.SetVector2(name, MaterialVectorFromPython<2>(value));
-                    break;
-                case MaterialPropertyType::Float3:
-                    mat.SetVector3(name, MaterialVectorFromPython<3>(value));
-                    break;
-                case MaterialPropertyType::Float4:
-                    mat.SetVector4(name, MaterialVectorFromPython<4>(value));
-                    break;
-                case MaterialPropertyType::Color:
-                    mat.SetColor(name, MaterialVectorFromPython<4>(value));
-                    break;
-                case MaterialPropertyType::Mat4:
-                    mat.SetMatrix(name, binding::Matrix4FromPython(value, "Material matrix"));
-                    break;
-                case MaterialPropertyType::FloatArray:
-                    mat.SetFloatArray(name, py::cast<std::vector<float>>(value));
-                    break;
-                case MaterialPropertyType::Float4Array:
-                    mat.SetVector4Array(name, MaterialVectorArrayFromPython(value));
-                    break;
-                case MaterialPropertyType::Texture2D:
+                if (property->type == MaterialPropertyType::Texture2D)
                     throw py::type_error("Use set_texture for a texture property: " + name);
-                }
+                mat.SetParameter(name, binding::MaterialPropertyFromPython(property->type, value));
             },
             py::arg("name"), py::arg("value"), "Set a value using its declared shader type")
         .def("clear_texture", bindings::MaterialNameMethod(&InxMaterial::ClearTexture), py::arg("name"),
@@ -970,6 +926,8 @@ void RegisterResourceBindings(py::module_ &m)
         // Typed access uses the same native declaration as setters and upload.
         .def("get_float", bindings::MaterialNameMethod(&InxMaterial::GetFloat), py::arg("name"))
         .def("get_int", bindings::MaterialNameMethod(&InxMaterial::GetInt), py::arg("name"))
+        .def("get_bool", bindings::MaterialNameMethod(&InxMaterial::GetBool), py::arg("name"))
+        .def("get_uint", bindings::MaterialNameMethod(&InxMaterial::GetUInt), py::arg("name"))
         .def("get_vector2", bindings::MaterialNameMethod(&InxMaterial::GetVector2), py::arg("name"))
         .def("get_vector3", bindings::MaterialNameMethod(&InxMaterial::GetVector3), py::arg("name"))
         .def("get_vector4", bindings::MaterialNameMethod(&InxMaterial::GetVector4), py::arg("name"))
@@ -978,6 +936,9 @@ void RegisterResourceBindings(py::module_ &m)
         .def(
             "get_matrix",
             [](const InxMaterial &material, const bindings::MaterialPropertyName &name) {
+                const auto *property = material.GetProperty(name);
+                if (property && property->type == MaterialPropertyType::Mat3)
+                    return binding::MatrixToPython(material.GetMatrix3(name));
                 return binding::Matrix4ToPython(material.GetMatrix(name));
             },
             py::arg("name"))

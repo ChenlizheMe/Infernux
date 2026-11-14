@@ -71,6 +71,9 @@ class MaterialUBO
     void SetVec3(const std::string &name, const glm::vec3 &value);
     void SetVec4(const std::string &name, const glm::vec4 &value);
     void SetInt(const std::string &name, int value);
+    void SetBool(const std::string &name, bool value);
+    void SetUInt(const std::string &name, uint32_t value);
+    void SetMat3(const std::string &name, const glm::mat3 &value);
     void SetMat4(const std::string &name, const glm::mat4 &value);
     void SetFloatArray(const std::string &name, const std::vector<float> &values);
     void SetVec4Array(const std::string &name, const std::vector<glm::vec4> &values);

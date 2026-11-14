@@ -208,7 +208,7 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, preview
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Material property renderer (JSON type system: ptype 0-7)
+#  Material property renderer (native material type system)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_asset_database():
@@ -323,15 +323,16 @@ def render_material_property(
     if ptype == 6:
         return _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
                                           reference_cache=reference_cache)
-    if ptype == 5:
+    if ptype in (5, 12):
+        size = 3 if ptype == 12 else 4
         values = list(value)
         changed = False
-        for row in range(4):
-            indices = [column * 4 + row for column in range(4)]
+        for row in range(size):
+            indices = [column * size + row for column in range(size)]
             before = [values[index] for index in indices]
-            metadata = FieldMetadata(prop_name, FieldType.VEC4, None)
+            metadata = FieldMetadata(prop_name, FieldType.VEC3 if size == 3 else FieldType.VEC4, None)
             after = draw_field_value(ctx, f"{wid}_{row}", f"{label} [{row + 1}]", metadata, before, plw)
-            after = [after.x, after.y, after.z, after.w] if after is not before else before
+            after = [getattr(after, axis) for axis in ("x", "y", "z", "w")[:size]] if after is not before else before
             if after != before:
                 for index, channel in zip(indices, after):
                     values[index] = channel
@@ -340,8 +341,19 @@ def render_material_property(
             prop["value"] = values
         return changed
 
+    if ptype == 11:
+        field_label(ctx, label, plw)
+        updated = int(ctx.input_uint(wid, int(value)))
+        if prop.get("range"):
+            lo, hi = prop["range"]
+            updated = max(int(lo), min(int(hi), updated))
+        if updated != value:
+            prop["value"] = updated
+            return True
+        return False
+
     field_types = {0: FieldType.FLOAT, 1: FieldType.VEC2, 2: FieldType.VEC3,
-                   3: FieldType.VEC4, 4: FieldType.INT, 7: FieldType.COLOR}
+                   3: FieldType.VEC4, 4: FieldType.INT, 7: FieldType.COLOR, 10: FieldType.BOOL}
     field_type = field_types[ptype]
     metadata = FieldMetadata(
         prop_name, field_type, None,
@@ -1458,22 +1470,13 @@ def _apply_native_prop(prop_name: str, value, ptype: int):
     """Forward a property change to the C++ material."""
     if not _native_mat:
         return
-    if ptype == 0:
-        _native_mat.set_float(prop_name, float(value))
-    elif ptype == 1:
-        _native_mat.set_vector2(prop_name, (float(value[0]), float(value[1])))
-    elif ptype == 2:
-        _native_mat.set_vector3(prop_name, (float(value[0]), float(value[1]), float(value[2])))
-    elif ptype == 3:
-        _native_mat.set_vector4(prop_name, (float(value[0]), float(value[1]), float(value[2]), float(value[3])))
-    elif ptype == 4:
-        _native_mat.set_int(prop_name, int(value))
-    elif ptype == 5:
-        _native_mat.set_matrix(prop_name, [float(v) for v in value])
-    elif ptype == 6:
+    if ptype == 6:
         _native_mat.set_texture_guid(prop_name, str(value))
-    elif ptype == 7:
-        _native_mat.set_color(prop_name, (float(value[0]), float(value[1]), float(value[2]), float(value[3])))
+        return
+    if ptype in (5, 12):
+        size = 3 if ptype == 12 else 4
+        value = [[value[column * size + row] for column in range(size)] for row in range(size)]
+    _native_mat.set_param(prop_name, value)
 
 
 class _InlineMaterialExecLayer:

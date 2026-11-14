@@ -31,13 +31,15 @@ Varying material_vertex(uint id : SV_VulkanVertexID)
 })";
 
 static constexpr const char *FragmentSource = R"(
-struct FragmentMaterial { float4 tint; float fragmentGain; row_major float4x4 colorTransform; float gains[2]; };
+struct FragmentMaterial { float4 tint; float fragmentGain; row_major float4x4 colorTransform; float gains[2]; bool enabled; uint marker; row_major float3x3 basis; };
 [[vk::binding(0, 0)]] ConstantBuffer<FragmentMaterial> MaterialProperties;
 [shader("fragment")]
 float4 material_fragment(float gain : TEXCOORD0) : SV_Target0
 {
     float3 color = mul(MaterialProperties.colorTransform, float4(MaterialProperties.tint.rgb, 0.0)).rgb;
-    return float4(color * MaterialProperties.fragmentGain * gain * MaterialProperties.gains[1], MaterialProperties.tint.a);
+    color = mul(MaterialProperties.basis, color);
+    float gate = MaterialProperties.enabled && MaterialProperties.marker == 0xfedcba98u ? 1.0 : 0.125;
+    return float4(color * MaterialProperties.fragmentGain * gain * MaterialProperties.gains[1] * gate, MaterialProperties.tint.a);
 })";
 
 int main(int argc, char **argv)
@@ -208,6 +210,10 @@ int main(int argc, char **argv)
         transform[2][0] = 0.1f;
         material.SetMatrix("colorTransform", transform);
         material.SetFloatArray("gains", {0.25f, 0.8f});
+        const glm::mat3 basis(glm::vec3(1.0f, 0.15f, 0.3f), glm::vec3(0.2f, 0.8f, 0.1f), glm::vec3(0.4f, 0.05f, 0.6f));
+        material.SetMatrix("basis", basis);
+        material.SetBool("enabled", index % 2 == 0);
+        material.SetUInt("marker", 0xfedcba98u);
         if (!publication)
             publication = descriptors.GetOrCreateDescriptorSet(material, program);
         else
@@ -230,8 +236,8 @@ int main(int argc, char **argv)
         assert(retirement.Collect(0) == 0 && allocator.Collect(0) == 0);
 
         auto &frame = frames[index];
-        const auto expected =
-            glm::vec3(transform * glm::vec4(glm::vec3(tint), 0.0f)) * fragmentGain * vertexGain * 0.8f;
+        const auto expected = basis * glm::vec3(transform * glm::vec4(glm::vec3(tint), 0.0f)) * fragmentGain *
+                              vertexGain * 0.8f * (index % 2 == 0 ? 1.0f : 0.125f);
         for (size_t channel = 0; channel < 3; ++channel)
             frame.expected[channel] = expected[channel];
         frame.expected[3] = 1;
