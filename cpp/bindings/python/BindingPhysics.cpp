@@ -555,7 +555,30 @@ py::dict GetContactEvents()
         }
     }
 
+    py::array_t<uint64_t> colliderIds({count, py::ssize_t(2)}), colliderGenerations({count, py::ssize_t(2)});
+    py::array_t<uint32_t> substeps(count), features(count);
+    auto colliders = colliderIds.mutable_unchecked<2>();
+    auto generations = colliderGenerations.mutable_unchecked<2>();
+    auto steps = substeps.mutable_unchecked<1>();
+    auto featureValues = features.mutable_unchecked<1>();
+    for (py::ssize_t index = 0; index < count; ++index) {
+        const auto &record = events[static_cast<size_t>(index)];
+        colliders(index, 0) = record.colliderIdA;
+        colliders(index, 1) = record.colliderIdB;
+        generations(index, 0) = record.colliderGenerationA;
+        generations(index, 1) = record.colliderGenerationB;
+        steps(index) = record.substep;
+        featureValues(index) = record.feature;
+    }
+    const auto identity = PhysicsWorld::Instance().GetContactStreamIdentity();
     py::dict result;
+    result["world_id"] = identity.worldId;
+    result["simulation_epoch"] = identity.simulationEpoch;
+    result["fixed_step_index"] = identity.fixedStepIndex;
+    result["collider_ids"] = std::move(colliderIds);
+    result["collider_generations"] = std::move(colliderGenerations);
+    result["substep"] = std::move(substeps);
+    result["feature"] = std::move(features);
     result["type"] = std::move(type);
     result["body_ids"] = std::move(bodyIds);
     result["sub_shape_ids"] = std::move(subShapeIds);
@@ -591,12 +614,40 @@ py::dict GetContactImpulses()
             impulseValues(index, axis) = impulse.impulse[axis];
         }
     }
+    py::array_t<uint64_t> colliderIds({count, py::ssize_t(2)}), colliderGenerations({count, py::ssize_t(2)});
+    py::array_t<uint32_t> substeps(count), features(count);
+    auto colliders = colliderIds.mutable_unchecked<2>();
+    auto generations = colliderGenerations.mutable_unchecked<2>();
+    auto steps = substeps.mutable_unchecked<1>();
+    auto featureValues = features.mutable_unchecked<1>();
+    for (py::ssize_t index = 0; index < count; ++index) {
+        const auto &record = impulses[static_cast<size_t>(index)];
+        colliders(index, 0) = record.colliderIdA;
+        colliders(index, 1) = record.colliderIdB;
+        generations(index, 0) = record.colliderGenerationA;
+        generations(index, 1) = record.colliderGenerationB;
+        steps(index) = record.substep;
+        featureValues(index) = record.feature;
+    }
+    py::array_t<uint32_t> pointIndices(count);
+    auto pointIndexValues = pointIndices.mutable_unchecked<1>();
+    for (py::ssize_t index = 0; index < count; ++index)
+        pointIndexValues(index) = impulses[static_cast<size_t>(index)].pointIndex;
+    const auto identity = PhysicsWorld::Instance().GetContactStreamIdentity();
     py::dict result;
+    result["world_id"] = identity.worldId;
+    result["simulation_epoch"] = identity.simulationEpoch;
+    result["fixed_step_index"] = identity.fixedStepIndex;
+    result["collider_ids"] = std::move(colliderIds);
+    result["collider_generations"] = std::move(colliderGenerations);
+    result["substep"] = std::move(substeps);
+    result["feature"] = std::move(features);
     result["body_ids"] = std::move(bodyIds);
     result["sub_shape_ids"] = std::move(subShapeIds);
     result["contact_point"] = std::move(points);
     result["contact_normal"] = std::move(normals);
     result["impulse"] = std::move(values);
+    result["point_index"] = std::move(pointIndices);
     return result;
 }
 

@@ -11,6 +11,7 @@
 #include "JoltGpuQueries.h"
 #include "JoltGpuScene.h"
 #include "PhysicsConstraintOwner.h"
+#include "PhysicsContactTypes.h"
 #include "PhysicsTargetReference.h"
 
 #include <array>
@@ -35,13 +36,13 @@ class FrameWorkOwner;
 class RuntimeWorld;
 struct PhysicsDomain;
 class JoltGpuRenderPoses;
+class JoltGpuContactReports;
 class Infernux;
 class JoltGpuScene;
 class JoltGpuQueries;
 class JoltGpuJoints;
 struct JoltGpuQueryResult;
 struct PreparedGpuActor;
-struct ContactEvent;
 namespace rhi
 {
 class ComputeHost;
@@ -201,21 +202,6 @@ struct PhysicsShapeState
     uint32_t bounceCombine = 0;
 };
 
-/// Actual velocity-solver impulse from the most recent fixed step. The
-/// impulse is applied to body B (its negative to A). Each solver midpoint
-/// retains its normal impulse and an equal share of manifold tangent friction.
-/// Independent torsional-friction angular impulses are not included. Opt-in.
-struct ContactImpulse
-{
-    uint32_t bodyIdA = 0xFFFFFFFF;
-    uint32_t bodyIdB = 0xFFFFFFFF;
-    uint32_t subShapeIdA = 0;
-    uint32_t subShapeIdB = 0;
-    glm::vec3 contactPoint{0.0f};
-    glm::vec3 contactNormal{0.0f};
-    glm::vec3 impulse{0.0f};
-};
-
 /**
  * @brief Result of a physics raycast (Unity: RaycastHit).
  */
@@ -347,6 +333,7 @@ class PhysicsWorld
     void SetContactImpulseStreamEnabled(bool enabled);
     [[nodiscard]] bool IsContactImpulseStreamEnabled() const noexcept;
     [[nodiscard]] const std::vector<ContactImpulse> &GetContactImpulses() const;
+    [[nodiscard]] ContactStreamIdentity GetContactStreamIdentity() const;
 
     // ========================================================================
     // Body management (published by PhysicsECSStore actors)
@@ -794,7 +781,9 @@ class PhysicsWorld
                          const std::function<void(PreparedGpuActor &)> &edit = {});
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(PhysicsDomain &domain, uint32_t bodyId,
                                                          PhysicsStateFields fields) const;
-    void CheckContactSupport(PhysicsDomain &domain) const;
+    [[nodiscard]] JoltGpuScene::ContactObserver
+    PrepareContactObserver(PhysicsDomain &domain,
+                           const std::shared_ptr<const JoltGpuScene::Publication> &publication) const;
     [[nodiscard]] JoltGpuControlWork
     PrepareStateBatch(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
                       const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
@@ -820,6 +809,7 @@ class PhysicsWorld
     std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;
     std::unique_ptr<JoltGpuRenderPoses> m_gpuRenderProgram;
+    std::unique_ptr<JoltGpuContactReports> m_gpuContactReports;
     std::unordered_set<PhysicsDomain *> m_domains;
 };
 

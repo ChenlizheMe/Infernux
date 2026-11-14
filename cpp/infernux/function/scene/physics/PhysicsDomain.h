@@ -2,6 +2,7 @@
 
 #include "JoltGpuRenderBindings.h"
 #include "JoltGpuRenderPoses.h"
+#include "PhysicsContactPublication.h"
 #include "PhysicsWorld.h"
 
 namespace infernux
@@ -45,7 +46,8 @@ struct PhysicsDomain final
     };
     std::unordered_map<uint32_t, CachedMotionState> requestedMotion;
     std::unordered_map<const JPH::Shape *, std::weak_ptr<const PhysicsShapeGeometry>> shapeGeometry;
-    bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false;
+    bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false, contactIncludeTriggers = true;
+    PhysicsContactPublication contacts;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;

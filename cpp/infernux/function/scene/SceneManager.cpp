@@ -2456,15 +2456,20 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
         // Mark before user collision callbacks: a Pause or delayed publication
         // must never repeat the solver or dispatch this batch a second time.
         world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Publication;
+        if (!validWorld())
+            return false;
+    }
+    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Publication) {
+        // The completed contact batch owns a receiver cursor advanced before
+        // user code. Pause resumes here; integration and delivered receivers
+        // are not replayed. Stop/epoch changes invalidate the retained batch.
         if (world.simulation.fixedHasPhysics) {
             const auto phaseStart = ProfileClock::now();
             m_lastFrameProfile.contactEvents += static_cast<double>(PhysicsWorld::Instance().DispatchContactEvents());
             m_lastFrameProfile.physicsEventsMs += ProfileMsSince(phaseStart);
         }
-        if (!validWorld())
+        if (!current() || !validWorld())
             return false;
-    }
-    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Publication) {
         if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsToTransform) || !validWorld())
             return false;
         if (world.simulation.fixedHasPhysics) {

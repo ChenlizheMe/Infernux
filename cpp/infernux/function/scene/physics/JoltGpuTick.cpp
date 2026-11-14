@@ -204,10 +204,12 @@ class JoltGpuTick::Impl
         CollidePairs,
         SetupContacts,
         SetupJoints,
+        ReportContactsBeforeVelocity,
         BuildConstraints,
         WarmJoints,
         SolveJointVelocity,
         SolveVelocity,
+        ReportContactsAfterVelocity,
         Integrate,
         SolveJointPosition,
         SolvePosition,
@@ -359,6 +361,12 @@ class JoltGpuTick::Impl
         batchNumericalKey.clear();
     }
 
+    static bool ProducerPhase(Phase phase)
+    {
+        return phase == Phase::Broadphase || phase == Phase::BuildConstraints ||
+               phase == Phase::ReportContactsBeforeVelocity || phase == Phase::ReportContactsAfterVelocity;
+    }
+
     StageSpan Span(Phase phase) const
     {
         using JPH::GPU::Domain;
@@ -394,6 +402,8 @@ class JoltGpuTick::Impl
             return {Stage::FinishTick, Domain::Bodies};
         case Phase::Broadphase:
         case Phase::BuildConstraints:
+        case Phase::ReportContactsBeforeVelocity:
+        case Phase::ReportContactsAfterVelocity:
         case Phase::Done:
             break;
         }
@@ -472,11 +482,19 @@ class JoltGpuTick::Impl
             next.phase = Phase::SetupJoints;
             break;
         case Phase::SetupJoints:
+            next.phase = control.prepareContactReport ? Phase::ReportContactsBeforeVelocity : Phase::BuildConstraints;
+            break;
+        case Phase::ReportContactsBeforeVelocity:
             next.phase = Phase::BuildConstraints;
+            break;
+        case Phase::ReportContactsAfterVelocity:
+            next.phase = Phase::Integrate;
             break;
         case Phase::BuildConstraints:
             next.iteration = 0;
-            next.phase = velocity ? Phase::WarmJoints : Phase::Integrate;
+            next.phase = velocity                       ? Phase::WarmJoints
+                         : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
+                                                        : Phase::Integrate;
             break;
         case Phase::WarmJoints:
             next.phase = Phase::SolveJointVelocity;
@@ -485,7 +503,9 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolveVelocity;
             break;
         case Phase::SolveVelocity:
-            next.phase = ++next.iteration < tickParameters.counts.w ? Phase::SolveJointVelocity : Phase::Integrate;
+            next.phase = ++next.iteration < tickParameters.counts.w ? Phase::SolveJointVelocity
+                         : control.prepareContactReport             ? Phase::ReportContactsAfterVelocity
+                                                                    : Phase::Integrate;
             break;
         case Phase::Integrate:
             next.iteration = 0;
@@ -511,7 +531,7 @@ class JoltGpuTick::Impl
     void Normalize(StageCursor &next) const
     {
         while (next.phase != Phase::Done) {
-            if (next.phase == Phase::Broadphase || next.phase == Phase::BuildConstraints)
+            if (ProducerPhase(next.phase))
                 return;
             const auto span = Span(next.phase);
             if (IslandDomain(span.domain)) {
@@ -785,8 +805,7 @@ class JoltGpuTick::Impl
             ready.reserve(MaxPacketUnits);
             long double planned = 0;
             bool cold = false;
-            while (ready.size() < MaxPacketUnits && next.phase != Phase::Done && next.phase != Phase::Broadphase &&
-                   next.phase != Phase::BuildConstraints) {
+            while (ready.size() < MaxPacketUnits && next.phase != Phase::Done && !ProducerPhase(next.phase)) {
                 const auto found = stageEstimates.find(Span(next.phase).stage);
                 // A mixed packet's measured average is only a planning proxy,
                 // never a measurement attributed to an individual stage.
@@ -1023,6 +1042,20 @@ class JoltGpuTick::Impl
                     broadphase.Prepare(storage, inputs, tickParameters,
                                        [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }),
                     PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::ReportContactsBeforeVelocity ||
+                stageCursor.phase == Phase::ReportContactsAfterVelocity) {
+                const auto phase = stageCursor.phase == Phase::ReportContactsBeforeVelocity
+                                       ? JoltGpuContactReportStage::BeforeVelocity
+                                       : JoltGpuContactReportStage::AfterVelocity;
+                SelectControlWork(control.prepareContactReport(storage, inputs, tickParameters, stageCursor.substep,
+                                                               phase,
+                                                               [this] {
+                                                                   NextSpan(stageCursor);
+                                                                   Normalize(stageCursor);
+                                                               }),
+                                  PacketKind::NumericalWork);
                 return true;
             }
             if (stageCursor.phase == Phase::BuildConstraints) {

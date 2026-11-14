@@ -14,7 +14,8 @@ enum class JoltGpuProgram
     Joints,
     RenderPoses,
     Broadphase,
-    Constraints
+    Constraints,
+    ContactReports
 };
 
 /// Builtin native programs, embedded from the pinned Jolt fork at build time.

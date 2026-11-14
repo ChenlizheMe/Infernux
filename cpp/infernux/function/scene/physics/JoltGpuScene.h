@@ -49,7 +49,7 @@ class JoltGpuScene final
     {
         PhysicsTargetReference surfaceTarget;
         uint64_t surfaceGameObjectId = 0;
-        uint64_t colliderId = 0;
+        uint64_t colliderId = 0, colliderGeneration = 0;
         uint32_t subShapeId = 0;
         uint32_t subShapeBits = 0;
         uint32_t memberIndex = 0;
@@ -77,6 +77,7 @@ class JoltGpuScene final
         PhysicsECSStore::RigidbodyHandle rigidbody;
         /// Full component ID captured with rigidbody, not a live pool lookup.
         uint64_t rigidbodyComponentId = 0;
+        PhysicsTargetReference bodyTarget;
         OwnerIdentity owner;
         std::vector<PublishedLeaf> leaves;
         JPH::GPU::Float4 rootCenterOfMass{};
@@ -124,6 +125,7 @@ class JoltGpuScene final
         uint32_t worldRow = 0, bodyBase = 0, bodyCount = 0, leafBase = 0, leafCount = 0, jointBase = 0, jointCount = 0;
         uint64_t simulationEpoch = 0;
         uint64_t fixedStepIndex = 0;
+        bool isFixedStep = false;
         std::shared_ptr<rhi::ComputeBuffer> bodyStates;
         std::shared_ptr<rhi::ComputeBuffer> bodyModels;
         std::shared_ptr<rhi::ComputeBuffer> shapeModels;
@@ -145,6 +147,14 @@ class JoltGpuScene final
     /// Synchronous host capture at successful tick writer admission, never on Busy.
     /// Must not submit work, drive the owner or reenter this scene.
     using ConsumerFactory = std::function<Consumer()>;
+    struct ContactObserver
+    {
+        decltype(JoltGpuTickControl::prepareContactReport) phase;
+        Consumer finish;
+    };
+    // Called once at successful writer admission, before accepted author
+    // capture. The publication directory is populated before the first phase.
+    using ContactObserverFactory = std::function<ContactObserver(const std::shared_ptr<const Publication> &)>;
 
     /// Owner bookkeeping on the exact failed writer; must not throw, drive, wait, or
     /// destroy this scene. Partition ownership retains the World until source retirement.
@@ -179,6 +189,10 @@ class JoltGpuScene final
     [[nodiscard]] const PublishedJoint &GetAuthoredJoint(uint64_t id) const;
     [[nodiscard]] BodyAllocation FindBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] PhysicsActorHandle FindActor(uint32_t bodyId) const noexcept;
+    /// Synchronous author metadata at writer admission, including reserved
+    /// actors whose first model is still pending. The visitor must not mutate
+    /// membership, drive this scene or retain references into its slot table.
+    void VisitActorHandles(const RuntimeWorld &world, const std::function<void(PhysicsActorHandle)> &visitor) const;
     [[nodiscard]] size_t GetBodyCount(const RuntimeWorld &world) const;
     [[nodiscard]] JPH::GPU::BodyModel GetAcceptedBodyModel(uint32_t bodyId) const;
     [[nodiscard]] uint32_t GetCapacity(const RuntimeWorld &world) const;
@@ -187,7 +201,8 @@ class JoltGpuScene final
 
     /// Busy preserves the complete per-world FIFO and logical tick identity.
     [[nodiscard]] bool TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
-                                    const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer = {});
+                                    const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer = {},
+                                    ContactObserverFactory prepareContacts = {});
     [[nodiscard]] bool TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer = {},
                                        Consumer finalConsumer = {});
     [[nodiscard]] bool TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &work);

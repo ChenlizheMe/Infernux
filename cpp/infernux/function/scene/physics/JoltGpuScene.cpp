@@ -693,6 +693,12 @@ class JoltGpuScene::Impl
         identity->actor = slot.actor;
         identity->rigidbody = actor.initialRigidbody;
         identity->rigidbodyComponentId = actor.rigidbodyComponentId;
+        auto &identityStore = PhysicsECSStore::Instance();
+        if (identityStore.IsValid(actor.initialRigidbody)) {
+            const auto *body = identityStore.GetRigidbody(actor.initialRigidbody).owner;
+            if (body && body->GetComponentID() == actor.rigidbodyComponentId)
+                identity->bodyTarget = PhysicsTargetReference(body);
+        }
         identity->owner = slot.owner;
         identity->rootCenterOfMass = rootCOM;
         identity->rootScale = actor.rootScale;
@@ -705,6 +711,7 @@ class JoltGpuScene::Impl
             PublishedLeaf publishedLeaf;
             publishedLeaf.surfaceTarget = PhysicsTargetReference(surface);
             publishedLeaf.colliderId = surface->GetComponentID();
+            publishedLeaf.colliderGeneration = surface->GetLifetimeGeneration();
             if (auto *object = surface->GetGameObject())
                 publishedLeaf.surfaceGameObjectId = object->GetID();
             publishedLeaf.subShapeId = leaf.subShapeID.GetValue();
@@ -1010,13 +1017,15 @@ class JoltGpuScene::Impl
     }
 
     JoltGpuTickControl PrepareControl(Partition &domain, uint64_t epoch, uint64_t step, bool controlOnly,
-                                      Consumer consumer, Consumer finalConsumer)
+                                      Consumer consumer, Consumer finalConsumer, ContactObserverFactory prepareContacts)
     {
         auto publication = std::make_shared<Publication>();
         publication->worldId = domain.id;
         publication->worldRow = domain.row;
         publication->simulationEpoch = epoch;
         publication->fixedStepIndex = step;
+        publication->isFixedStep = !controlOnly;
+        auto reports = prepareContacts ? prepareContacts(publication) : ContactObserver{};
         auto prefix = std::make_shared<std::vector<PrefixTarget>>();
         for (const auto index : domain.records)
             if (index != UINT32_MAX)
@@ -1031,6 +1040,13 @@ class JoltGpuScene::Impl
             publication->shapeModels = storage.Get(Resource::ShapeModels)->Freeze();
             publication->worlds = storage.Get(Resource::Worlds)->Freeze();
             publication->directory = CapturePublicationDirectory();
+            const auto &selected = storage.GetModel().worlds.at(domain.row);
+            publication->bodyBase = selected.bodies.x;
+            publication->bodyCount = selected.bodies.y;
+            publication->leafBase = selected.leaves.x;
+            publication->leafCount = selected.leaves.y;
+            publication->jointBase = selected.leaves.z;
+            publication->jointCount = selected.leaves.w;
             for (const auto &input : *prefix) {
                 const auto found = byId.find(input.bodyId);
                 if (found == byId.end() || !slots[found->second].accepted)
@@ -1067,12 +1083,14 @@ class JoltGpuScene::Impl
                 };
         JoltGpuTickControl control;
         control.commandProgram = &commands;
+        control.prepareContactReport = std::move(reports.phase);
         control.groups = std::move(domain.pending);
         domain.pendingSources.reset();
         domain.pendingCompletions.clear();
         const std::shared_ptr<const Publication> retained = publication;
         control.prepareFinalWork = [this, publication, retained, consumer = std::move(consumer),
-                                    finalConsumer = std::move(finalConsumer)](const JoltGpuTickOutput &output) {
+                                    finalConsumer = std::move(finalConsumer),
+                                    reportFinish = std::move(reports.finish)](const JoltGpuTickOutput &output) {
             publication->worldRow = output.worldRow;
             publication->bodyBase = output.bodyBase;
             publication->bodyCount = output.bodyCount;
@@ -1083,10 +1101,13 @@ class JoltGpuScene::Impl
             publication->bodyStates = output.states;
             publication->jointStream = output.joints;
             publication->jointLayout = output.jointLayout;
-            return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer] {
-                return Then(consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
-                    return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
-                });
+            return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer, reportFinish] {
+                return Then(
+                    reportFinish ? reportFinish(retained) : JoltGpuControlWork{}, [retained, consumer, finalConsumer] {
+                        return Then(consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
+                            return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
+                        });
+                    });
             });
         };
         candidate = std::move(publication);
@@ -1111,14 +1132,15 @@ class JoltGpuScene::Impl
 
     template <typename FinalConsumerFactory>
     bool TryBegin(Partition &domain, uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters *parameters,
-                  Consumer consumer, FinalConsumerFactory prepareFinalConsumer)
+                  Consumer consumer, FinalConsumerFactory prepareFinalConsumer,
+                  ContactObserverFactory prepareContacts = {})
     {
         Service();
         if (writer || domain.closed || !domain.admission)
             return false;
         auto finalConsumer = prepareFinalConsumer();
-        auto control =
-            PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer), std::move(finalConsumer));
+        auto control = PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer),
+                                      std::move(finalConsumer), std::move(prepareContacts));
         writer = &domain;
         writerKind = parameters ? WriterKind::Tick : WriterKind::Control;
         domain.status = JoltGpuTick::Status::Running;
@@ -1516,6 +1538,14 @@ PhysicsActorHandle JoltGpuScene::FindActor(uint32_t id) const noexcept
     return found == m_impl->byId.end() || FindBody(id).bodyId == InvalidBodyId ? PhysicsActorHandle{}
                                                                                : m_impl->slots[found->second].actor;
 }
+void JoltGpuScene::VisitActorHandles(const RuntimeWorld &world,
+                                     const std::function<void(PhysicsActorHandle)> &visitor) const
+{
+    const auto &domain = m_impl->Domain(world);
+    for (const auto index : domain.records)
+        if (index != UINT32_MAX)
+            visitor(m_impl->slots[index].actor);
+}
 size_t JoltGpuScene::GetBodyCount(const RuntimeWorld &world) const
 {
     if (!m_impl->domains.count(world.id))
@@ -1542,11 +1572,13 @@ bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
     return !domain.pending.empty() || (m_impl->writer == &domain && !m_impl->tick.AreControlInputsAccepted());
 }
 bool JoltGpuScene::TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
-                                const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer)
+                                const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer,
+                                ContactObserverFactory prepareContacts)
 {
-    return m_impl->TryBegin(m_impl->Domain(world), epoch, step, dt, &parameters, {}, [&prepareFinalConsumer] {
-        return prepareFinalConsumer ? prepareFinalConsumer() : Consumer{};
-    });
+    return m_impl->TryBegin(
+        m_impl->Domain(world), epoch, step, dt, &parameters, {},
+        [&prepareFinalConsumer] { return prepareFinalConsumer ? prepareFinalConsumer() : Consumer{}; },
+        std::move(prepareContacts));
 }
 bool JoltGpuScene::TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer, Consumer finalConsumer)
 {

@@ -14,6 +14,7 @@
 #include "../TagLayerManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
+#include "JoltGpuContactReports.h"
 #include "JoltGpuJoints.h"
 #include "JoltGpuProgramSources.h"
 #include "JoltGpuQueries.h"
@@ -431,6 +432,8 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         m_gpuQueries = std::move(queries);
         m_gpuJoints = std::move(joints);
         m_gpuRenderProgram = std::move(rendering);
+        m_gpuContactReports = std::make_unique<JoltGpuContactReports>(
+            *m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::ContactReports));
     }
     if (!m_gpuScene) {
         m_gpuScene = std::make_unique<JoltGpuScene>(
@@ -468,6 +471,7 @@ void PhysicsWorld::Shutdown()
         domain->rendering.bindings.Clear();
         domain->rendering.pending.reset();
         domain->rendering.ready.reset();
+        domain->contacts.Close();
         domain->lastPublication.reset();
         domain->requestedMotion.clear();
     }
@@ -480,6 +484,7 @@ void PhysicsWorld::Shutdown()
         domain->shapeGeometry.clear();
         domain->rendering.checkedKeys.reset();
     }
+    m_gpuContactReports.reset();
     m_gpuRenderProgram.reset();
     m_gpuQueries.reset();
     m_gpuJoints.reset();
@@ -511,22 +516,23 @@ uint32_t PhysicsWorld::GetDefaultQueryLayerMask()
 {
     return EngineConfig::Get().defaultQueryLayerMask;
 }
-void PhysicsWorld::CheckContactSupport(PhysicsDomain &domain) const
+JoltGpuScene::ContactObserver
+PhysicsWorld::PrepareContactObserver(PhysicsDomain &domain,
+                                     const std::shared_ptr<const JoltGpuScene::Publication> &publication) const
 {
-    bool requested = domain.contactEventStreamEnabled || domain.contactImpulseStreamEnabled;
-    PhysicsECSStore::Instance().ForEachAliveActor([&](const PhysicsActorData &actor) {
-        if (actor.runtimeWorld != &domain.owner || !actor.owner || actor.sceneSuspended ||
-            !actor.owner->IsActiveInHierarchy())
-            return;
-        for (const auto &c : actor.owner->GetAllComponents())
-            requested = requested || (c && c->WantsPhysicsCallbacks());
-        for (const auto *col : actor.colliders)
-            if (col && col->GetGameObject() != actor.owner)
-                for (const auto &c : col->GetGameObject()->GetAllComponents())
-                    requested = requested || (c && c->WantsPhysicsCallbacks());
-    });
-    if (requested)
-        Unsupported("collision/trigger events and impulse streams");
+    const WorldExecutionScope ownerScope(&domain.owner);
+    auto policy = PhysicsContactPublication::Capture(domain.owner, *m_gpuScene, domain.contactEventStreamEnabled,
+                                                     domain.contactIncludeTriggers, domain.contactImpulseStreamEnabled);
+    if (!policy.Requested())
+        return {}; // No report job, endpoint, upload or numerical readback.
+    auto pending = std::make_shared<PhysicsContactPublication::Pending>();
+    pending->policy = std::move(policy);
+    auto capture = m_gpuContactReports->Prepare(
+        publication, domain.admittedParameters->Get().solve.y, pending->policy.Flags(),
+        [pending](const JoltGpuScene::Publication &accepted) { return pending->policy.LeafInterest(accepted); });
+    pending->report = capture.result;
+    domain.contacts.pending = std::move(pending);
+    return {std::move(capture.phase), std::move(capture.finish)};
 }
 void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const
 {
@@ -534,6 +540,8 @@ void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalCh
     const auto &p = m_gpuScene->GetPublished(domain.owner);
     if (p && p.get() != domain.lastPublication.get()) {
         domain.lastPublication = p;
+        if (p->isFixedStep)
+            domain.contacts.Publish(p);
         if (numericalChange) {
             domain.queryGeneration.fetch_add(1, std::memory_order_release);
             domain.requestedMotion.clear();
@@ -631,6 +639,7 @@ void PhysicsWorld::RequireHealthyStep(PhysicsDomain &domain) const
 }
 void PhysicsWorld::FailStep(PhysicsDomain &domain) noexcept
 {
+    domain.contacts.pending.reset();
     domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Failed;
     domain.stepCompleted = false;
     if (m_gpuScene)
@@ -675,7 +684,6 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
         } else {
             if (!EnsureGpuReady(domain))
                 return false;
-            CheckContactSupport(domain);
             RefreshGpuSurfaces(domain);
             domain.stepEpoch = epoch;
             domain.stepIndex = index;
@@ -692,9 +700,12 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
                 domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::RetireControl;
             } else {
                 AdmissionScope admission(*m_gpuScene, domain.owner);
-                domain.solverStarted =
-                    m_gpuScene->TryBeginTick(domain.owner, epoch, index, dt, *domain.admittedParameters,
-                                             [this, &domain] { return PrepareRenderConsumer(domain, true); });
+                domain.solverStarted = m_gpuScene->TryBeginTick(
+                    domain.owner, epoch, index, dt, *domain.admittedParameters,
+                    [this, &domain] { return PrepareRenderConsumer(domain, true); },
+                    [this, &domain](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
+                        return PrepareContactObserver(domain, p);
+                    });
                 domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Solver;
             }
         }
@@ -724,7 +735,10 @@ bool PhysicsWorld::AdvanceFixedStep(PhysicsDomain &domain, bool synchronous)
                 } else {
                     domain.solverStarted = m_gpuScene->TryBeginTick(
                         domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime,
-                        *domain.admittedParameters, [this, &domain] { return PrepareRenderConsumer(domain, true); });
+                        *domain.admittedParameters, [this, &domain] { return PrepareRenderConsumer(domain, true); },
+                        [this, &domain](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
+                            return PrepareContactObserver(domain, p);
+                        });
                     domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Solver;
                 }
             }
@@ -742,10 +756,12 @@ bool PhysicsWorld::AdvanceFixedStep(PhysicsDomain &domain, bool synchronous)
                 continue;
             }
             if (!domain.solverStarted) {
-                if (!(domain.solverStarted =
-                          m_gpuScene->TryBeginTick(domain.owner, domain.stepEpoch, domain.stepIndex,
-                                                   domain.admittedDeltaTime, *domain.admittedParameters,
-                                                   [this, &domain] { return PrepareRenderConsumer(domain, true); }))) {
+                if (!(domain.solverStarted = m_gpuScene->TryBeginTick(
+                          domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime,
+                          *domain.admittedParameters, [this, &domain] { return PrepareRenderConsumer(domain, true); },
+                          [this, &domain](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
+                              return PrepareContactObserver(domain, p);
+                          }))) {
                     if (synchronous) {
                         DrainGpuSource(domain);
                         continue;
@@ -927,6 +943,7 @@ void PhysicsWorld::RefreshRenderPoses()
 void PhysicsWorld::CancelPendingStep() noexcept
 {
     auto &domain = CurrentDomain();
+    domain.contacts.Close();
     auto &world = domain.owner;
     if (m_gpuRenderProgram) {
         domain.rendering.bindings.Clear();
@@ -987,6 +1004,16 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
     if (domain.synchronousRead)
         throw std::logic_error("Physics query cannot reenter its synchronous source");
     FlagScope reading(domain.synchronousRead);
+    if (domain.contacts.dispatching) {
+        // User commands stay in the next author FIFO. Queries observe exactly
+        // the complete publication responsible for this callback batch.
+        const auto batch = domain.contacts.batch;
+        if (!batch || batch->publication->simulationEpoch != domain.owner.simulation.simulationEpoch)
+            throw std::logic_error("Contact query has no current completed publication");
+        FrameWorkOwner::Scope preparation(*m_gpuWork);
+        RunPreparedWork(domain, consumer ? consumer(batch->publication) : JoltGpuControlWork{});
+        return;
+    }
     try {
         // This also completes an earlier managed render-control before a new
         // query consumer or later author prefix can acquire the same tick.
@@ -1433,8 +1460,8 @@ void PhysicsWorld::RequireResetPhase() const
     auto &domain = CurrentDomain();
     RequireOwnerThread();
     RequireGpu(domain);
-    if (HasPendingStep())
-        throw std::logic_error("Physics reset requires a boundary between completed fixed steps");
+    if (HasPendingStep() || domain.contacts.dispatching)
+        throw std::logic_error("Physics reset requires a boundary outside contact delivery");
 }
 void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionState> &states)
 {
@@ -2080,43 +2107,53 @@ bool PhysicsWorld::HasRagdollAssembly(uint64_t) const
 {
     return false;
 }
-void PhysicsWorld::SetContactEventStreamEnabled(bool enabled, bool)
+void PhysicsWorld::SetContactEventStreamEnabled(bool enabled, bool includeTriggers)
 {
+    RequireOwnerThread();
     auto &domain = CurrentDomain();
-    if (enabled)
-        Unsupported("contact event stream");
-    domain.contactEventStreamEnabled = false;
+    domain.contactEventStreamEnabled = enabled;
+    domain.contactIncludeTriggers = includeTriggers;
 }
 void PhysicsWorld::SetContactImpulseStreamEnabled(bool enabled)
 {
-    auto &domain = CurrentDomain();
-    if (enabled)
-        Unsupported("contact impulse stream");
-    domain.contactImpulseStreamEnabled = false;
+    RequireOwnerThread();
+    CurrentDomain().contactImpulseStreamEnabled = enabled;
 }
 const std::vector<ContactEvent> &PhysicsWorld::GetContactEvents() const
 {
-    Unsupported("contact events");
+    RequireOwnerThread();
+    return CurrentDomain().contacts.Events();
 }
 const std::vector<ContactImpulse> &PhysicsWorld::GetContactImpulses() const
 {
-    Unsupported("contact impulses");
+    RequireOwnerThread();
+    return CurrentDomain().contacts.Impulses();
+}
+ContactStreamIdentity PhysicsWorld::GetContactStreamIdentity() const
+{
+    RequireOwnerThread();
+    const auto &batch = CurrentDomain().contacts.batch;
+    if (!batch)
+        return {};
+    const auto &p = *batch->publication;
+    return {p.worldId, p.simulationEpoch, p.fixedStepIndex};
 }
 size_t PhysicsWorld::DispatchContactEvents()
 {
+    RequireOwnerThread();
     auto &domain = CurrentDomain();
-    CheckContactSupport(domain);
-    return 0;
+    return domain.contacts.Dispatch(domain.owner);
 }
 void PhysicsWorld::RefreshBodyTriggerState(uint32_t id)
 {
     auto &domain = DomainForBody(id);
     RefreshGpuActor(domain, id);
 }
-void PhysicsWorld::InvalidateContactPairsForBody(uint32_t)
+void PhysicsWorld::InvalidateContactPairsForBody(uint32_t id)
 {
     RequireOwnerThread();
-} // No retained GPU pair cache yet.
+    DomainForBody(id).contacts.Invalidate(id);
+}
 bool PhysicsWorld::IsBodySensor(uint32_t id) const
 {
     auto &domain = DomainForBody(id);

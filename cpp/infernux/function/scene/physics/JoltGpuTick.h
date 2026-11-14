@@ -72,6 +72,12 @@ struct JoltGpuTickOutput
 
 /// Accepted through the tick's existing work source before solver inputs are
 /// captured: initialization, then each group's model, commands and deferred work.
+enum class JoltGpuContactReportStage
+{
+    BeforeVelocity,
+    AfterVelocity
+};
+
 struct JoltGpuTickControl
 {
     JoltGpuTickControl() = default;
@@ -83,6 +89,14 @@ struct JoltGpuTickControl
     // Required when any group has commands; must outlive control acceptance.
     JoltGpuBodyCommands *commandProgram = nullptr;
     std::vector<JoltGpuControlGroup> groups;
+    /// Opt-in producer only, using this tick's existing source and receipts.
+    /// Call done exactly once after all phase writers are accepted/completed
+    /// as required by their normal queue dependencies. Never submit or wait.
+    /// Geometry is captured before warm/solve; lambdas after velocity, before
+    /// integration. A missing producer preserves the ordinary stage path.
+    std::function<JoltGpuControlWork(const JoltGpuStorage &, const JoltGpuStepInputs &, const JPH::GPU::StepParams &,
+                                     uint32_t, JoltGpuContactReportStage, std::function<void()>)>
+        prepareContactReport;
     /// Prepare exactly once after every numerical writer is accepted, including
     /// for a control-only/empty world. The input is the compact selected-world
     /// output; its states are null for a zero-body range. All packets use this source's admission and

@@ -76,8 +76,34 @@ enum ContactEventInterest : uint8_t
     return 0;
 }
 
+struct ContactStreamIdentity
+{
+    uint64_t worldId = 0, simulationEpoch = 0, fixedStepIndex = 0;
+};
+
+/// Actual velocity-solver impulse from the most recent fixed step. The
+/// impulse is applied to body B (its negative to A). Each solver midpoint
+/// retains its normal impulse and an equal share of manifold tangent friction.
+/// Independent torsional-friction angular impulses are not included. Opt-in.
+struct ContactImpulse
+{
+    uint64_t worldId = 0, simulationEpoch = 0, fixedStepIndex = 0;
+    uint64_t colliderIdA = 0, colliderIdB = 0, colliderGenerationA = 0, colliderGenerationB = 0;
+    uint32_t substep = 0, feature = 0, pointIndex = 0;
+    uint32_t bodyIdA = 0xFFFFFFFF;
+    uint32_t bodyIdB = 0xFFFFFFFF;
+    uint32_t subShapeIdA = 0;
+    uint32_t subShapeIdB = 0;
+    glm::vec3 contactPoint{0.0f};
+    glm::vec3 contactNormal{0.0f};
+    glm::vec3 impulse{0.0f};
+};
+
 struct ContactEvent
 {
+    uint64_t worldId = 0, simulationEpoch = 0, fixedStepIndex = 0;
+    uint64_t colliderIdA = 0, colliderIdB = 0, colliderGenerationA = 0, colliderGenerationB = 0;
+    uint32_t substep = 0, feature = 0;
     ContactEventType type;
     uint32_t bodyIdA; ///< Opaque body identity for body A
     uint32_t bodyIdB; ///< Opaque body identity for body B

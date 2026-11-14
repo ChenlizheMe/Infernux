@@ -399,11 +399,11 @@ class Physics(metaclass=_PhysicsMeta):
     def set_contact_event_stream_enabled(enabled: bool = True, *, include_triggers: bool = False):
         """Enable the resolved fixed-step contact stream for custom solvers.
 
-        When enabled, :meth:`get_contact_events` exposes contact points,
-        normals, relative velocities, body IDs and sub-shape IDs from the
-        most recent completed physics step. The stream is opt-in so ordinary
-        projects pay no contact-event buffering cost. Call from setup before
-        the first fixed step; the event arrays are replaced on each step.
+        This setting belongs to the current World and applies at the next
+        admitted fixed step. It enables arrays independently of component
+        callbacks; ``include_triggers`` filters these arrays, not callbacks.
+        Without either a subscriber or an enabled stream, no GPU report
+        buffers, report dispatches or numerical readbacks are created.
         """
         _CppPhysics.set_contact_event_stream_enabled(bool(enabled), bool(include_triggers))
 
@@ -411,11 +411,17 @@ class Physics(metaclass=_PhysicsMeta):
     def get_contact_events():
         """Return resolved contacts from the most recent completed fixed step.
 
-        The result is a NumPy structure-of-arrays dictionary. ``type`` uses
+        The result contains NumPy columns plus integer batch metadata:
+        ``world_id``, ``simulation_epoch`` and ``fixed_step_index``. ``type`` uses
         the native event order: collision enter/stay/exit (0/1/2), then
-        trigger enter/stay/exit (3/4/5). This is a snapshot and contains no
-        solver impulse; custom solvers should aggregate their own feedback
-        and submit it through :meth:`apply_rigidbody_impulses`.
+        trigger enter/stay/exit (3/4/5). ``substep`` preserves transitions
+        within a fixed step. Body, Collider/generation and complete sub-shape
+        IDs identify the captured geometry; ``feature`` describes its primitive
+        contact feature.
+        Reading does not advance physics. An empty completed batch still has
+        metadata. Component callbacks aggregate sub-shapes by Collider pair.
+        This stream contains no solver impulse; use :meth:`get_contact_impulses`
+        for the solved response, including contacts with zero response.
         """
         return _CppPhysics.get_contact_events()
 
@@ -435,11 +441,13 @@ class Physics(metaclass=_PhysicsMeta):
     def get_contact_impulses():
         """Return actual solved contact impulses from the latest fixed step.
 
-        The result is a NumPy structure-of-arrays dictionary containing body
-        and sub-shape IDs, solver world midpoints/normals, and the impulse on
-        body B (its negative acts on A). Positions are frozen when velocity
-        constraints are built, before integration and position correction.
-        The snapshot is replaced by the next fixed step.
+        NumPy columns carry body, Collider/generation, complete sub-shape IDs,
+        ``substep``, ``feature``, ``point_index`` and solver midpoints/normals.
+        Integer World/epoch/fixed-step metadata identifies the entire batch.
+        Each impulse acts on body B (its negative acts on A). Geometry and
+        incoming relative velocities are captured before warm start; impulses
+        are read after the velocity solve, before integration or position
+        correction. Reading does not advance physics or flush queued commands.
         """
         return _CppPhysics.get_contact_impulses()
 
