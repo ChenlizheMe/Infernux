@@ -6,7 +6,6 @@
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
-#include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMetadata.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
@@ -57,9 +56,7 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
                     return std::string(bytes.begin(), bytes.end());
                 },
                 ShaderAuthorPhase::Program, {"vertex_" + stages.vertexKey, vertex->filePath, vertex->authorSourceText});
-            const auto compilation = std::make_shared<const ShaderCompilation>(
-                compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl},
-                                 false, prepared.sourceRanges));
+            const auto compilation = std::make_shared<const ShaderCompilation>(compiler.CompileAuthorProgram(prepared));
             result->program = std::make_shared<const ShaderProgramArtifact>(
                 CreateShaderAuthorMaterial(stages.fragmentKey, compilation, prepared.schema, stages.vertexKey));
         }
@@ -103,78 +100,68 @@ void ShaderLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::st
 // Internal helper — compile a shader file into a ShaderAsset
 // =============================================================================
 
-static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePath, const std::string &guid,
-                                                       AssetDatabase *adb)
+std::shared_ptr<ShaderAsset> ShaderLoader::CompileAuthorAsset(const ShaderSourceModule &source,
+                                                              const ShaderAuthorSource &prepared,
+                                                              const std::string &guid,
+                                                              std::vector<std::string> dependencies)
 {
-    if (const auto *kind = asset_formats::FindShaderSourceKind(filePath)) {
-        std::vector<char> bytes;
-        if (!adb->ReadFile(filePath, bytes))
-            throw std::runtime_error("GPU author source could not be read: " + filePath);
-        const std::string source(bytes.begin(), bytes.end());
-        auto &compiler = SlangCompiler::Get();
-        const ShaderSourceModule module{"asset_" + guid, filePath, source};
-        const auto prepared =
-            compiler.PrepareAuthorSource(module, [adb](const std::string &path) -> std::optional<std::string> {
-                std::vector<char> contents;
-                if (!adb->ReadFile(path, contents))
-                    return std::nullopt;
-                return std::string(contents.begin(), contents.end());
-            });
-        auto asset = std::make_shared<ShaderAsset>();
-        const auto meta = adb->GetMetaByGuid(guid);
-        asset->shaderId = meta->GetDataAs<std::string>("shader_id");
-        asset->shaderType = kind->stage;
-        asset->filePath = filePath;
-        asset->descriptor.shaderId = asset->shaderId;
-        asset->descriptor.isFragmentShader = kind->stage == "fragment";
-        asset->descriptor.isVertexShader = kind->stage == "vertex";
-        asset->descriptor.filePath = filePath;
-        asset->descriptor.fileExtension = kind->suffix;
-        asset->authoringSchema = prepared.schema;
-        asset->authorSourceText = source;
-        const auto schema = nlohmann::json::parse(prepared.schema);
-        const auto &info = schema.at("info");
-        asset->descriptor.hidden = info.at("hidden").get<bool>();
-        asset->renderMeta.cullMode = info.at("cull_mode");
-        asset->renderMeta.depthWrite = info.at("depth_write").is_null()     ? std::string{}
-                                       : info.at("depth_write").get<bool>() ? "on"
-                                                                            : "off";
-        asset->renderMeta.depthTest = info.at("depth_test");
-        asset->renderMeta.blend = info.at("blend");
-        asset->renderMeta.queue = info.at("render_queue");
-        asset->renderMeta.passTag = info.at("pass_tag");
-        asset->renderMeta.stencil = info.at("stencil");
-        asset->renderMeta.alphaClip = info.at("alpha_clip").is_null() ? std::string{} : info.at("alpha_clip").dump();
-        if (schema.at("domain") == "fullscreen")
-            asset->programDomain = ShaderProgramDomain::Fullscreen;
-        else if (schema.at("domain") == "particle")
-            asset->programDomain = ShaderProgramDomain::ParticleSprite;
-        else if (schema.at("domain") == "mesh" || schema.at("domain") == "vertex")
-            asset->programDomain = ShaderProgramDomain::Mesh;
-        for (const auto &library : prepared.libraries) {
-            if (!asset_formats::FindShaderSourceKind(library.path))
-                continue;
-            auto dependency = adb->GetGuidFromPath(library.path);
-            if (!dependency.empty())
-                asset->sourceDependencies.push_back(std::move(dependency));
-        }
-        auto program = std::make_shared<ShaderCompilation>(
-            compiler.Compile(prepared.source, prepared.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl},
-                             false, prepared.sourceRanges));
-        std::vector<std::pair<std::string, std::string>> inputs;
-        for (const auto &input : schema.at("inputs"))
-            inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
-        ApplyShaderAuthorInputs(*program, inputs);
-        asset->program = std::move(program);
-        if (schema.at("domain") == "mesh" || schema.at("domain") == "particle") {
-            asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(CreateShaderAuthorMaterial(
-                guid, asset->program, prepared.schema,
-                asset->programDomain == ShaderProgramDomain::ParticleSprite ? "" : infernux::kStandardVertexShaderId));
-        }
-        return asset;
+    const auto *kind = asset_formats::FindShaderSourceKind(source.path);
+    const auto schema = nlohmann::json::parse(prepared.schema);
+    const auto &info = schema.at("info");
+    auto asset = std::make_shared<ShaderAsset>();
+    asset->shaderId = info.at("shader_id");
+    asset->shaderType = kind->stage;
+    asset->filePath = source.path;
+    asset->descriptor.shaderId = asset->shaderId;
+    asset->descriptor.isFragmentShader = kind->stage == "fragment";
+    asset->descriptor.isVertexShader = kind->stage == "vertex";
+    asset->descriptor.filePath = source.path;
+    asset->descriptor.fileExtension = kind->suffix;
+    asset->descriptor.hidden = info.at("hidden").get<bool>();
+    asset->authoringSchema = prepared.schema;
+    asset->authorSourceText = source.source;
+    asset->renderMeta = ReadShaderAuthorRenderMeta(info);
+    if (schema.at("domain") == "fullscreen")
+        asset->programDomain = ShaderProgramDomain::Fullscreen;
+    else if (schema.at("domain") == "particle")
+        asset->programDomain = ShaderProgramDomain::ParticleSprite;
+    else if (schema.at("domain") == "mesh" || schema.at("domain") == "vertex")
+        asset->programDomain = ShaderProgramDomain::Mesh;
+    asset->sourceDependencies = std::move(dependencies);
+    asset->program = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(prepared));
+    if (schema.at("domain") == "mesh" || schema.at("domain") == "particle") {
+        asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(CreateShaderAuthorMaterial(
+            guid, asset->program, prepared.schema,
+            asset->programDomain == ShaderProgramDomain::ParticleSprite ? "" : kStandardVertexShaderId));
     }
+    return asset;
+}
 
-    throw std::invalid_argument("Shader assets use typed Python GPU source: " + filePath);
+static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePath, const std::string &guid,
+                                                       AssetDatabase *database)
+{
+    if (!asset_formats::FindShaderSourceKind(filePath))
+        throw std::invalid_argument("Shader assets use typed Python GPU source: " + filePath);
+    std::vector<char> bytes;
+    if (!database->ReadFile(filePath, bytes))
+        throw std::runtime_error("GPU author source could not be read: " + filePath);
+    const ShaderSourceModule source{"asset_" + guid, filePath, std::string(bytes.begin(), bytes.end())};
+    const auto prepared = SlangCompiler::Get().PrepareAuthorSource(
+        source, [database](const std::string &path) -> std::optional<std::string> {
+            std::vector<char> contents;
+            if (!database->ReadFile(path, contents))
+                return std::nullopt;
+            return std::string(contents.begin(), contents.end());
+        });
+    std::vector<std::string> dependencies;
+    for (const auto &library : prepared.libraries) {
+        if (!asset_formats::FindShaderSourceKind(library.path))
+            continue;
+        auto dependency = database->GetGuidFromPath(library.path);
+        if (!dependency.empty())
+            dependencies.push_back(std::move(dependency));
+    }
+    return ShaderLoader::CompileAuthorAsset(source, prepared, guid, std::move(dependencies));
 }
 
 // =============================================================================

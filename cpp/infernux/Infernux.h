@@ -493,6 +493,7 @@ class Infernux
 
     /// @brief Push a compiled ShaderAsset into the renderer (SPIR-V + variants + render meta).
     void RegisterShaderToRenderer(const struct ShaderAsset &asset);
+    void RetireShaderPreparations(const std::vector<std::string> &sourcePaths);
 
     struct LinkedShaderProgramPreparation
     {

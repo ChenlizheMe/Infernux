@@ -12,16 +12,19 @@ from infernux.core._shader_catalog import (
 
 # Only published material fields are cached here; discovery is core-owned.
 _shader_properties_cache_generation = -1
-_shader_properties_cache: dict[tuple[str, ...], list | None] = {}
+_shader_properties_cache: dict[tuple[str, ...], tuple[str, int, list | None]] = {}
 
 
 def _get_shader_properties_cached(reference, ext: str) -> list | None:
     """Resolve the imported GUID; only name-only references use the catalog.
 
     None means an unavailable stage, distinct from a valid empty schema.
-    Both are cached until the shader publication generation changes.
+    Native publication versions also invalidate fields when a scene worker
+    accepts a program without passing through the Python asset facade.
     """
     from infernux.engine.project_context import get_project_root
+    from infernux.lib import AssetRegistry
+    registry = AssetRegistry.instance()
     guid = str(reference.get("guid", "") or "").strip() if isinstance(reference, dict) else ""
     shader_id = shader_ref_id(reference)
     if not shader_id and isinstance(reference, dict):
@@ -32,17 +35,18 @@ def _get_shader_properties_cached(reference, ext: str) -> list | None:
         _shader_properties_cache.clear()
         _shader_properties_cache_generation = generation
     cache_key = (get_project_root() or "", "guid" if guid else "name", guid or shader_id, ext)
-    if cache_key in _shader_properties_cache:
-        return _shader_properties_cache[cache_key]
+    cached = _shader_properties_cache.get(cache_key)
+    if cached is not None and registry.get_asset_version(cached[0]) == cached[1]:
+        return cached[2]
+    database = registry.get_asset_database()
     if guid:
-        from infernux.lib import AssetRegistry
-        database = AssetRegistry.instance().get_asset_database()
         shader_path = database.get_path_from_guid(guid) if database else None
     else:
         shader_path = get_shader_file_path(shader_id, ext)
+    source_guid = guid or (database.get_guid_from_path(shader_path) if database and shader_path else "")
     props = (parse_shader_properties(shader_path)
              if shader_path and _matches_stage(shader_path, ext) else None)
-    _shader_properties_cache[cache_key] = props
+    _shader_properties_cache[cache_key] = (source_guid, registry.get_asset_version(source_guid), props)
     return props
 
 

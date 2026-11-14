@@ -8,6 +8,8 @@ namespace infernux
 struct ShaderAsset;
 struct ShaderMaterialPreparation;
 struct ShaderStagePair;
+struct ShaderSourceModule;
+struct ShaderAuthorSource;
 
 /**
  * @brief Runtime preparation and publication for GPU author assets.
@@ -21,6 +23,11 @@ struct ShaderStagePair;
 class ShaderLoader final : public IAssetLoader
 {
   public:
+    /// Worker-safe construction from an already frozen frontend snapshot.
+    [[nodiscard]] static std::shared_ptr<ShaderAsset> CompileAuthorAsset(const ShaderSourceModule &source,
+                                                                         const ShaderAuthorSource &prepared,
+                                                                         const std::string &guid,
+                                                                         std::vector<std::string> dependencies);
     [[nodiscard]] static std::shared_ptr<const ShaderMaterialPreparation>
     CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment, const std::shared_ptr<ShaderAsset> &vertex,
                            const ShaderStagePair &stages, AssetDatabase *database);

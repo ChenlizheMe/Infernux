@@ -70,6 +70,7 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
         m_shaderReloadSources.clear();
         for (const auto &root : roots)
             m_shaderReloadSources.push_back(database->GetPathFromGuid(root));
+        RetireShaderPreparations(m_shaderReloadSources);
 
         ShaderLoader loader;
         std::vector<std::pair<std::string, std::shared_ptr<ShaderAsset>>> candidates;

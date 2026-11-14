@@ -200,6 +200,10 @@ void RegisterShaderCompilerBindings(py::module_ &m)
             const auto path = database->GetPathFromGuid(guid);
             if (!asset_formats::FindShaderSourceKind(path))
                 throw std::invalid_argument("Asset has no static GPU author schema: " + guid);
+            // An accepted resident program owns its fields until the next
+            // publication. An unfinished disk edit cannot change that schema.
+            if (const auto resident = AssetRegistry::Instance().GetAsset<ShaderAsset>(guid))
+                return resident->authoringSchema;
             const auto reader = [database](const std::string &sourcePath) -> std::optional<std::string> {
                 std::vector<char> contents;
                 if (!database->ReadFile(sourcePath, contents))

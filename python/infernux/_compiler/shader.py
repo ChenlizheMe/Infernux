@@ -532,7 +532,7 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
     if source_extension(source_path) == ".shaderlib.py":
         graph = LibraryGraph(reader)
         owner = ShaderEmitter(source, source_path)
-        module = graph.load(Path(source_path), owner, ast.Constant(lineno=1, col_offset=0), source=source)
+        module = graph.load(Path(source_path), owner, ast.Constant(value=None, lineno=1, col_offset=0), source=source)
         schema = {"name": Path(source_path).name[:-len(".shaderlib.py")], "domain": "library",
                   "info": read_shader_info(source, source_path),
                   "parameters": [], "inputs": [],

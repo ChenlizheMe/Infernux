@@ -65,6 +65,9 @@ class SlangCompiler
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderAuthorSource
     PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader,
                         ShaderAuthorPhase phase = ShaderAuthorPhase::Program, const ShaderSourceModule &vertex = {});
+    /// Compile a frozen author snapshot with the same targets and logical input
+    /// contracts used by asset loading, material composition and scene workers.
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderCompilation CompileAuthorProgram(const ShaderAuthorSource &source);
 
     /// Libraries contain the frozen import/include closure with original source
     /// paths. Relative includes use those paths; built-in standard modules

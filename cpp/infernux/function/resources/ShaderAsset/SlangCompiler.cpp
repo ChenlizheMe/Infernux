@@ -1,7 +1,9 @@
 #include "SlangCompiler.h"
+#include "ShaderAuthorInputs.h"
 #include "SlangLayout.h"
 #include "SlangModuleFiles.h"
 
+#include <nlohmann/json.hpp>
 #include <slang-com-ptr.h>
 #include <slang.h>
 
@@ -208,6 +210,18 @@ ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &
     // Frontend work may acquire the host interpreter. Never hold a compiler
     // lock across that boundary; only the returned C++ snapshot enters Slang.
     return frontend(source, reader, phase, vertex);
+}
+
+ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source)
+{
+    auto result = Compile(source.source, source.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}, false,
+                          source.sourceRanges);
+    const auto schema = nlohmann::json::parse(source.schema);
+    std::vector<std::pair<std::string, std::string>> inputs;
+    for (const auto &input : schema.at("inputs"))
+        inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
+    ApplyShaderAuthorInputs(result, inputs);
+    return result;
 }
 
 ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,

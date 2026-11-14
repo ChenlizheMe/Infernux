@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SlangCompiler.h"
+#include <core/types/ShaderTypes.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetSource.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -8,6 +9,22 @@
 
 namespace infernux
 {
+inline ShaderRenderMeta ReadShaderAuthorRenderMeta(const nlohmann::json &info)
+{
+    ShaderRenderMeta result;
+    result.cullMode = info.at("cull_mode");
+    result.depthWrite = info.at("depth_write").is_null()     ? std::string{}
+                        : info.at("depth_write").get<bool>() ? "on"
+                                                             : "off";
+    result.depthTest = info.at("depth_test");
+    result.blend = info.at("blend");
+    result.queue = info.at("render_queue");
+    result.passTag = info.at("pass_tag");
+    result.stencil = info.at("stencil");
+    result.alphaClip = info.at("alpha_clip").is_null() ? std::string{} : info.at("alpha_clip").dump();
+    return result;
+}
+
 inline void CreateShaderAuthorMetadata(AssetSource &source, InxResourceMeta &metadata)
 {
     metadata.InitFromSource(source, ResourceType::Shader);
