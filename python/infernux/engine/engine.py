@@ -233,6 +233,7 @@ class Engine(WorkRuntime):
                 from infernux.renderstack import RenderStackPipeline
 
                 self.set_render_pipeline(RenderStackPipeline())
+                self._install_graphical_maintenance()
             self._cpu_range_accepting = True
         except BaseException:
             self.exit()
@@ -703,6 +704,9 @@ class Engine(WorkRuntime):
         if self._resources_manager and not self._resources_manager.is_running():
             self._resources_manager.start()
 
+        self._run_native_loop()
+
+    def _install_graphical_maintenance(self):
         # Install a pre-GUI callback so that DeferredTaskRunner steps
         # (which may mutate the scene via deserialize) execute BEFORE
         # any ImGui panel renders.  This prevents panels from accessing
@@ -792,8 +796,6 @@ class Engine(WorkRuntime):
                 if sfm is not None:
                     sfm.poll_deferred_load()
         self._engine.set_post_draw_callback(_post_draw_tick)
-
-        self._run_native_loop()
 
     def _run_native_loop(self):
         import signal
