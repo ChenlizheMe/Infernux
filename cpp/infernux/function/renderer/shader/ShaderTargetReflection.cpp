@@ -96,6 +96,19 @@ ReflectedImageDimension ImageDimension(rhi::TextureViewDimension dimension)
 }
 } // namespace
 
+void ShaderReflection::Clear()
+{
+    m_sampleRateShading = false;
+    m_uniformBuffers.clear();
+    m_sampledImages.clear();
+    m_storageBuffers.clear();
+    m_storageImages.clear();
+    m_unsupportedDescriptorResources.clear();
+    m_pushConstants.clear();
+    m_inputs.clear();
+    m_outputs.clear();
+}
+
 void ShaderReflection::LoadTargetLayout(const ShaderTargetCode &target, std::string_view entryPoint)
 {
     Clear();

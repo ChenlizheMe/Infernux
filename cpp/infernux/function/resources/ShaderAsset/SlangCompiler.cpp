@@ -169,7 +169,7 @@ struct SlangCompiler::Impl
     Impl()
     {
         CheckCompilation(slang::createGlobalSession(global.writeRef()), "initialize", nullptr);
-        version = global->getBuildTagString();
+        version = SLANG_COMPILER_ID;
     }
 };
 

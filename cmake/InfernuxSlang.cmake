@@ -7,11 +7,18 @@ set(INFERNUX_SLANG_VERSION "2026.21")
 get_filename_component(_infernux_slang_engine_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 if(INFERNUX_SLANG_ROOT)
+    # Read the SDK's own compiler identity; never infer it from the consumer's checkout.
+    unset(slang_DIR CACHE)
+    find_package(slang ${INFERNUX_SLANG_VERSION} EXACT CONFIG REQUIRED
+        PATHS "${INFERNUX_SLANG_ROOT}" "${INFERNUX_SLANG_ROOT}/cmake"
+              "${INFERNUX_SLANG_ROOT}/lib64/cmake/slang" NO_DEFAULT_PATH)
     if(EMSCRIPTEN)
         # Slang's prepared Wasm SDK exposes static archives, with the same
         # public C++ compilation API as the native shared library.
         add_library(infernux_slang_sdk INTERFACE)
         target_include_directories(infernux_slang_sdk INTERFACE "${INFERNUX_SLANG_ROOT}/include")
+        target_compile_definitions(infernux_slang_sdk INTERFACE
+            "SLANG_COMPILER_ID=\"${slang_COMPILER_ID}\"")
         target_link_libraries(infernux_slang_sdk INTERFACE "-Wl,--start-group"
             "${INFERNUX_SLANG_ROOT}/lib/libslang-compiler.a"
             "${INFERNUX_SLANG_ROOT}/lib/libcore.a"
@@ -24,12 +31,6 @@ if(INFERNUX_SLANG_ROOT)
             "${INFERNUX_SLANG_ROOT}/lib/liblz4.a" "-Wl,--end-group")
         set(INFERNUX_SLANG_TARGET infernux_slang_sdk)
     else()
-        # The requested SDK owns resolution, including after changing it in an
-        # existing build tree. Do not retain another SDK's cached package path.
-        unset(slang_DIR CACHE)
-        find_package(slang ${INFERNUX_SLANG_VERSION} EXACT CONFIG REQUIRED
-            PATHS "${INFERNUX_SLANG_ROOT}" "${INFERNUX_SLANG_ROOT}/cmake"
-                  "${INFERNUX_SLANG_ROOT}/lib64/cmake/slang" NO_DEFAULT_PATH)
         set(INFERNUX_SLANG_TARGET slang::slang)
     endif()
     set(INFERNUX_SLANG_NOTICES_DIR "${INFERNUX_SLANG_ROOT}/third-party-notices")

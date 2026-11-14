@@ -497,17 +497,4 @@ std::vector<uint32_t> ShaderReflection::GetUsedDescriptorSets() const
     return sets;
 }
 
-void ShaderReflection::Clear()
-{
-    m_sampleRateShading = false;
-    m_uniformBuffers.clear();
-    m_sampledImages.clear();
-    m_storageBuffers.clear();
-    m_storageImages.clear();
-    m_unsupportedDescriptorResources.clear();
-    m_pushConstants.clear();
-    m_inputs.clear();
-    m_outputs.clear();
-}
-
 } // namespace infernux
