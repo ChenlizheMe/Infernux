@@ -7,12 +7,31 @@
 #include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <array>
+#include <map>
 #include <memory>
 #include <optional>
 #include <vector>
 
 namespace infernux
 {
+// Native-only lifetime identity: (Collider A ID/generation, B ID/generation).
+// Canonical endpoint order is unsigned component ID, then generation.
+using PhysicsColliderPair = std::array<uint64_t, 4>;
+using PhysicsColliderPairs = std::vector<PhysicsColliderPair>;
+
+// One accepted policy prefix. The frozen GPU words contain canonical ID64
+// pairs only; full lifetimes remain here for retained-source Sweep admission.
+struct JoltGpuColliderPairs
+{
+    std::shared_ptr<const PhysicsColliderPairs> identities;
+    std::map<uint64_t, uint64_t> lifetimes;
+    std::vector<JPH::GPU::QueryRecordWord> words;
+    std::shared_ptr<rhi::ComputeBuffer> buffer;
+};
+struct JoltGpuColliderPairCapture
+{
+    std::shared_ptr<const JoltGpuColliderPairs> value;
+};
 
 /// Device records and immutable geometry for the first GPU rigid-body slice.
 /// No CPU PhysicsSystem or Jolt Body memory is uploaded through this interface.
@@ -265,6 +284,14 @@ class JoltGpuStepInputs
     }
     /// Original frozen author inputs, even while contact work overrides bindings.
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetCaptured(JPH::GPU::Resource resource) const;
+    void SetColliderPairs(std::shared_ptr<const JoltGpuColliderPairs> pairs)
+    {
+        m_colliderPairs = std::move(pairs);
+    }
+    [[nodiscard]] const std::shared_ptr<const JoltGpuColliderPairs> &GetColliderPairs() const
+    {
+        return m_colliderPairs;
+    }
     void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
     void ClearContacts() noexcept;
     [[nodiscard]] const std::shared_ptr<const JoltGpuContactWorkset> &GetContacts() const noexcept
@@ -289,6 +316,7 @@ class JoltGpuStepInputs
     JPH::GPU::StepParams m_parameters{};
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
+    std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.

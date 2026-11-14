@@ -16,6 +16,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -92,10 +93,91 @@ class JoltGpuScene::Impl
         std::shared_ptr<PhysicsTargetBatch> pendingSources;
         std::vector<TargetCompletion> pendingCompletions;
         std::shared_ptr<const Publication> published;
+        std::shared_ptr<const PhysicsColliderPairs> acceptedPairs = std::make_shared<const PhysicsColliderPairs>();
+        std::shared_ptr<const PhysicsColliderPairs> queuedPairs;
+        std::shared_ptr<const JoltGpuColliderPairs> pairCache;
         JoltGpuTick::Status status = JoltGpuTick::Status::Idle;
         uint64_t tickSerial = 0, controlSerial = 0, observedTick = 0, observedControl = 0;
         bool admission = true, closed = false, cleanup = false, retiring = false, retired = false;
     };
+
+    struct PairUpload : std::enable_shared_from_this<PairUpload>
+    {
+        Impl *scene;
+        Partition *domain;
+        std::shared_ptr<Publication> publication;
+        std::shared_ptr<JoltGpuColliderPairCapture> capture;
+        std::shared_ptr<JoltGpuColliderPairs> pairs;
+        uint32_t first = 0;
+        JoltGpuControlWork Next()
+        {
+            auto host = scene->storage.GetHost();
+            const uint64_t total = std::max<size_t>(1, pairs->words.size());
+            if (!pairs->buffer) {
+                const uint64_t bytes = total * sizeof(QueryRecordWord);
+                if (total > UINT32_MAX || !host.device.GetCapabilities().IsStorageBufferRangeValid(0, bytes))
+                    throw std::length_error("Collider pair table exceeds device range");
+                pairs->buffer =
+                    rhi::ComputeBuffer::TryCreatePrivate(host, {bytes / 4, rhi::ComputeScalarType::UInt32, 1});
+                if (!pairs->buffer)
+                    return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+            }
+            if (first == total) {
+                pairs->buffer = pairs->buffer->Freeze();
+                domain->pairCache = pairs;
+                publication->colliderPairs = pairs;
+                capture->value = pairs;
+                return {};
+            }
+            const uint32_t count = static_cast<uint32_t>(std::min<uint64_t>(2048, total - first));
+            std::vector<uint8_t> bytes(uint64_t(count) * sizeof(QueryRecordWord));
+            if (!pairs->words.empty())
+                std::memcpy(bytes.data(), pairs->words.data() + first, bytes.size());
+            auto packet = rhi::PrepareComputeBatch(
+                host, {{pairs->buffer, uint64_t(first) * sizeof(QueryRecordWord), std::move(bytes)}}, {}, {});
+            return {packet,
+                    [self = shared_from_this(), count] {
+                        self->first += count;
+                        return self->Next();
+                    },
+                    JoltGpuControlWork::ResumeAfter::Acceptance};
+        }
+    };
+
+    JoltGpuControlWork PrepareColliderPairs(Partition &domain, std::shared_ptr<Publication> publication,
+                                            std::shared_ptr<JoltGpuColliderPairCapture> capture)
+    {
+        if (domain.pairCache && domain.pairCache->identities == domain.acceptedPairs) {
+            publication->colliderPairs = domain.pairCache;
+            capture->value = domain.pairCache;
+            return {};
+        }
+        auto pairs = std::make_shared<JoltGpuColliderPairs>();
+        pairs->identities = domain.acceptedPairs;
+        pairs->words.reserve(pairs->identities->size());
+        for (const auto &pair : *pairs->identities) {
+            const auto insert = [&](uint64_t id, uint64_t generation) {
+                const auto [entry, added] = pairs->lifetimes.emplace(id, generation);
+                if (!added && entry->second != generation)
+                    throw std::logic_error("Collider policy contains two generations of one identity");
+            };
+            insert(pair[0], pair[1]);
+            insert(pair[2], pair[3]);
+            pairs->words.push_back({{static_cast<uint32_t>(pair[0]), static_cast<uint32_t>(pair[0] >> 32),
+                                     static_cast<uint32_t>(pair[2]), static_cast<uint32_t>(pair[2] >> 32)}});
+        }
+        std::sort(pairs->words.begin(), pairs->words.end(), [](const auto &a, const auto &b) {
+            return std::tie(a.value.y, a.value.x, a.value.w, a.value.z) <
+                   std::tie(b.value.y, b.value.x, b.value.w, b.value.z);
+        });
+        auto upload = std::make_shared<PairUpload>();
+        upload->scene = this;
+        upload->domain = &domain;
+        upload->publication = std::move(publication);
+        upload->capture = std::move(capture);
+        upload->pairs = std::move(pairs);
+        return upload->Next();
+    }
 
     struct Slot
     {
@@ -1020,6 +1102,7 @@ class JoltGpuScene::Impl
                                       Consumer consumer, Consumer finalConsumer, ContactObserverFactory prepareContacts)
     {
         auto publication = std::make_shared<Publication>();
+        auto pairCapture = std::make_shared<JoltGpuColliderPairCapture>();
         publication->worldId = domain.id;
         publication->worldRow = domain.row;
         publication->simulationEpoch = epoch;
@@ -1061,6 +1144,9 @@ class JoltGpuScene::Impl
             }
             return {};
         };
+        capture.prepareWork = [this, &domain, publication, pairCapture] {
+            return PrepareColliderPairs(domain, publication, pairCapture);
+        };
         domain.pending.push_back(std::move(capture));
         for (auto &group : domain.pending)
             if (!group.commands.empty())
@@ -1082,6 +1168,7 @@ class JoltGpuScene::Impl
                     }
                 };
         JoltGpuTickControl control;
+        control.colliderPairs = pairCapture;
         control.commandProgram = &commands;
         control.prepareContactReport = std::move(reports.phase);
         control.groups = std::move(domain.pending);
@@ -1205,6 +1292,7 @@ class JoltGpuScene::Impl
         if (writer == &domain && candidateCompletions)
             targets.insert(targets.end(), candidateCompletions->begin(), candidateCompletions->end());
         domain.pending.clear();
+        domain.queuedPairs.reset();
         domain.pendingSources.reset();
         domain.pendingCompletions.clear();
         for (const auto index : domain.records)
@@ -1481,6 +1569,18 @@ void JoltGpuScene::SetResident(uint32_t id, bool value, bool preserve)
 PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand value, const PhysicsTargetAuthor *author)
 {
     return m_impl->QueueCommand(id, value, author);
+}
+void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs)
+{
+    auto &domain = m_impl->Domain(world);
+    if (!pairs || domain.closed || domain.retiring)
+        throw std::invalid_argument("Collider policy requires its live registered World");
+    if (domain.queuedPairs == pairs)
+        return;
+    JoltGpuControlGroup group;
+    group.modelAccepted = [&domain, pairs]() noexcept { domain.acceptedPairs = pairs; };
+    domain.pending.push_back(std::move(group));
+    domain.queuedPairs = std::move(pairs);
 }
 void JoltGpuScene::StageRetire(uint32_t id)
 {

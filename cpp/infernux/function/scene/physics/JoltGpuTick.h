@@ -89,6 +89,7 @@ struct JoltGpuTickControl
     // Required when any group has commands; must outlive control acceptance.
     JoltGpuBodyCommands *commandProgram = nullptr;
     std::vector<JoltGpuControlGroup> groups;
+    std::shared_ptr<JoltGpuColliderPairCapture> colliderPairs;
     /// Opt-in producer only, using this tick's existing source and receipts.
     /// Call done exactly once after all phase writers are accepted/completed
     /// as required by their normal queue dependencies. Never submit or wait.

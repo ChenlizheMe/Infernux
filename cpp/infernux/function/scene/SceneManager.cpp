@@ -201,9 +201,12 @@ void SceneManager::RefreshThreadDefaultRandomStorage() const
 
 SceneManager::RuntimeWorldInitialSettings SceneManager::CaptureAuthoringWorldSettings() const
 {
-    return {m_authoringWorld->simulation.fixedTimeStep, m_authoringWorld->simulation.maxFixedDeltaTime,
-            m_authoringWorld->simulation.timeScale, m_authoringWorld->physics->gravity,
-            Random::CaptureStorage(*m_authoringWorld->random)};
+    return {m_authoringWorld->simulation.fixedTimeStep,
+            m_authoringWorld->simulation.maxFixedDeltaTime,
+            m_authoringWorld->simulation.timeScale,
+            m_authoringWorld->physics->gravity,
+            Random::CaptureStorage(*m_authoringWorld->random),
+            *PhysicsWorld::Instance().CaptureColliderPairs(*m_authoringWorld->physics, true)};
 }
 
 uint64_t SceneManager::BeginRuntimeWorldManagementSession()
@@ -256,6 +259,7 @@ RuntimeWorld &SceneManager::BeginReservedRuntimeWorld(const std::shared_ptr<Runt
     result.simulation.maxFixedDeltaTime = initial.maxFixedDeltaTime;
     result.simulation.timeScale = initial.timeScale;
     result.physics->gravity = initial.gravity;
+    result.physics->initialColliderPairs = initial.colliderPairs;
     Random::RestoreStorage(*result.random, initial.random);
     m_preparingWorlds.push_back(std::move(world));
     m_reservedWorlds.erase(it);
@@ -345,6 +349,7 @@ void SceneManager::RemapPreparingWorldReferences(uint64_t id, const std::unorder
             for (const auto &component : object->GetAllComponents())
                 component->RemapComponentReferences(components);
         }
+    PhysicsWorld::Instance().RestoreColliderPairs(*world, world->physics->initialColliderPairs, components);
 }
 
 bool SceneManager::PublishRuntimeWorld(uint64_t id)

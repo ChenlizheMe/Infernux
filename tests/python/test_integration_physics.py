@@ -10,6 +10,7 @@ from infernux.components import InxComponent
 from infernux.engine.scene_document_transaction import SceneDocumentTransaction
 from infernux.physics import Physics as PublicPhysics
 from infernux.timing import Time
+from tests.python.test_play_enter_recovery import authoring_project as _collider_authoring_project
 from infernux.lib import BoxCollider as NativeBoxCollider
 from infernux.lib import MeshCollider as NativeMeshCollider
 from infernux.lib import (
@@ -1921,7 +1922,95 @@ class TestLayerCollision:
 
 
 class TestColliderCollisionIgnore:
-    def test_exact_compound_member_can_be_ignored_and_restored(self, scene):
+    @pytest.fixture
+    def _normal_play(self, _collider_authoring_project):
+        """Use the existing normal editor/Play owner, scoped to this class."""
+        import time
+        from types import SimpleNamespace
+        from infernux.components.script_loader import load_and_create_component
+        from infernux.core.assets import AssetManager
+        from infernux.lib import _Infernux
+        from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+        from infernux.world import WorldManager
+
+        state = _collider_authoring_project
+        world = None
+        pipeline = RenderStackPipeline()
+        state.host._engine.set_render_pipeline(pipeline)
+
+        def until(predicate, label):
+            deadline = time.monotonic() + 60.0
+            while not predicate():
+                assert time.monotonic() < deadline, label
+                state.runner.tick()
+                state.host.tick(0.0)
+
+        def add_probe(owner):
+            path = state.path.parent / "ColliderIgnoreProbe.py"
+            path.write_text(
+                "from infernux.components import InxComponent\n"
+                "class ColliderIgnoreProbe(InxComponent):\n"
+                "    def awake(self): self.events = []\n"
+                "    def on_collision_enter(self, collision): self.events.append(collision)\n",
+                encoding="utf-8",
+            )
+            imported = AssetManager.import_asset(str(path), database=state.manager._asset_database)
+            assert imported.succeeded and imported.guid
+            probe = load_and_create_component(
+                str(path), state.manager._asset_database, "ColliderIgnoreProbe", script_guid=imported.guid
+            )
+            assert probe is not None
+            owner.add_py_component(probe)
+
+        def start():
+            nonlocal world
+            # Publish the final GUID Scene, including this test's actual setup.
+            state.path.write_text(state.scene.serialize_asset(), encoding="utf-8")
+            assert state.manager._asset_database.import_asset(str(state.path)).succeeded
+            state.manager.initial_world_count = 1
+            assert state.manager.enter_play_mode()
+
+            def ready():
+                if not state.manager.is_playing:
+                    return False
+                worlds = WorldManager.get_worlds()
+                assert all(value.state not in ("failed", "cancelled", "destroyed") for value in worlds)
+                return len(worlds) == 1 and worlds[0].is_ready
+
+            until(ready, "Normal Play world preparation timed out")
+            world, = WorldManager.get_worlds()
+            assert state.manager.pause()
+            with _Infernux._RuntimeWorldScope(world.id):
+                runtime = world.get_active_scene()
+                assert runtime is not state.scene
+                assert runtime.world_id != state.scene.world_id
+                return runtime
+
+        def frames(count):
+            # Preserve these tests' explicit 1/60-second simulation requests.
+            # Host opportunities only drain the admitted step; they add no time.
+            for _ in range(count):
+                state.native.step(1.0 / 60.0)
+                until(lambda: not state.native.is_stepping(),
+                      "Paused simulation frame did not complete")
+            with _Infernux._RuntimeWorldScope(world.id):
+                assert not state.native.fixed_step_pending
+                assert state.native.completed_fixed_step_index == state.native.published_fixed_step_index
+
+        try:
+            yield SimpleNamespace(start=start, frames=frames, add_probe=add_probe,
+                                  scope=lambda: _Infernux._RuntimeWorldScope(world.id))
+        finally:
+            try:
+                if state.manager.is_playing:
+                    assert state.manager.exit_play_mode()
+                    until(lambda: state.manager.is_edit_mode and not state.host._world_runtimes
+                          and state.host._runtime_world_session is None,
+                          "Normal Stop did not retire the runtime worlds")
+            finally:
+                state.host._engine.set_render_pipeline(None)
+
+    def test_exact_compound_member_can_be_ignored_and_restored(self, scene, _normal_play):
         compound = scene.create_game_object("CompoundGround")
         box = compound.add_component("BoxCollider")
         box.size = Vector3(2, 1, 2)
@@ -1936,31 +2025,33 @@ class TestColliderCollisionIgnore:
         Physics.ignore_collision(sphere, sphere_ball_collider)
         assert Physics.get_ignore_collision(sphere_ball_collider, sphere) is True
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(120)
+        box_ball.name = "BoxBall"
+        sphere_ball.name = "SphereBall"
+        author_box_id = box_ball.id
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            box_ball = runtime.find("BoxBall")
+            sphere_ball = runtime.find("SphereBall")
+            compound = runtime.find("CompoundGround")
+            assert box_ball is not None and sphere_ball is not None and compound is not None
+            assert box_ball.id != author_box_id
+            sphere = compound.get_component("SphereCollider")
+            sphere_body = sphere_ball.get_component("Rigidbody")
+            sphere_ball_collider = sphere_ball.get_component("SphereCollider")
+            assert Physics.get_ignore_collision(sphere_ball_collider, sphere) is True
+            _normal_play.frames(120)
 
-        assert box_ball.transform.position.y > 0.8
-        assert sphere_ball.transform.position.y < -3.0
+            assert box_ball.transform.position.y > 0.8
+            assert sphere_ball.transform.position.y < -3.0
 
-        sphere_body.position = Vector3(5, 3, 0)
-        sphere_body.velocity = Vector3(0, 0, 0)
-        Physics.ignore_collision(sphere_ball_collider, sphere, False)
-        assert Physics.get_ignore_collision(sphere, sphere_ball_collider) is False
-        _step_frames(120)
-        assert sphere_ball.transform.position.y > 1.3
+            sphere_body.position = Vector3(5, 3, 0)
+            sphere_body.velocity = Vector3(0, 0, 0)
+            Physics.ignore_collision(sphere_ball_collider, sphere, False)
+            assert Physics.get_ignore_collision(sphere, sphere_ball_collider) is False
+            _normal_play.frames(120)
+            assert sphere_ball.transform.position.y > 1.3
 
-    def test_joint_and_game_ignore_own_their_policies_independently(self, scene):
-        class CollisionProbe(InxComponent):
-            events = None
-
-            def awake(self):
-                self.events = []
-
-            def on_collision_enter(self, collision):
-                self.events.append(collision)
-
+    def test_joint_and_game_ignore_own_their_policies_independently(self, scene, _normal_play):
         support = scene.create_game_object("IgnoreSupport")
         support.transform.position = Vector3(0, 3, 0)
         support_body = support.add_component("Rigidbody")
@@ -1976,33 +2067,42 @@ class TestColliderCollisionIgnore:
         hinge.anchor = Vector3(-0.375, 0, 0)
         hinge.axis = Vector3(0, 0, 1)
         hinge.connected_body = support_body
-        probe = body.add_component(CollisionProbe)
+        _normal_play.add_probe(body)
 
         Physics.ignore_collision(support_collider, body_collider)
         # The public policy is idempotent; a repeated authoring write cannot
         # create hidden reference-count ownership.
         Physics.ignore_collision(body_collider, support_collider)
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(3)
-        assert probe.events == []
+        author_body_id = body.id
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            support = runtime.find("IgnoreSupport")
+            body = runtime.find("IgnoreDoor")
+            assert support is not None and body is not None
+            assert body.id != author_body_id
+            support_collider = support.get_component("BoxCollider")
+            body_collider = body.get_component("BoxCollider")
+            hinge = body.get_component("HingeJoint")
+            probe, = body.get_py_components()
+            assert type(probe).__module__.startswith("_infernux_runtime_")
+            _normal_play.frames(3)
+            assert probe.events == []
 
-        hinge.enable_collision = True
-        _step_frames(3)
-        assert probe.events == []
-        assert Physics.get_ignore_collision(support_collider, body_collider) is True
+            hinge.enable_collision = True
+            _normal_play.frames(3)
+            assert probe.events == []
+            assert Physics.get_ignore_collision(support_collider, body_collider) is True
 
-        Physics.ignore_collision(support_collider, body_collider, False)
-        _step_frames(3)
-        assert len(probe.events) == 1
+            Physics.ignore_collision(support_collider, body_collider, False)
+            _normal_play.frames(3)
+            assert len(probe.events) == 1
 
-        # Releasing an already released public policy remains an idempotent
-        # state assignment rather than an ownership error.
-        Physics.ignore_collision(support_collider, body_collider, False)
+            # Releasing an already released public policy remains an idempotent
+            # state assignment rather than an ownership error.
+            Physics.ignore_collision(support_collider, body_collider, False)
 
-    def test_destroyed_collider_does_not_transfer_policy_to_replacement(self, scene):
+    def test_destroyed_collider_does_not_transfer_policy_to_replacement(self, scene, _normal_play):
         first = scene.create_game_object("DestroyIgnored")
         first_collider = first.add_component("BoxCollider")
         second = scene.create_game_object("IgnorePeer")
@@ -2012,6 +2112,54 @@ class TestColliderCollisionIgnore:
         assert first.remove_component(first_collider) is True
         replacement = first.add_component("BoxCollider")
         assert Physics.get_ignore_collision(replacement, second_collider) is False
+
+        # Extend this existing case with the real retained-world release path.
+        # Insertion order deliberately invokes Rigidbody.OnDestroy first.
+        retained = scene.create_game_object("RetainedRBFirst")
+        retained.transform.position = Vector3(20, 0, 0)
+        retained_body = retained.add_component("Rigidbody")
+        retained_body.use_gravity = False
+        retained_collider = retained.add_component("BoxCollider")
+        Physics.ignore_collision(retained_collider, second_collider)
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            retained = runtime.find("RetainedRBFirst")
+            peer = runtime.find("IgnorePeer").get_component("BoxCollider")
+            retained_collider = retained.get_component("BoxCollider")
+            assert Physics.get_ignore_collision(retained_collider, peer) is True
+            _normal_play.frames(1)
+            empty = runtime.serialize_document()
+            empty["objects"] = []
+            empty["authoring_identity"] = {"objects": {}, "components": {}}
+            token = runtime._commit_document_retaining_world(empty)
+            assert token is not None and token.is_active
+            try:
+                assert runtime.find("RetainedRBFirst") is None
+                token.finalize()
+                assert not token.is_active
+                token.finalize()  # Already settled tokens are inert.
+            finally:
+                if token.is_active:
+                    assert token.rollback()
+
+            # Use only live replacement handles after finalization. A healthy
+            # next publication/normal Stop is the externally visible gate;
+            # no stale-pointer access or private policy counter is needed.
+            replacement = runtime.create_game_object("AfterFinalize")
+            replacement.transform.position = Vector3(10, 0, 0)
+            replacement_body = replacement.add_component("Rigidbody")
+            replacement_body.use_gravity = False
+            replacement_collider = replacement.add_component("BoxCollider")
+            peer_object = runtime.create_game_object("AfterFinalizePeer")
+            peer_object.transform.position = Vector3(14, 0, 0)
+            peer = peer_object.add_component("BoxCollider")
+            assert Physics.get_ignore_collision(replacement_collider, peer) is False
+            Physics.ignore_collision(replacement_collider, peer)
+            assert Physics.get_ignore_collision(replacement_collider, peer) is True
+            Physics.ignore_collision(replacement_collider, peer, False)
+            _normal_play.frames(1)
+            velocity = replacement_body.velocity
+            assert all(math.isfinite(value) for value in (velocity.x, velocity.y, velocity.z))
 
 
 class TestRaycastBatch:

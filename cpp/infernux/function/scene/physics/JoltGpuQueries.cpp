@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -241,10 +242,11 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
     const bool cast = query.meta.x == QueryShapeCast;
     const bool sweep = cast && (query.meta.w & QuerySweepPolicy);
     if ((!cast && query.meta.x > QueryPenetration) || query.meta.y > QueryAny ||
-        (query.meta.w & ~(QueryTargetCollider | QueryExcludeBody | (cast ? QuerySweepPolicy : 0u))) ||
-        (sweep && (query.meta.w & QueryTargetCollider)) || query.filter.y > 1 ||
-        (!sweep && (query.source.z || query.source.w)) || !Finite(query.positionMaximum) || !Finite(query.direction) ||
-        !Finite(query.rotation) || !Finite(query.geometry) || query.direction.w != 0)
+        (query.meta.w &
+         ~(QueryTargetCollider | QueryExcludeBody | (cast ? (QuerySweepPolicy | QuerySweepPairPolicy) : 0u))) ||
+        (sweep && (query.meta.w & QueryTargetCollider)) || ((query.meta.w & QuerySweepPairPolicy) && !sweep) ||
+        query.filter.y > 1 || (!sweep && (query.source.z || query.source.w)) || !Finite(query.positionMaximum) ||
+        !Finite(query.direction) || !Finite(query.rotation) || !Finite(query.geometry) || query.direction.w != 0)
         throw JoltGpuQueryRequestError("Jolt GPU query contains an invalid operation, filter or finite input record");
     if ((query.meta.w & QueryExcludeBody) ? (query.source.x < bodyBase || query.source.x - bodyBase >= bodyCount)
                                           : query.source.x != InvalidQueryBodySlot)
@@ -326,6 +328,40 @@ rhi::ComputeDispatchDesc ParticleDispatch(const std::shared_ptr<rhi::ComputeKern
     dispatch.proof = std::move(proof);
     return dispatch;
 }
+
+// The existing query identity stream also carries the immutable policy suffix.
+// Copy in ordinary bounded control work; prepare the reading dispatch only after
+// every destination interval has an accepted writer. No additional SSBO is used.
+struct QueryPolicyCopy : std::enable_shared_from_this<QueryPolicyCopy>
+{
+    explicit QueryPolicyCopy(const rhi::ComputeHost &value) : host(value)
+    {
+    }
+    rhi::ComputeHost host;
+    std::shared_ptr<rhi::ComputeBuffer> source, target;
+    std::vector<rhi::ComputeBufferUpdate> uploads;
+    std::function<JoltGpuControlWork()> ready;
+    uint32_t first = 0, count = 0, targetBase = 0;
+
+    JoltGpuControlWork Next()
+    {
+        if (first == count)
+            return ready();
+        const uint32_t words = std::min(2048u, count - first);
+        const uint64_t stride = sizeof(QueryRecordWord);
+        std::vector<rhi::ComputeBufferCopy> copies{
+            {source,
+             target,
+             {uint64_t(first) * stride, (uint64_t(targetBase) + first) * stride, uint64_t(words) * stride}}};
+        auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), {}, {}, std::move(copies));
+        return {packet,
+                [self = shared_from_this(), words] {
+                    self->first += words;
+                    return self->Next();
+                },
+                JoltGpuControlWork::ResumeAfter::Acceptance};
+    }
+};
 
 void RequireSuccess(uint32_t status)
 {
@@ -569,10 +605,21 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
                                       [](const auto &query) { return (query.meta.w & QuerySweepPolicy) != 0; });
     // Identity records are compact for this retained publication's world.
     // Author model/shape addresses and query result addresses remain global.
-    const uint64_t identityCount = uint64_t(bodyCount) + (hasSweep ? leafCount : 0u);
-    if (identityCount > std::numeric_limits<uint32_t>::max())
+    const bool hasPairPolicy = std::any_of(
+        queries.begin(), queries.end(), [](const auto &query) { return (query.meta.w & QuerySweepPairPolicy) != 0; });
+    const auto pairs = result->publication ? result->publication->colliderPairs : nullptr;
+    if (hasPairPolicy && !pairs)
+        throw JoltGpuQueryRequestError("GPU source sweep requires its retained collider policy");
+    const uint64_t pairCount64 = hasPairPolicy ? pairs->words.size() : 0;
+    const uint64_t identityPrefix = std::max<uint64_t>(1, uint64_t(bodyCount) + (hasSweep ? leafCount : 0u));
+    if (identityPrefix > UINT32_MAX || pairCount64 > UINT32_MAX - identityPrefix)
         throw JoltGpuQueryRequestError("Jolt GPU query identity words exceed device indexing");
-    std::vector<QueryBodyIdentity> identities(static_cast<size_t>(std::max(uint64_t(1), identityCount)));
+    const uint32_t pairCount = static_cast<uint32_t>(pairCount64);
+    if (pairCount &&
+        (!pairs->buffer || !pairs->buffer->IsFrozen() || !host.SharesServicesWith(pairs->buffer->GetHost()) ||
+         pairs->buffer->GetByteSize() != CheckedBytes(pairCount, sizeof(QueryRecordWord))))
+        throw JoltGpuQueryRequestError("GPU source sweep policy differs from its exact frozen generation");
+    std::vector<QueryBodyIdentity> identities(static_cast<size_t>(identityPrefix));
     identities.front().ids.x = InvalidQueryBodySlot;
     for (uint32_t local = 0; local < bodyCount; ++local) {
         const auto &actor = result->publication->directory->actors[bodyBase + local];
@@ -588,8 +635,10 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
             identities[bodyCount + local].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
         }
     }
-    upload(BodyIdentities, Bytes(identities.data(), identities.size()));
-    const QueryCastParams castParameters{{castIterationQuantum, bodyCount, 0, 0}};
+    allocate(BodyIdentities, identityPrefix + pairCount);
+    updates.push_back({buffers[BodyIdentities], 0, Bytes(identities.data(), identities.size())});
+    const QueryCastParams castParameters{
+        {castIterationQuantum, bodyCount, static_cast<uint32_t>(identityPrefix), pairCount}};
     upload(CastParameters, Bytes(&castParameters, 1));
     const QueryParams parameters{
         {result->queryCount, bodyBase, bodyCount, leafCount},
@@ -644,15 +693,30 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         result->spanReadbackIndex = static_cast<uint32_t>(reads.size());
         reads.push_back({result->spans, 0, CheckedBytes(result->queryCount, sizeof(QuerySpan))});
     }
-    auto batch = rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
-    result->summaryReadback = batch->Readback(0);
     std::vector<rhi::ComputeDispatchDesc> resume;
     if (hasCasts)
         resume = {dispatch(ResumeCasts), dispatch(Scan), dispatch(Compact)};
-    auto execution = std::make_shared<Execution>(
-        Execution{host, result, std::move(resume), batch, knownCount || readback == JoltGpuQueryReadback::Device});
-    JoltGpuControlWork work{batch, [execution]() { return Continue(execution); }};
-    return {std::move(result), std::move(work)};
+    auto copy = pairCount ? std::make_shared<QueryPolicyCopy>(host) : nullptr;
+    if (copy) {
+        copy->source = pairs->buffer;
+        copy->target = buffers[BodyIdentities];
+        copy->uploads = std::move(updates);
+        copy->count = pairCount;
+        copy->targetBase = static_cast<uint32_t>(identityPrefix);
+    }
+    auto ready = [host, result, updates = std::move(updates), dispatches = std::move(dispatches),
+                  reads = std::move(reads), resume = std::move(resume),
+                  payload = knownCount || readback == JoltGpuQueryReadback::Device]() mutable -> JoltGpuControlWork {
+        auto batch = rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+        result->summaryReadback = batch->Readback(0);
+        auto execution = std::make_shared<Execution>(Execution{host, result, std::move(resume), batch, payload});
+        return {batch, [execution]() { return Continue(execution); }};
+    };
+    if (copy) {
+        copy->ready = std::move(ready);
+        return {std::move(result), copy->Next()};
+    }
+    return {std::move(result), ready()};
 }
 
 JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_ptr<JoltGpuQueryResult>> &results,

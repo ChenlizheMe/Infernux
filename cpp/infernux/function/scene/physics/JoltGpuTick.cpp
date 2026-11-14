@@ -620,6 +620,7 @@ class JoltGpuTick::Impl
             inputs = reuseParameters ? parameterInput : JoltGpuStepInputs{};
             inputAccepted = (reuseParameters && !cpuForces) || !storage.GetBodyCount();
             inputs.SetSelection(actual);
+            inputs.SetColliderPairs(control.colliderPairs ? control.colliderPairs->value : nullptr);
             CaptureStageSpans();
             for (const auto resource :
                  {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels, JPH::GPU::Resource::Worlds})

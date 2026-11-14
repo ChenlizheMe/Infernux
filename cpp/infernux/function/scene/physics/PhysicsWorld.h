@@ -728,6 +728,15 @@ class PhysicsWorld
 
   private:
     friend class Infernux;
+    friend class SceneManager;
+    friend class Ragdoll;
+    [[nodiscard]] std::shared_ptr<const PhysicsColliderPairs> CaptureColliderPairs(PhysicsDomain &domain,
+                                                                                   bool userOnly = false) const;
+    void QueueColliderPairs(PhysicsDomain &domain) const;
+    void RestoreColliderPairs(RuntimeWorld &world, const PhysicsColliderPairs &source,
+                              const std::unordered_map<uint64_t, uint64_t> &remap);
+    void AcquireColliderPairOwner(Collider *a, Collider *b, const Component &owner);
+    void ReleaseColliderPairOwner(PhysicsDomain &domain, const std::array<uint64_t, 2> &ownerIdentity);
     /// Engine-owned services, borrowed until Shutdown; no external host lease.
     void BindGpuServices(std::unique_ptr<rhi::ComputeHost> host, FrameWorkOwner *work);
     friend class SkeletonPhysicsPoseRead;
@@ -769,7 +778,8 @@ class PhysicsWorld
     void RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(PhysicsDomain &domain,
                                                                const std::vector<JPH::GPU::QueryInput> &requests,
-                                                               uint64_t sweepColliderId = 0) const;
+                                                               uint64_t sweepColliderId = 0,
+                                                               uint64_t sweepColliderGeneration = 0) const;
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(PhysicsDomain &domain,
                                                                        const JPH::GPU::QueryInput &request,

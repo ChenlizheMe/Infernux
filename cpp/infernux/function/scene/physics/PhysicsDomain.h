@@ -4,6 +4,8 @@
 #include "JoltGpuRenderPoses.h"
 #include "PhysicsContactPublication.h"
 #include "PhysicsWorld.h"
+#include <map>
+#include <set>
 
 namespace infernux
 {
@@ -46,6 +48,14 @@ struct PhysicsDomain final
     };
     std::unordered_map<uint32_t, CachedMotionState> requestedMotion;
     std::unordered_map<const JPH::Shape *, std::weak_ptr<const PhysicsShapeGeometry>> shapeGeometry;
+    struct ColliderPairPolicy
+    {
+        bool user = false;
+        std::set<std::array<uint64_t, 2>> owners;
+    };
+    std::map<PhysicsColliderPair, ColliderPairPolicy> colliderPairs;
+    std::shared_ptr<const PhysicsColliderPairs> colliderPairSnapshot, queuedColliderPairs;
+    PhysicsColliderPairs initialColliderPairs;
     bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false, contactIncludeTriggers = true;
     PhysicsContactPublication contacts;
     struct RenderState

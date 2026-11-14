@@ -415,6 +415,7 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         domain.lastPublication.reset();
         domain.requestedMotion.clear();
         domain.gpuCancelled = false;
+        domain.queuedColliderPairs.reset();
     }
     if (!m_gpuPrograms) {
         auto p = std::make_unique<CompiledGpuPrograms>();
@@ -451,6 +452,7 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         return false;
     domain.recreateActors.reserve(m_gpuScene->GetCapacity(domain.owner));
     m_domains.insert(&domain);
+    QueueColliderPairs(domain);
     auto &store = PhysicsECSStore::Instance();
     for (const auto handle : domain.recreateActors)
         if (store.IsValid(handle) && store.GetActor(handle).bodyId == UINT32_MAX)
@@ -473,6 +475,7 @@ void PhysicsWorld::Shutdown()
         domain->rendering.ready.reset();
         domain->contacts.Close();
         domain->lastPublication.reset();
+        domain->queuedColliderPairs.reset();
         domain->requestedMotion.clear();
     }
     m_gpuScene.reset(); // Whole-engine teardown after all logical worlds stop.
@@ -844,6 +847,7 @@ bool PhysicsWorld::BeginGpuControl(PhysicsDomain &domain, bool numericalChange,
                                    const JoltGpuScene::Consumer &consumer) const
 {
     RequireGpu(domain);
+    numericalChange = numericalChange || m_gpuScene->HasPendingControl(domain.owner);
     AdmissionScope admission(*m_gpuScene, domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
     auto rendering = PrepareRenderConsumer(domain, numericalChange);
@@ -1037,8 +1041,10 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
     }
 }
 
-std::shared_ptr<JoltGpuQueryResult>
-PhysicsWorld::RunQuery(PhysicsDomain &domain, const std::vector<QueryInput> &requests, uint64_t sweepColliderId) const
+std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunQuery(PhysicsDomain &domain,
+                                                           const std::vector<QueryInput> &requests,
+                                                           uint64_t sweepColliderId,
+                                                           uint64_t sweepColliderGeneration) const
 {
     JoltGpuPreparedQuery prepared;
     std::exception_ptr requestError;
@@ -1049,6 +1055,13 @@ PhysicsWorld::RunQuery(PhysicsDomain &domain, const std::vector<QueryInput> &req
                 std::vector<QueryInput> sweepInputs;
                 if (sweepColliderId) {
                     sweepInputs = requests;
+                    if (publication->colliderPairs) {
+                        const auto found = publication->colliderPairs->lifetimes.find(sweepColliderId);
+                        if (found != publication->colliderPairs->lifetimes.end() &&
+                            found->second == sweepColliderGeneration)
+                            for (auto &input : sweepInputs)
+                                input.meta.w |= QuerySweepPairPolicy;
+                    }
                     // Only this accepted publication can name the source slot.
                     // An unregistered Collider still excludes its GameObject.
                     for (const auto &actor : publication->directory->actors) {
@@ -2167,17 +2180,166 @@ bool PhysicsWorld::IsBodySensor(uint32_t id) const
     return actor && !actor->leaves.empty() &&
            std::all_of(actor->leaves.begin(), actor->leaves.end(), [](const auto &leaf) { return leaf.sensor; });
 }
-void PhysicsWorld::SetColliderPairIgnored(Collider *, Collider *, bool)
+std::shared_ptr<const PhysicsColliderPairs> PhysicsWorld::CaptureColliderPairs(PhysicsDomain &domain,
+                                                                               bool userOnly) const
 {
-    Unsupported("per-Collider collision suppression");
+    if (!userOnly && domain.colliderPairSnapshot)
+        return domain.colliderPairSnapshot;
+    auto pairs = std::make_shared<PhysicsColliderPairs>();
+    pairs->reserve(domain.colliderPairs.size());
+    for (const auto &[key, value] : domain.colliderPairs)
+        if (userOnly ? value.user : (value.user || !value.owners.empty()))
+            pairs->push_back(key);
+    if (!userOnly)
+        domain.colliderPairSnapshot = pairs;
+    return pairs;
 }
-bool PhysicsWorld::GetColliderPairIgnored(const Collider *, const Collider *) const
+void PhysicsWorld::QueueColliderPairs(PhysicsDomain &domain) const
 {
-    Unsupported("per-Collider collision suppression");
+    if (!m_gpuScene || !m_domains.count(&domain) || domain.gpuCancelled || domain.retiring)
+        return;
+    const auto pairs = CaptureColliderPairs(domain);
+    if (domain.queuedColliderPairs == pairs)
+        return;
+    m_gpuScene->SetColliderPairs(domain.owner, pairs);
+    domain.queuedColliderPairs = pairs;
 }
-void PhysicsWorld::RemoveIgnoredPairsForCollider(const Collider *)
+void PhysicsWorld::SetColliderPairIgnored(Collider *a, Collider *b, bool ignored)
 {
-} // No suppression resource can be created yet.
+    RequireOwnerThread();
+    if (!a || !b || a == b || a->IsDestroyed() || b->IsDestroyed() || a->IsBeingDestroyed() || b->IsBeingDestroyed())
+        throw std::invalid_argument("Collision policy requires two distinct live Colliders");
+    auto &domain = DomainForComponent(*a);
+    if (&domain != &DomainForComponent(*b) || domain.retiring)
+        throw std::invalid_argument("Collision policy endpoints must belong to one live RuntimeWorld");
+    auto first = std::make_pair(a->GetComponentID(), a->GetLifetimeGeneration());
+    auto second = std::make_pair(b->GetComponentID(), b->GetLifetimeGeneration());
+    if (second < first)
+        std::swap(first, second);
+    const PhysicsColliderPair key{first.first, first.second, second.first, second.second};
+    const auto found = domain.colliderPairs.find(key);
+    if ((found != domain.colliderPairs.end() && found->second.user) == ignored)
+        return;
+    auto &policy = domain.colliderPairs[key];
+    const bool wasIgnored = policy.user || !policy.owners.empty();
+    policy.user = ignored;
+    if (ignored) {
+        auto &store = PhysicsECSStore::Instance();
+        store.GetCollider(a->GetECSHandle()).collisionPolicyWorld = &domain.owner;
+        store.GetCollider(b->GetECSHandle()).collisionPolicyWorld = &domain.owner;
+    }
+    const bool isIgnored = policy.user || !policy.owners.empty();
+    if (!isIgnored)
+        domain.colliderPairs.erase(key);
+    if (wasIgnored != isIgnored)
+        domain.colliderPairSnapshot.reset();
+}
+void PhysicsWorld::AcquireColliderPairOwner(Collider *a, Collider *b, const Component &owner)
+{
+    RequireOwnerThread();
+    if (!a || !b || a == b || a->IsDestroyed() || b->IsDestroyed() || a->IsBeingDestroyed() || b->IsBeingDestroyed())
+        throw std::invalid_argument("Collision policy requires two distinct live Colliders");
+    auto &domain = DomainForComponent(*a);
+    if (&domain != &DomainForComponent(*b) || domain.retiring)
+        throw std::invalid_argument("Collision policy endpoints must belong to one live RuntimeWorld");
+    if (owner.IsDestroyed() || owner.IsBeingDestroyed() || &DomainForComponent(owner) != &domain)
+        throw std::invalid_argument("Collision policy owner must be live in the endpoint RuntimeWorld");
+    auto first = std::make_pair(a->GetComponentID(), a->GetLifetimeGeneration());
+    auto second = std::make_pair(b->GetComponentID(), b->GetLifetimeGeneration());
+    if (second < first)
+        std::swap(first, second);
+    const PhysicsColliderPair key{first.first, first.second, second.first, second.second};
+    const std::array<uint64_t, 2> token{owner.GetComponentID(), owner.GetLifetimeGeneration()};
+    auto &policy = domain.colliderPairs[key];
+    const bool wasIgnored = policy.user || !policy.owners.empty();
+    if (!policy.owners.insert(token).second)
+        return;
+    auto &store = PhysicsECSStore::Instance();
+    store.GetCollider(a->GetECSHandle()).collisionPolicyWorld = &domain.owner;
+    store.GetCollider(b->GetECSHandle()).collisionPolicyWorld = &domain.owner;
+    if (!wasIgnored)
+        domain.colliderPairSnapshot.reset();
+}
+void PhysicsWorld::ReleaseColliderPairOwner(PhysicsDomain &domain, const std::array<uint64_t, 2> &ownerIdentity)
+{
+    RequireOwnerThread();
+    // The assembly owner retains this domain and lifetime token from acquisition.
+    // Teardown need not retain a Component, Scene link, or either endpoint.
+    bool changed = false;
+    for (auto it = domain.colliderPairs.begin(); it != domain.colliderPairs.end();) {
+        auto &policy = it->second;
+        if (!policy.owners.erase(ownerIdentity)) {
+            ++it;
+            continue;
+        }
+        if (!policy.user && policy.owners.empty()) {
+            it = domain.colliderPairs.erase(it);
+            changed = true;
+        } else
+            ++it;
+    }
+    if (changed)
+        domain.colliderPairSnapshot.reset();
+}
+bool PhysicsWorld::GetColliderPairIgnored(const Collider *a, const Collider *b) const
+{
+    RequireOwnerThread();
+    if (!a || !b || a == b || a->IsDestroyed() || b->IsDestroyed() || a->IsBeingDestroyed() || b->IsBeingDestroyed())
+        throw std::invalid_argument("Collision policy requires two distinct live Colliders");
+    auto &domain = DomainForComponent(*a);
+    if (&domain != &DomainForComponent(*b))
+        throw std::invalid_argument("Collision policy endpoints must belong to one RuntimeWorld");
+    auto first = std::make_pair(a->GetComponentID(), a->GetLifetimeGeneration());
+    auto second = std::make_pair(b->GetComponentID(), b->GetLifetimeGeneration());
+    if (second < first)
+        std::swap(first, second);
+    const auto found = domain.colliderPairs.find({first.first, first.second, second.first, second.second});
+    return found != domain.colliderPairs.end() && (found->second.user || !found->second.owners.empty());
+}
+void PhysicsWorld::RemoveIgnoredPairsForCollider(const Collider *collider)
+{
+    RequireOwnerThread();
+    if (!collider)
+        return;
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = collider->GetECSHandle();
+    if (!store.IsValid(handle))
+        return;
+    auto &data = store.GetCollider(handle);
+    auto *world = data.collisionPolicyWorld;
+    if (!world)
+        return; // Unregistered staging never acquired a policy domain.
+    auto &domain = *world->physics;
+    data.collisionPolicyWorld = nullptr;
+    bool changed = false;
+    const auto id = collider->GetComponentID(), generation = collider->GetLifetimeGeneration();
+    for (auto it = domain.colliderPairs.begin(); it != domain.colliderPairs.end();) {
+        const auto &k = it->first;
+        if ((k[0] == id && k[1] == generation) || (k[2] == id && k[3] == generation)) {
+            it = domain.colliderPairs.erase(it);
+            changed = true;
+        } else
+            ++it;
+    }
+    if (changed)
+        domain.colliderPairSnapshot.reset();
+}
+void PhysicsWorld::RestoreColliderPairs(RuntimeWorld &world, const PhysicsColliderPairs &source,
+                                        const std::unordered_map<uint64_t, uint64_t> &remap)
+{
+    RequireOwnerThread();
+    auto &domain = *world.physics;
+    for (const auto &pair : source) {
+        const auto a = remap.find(pair[0]), b = remap.find(pair[2]);
+        if (a == remap.end() || b == remap.end())
+            continue;
+        auto *first = dynamic_cast<Collider *>(Component::FindByComponentId(a->second));
+        auto *second = dynamic_cast<Collider *>(Component::FindByComponentId(b->second));
+        if (!first || !second || &DomainForComponent(*first) != &domain || &DomainForComponent(*second) != &domain)
+            throw std::logic_error("Cloned collision policy endpoint differs from its preparing World");
+        SetColliderPairIgnored(first, second, true);
+    }
+}
 
 void PhysicsWorld::MoveBodyKinematic(uint32_t id, const glm::vec3 &position, const glm::quat &rotation, float dt,
                                      float maxSpeed)
@@ -2435,7 +2597,7 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
     request.source.w = static_cast<uint32_t>(objectId >> 32);
     request.filter.z = static_cast<uint32_t>(colliderId);
     request.filter.w = static_cast<uint32_t>(colliderId >> 32);
-    auto result = RunQuery(domain, {request}, colliderId);
+    auto result = RunQuery(domain, {request}, colliderId, box.GetLifetimeGeneration());
     FrameWorkOwner::Scope materialize(*m_gpuWork);
     const auto &record = result->ReadHits().front();
     hit = DecodeQueryHit(*result, record);

@@ -134,6 +134,7 @@ class JoltGpuScene final
         std::shared_ptr<const PublicationDirectory> directory;
         std::shared_ptr<rhi::ComputeBuffer> jointStream;
         std::shared_ptr<const JoltGpuJointLayout> jointLayout;
+        std::shared_ptr<const JoltGpuColliderPairs> colliderPairs;
 
         /// Joint rows are local to this publication's real accepted world row.
         [[nodiscard]] const std::vector<PublishedJoint> &GetJoints() const
@@ -185,6 +186,7 @@ class JoltGpuScene final
     void UpdateJoint(uint64_t id, const std::function<void(JPH::GPU::JointAuthor &)> &update);
     void UpdateJoints(std::vector<JointUpdate> updates);
     void DestroyJoint(uint64_t id);
+    void SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs);
     void DestroyJointsForBody(uint32_t bodyId);
     [[nodiscard]] const PublishedJoint &GetAuthoredJoint(uint64_t id) const;
     [[nodiscard]] BodyAllocation FindBody(uint32_t bodyId) const noexcept;

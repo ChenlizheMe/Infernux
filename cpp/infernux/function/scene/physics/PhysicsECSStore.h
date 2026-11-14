@@ -64,6 +64,9 @@ struct ColliderECSData
 {
     // ---- Identity ----
     Collider *owner = nullptr;
+    // Registered policy ownership follows this Collider lifetime, independently
+    // of actor migration/retirement and retained Scene graph detachment.
+    RuntimeWorld *collisionPolicyWorld = nullptr;
 
     PhysicsActorHandle actorHandle;
 

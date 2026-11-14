@@ -6,6 +6,7 @@
 #include "RuntimeWorld.h"
 #include "Scene.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <core/math/FrameTimeSmoothing.h>
@@ -745,6 +746,7 @@ class SceneManager
         float timeScale;
         glm::vec3 gravity;
         Random::Snapshot random;
+        std::vector<std::array<uint64_t, 4>> colliderPairs;
     };
     [[nodiscard]] RuntimeWorldInitialSettings CaptureAuthoringWorldSettings() const;
     void RefreshThreadDefaultRandomStorage() const;

@@ -30,6 +30,7 @@ enum Port : uint8_t
     RuntimeWorlds,
     Arena,
     Arguments,
+    ColliderPairs,
     PortCount
 };
 enum Entry : uint8_t
@@ -90,31 +91,31 @@ constexpr uint32_t Bit(Port port)
     return 1u << port;
 }
 constexpr uint32_t A = Bit(Arena), P = Bit(Parameters), K = Bit(Work);
-constexpr std::array<uint32_t, EntryCount> EntryPorts{A | P | K,
-                                                      A | P,
-                                                      A | Bit(Arguments) | P | K,
-                                                      A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(AuthorWorlds) |
-                                                          Bit(Bounds),
-                                                      A | P | K | Bit(Joints) | Bit(Bodies) | Bit(AuthorWorlds),
-                                                      A | P | K,
-                                                      A | P | K | Bit(Bounds),
-                                                      A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(Bounds),
-                                                      A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(Bounds),
-                                                      A | P | K,
-                                                      A | P | K,
-                                                      A | P | K,
-                                                      A | P | K,
-                                                      A | P,
-                                                      A | P,
-                                                      A | P | K,
-                                                      A | P | K,
-                                                      A | P,
-                                                      A | P | K | Bit(AuthorWorlds) | Bit(RuntimeWorlds),
-                                                      A | P,
-                                                      A | P | K,
-                                                      A | P | K,
-                                                      A | P,
-                                                      A | P};
+constexpr std::array<uint32_t, EntryCount> EntryPorts{
+    A | P | K,
+    A | P,
+    A | Bit(Arguments) | P | K,
+    A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(AuthorWorlds) | Bit(Bounds),
+    A | P | K | Bit(Joints) | Bit(Bodies) | Bit(AuthorWorlds),
+    A | P | K,
+    A | P | K | Bit(Bounds),
+    A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(Bounds) | Bit(ColliderPairs),
+    A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(Bounds) | Bit(ColliderPairs),
+    A | P | K,
+    A | P | K,
+    A | P | K,
+    A | P | K,
+    A | P,
+    A | P,
+    A | P | K,
+    A | P | K,
+    A | P,
+    A | P | K | Bit(AuthorWorlds) | Bit(RuntimeWorlds),
+    A | P,
+    A | P | K,
+    A | P | K,
+    A | P,
+    A | P};
 
 struct PortLayout
 {
@@ -143,7 +144,8 @@ constexpr PortLayout Ports[] = {
     {"joint_stream", sizeof(QueryRecordWord), {"value"}, 1u, true},
     {"runtime_worlds", sizeof(WorldRange), {"bodies", "leaves"}, 3u, false},
     {"contact_patches", sizeof(ContactPatch), {"leaves"}, 1u, false},
-    {"indirect_arguments", sizeof(QueryRecordWord), {"value"}, 1u, false}};
+    {"indirect_arguments", sizeof(QueryRecordWord), {"value"}, 1u, false},
+    {"collider_pair_ignores", sizeof(QueryRecordWord), {"value"}, 1u, true}};
 
 constexpr uint32_t MaxDispatchesPerPacket = 16;
 constexpr uint32_t ActiveRoundsPerWindow = 4;
@@ -325,6 +327,13 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         config.counts = {n, j, w, storage.GetBodyCount()};
         config.selection = settings.selection;
         config.selectedCounts = settings.selectedCounts;
+        const auto &pairs = inputs.GetColliderPairs();
+        if (!pairs || pairs->words.size() > UINT32_MAX)
+            throw std::invalid_argument("Broadphase requires its accepted Collider policy");
+        settingsPorts[ColliderPairs] = pairs->buffer;
+        ValidateInput(settingsPorts[ColliderPairs]);
+        requireBytes(ColliderPairs, uint64_t(std::max<size_t>(1, pairs->words.size())) * sizeof(QueryRecordWord));
+        config.selectedCounts.w = static_cast<uint32_t>(pairs->words.size());
         config.round = {BroadphaseNeighborLimit, 0, 0, 0};
         rounds = n > 1 ? (n - 2u) / BroadphaseNeighborLimit + 1u : 1u;
         uint64_t words = 0;
