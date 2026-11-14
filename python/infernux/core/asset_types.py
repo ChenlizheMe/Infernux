@@ -986,14 +986,14 @@ IMAGE_EXTENSIONS = frozenset({
 })
 
 # Shader import, reference fields and cook use the native source classification.
-SHADER_VERTEX_EXTENSIONS = frozenset({".vert"}) | frozenset(
+SHADER_VERTEX_EXTENSIONS = frozenset(
     suffix for suffix, kind in SHADER_SOURCE_KINDS.items() if kind[0] == "vertex"
 )
-SHADER_FRAGMENT_EXTENSIONS = frozenset({".frag"}) | frozenset(
+SHADER_FRAGMENT_EXTENSIONS = frozenset(
     suffix for suffix, kind in SHADER_SOURCE_KINDS.items() if kind[0] == "fragment"
 )
 SHADER_EXTENSIONS = SHADER_VERTEX_EXTENSIONS | SHADER_FRAGMENT_EXTENSIONS
-SHADER_DEPENDENCY_EXTENSIONS = frozenset({".glsl", ".shadingmodel"}) | frozenset(
+SHADER_DEPENDENCY_EXTENSIONS = frozenset(
     suffix for suffix, kind in SHADER_SOURCE_KINDS.items() if kind[0] in {"library", "shadingmodel"}
 )
 SHADER_SOURCE_EXTENSIONS = SHADER_EXTENSIONS | SHADER_DEPENDENCY_EXTENSIONS | frozenset(SHADER_SOURCE_KINDS)

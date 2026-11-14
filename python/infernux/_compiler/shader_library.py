@@ -314,10 +314,10 @@ class LibraryGraph:
             owner.error(call, "A GPU asset reference uses a registered ID or " + suffix + " path", code="author.reference")
         if reference.endswith(suffix):
             return (Path(owner.path).parent / reference).resolve()
-        from infernux.lib import _Infernux
+        from infernux.core._shader_catalog import get_shader_file_path
 
         try:
-            resolved = _Infernux._shader_source_path(reference, stage)
+            resolved = get_shader_file_path(reference, suffix[:-3])
         except (RuntimeError, ValueError) as error:
             owner.error(call, str(error), code="author.reference")
         if not resolved:

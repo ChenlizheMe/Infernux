@@ -124,7 +124,7 @@ def _particle_fragment_shader_catalog(shader_ids):
     from pathlib import Path
     from infernux._compiler.shader import _prepare_source
     from infernux._compiler.shader_parameters import material_properties
-    from infernux.engine.ui.inspector_shader_utils import (
+    from infernux.core._shader_catalog import (
         get_shader_candidates,
         get_shader_file_path,
     )

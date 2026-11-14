@@ -6,7 +6,6 @@ import pytest
 
 from infernux.lib import _Infernux as native
 from infernux._compiler.shader import _prepare_source
-from infernux._compiler.shader_info import read_shader_info
 
 
 SHADERS = Path(__file__).parents[2] / 'python/infernux/resources/shaders'
@@ -14,11 +13,7 @@ STAGES = sorted((*SHADERS.glob('*.frag.py'), *SHADERS.glob('*.vert.py')))
 
 
 @pytest.mark.parametrize('path', STAGES, ids=lambda path:path.name)
-def test_builtin_authored_stage_compiles(path, monkeypatch):
-    # Supply the real builtin catalog without booting an Engine/GPU per source.
-    models = {read_shader_info(model.read_text(encoding='utf-8'), str(model))['shader_id']: str(model)
-              for model in SHADERS.glob('*.shadingmodel.py')}
-    monkeypatch.setattr(native, '_shader_source_path', lambda identity, stage: models[identity])
+def test_builtin_authored_stage_compiles(path):
     text = path.read_text(encoding='utf-8')
     vertex = None
     source_path = str(path)

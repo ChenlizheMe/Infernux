@@ -1188,12 +1188,9 @@ class AssetManager:
         """Publish shader catalog changes independently of runtime renderer state."""
         if source_extension(path) not in SHADER_SOURCE_EXTENSIONS:
             return
-        try:
-            from infernux.engine.ui import inspector_shader_utils
+        from infernux.core._shader_catalog import bump_shader_property_generation
 
-            inspector_shader_utils.bump_shader_property_generation()
-        except ImportError:
-            pass
+        bump_shader_property_generation()
 
     @classmethod
     def _compile_shader_dependency_runtime(cls, path: str, previous_path: str = "") -> str:
