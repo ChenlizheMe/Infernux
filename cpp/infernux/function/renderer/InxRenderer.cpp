@@ -1243,7 +1243,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 
     // An explicit Step can still have required view consumers while the
     // window is suspended. Keep them in this logical step's view schedule.
-    const bool allowViewportViews = !windowSuspended || sceneManager.IsStepping();
+    const bool allowViewportViews = !windowSuspended || sceneManager.HasPendingRuntimeSteps();
     const bool sceneViewActive =
         (((allowViewportViews && m_sceneViewVisible) || HasPendingCapture(CaptureSource::Scene) ||
           (m_scenePickingService && m_scenePickingService->HasPendingRecord())) &&
@@ -1430,7 +1430,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         m_sceneRenderGraph->SetOutlineRenderer(sceneViewActive ? m_outlineRenderer.get() : nullptr);
 
     UpdateViewSchedule();
-    const bool pendingStepView = sceneManager.IsStepping() &&
+    const bool pendingStepView = sceneManager.HasPendingRuntimeSteps() &&
                                  std::any_of(m_scheduledViews.begin(), m_scheduledViews.end(), [](const auto &view) {
                                      return view.waitingForResult && view.graph->HasPendingBufferInputs(true);
                                  });

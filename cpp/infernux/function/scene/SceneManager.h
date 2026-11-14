@@ -439,7 +439,15 @@ class SceneManager
 
     /// @brief Step exactly one frame while paused (Update + LateUpdate + EndFrame).
     /// Does nothing if not currently paused and playing.
-    void Step(float deltaTime);
+    void Step(float unscaledDeltaTime);
+    struct RuntimeStepRequest
+    {
+        uint64_t worldId;
+        uint64_t simulationEpoch;
+        float unscaledDeltaTime;
+    };
+    // One owner-boundary admission; no callback runs until every member is queued.
+    void RequestRuntimeSteps(const std::vector<RuntimeStepRequest> &requests);
 
     [[nodiscard]] bool IsPaused() const
     {
@@ -450,6 +458,13 @@ class SceneManager
     {
         return CurrentWorld().simulation.isStepping || CurrentWorld().simulation.pausedStepPending ||
                CurrentWorld().simulation.stepFrameOpen;
+    }
+    [[nodiscard]] bool HasPendingRuntimeSteps() const noexcept
+    {
+        return std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(), [](const auto &world) {
+            return world->simulation.isStepping || world->simulation.pausedStepPending ||
+                   world->simulation.stepFrameOpen;
+        });
     }
     /// Actual native callback dispatch, excluding a logical Step awaiting results.
     [[nodiscard]] bool IsExecutingStep() const noexcept
@@ -463,10 +478,9 @@ class SceneManager
     }
     [[nodiscard]] uint64_t GetStepPermissionIndex() const noexcept
     {
-        // Initial Start precedes fixed-step admission. Starts after integration
-        // and continuations of an admitted fixed step use its current identity.
-        return CurrentWorld().simulation.pausedStepPending ? CurrentWorld().frame.stepTarget
-                                                           : CurrentWorld().simulation.fixedStepIndex;
+        // A logical frame permit is distinct even when it contains zero Fixed bundles.
+        return CurrentWorld().simulation.pausedStepPending ? CurrentWorld().frame.stepLogicalFrameTarget
+                                                           : CurrentWorld().frame.generation;
     }
 
     /// @brief Get the fixed physics timestep in seconds.
@@ -686,7 +700,8 @@ class SceneManager
     void ResetFrameDelta();
     void ContinueRuntimeUpdate();
     void ContinueRuntimeLateUpdate();
-    void AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission, bool stepping);
+    void AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission);
+    void ContinuePausedStep();
     void BeginRuntimePhaseScenes();
     void BeginRuntimeLifecycleFrame(bool useScheduler);
     void CloseRuntimeFrame(bool completed);

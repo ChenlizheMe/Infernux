@@ -660,7 +660,7 @@ void SceneManager::ResetFrameTime()
     world.frame.pending.clear();
     CloseRuntimeFrame(false);
     world.frame.stepInput.reset();
-    world.frame.stepTarget = 0;
+    world.frame.stepLogicalFrameTarget = 0;
     world.simulation.frameTime = {};
     world.simulation.frameTimeSmoother.Reset();
 }
@@ -1158,7 +1158,7 @@ void SceneManager::RecordHostFrame(float deltaTime)
          std::move(input)});
 }
 
-void SceneManager::AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission, bool stepping)
+void SceneManager::AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission)
 {
     auto &world = CurrentWorld();
     ++world.frame.generation;
@@ -1169,17 +1169,12 @@ void SceneManager::AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission, boo
     world.frame.animationStarted = false;
     world.frame.lateStarted = false;
     world.frame.hadRuntimeLifecycleScope = false;
-    world.frame.debitFixedAccumulator = !stepping;
     AdvanceFrameTime(admission.unscaledDeltaTime, admission.deltaTime);
     world.frame.input = InputManager::Instance().BeginWorldFrameInput(world.id, std::move(admission.input),
                                                                       world.simulation.frameTime.frameCount);
-    if (stepping) {
-        world.frame.fixedTarget = world.simulation.fixedStepIndex + static_cast<uint64_t>(!HasPendingFixedStep());
-    } else {
-        world.simulation.fixedTimeAccumulator += admission.deltaTime;
-        const auto due = static_cast<uint64_t>(world.simulation.fixedTimeAccumulator / world.simulation.fixedTimeStep);
-        world.frame.fixedTarget = world.simulation.fixedStepIndex + due;
-    }
+    world.simulation.fixedTimeAccumulator += admission.deltaTime;
+    const auto due = static_cast<uint64_t>(world.simulation.fixedTimeAccumulator / world.simulation.fixedTimeStep);
+    world.frame.fixedTarget = world.simulation.fixedStepIndex + due;
 }
 
 void SceneManager::BeginRuntimePhaseScenes()
@@ -1249,7 +1244,7 @@ void SceneManager::UpdateCurrentWorld(float deltaTime)
     const auto admittedState = GetSimulationState();
     auto t0 = ProfileClock::now();
     if (world.simulation.pausedStepPending && world.simulation.isPlaying && world.simulation.isPaused) {
-        Step(world.simulation.pausedStepDeltaTime);
+        ContinuePausedStep();
         return;
     }
 
@@ -1296,7 +1291,7 @@ void SceneManager::ContinueRuntimeUpdate()
             return;
         auto admission = std::move(world.frame.pending.front());
         world.frame.pending.pop_front();
-        AdmitRuntimeFrame(std::move(admission), false);
+        AdmitRuntimeFrame(std::move(admission));
     }
     if (world.frame.phase == RuntimeWorld::FramePhase::Ready ||
         world.frame.phase == RuntimeWorld::FramePhase::Complete ||
@@ -1331,8 +1326,7 @@ void SceneManager::ContinueRuntimeUpdate()
         return;
     if (world.frame.phase == RuntimeWorld::FramePhase::Fixed) {
         while (HasPendingFixedStep() || (world.simulation.fixedStepIndex < world.frame.fixedTarget &&
-                                         (!world.frame.debitFixedAccumulator ||
-                                          world.simulation.fixedTimeAccumulator >= world.simulation.fixedTimeStep))) {
+                                         world.simulation.fixedTimeAccumulator >= world.simulation.fixedTimeStep)) {
             if (!CanContinueRuntimeFrame() || !RunFixedSimulationStep(useRuntimeScheduler, admittedState))
                 return;
         }
@@ -1486,7 +1480,7 @@ bool SceneManager::ServiceCurrentWorldFrame()
     TransformECSStore::Instance().BeginFrameCache();
     if (world.simulation.pausedStepPending && world.simulation.isPaused) {
         const auto completed = world.simulation.runtimeFrameCount;
-        Step(world.simulation.pausedStepDeltaTime);
+        ContinuePausedStep();
         if (&world != GetPrimaryRuntimeWorld())
             FinishStepPresentation(true);
         return world.simulation.runtimeFrameCount != completed;
@@ -1665,7 +1659,7 @@ void SceneManager::PlayCurrentWorld()
     world.simulation.isPaused = false;
     world.simulation.pausedStepPending = false;
     world.frame.stepInput.reset();
-    world.frame.stepTarget = 0;
+    world.frame.stepLogicalFrameTarget = 0;
     world.simulation.stepFrameOpen = false;
     if (fresh) {
         ++world.simulation.simulationEpoch;
@@ -1878,23 +1872,60 @@ void SceneManager::PauseCurrentWorld()
 #endif
 }
 
-void SceneManager::Step(float requestedDeltaTime)
+void SceneManager::Step(float unscaledDeltaTime)
+{
+    const auto *scope = WorldExecutionScope::Current();
+    const auto ids = scope && scope != m_authoringWorld.get() ? std::vector<uint64_t>{scope->id} : GetRuntimeWorldIds();
+    std::vector<RuntimeStepRequest> requests;
+    for (auto id : ids) {
+        const auto *world = FindRuntimeWorld(id);
+        if (world && world->simulation.isPlaying && world->simulation.isPaused)
+            requests.push_back({id, world->simulation.simulationEpoch, unscaledDeltaTime});
+    }
+    RequestRuntimeSteps(requests);
+}
+
+void SceneManager::RequestRuntimeSteps(const std::vector<RuntimeStepRequest> &requests)
+{
+    Scene::RequireNoWorldRetirement();
+    std::unordered_set<uint64_t> selected;
+    for (const auto &request : requests) {
+        const auto *world = FindRuntimeWorld(request.worldId);
+        if (!selected.insert(request.worldId).second || !world || !world->handle || world->handle->state != "ready" ||
+            world->handle->destroyRequested || world->simulation.simulationEpoch != request.simulationEpoch ||
+            !world->simulation.isPlaying || !world->simulation.isPaused ||
+            (world->scenes.loaded.empty() && !world->scenes.persistent))
+            throw std::logic_error("Paused Step requires unique ready members of the same current Play");
+        if (!std::isfinite(request.unscaledDeltaTime) || request.unscaledDeltaTime < 0.0f)
+            throw std::invalid_argument("Step duration must be finite and non-negative");
+        if (world->simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
+            throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
+        if (world->simulation.isStepping || world->simulation.pausedStepPending || world->simulation.stepFrameOpen)
+            throw std::logic_error("a paused logical Step cannot be reentered");
+    }
+    if (requests.empty())
+        return;
+    const auto input = InputManager::Instance().CaptureFrame();
+    for (const auto &request : requests) {
+        auto &world = *FindRuntimeWorld(request.worldId);
+        world.simulation.pausedStepUnscaledDeltaTime = request.unscaledDeltaTime;
+        world.frame.stepLogicalFrameTarget = world.frame.generation + 1;
+        world.frame.stepInput = input;
+        world.simulation.pausedStepPending = true;
+        world.simulation.stepFrameOpen = true;
+        // An admitted old F keeps its original fixedTarget and accumulator debit.
+    }
+    if (m_runtimeFrameWork && m_runtimeFrameSource)
+        m_runtimeFrameWork->Wake(m_runtimeFrameSource);
+}
+
+void SceneManager::ContinuePausedStep()
 {
     const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
-    std::optional<FrameWorkOwner::Scope> accounting;
-    if (m_runtimeFrameWork && m_runtimeFrameWork->IsActive())
-        accounting.emplace(*m_runtimeFrameWork);
-    if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
-        throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
-    if (!world.simulation.isPaused || !world.simulation.isPlaying ||
-        (world.scenes.loaded.empty() && !world.scenes.persistent))
+    if (!world.simulation.pausedStepPending || !world.simulation.isPaused || !world.simulation.isPlaying)
         return;
-    if (world.simulation.isStepping || (world.simulation.stepFrameOpen && !world.simulation.pausedStepPending))
-        throw std::logic_error("a paused simulation step cannot be reentered");
-    const bool beginningFrame = !world.simulation.pausedStepPending;
     world.simulation.isStepping = true;
-    world.simulation.pausedStepPending = true;
     struct StepScope
     {
         bool &active;
@@ -1903,25 +1934,15 @@ void SceneManager::Step(float requestedDeltaTime)
             active = false;
         }
     } stepScope{world.simulation.isStepping};
-    if (beginningFrame) {
-        world.simulation.pausedStepDeltaTime = requestedDeltaTime;
-        world.frame.stepTarget = world.simulation.completedFixedStepIndex + 1;
-        world.frame.stepInput = InputManager::Instance().CaptureFrame();
-        world.simulation.stepFrameOpen = true;
-        if (world.frame.phase == RuntimeWorld::FramePhase::Input ||
-            world.frame.phase == RuntimeWorld::FramePhase::Fixed)
-            world.frame.fixedTarget = std::min(world.frame.fixedTarget, world.frame.stepTarget);
-    }
     const bool managedCache = TransformECSStore::Instance().IsFrameCacheActive();
     for (;;) {
         if (!CanContinueRuntimeFrame())
             return;
         if (world.frame.phase == RuntimeWorld::FramePhase::Idle) {
-            const float delta = world.simulation.pausedStepDeltaTime;
-            AdmitRuntimeFrame({world.simulation.timeScale > 0.0f ? delta / world.simulation.timeScale : 0.0f, delta,
-                               world.frame.stepInput},
-                              true);
-            world.frame.fixedTarget = world.frame.stepTarget;
+            const auto delta = world.simulation.pausedStepUnscaledDeltaTime;
+            AdmitRuntimeFrame({delta,
+                               std::clamp(delta * world.simulation.timeScale, 0.0f, world.simulation.maxFixedDeltaTime),
+                               world.frame.stepInput});
         }
         const auto admittedState = GetSimulationState();
         const InputReadScope inputScope(world.frame.input, world.id);
@@ -1935,13 +1956,13 @@ void SceneManager::Step(float requestedDeltaTime)
         const bool published = EndRuntimeFrame(false);
         if (!current || !published || GetSimulationState() != admittedState)
             return;
-        if (world.simulation.completedFixedStepIndex >= world.frame.stepTarget) {
+        if (world.frame.generation == world.frame.stepLogicalFrameTarget) {
             world.simulation.pausedStepPending = false;
             world.frame.stepInput.reset();
             return;
         }
-        // The old F had already passed Fixed. Its tail has now completed;
-        // the one new Step F uses the request-time sample and fixed target.
+        // Only the old admitted F drained. Admit the distinct Step F next,
+        // retaining the request-time input and each world's unchanged accumulator.
         if (managedCache)
             TransformECSStore::Instance().BeginFrameCache();
     }
@@ -2176,7 +2197,7 @@ void SceneManager::PrepareActiveSceneReplacement()
     world.frame.pending.clear();
     CloseRuntimeFrame(false);
     world.frame.stepInput.reset();
-    world.frame.stepTarget = 0;
+    world.frame.stepLogicalFrameTarget = 0;
     ResetFrameDelta();
     if (world.simulation.isPlaying) {
         FlushPersistentPromotions();
@@ -2322,7 +2343,6 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     const auto current = [&] { return validWorld() && GetSimulationState() == admittedState; };
     if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Idle) {
         world.simulation.admittedFixedDeltaTime = world.simulation.fixedTimeStep;
-        world.simulation.fixedAccumulatorDebit = world.frame.debitFixedAccumulator;
         world.simulation.fixedHasPhysics = false;
         ++world.simulation.fixedStepIndex;
         world.simulation.fixedTime += static_cast<double>(world.simulation.admittedFixedDeltaTime);
@@ -2410,8 +2430,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
         }
         world.simulation.completedFixedStepIndex = world.simulation.fixedStepIndex;
         m_lastFrameProfile.fixedSteps += 1.0;
-        if (world.simulation.fixedAccumulatorDebit)
-            world.simulation.fixedTimeAccumulator -= world.simulation.admittedFixedDeltaTime;
+        world.simulation.fixedTimeAccumulator -= world.simulation.admittedFixedDeltaTime;
         // Mark before user collision callbacks: a Pause or delayed publication
         // must never repeat the solver or dispatch this batch a second time.
         world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Publication;

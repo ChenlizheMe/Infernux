@@ -13,12 +13,12 @@ from infernux.engine.interaction import EditorInteractionCore
 from infernux.engine.play_mode import PlayModeManager, PlayModeState
 from infernux.engine.scene_manager import SceneFileManager
 from infernux.engine.undo import UndoManager
-from infernux.lib import SceneManager
+from infernux.lib import SceneManager, _Infernux
 from infernux.renderstack.render_effect import RenderEffect
 
 
 @pytest.fixture
-def playing_author(engine, scene, tmp_path, monkeypatch):
+def playing_author(engine, scene, tmp_path, monkeypatch, play_host):
     from infernux.components import script_loader
 
     # This fixture composes a fresh editor project on the shared native Engine;
@@ -51,20 +51,38 @@ def playing_author(engine, scene, tmp_path, monkeypatch):
     manager = PlayModeManager()
     manager.set_asset_database(database)
     manager._native_engine = engine
+    play_host._play_mode_manager = manager
     native = SceneManager.instance()
     try:
         assert manager.enter_play_mode()
         runner.tick()
         assert manager.state is PlayModeState.PLAYING and native.is_playing()
-        scene.find_by_id(object_id).name = "RuntimeDoor"
+        identities = tuple(native._runtime_world_ids)
+        assert len(identities) == 1
+        with _Infernux._RuntimeWorldScope(int(identities[0])):
+            runtime_scene = native.get_scene(scene.name)
+            assert runtime_scene is not None and runtime_scene is not scene
+            runtime_obj = runtime_scene.find("AuthorDoor")
+            runtime_second = runtime_scene.find("AuthorKey")
+            assert runtime_obj is not None and runtime_obj is not obj
+            assert runtime_second is not None
+            assert runtime_obj.id != object_id and runtime_second.id != second_id
+            assert runtime_obj.transform.component_id != obj.transform.component_id
+            runtime_obj.name = "RuntimeDoor"
+        assert scene.find_by_id(object_id) is obj and obj.name == "AuthorDoor"
         yield SimpleNamespace(manager=manager, runner=runner, files=files, scene=scene,
-                              native=native, object_id=object_id, second_id=second_id, path=path,
+                              native=native, host=play_host, author_object=obj,
+                              runtime_scene=runtime_scene, runtime_object_id=runtime_obj.id,
+                              runtime_second_id=runtime_second.id, runtime_world_id=int(identities[0]),
+                              object_id=object_id, second_id=second_id, path=path,
                               original_bytes=path.read_bytes())
     finally:
         runner.cancel()
         if native.is_playing():
             native.stop()
-        AssetManager._end_play_data_asset_isolation()
+        if manager._runtime_world_session is not None:
+            manager._runtime_world_session.close()
+            manager._runtime_world_session = None
         Material._suppress_auto_save = False
         RenderEffect._suppress_auto_save = False
         engine.set_play_mode_rendering(False)
@@ -120,7 +138,7 @@ def test_stop_preserves_current_selection_by_authored_identity(selection_author,
     if case == 'multiple':
         expected = targets = [second, first]
     elif case in ('mixed', 'runtime_only'):
-        runtime = state.scene.create_game_object('RuntimeSelection')
+        runtime = state.runtime_scene.create_game_object('RuntimeSelection')
         runtime_target = SelectionTarget.scene_object(runtime.id)
         targets = [runtime_target, second] if case == 'mixed' else [runtime_target]
         expected = [second] if case == 'mixed' else []
@@ -131,7 +149,8 @@ def test_stop_preserves_current_selection_by_authored_identity(selection_author,
         expected = targets = [SelectionTarget.asset(state.manager._asset_database.get_guid_from_path(str(state.path)))]
     elif case in ('component', 'runtime_component'):
         owner = 'inspector'
-        obj = state.scene.find_by_id(state.object_id)
+        obj = (state.scene.find_by_id(state.object_id) if case == 'component'
+               else state.runtime_scene.find_by_id(state.runtime_object_id))
         component = obj.transform if case == 'component' else obj.add_component('BoxCollider')
         targets = [SelectionTarget.component(obj.id, component.component_id)]
         expected = targets if case == 'component' else []
@@ -155,6 +174,7 @@ def test_stop_preserves_current_selection_by_authored_identity(selection_author,
         assert state.ui_projected[-1] == restored
     assert not any(change.record_history for change in changes)
     assert len(tuple(journal.applied_entries())) == before_history
+    assert state.scene.find_by_id(state.object_id) is state.author_object
     assert state.scene.find_by_id(state.object_id).name == 'AuthorDoor'
     assert state.path.read_bytes() == state.original_bytes
 
@@ -192,13 +212,13 @@ def test_failed_stop_does_not_discard_selection_before_explicit_recovery(selecti
     state = selection_author
     state.selection.select_scene_object(state.second_id, owner_id='hierarchy', record_history=False)
     before = state.selection.snapshot
-    rebuild = state.manager._rebuild_scene
-    monkeypatch.setattr(state.manager, '_rebuild_scene', lambda *a, **kw: False)
+    restore = state.manager._restore_loaded_scenes_after_play
+    monkeypatch.setattr(state.manager, '_restore_loaded_scenes_after_play', lambda *a, **kw: False)
     assert state.manager.exit_play_mode()
     state.runner.tick()
     assert state.manager.state is PlayModeState.RECOVERY_REQUIRED
     assert state.selection.snapshot == before
-    monkeypatch.setattr(state.manager, '_rebuild_scene', rebuild)
+    monkeypatch.setattr(state.manager, '_restore_loaded_scenes_after_play', restore)
     assert state.manager.exit_play_mode()
     state.runner.tick()
     assert state.manager.is_edit_mode
@@ -225,6 +245,7 @@ def test_stop_keeps_authoring_locked_until_restore_finishes(playing_author, paus
     state.runner.tick()
     assert completed == [True]
     assert state.manager.is_edit_mode
+    assert state.scene.find_by_id(state.object_id) is state.author_object
     assert state.scene.find_by_id(state.object_id).name == "AuthorDoor"
     assert not Material._suppress_auto_save and not RenderEffect._suppress_auto_save
 
@@ -233,15 +254,17 @@ def test_stop_keeps_authoring_locked_until_restore_finishes(playing_author, paus
 def test_failed_stop_keeps_snapshot_and_requires_explicit_recovery(playing_author, monkeypatch, failure):
     state = playing_author
     backups = state.manager._scene_backups
-    rebuild = state.manager._rebuild_scene
+    restore = state.manager._restore_loaded_scenes_after_play
     notify = state.manager._notify_state_change
 
-    def reject(scene, *args, **kwargs):
-        if scene is state.scene:
-            if failure == "raised":
-                raise RuntimeError("injected scene restoration failure")
-            return False
-        return rebuild(scene, *args, **kwargs)
+    def reject():
+        # Real Stop boundary: runtime retirement precedes retained author
+        # document rebinding and EDIT publication.
+        assert state.native.get_scene_by_world_id(state.scene.world_id) is state.scene
+        assert state.scene.find_by_id(state.object_id) is state.author_object
+        if failure == "raised":
+            raise RuntimeError("injected scene restoration failure")
+        return False
 
     def reject_notification(old, new):
         if new is PlayModeState.EDIT:
@@ -251,7 +274,7 @@ def test_failed_stop_keeps_snapshot_and_requires_explicit_recovery(playing_autho
     if failure == "notification":
         monkeypatch.setattr(state.manager, "_notify_state_change", reject_notification)
     else:
-        monkeypatch.setattr(state.manager, "_rebuild_scene", reject)
+        monkeypatch.setattr(state.manager, "_restore_loaded_scenes_after_play", reject)
     completed = []
     assert state.manager.exit_play_mode(on_complete=completed.append)
     state.runner.tick()
@@ -265,15 +288,16 @@ def test_failed_stop_keeps_snapshot_and_requires_explicit_recovery(playing_autho
     assert not state.manager.resume()
     assert not state.manager.step_frame()
     elapsed = state.manager.total_play_time
-    state.manager.tick(3.0)
+    state.host.tick(3.0)
     assert state.manager.total_play_time == elapsed
     assert state.path.read_bytes() == state.original_bytes
-    monkeypatch.setattr(state.manager, "_rebuild_scene", rebuild)
+    monkeypatch.setattr(state.manager, "_restore_loaded_scenes_after_play", restore)
     monkeypatch.setattr(state.manager, "_notify_state_change", notify)
     assert state.manager.exit_play_mode(on_complete=completed.append)
     state.runner.tick()
     assert completed == [False, True]
     assert state.manager.is_edit_mode and not state.native.is_playing()
+    assert state.scene.find_by_id(state.object_id) is state.author_object
     assert state.scene.find_by_id(state.object_id).name == "AuthorDoor"
     assert state.path.read_bytes() == state.original_bytes
     assert not Material._suppress_auto_save and not RenderEffect._suppress_auto_save
@@ -302,11 +326,14 @@ def test_editor_scene_replacement_cannot_retire_play_document(playing_author, pa
     state.files.poll_deferred_load()
     assert registry.require(document.document_id) is document
     assert state.files.document_id == document.document_id
-    assert state.scene.find_by_id(state.object_id).name == "RuntimeDoor"
+    assert state.runtime_scene.find_by_id(state.runtime_object_id).name == "RuntimeDoor"
+    assert state.scene.find_by_id(state.object_id) is state.author_object
+    assert state.author_object.name == "AuthorDoor"
     for _ in range(3):
         assert state.manager.exit_play_mode()
         state.runner.tick()
         assert state.manager.is_edit_mode
+        assert state.scene.find_by_id(state.object_id) is state.author_object
         assert state.scene.find_by_id(state.object_id).name == "AuthorDoor"
         assert registry.require(document.document_id) is document
         assert (document.revision, document.saved_revision) == revisions

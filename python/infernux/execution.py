@@ -399,7 +399,8 @@ class ResultConsumer:
             self._hold_render_input()
             if self._suspended():
                 return True
-        permission = int(manager._current_runtime_world_id), int(manager.simulation_epoch), int(manager.fixed_step_index)
+        physics_identity = int(manager._current_runtime_world_id), int(manager.simulation_epoch), int(manager.fixed_step_index)
+        permission = (*physics_identity[:2], int(manager._step_permission_index))
         stepping = manager.is_stepping() and (self.boundary == 'physics'
                     or self._step_allowed())
         if stepping:
@@ -431,7 +432,7 @@ class ResultConsumer:
                 self.status = 'applying'
                 frame = self.request._owner()._frame
                 host_frame = int(frame.opportunity) if frame.active else None
-                physics_step = (ClockStamp('physics', *permission[1:], world_id=permission[0]) if self.boundary == 'physics' else None)
+                physics_step = (ClockStamp('physics', *physics_identity[1:], world_id=physics_identity[0]) if self.boundary == 'physics' else None)
                 if host_frame is not None:
                     frame.begin_scope()
                 started = perf_counter_ns()

@@ -280,3 +280,56 @@ def _reset_physics_state(engine):
     Physics.set_gravity(earth_gravity)
     yield
     Physics.set_gravity(earth_gravity)
+
+
+# Shared real Python companion for native-host Play recovery tests.
+@pytest.fixture
+def play_host(engine, monkeypatch):
+    """Attach the production Python owner to CI's existing native Engine."""
+    import infernux.application as application_state
+    from infernux.application import Application
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.engine.engine import Engine
+    from infernux.lib import RuntimeMode
+    from infernux.renderstack.render_stack import RenderStack
+
+    host = Engine.__new__(Engine)
+    host._engine = engine
+    host._mode = RuntimeMode.Graphical
+    host._application_role = "editor"
+    host._play_mode_manager = None
+    host._player_runtime = None
+    host._resources_manager = None
+    host._next_reload_poll_time = 0.0
+    host._reload_poll_interval = 1.0 / 60.0
+    host._world_runtimes = {}
+    host._runtime_world_session = None
+    host._authoring_scheduler = RuntimeExecutionScheduler(name="pytest-play-recovery", native_bridge=True)
+    host._initialize_work_runtime(engine.frame_work, accepting=True)
+    native = SceneManager.instance()
+    with monkeypatch.context() as globals_state:
+        for name in ("_engine_ref", "_runtime_kind", "_exit_code", "_player_install_root"):
+            globals_state.setattr(application_state, name, getattr(application_state, name))
+        globals_state.setattr(RenderStack, "_scene_instances", dict(RenderStack._scene_instances))
+        Application._bind_engine(host, "editor")
+        try:
+            host._install_pre_scene_time_callback()
+            yield host
+        finally:
+            try:
+                if host._runtime_world_session is not None:
+                    host._runtime_world_session.close()
+                host._shutdown_work_runtime()
+                assert native._collect_retired_runtime_worlds()
+                assert host._runtime_world_session is None
+                assert not host._world_runtimes
+            finally:
+                engine._set_runtime_frame_callbacks(None, None)
+                native._set_runtime_world_retirement_callbacks(None, None)
+                native.clear_runtime_lifecycle_callbacks()
+                host._authoring_scheduler.end_native_frame()
+                host._authoring_scheduler.unbind_native_bridge()
+                host._authoring_scheduler.clear()
+                host._runtime_scene_manager = None
+                Application._unbind_engine(host)
+                host._engine = None

@@ -610,9 +610,18 @@ void BindSceneManager(py::module_ &m)
         .def_property_readonly("fixed_unscaled_time", &SceneManager::GetFixedUnscaledTime,
                                "Real time represented by completed fixed steps")
         .def("step", &SceneManager::Step, py::arg("delta_time") = 0.016f,
-             "Execute exactly one shared fixed-physics bundle plus Update/LateUpdate while paused. "
-             "No-op while Play is running; manual stepping cannot advance a second World beside the "
-             "automatic accumulator.")
+             "Queue one new logical frame for the paused target group. Existing admitted frames drain first; "
+             "normal scaled accumulation determines zero or more unchanged fixed bundles.")
+        .def(
+            "_request_runtime_steps",
+            [](SceneManager &manager, const std::vector<std::tuple<uint64_t, uint64_t, float>> &members) {
+                std::vector<SceneManager::RuntimeStepRequest> requests;
+                requests.reserve(members.size());
+                for (const auto &[world, epoch, delta] : members)
+                    requests.push_back({world, epoch, delta});
+                manager.RequestRuntimeSteps(requests);
+            },
+            py::arg("members"))
         .def("get_last_collider_sync_candidate_count", &SceneManager::GetLastColliderSyncCandidateCount,
              "Number of dirty collider handles considered by the most recent simulation frame")
         .def("get_last_rigidbody_sync_candidate_count", &SceneManager::GetLastRigidbodySyncCandidateCount,

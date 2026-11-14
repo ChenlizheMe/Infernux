@@ -99,8 +99,7 @@ class RuntimeWorld final
         bool animationStarted = false;
         bool lateStarted = false;
         bool hadRuntimeLifecycleScope = false;
-        bool debitFixedAccumulator = false;
-        uint64_t stepTarget = 0;
+        uint64_t stepLogicalFrameTarget = 0;
         InputFrameLease stepInput;
     };
 
@@ -136,7 +135,6 @@ class RuntimeWorld final
         uint64_t publishedFixedStepIndex = 0;
         FixedPhase fixedPhase = FixedPhase::Idle;
         float admittedFixedDeltaTime = 0.0f;
-        bool fixedAccumulatorDebit = false;
         bool fixedHasPhysics = false;
         bool fixedExecuting = false;
         std::vector<uint64_t> fixedSceneWorlds;
@@ -146,7 +144,7 @@ class RuntimeWorld final
         bool isStepping = false;
         bool pausedStepPending = false;
         bool stepFrameOpen = false;
-        float pausedStepDeltaTime = 0.0f;
+        float pausedStepUnscaledDeltaTime = 0.0f;
         bool startupPending = false;
         uint64_t runtimeFrameCount = 0;
     };

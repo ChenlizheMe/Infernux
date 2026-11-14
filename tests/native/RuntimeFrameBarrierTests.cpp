@@ -182,7 +182,8 @@ int main()
 
     // The production accumulator may run zero or multiple fixed steps in one
     // rendered frame. A long frame is clamped once, time scale changes the
-    // real-time frequency, and paused Step advances exactly one fixed step.
+    // real-time frequency. Paused Step admits one new logical frame through
+    // that same accumulator, including zero or multiple fixed steps.
     observed.clear();
     beginCount = 0;
     fixedUpdateCount = 0;
@@ -226,10 +227,22 @@ int main()
     runFrame(1.0f);
     assert(fixedUpdateCount == 1);
     manager.Step(0.016f);
-    manager.EndFrame();
+    assert(fixedUpdateCount == 1); // Admission does not execute callbacks.
+    runFrame(0.0f);
     assert(fixedUpdateCount == 2);
     assert(manager.GetFixedTime() > 0.039 && manager.GetFixedTime() < 0.041);
     assert(manager.GetFixedUnscaledTime() > 0.019 && manager.GetFixedUnscaledTime() < 0.021);
+    const auto steppedFrame = manager.GetRuntimeFrameCount();
+    manager.Step(0.0f);
+    runFrame(0.0f);
+    assert(manager.GetRuntimeFrameCount() == steppedFrame + 1);
+    assert(fixedUpdateCount == 2);
+    manager.Step(0.016f);
+    runFrame(0.0f);
+    assert(manager.GetRuntimeFrameCount() == steppedFrame + 2);
+    assert(fixedUpdateCount == 4);
+    assert(manager.GetFixedTime() > 0.079 && manager.GetFixedTime() < 0.081);
+    assert(manager.GetFixedUnscaledTime() > 0.039 && manager.GetFixedUnscaledTime() < 0.041);
     manager.Stop();
     const bool retired3 = manager.CollectRetiredRuntimeWorlds();
     assert(retired3);

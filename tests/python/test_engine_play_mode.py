@@ -1,5 +1,6 @@
 """Tests for infernux.engine.play_mode — PlayModeState, PlayModeEvent, PlayModeManager."""
 
+from contextlib import contextmanager
 import sys
 import time
 from types import SimpleNamespace
@@ -100,6 +101,85 @@ class _FakeScriptSceneManager:
         return self.scene
 
 
+class _FakePausedGroupSceneManager(_FakeScriptSceneManager):
+    """Explicit two-member unit protocol; this is not real-World evidence."""
+    def __init__(self):
+        super().__init__(None)
+        self._runtime_world_ids = (101, 202)
+        self._scope_id = self._authoring_runtime_world_id
+        self.admissions = []
+        self.play_calls = []
+        self.worlds = {
+            101: SimpleNamespace(handle=SimpleNamespace(id=101, state='ready', destroy_requested=False),
+                epoch=7, clock=SimpleNamespace(frame_count=0, unscaled_delta_time=0.0),
+                target=10, stepping=False, playing=True, paused=True, pending_delta=None),
+            202: SimpleNamespace(handle=SimpleNamespace(id=202, state='ready', destroy_requested=False),
+                epoch=9, clock=SimpleNamespace(frame_count=4, unscaled_delta_time=.03),
+                target=20, stepping=False, playing=True, paused=True, pending_delta=None),
+        }
+
+    @contextmanager
+    def scope(self, identity):
+        assert identity in self.worlds or identity == self._authoring_runtime_world_id
+        previous, self._scope_id = self._scope_id, identity
+        try:
+            yield
+        finally:
+            self._scope_id = previous
+
+    def _get_runtime_world_handle(self, identity):
+        return self.worlds[identity].handle
+
+    @property
+    def simulation_epoch(self):
+        return self.worlds[self._scope_id].epoch
+
+    @property
+    def _frame_time(self):
+        return self.worlds[self._scope_id].clock
+
+    @property
+    def _step_permission_index(self):
+        return self.worlds[self._scope_id].target
+
+    def is_playing(self):
+        return self.worlds[self._scope_id].playing
+
+    def is_paused(self):
+        return self.worlds[self._scope_id].paused
+
+    def is_stepping(self):
+        return self.worlds[self._scope_id].stepping
+
+    def _request_runtime_steps(self, requests):
+        batch = tuple(requests)
+        assert {identity for identity, _epoch, _delta in batch} == set(self.worlds)
+        for identity, epoch, delta in batch:
+            state = self.worlds[identity]
+            assert epoch == state.epoch and state.playing and state.paused and not state.stepping
+            assert delta >= 0
+        self.admissions.append(batch)
+        for identity, _epoch, delta in batch:
+            state = self.worlds[identity]
+            state.target += 1
+            state.stepping = True
+            state.pending_delta = delta
+
+    def complete(self, identity):
+        state = self.worlds[identity]
+        assert state.stepping
+        state.clock.frame_count += 1
+        state.clock.unscaled_delta_time = state.pending_delta
+        state.pending_delta = None
+        state.stepping = False
+
+    def play(self):
+        assert self._scope_id == self._authoring_runtime_world_id
+        self.play_calls.append(self._scope_id)
+        for state in self.worlds.values():
+            state.paused = False
+
+
 # ══════════════════════════════════════════════════════════════════════
 # PlayModeState enum
 # ══════════════════════════════════════════════════════════════════════
@@ -116,88 +196,103 @@ class _FakeScriptSceneManager:
 
 
 class TestPlayModeManager:
-    def test_paused_step_sequence_records_completed_commands(self):
-        class _SceneManager:
-            simulation_epoch = 1
-            fixed_step_index = 0
-            published_fixed_step_index = 0
-            runtime_frame_count = 0
-            fixed_step_pending = False
-            stepping = False
-            def __init__(self):
-                self.steps = []
-
-            def step(self, delta_time):
-                self.steps.append(delta_time)
-                self.fixed_step_index += 1
-                self.published_fixed_step_index += 1
-                self.runtime_frame_count += 1
-
-            def is_stepping(self):
-                return self.stepping
+    def test_paused_step_sequence_records_completed_commands(self, monkeypatch):
+        from infernux.lib import _Infernux
 
         mgr = PlayModeManager()
-        scene_manager = _SceneManager()
+        scene_manager = _FakePausedGroupSceneManager()
+        monkeypatch.setattr(_Infernux, '_RuntimeWorldScope', scene_manager.scope)
         mgr._state = PlayModeState.PAUSED
         mgr._get_scene_manager = lambda: scene_manager
 
-        mgr.step_frame()
-        mgr.step_frame()
-
+        assert mgr.step_frame()
+        assert mgr.step_frame()
         assert mgr.step_sequence == 0
-        assert scene_manager.steps == []
+        assert scene_manager.admissions == []
+        mgr.process_pending_step()
+        assert mgr.step_sequence == 0  # Batch admission is not completion.
+        assert len(scene_manager.admissions) == 1
+        mgr.process_pending_step()
+        assert mgr.step_sequence == 0
+        assert len(scene_manager.admissions) == 1
+        scene_manager.complete(101)
+        mgr.process_pending_step()
+        assert mgr.step_sequence == 0  # One finished member is not the group.
+        assert len(scene_manager.admissions) == 1
+        scene_manager.complete(202)
         mgr.process_pending_step()
         assert mgr.step_sequence == 1
+        assert len(scene_manager.admissions) == 2
+        for identity in scene_manager._runtime_world_ids:
+            scene_manager.complete(identity)
         mgr.process_pending_step()
         assert mgr.step_sequence == 2
 
-        immediate_step = scene_manager.step
-        scene_manager.step = lambda dt: setattr(scene_manager, 'stepping', True)
-        mgr.step_frame()
+        assert mgr.step_frame()
         mgr.process_pending_step()
         mgr.process_pending_step()
         assert mgr.step_sequence == 2
-        immediate_step(1.0 / 60.0)
-        scene_manager.stepping = False
+        assert len(scene_manager.admissions) == 3
+        for identity in scene_manager._runtime_world_ids:
+            scene_manager.complete(identity)
         mgr.process_pending_step()
         assert mgr.step_sequence == 3
-        assert scene_manager.steps == [pytest.approx(1.0 / 60.0)] * 3
+        for batch in scene_manager.admissions:
+            assert batch == ((101, 7, pytest.approx(1.0/60.0)), (202, 9, pytest.approx(.03)))
+        assert scene_manager.worlds[101].clock.frame_count == 3
+        assert scene_manager.worlds[202].clock.frame_count == 7
         mgr.process_pending_step()
         assert mgr.step_sequence == 3
+        assert len(scene_manager.admissions) == 3
 
-    def test_paused_step_runs_after_authoring_transaction(self):
+    def test_paused_step_runs_after_authoring_transaction(self, monkeypatch):
+        from infernux.lib import _Infernux
         from infernux.engine.runtime_change_journal import RuntimeChangeJournal
 
         journal = RuntimeChangeJournal()
         mgr = PlayModeManager()
         mgr._state = PlayModeState.PAUSED
-        scene_manager = SimpleNamespace(simulation_epoch=1, fixed_step_index=0,
-            published_fixed_step_index=0, runtime_frame_count=0, fixed_step_pending=False, is_stepping=lambda: False)
-        def step(dt):
-            journal.flush()
-            scene_manager.fixed_step_index += 1
-            scene_manager.published_fixed_step_index += 1
-            scene_manager.runtime_frame_count += 1
-        scene_manager.step = step
+        scene_manager = _FakePausedGroupSceneManager()
+        monkeypatch.setattr(_Infernux, '_RuntimeWorldScope', scene_manager.scope)
+        admit = scene_manager._request_runtime_steps
+
+        def request_steps(members):
+            journal.flush()  # Fails if admission was moved inside the transaction.
+            admit(members)
+
+        scene_manager._request_runtime_steps = request_steps
         mgr._get_scene_manager = lambda: scene_manager
         with journal.transaction():
             assert mgr.step_frame()
             assert mgr.step_sequence == 0
+            assert scene_manager.admissions == []
+        assert scene_manager.admissions == []
+        mgr.process_pending_step()
+        assert len(scene_manager.admissions) == 1
+        assert mgr.step_sequence == 0
+        scene_manager.complete(101)
+        mgr.process_pending_step()
+        assert mgr.step_sequence == 0
+        scene_manager.complete(202)
         mgr.process_pending_step()
         assert mgr.step_sequence == 1
+        assert len(scene_manager.admissions) == 1
 
-    def test_pending_step_is_cancelled_on_resume(self):
+    def test_pending_step_is_cancelled_on_resume(self, monkeypatch):
+        from infernux.lib import _Infernux
+
         mgr = PlayModeManager()
         mgr._state = PlayModeState.PAUSED
-        mgr._get_scene_manager = lambda: SimpleNamespace(
-            step=lambda dt: pytest.fail("cancelled step executed"),
-            play=lambda: None,
-        )
-        mgr.step_frame()
+        scene_manager = _FakePausedGroupSceneManager()
+        monkeypatch.setattr(_Infernux, '_RuntimeWorldScope', scene_manager.scope)
+        mgr._get_scene_manager = lambda: scene_manager
+        assert mgr.step_frame()
         assert mgr.resume()
+        assert scene_manager.play_calls == [scene_manager._authoring_runtime_world_id]
         mgr._state = PlayModeState.PAUSED
         mgr.process_pending_step()
         assert mgr.step_sequence == 0
+        assert scene_manager.admissions == []
 
     def test_restore_scene_path_reasserts_authored_scene_persistence(self, monkeypatch, tmp_path):
         from infernux.engine.scene_manager import SceneFileManager

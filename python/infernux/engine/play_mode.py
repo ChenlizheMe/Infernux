@@ -25,6 +25,12 @@ from infernux.lib import InputManager as _NativeInputManager
 from infernux.engine.project_context import resolve_script_path
 
 
+def _control_world_group(scene_manager, control: Callable[[], None]) -> None:
+    """Session controls address the whole Play group, including from a component."""
+    from infernux.lib import _Infernux
+    with _Infernux._RuntimeWorldScope(scene_manager._authoring_runtime_world_id):
+        control()
+
 
 class PlayModeState(Enum):
     """Play mode states."""
@@ -821,7 +827,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 if not session.initialization_current(handle):
                     raise RuntimeWorldInitializationCancelled('Editor project warmup cancelled Play')
                 report_progress(0.75, "Starting scene components")
-                scene_manager.play()
+                _control_world_group(scene_manager, scene_manager.play)
                 if not session.initialization_current(handle, started=True):
                     raise RuntimeWorldInitializationCancelled('Editor Start cancelled Play')
                 from infernux.components.component import InxComponent
@@ -852,7 +858,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 try:
                     scene_manager = self._get_scene_manager()
                     if scene_manager is not None:
-                        scene_manager.stop()
+                        _control_world_group(scene_manager, scene_manager.stop)
                     from infernux.input import Input
                     Input.set_game_focused(False)
                     Input.set_cursor_locked(False)
@@ -967,7 +973,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         if scene_manager and old_state in (
             PlayModeState.PLAYING, PlayModeState.PAUSED, PlayModeState.RECOVERY_REQUIRED,
         ):
-            scene_manager.stop()
+            _control_world_group(scene_manager, scene_manager.stop)
 
         # Stop owns the editor cursor boundary even when the Game View is
         # hidden and therefore cannot run its normal per-frame input route.
@@ -1062,7 +1068,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         
         scene_manager = self._get_scene_manager()
         if scene_manager:
-            scene_manager.pause()
+            _control_world_group(scene_manager, scene_manager.pause)
 
         from infernux.input import Input
         Input.set_game_focused(False)
@@ -1089,7 +1095,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._step_completion = None
         scene_manager = self._get_scene_manager()
         if scene_manager:
-            scene_manager.play()
+            _control_world_group(scene_manager, scene_manager.play)
 
         old_state = self._state
         self._state = PlayModeState.PLAYING
@@ -1118,38 +1124,66 @@ class PlayModeManager(PlayModeSerializationMixin):
         return True
 
     def process_pending_step(self) -> bool:
-        """Issue one logical step and count it only after its publication completes."""
+        """Admit one paused group command; count only all-member completion."""
         if self._state != PlayModeState.PAUSED:
             self._step_completion = None
             return False
         if self._pending_step_requests <= 0 and self._step_completion is None:
             return False
-        scene_manager = self._get_scene_manager()
-        if scene_manager is None:
+        manager = self._get_scene_manager()
+        if manager is None:
             return False
-        if scene_manager.is_stepping():
-            return False
+        from infernux.lib import _Infernux
         if self._step_completion is not None:
-            epoch, step, frame = self._step_completion
-            if (int(scene_manager.simulation_epoch) == epoch and scene_manager.published_fixed_step_index >= step
-                    and scene_manager.runtime_frame_count >= frame):
+            pending = cancelled = False
+            for handle, epoch, target, frame in self._step_completion:
+                if handle.state != "ready" or handle.destroy_requested:
+                    cancelled = True
+                    continue
+                with _Infernux._RuntimeWorldScope(int(handle.id)):
+                    if (int(manager.simulation_epoch) != epoch or not manager.is_paused()
+                            or int(manager._step_permission_index) != target):
+                        cancelled = True
+                    elif manager.is_stepping():
+                        pending = True
+                    elif int(manager._frame_time.frame_count) < frame:
+                        cancelled = True
+            if pending:
+                return False
+            if not cancelled:
                 self._step_sequence += 1
+            else:
+                Debug.log_warning("Paused group Step cancelled because a member left its admitted Play frame")
             self._step_completion = None
         if self._pending_step_requests <= 0:
             return False
+        members = []
+        requests = []
+        for identity in tuple(manager._runtime_world_ids):
+            handle = manager._get_runtime_world_handle(identity)
+            if handle.state != "ready" or handle.destroy_requested:
+                continue
+            with _Infernux._RuntimeWorldScope(identity):
+                if not manager.is_playing() or not manager.is_paused():
+                    continue
+                if manager.is_stepping():
+                    return False
+                clock = manager._frame_time
+                # Time is this world's admitted logical clock, never paused wall time.
+                # Preserve the existing first-frame Step default only before any F.
+                source_delta = float(clock.unscaled_delta_time) if clock.frame_count else 1.0 / 60.0
+                epoch = int(manager.simulation_epoch)
+                members.append((handle, epoch, int(clock.frame_count) + 1))
+                requests.append((int(identity), epoch, source_delta))
+        manager._request_runtime_steps(requests)
         self._pending_step_requests -= 1
-        delta = self.delta_time
-        dt = delta if delta > 0 else (1.0 / 60.0)
-        epoch = int(scene_manager.simulation_epoch)
-        step = int(scene_manager.fixed_step_index) + int(not scene_manager.fixed_step_pending)
-        frame = int(scene_manager.runtime_frame_count) + 1
-        scene_manager.step(dt)
-        if scene_manager.is_stepping():
-            self._step_completion = epoch, step, frame
-        elif (int(scene_manager.simulation_epoch) == epoch and scene_manager.published_fixed_step_index >= step
-                and scene_manager.runtime_frame_count >= frame):
-            self._step_sequence += 1
-        return True
+        if members:
+            completion = []
+            for handle, epoch, frame in members:
+                with _Infernux._RuntimeWorldScope(int(handle.id)):
+                    completion.append((handle, epoch, int(manager._step_permission_index), frame))
+            self._step_completion = tuple(completion)
+        return bool(members)
 
     def _prepare_active_scene_for_play(self, snapshot: Optional[Any]) -> bool:
         """Refresh Python component instances while preserving native objects."""
