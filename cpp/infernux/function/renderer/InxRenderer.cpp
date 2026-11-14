@@ -905,6 +905,13 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         }
     } frameScope{m_drawingFrame, m_cameraRequestSerial, ++m_viewRequestSerial};
     m_drawingFrame = true;
+    const auto finishStoppedFrame = [this]() {
+        if (m_frameWorkOwner->IsAccepting())
+            return false;
+        m_gui->CompleteInputFrame();
+        SceneManager::Instance().FinishStepPresentation(false);
+        return true;
+    };
     RetireReplacedViewTargets();
     const bool samplePerformanceFrame = m_framePerformanceWindowActive;
     RendererFramePerformanceSample performanceSample;
@@ -1004,6 +1011,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 
     // Window events
     m_view->ProcessEvent(pace);
+    if (finishStoppedFrame())
+        return {};
     if (samplePerformanceFrame) {
         performanceSample.inputMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - performanceWindowFrameStart)
@@ -1079,8 +1088,12 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         samplePerformanceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     if (auto callback = m_frameBeginCallback)
         callback(m_deltaTime);
+    if (finishStoppedFrame())
+        return {};
     if (auto callback = m_preGuiCallback)
         callback();
+    if (finishStoppedFrame())
+        return {};
     if (samplePerformanceFrame)
         performanceSample.callbacksMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - callbacksStart).count();
@@ -1150,12 +1163,16 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start).count();
         RecordUIPerformanceFrame();
     }
+    if (finishStoppedFrame())
+        return {};
     // Update scene system
     auto _sceneUpdateStart = std::chrono::high_resolution_clock::now();
     auto _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     SceneManager &sceneManager = SceneManager::Instance();
     const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(m_deltaTime);
     sceneManager.ServiceRuntimeFrames(*m_frameWorkOwner, sceneDeltaTime);
+    if (finishStoppedFrame())
+        return {};
     m_gui->CompleteInputFrame();
     ConsumeSceneTemporalDiscontinuity();
 #if INFERNUX_FRAME_PROFILE
@@ -1201,6 +1218,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // This is the actual Host extraction boundary for editor views and
     // previews. Logical World completion has its own publication callback.
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderExtraction);
+    if (finishStoppedFrame())
+        return {};
     if (!sceneManager.IsPlaying())
         PrepareWorldRenderInputs();
     bridge.PrepareFrame(sceneViewActive);

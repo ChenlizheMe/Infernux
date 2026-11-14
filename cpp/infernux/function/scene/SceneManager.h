@@ -238,12 +238,8 @@ class SceneManager
     {
         return CurrentWorld().simulation.simulationEpoch;
     }
-    using SimulationState = std::tuple<uint64_t, bool, bool, uint64_t>;
-    [[nodiscard]] SimulationState GetSimulationState() const noexcept
-    {
-        return std::tuple{CurrentWorld().simulation.simulationEpoch, CurrentWorld().simulation.isPlaying,
-                          CurrentWorld().simulation.isPaused, CurrentWorld().frame.generation};
-    }
+    using SimulationState = std::tuple<uint64_t, bool, bool, uint64_t, bool>;
+    [[nodiscard]] SimulationState GetSimulationState() const noexcept;
     /// Fixed bundles begun in this session, including empty-body and paused steps.
     [[nodiscard]] uint64_t GetFixedStepIndex() const noexcept
     {

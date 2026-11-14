@@ -540,10 +540,18 @@ void SceneManager::ClearRuntimeLifecycleCallbacks()
         world.scenes.persistent->SetRuntimeLifecycleSchedulerEnabled(false);
 }
 
+SceneManager::SimulationState SceneManager::GetSimulationState() const noexcept
+{
+    const auto &world = CurrentWorld();
+    return {world.simulation.simulationEpoch, world.simulation.isPlaying, world.simulation.isPaused,
+            world.frame.generation, !m_runtimeFrameWork || m_runtimeFrameWork->IsAccepting()};
+}
+
 bool SceneManager::CanContinueRuntimeFrame() const noexcept
 {
-    return !CurrentWorld().simulation.isPlaying || !m_runtimeFrameWork || !m_runtimeFrameWork->IsActive() ||
-           m_runtimeFrameWork->Remaining() > 0;
+    return !m_runtimeFrameWork || (m_runtimeFrameWork->IsAccepting() &&
+                                   (!CurrentWorld().simulation.isPlaying || !m_runtimeFrameWork->IsActive() ||
+                                    m_runtimeFrameWork->Remaining() > 0));
 }
 
 void SceneManager::BindRuntimeFrameWork(FrameWorkOwner &work) noexcept
@@ -724,7 +732,8 @@ void SceneManager::Update(float deltaTime)
 void SceneManager::ContinueRuntimeUpdate()
 {
     auto &world = CurrentWorld();
-    if (!world.simulation.isPlaying || (world.simulation.isPaused && !world.simulation.isStepping))
+    if (!world.simulation.isPlaying || (world.simulation.isPaused && !world.simulation.isStepping) ||
+        !CanContinueRuntimeFrame())
         return;
     if (world.frame.phase == RuntimeWorld::FramePhase::Idle) {
         if (world.frame.pending.empty() || !CanContinueRuntimeFrame())
@@ -920,6 +929,8 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
     const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
     BindRuntimeFrameWork(work);
+    if (!work.IsAccepting())
+        return;
     FrameWorkOwner::Scope accounting(work);
     TransformECSStore::Instance().BeginFrameCache();
     Update(hostDeltaTime);
@@ -976,6 +987,10 @@ bool SceneManager::EndRuntimeFrame(bool completeStep)
         std::function<void()> callback;
         ~LifecycleScopeEnd()
         {
+            // Exit or a scene replacement can return before normal publication.
+            // Commit only the CPU author cache; do not start another GPU consumer.
+            if (TransformECSStore::Instance().IsFrameCacheActive())
+                TransformECSStore::Instance().EndFrameCache();
             if (world.lifecycle.runtimeLifecycleFrameOpen) {
                 world.lifecycle.runtimeLifecycleFrameOpen = false;
                 if (callback)
@@ -983,6 +998,8 @@ bool SceneManager::EndRuntimeFrame(bool completeStep)
             }
         }
     } lifecycleEnd{world, m_runtimeLifecycleEnd};
+    if (m_runtimeFrameWork && !m_runtimeFrameWork->IsAccepting())
+        return false;
     CompleteRuntimeFrame();
     if (GetSimulationState() != admittedState)
         return false;
