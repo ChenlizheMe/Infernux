@@ -2478,7 +2478,7 @@ int main()
     assert(portableStorage.Assign({portableCull, portableCull, portableCull}));
     portableCull.reset();
     assert(!portableWeak.expired() && portableStorage.View().reset->target == ShaderCodeTarget::Wgsl &&
-           portableStorage.View().reset->rootConstants);
+           portableStorage.View().reset->entries.front().rootConstants);
     particle::ParticleGpuCuller sceneCuller;
     particle::ParticleGpuCuller gameCuller;
     assert(sceneCuller.Create(cullDevice, cullerDesc));

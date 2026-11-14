@@ -1323,7 +1323,8 @@ void main() { }
     for (const auto &[source, name] : particleSortShaders) {
         for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
             const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
-            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+            assert(program.entries.front().rootConstants && !program.entries.empty() &&
+                   !program.entries.front().code.empty());
         }
     }
 
@@ -1335,7 +1336,8 @@ void main() { }
     for (const auto &[source, name] : particleCullShaders) {
         for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
             const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
-            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+            assert(program.entries.front().rootConstants && !program.entries.empty() &&
+                   !program.entries.front().code.empty());
         }
     }
 
@@ -1346,7 +1348,8 @@ void main() { }
     for (const auto &[source, name] : particleBoundsShaders) {
         for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
             const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
-            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+            assert(program.entries.front().rootConstants && !program.entries.empty() &&
+                   !program.entries.front().code.empty());
         }
     }
 
@@ -1357,7 +1360,8 @@ void main() { }
     for (const auto &[source, name] : particleMigrationShaders) {
         for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
             const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
-            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+            assert(program.entries.front().rootConstants && !program.entries.empty() &&
+                   !program.entries.front().code.empty());
         }
     }
 
@@ -1371,7 +1375,8 @@ void main() { }
     for (const auto &[source, name] : particleRibbonTopologyShaders) {
         for (auto target : {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl}) {
             const auto program = infernux::CompileSlangNativeModule({name, name, std::string(source)}, target);
-            assert(program.rootConstants && !program.entries.empty() && !program.entries.front().code.empty());
+            assert(program.entries.front().rootConstants && !program.entries.empty() &&
+                   !program.entries.front().code.empty());
         }
     }
 
@@ -1386,7 +1391,8 @@ void main() { }
             const auto compiled = infernux::CompileSlangNativeModule(
                 {"ribbon", "ParticleRibbon.slang", std::string(ribbonSources[index])}, target);
             assert(compiled.entries.size() == 1 && compiled.entries[0].name == "main");
-            assert(index == 3 ? !compiled.rootConstants : compiled.rootConstants->byteSize == 240);
+            assert(index == 3 ? !compiled.entries.front().rootConstants
+                              : compiled.entries.front().rootConstants->byteSize == 240);
             const auto &entry = compiled.entries[0];
             if (index == 0 || index == 2) {
                 assert(entry.bindings.size() == 4);

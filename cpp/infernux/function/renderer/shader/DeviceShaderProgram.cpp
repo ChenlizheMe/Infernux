@@ -40,7 +40,6 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTarget
                                          const std::vector<rhi::BindingLayoutHandle> &sharedLayouts)
     : m_impl(std::make_unique<Impl>(device))
 {
-    m_impl->rootConstantBytes = code.rootConstants ? static_cast<uint32_t>(code.rootConstants->byteSize) : 0;
     for (const auto index : entries) {
         const auto &entry = code.entries.at(index);
         if (entry.sampleRateShading && !device.GetCapabilities().features.sampleRateShading)
@@ -50,7 +49,9 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTarget
         const auto module = device.CreateShaderModule({language, entry.code.data(), entry.code.size()});
         if (!module.IsValid())
             throw std::runtime_error("Device shader module creation failed: " + entry.name);
+        const auto rootBytes = entry.rootConstants ? static_cast<uint32_t>(entry.rootConstants->byteSize) : 0;
         m_impl->entries.push_back({entry.name, entry.stage, module});
+        m_impl->rootConstantBytes = std::max(m_impl->rootConstantBytes, rootBytes);
     }
     std::vector<rhi::BindingLayoutDesc> descriptions;
     for (auto resource : code.resources) {

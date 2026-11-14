@@ -36,6 +36,9 @@ struct ShaderEntryPointCode
     std::vector<ShaderStageVariable> inputs;
     std::vector<ShaderStageVariable> outputs;
     bool sampleRateShading = false;
+    /// Small per-execution values. Vulkan uses a push-constant range; the
+    /// portable target uses the RHI's reserved uniform binding instead.
+    std::optional<ShaderValueLayout> rootConstants;
 };
 
 struct ShaderTargetCode
@@ -43,9 +46,6 @@ struct ShaderTargetCode
     ShaderCodeTarget target = ShaderCodeTarget::SpirV;
     std::vector<ShaderEntryPointCode> entries;
     std::vector<ShaderResourceLayout> resources;
-    /// Small per-execution values. Vulkan uses a push-constant range; the
-    /// portable target uses the RHI's reserved uniform binding instead.
-    std::optional<ShaderValueLayout> rootConstants;
     /// Full target reflection retained for tools and compiler diagnostics.
     std::string reflection;
 };

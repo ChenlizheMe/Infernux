@@ -188,10 +188,10 @@ struct BindingOffset
 };
 
 void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, const std::string &path,
-                  std::vector<ShaderResourceLayout> &result, std::optional<ShaderValueLayout> &rootConstants);
+                  std::vector<ShaderResourceLayout> &result);
 
 void ReflectContainer(slang::TypeLayoutReflection *container, BindingOffset offset, const std::string &path,
-                      std::vector<ShaderResourceLayout> &result, std::optional<ShaderValueLayout> &rootConstants)
+                      std::vector<ShaderResourceLayout> &result)
 {
     if (container->getKind() == Kind::ParameterBlock)
         offset.binding = 0; // A parameter block owns its descriptor set.
@@ -206,21 +206,19 @@ void ReflectContainer(slang::TypeLayoutReflection *container, BindingOffset offs
         resource.binding.type = rhi::BindingType::UniformBuffer;
         resource.value = ValueLayout(value);
         resource.binding.minBufferBindingSize = resource.value.byteSize;
-        if (location.set == rhi::RootConstantGroup && location.binding == rhi::RootConstantBinding)
-            rootConstants = std::move(resource.value);
-        else
+        if (location.set != rhi::RootConstantGroup || location.binding != rhi::RootConstantBinding)
             result.push_back(std::move(resource));
     }
     // The element variable holds offsets relative to the container. Its type
     // is unadjusted; getElementTypeLayout() already folds these offsets in.
-    ReflectValue(value, offset.At(element), path, result, rootConstants);
+    ReflectValue(value, offset.At(element), path, result);
 }
 
 void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, const std::string &path,
-                  std::vector<ShaderResourceLayout> &result, std::optional<ShaderValueLayout> &rootConstants)
+                  std::vector<ShaderResourceLayout> &result)
 {
     if (layout->getKind() == Kind::ConstantBuffer || layout->getKind() == Kind::ParameterBlock) {
-        ReflectContainer(layout, offset, path, result, rootConstants);
+        ReflectContainer(layout, offset, path, result);
         return;
     }
     const auto rangeCount = layout->getBindingRangeCount();
@@ -234,10 +232,8 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
         const auto first = layout->getBindingRangeFirstDescriptorRangeIndex(index);
         const auto count = layout->getBindingRangeDescriptorRangeCount(index);
         auto *type = layout->getBindingRangeLeafTypeLayout(index);
-        if (bindingType == slang::BindingType::PushConstant) {
-            rootConstants = ValueLayout(type->getElementTypeLayout());
+        if (bindingType == slang::BindingType::PushConstant)
             continue;
-        }
         for (SlangInt range = first; range < first + count; ++range) {
             ShaderResourceLayout resource;
             resource.name = names[index];
@@ -298,7 +294,7 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
         const auto type = layout->getBindingRangeType(range);
         if (type == slang::BindingType::ConstantBuffer || type == slang::BindingType::ParameterBlock)
             ReflectContainer(layout->getBindingRangeLeafTypeLayout(range),
-                             offset.At(layout->getSubObjectRangeOffset(index)), names[range], result, rootConstants);
+                             offset.At(layout->getSubObjectRangeOffset(index)), names[range], result);
     }
 }
 void StageType(slang::TypeLayoutReflection *type, SlangParameterCategory category, uint32_t location,
@@ -349,11 +345,33 @@ void StageType(slang::TypeLayoutReflection *type, SlangParameterCategory categor
 }
 } // namespace
 
-std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout,
-                                                        std::optional<ShaderValueLayout> &rootConstants)
+std::vector<SlangRootParameter> ReflectSlangRootParameters(slang::TypeLayoutReflection *layout)
+{
+    std::vector<SlangRootParameter> result;
+    for (unsigned index = 0; index < layout->getFieldCount(); ++index) {
+        auto *variable = layout->getFieldByIndex(index);
+        auto *type = variable->getTypeLayout();
+        if (type->getSize(SLANG_PARAMETER_CATEGORY_PUSH_CONSTANT_BUFFER) != 0) {
+            result.push_back(
+                {SLANG_PARAMETER_CATEGORY_PUSH_CONSTANT_BUFFER,
+                 static_cast<uint32_t>(variable->getBindingSpace(SLANG_PARAMETER_CATEGORY_PUSH_CONSTANT_BUFFER)),
+                 static_cast<uint32_t>(variable->getOffset(SLANG_PARAMETER_CATEGORY_PUSH_CONSTANT_BUFFER)),
+                 ValueLayout(type->getElementTypeLayout())});
+        } else if (type->getKind() == Kind::ConstantBuffer &&
+                   variable->getBindingSpace(SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT) ==
+                       rhi::RootConstantGroup &&
+                   variable->getOffset(SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT) == rhi::RootConstantBinding) {
+            result.push_back({SLANG_PARAMETER_CATEGORY_DESCRIPTOR_TABLE_SLOT, rhi::RootConstantGroup,
+                              rhi::RootConstantBinding, ValueLayout(type->getElementTypeLayout())});
+        }
+    }
+    return result;
+}
+
+std::vector<ShaderResourceLayout> ReflectSlangResources(slang::TypeLayoutReflection *layout)
 {
     std::vector<ShaderResourceLayout> result;
-    ReflectValue(layout, {}, {}, result, rootConstants);
+    ReflectValue(layout, {}, {}, result);
     std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
         return std::tie(left.set, left.binding.binding) < std::tie(right.set, right.binding.binding);
     });

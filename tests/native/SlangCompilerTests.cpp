@@ -342,6 +342,84 @@ void main() { output[0] = uniforms.rotation[1][2] + uniforms.rectangular[1][2] +
             Require(standardModuleFound, "Embedded Slang standard module was not found");
         }
 
+        // A shared module can select its native root representation per target.
+        // Its unused alternative and an unrelated entry must not overwrite layout.
+        const ShaderSourceModule executionLibrary{"execution_values", "<infernux/shader/execution_values>", R"(
+[ForceInline]
+public T read_execution_values<T>(T native, T emulated)
+{
+    __target_switch {
+    case spirv: return native;
+    case wgsl: return emulated;
+    }
+}
+)"};
+        const ShaderSourceModule rootLibrary{"shared_roots", "Assets/shared_roots.shaderlib.py", R"(
+import execution_values;
+public struct Values { public float prefix; public float weights[3]; public float3x3 basis; };
+[[vk::push_constant]] ConstantBuffer<Values> native_values;
+[[vk::binding(999, 0)]] ConstantBuffer<Values> emulated_values;
+public Values read_values()
+{
+    return read_execution_values<Values>(native_values, emulated_values);
+}
+)"};
+        const auto roots =
+            compiler.Compile({"entry_roots", "Assets/entry_roots.compute.py", R"(
+import shared_roots;
+[[vk::binding(0, 1)]] RWStructuredBuffer<float4> output;
+[shader("compute")][numthreads(1, 1, 1)]
+void root_main()
+{
+    Values value = read_values();
+    output[0] = float4(value.prefix, value.weights[1], value.basis[0][1], value.basis[2][2]);
+}
+[shader("compute")][numthreads(1, 1, 1)]
+void independent_main() { output[1] = float4(11.0); }
+)"},
+                             {executionLibrary, rootLibrary}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : roots.targets) {
+            const auto used = std::find_if(target.entries.begin(), target.entries.end(),
+                                           [](const auto &entry) { return entry.name == "root_main"; });
+            const auto independent = std::find_if(target.entries.begin(), target.entries.end(),
+                                                  [](const auto &entry) { return entry.name == "independent_main"; });
+            Require(used != target.entries.end() && independent != target.entries.end(),
+                    "Root specialization lost a module entry");
+            Require(used->rootConstants && !independent->rootConstants,
+                    "Per-execution layout must follow final entry usage");
+            const bool native = target.target == ShaderCodeTarget::SpirV;
+            const auto &value = *used->rootConstants;
+            Require(value.byteSize == (native ? 64u : 112u) && value.fields[1].offset == (native ? 4u : 16u) &&
+                        value.fields[1].stride == (native ? 4u : 16u) && value.fields[2].offset == (native ? 16u : 64u),
+                    "An unused root alternative overwrote the selected array/matrix layout");
+            if (!native) {
+                const std::string text(used->code.begin(), used->code.end());
+                Require(text.find("var<immediate>") == std::string::npos &&
+                            text.find("@binding(999)") != std::string::npos,
+                        "Portable root values must use the existing uniform ABI");
+            }
+            Require(target.resources.size() == 1 && target.resources[0].name == "output",
+                    "Root representations leaked into ordinary author resources");
+        }
+
+        bool ambiguousRootRejected = false;
+        try {
+            compiler.Compile({"ambiguous_roots", "Assets/ambiguous_roots.compute.py", R"(
+struct Values { float value; };
+[[vk::push_constant]] ConstantBuffer<Values> native_values;
+[[vk::binding(999, 0)]] ConstantBuffer<Values> emulated_values;
+[[vk::binding(0, 1)]] RWStructuredBuffer<float> output;
+[shader("compute")][numthreads(1, 1, 1)]
+void main() { output[0] = native_values.value + emulated_values.value; }
+)"},
+                             {}, {ShaderCodeTarget::SpirV});
+        } catch (const ShaderCompilationError &error) {
+            ambiguousRootRejected = error.diagnostics.size() == 1 &&
+                                    error.diagnostics[0].code == "author.root_parameters" &&
+                                    error.diagnostics[0].path == "Assets/ambiguous_roots.compute.py";
+        }
+        Require(ambiguousRootRejected, "Conflicting execution blocks must fail before device preparation");
+
         for (auto target : {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}) {
             const auto native = CompileSlangNativeModule({"native_root", "native_root.slang", R"slang(
 struct Arguments { float weights[2]; };
@@ -351,10 +429,10 @@ INX_ROOT_CONSTANTS ConstantBuffer<Arguments> pc;
 void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weights[1]; }
 )slang"},
                                                          target);
-            Require(native.rootConstants.has_value(), "Native root values lost their target layout");
+            Require(native.entries.front().rootConstants.has_value(), "Native root values lost their target layout");
             Require(native.resources.size() == 1 && native.resources[0].binding.binding == 3,
                     "Native root values must not enter user descriptor groups");
-            const auto &root = *native.rootConstants;
+            const auto &root = *native.entries.front().rootConstants;
             const auto &array = root.fields.at(0);
             const auto expectedStride = target == ShaderCodeTarget::SpirV ? 4u : 16u;
             Require(array.stride == expectedStride, "Root array packing must follow the concrete target");
@@ -378,14 +456,15 @@ void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weigh
                             ui.entries[1].name == "fragment_main",
                         "Native UI entries must share the compiled module");
                 const auto rootBytes = editor ? (split ? 32u : 24u) : (world ? 128u : 64u);
-                Require(ui.rootConstants && ui.rootConstants->byteSize == rootBytes,
+                Require(ui.entries.front().rootConstants && ui.entries.front().rootConstants->byteSize == rootBytes,
                         "Native UI root values must match the host's target layout");
                 if (editor)
-                    Require(ui.rootConstants->fields[0].offset == 0 && ui.rootConstants->fields[1].offset == 8 &&
-                                ui.rootConstants->fields[2].offset == 16,
+                    Require(ui.entries.front().rootConstants->fields[0].offset == 0 &&
+                                ui.entries.front().rootConstants->fields[1].offset == 8 &&
+                                ui.entries.front().rootConstants->fields[2].offset == 16,
                             "Editor UI must retain the backend's shared root block offsets");
                 else
-                    Require(ui.rootConstants->fields[world ? 1 : 6].offset == (world ? 64u : 32u),
+                    Require(ui.entries.front().rootConstants->fields[world ? 1 : 6].offset == (world ? 64u : 32u),
                             "UI material color offset differs between targets");
                 Require(ui.resources.size() == (split ? 2u : 1u) && ui.resources[0].binding.binding == 0 &&
                             ui.resources[0].binding.type ==
@@ -407,7 +486,8 @@ void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weigh
                 const bool root = vertex || source.stage == "picking_fragment";
                 Require(particle.entries.size() == 1 && particle.entries[0].name == "main",
                         "Particle module lost its graphics entry");
-                Require(bool(particle.rootConstants) == root && (!root || particle.rootConstants->byteSize == 240),
+                Require(bool(particle.entries.front().rootConstants) == root &&
+                            (!root || particle.entries.front().rootConstants->byteSize == 240),
                         "Particle view constants differ from the shared host layout");
                 if (vertex)
                     Require(particle.entries[0].bindings.size() == (source.renderer == "mesh" ? 4u : 2u),

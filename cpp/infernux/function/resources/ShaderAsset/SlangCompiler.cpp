@@ -297,7 +297,8 @@ try {
         if (!layout)
             throw ShaderCompilationError(FailureDiagnostics("reflect", source.path, diagnostics, targetName));
         AppendDiagnostics(result, diagnostics, "reflect", targetName);
-        target.resources = ReflectSlangResources(layout->getGlobalParamsTypeLayout(), target.rootConstants);
+        target.resources = ReflectSlangResources(layout->getGlobalParamsTypeLayout());
+        const auto rootParameters = ReflectSlangRootParameters(layout->getGlobalParamsTypeLayout());
 
         for (SlangInt entryIndex = 0; entryIndex < entryCount; ++entryIndex) {
             Slang::ComPtr<slang::IBlob> code;
@@ -331,6 +332,19 @@ try {
                                  "descriptor_use", nullptr, source.path, targetName);
                 if (used)
                     artifact.bindings.push_back({resource.set, resource.binding.binding});
+            }
+            for (const auto &root : rootParameters) {
+                bool used = false;
+                CheckCompilation(metadata->isParameterLocationUsed(root.category, root.space, root.binding, used),
+                                 "root_parameter_use", nullptr, source.path, targetName);
+                if (!used)
+                    continue;
+                if (artifact.rootConstants)
+                    throw ShaderCompilationError(
+                        {{"author.root_parameters", "error", source.path, 0, 0, 0, 0,
+                          "Shader entry '" + artifact.name + "' uses more than one per-execution parameter block",
+                          "reflect", targetName}});
+                artifact.rootConstants = root.value;
             }
             const auto *bytes = static_cast<const char *>(code->getBufferPointer());
             artifact.code.assign(bytes, bytes + code->getBufferSize());
