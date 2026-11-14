@@ -81,6 +81,8 @@ class JoltGpuScene final
         std::vector<PublishedLeaf> leaves;
         JPH::GPU::Float4 rootCenterOfMass{};
         JPH::GPU::Float4 rootScale{1, 1, 1, 0};
+        // Accepted physical author record; never a numerical state mirror.
+        JPH::GPU::BodyModel physicalModel{};
         uint64_t shapeRevision = 0;
         JPH::RefConst<JPH::Shape> authoredShape;
     };
@@ -173,6 +175,7 @@ class JoltGpuScene final
     [[nodiscard]] BodyAllocation FindBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] PhysicsActorHandle FindActor(uint32_t bodyId) const noexcept;
     [[nodiscard]] size_t GetBodyCount(const RuntimeWorld &world) const;
+    [[nodiscard]] JPH::GPU::BodyModel GetAcceptedBodyModel(uint32_t bodyId) const;
     [[nodiscard]] uint32_t GetCapacity(const RuntimeWorld &world) const;
     [[nodiscard]] bool CanReserve(const RuntimeWorld &world) const;
     [[nodiscard]] bool HasPendingControl(const RuntimeWorld &world) const;

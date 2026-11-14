@@ -43,8 +43,8 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
 
     const auto *rigidbody = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
     if (rigidbody) {
-        if (rigidbody->GetConstraints() != 0)
-            throw std::invalid_argument("Jolt GPU actor preparation does not yet support locked degrees of freedom");
+        if ((rigidbody->GetConstraints() & ~126) != 0)
+            throw std::invalid_argument("Rigidbody constraints contain unknown bits");
         if (rigidbody->GetCollisionDetectionMode() != static_cast<int>(CollisionDetectionMode::Discrete))
             throw std::invalid_argument(
                 "Jolt GPU actor preparation does not yet support continuous collision detection");
@@ -74,6 +74,8 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
         const auto mass = PrepareBodyMass(shape.GetPtr(), rigidbody->GetMass(), properties ? &*properties : nullptr,
                                           transform->GetWorldScale());
         prepared.body.mass.x = 1.0f / mass.mass;
+        prepared.body.mass.y = float((rigidbody->GetConstraints() >> 1) & 7);
+        prepared.body.mass.z = float((rigidbody->GetConstraints() >> 4) & 7);
         prepared.body.mass.w = rigidbody->GetUseGravity() ? 1.0f : 0.0f;
         prepared.body.invInertiaDiagonal = {mass.inverse.GetX(), mass.inverse.GetY(), mass.inverse.GetZ(), 0.0f};
         prepared.body.inertiaRotation = {mass.axes.GetX(), mass.axes.GetY(), mass.axes.GetZ(), mass.axes.GetW()};

@@ -48,6 +48,8 @@ class JoltGpuJoints final
     /// model acceptance boundary. Reference frames and unrelated runtime survive.
     [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate> PrepareUpdate(JoltGpuStorage &storage,
                                                                     std::vector<JoltGpuJointModelUpdate> changes) const;
+    /// Existing state update entry; does not upload/reinitialize joint authors.
+    [[nodiscard]] JoltGpuJointReplacement PrepareMobilityReset(JoltGpuStorage &storage, uint32_t bodySlot) const;
     [[nodiscard]] JoltGpuPreparedJointMotion
     PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication, const std::vector<uint32_t> &rows,
                       uint32_t kind) const;

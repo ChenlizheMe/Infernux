@@ -11,6 +11,7 @@ function(infernux_embed_physics_sources target)
         "${_physics_root}/Shaders/island_owner_schedule.slang"
         "${_physics_root}/Shaders/rigid_broadphase.slang"
         "${_physics_root}/Shaders/rigid_math.slang"
+        "${_physics_root}/Shaders/rigid_psd.slang"
         "${_physics_root}/Shaders/rigid_joints.slang"
         "${_physics_root}/Shaders/rigid_swing_twist.slang"
         "${_physics_root}/Shaders/joint_commands.slang"
@@ -30,6 +31,7 @@ function(infernux_embed_physics_sources target)
     file(READ "${_physics_root}/Shaders/island_owner_schedule.slang" JOLT_GPU_ISLAND_OWNER_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_broadphase.slang" JOLT_GPU_BROADPHASE_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_math.slang" JOLT_GPU_MATH_SOURCE)
+    file(READ "${_physics_root}/Shaders/rigid_psd.slang" JOLT_GPU_PSD_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_joints.slang" JOLT_GPU_JOINTS_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_swing_twist.slang" JOLT_GPU_SWING_TWIST_SOURCE)
     file(READ "${_physics_root}/Shaders/joint_commands.slang" JOLT_GPU_JOINT_COMMANDS_SOURCE)
@@ -42,7 +44,7 @@ function(infernux_embed_physics_sources target)
 
     # Keep individual literals below MSVC's limit without changing the source
     # text or introducing runtime file access. Adjacent literals concatenate.
-    foreach(_source IN ITEMS JOLT_GPU_TYPES_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_STEP_SOURCE
+    foreach(_source IN ITEMS JOLT_GPU_TYPES_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_PSD_SOURCE JOLT_GPU_STEP_SOURCE
             JOLT_GPU_BROADPHASE_TYPES_SOURCE JOLT_GPU_BROADPHASE_SOURCE
             JOLT_GPU_CONSTRAINT_TYPES_SOURCE JOLT_GPU_CONSTRAINT_SOURCE JOLT_GPU_ISLAND_OWNER_SOURCE
             JOLT_GPU_BODY_MUTATIONS_SOURCE JOLT_GPU_BODY_COMMANDS_SOURCE

@@ -5089,6 +5089,10 @@ class Rigidbody(Component):
 
     @property
     def world_center_of_mass(self) -> Vector3: ...
+    @property
+    def inertia_tensor(self) -> Vector3: ...
+    @property
+    def inertia_tensor_rotation(self) -> quatf: ...
     position: Vector3
     rotation: quatf
 

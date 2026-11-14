@@ -685,6 +685,7 @@ class JoltGpuScene::Impl
         identity->bodyId = id;
         identity->slot = index;
         identity->acceptedMotionType = actor.body.meta.z & ~MotionNotResident;
+        identity->physicalModel = actor.body;
         identity->actor = slot.actor;
         identity->rigidbody = actor.initialRigidbody;
         identity->rigidbodyComponentId = actor.rigidbodyComponentId;
@@ -764,6 +765,16 @@ class JoltGpuScene::Impl
                     {{packed, 0, 0, 0}, {newCOM.x - oldCOM.x, newCOM.y - oldCOM.y, newCOM.z - oldCOM.z, 0.0f}});
             }
             const auto &acceptedBody = storage.GetModel().bodies[packed];
+            const auto different = [](const Float4 &a, const Float4 &b) {
+                return a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w;
+            };
+            const bool mobilityChanged =
+                !change->creation &&
+                (acceptedBody.mass.x != change->model.mass.x || acceptedBody.mass.y != change->model.mass.y ||
+                 acceptedBody.mass.z != change->model.mass.z ||
+                 different(acceptedBody.invInertiaDiagonal, change->model.invInertiaDiagonal) ||
+                 different(acceptedBody.inertiaRotation, change->model.inertiaRotation));
+            auto warm = mobilityChanged ? joints.PrepareMobilityReset(storage, packed) : JoltGpuJointReplacement{};
             if (acceptedBody.meta.y == change->leaves.size()) {
                 auto body = change->model;
                 body.meta.x = acceptedBody.meta.x;
@@ -771,16 +782,22 @@ class JoltGpuScene::Impl
                 leaves.reserve(change->leaves.size());
                 for (uint32_t leaf = 0; leaf < change->leaves.size(); ++leaf)
                     leaves.push_back({acceptedBody.meta.x + leaf, change->leaves[leaf]});
-                return mutations.Prepare(storage, {{packed, body}}, std::move(leaves), initial, rebases);
+                return mutations.Prepare(storage, {{packed, body}}, std::move(leaves), initial, rebases,
+                                         std::move(warm.updates), std::move(warm.dispatches));
             }
             return mutations.PrepareReplacement(storage, RepackModel(packed, change->model, change->leaves), initial,
-                                                rebases);
+                                                rebases, std::move(warm.updates), std::move(warm.dispatches));
         };
         group.modelAccepted = [this, change]() noexcept { CommitActor(change); };
         if (motionChanged) {
             BodyCommand boundary{};
             boundary.meta = {id, CommandMotionBoundary, MotionBoundaryTypeChange | CarryFlags(slot.queuedTarget), 0};
             group.commands.push_back(boundary);
+        }
+        if (!firstOwnership) {
+            BodyCommand project{};
+            project.meta = {id, CommandMotionBoundary, MotionBoundaryProjectMobility, 0};
+            group.commands.push_back(project);
         }
         if (motion != MotionStatic) {
             // A new slot clamps its initial values. A new Rigidbody attached
@@ -1445,6 +1462,14 @@ uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t a, ui
 {
     return m_impl->CreateJoint(owner, a, b, author);
 }
+JPH::GPU::BodyModel JoltGpuScene::GetAcceptedBodyModel(uint32_t bodyId) const
+{
+    const auto &slot = m_impl->slots[m_impl->RequireSlot(bodyId)];
+    if (!slot.accepted)
+        throw std::logic_error("Rigidbody has no accepted physical model");
+    return slot.accepted->physicalModel;
+}
+
 void JoltGpuScene::UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update)
 {
     m_impl->UpdateJoint(id, update);

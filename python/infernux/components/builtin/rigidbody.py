@@ -205,6 +205,16 @@ class Rigidbody(BuiltinComponent):
         return self._require_cpp_component().mass_properties
 
     @property
+    def inertia_tensor(self):
+        """Accepted principal moments in kg m², including the authored scale."""
+        return self._require_cpp_component().inertia_tensor
+
+    @property
+    def inertia_tensor_rotation(self):
+        """Accepted principal axes expressed in the body's local frame."""
+        return self._require_cpp_component().inertia_tensor_rotation
+
+    @property
     def constraints_flags(self) -> RigidbodyConstraints:
         """Typed view of the constraint bitmask."""
         return RigidbodyConstraints(int(self.constraints))

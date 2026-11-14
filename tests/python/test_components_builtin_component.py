@@ -64,7 +64,7 @@ class TestCppPropertyReadWrite:
 
 
 class TestCppPropertyEdgeCases:
-    @pytest.mark.parametrize("operation", ["get", "set"])
+    @pytest.mark.parametrize("operation", ["get", "set", "native_get"])
     def test_business_runtime_error_preserves_live_binding(self, operation):
         class BadCpp:
             component_id = 42
@@ -77,14 +77,20 @@ class TestCppPropertyEdgeCases:
             def raw(self, value):
                 raise RuntimeError("operation rejected")
 
+            @property
+            def native_only(self):
+                raise RuntimeError("operation rejected")
+
         demo = DemoBuiltin()
         demo._cpp_component = BadCpp()
         cpp = demo._cpp_component
         with pytest.raises(RuntimeError, match="operation rejected"):
             if operation == "get":
                 _ = demo.raw
-            else:
+            elif operation == "set":
                 demo.raw = 1
+            else:
+                _ = demo.native_only
         assert demo._require_cpp_component() is cpp
 
     @pytest.mark.parametrize("operation", ["get", "set"])

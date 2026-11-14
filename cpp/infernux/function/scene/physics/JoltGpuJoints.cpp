@@ -499,6 +499,71 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
     dispatches.push_back(std::move(dispatch));
     return storage.PrepareModelUpdate({}, {}, std::move(uploads), std::move(dispatches), std::move(changes));
 }
+JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &storage, uint32_t bodySlot) const
+{
+    if (!m_host.SharesServicesWith(storage.GetHost()))
+        throw std::invalid_argument("Mobility reset belongs to a different compute owner");
+    const auto &accepted = storage.GetModel().joints;
+    std::vector<uint32_t> rows;
+    for (uint32_t row = 0; row < accepted.size(); ++row)
+        if (accepted[row].bodies.x == bodySlot || accepted[row].bodies.y == bodySlot) {
+            rows.push_back(row);
+            rows.push_back(JointResetMobility);
+        }
+    if (rows.empty())
+        return {};
+    const auto requestCount = rows.size() / 2;
+    const auto groups = Groups(m_host, requestCount);
+    const auto &stream = storage.Get(Resource::Joints);
+    if (!stream || stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
+        stream->GetByteSize() != StreamBytes(accepted.size()))
+        throw std::invalid_argument("Jolt GPU joint updates require their accepted writable stream");
+    const auto &states = storage.Get(Resource::BodyStates);
+    if (!states || !m_host.SharesServicesWith(states->GetHost()) ||
+        states->GetByteSize() != uint64_t(storage.GetBodyCount()) * sizeof(BodyState))
+        throw std::invalid_argument("Jolt GPU joint updates require their ordered body states");
+
+    rhi::ComputeHost host = m_host;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers{};
+    buffers[Stream] = stream;
+    buffers[States] = states->Freeze();
+    std::vector<rhi::ComputeBufferUpdate> uploads;
+    const auto upload = [&](Port port, std::vector<uint8_t> data) {
+        buffers[port] = Allocate(host, data.size());
+        uploads.push_back({buffers[port], 0, std::move(data)});
+    };
+    const JointParams parameters{{static_cast<uint32_t>(accepted.size()), 0, static_cast<uint32_t>(requestCount), 0}};
+    upload(Parameters, Bytes(&parameters, 1));
+    upload(Rows, Bytes(rows.data(), rows.size()));
+    const auto &program = m_programs[UpdateState];
+    rhi::ComputeDispatchDesc dispatch;
+    dispatch.kernel = program.kernel;
+    dispatch.groupCountX = groups;
+    rhi::ComputeDispatchProof proof;
+    const uint64_t runtimeBase = sizeof(UInt4) + uint64_t(accepted.size()) * sizeof(JointAuthor);
+    for (const auto port : program.ports) {
+        const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
+        dispatch.buffers.push_back(buffers[port]);
+        dispatch.bufferAccesses.push_back(port == Stream ? rhi::ComputeBufferAccess::ReadWrite
+                                                         : rhi::ComputeBufferAccess::Read);
+        if (port != Stream) {
+            proof.reads.push_back({binding, 0, buffers[port]->GetByteSize()});
+            continue;
+        }
+        proof.reads.push_back({binding, 0, sizeof(UInt4)});
+        for (size_t request = 0; request < rows.size(); request += 2) {
+            const uint64_t row = rows[request];
+            proof.reads.push_back({binding, sizeof(UInt4) + row * sizeof(JointAuthor), sizeof(JointAuthor)});
+            const rhi::ComputeBindingRange runtime{binding, runtimeBase + row * sizeof(JointState), sizeof(JointState)};
+            proof.reads.push_back(runtime);
+            proof.writes.push_back(runtime);
+        }
+    }
+    dispatch.proof = std::move(proof);
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    dispatches.push_back(std::move(dispatch));
+    return {nullptr, std::move(uploads), std::move(dispatches)};
+}
 
 JoltGpuPreparedJointMotion
 JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication,

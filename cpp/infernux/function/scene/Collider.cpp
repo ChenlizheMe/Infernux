@@ -78,6 +78,8 @@ nlohmann::json &Collider::AddSemanticField(SemanticTypeDescriptor &type, std::st
 
 Collider::Collider()
 {
+    // Native geometry cooking is also legal before a numerical world starts.
+    (void)PhysicsWorld::Instance();
     m_ecsHandle = PhysicsECSStore::Instance().AllocateCollider(this);
 }
 

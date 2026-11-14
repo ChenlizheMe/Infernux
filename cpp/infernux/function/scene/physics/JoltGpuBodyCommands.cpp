@@ -102,9 +102,9 @@ void Validate(const BodyCommand &command, uint32_t bodyCount)
         return;
     }
     if (kind == CommandMotionBoundary) {
-        constexpr uint32_t flags = MotionBoundaryActionMask | MotionBoundaryCarryAuthoredPosition |
-                                   MotionBoundaryCarryAuthoredRotation;
-        if ((mode & ~flags) != 0 || (mode & MotionBoundaryActionMask) > MotionBoundarySuspendReset)
+        constexpr uint32_t flags =
+            MotionBoundaryActionMask | MotionBoundaryCarryAuthoredPosition | MotionBoundaryCarryAuthoredRotation;
+        if ((mode & ~flags) != 0 || (mode & MotionBoundaryActionMask) > MotionBoundaryProjectMobility)
             throw std::invalid_argument("Jolt GPU motion boundary has invalid action or carry flags");
         // Boundary pose channels come from the live device target. No command
         // payload lane is consumed, and none is a CPU copy of that device pose.

@@ -1237,6 +1237,11 @@ void RegisterPhysicsBindings(py::module_ &m)
                                 "rotation"_a = properties->rotation);
             },
             "Explicit unit-scale mass properties, or None for geometry-derived properties.")
+        .def_property_readonly("inertia_tensor", &Rigidbody::GetInertiaTensor,
+                               "Accepted computed principal moments; rotation locks use these axis labels.")
+        .def_property_readonly(
+            "inertia_tensor_rotation", &Rigidbody::GetInertiaTensorRotation,
+            "Accepted computed principal frame relative to the body; available after model acceptance.")
         .def_property("drag", &Rigidbody::GetDrag, &Rigidbody::SetDrag, "Linear drag (default 0)")
         .def_property("angular_drag", &Rigidbody::GetAngularDrag, &Rigidbody::SetAngularDrag,
                       "Angular drag (default 0.05)")

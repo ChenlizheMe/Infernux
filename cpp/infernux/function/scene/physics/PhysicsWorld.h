@@ -282,9 +282,9 @@ class PhysicsWorld
     /// Tear-down order is fixed:
     ///   1. ContactListener::ClearAll() — drop pair tracking before bodies die.
     ///   2. Body ownership and query publications are cleared.
-    ///   3. ContactListener / PhysicsSystem / JobSystem / TempAllocator / Layers
-    ///      destroyed in dependency order.
-    ///   4. Jolt globals (Factory, registered types) torn down.
+    ///   3. GPU scene resources and their host services are released.
+    /// Geometry authoring types outlive numerical execution and remain usable
+    /// before Play and between engine instances.
     /// Idempotent: subsequent calls are no-ops.
     void Shutdown();
     [[nodiscard]] size_t GetBodyCount() const;
@@ -592,6 +592,8 @@ class PhysicsWorld
     /// Get the world-space inertia tensor on the body's allowed angular subspace.
     /// Frozen axes and invalid/static bodies produce zero rows and columns.
     [[nodiscard]] glm::mat3 GetBodyWorldSpaceInertiaTensor(uint32_t bodyId) const;
+    [[nodiscard]] glm::vec3 GetBodyPrincipalInertia(uint32_t bodyId) const;
+    [[nodiscard]] glm::quat GetBodyPrincipalInertiaRotation(uint32_t bodyId) const;
 
     // ========================================================================
     // Raycast API (Unity: Physics.Raycast)
@@ -749,7 +751,7 @@ class PhysicsWorld
     void ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const;
     void SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets);
 
-    PhysicsWorld() = default;
+    PhysicsWorld();
     ~PhysicsWorld();
     PhysicsWorld(const PhysicsWorld &) = delete;
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
@@ -810,7 +812,6 @@ class PhysicsWorld
                                const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical) const;
 
     bool m_initialized = false;
-    bool m_ownsJoltGlobals = false;
     std::thread::id m_ownerThreadId{};
     std::unique_ptr<rhi::ComputeHost> m_gpuHost;
     FrameWorkOwner *m_gpuWork = nullptr;

@@ -187,22 +187,31 @@ JoltGpuBodyMutations::PrepareCapacityInitialization(const JoltGpuBodyStatePorts 
 
 std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::Prepare(
     JoltGpuStorage &storage, std::vector<JoltGpuBodyModelUpdate> bodies, std::vector<JoltGpuShapeModelUpdate> shapes,
-    const std::vector<BodyInitialization> &initializations, const std::vector<CenterOfMassUpdate> &centersOfMass)
+    const std::vector<BodyInitialization> &initializations, const std::vector<CenterOfMassUpdate> &centersOfMass,
+    std::vector<rhi::ComputeBufferUpdate> extraUploads, std::vector<rhi::ComputeDispatchDesc> extraDispatches)
 {
     std::sort(bodies.begin(), bodies.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
     auto packet = PreparePacket(storage, storage.GetModel().bodies, bodies, initializations, centersOfMass);
+    for (auto &upload : extraUploads)
+        packet.uploads.push_back(std::move(upload));
+    for (auto &dispatch : extraDispatches)
+        packet.dispatches.push_back(std::move(dispatch));
     return storage.PrepareModelUpdate(std::move(bodies), std::move(shapes), std::move(packet.uploads),
                                       std::move(packet.dispatches));
 }
 
-std::unique_ptr<JoltGpuModelUpdate>
-JoltGpuBodyMutations::PrepareReplacement(JoltGpuStorage &storage, JoltGpuModel replacement,
-                                         const std::vector<BodyInitialization> &initializations,
-                                         const std::vector<CenterOfMassUpdate> &centersOfMass)
+std::unique_ptr<JoltGpuModelUpdate> JoltGpuBodyMutations::PrepareReplacement(
+    JoltGpuStorage &storage, JoltGpuModel replacement, const std::vector<BodyInitialization> &initializations,
+    const std::vector<CenterOfMassUpdate> &centersOfMass, std::vector<rhi::ComputeBufferUpdate> extraUploads,
+    std::vector<rhi::ComputeDispatchDesc> extraDispatches)
 {
     if (replacement.bodies.size() != storage.GetBodyCount() || replacement.worlds.size() != storage.GetWorldCount())
         throw std::invalid_argument("Jolt GPU replacement must retain body capacity and world count");
     auto packet = PreparePacket(storage, replacement.bodies, {}, initializations, centersOfMass);
+    for (auto &upload : extraUploads)
+        packet.uploads.push_back(std::move(upload));
+    for (auto &dispatch : extraDispatches)
+        packet.dispatches.push_back(std::move(dispatch));
     return storage.PrepareModelReplacement(std::move(replacement), std::move(packet.uploads),
                                            std::move(packet.dispatches));
 }

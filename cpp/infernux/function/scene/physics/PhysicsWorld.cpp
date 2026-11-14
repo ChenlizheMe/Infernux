@@ -313,6 +313,39 @@ PhysicsDomain::PhysicsDomain(RuntimeWorld &world) : owner(world), gravity(Engine
 }
 namespace
 {
+// Geometry cooking and mass authoring also run before Play and between engine
+// instances. Their Jolt allocation/type lifetime is independent of GPU physics.
+class JoltAuthoringRuntime final
+{
+  public:
+    JoltAuthoringRuntime()
+    {
+#ifndef JPH_DISABLE_CUSTOM_ALLOCATOR
+        // An existing allocator family belongs to its upstream owner.
+        if (!JPH::Allocate)
+            JPH::RegisterDefaultAllocator();
+#endif
+        if (!JPH::Factory::sInstance) {
+            m_ownedFactory = new JPH::Factory();
+            JPH::Factory::sInstance = m_ownedFactory;
+            JPH::RegisterTypes();
+        }
+    }
+    ~JoltAuthoringRuntime()
+    {
+        if (m_ownedFactory) {
+            if (JPH::Factory::sInstance == m_ownedFactory) {
+                JPH::UnregisterTypes();
+                JPH::Factory::sInstance = nullptr;
+            }
+            delete m_ownedFactory;
+        }
+    }
+
+  private:
+    JPH::Factory *m_ownedFactory = nullptr;
+};
+
 PhysicsDomain::RenderState::Keys CaptureRenderKeys()
 {
     const auto &manager = SceneManager::Instance();
@@ -328,6 +361,10 @@ PhysicsWorld &PhysicsWorld::Instance()
 {
     static PhysicsWorld *world = new PhysicsWorld();
     return *world;
+}
+PhysicsWorld::PhysicsWorld()
+{
+    static JoltAuthoringRuntime authoring;
 }
 PhysicsWorld::~PhysicsWorld()
 {
@@ -350,12 +387,6 @@ void PhysicsWorld::Initialize()
     if (m_initialized)
         return;
     m_ownerThreadId = std::this_thread::get_id();
-    JPH::RegisterDefaultAllocator();
-    if (!JPH::Factory::sInstance) {
-        JPH::Factory::sInstance = new JPH::Factory();
-        m_ownsJoltGlobals = true;
-        JPH::RegisterTypes();
-    }
     m_initialized = true;
     if (m_gpuHost && m_gpuWork) {
         try {
@@ -449,12 +480,6 @@ void PhysicsWorld::Shutdown()
     m_domains.clear();
     m_gpuHost.reset();
     m_gpuWork = nullptr;
-    if (m_ownsJoltGlobals) {
-        JPH::UnregisterTypes();
-        delete JPH::Factory::sInstance;
-        JPH::Factory::sInstance = nullptr;
-        m_ownsJoltGlobals = false;
-    }
     m_initialized = false;
     m_ownerThreadId = {};
 }
@@ -1307,11 +1332,14 @@ void PhysicsWorld::SetBodyMaxLinearVelocity(uint32_t id, float value)
 void PhysicsWorld::SetBodyAllowedDOFs(uint32_t id, int allowed, float mass)
 {
     auto &domain = DomainForBody(id);
-    if (allowed != 0x3f)
-        Unsupported("locked rigidbody degrees of freedom");
+    if (allowed < 0 || (allowed & ~0x3f) != 0)
+        throw std::invalid_argument("Allowed degrees of freedom contain unknown bits");
     if (!std::isfinite(mass) || mass <= 0)
         throw std::invalid_argument("Body mass must be positive and finite");
-    RefreshGpuActor(domain, id);
+    RefreshGpuActor(domain, id, [=](PreparedGpuActor &a) {
+        a.body.mass.y = float((~allowed) & 7);
+        a.body.mass.z = float(((~allowed) >> 3) & 7);
+    });
 }
 void PhysicsWorld::SetBodyMotionQuality(uint32_t, int quality)
 {
@@ -1900,6 +1928,23 @@ glm::vec3 PhysicsWorld::GetBodyAngularVelocity(uint32_t id) const
     auto &domain = DomainForBody(id);
     return ReadMotionState(domain, id, PhysicsStateFields::AngularVelocity).angularVelocity;
 }
+glm::vec3 PhysicsWorld::GetBodyPrincipalInertia(uint32_t id) const
+{
+    (void)DomainForBody(id);
+    const auto model = m_gpuScene->GetAcceptedBodyModel(id);
+    const auto d = model.invInertiaDiagonal;
+    if (!(d.x > 0 && d.y > 0 && d.z > 0))
+        throw std::logic_error("Rigidbody has no accepted positive principal inertia");
+    return glm::vec3(1.0f / d.x, 1.0f / d.y, 1.0f / d.z);
+}
+
+glm::quat PhysicsWorld::GetBodyPrincipalInertiaRotation(uint32_t id) const
+{
+    (void)DomainForBody(id);
+    const auto q = m_gpuScene->GetAcceptedBodyModel(id).inertiaRotation;
+    return glm::quat(q.w, q.x, q.y, q.z);
+}
+
 glm::mat3 PhysicsWorld::GetBodyWorldSpaceInertiaTensor(uint32_t id) const
 {
     auto &domain = DomainForBody(id);

@@ -215,10 +215,7 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
         hierarchyAuthored && (currentActor.centerTransformDirty || currentActor.shapeTransformDirty);
     const bool applyPosition = !pendingPosition && !hierarchyPending && authoredAfter[0] == authoredBefore[0] &&
                                (!positionAuthored || after.lastAuthoredPoseRevision[0] == authoredAfter[0]);
-    const bool rotationFrozen = (after.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
-                                static_cast<int>(RigidbodyConstraints::FreezeRotation);
-    const bool applyRotation = !pendingRotation && !hierarchyPending && !rotationFrozen &&
-                               authoredAfter[1] == authoredBefore[1] &&
+    const bool applyRotation = !pendingRotation && !hierarchyPending && authoredAfter[1] == authoredBefore[1] &&
                                (!rotationAuthored || after.lastAuthoredPoseRevision[1] == authoredAfter[1]);
     const auto position = applyPosition ? sample.position : target->GetWorldPosition();
     const auto rotation = applyRotation ? sample.rotation : target->GetWorldRotation();

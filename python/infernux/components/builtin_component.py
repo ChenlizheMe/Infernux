@@ -497,12 +497,9 @@ class BuiltinComponent(InxComponent):
     def __getattr__(self, name: str):
         cpp = self._get_bound_native_component()
         if cpp is not None:
-            try:
-                return getattr(cpp, name)
-            except RuntimeError:
-                self._invalidate_native_binding()
-            except AttributeError:
-                pass
+            # Handle resolution owns lifetime. A live property's state error
+            # must propagate without retiring the component that reported it.
+            return getattr(cpp, name)
         raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     @property

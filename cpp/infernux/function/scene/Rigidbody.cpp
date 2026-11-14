@@ -634,6 +634,16 @@ void Rigidbody::MoveRotation(const glm::quat &rotation)
 // Read-only world info
 // ============================================================================
 
+glm::vec3 Rigidbody::GetInertiaTensor() const
+{
+    return PhysicsWorld::Instance().GetBodyPrincipalInertia(GetBodyId());
+}
+
+glm::quat Rigidbody::GetInertiaTensorRotation() const
+{
+    return PhysicsWorld::Instance().GetBodyPrincipalInertiaRotation(GetBodyId());
+}
+
 glm::vec3 Rigidbody::GetWorldCenterOfMass() const
 {
     uint32_t bid = GetBodyId();
@@ -918,10 +928,8 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
         // A normal fixed-step publication has already written this pose. A
         // mode handoff may still need the complete sample, but must not consume
         // a newer authored Transform before its normal physics boundary.
-        const bool rotationFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
-                                    static_cast<int>(RigidbodyConstraints::FreezeRotation);
         if (d.currentPhysicsPosition == d.lastSyncedPosition &&
-            (rotationFrozen || !RotationChanged(d.currentPhysicsRotation, d.lastSyncedRotation)))
+            !RotationChanged(d.currentPhysicsRotation, d.lastSyncedRotation))
             return;
         PublishPhysicsPose(d.currentPhysicsPosition, d.currentPhysicsRotation);
         return;
@@ -1010,12 +1018,8 @@ void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::qua
         return;
     TransformECSStore::PhysicsPoseReadScope applying(TransformECSStore::Instance());
 
-    const bool rotFrozen = (d.constraints & static_cast<int>(RigidbodyConstraints::FreezeRotation)) ==
-                           static_cast<int>(RigidbodyConstraints::FreezeRotation);
-
     const bool applyPosition = !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Position));
-    const bool applyRotation =
-        !rotFrozen && !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Rotation));
+    const bool applyRotation = !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Rotation));
     if (!applyPosition && !applyRotation)
         return;
     tf->ApplyWorldPoseFromPhysics(applyPosition ? presentedPos : tf->GetWorldPosition(),

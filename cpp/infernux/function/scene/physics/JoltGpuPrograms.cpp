@@ -225,9 +225,11 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                 (motionType != MotionStatic && motionType != MotionKinematic && motionType != MotionDynamic))
                 throw std::invalid_argument("Invalid body or leaf range in the Jolt GPU model");
             const bool nonstatic = motionType != MotionStatic;
-            if (!Finite4(record.mass) || record.mass.y != 0 || record.mass.z != 0 ||
-                (nonstatic ? record.mass.x <= 0 : record.mass.x != 0) || !Finite4(record.damping) ||
-                record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
+            if (!Finite4(record.mass) || record.mass.y < 0 || record.mass.y > 7 ||
+                std::floor(record.mass.y) != record.mass.y || record.mass.z < 0 || record.mass.z > 7 ||
+                std::floor(record.mass.z) != record.mass.z || (nonstatic ? record.mass.x <= 0 : record.mass.x != 0) ||
+                !Finite4(record.damping) || record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 ||
+                record.damping.w < 0 ||
                 (nonstatic && (!Finite3(record.invInertiaDiagonal) || record.invInertiaDiagonal.x <= 0 ||
                                record.invInertiaDiagonal.y <= 0 || record.invInertiaDiagonal.z <= 0 ||
                                !Normalized(record.inertiaRotation))))

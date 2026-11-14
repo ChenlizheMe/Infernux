@@ -245,6 +245,8 @@ class Rigidbody : public Component
 
     /// @brief World-space center of mass (Unity: Rigidbody.worldCenterOfMass).
     [[nodiscard]] glm::vec3 GetWorldCenterOfMass() const;
+    [[nodiscard]] glm::vec3 GetInertiaTensor() const;
+    [[nodiscard]] glm::quat GetInertiaTensorRotation() const;
     [[nodiscard]] PhysicsBodyMotionState GetMotionState() const;
     [[nodiscard]] PhysicsBodyMotionState GetMotionState(PhysicsStateFields fields) const;
 

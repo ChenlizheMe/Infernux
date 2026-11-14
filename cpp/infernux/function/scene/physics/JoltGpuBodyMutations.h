@@ -22,11 +22,15 @@ class JoltGpuBodyMutations
     Prepare(JoltGpuStorage &storage, std::vector<JoltGpuBodyModelUpdate> bodies,
             std::vector<JoltGpuShapeModelUpdate> shapes,
             const std::vector<JPH::GPU::BodyInitialization> &initializations = {},
-            const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {});
+            const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {},
+            std::vector<rhi::ComputeBufferUpdate> extraUploads = {},
+            std::vector<rhi::ComputeDispatchDesc> extraDispatches = {});
     [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
     PrepareReplacement(JoltGpuStorage &storage, JoltGpuModel replacement,
                        const std::vector<JPH::GPU::BodyInitialization> &initializations = {},
-                       const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {});
+                       const std::vector<JPH::GPU::CenterOfMassUpdate> &centersOfMass = {},
+                       std::vector<rhi::ComputeBufferUpdate> extraUploads = {},
+                       std::vector<rhi::ComputeDispatchDesc> extraDispatches = {});
     /// Initialize one contiguous new-capacity tail without reading old state.
     /// The caller uploads StageWork{{first, count, 0, 0}} to workUniform in the
     /// same ordered packet. Each call covers at most 2048 complete body slots.
