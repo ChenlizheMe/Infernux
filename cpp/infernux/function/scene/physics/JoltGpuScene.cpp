@@ -225,13 +225,28 @@ class JoltGpuScene::Impl
     {
         if (domains.count(world.id))
             throw std::logic_error("GPU RuntimeWorld partition is already registered");
+        if (freeRows.empty()) {
+            if (ordered.size() >= UINT32_MAX)
+                throw std::length_error("GPU world row address space is exhausted");
+            // Retirement runs inside CanRetireDomain's nonthrowing boundary.
+            // Reserve its freelist entry while registering, never while releasing.
+            if (freeRows.capacity() < ordered.size() + 1u)
+                freeRows.reserve(std::max(ordered.size() + 1u, freeRows.capacity() * 2u));
+            if (ordered.capacity() < ordered.size() + 1u)
+                ordered.reserve(std::max(ordered.size() + 1u, ordered.capacity() * 2u));
+        }
         auto domain = std::make_unique<Partition>();
         domain->world = &world;
         domain->id = world.id;
-        domain->row = static_cast<uint32_t>(ordered.size());
+        domain->row = freeRows.empty() ? static_cast<uint32_t>(ordered.size()) : freeRows.back();
         auto *address = domain.get();
         domains.emplace(world.id, std::move(domain));
-        ordered.push_back(address);
+        if (freeRows.empty())
+            ordered.push_back(address);
+        else {
+            ordered[address->row] = address;
+            freeRows.pop_back();
+        }
         ReserveCapacity(world, capacity);
         // Even a zero-capacity registration needs its real empty GPU world row.
         if (!capacity)
@@ -447,6 +462,12 @@ class JoltGpuScene::Impl
         const auto &old = storage.GetModel();
         std::vector<uint32_t> capacities;
         for (auto *domain : ordered) {
+            if (!domain) {
+                // Rows are addresses, not public identities. Preserve holes so
+                // survivors retain their rows; released rows have no GPU range.
+                capacities.push_back(0u);
+                continue;
+            }
             const uint32_t oldCount = domain->row < old.worlds.size() ? old.worlds[domain->row].bodies.y : 0u;
             const uint32_t count = domain == &changed ? capacity : oldCount;
             capacities.push_back(count);
@@ -904,10 +925,11 @@ class JoltGpuScene::Impl
             auto &slot = slots[index];
             slot.partition->records[slot.local] = UINT32_MAX;
             slot.partition->freeLocals.push_back(slot.local);
-            slot.accepted.reset();
-            slot.authored.reset();
-            freeRecords.push_back(index);
             byId.erase(id);
+            // Free records must not retain a retiring Partition*, target owner,
+            // initial Rigidbody generation, actor model or command provenance.
+            slot = Slot{};
+            freeRecords.push_back(index);
         };
         pendingCompletions.reserve(pendingCompletions.size() + 2);
         pending.push_back(std::move(group));
@@ -1178,14 +1200,35 @@ class JoltGpuScene::Impl
                 continue;
             auto &slot = slots[index];
             byId.erase(slot.bodyId);
-            slot.retiring = true;
-            slot.accepted.reset();
-            slot.authored.reset();
             domain.freeLocals.push_back(slot.local);
+            slot = Slot{};
             freeRecords.push_back(index);
             index = UINT32_MAX;
         }
         domain.liveCount = 0;
+    }
+
+    bool ReleaseRetiredPartition(Partition &domain) noexcept
+    {
+        // Ordinary Cancel is reopenable for this same RuntimeWorld. Only its
+        // final retirement may return a row to a different public World identity.
+        if (!domain.retiring || !domain.retired || domain.cleanup || writer == &domain || !domain.pending.empty() ||
+            !domain.records.empty() || domain.liveCount)
+            return false;
+        const auto &worlds = storage.GetModel().worlds;
+        if (domain.row < worlds.size()) {
+            const auto &range = worlds[domain.row];
+            if (range.bodies.y || range.leaves.y || range.leaves.w)
+                return false;
+        }
+        // Service marks retired only after cancellation/cleanup and the zero-range
+        // layout writer have completed all receipts. Retained Publications own
+        // frozen resources/immutable identities, never this Partition or its row.
+        const auto id = domain.id;
+        ordered[domain.row] = nullptr;
+        freeRows.push_back(domain.row); // Capacity was reserved at registration.
+        domains.erase(id);
+        return true;
     }
 
     JoltGpuControlWork PrepareLocalReset(Partition &domain)
@@ -1254,6 +1297,8 @@ class JoltGpuScene::Impl
         if (writer)
             return;
         for (auto *domain : ordered) {
+            if (!domain)
+                continue;
             if (!domain->cleanup && (!domain->retiring || domain->retired))
                 continue;
             const auto &worlds = storage.GetModel().worlds;
@@ -1302,7 +1347,10 @@ class JoltGpuScene::Impl
     std::vector<uint32_t> freeRecords;
     std::unordered_map<uint32_t, uint32_t> byId;
     std::map<uint64_t, std::unique_ptr<Partition>> domains;
+    // Stable row-address table, bounded by the concurrently registered high-water
+    // mark. Null entries are retired zero-range rows available for later Worlds.
     std::vector<Partition *> ordered;
+    std::vector<uint32_t> freeRows;
     Partition *writer = nullptr;
     WriterKind writerKind = WriterKind::Control;
     std::shared_ptr<Publication> candidate;
@@ -1551,7 +1599,11 @@ bool JoltGpuScene::CanRetire(const RuntimeWorld &world)
     if (!m_impl->domains.count(world.id))
         return true;
     m_impl->Service();
-    const auto &domain = m_impl->Domain(world);
-    return !domain.cleanup && m_impl->writer != &domain && (!domain.retiring || domain.retired);
+    auto &domain = m_impl->Domain(world);
+    if (domain.cleanup || m_impl->writer == &domain)
+        return false;
+    if (!domain.retiring)
+        return true; // Cancel/reopen retains the same partition, capacity and row.
+    return m_impl->ReleaseRetiredPartition(domain);
 }
 } // namespace infernux

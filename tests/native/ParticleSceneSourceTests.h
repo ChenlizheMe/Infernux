@@ -22,15 +22,21 @@ try {
     auto &scenes = SceneManager::Instance();
     scenes.Stop();
     scenes.UnloadAllScenes();
+    auto &runtimeWorld = scenes.BeginRuntimeWorld();
+    std::optional<WorldExecutionScope> runtimeScope(std::in_place, &runtimeWorld);
     struct SceneOwner
     {
         SceneManager &scenes;
+        std::optional<WorldExecutionScope> &runtimeScope;
         ~SceneOwner()
         {
             scenes.Stop();
+            runtimeScope.reset();
+            const bool retired = scenes.CollectRetiredRuntimeWorlds();
+            assert(retired);
             scenes.UnloadAllScenes();
         }
-    } sceneOwner{scenes};
+    } sceneOwner{scenes, runtimeScope};
     auto model = std::make_shared<InxSkinnedMesh>();
     model->scaleFactor = 1.0f;
     model->baseVertices.resize(3);
@@ -76,6 +82,10 @@ try {
     source->SetRuntimeAnimationTime(0.25f);
     object->GetTransform()->SetPosition({10, 0, 0});
     scenes.SetActiveScene(sceneB);
+    // The bound skin, both loaded Scenes and all six GPU samples belong to
+    // this published runtime graph before Play promotes the source.
+    if (!Require(scenes.PublishRuntimeWorld(runtimeWorld.id), "Scene source runtime graph did not publish"))
+        return false;
     const ObjectHandle initialHandle = source->GetHandle();
     const auto active = ResolveSceneSkinnedMeshSource(initialHandle);
     if (!Require(active && active->currentPalette && active->currentPalette->size() == 1,
@@ -355,6 +365,9 @@ void main() { result = snapshot; }
     scenes.Stop();
     if (!Require(!ResolveSceneSkinnedMeshSource(persistentHandle) && !meshInterface.skinnedRendererHandle().IsValid(),
                  "Destroyed persistent source remained bound"))
+        return false;
+    runtimeScope.reset();
+    if (!Require(scenes.CollectRetiredRuntimeWorlds(), "Scene source runtime graph did not retire"))
         return false;
     // Reusing an authored ID must never revive a binding to a destroyed native
     // instance, even while the old graph and callback copies remain resident.

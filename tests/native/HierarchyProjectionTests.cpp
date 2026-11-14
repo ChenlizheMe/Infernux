@@ -8,6 +8,7 @@
 #include <function/scene/SceneManager.h>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 
 using namespace infernux;
@@ -94,9 +95,14 @@ static int ExtendedCases(nlohmann::json &report)
         if (!value)
             throw std::runtime_error(message);
     };
-    const auto run = [&](const char *name, const auto &body) {
+    const auto run = [&](const char *name, const auto &body, bool runtimeFixture = false) {
         auto &manager = SceneManager::Instance();
         manager.Shutdown();
+        // Runtime projection must display the objects that Play will actually
+        // promote; the other projection cases retain their authored fixture.
+        std::optional<WorldExecutionScope> runtimeScope;
+        if (runtimeFixture)
+            runtimeScope.emplace(&manager.BeginRuntimeWorld());
         auto *scene = manager.CreateScene("Projection primary");
         manager.SetActiveScene(scene);
         auto *a = scene->CreateGameObject("Match first");
@@ -145,6 +151,11 @@ static int ExtendedCases(nlohmann::json &report)
         } catch (const std::exception &error) {
             ++failures;
             report["cases"].push_back({{"case", name}, {"passed", false}, {"error", error.what()}});
+        }
+        if (runtimeFixture) {
+            manager.Stop();
+            runtimeScope.reset();
+            check(manager.CollectRetiredRuntimeWorlds(), "runtime hierarchy fixture did not retire");
         }
         manager.Shutdown();
     };
@@ -257,8 +268,11 @@ static int ExtendedCases(nlohmann::json &report)
         check(range(fresh->GetID()) == std::vector<uint64_t>{a->GetID(), b->GetID(), fresh->GetID()},
               "new root missing until render");
     });
-    run("persistent_projection_and_rename",
+    run(
+        "persistent_projection_and_rename",
         [&](auto &m, auto *, auto *a, auto *c, auto *b, auto &p, auto frame, auto range, auto) {
+            check(m.PublishRuntimeWorld(a->GetScene()->GetRuntimeWorld()->id),
+                  "runtime hierarchy graph did not publish");
             m.Play();
             m.DontDestroyOnLoad(a);
             m.Update(0.0f);
@@ -277,7 +291,8 @@ static int ExtendedCases(nlohmann::json &report)
             frame();
             check(range(a->GetID()) == std::vector<uint64_t>{b->GetID(), a->GetID()},
                   "collapsed persistent child in range");
-        });
+        },
+        true);
     run("name_revision_does_not_invalidate_runtime_structure",
         [&](auto &, auto *s, auto *a, auto *, auto *, auto &p, auto frame, auto, auto) {
             const auto structure = s->GetStructureVersion();

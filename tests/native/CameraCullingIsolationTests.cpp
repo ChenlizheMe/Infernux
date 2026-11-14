@@ -25,6 +25,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
 #include <memory>
+#include <optional>
 
 using namespace infernux;
 
@@ -145,6 +146,10 @@ static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry
 static void TestResidentLightShadows(SceneManager &manager)
 {
     for (auto type : {LightType::Directional, LightType::Spot, LightType::Point, LightType::Area}) {
+        // Keep both loaded Scenes, their camera and the persistent light in
+        // one real runtime owner, including the final post-Stop shadow check.
+        auto &runtimeWorld = manager.BeginRuntimeWorld();
+        std::optional<WorldExecutionScope> runtimeScope(std::in_place, &runtimeWorld);
         Scene *sceneA = manager.CreateScene("ShadowWorldA");
         Scene *sceneB = manager.CreateScene("ShadowWorldB");
         Scene *preview = manager.CreatePreviewScene("ShadowPreview");
@@ -165,6 +170,8 @@ static void TestResidentLightShadows(SceneManager &manager)
         Light *lightA = makeLight(sceneA, 1u);
         Light *lightB = makeLight(sceneB, 2u);
         makeLight(preview, 4u);
+        const bool published = manager.PublishRuntimeWorld(runtimeWorld.id);
+        assert(published);
         const uint64_t idA = lightA->GetGameObject()->GetID();
         const uint64_t idB = lightB->GetGameObject()->GetID();
         const uint32_t viewCount = type == LightType::Directional ? 4u : type == LightType::Spot ? 1u : 6u;
@@ -246,6 +253,9 @@ static void TestResidentLightShadows(SceneManager &manager)
         check(true, false);
         manager.UnloadAllScenes();
         assert(manager.GetActiveLights().empty());
+        runtimeScope.reset();
+        const bool retired = manager.CollectRetiredRuntimeWorlds();
+        assert(retired);
     }
 }
 

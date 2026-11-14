@@ -183,6 +183,10 @@ class JoltGpuScene final
     /// the shared source performs GPU cleanup after necessary receipts settle.
     void Cancel(RuntimeWorld &world);
     void RetirePartition(RuntimeWorld &world);
+    /// Services accepted cleanup nonblockingly. A true result for a retiring
+    /// World also releases its completed partition and reusable zero-range row.
+    /// An ordinary Cancel retains its partition so the same World can reopen.
+    /// Retained Publications keep exact frozen outputs independently of the row.
     [[nodiscard]] bool CanRetire(const RuntimeWorld &world);
 
   private:

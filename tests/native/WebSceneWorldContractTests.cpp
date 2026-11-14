@@ -12,6 +12,7 @@
 #include <cassert>
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -73,12 +74,18 @@ int main()
     manager.Stop();
     manager.UnloadAllScenes();
 
+    // The camera, additive geometry and persistent objects share the actual
+    // runtime owner from construction through the post-Stop extraction checks.
+    auto &runtimeWorld = manager.BeginRuntimeWorld();
+    std::optional<WorldExecutionScope> runtimeScope(std::in_place, &runtimeWorld);
     Scene *sceneA = manager.CreateScene("WebWorldA");
     const AuthoredSceneObjects objectsA = PopulateScene(sceneA, "A", 1.25f);
     Scene *sceneB = manager.CreateScene("WebWorldB");
     const AuthoredSceneObjects objectsB = PopulateScene(sceneB, "B", 2.5f);
     objectsB.camera->SetDepth(-100.0f);
     manager.SetActiveScene(sceneA);
+    const bool published = manager.PublishRuntimeWorld(runtimeWorld.id);
+    assert(published);
 
     SceneRenderExtractor extractor;
     RenderWorldSnapshot world;
@@ -172,5 +179,8 @@ int main()
     assert(emptyFrame && emptyFrame->DrawCalls().drawCalls.empty());
 
     manager.UnloadAllScenes();
+    runtimeScope.reset();
+    const bool retired = manager.CollectRetiredRuntimeWorlds();
+    assert(retired);
     return 0;
 }
