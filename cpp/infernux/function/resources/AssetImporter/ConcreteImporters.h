@@ -103,7 +103,7 @@ class ShaderImporter final : public AssetImporter
 
     [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
     {
-        std::vector<std::string> extensions{".vert", ".frag"};
+        std::vector<std::string> extensions;
         for (const auto &kind : asset_formats::kShaderSourceKinds)
             extensions.emplace_back(kind.suffix);
         return extensions;

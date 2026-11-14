@@ -6440,7 +6440,7 @@ ResourceType AssetDatabase::GetResourcesType(const std::string &extensionName) c
     std::string ext = extensionName;
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-    if (asset_formats::FindShaderSourceKind(ext) || ext == ".vert" || ext == ".frag") {
+    if (asset_formats::FindShaderSourceKind(ext)) {
         return ResourceType::Shader;
     }
     if (ext == ".mat") {
