@@ -117,7 +117,9 @@ else()
     if(MSVC)
         add_compile_options(/utf-8)
     elseif(EMSCRIPTEN)
-        add_compile_options(-fwasm-exceptions)
+        # SPIRV-Tools disables C++ exceptions locally. Keep its setjmp mode
+        # consistent with the resident compiler's Wasm exception ABI.
+        add_compile_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
     endif()
     add_subdirectory("${_infernux_slang_engine_root}/external/slang_for_infernux"
                      "${CMAKE_BINARY_DIR}/external/slang" EXCLUDE_FROM_ALL)
