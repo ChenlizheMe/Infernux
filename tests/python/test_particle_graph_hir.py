@@ -9,7 +9,7 @@ from infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, Port
 from infernux.particle import (
     EmitterSettings,
     EmitterShape as EmitterShape,
-    GpuParticleGlslLowerer,
+    GpuParticleLowerer,
     KernelCompileError,
     MeshEmissionMode as MeshEmissionMode,
     ParticleCompileError,
@@ -153,7 +153,7 @@ class SmokeGraph(ParticleScript):
             particles.set_lifetime(8.0)
             particles.set_flipbook_frame(particles.normalized_age * 63.0)
             particles.sprite(
-                shader="Particle Six-Way Smoke",
+                shader="infernux/particle/six_way_smoke",
                 receive_scene_lighting=True,
                 receive_shadows=True,
                 sort="back_to_front",
@@ -477,7 +477,7 @@ def test_integer_emitter_shape_preserves_saved_aot_signature(tmp_path):
     artifact = ParticleArtifactRegistry.get(path)
     restored = ParticleGraphAsset.load(path)
     program = ParticleGraphCompiler().compile(restored)
-    gpu = GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(program))
+    gpu = GpuParticleLowerer().lower(ParticleKernelLowerer().lower(program))
 
     assert program.behavior_hash == artifact.behavior_hash
     assert gpu.kernel_hash == artifact.gpu_spirv["kernel_hash"]
@@ -557,7 +557,7 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
                     sprite.uid,
                     sprite.type_id,
                     properties={
-                        "shader": "Particle Six-Way Smoke",
+                        "shader": "infernux/particle/six_way_smoke",
                         "receive_scene_lighting": True,
                         "receive_shadows": True,
                         "soft_particles": True,
@@ -579,7 +579,7 @@ def test_particle_graph_compiler_builds_multi_emitter_schedule_and_render_plan()
     assert smoke.init.stage is ParticleStage.INIT
     assert _operations(smoke.init)[0].opcode == "emitter.sample_shape"
     assert _operations(smoke.update)[0].opcode == "attribute.modify_velocity"
-    assert smoke.render_plan.outputs[0].shader == "Particle Six-Way Smoke"
+    assert smoke.render_plan.outputs[0].shader == "infernux/particle/six_way_smoke"
     assert {item.name for item in smoke.render_plan.outputs[0].shader_properties} >= {
         "base_color",
         "positiveAxesMap",

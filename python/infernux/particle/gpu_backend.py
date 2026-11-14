@@ -1,4 +1,4 @@
-"""AOT lowering from portable particle Kernel IR to Vulkan GLSL compute sources."""
+"""AOT lowering from portable particle Kernel IR to portable Slang compute programs."""
 
 from __future__ import annotations
 
@@ -38,18 +38,113 @@ from .kernel_ir import (
 from .kernel_semantics import KernelStage
 
 
+_COMPUTE_COMMON = """struct InxAtomicUint4 {
+    Atomic<uint> x, y, z, w;
+    [ForceInline][__ref] uint4 load() { return uint4(x.load(), y.load(), z.load(), w.load()); }
+    [ForceInline][__ref] void store(uint4 value) { x.store(value.x); y.store(value.y); z.store(value.z); w.store(value.w); }
+};
+struct InxColumnMatrix4 {
+    column_major float4x4 value;
+};
+struct InxAtomicKey {
+    Atomic<uint> x;
+    uint y, z, w;
+    [ForceInline][__ref] uint4 load() { return uint4(x.load(), y, z, w); }
+    [ForceInline][__ref] void store(uint4 value) { x.store(value.x); y = value.y; z = value.z; w = value.w; }
+    [ForceInline][__ref] uint3 load_tail() { return uint3(y, z, w); }
+    [ForceInline][__ref] void store_tail(uint3 value) { y = value.x; z = value.y; w = value.z; }
+};
+struct InxAtomicStatus {
+    uint x, y, z;
+    Atomic<uint> w;
+    [ForceInline][__ref] uint4 load() { return uint4(x, y, z, w.load()); }
+    [ForceInline][__ref] void store(uint4 value) { x = value.x; y = value.y; z = value.z; w.store(value.w); }
+    [ForceInline][__ref] uint3 load_head() { return uint3(x, y, z); }
+    [ForceInline][__ref] void store_head(uint3 value) { x = value.x; y = value.y; z = value.z; }
+};
+static uint3 inx_dispatch_id;
+static uint3 inx_group_thread_id;
+static uint inx_group_index;
+
+float3x3 inx_rotation(float4x4 value) {
+    float3x3 columns = transpose((float3x3)value);
+    return transpose(float3x3(normalize(columns[0]), normalize(columns[1]), normalize(columns[2])));
+}
+
+float3x3 inx_inverse3x3(float3x3 value) {
+    float3x3 cofactors = float3x3(cross(value[1], value[2]), cross(value[2], value[0]), cross(value[0], value[1]));
+    return transpose(cofactors) / dot(value[0], cofactors[0]);
+}
+
+// Particle field transforms are affine scene transforms, including scale and shear.
+float4x4 inx_inverse_affine(float4x4 value) {
+    float3x3 linear = inx_inverse3x3((float3x3)value);
+    float3 translation = -mul(linear, float3(value[0][3], value[1][3], value[2][3]));
+    return float4x4(float4(linear[0], translation.x), float4(linear[1], translation.y),
+                   float4(linear[2], translation.z), float4(0.0, 0.0, 0.0, 1.0));
+}
+
+int3 inx_texture_dimensions(Sampler3D<float4> value) {
+    uint width, height, depth;
+    value.GetDimensions(width, height, depth);
+    return int3(width, height, depth);
+}
+
+uint inx_buffer_count<T>(StructuredBuffer<T> value) { uint count, stride; value.GetDimensions(count, stride); return count; }
+uint inx_buffer_count<T>(RWStructuredBuffer<T> value) { uint count, stride; value.GetDimensions(count, stride); return count; }
+
+uint inx_reserve_active(__ref Atomic<uint> counter, bool active) {
+    __target_switch {
+    case wgsl:
+        return active ? counter.add(1u) : 0u;
+    default:
+        uint count = WaveActiveCountBits(active);
+        uint base = 0u;
+        if (WaveIsFirstLane() && count != 0u)
+            base = counter.add(count);
+        return WaveReadLaneFirst(base) + WavePrefixCountBits(active);
+    }
+}
+
+uint inx_reserve_visible(__ref Atomic<uint> counter, __ref Atomic<uint> draw_count, bool active, uint capacity) {
+    __target_switch {
+    case wgsl:
+        if (!active) return 0u;
+        uint index = counter.add(1u);
+        if (index < capacity)
+            draw_count.add(1u);
+        else
+            counter.add(0xffffffffu);
+        return index;
+    default:
+        uint count = WaveActiveCountBits(active);
+        uint base = 0u;
+        if (WaveIsFirstLane() && count != 0u) {
+            base = counter.add(count);
+            uint available = base < capacity ? capacity - base : 0u;
+            uint committed = min(count, available);
+            if (committed != 0u)
+                draw_count.add(committed);
+        }
+        return WaveReadLaneFirst(base) + WavePrefixCountBits(active);
+    }
+}
+"""
+
+
 class GpuParticleCompileError(ValueError):
     pass
 
 
 _SPIRV_DESCRIPTOR_CACHE: dict[str | tuple[str, str], dict[str, Any]] = {}
-_CURVE_MIN_SPAN = array("f", (.0001,))[0]
+_CURVE_MIN_SPAN = array("f", (0.0001,))[0]
 
 
 def _update_render_fusion_capability(
     emitter: ParticleEmitterKernelIR,
 ) -> dict[str, Any]:
     return emitter.update_render_fusion_capability()
+
 
 @cache
 def _particle_graphics_sources() -> dict[str, dict[str, str]]:
@@ -144,11 +239,11 @@ class GpuParticleEmitterSource:
                 {
                     "stable_id": stable_id,
                     "field": field,
-                    "glsl_type": glsl_type,
+                    "storage_type": storage_type,
                     "offset": offset,
                     "byte_size": byte_size,
                 }
-                for stable_id, field, glsl_type, offset, byte_size in self.attribute_fields
+                for stable_id, field, storage_type, offset, byte_size in self.attribute_fields
             ],
             "state_stride": self.state_stride,
             "event_type_count": self.event_type_count,
@@ -157,9 +252,7 @@ class GpuParticleEmitterSource:
             "data_interfaces": [dict(value) for value in self.data_interfaces],
             "data_interface_layout": dict(self.data_interface_layout),
             "continuation": (
-                self.continuation.to_dict()
-                if self.continuation is not None
-                else None
+                self.continuation.to_dict() if self.continuation is not None else None
             ),
             "stages": self.stages(),
         }
@@ -173,15 +266,15 @@ class GpuParticleProgramSource:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "$schema": "infernux.particle_gpu_glsl",
+            "$schema": "infernux.particle_gpu_slang",
             "kernel_hash": self.kernel_hash,
             "parameters": [parameter.to_dict() for parameter in self.parameters],
             "emitters": [emitter.to_dict() for emitter in self.emitters],
         }
 
 
-class GpuParticleGlslLowerer:
-    """Generate portable GLSL 450 consumed by the Vulkan RHI backend."""
+class GpuParticleLowerer:
+    """Lower typed particle programs directly to portable Slang compute sources."""
 
     def lower(self, program: ParticleKernelProgram) -> GpuParticleProgramSource:
         if not isinstance(program, ParticleKernelProgram):
@@ -214,7 +307,7 @@ class GpuParticleGlslLowerer:
             instruction.opcode == "collide_scene"
             for instruction in emitter.update.instructions
         )
-        attribute_layout, state_stride = _std430_attribute_layout(fields)
+        attribute_layout, state_stride = _state_attribute_layout(fields)
         event_type_count = len(events.event_types)
         parameter_slots, _parameter_slot_count = _parameter_slot_layout(parameters)
         data_interface_layout = _data_interface_layout(
@@ -246,9 +339,7 @@ class GpuParticleGlslLowerer:
         continuation_join_indices = {
             (flow.lifecycle_stage, flow.flow_id, join.source_node_uid): index
             for index, (flow, join) in enumerate(
-                (flow, join)
-                for flow in emitter.flows
-                for join in flow.joins
+                (flow, join) for flow in emitter.flows for join in flow.joins
             )
         }
         init_flows = tuple(
@@ -261,9 +352,7 @@ class GpuParticleGlslLowerer:
             flow for flow in emitter.flows if flow.kernel_stage is KernelStage.CONTACT
         )
         rendering_flows = tuple(
-            flow
-            for flow in emitter.flows
-            if flow.kernel_stage is KernelStage.RENDERING
+            flow for flow in emitter.flows if flow.kernel_stage is KernelStage.RENDERING
         )
         bootstrap = prelude + _bootstrap_main(event_type_count)
         init_body, _ = _StageCompiler(
@@ -319,7 +408,12 @@ class GpuParticleGlslLowerer:
             continuation_join_indices=continuation_join_indices,
             entry_guard="state.rendering_resume_step != pc.simulation_step",
         ).compile(emitter.rendering, rendering_flows)
-        required = {"builtin.position", "builtin.size", "builtin.color", "builtin.rotation"}
+        required = {
+            "builtin.position",
+            "builtin.size",
+            "builtin.color",
+            "builtin.rotation",
+        }
         if not required.issubset(exports):
             missing = ", ".join(sorted(required - set(exports)))
             raise GpuParticleCompileError(
@@ -336,7 +430,7 @@ class GpuParticleGlslLowerer:
             continuation_join_indices,
         )
         continuation_bindings = (
-            _continuation_bindings_glsl(5) if continuation is not None else ""
+            _continuation_bindings_slang(5) if continuation is not None else ""
         )
         update_state_write = _function_has_state_effect(emitter.update)
         update_rendering_fused = ""
@@ -372,7 +466,7 @@ class GpuParticleGlslLowerer:
                 update_state_write=update_state_write,
             )
         contact_continuation_bindings = (
-            _continuation_bindings_glsl(5, contact_context=True)
+            _continuation_bindings_slang(5, contact_context=True)
             if continuation is not None
             else ""
         )
@@ -423,24 +517,29 @@ class GpuParticleGlslLowerer:
         )
 
 
-def _compile_cached_graphics(
+def _compile_cached_programs(
     native,
     sources: Mapping[str, str],
     label: str,
 ) -> dict[str, dict[str, Any]]:
     result = {}
     for stage, source in sources.items():
-        key = ("particle-graphics-slang", source)
+        key = ("particle-slang", source)
         descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
         if descriptor is None:
             compiled = native._compile_shader_program(
-                source, f"<{label}:{stage}>", f"particle_{stage}", targets=["spirv"]
+                source,
+                f"<{label}:{stage}>",
+                f"particle_{stage.replace('.', '_')}",
+                targets=["spirv"],
             )
             binary = bytes(compiled["targets"][0]["entries"][0]["code"])
             descriptor = {
                 "byte_size": len(binary),
                 "sha256": hashlib.sha256(binary).hexdigest(),
-                "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
+                "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode(
+                    "ascii"
+                ),
             }
             _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
         result[stage] = dict(descriptor)
@@ -454,18 +553,20 @@ def _particle_graphics_abi_hash() -> str:
     for renderer, sources in _particle_graphics_sources().items():
         for stage, source in sources.items():
             digest.update(f"{renderer}.{stage}\0{source}\0".encode("utf-8"))
-    digest.update(_curve_interpolation_glsl().encode("utf-8"))
-    digest.update(_ramp_parameter_glsl({"curve": (0, TypeRef(ValueType.CURVE))}).encode("utf-8"))
+    digest.update(_curve_interpolation_slang().encode("utf-8"))
+    digest.update(
+        _ramp_parameter_slang({"curve": (0, TypeRef(ValueType.CURVE))}).encode("utf-8")
+    )
     return digest.hexdigest()
 
 
 def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, Any]:
-    """Compile particle stages and shared Slang geometry using the resident compiler."""
+    """Compile particle kernels and geometry with the resident Slang service."""
     from infernux.lib import _Infernux as native
 
     emitters = []
     for emitter in program.emitters:
-        sources = dict(emitter.stages())
+        sources = emitter.stages()
         if emitter.continuation is not None:
             sources.update(
                 {
@@ -473,47 +574,9 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
                     for stage, source in emitter.continuation.stages().items()
                 }
             )
-        source_keys = {
-            stage: hashlib.sha256(
-                ("vulkan1.2-spirv1.5\0" + source).encode("utf-8")
-            ).hexdigest()
-            for stage, source in sources.items()
-        }
-        missing = {
-            stage: sources[stage]
-            for stage, key in source_keys.items()
-            if key not in _SPIRV_DESCRIPTOR_CACHE
-        }
-        compiled = (
-            native._compile_compute_glsl_batch(
-                missing, f"particle:{emitter.stable_id}"
-            )
-            if missing
-            else {}
+        binaries = _compile_cached_programs(
+            native, sources, f"particle:{emitter.stable_id}"
         )
-        if set(compiled) != set(missing):
-            raise GpuParticleCompileError("engine compute compiler returned incomplete stages")
-        encoded_sources = {}
-        for stage, key in sorted(source_keys.items()):
-            descriptor = _SPIRV_DESCRIPTOR_CACHE.get(key)
-            if descriptor is None:
-                binary = bytes(compiled[stage])
-                if len(binary) < 20 or int.from_bytes(binary[:4], "little") != 0x07230203:
-                    raise GpuParticleCompileError(
-                        f"engine compute compiler returned invalid SPIR-V for {stage}"
-                    )
-                descriptor = {
-                    "byte_size": len(binary),
-                    "sha256": hashlib.sha256(binary).hexdigest(),
-                    "zlib_base64": base64.b64encode(zlib.compress(binary, 9)).decode("ascii"),
-                }
-                _SPIRV_DESCRIPTOR_CACHE[key] = descriptor
-            encoded_sources[stage] = dict(descriptor)
-        stages = {
-            stage: descriptor
-            for stage, descriptor in encoded_sources.items()
-            if not stage.startswith("continuation.")
-        }
         continuation = None
         if emitter.continuation is not None:
             continuation = {
@@ -521,7 +584,7 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
                 "lane_count": emitter.continuation.lane_count,
                 "join_count": emitter.continuation.join_count,
                 "stages": {
-                    stage: encoded_sources[f"continuation.{stage}"]
+                    stage: binaries[f"continuation.{stage}"]
                     for stage in emitter.continuation.stages()
                 },
             }
@@ -530,14 +593,15 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
                 "stable_id": emitter.stable_id,
                 "collision_enabled": emitter.collision_enabled,
                 "update_render_fusion": dict(emitter.update_render_fusion),
-                "stages": stages,
+                "stages": {
+                    stage: value
+                    for stage, value in binaries.items()
+                    if not stage.startswith("continuation.")
+                },
                 "continuation": continuation,
             }
         )
     graphics = _particle_graphics_sources()
-    billboard = _compile_cached_graphics(native, graphics["billboard"], "particle:billboard")
-    mesh = _compile_cached_graphics(native, graphics["mesh"], "particle:mesh")
-
     return {
         "$schema": "infernux.particle_gpu_spirv",
         "target": "vulkan1.2-spirv1.5",
@@ -546,8 +610,10 @@ def compile_gpu_particle_spirv(program: GpuParticleProgramSource) -> dict[str, A
         "parameters": [parameter.to_dict() for parameter in program.parameters],
         "parameter_words": list(pack_gpu_particle_parameters(program.parameters)),
         "emitters": emitters,
-        "billboard": billboard,
-        "mesh": mesh,
+        "billboard": _compile_cached_programs(
+            native, graphics["billboard"], "particle:billboard"
+        ),
+        "mesh": _compile_cached_programs(native, graphics["mesh"], "particle:mesh"),
     }
 
 
@@ -573,20 +639,28 @@ def validate_gpu_particle_spirv(
         or value["target"] != "vulkan1.2-spirv1.5"
         or value["graphics_abi_hash"] != _particle_graphics_abi_hash()
         or value["kernel_hash"] != program.kernel_hash
-        or value["parameters"] != [parameter.to_dict() for parameter in program.parameters]
-        or value["parameter_words"] != list(pack_gpu_particle_parameters(program.parameters))
+        or value["parameters"]
+        != [parameter.to_dict() for parameter in program.parameters]
+        or value["parameter_words"]
+        != list(pack_gpu_particle_parameters(program.parameters))
         or type(value["emitters"]) is not list
         or len(value["emitters"]) != len(program.emitters)
     ):
         raise GpuParticleCompileError("particle GPU SPIR-V header is incompatible")
     billboard = value["billboard"]
     if type(billboard) is not dict or set(billboard) != {
-        "vertex", "picking_fragment", "motion_vertex", "motion_fragment",
+        "vertex",
+        "picking_fragment",
+        "motion_vertex",
+        "motion_fragment",
     }:
         raise GpuParticleCompileError("particle GPU billboard binary is incomplete")
     mesh = value["mesh"]
     if type(mesh) is not dict or set(mesh) != {
-        "vertex", "shadow_fragment", "picking_fragment", "motion_vertex",
+        "vertex",
+        "shadow_fragment",
+        "picking_fragment",
+        "motion_vertex",
         "motion_fragment",
     }:
         raise GpuParticleCompileError("particle GPU mesh binary is incomplete")
@@ -598,7 +672,9 @@ def validate_gpu_particle_spirv(
             "stages",
             "continuation",
         }:
-            raise GpuParticleCompileError("particle GPU emitter binary entry is invalid")
+            raise GpuParticleCompileError(
+                "particle GPU emitter binary entry is invalid"
+            )
         stages = encoded["stages"]
         if (
             encoded["stable_id"] != source.stable_id
@@ -606,11 +682,17 @@ def validate_gpu_particle_spirv(
             or encoded["collision_enabled"] != source.collision_enabled
             or type(stages) is not dict
         ):
-            raise GpuParticleCompileError("particle GPU emitter binary identity is invalid")
+            raise GpuParticleCompileError(
+                "particle GPU emitter binary identity is invalid"
+            )
         if encoded["update_render_fusion"] != source.update_render_fusion:
-            raise GpuParticleCompileError("particle GPU emitter fusion metadata is incompatible")
+            raise GpuParticleCompileError(
+                "particle GPU emitter fusion metadata is incompatible"
+            )
         if set(stages) != set(source.stages()):
-            raise GpuParticleCompileError("particle GPU emitter binary stages are incomplete")
+            raise GpuParticleCompileError(
+                "particle GPU emitter binary stages are incomplete"
+            )
         for stage, descriptor in stages.items():
             _validate_spirv_descriptor(descriptor, stage)
         continuation = encoded["continuation"]
@@ -634,8 +716,7 @@ def validate_gpu_particle_spirv(
                 or continuation["lane_count"] != source.continuation.lane_count
                 or continuation["join_count"] != source.continuation.join_count
                 or type(continuation["stages"]) is not dict
-                or set(continuation["stages"])
-                != set(source.continuation.stages())
+                or set(continuation["stages"]) != set(source.continuation.stages())
             ):
                 raise GpuParticleCompileError(
                     "particle GPU continuation binary metadata is incompatible"
@@ -698,7 +779,10 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
         or type(mesh) is not dict
         or type(parameters) is not list
         or type(parameter_words) is not list
-        or any(type(word) is not int or not 0 <= word <= 0xFFFFFFFF for word in parameter_words)
+        or any(
+            type(word) is not int or not 0 <= word <= 0xFFFFFFFF
+            for word in parameter_words
+        )
     ):
         raise GpuParticleCompileError("particle GPU emitter payload is invalid")
 
@@ -712,7 +796,8 @@ def decode_gpu_particle_spirv(value: Any, emitter_index: int) -> dict[str, Any]:
     continuation = emitter.get("continuation")
     if continuation is not None and (
         type(continuation) is not dict
-        or set(continuation) != {
+        or set(continuation)
+        != {
             "record_stride",
             "lane_count",
             "join_count",
@@ -766,8 +851,9 @@ class _StageCompiler:
         *,
         parameter_slots: Mapping[str, tuple[int, TypeRef]] | None = None,
         continuation_lane_indices: Mapping[str, int] | None = None,
-        continuation_join_indices: Mapping[tuple[ParticleStage, str, str], int]
-        | None = None,
+        continuation_join_indices: (
+            Mapping[tuple[ParticleStage, str, str], int] | None
+        ) = None,
         existing_continuation_lane: int | None = None,
         entry_guard: str = "true",
         flow_entry_guards: Mapping[tuple[ParticleStage, str], str] | None = None,
@@ -775,7 +861,9 @@ class _StageCompiler:
         symbol_prefix: str = "",
     ) -> None:
         self._emitter = emitter
-        self._fields = {stable_id: (value_type, field) for stable_id, value_type, field in fields}
+        self._fields = {
+            stable_id: (value_type, field) for stable_id, value_type, field in fields
+        }
         self._values: dict[str, str] = {}
         self._exports: dict[str, str] = {}
         self._lines: list[str] = []
@@ -813,7 +901,12 @@ class _StageCompiler:
             self._continuation_lane_indices
             and any(
                 instruction.opcode
-                in {"suspend_frames", "suspend_seconds", "until_frames", "until_seconds"}
+                in {
+                    "suspend_frames",
+                    "suspend_seconds",
+                    "until_frames",
+                    "until_seconds",
+                }
                 for instruction in function.instructions
             )
         ):
@@ -853,14 +946,10 @@ class _StageCompiler:
                     f"{self._symbol_prefix}inx_lane_{prefix}_{flow_index}_{lane.index}_active"
                 )
             joins.update(
-                {
-                    (flow_index, join.output_lane_index): join
-                    for join in flow.joins
-                }
+                {(flow_index, join.output_lane_index): join for join in flow.joins}
             )
             block_order = {
-                block.source_node_uid: order
-                for order, block in enumerate(flow.blocks)
+                block.source_node_uid: order for order, block in enumerate(flow.blocks)
             }
             join_order = {
                 join.source_node_uid: block_order[join.source_node_uid]
@@ -911,9 +1000,7 @@ class _StageCompiler:
             for suspension in flow_suspensions:
                 candidates = []
                 for join in flow.joins:
-                    runtime = runtime_joins.get(
-                        (flow_index, join.output_lane_index)
-                    )
+                    runtime = runtime_joins.get((flow_index, join.output_lane_index))
                     if runtime is None or not any(
                         is_descendant(flow, input_lane, suspension.lane_index)
                         for input_lane in join.input_lane_indices
@@ -1040,8 +1127,7 @@ class _StageCompiler:
         suspension,
     ) -> str:
         block_order = {
-            block.source_node_uid: order
-            for order, block in enumerate(flow.blocks)
+            block.source_node_uid: order for order, block in enumerate(flow.blocks)
         }
         try:
             resume_order = block_order[suspension.resume_node_uid]
@@ -1169,9 +1255,7 @@ class _StageCompiler:
                 )
             prerequisite_indices.add(producer_index)
             pending_values.extend(
-                operand.value_id
-                for operand in producer.operands
-                if operand.value_id
+                operand.value_id for operand in producer.operands if operand.value_id
             )
 
         # Resume shaders are separate entry points. Rebuild only the pure SSA
@@ -1211,7 +1295,9 @@ class _StageCompiler:
             ]
             if not candidates:
                 continue
-            nearest = min(candidates, key=lambda join: join_orders[join.source_node_uid])
+            nearest = min(
+                candidates, key=lambda join: join_orders[join.source_node_uid]
+            )
             nearest_index = self._continuation_join_indices[
                 (flow.lifecycle_stage, flow.flow_id, nearest.source_node_uid)
             ]
@@ -1229,11 +1315,14 @@ class _StageCompiler:
                         (flow.lifecycle_stage, flow.flow_id, join.source_node_uid)
                     ]
                     expected_mask = (1 << len(join.input_lane_indices)) - 1
-                    arrivals = " | ".join(
-                        f"({lane_names[value]} ? {1 << bit}u : 0u)"
-                        for bit, value in enumerate(join.input_lane_indices)
-                        if value in lane_names
-                    ) or "0u"
+                    arrivals = (
+                        " | ".join(
+                            f"({lane_names[value]} ? {1 << bit}u : 0u)"
+                            for bit, value in enumerate(join.input_lane_indices)
+                            if value in lane_names
+                        )
+                        or "0u"
+                    )
                     token = (
                         "(inx_continuation_record_join_index == "
                         f"{join_index}u ? inx_continuation_record_branch_token : 0u)"
@@ -1302,7 +1391,7 @@ class _StageCompiler:
             if result_type.value_type is ValueType.TEXTURE2D:
                 self._values[instruction.result_id] = "0u"
                 return
-            expression = _glsl_literal(immediate["value"], result_type)
+            expression = _slang_literal(immediate["value"], result_type)
         elif opcode == "load_attribute":
             value_type, field = self._field(immediate["attribute"])
             expression = _storage_decode(f"state.{field}", value_type)
@@ -1332,7 +1421,7 @@ class _StageCompiler:
             if result_type.value_type in {ValueType.CURVE, ValueType.GRADIENT}:
                 self._values[instruction.result_id] = f"{parameter[0]}u"
                 return
-            expression = _parameter_load_glsl(parameter[0], result_type)
+            expression = _parameter_load_slang(parameter[0], result_type)
         elif opcode == "store_parameter":
             stable_id = str(immediate["parameter"])
             parameter = self._parameter_slots.get(stable_id)
@@ -1341,17 +1430,19 @@ class _StageCompiler:
                     f"GPU backend cannot write parameter {stable_id!r}"
                 )
             self._lines.append(
-                _parameter_store_glsl(parameter[0], parameter[1], operands[0])
+                _parameter_store_slang(parameter[0], parameter[1], operands[0])
             )
             return
         elif opcode == "event_payload":
             event_index = int(immediate["event_type_index"])
             if not 0 <= event_index < len(self._events.event_types):
-                raise GpuParticleCompileError("GPU event payload references an unknown event")
+                raise GpuParticleCompileError(
+                    "GPU event payload references an unknown event"
+                )
             event_type = self._events.event_types[event_index]
             field_id = str(immediate["field_stable_id"])
             head_field = self._field(f"{_event_state_prefix(event_index)}.head")[1]
-            default = _glsl_literal(immediate["default"], result_type)
+            default = _slang_literal(immediate["default"], result_type)
             expression = default
             for slot in range(event_type.queue_capacity - 1, -1, -1):
                 payload_field = self._field(
@@ -1409,15 +1500,17 @@ class _StageCompiler:
                         _event_payload_state_id(event_index, slot, field.stable_id)
                     )[1]
                     encoded = _storage_encode(value, field.value_type)
-                    self._lines.append(f"            state.{payload_field} = {encoded};")
+                    self._lines.append(
+                        f"            state.{payload_field} = {encoded};"
+                    )
                 self._lines.append("        }")
             self._lines.extend(
                 (
                     f"        state.{tail_field} = (state.{tail_field} + 1u) % {capacity}u;",
                     f"        state.{count_field} += 1u;",
-                    f"        atomicAdd(counters.event_counters[{event_type_count + event_index}u], 1u);",
+                    f"        counters_words[13u + {event_type_count + event_index}u].add(1u);",
                     "    } else {",
-                    f"        atomicAdd(counters.event_counters[{event_index}u], 1u);",
+                    f"        counters_words[13u + {event_index}u].add(1u);",
                     "    }",
                     "}",
                 )
@@ -1425,9 +1518,7 @@ class _StageCompiler:
             return
         elif opcode == "burst_enqueue":
             target_index = int(immediate["target_emitter_index"])
-            self._lines.append(
-                f"inx_enqueue_burst({target_index}u, {operands[0]});"
-            )
+            self._lines.append(f"inx_enqueue_burst({target_index}u, {operands[0]});")
             return
         elif opcode == "emitter_set_playing":
             target_index = int(immediate["target_emitter_index"])
@@ -1460,17 +1551,17 @@ class _StageCompiler:
                     f"if ({operands[0]}{pending_guard}) {{",
                     f"    state.{active_field} = 0u;",
                     f"    state.{head_field} = (state.{head_field} + 1u) % {capacity}u;",
-                    f"    atomicAdd(counters.event_counters[{event_type_count * 2 + event_index}u], 1u);",
+                    f"    counters_words[13u + {event_type_count * 2 + event_index}u].add(1u);",
                     "}",
                 )
             )
             return
         elif opcode == "numeric_resize":
-            expression = _numeric_resize_glsl(
+            expression = _numeric_resize_slang(
                 operands[0], instruction.operands[0].value_type, result_type
             )
         elif opcode in {"compose_vec2", "compose_vec3", "compose_vec4"}:
-            expression = f"{_glsl_type(result_type)}({', '.join(operands)})"
+            expression = f"{_slang_type(result_type)}({', '.join(operands)})"
         elif opcode == "split_component":
             expression = f"({operands[0]}).{'xyzw'[int(immediate['component'])]}"
         elif opcode == "add":
@@ -1478,7 +1569,15 @@ class _StageCompiler:
         elif opcode == "subtract":
             expression = f"({operands[0]} - {operands[1]})"
         elif opcode == "multiply":
-            expression = f"({operands[0]} * {operands[1]})"
+            matrix = any(
+                operand.value_type.value_type in {ValueType.MAT3, ValueType.MAT4}
+                for operand in instruction.operands
+            )
+            expression = (
+                f"mul({operands[0]}, {operands[1]})"
+                if matrix
+                else f"({operands[0]} * {operands[1]})"
+            )
         elif opcode == "divide":
             expression = f"({operands[0]} / {operands[1]})"
         elif opcode == "normalized_age":
@@ -1486,7 +1585,7 @@ class _StageCompiler:
                 f"clamp({operands[0]} / max({operands[1]}, 0.000001), 0.0, 1.0)"
             )
         elif opcode == "lerp":
-            expression = f"mix({operands[0]}, {operands[1]}, {operands[2]})"
+            expression = f"lerp({operands[0]}, {operands[1]}, {operands[2]})"
         elif opcode == "less_than":
             expression = f"({operands[0]} < {operands[1]})"
         elif opcode == "less_equal":
@@ -1528,7 +1627,7 @@ class _StageCompiler:
         elif opcode in {"floor", "ceil"}:
             expression = f"{opcode}({operands[0]})"
         elif opcode == "fraction":
-            expression = f"fract({operands[0]})"
+            expression = f"frac({operands[0]})"
         elif opcode == "square_root":
             expression = f"sqrt({operands[0]})"
         elif opcode == "sine":
@@ -1553,13 +1652,11 @@ class _StageCompiler:
             curve = AnimationCurve.from_dict(immediate["curve"])
             sample_time = f"{result}_time"
             self._lines.append(
-                f"float {sample_time} = {_glsl_wrapped_curve_time(operands[0], curve)};"
+                f"float {sample_time} = {_slang_wrapped_curve_time(operands[0], curve)};"
             )
-            expression = _glsl_curve_sample(sample_time, curve)
+            expression = _slang_curve_sample(sample_time, curve)
         elif opcode == "sample_curve_parameter":
-            expression = (
-                f"inx_sample_curve_parameter({operands[0]}, {operands[1]})"
-            )
+            expression = f"inx_sample_curve_parameter({operands[0]}, {operands[1]})"
         elif opcode == "sample_gradient":
             gradient = Gradient.from_dict(immediate["gradient"])
             sample_time = f"{result}_time"
@@ -1568,17 +1665,19 @@ class _StageCompiler:
                 f"{_float_literal(gradient.keys[0].time)}, "
                 f"{_float_literal(gradient.keys[-1].time)});"
             )
-            expression = _glsl_gradient_sample(sample_time, gradient)
+            expression = _slang_gradient_sample(sample_time, gradient)
         elif opcode == "sample_gradient_parameter":
-            expression = (
-                f"inx_sample_gradient_parameter({operands[0]}, {operands[1]})"
-            )
+            expression = f"inx_sample_gradient_parameter({operands[0]}, {operands[1]})"
         elif opcode == "sample_texture2d":
             expression = f"inx_sample_parameter_texture({operands[0]}, {operands[1]})"
         elif opcode == "value_noise_3d":
-            expression = f"inx_value_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
+            expression = (
+                f"inx_value_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
+            )
         elif opcode == "vector_noise_3d":
-            expression = f"inx_vector_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
+            expression = (
+                f"inx_vector_noise_3d({operands[0]}, {operands[1]}, {operands[2]})"
+            )
         elif opcode.startswith("sample_shape_"):
             mode = "position" if opcode.endswith("position") else "direction"
             slots = immediate["random_slots"]
@@ -1587,11 +1686,7 @@ class _StageCompiler:
                     raise GpuParticleCompileError(
                         "automatic Mesh emitter shape only samples particle position"
                     )
-                expression = (
-                    "inx_sample_mesh_shape_position(inx_shape_random("
-                    f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
-                    f"state.{self._field('builtin.id')[1]}, state.spawn_generation))"
-                )
+                expression = f"inx_sample_mesh_shape_position(inx_shape_random(uint3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), state.{self._field('builtin.id')[1]}, state.spawn_generation))"
             elif immediate["shape"] == "sdf":
                 if mode != "position":
                     raise GpuParticleCompileError(
@@ -1604,22 +1699,9 @@ class _StageCompiler:
                     raise GpuParticleCompileError(
                         f"GPU SDF emitter shape layout is missing {stable_id!r}"
                     ) from exc
-                expression = (
-                    f"inx_sample_sdf_shape_position_{sample_index}("
-                    "inx_shape_random("
-                    f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
-                    f"state.{self._field('builtin.id')[1]}, state.spawn_generation), "
-                    f"{'true' if str(immediate['sdf_mode']) == 'surface' else 'false'})"
-                )
+                expression = f"inx_sample_sdf_shape_position_{sample_index}(inx_shape_random(uint3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), state.{self._field('builtin.id')[1]}, state.spawn_generation), {'true' if str(immediate['sdf_mode']) == 'surface' else 'false'})"
             else:
-                expression = (
-                    f"inx_sample_shape_{mode}({_shape_kind(immediate['shape'])}u, "
-                    f"{_float_literal(immediate['radius'])}, "
-                    f"{_float_literal(immediate['angle_degrees'])}, "
-                    f"{_vector_literal(immediate['dimensions'], 3)}, "
-                    f"uvec3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), "
-                    f"state.{self._field('builtin.id')[1]}, state.spawn_generation)"
-                )
+                expression = f"inx_sample_shape_{mode}({_shape_kind(immediate['shape'])}u, {_float_literal(immediate['radius'])}, {_float_literal(immediate['angle_degrees'])}, {_vector_literal(immediate['dimensions'], 3)}, uint3({int(slots[0])}u, {int(slots[1])}u, {int(slots[2])}u), state.{self._field('builtin.id')[1]}, state.spawn_generation)"
         elif opcode == "sample_vector_field":
             stable_id = immediate["interface"]
             try:
@@ -1646,11 +1728,12 @@ class _StageCompiler:
                 raise GpuParticleCompileError(
                     f"GPU Mesh resource sample layout is missing {stable_id!r}"
                 ) from exc
-            sample_value = operands[0] if operands else (
-                "vec3("
-                f"inx_random01({int(immediate['seed'])}u, 0u, particle_index, 0u), "
-                f"inx_random01({int(immediate['seed'])}u, 1u, particle_index, 0u), "
-                f"inx_random01({int(immediate['seed'])}u, 2u, particle_index, 0u))"
+            sample_value = (
+                operands[0]
+                if operands
+                else (
+                    f"float3(inx_random01({int(immediate['seed'])}u, 0u, particle_index, 0u), inx_random01({int(immediate['seed'])}u, 1u, particle_index, 0u), inx_random01({int(immediate['seed'])}u, 2u, particle_index, 0u))"
+                )
             )
             expression = (
                 f"inx_sample_mesh_{sample_index}({sample_value}, "
@@ -1718,14 +1801,16 @@ class _StageCompiler:
                 or velocity_type.value_type is not ValueType.VEC3
             ):
                 raise GpuParticleCompileError(
-                    "Emitter collider collision requires vec3 position and velocity attributes"
+                    "Emitter collider collision requires float3 position and velocity attributes"
                 )
             suffix = len(self._lines)
             position_name = self._symbol(f"inx_scene_position_{suffix}")
             velocity_name = self._symbol(f"inx_scene_velocity_{suffix}")
             normal_name = self._symbol(f"inx_scene_normal_{suffix}")
             point_name = self._symbol(f"inx_scene_point_{suffix}")
-            relative_velocity_name = self._symbol(f"inx_scene_relative_velocity_{suffix}")
+            relative_velocity_name = self._symbol(
+                f"inx_scene_relative_velocity_{suffix}"
+            )
             penetration_name = self._symbol(f"inx_scene_penetration_{suffix}")
             trigger_name = self._symbol(f"inx_scene_trigger_{suffix}")
             material_name = self._symbol(f"inx_scene_material_{suffix}")
@@ -1733,15 +1818,15 @@ class _StageCompiler:
             hit_name = self._symbol(f"inx_scene_hit_{suffix}")
             self._lines.extend(
                 (
-                    f"vec3 {position_name} = {operands[0]};",
-                    f"vec3 {velocity_name} = {operands[1]};",
-                    f"vec3 {normal_name} = vec3(0.0);",
-                    f"vec3 {point_name} = vec3(0.0);",
-                    f"vec3 {relative_velocity_name} = vec3(0.0);",
+                    f"float3 {position_name} = {operands[0]};",
+                    f"float3 {velocity_name} = {operands[1]};",
+                    f"float3 {normal_name} = float3(0.0);",
+                    f"float3 {point_name} = float3(0.0);",
+                    f"float3 {relative_velocity_name} = float3(0.0);",
                     f"float {penetration_name} = 0.0;",
                     f"bool {trigger_name} = false;",
-                    f"vec4 {material_name} = vec4(0.0);",
-                    f"uvec2 {collider_id_name} = uvec2(0u);",
+                    f"float4 {material_name} = float4(0.0);",
+                    f"uint2 {collider_id_name} = uint2(0u);",
                     f"bool {hit_name} = inx_collide_scene(particle_index, "
                     f"{position_name}, {velocity_name}, {', '.join(operands[2:])}, "
                     f"{normal_name}, {point_name}, {relative_velocity_name}, "
@@ -1766,8 +1851,7 @@ class _StageCompiler:
                 normal_type, normal_field = self._field(normal_attribute)
                 if normal_type != TypeRef(ValueType.VEC3, CoordinateSpace.SIMULATION):
                     raise GpuParticleCompileError(
-                        "Emitter collider collision normal output requires a simulation-space "
-                        "vec3 attribute"
+                        "Emitter collider collision normal output requires a simulation-space float3 attribute"
                     )
                 self._lines.append(
                     f"if ({hit_name}) state.{normal_field} = {normal_name};"
@@ -1840,8 +1924,10 @@ class _StageCompiler:
             )
 
         if not instruction.result_id or result_type is None:
-            raise KernelCompileError(f"kernel opcode {opcode!r} did not produce a value")
-        self._lines.append(f"{_glsl_type(result_type)} {result} = {expression};")
+            raise KernelCompileError(
+                f"kernel opcode {opcode!r} did not produce a value"
+            )
+        self._lines.append(f"{_slang_type(result_type)} {result} = {expression};")
         self._values[instruction.result_id] = result
 
     def _field(self, stable_id: str) -> tuple[TypeRef, str]:
@@ -1856,7 +1942,7 @@ class _StageCompiler:
         return f"{self._symbol_prefix}{name}"
 
 
-def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
+def _slang_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
     span = last - first
     offset = f"({value} - {_float_literal(first)})"
     if mode in ("repeat", "default"):
@@ -1867,7 +1953,7 @@ def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
     )
 
 
-def _glsl_wrapped_curve_time(source: str, curve: AnimationCurve) -> str:
+def _slang_wrapped_curve_time(source: str, curve: AnimationCurve) -> str:
     if not curve.keys:
         return "0.0"
     first = curve.keys[0].time
@@ -1879,28 +1965,44 @@ def _glsl_wrapped_curve_time(source: str, curve: AnimationCurve) -> str:
     before = (
         source
         if curve.pre_wrap in ("clamp", "once")
-        else _glsl_curve_wrap(source, first, last, curve.pre_wrap)
+        else _slang_curve_wrap(source, first, last, curve.pre_wrap)
     )
     after = (
         source
         if curve.post_wrap in ("clamp", "once")
-        else _glsl_curve_wrap(source, first, last, curve.post_wrap)
+        else _slang_curve_wrap(source, first, last, curve.post_wrap)
     )
     return f"({before_source} ? {before} : ({after_source} ? {after} : {source}))"
 
 
-def _glsl_curve_segment(sample_time: str, left, right) -> str:
+def _slang_curve_segment(sample_time: str, left, right) -> str:
     import math
+
     if math.isinf(left.out_tangent) or math.isinf(right.in_tangent):
-        value = left.value if left.out_tangent == math.inf or right.in_tangent == math.inf else right.value
+        value = (
+            left.value
+            if left.out_tangent == math.inf or right.in_tangent == math.inf
+            else right.value
+        )
         return _float_literal(value)
+
     def key(k):
         # The other two slopes are unused by this segment and may be steps.
-        return _vector_literal((k.time, k.value,
-                                k.in_tangent if k is right else 0.0,
-                                k.out_tangent if k is left else 0.0), 4)
+        return _vector_literal(
+            (
+                k.time,
+                k.value,
+                k.in_tangent if k is right else 0.0,
+                k.out_tangent if k is left else 0.0,
+            ),
+            4,
+        )
+
     def weights(k):
-        return _vector_literal((k.in_weight, k.out_weight, float(int(k.weighted_mode) & 3)), 3)
+        return _vector_literal(
+            (k.in_weight, k.out_weight, float(int(k.weighted_mode) & 3)), 3
+        )
+
     inverse = _float_literal(_curve_inverse_span(left, right))
     return f"inx_curve_segment({sample_time}, {key(left)}, {key(right)}, {weights(left)}, {weights(right)}, {inverse})"
 
@@ -1910,24 +2012,31 @@ def _curve_inverse_span(left, right) -> float:
         return 0.0
     # Authoring/upload work only. Array conversion preserves native float32
     # rounding and overflow without a platform-specific numerical dependency.
-    duration = array("f", (right.time-left.time,))[0]
-    return array("f", (1.0/max(duration, _CURVE_MIN_SPAN),))[0]
+    duration = array("f", (right.time - left.time,))[0]
+    return array("f", (1.0 / max(duration, _CURVE_MIN_SPAN),))[0]
 
 
-def _glsl_curve_sample(sample_time: str, curve: AnimationCurve) -> str:
+def _slang_curve_sample(sample_time: str, curve: AnimationCurve) -> str:
     if not curve.keys:
         return "0.0"
     if len(curve.keys) == 1:
         return _float_literal(curve.keys[0].value)
     expression = _float_literal(curve.keys[-1].value)
     for left, right in reversed(tuple(zip(curve.keys, curve.keys[1:]))):
-        segment = _glsl_curve_segment(sample_time, left, right)
-        expression = f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
-    comparison = "<=" if curve.keys[1].time == curve.keys[0].time and curve.keys[-1].time != curve.keys[0].time else "<"
+        segment = _slang_curve_segment(sample_time, left, right)
+        expression = (
+            f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
+        )
+    comparison = (
+        "<="
+        if curve.keys[1].time == curve.keys[0].time
+        and curve.keys[-1].time != curve.keys[0].time
+        else "<"
+    )
     return f"({sample_time} {comparison} {_float_literal(curve.keys[0].time)} ? {_float_literal(curve.keys[0].value)} : {expression})"
 
 
-def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
+def _slang_gradient_sample(sample_time: str, gradient: Gradient) -> str:
     if len(gradient.keys) == 1:
         return _vector_literal(gradient.keys[0].color, 4)
     expression = _vector_literal(gradient.keys[-1].color, 4)
@@ -1948,7 +2057,9 @@ def _glsl_gradient_sample(sample_time: str, gradient: Gradient) -> str:
                 f"{function}({_vector_literal(left.color, 4)}, "
                 f"{_vector_literal(right.color, 4)}, {factor})"
             )
-        expression = f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
+        expression = (
+            f"({sample_time} < {_float_literal(right.time)} ? {segment} : {expression})"
+        )
     return expression
 
 
@@ -2028,7 +2139,7 @@ def _texture_parameter_layout(
                 "default": dict(by_id[stable_id].default),
             }
             for index, stable_id in enumerate(sorted(sampled))
-        ]
+        ],
     }
 
 
@@ -2073,10 +2184,22 @@ def _mesh_interface_layout(emitter: ParticleEmitterKernelIR) -> list[dict[str, A
                 "mesh": dict(immediate["mesh"]),
                 "space": immediate["shape_space"],
                 "mesh_to_space": [
-                    1.0, 0.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    0.0, 0.0, 1.0, 0.0,
-                    0.0, 0.0, 0.0, 1.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
                 ],
                 "interface_index": 0,
                 "metadata_offset": 0,
@@ -2177,20 +2300,24 @@ def _volume_interface_layout(emitter: ParticleEmitterKernelIR) -> dict[str, Any]
         "volume_metadata_binding": 0,
         "volume_stride_words": 32,
         "volume_interfaces": [
-            ({
-                "kind": sampled[stable_id],
-                "stable_id": stable_id,
-                "interface_index": index,
-                "texture_binding": index + 1,
-                "boundary": interfaces[stable_id].boundary.value,
-                "filtering": interfaces[stable_id].filtering.value,
-            } if sampled[stable_id] == "vector_field" else {
-                "kind": "sdf",
-                "stable_id": stable_id,
-                "interface_index": index,
-                "texture_binding": index + 1,
-                "filtering": sdf_interfaces[stable_id].filtering.value,
-            })
+            (
+                {
+                    "kind": sampled[stable_id],
+                    "stable_id": stable_id,
+                    "interface_index": index,
+                    "texture_binding": index + 1,
+                    "boundary": interfaces[stable_id].boundary.value,
+                    "filtering": interfaces[stable_id].filtering.value,
+                }
+                if sampled[stable_id] == "vector_field"
+                else {
+                    "kind": "sdf",
+                    "stable_id": stable_id,
+                    "interface_index": index,
+                    "texture_binding": index + 1,
+                    "filtering": sdf_interfaces[stable_id].filtering.value,
+                }
+            )
             for index, stable_id in enumerate(sorted(sampled))
         ],
     }
@@ -2219,11 +2346,13 @@ def _attribute_fields(
         result.append((stable_id, value_type, field))
     required = {"builtin.id", "builtin.position", "builtin.size", "builtin.color"}
     if not required.issubset(stable_id for stable_id, _type, _field in result):
-        raise GpuParticleCompileError("GPU particles require the standard builtin attributes")
+        raise GpuParticleCompileError(
+            "GPU particles require the standard builtin attributes"
+        )
     return tuple(result)
 
 
-_STD430_STORAGE_LAYOUT = {
+_STATE_STORAGE_LAYOUT = {
     ValueType.BOOL: (4, 4),
     ValueType.I32: (4, 4),
     ValueType.U32: (4, 4),
@@ -2237,7 +2366,7 @@ _STD430_STORAGE_LAYOUT = {
 }
 
 
-def _std430_attribute_layout(
+def _state_attribute_layout(
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> tuple[tuple[tuple[str, TypeRef, str, int, int], ...], int]:
     # Internal lifecycle flags, generation, and per-stage resume stamps.
@@ -2246,7 +2375,7 @@ def _std430_attribute_layout(
     result = []
     for stable_id, value_type, field in fields:
         try:
-            alignment, byte_size = _STD430_STORAGE_LAYOUT[value_type.value_type]
+            alignment, byte_size = _STATE_STORAGE_LAYOUT[value_type.value_type]
         except KeyError as exc:
             raise GpuParticleCompileError(
                 f"attribute {stable_id!r} has no std430 storage layout"
@@ -2269,7 +2398,9 @@ def build_gpu_particle_migration(
 ) -> dict[str, Any]:
     """Build raw-word copy ranges and defaults for one layout migration."""
     if not isinstance(previous_layout, dict) or not isinstance(next_layout, dict):
-        raise GpuParticleCompileError("GPU particle migration requires two layout documents")
+        raise GpuParticleCompileError(
+            "GPU particle migration requires two layout documents"
+        )
     if previous_layout.get("stable_id") != next_layout.get("stable_id"):
         raise GpuParticleCompileError("GPU particle migration emitter identity changed")
     old_stride = previous_layout.get("state_stride")
@@ -2282,7 +2413,9 @@ def build_gpu_particle_migration(
         or new_stride <= 0
         or new_stride % 4
     ):
-        raise GpuParticleCompileError("GPU particle migration state strides are invalid")
+        raise GpuParticleCompileError(
+            "GPU particle migration state strides are invalid"
+        )
 
     previous_fields = _decode_attribute_layout(previous_layout)
     next_fields = _decode_attribute_layout(next_layout)
@@ -2291,13 +2424,15 @@ def build_gpu_particle_migration(
         for stable_id, value_type, default in next_kernel.attributes
     }
     if set(next_fields) != set(kernel_schema):
-        raise GpuParticleCompileError("GPU particle migration layout does not match Kernel IR")
+        raise GpuParticleCompileError(
+            "GPU particle migration layout does not match Kernel IR"
+        )
 
     defaults = bytearray(new_stride)
     struct.pack_into("<II", defaults, 8, 0xFFFFFFFF, 0xFFFFFFFF)
     for stable_id, (value_type, default) in kernel_schema.items():
-        _glsl_type_name, offset, _byte_size = next_fields[stable_id]
-        _pack_std430_default(defaults, offset, value_type, default)
+        _slang_type_name, offset, _byte_size = next_fields[stable_id]
+        _pack_state_default(defaults, offset, value_type, default)
 
     copy_ranges = []
     for stable_id, (new_type, new_offset, new_size) in next_fields.items():
@@ -2336,22 +2471,24 @@ def _decode_attribute_layout(
     expected_keys = {
         "stable_id",
         "field",
-        "glsl_type",
+        "storage_type",
         "offset",
         "byte_size",
     }
     for field in fields:
         if type(field) is not dict or set(field) != expected_keys:
-            raise GpuParticleCompileError("GPU particle attribute layout entry is invalid")
+            raise GpuParticleCompileError(
+                "GPU particle attribute layout entry is invalid"
+            )
         stable_id = field["stable_id"]
-        glsl_type = field["glsl_type"]
+        storage_type = field["storage_type"]
         offset = field["offset"]
         byte_size = field["byte_size"]
         if (
             type(stable_id) is not str
             or not stable_id
             or stable_id in result
-            or type(glsl_type) is not str
+            or type(storage_type) is not str
             or type(offset) is not int
             or offset < 16
             or offset % 4
@@ -2360,12 +2497,14 @@ def _decode_attribute_layout(
             or byte_size % 4
             or offset + byte_size > stride
         ):
-            raise GpuParticleCompileError("GPU particle attribute layout entry is invalid")
-        result[stable_id] = (glsl_type, offset, byte_size)
+            raise GpuParticleCompileError(
+                "GPU particle attribute layout entry is invalid"
+            )
+        result[stable_id] = (storage_type, offset, byte_size)
     return result
 
 
-def _pack_std430_default(
+def _pack_state_default(
     destination: bytearray,
     offset: int,
     value_type: TypeRef,
@@ -2387,7 +2526,9 @@ def _pack_std430_default(
             ValueType.VEC4: 4,
             ValueType.COLOR: 4,
         }[kind]
-        struct.pack_into(f"<{count}f", destination, offset, *(float(item) for item in value))
+        struct.pack_into(
+            f"<{count}f", destination, offset, *(float(item) for item in value)
+        )
     elif kind is ValueType.MAT3:
         values = [float(item) for item in value]
         for column in range(3):
@@ -2405,22 +2546,21 @@ def _pack_std430_default(
         )
 
 
-def _mesh_shape_glsl(layout: dict[str, Any]) -> str:
+def _mesh_shape_slang(layout: dict[str, Any]) -> str:
     interfaces = layout.get("mesh_interfaces", ())
     if not interfaces:
         return ""
     lines = [
-        "layout(std430, set = 1, binding = 0) readonly buffer "
-        "InxParticleDataMetadata { uint inx_particle_data_meta[]; };",
-        "const uint INX_MESH_SAMPLE_VERTEX = 0u;",
-        "const uint INX_MESH_SAMPLE_EDGE = 1u;",
-        "const uint INX_MESH_SAMPLE_SURFACE = 2u;",
+        "[[vk::binding(0, 1)]] StructuredBuffer<uint> inx_particle_data_meta;",
+        "static const uint INX_MESH_SAMPLE_VERTEX = 0u;",
+        "static const uint INX_MESH_SAMPLE_EDGE = 1u;",
+        "static const uint INX_MESH_SAMPLE_SURFACE = 2u;",
         "struct InxMeshVertex {",
-        "    vec4 position; vec4 normal; vec4 tangent; vec4 color; vec4 uv;",
+        "    float4 position; float4 normal; float4 tangent; float4 color; float4 uv;",
         "};",
-        "struct InxMeshSkinInfluence { uvec4 bones; vec4 weights; };",
+        "struct InxMeshSkinInfluence { uint4 bones; float4 weights; };",
         "struct InxMeshSample {",
-        "    vec3 position; vec3 normal; vec4 tangent; vec2 uv; vec3 barycentric;",
+        "    float3 position; float3 normal; float4 tangent; float2 uv; float3 barycentric;",
         "};",
     ]
     for interface in interfaces:
@@ -2432,91 +2572,91 @@ def _mesh_shape_glsl(layout: dict[str, Any]) -> str:
         palette_binding = int(interface["palette_binding"])
         lines.extend(
             (
-                f"layout(std430, set = 1, binding = {vertex_binding}) readonly buffer InxMeshVertices{index} {{ InxMeshVertex inx_mesh_vertices_{index}[]; }};",
-                f"layout(std430, set = 1, binding = {triangle_binding}) readonly buffer InxMeshTriangles{index} {{ uvec4 inx_mesh_triangles_{index}[]; }};",
-                f"layout(std430, set = 1, binding = {influence_binding}) readonly buffer InxMeshInfluences{index} {{ InxMeshSkinInfluence inx_mesh_influences_{index}[]; }};",
-                f"layout(std430, set = 1, binding = {palette_binding}) readonly buffer InxMeshPalette{index} {{ mat4 inx_mesh_palette_{index}[]; }};",
+                f"[[vk::binding({vertex_binding}, 1)]] StructuredBuffer<InxMeshVertex> inx_mesh_vertices_{index};",
+                f"[[vk::binding({triangle_binding}, 1)]] StructuredBuffer<uint4> inx_mesh_triangles_{index};",
+                f"[[vk::binding({influence_binding}, 1)]] StructuredBuffer<InxMeshSkinInfluence> inx_mesh_influences_{index};",
+                f"[[vk::binding({palette_binding}, 1)]] StructuredBuffer<InxColumnMatrix4> inx_mesh_palette_{index};",
                 f"InxMeshVertex inx_mesh_vertex_{index}(uint vertex_index) {{",
                 f"    InxMeshVertex vertex = inx_mesh_vertices_{index}[vertex_index];",
                 f"    uint bone_count = inx_particle_data_meta[{metadata + 3}u];",
                 "    if (bone_count == 0u) return vertex;",
                 f"    InxMeshSkinInfluence influence = inx_mesh_influences_{index}[vertex_index];",
-                "    float weight_sum = dot(influence.weights, vec4(1.0));",
+                "    float weight_sum = dot(influence.weights, float4(1.0));",
                 "    if (weight_sum <= 1.0e-8) return vertex;",
-                "    vec4 weights = influence.weights / weight_sum;",
-                f"    mat4 skin = inx_mesh_palette_{index}[min(influence.bones.x, bone_count - 1u)] * weights.x",
-                f"              + inx_mesh_palette_{index}[min(influence.bones.y, bone_count - 1u)] * weights.y",
-                f"              + inx_mesh_palette_{index}[min(influence.bones.z, bone_count - 1u)] * weights.z",
-                f"              + inx_mesh_palette_{index}[min(influence.bones.w, bone_count - 1u)] * weights.w;",
-                "    vertex.position.xyz = (skin * vec4(vertex.position.xyz, 1.0)).xyz;",
-                "    mat3 skin_linear = mat3(skin);",
+                "    float4 weights = influence.weights / weight_sum;",
+                f"    float4x4 skin = inx_mesh_palette_{index}[min(influence.bones.x, bone_count - 1u)].value * weights.x",
+                f"              + inx_mesh_palette_{index}[min(influence.bones.y, bone_count - 1u)].value * weights.y",
+                f"              + inx_mesh_palette_{index}[min(influence.bones.z, bone_count - 1u)].value * weights.z",
+                f"              + inx_mesh_palette_{index}[min(influence.bones.w, bone_count - 1u)].value * weights.w;",
+                "    vertex.position.xyz = (mul(skin, float4(vertex.position.xyz, 1.0))).xyz;",
+                "    float3x3 skin_linear = float3x3(skin);",
                 "    float skin_determinant = determinant(skin_linear);",
-                "    mat3 skin_normal = abs(skin_determinant) > 1.0e-8 ? transpose(inverse(skin_linear)) : mat3(1.0);",
-                "    vertex.normal.xyz = skin_normal * vertex.normal.xyz;",
-                "    vertex.tangent.xyz = skin_linear * vertex.tangent.xyz;",
+                "    float3x3 skin_normal = abs(skin_determinant) > 1.0e-8 ? transpose(inx_inverse3x3(skin_linear)) : float3x3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);",
+                "    vertex.normal.xyz = mul(skin_normal, vertex.normal.xyz);",
+                "    vertex.tangent.xyz = mul(skin_linear, vertex.tangent.xyz);",
                 "    return vertex;",
                 "}",
-                f"InxMeshSample inx_sample_mesh_{index}(vec3 sample_value, uint mode) {{",
+                f"InxMeshSample inx_sample_mesh_{index}(float3 sample_value, uint mode) {{",
                 "    InxMeshSample result;",
-                "    sample_value = clamp(sample_value, vec3(0.0), vec3(0.99999994));",
+                "    sample_value = clamp(sample_value, float3(0.0), float3(0.99999994));",
                 f"    uint vertex_count = inx_particle_data_meta[{metadata}u];",
                 f"    uint triangle_count = inx_particle_data_meta[{metadata + 1}u];",
                 f"    uint edge_count = inx_particle_data_meta[{metadata + 2}u];",
                 "    uint triangle_index = 0u;",
-                "    uvec3 triangle = uvec3(0u);",
-                "    vec3 barycentric = vec3(1.0, 0.0, 0.0);",
+                "    uint3 triangle = uint3(0u);",
+                "    float3 barycentric = float3(1.0, 0.0, 0.0);",
                 "    if (mode == INX_MESH_SAMPLE_VERTEX) {",
                 "        uint vertex_index = min(uint(sample_value.x * float(vertex_count)), vertex_count - 1u);",
-                "        triangle = uvec3(vertex_index);",
+                "        triangle = uint3(vertex_index);",
                 "    } else if (mode == INX_MESH_SAMPLE_EDGE) {",
                 "        uint low = 0u;",
                 "        uint high = edge_count;",
                 "        while (low < high) {",
                 "            uint middle = low + (high - low) / 2u;",
-                f"            float cdf = uintBitsToFloat(inx_mesh_triangles_{index}[triangle_count + middle].z);",
+                f"            float cdf = asfloat(inx_mesh_triangles_{index}[triangle_count + middle].z);",
                 "            if (cdf < sample_value.x) low = middle + 1u; else high = middle;",
                 "        }",
                 "        uint edge_index = min(low, edge_count - 1u);",
-                f"        uvec4 edge = inx_mesh_triangles_{index}[triangle_count + edge_index];",
-                "        triangle = uvec3(edge.x, edge.y, edge.y);",
-                "        barycentric = vec3(1.0 - sample_value.y, sample_value.y, 0.0);",
+                f"        uint4 edge = inx_mesh_triangles_{index}[triangle_count + edge_index];",
+                "        triangle = uint3(edge.x, edge.y, edge.y);",
+                "        barycentric = float3(1.0 - sample_value.y, sample_value.y, 0.0);",
                 "    } else {",
                 "        if (mode == INX_MESH_SAMPLE_SURFACE) {",
                 "            uint low = 0u;",
                 "            uint high = triangle_count;",
                 "            while (low < high) {",
                 "                uint middle = low + (high - low) / 2u;",
-                f"                float cdf = uintBitsToFloat(inx_mesh_triangles_{index}[middle].w);",
+                f"                float cdf = asfloat(inx_mesh_triangles_{index}[middle].w);",
                 "                if (cdf < sample_value.x) low = middle + 1u; else high = middle;",
                 "            }",
                 "            triangle_index = min(low, triangle_count - 1u);",
                 "        }",
                 f"        triangle = inx_mesh_triangles_{index}[triangle_index].xyz;",
                 "        float root = sqrt(sample_value.y);",
-                "        barycentric = vec3(1.0 - root, root * (1.0 - sample_value.z), root * sample_value.z);",
+                "        barycentric = float3(1.0 - root, root * (1.0 - sample_value.z), root * sample_value.z);",
                 "    }",
                 f"    InxMeshVertex a = inx_mesh_vertex_{index}(triangle.x);",
                 f"    InxMeshVertex b = inx_mesh_vertex_{index}(triangle.y);",
                 f"    InxMeshVertex c = inx_mesh_vertex_{index}(triangle.z);",
-                "    vec3 local_position = a.position.xyz * barycentric.x + b.position.xyz * barycentric.y + c.position.xyz * barycentric.z;",
-                "    vec3 local_normal = a.normal.xyz * barycentric.x + b.normal.xyz * barycentric.y + c.normal.xyz * barycentric.z;",
-                "    vec4 local_tangent = a.tangent * barycentric.x + b.tangent * barycentric.y + c.tangent * barycentric.z;",
-                "    vec2 local_uv = a.uv.xy * barycentric.x + b.uv.xy * barycentric.y + c.uv.xy * barycentric.z;",
-                f"    mat4 mesh_to_simulation = mat4(uintBitsToFloat(inx_particle_data_meta[{metadata + 4}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 5}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 6}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 7}u]),",
-                f"                                    uintBitsToFloat(inx_particle_data_meta[{metadata + 8}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 9}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 10}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 11}u]),",
-                f"                                    uintBitsToFloat(inx_particle_data_meta[{metadata + 12}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 13}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 14}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 15}u]),",
-                f"                                    uintBitsToFloat(inx_particle_data_meta[{metadata + 16}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 17}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 18}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 19}u]));",
-                f"    mat3 normal_to_simulation = mat3(uintBitsToFloat(inx_particle_data_meta[{metadata + 20}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 21}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 22}u]),",
-                f"                                      uintBitsToFloat(inx_particle_data_meta[{metadata + 24}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 25}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 26}u]),",
-                f"                                      uintBitsToFloat(inx_particle_data_meta[{metadata + 28}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 29}u]), uintBitsToFloat(inx_particle_data_meta[{metadata + 30}u]));",
-                "    result.position = (mesh_to_simulation * vec4(local_position, 1.0)).xyz;",
-                "    vec3 transformed_normal = normal_to_simulation * local_normal;",
-                "    vec3 transformed_tangent = mat3(mesh_to_simulation) * local_tangent.xyz;",
-                "    result.normal = dot(transformed_normal, transformed_normal) > 1.0e-12 ? normalize(transformed_normal) : vec3(0.0, 1.0, 0.0);",
+                "    float3 local_position = a.position.xyz * barycentric.x + b.position.xyz * barycentric.y + c.position.xyz * barycentric.z;",
+                "    float3 local_normal = a.normal.xyz * barycentric.x + b.normal.xyz * barycentric.y + c.normal.xyz * barycentric.z;",
+                "    float4 local_tangent = a.tangent * barycentric.x + b.tangent * barycentric.y + c.tangent * barycentric.z;",
+                "    float2 local_uv = a.uv.xy * barycentric.x + b.uv.xy * barycentric.y + c.uv.xy * barycentric.z;",
+                f"    float4x4 mesh_to_simulation = transpose(float4x4(asfloat(inx_particle_data_meta[{metadata + 4}u]), asfloat(inx_particle_data_meta[{metadata + 5}u]), asfloat(inx_particle_data_meta[{metadata + 6}u]), asfloat(inx_particle_data_meta[{metadata + 7}u]),",
+                f"                                    asfloat(inx_particle_data_meta[{metadata + 8}u]), asfloat(inx_particle_data_meta[{metadata + 9}u]), asfloat(inx_particle_data_meta[{metadata + 10}u]), asfloat(inx_particle_data_meta[{metadata + 11}u]),",
+                f"                                    asfloat(inx_particle_data_meta[{metadata + 12}u]), asfloat(inx_particle_data_meta[{metadata + 13}u]), asfloat(inx_particle_data_meta[{metadata + 14}u]), asfloat(inx_particle_data_meta[{metadata + 15}u]),",
+                f"                                    asfloat(inx_particle_data_meta[{metadata + 16}u]), asfloat(inx_particle_data_meta[{metadata + 17}u]), asfloat(inx_particle_data_meta[{metadata + 18}u]), asfloat(inx_particle_data_meta[{metadata + 19}u])));",
+                f"    float3x3 normal_to_simulation = transpose(float3x3(asfloat(inx_particle_data_meta[{metadata + 20}u]), asfloat(inx_particle_data_meta[{metadata + 21}u]), asfloat(inx_particle_data_meta[{metadata + 22}u]),",
+                f"                                      asfloat(inx_particle_data_meta[{metadata + 24}u]), asfloat(inx_particle_data_meta[{metadata + 25}u]), asfloat(inx_particle_data_meta[{metadata + 26}u]),",
+                f"                                      asfloat(inx_particle_data_meta[{metadata + 28}u]), asfloat(inx_particle_data_meta[{metadata + 29}u]), asfloat(inx_particle_data_meta[{metadata + 30}u])));",
+                "    result.position = (mul(mesh_to_simulation, float4(local_position, 1.0))).xyz;",
+                "    float3 transformed_normal = mul(normal_to_simulation, local_normal);",
+                "    float3 transformed_tangent = mul(float3x3(mesh_to_simulation), local_tangent.xyz);",
+                "    result.normal = dot(transformed_normal, transformed_normal) > 1.0e-12 ? normalize(transformed_normal) : float3(0.0, 1.0, 0.0);",
                 "    transformed_tangent -= result.normal * dot(result.normal, transformed_tangent);",
-                "    vec3 tangent_direction = dot(transformed_tangent, transformed_tangent) > 1.0e-12 ? normalize(transformed_tangent) : vec3(1.0, 0.0, 0.0);",
-                "    float tangent_handedness = (local_tangent.w < 0.0 ? -1.0 : 1.0) * (determinant(mat3(mesh_to_simulation)) < 0.0 ? -1.0 : 1.0);",
-                "    result.tangent = vec4(tangent_direction, tangent_handedness);",
+                "    float3 tangent_direction = dot(transformed_tangent, transformed_tangent) > 1.0e-12 ? normalize(transformed_tangent) : float3(1.0, 0.0, 0.0);",
+                "    float tangent_handedness = (local_tangent.w < 0.0 ? -1.0 : 1.0) * (determinant(float3x3(mesh_to_simulation)) < 0.0 ? -1.0 : 1.0);",
+                "    result.tangent = float4(tangent_direction, tangent_handedness);",
                 "    result.uv = local_uv;",
                 "    result.barycentric = barycentric;",
                 "    return result;",
@@ -2526,113 +2666,113 @@ def _mesh_shape_glsl(layout: dict[str, Any]) -> str:
         shape_mode = str(interface.get("shape_mode") or "")
         if shape_mode:
             lines.append(
-                f"vec3 inx_sample_mesh_shape_position(vec3 sample_value) {{ return inx_sample_mesh_{index}(sample_value, INX_MESH_SAMPLE_{shape_mode.upper()}).position; }}"
+                f"float3 inx_sample_mesh_shape_position(float3 sample_value) {{ return inx_sample_mesh_{index}(sample_value, INX_MESH_SAMPLE_{shape_mode.upper()}).position; }}"
             )
     return "\n".join(lines)
 
 
-def _volume_interface_glsl(layout: dict[str, Any]) -> str:
+def _volume_interface_slang(layout: dict[str, Any]) -> str:
     interfaces = layout.get("volume_interfaces", ())
     if not interfaces:
         return ""
     stride = int(layout["volume_stride_words"])
-    lines = [
-        "layout(std430, set = 2, binding = 0) readonly buffer InxVolumeMetadata { uint inx_volume_meta[]; };"
-    ]
+    lines = ["[[vk::binding(0, 2)]] StructuredBuffer<uint> inx_volume_meta;"]
     for interface in interfaces:
         index = int(interface["interface_index"])
         base = index * stride
         lines.extend(
             (
-                f"layout(set = 2, binding = {int(interface['texture_binding'])}) uniform sampler3D inx_volume_texture_{index};",
-                f"mat4 inx_volume_simulation_to_field_{index}() {{",
-                "    return mat4(",
+                f"[[vk::binding({int(interface['texture_binding'])}, 2)]] Sampler3D<float4> inx_volume_texture_{index};",
+                f"float4x4 inx_volume_simulation_to_field_{index}() {{",
+                "    return transpose(float4x4(",
                 *(
-                    "        vec4("
+                    "        float4("
                     + ", ".join(
-                        f"uintBitsToFloat(inx_volume_meta[{base + column * 4 + row}u])"
+                        f"asfloat(inx_volume_meta[{base + column * 4 + row}u])"
                         for row in range(4)
                     )
                     + (")," if column < 3 else ")")
                     for column in range(4)
                 ),
-                "    );",
+                "    ));",
                 "}",
-                f"mat3 inx_volume_direction_to_simulation_{index}() {{",
-                "    return mat3(",
+                f"float3x3 inx_volume_direction_to_simulation_{index}() {{",
+                "    return transpose(float3x3(",
                 *(
-                    "        vec3("
+                    "        float3("
                     + ", ".join(
-                        f"uintBitsToFloat(inx_volume_meta[{base + 16 + column * 4 + row}u])"
+                        f"asfloat(inx_volume_meta[{base + 16 + column * 4 + row}u])"
                         for row in range(3)
                     )
                     + (")," if column < 2 else ")")
                     for column in range(3)
                 ),
-                "    );",
+                "    ));",
                 "}",
             )
         )
         if interface["kind"] == "vector_field":
             lines.extend(
                 (
-                    f"vec3 inx_sample_vector_field_{index}(vec3 simulation_position) {{",
-                    f"    vec3 uvw = (inx_volume_simulation_to_field_{index}() * vec4(simulation_position, 1.0)).xyz;",
+                    f"float3 inx_sample_vector_field_{index}(float3 simulation_position) {{",
+                    f"    float3 uvw = (mul(inx_volume_simulation_to_field_{index}(), float4(simulation_position, 1.0))).xyz;",
                 )
             )
             if interface["boundary"] == "zero":
                 lines.append(
-                    "    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return vec3(0.0);"
+                    "    if (any((uvw < float3(0.0))) || any((uvw > float3(1.0)))) return float3(0.0);"
                 )
             lines.extend(
                 (
-                    f"    vec3 value = texture(inx_volume_texture_{index}, uvw).xyz;",
-                    f"    float scale = uintBitsToFloat(inx_volume_meta[{base + 28}u]);",
-                    f"    return inx_volume_direction_to_simulation_{index}() * value * scale;",
+                    f"    float3 value = inx_volume_texture_{index}.SampleLevel(uvw, 0.0).xyz;",
+                    f"    float scale = asfloat(inx_volume_meta[{base + 28}u]);",
+                    f"    return mul(inx_volume_direction_to_simulation_{index}(), value) * scale;",
                     "}",
                 )
             )
             continue
         lines.extend(
             (
-                f"bool inx_sample_sdf_{index}(vec3 simulation_position, bool inverted, out float distance_value, out vec3 normal) {{",
-                f"    vec3 field_position = (inx_volume_simulation_to_field_{index}() * vec4(simulation_position, 1.0)).xyz;",
-                "    vec3 uvw = field_position + vec3(0.5);",
-                "    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return false;",
-                f"    ivec3 dimensions = textureSize(inx_volume_texture_{index}, 0);",
-                "    vec3 texel = vec3(1.0) / vec3(dimensions);",
-                f"    float dx = texture(inx_volume_texture_{index}, clamp(uvw + vec3(texel.x, 0.0, 0.0), vec3(0.0), vec3(1.0))).r",
-                f"             - texture(inx_volume_texture_{index}, clamp(uvw - vec3(texel.x, 0.0, 0.0), vec3(0.0), vec3(1.0))).r;",
-                f"    float dy = texture(inx_volume_texture_{index}, clamp(uvw + vec3(0.0, texel.y, 0.0), vec3(0.0), vec3(1.0))).r",
-                f"             - texture(inx_volume_texture_{index}, clamp(uvw - vec3(0.0, texel.y, 0.0), vec3(0.0), vec3(1.0))).r;",
-                f"    float dz = texture(inx_volume_texture_{index}, clamp(uvw + vec3(0.0, 0.0, texel.z), vec3(0.0), vec3(1.0))).r",
-                f"             - texture(inx_volume_texture_{index}, clamp(uvw - vec3(0.0, 0.0, texel.z), vec3(0.0), vec3(1.0))).r;",
-                "    vec3 field_gradient = vec3(dx / (2.0 * texel.x), dy / (2.0 * texel.y), dz / (2.0 * texel.z));",
-                f"    vec3 transformed = inx_volume_direction_to_simulation_{index}() * field_gradient;",
+                f"""bool inx_sample_sdf_{index}(float3 simulation_position, bool inverted, out float distance_value, out float3 normal) {{
+    distance_value = float(0.0);
+    normal = float3(0.0);""",
+                f"    float3 field_position = (mul(inx_volume_simulation_to_field_{index}(), float4(simulation_position, 1.0))).xyz;",
+                "    float3 uvw = field_position + float3(0.5);",
+                "    if (any((uvw < float3(0.0))) || any((uvw > float3(1.0)))) return false;",
+                f"    int3 dimensions = inx_texture_dimensions(inx_volume_texture_{index});",
+                "    float3 texel = float3(1.0) / float3(dimensions);",
+                f"    float dx = inx_volume_texture_{index}.SampleLevel(clamp(uvw + float3(texel.x, 0.0, 0.0), float3(0.0), float3(1.0)), 0.0).r",
+                f"             - inx_volume_texture_{index}.SampleLevel(clamp(uvw - float3(texel.x, 0.0, 0.0), float3(0.0), float3(1.0)), 0.0).r;",
+                f"    float dy = inx_volume_texture_{index}.SampleLevel(clamp(uvw + float3(0.0, texel.y, 0.0), float3(0.0), float3(1.0)), 0.0).r",
+                f"             - inx_volume_texture_{index}.SampleLevel(clamp(uvw - float3(0.0, texel.y, 0.0), float3(0.0), float3(1.0)), 0.0).r;",
+                f"    float dz = inx_volume_texture_{index}.SampleLevel(clamp(uvw + float3(0.0, 0.0, texel.z), float3(0.0), float3(1.0)), 0.0).r",
+                f"             - inx_volume_texture_{index}.SampleLevel(clamp(uvw - float3(0.0, 0.0, texel.z), float3(0.0), float3(1.0)), 0.0).r;",
+                "    float3 field_gradient = float3(dx / (2.0 * texel.x), dy / (2.0 * texel.y), dz / (2.0 * texel.z));",
+                f"    float3 transformed = mul(inx_volume_direction_to_simulation_{index}(), field_gradient);",
                 "    float normal_length = length(transformed);",
-                "    normal = normal_length > 1.0e-6 ? transformed / normal_length : vec3(0.0, 1.0, 0.0);",
-                f"    distance_value = texture(inx_volume_texture_{index}, uvw).r * uintBitsToFloat(inx_volume_meta[{base + 28}u]);",
+                "    normal = normal_length > 1.0e-6 ? transformed / normal_length : float3(0.0, 1.0, 0.0);",
+                f"    distance_value = inx_volume_texture_{index}.SampleLevel(uvw, 0.0).r * asfloat(inx_volume_meta[{base + 28}u]);",
                 "    if (inverted) { distance_value = -distance_value; normal = -normal; }",
                 "    return true;",
                 "}",
-                f"float inx_sdf_shape_distance_{index}(vec3 field_position) {{",
-                "    vec3 uvw = clamp(field_position + vec3(0.5), vec3(0.0), vec3(1.0));",
-                f"    return texture(inx_volume_texture_{index}, uvw).r * uintBitsToFloat(inx_volume_meta[{base + 28}u]);",
+                f"float inx_sdf_shape_distance_{index}(float3 field_position) {{",
+                "    float3 uvw = clamp(field_position + float3(0.5), float3(0.0), float3(1.0));",
+                f"    return inx_volume_texture_{index}.SampleLevel(uvw, 0.0).r * asfloat(inx_volume_meta[{base + 28}u]);",
                 "}",
-                f"vec3 inx_sdf_shape_candidate_{index}(vec3 seed, int attempt) {{",
-                "    const vec3 sequence = vec3(0.754877666, 0.569840296, 0.438579021);",
-                "    return fract(seed + sequence * float(attempt + 1)) - vec3(0.5);",
+                f"float3 inx_sdf_shape_candidate_{index}(float3 seed, int attempt) {{",
+                "    const float3 sequence = float3(0.754877666, 0.569840296, 0.438579021);",
+                "    return frac(seed + sequence * float(attempt + 1)) - float3(0.5);",
                 "}",
-                f"vec3 inx_sample_sdf_shape_position_{index}(vec3 seed, bool surface) {{",
-                f"    mat4 field_to_simulation = inverse(inx_volume_simulation_to_field_{index}());",
-                f"    vec3 best_field = inx_sdf_shape_candidate_{index}(seed, 0);",
+                f"float3 inx_sample_sdf_shape_position_{index}(float3 seed, bool surface) {{",
+                f"    float4x4 field_to_simulation = inx_inverse_affine(inx_volume_simulation_to_field_{index}());",
+                f"    float3 best_field = inx_sdf_shape_candidate_{index}(seed, 0);",
                 f"    float best_distance = inx_sdf_shape_distance_{index}(best_field);",
                 "    if (!surface) {",
                 "        for (int attempt = 0; attempt < 16; ++attempt) {",
-                f"            vec3 field_position = inx_sdf_shape_candidate_{index}(seed, attempt);",
+                f"            float3 field_position = inx_sdf_shape_candidate_{index}(seed, attempt);",
                 f"            float distance_value = inx_sdf_shape_distance_{index}(field_position);",
                 "            if (distance_value <= 0.0)",
-                "                return (field_to_simulation * vec4(field_position, 1.0)).xyz;",
+                "                return (mul(field_to_simulation, float4(field_position, 1.0))).xyz;",
                 "            if (distance_value < best_distance) {",
                 "                best_distance = distance_value;",
                 "                best_field = field_position;",
@@ -2641,7 +2781,7 @@ def _volume_interface_glsl(layout: dict[str, Any]) -> str:
                 "    } else {",
                 "        best_distance = abs(best_distance);",
                 "        for (int attempt = 1; attempt < 4; ++attempt) {",
-                f"            vec3 field_position = inx_sdf_shape_candidate_{index}(seed, attempt);",
+                f"            float3 field_position = inx_sdf_shape_candidate_{index}(seed, attempt);",
                 f"            float distance_value = abs(inx_sdf_shape_distance_{index}(field_position));",
                 "            if (distance_value < best_distance) {",
                 "                best_distance = distance_value;",
@@ -2649,14 +2789,14 @@ def _volume_interface_glsl(layout: dict[str, Any]) -> str:
                 "            }",
                 "        }",
                 "    }",
-                "    vec3 point = (field_to_simulation * vec4(best_field, 1.0)).xyz;",
-                "    vec3 best_point = point;",
+                "    float3 point = (mul(field_to_simulation, float4(best_field, 1.0))).xyz;",
+                "    float3 best_point = point;",
                 "    float best_absolute_distance = 3.402823466e+38;",
-                f"    float distance_scale = abs(uintBitsToFloat(inx_volume_meta[{base + 28}u]));",
+                f"    float distance_scale = abs(asfloat(inx_volume_meta[{base + 28}u]));",
                 "    float epsilon = max(1.0e-4, distance_scale * 5.0e-4);",
                 "    for (int iteration = 0; iteration < 8; ++iteration) {",
                 "        float distance_value;",
-                "        vec3 normal;",
+                "        float3 normal;",
                 f"        if (!inx_sample_sdf_{index}(point, false, distance_value, normal)) break;",
                 "        float absolute_distance = abs(distance_value);",
                 "        if (absolute_distance < best_absolute_distance) {",
@@ -2668,28 +2808,28 @@ def _volume_interface_glsl(layout: dict[str, Any]) -> str:
                 "    }",
                 "    return best_point;",
                 "}",
-                f"float inx_sample_sdf_distance_{index}(vec3 position) {{",
-                "    float distance_value = 3.402823466e+38; vec3 gradient;",
+                f"float inx_sample_sdf_distance_{index}(float3 position) {{",
+                "    float distance_value = 3.402823466e+38; float3 gradient;",
                 f"    inx_sample_sdf_{index}(position, false, distance_value, gradient);",
                 "    return distance_value;",
                 "}",
-                f"vec3 inx_sample_sdf_gradient_{index}(vec3 position) {{",
-                "    float distance_value; vec3 gradient = vec3(0.0);",
+                f"float3 inx_sample_sdf_gradient_{index}(float3 position) {{",
+                "    float distance_value; float3 gradient = float3(0.0);",
                 f"    inx_sample_sdf_{index}(position, false, distance_value, gradient);",
                 "    return gradient;",
                 "}",
-                f"vec3 inx_collide_sdf_position_{index}(vec3 position, vec3 velocity, float radius, float restitution, float friction, bool inverted) {{",
-                "    float distance_value; vec3 normal;",
+                f"float3 inx_collide_sdf_position_{index}(float3 position, float3 velocity, float radius, float restitution, float friction, bool inverted) {{",
+                "    float distance_value; float3 normal;",
                 f"    if (!inx_sample_sdf_{index}(position, inverted, distance_value, normal)) return position;",
                 "    float penetration = max(radius, 0.0) - distance_value;",
                 "    return penetration > 0.0 ? position + normal * penetration : position;",
                 "}",
-                f"vec3 inx_collide_sdf_velocity_{index}(vec3 position, vec3 velocity, float radius, float restitution, float friction, bool inverted) {{",
-                "    float distance_value; vec3 normal;",
+                f"float3 inx_collide_sdf_velocity_{index}(float3 position, float3 velocity, float radius, float restitution, float friction, bool inverted) {{",
+                "    float distance_value; float3 normal;",
                 f"    if (!inx_sample_sdf_{index}(position, inverted, distance_value, normal)) return velocity;",
                 "    float normal_speed = dot(velocity, normal);",
                 "    if (distance_value >= max(radius, 0.0) || normal_speed >= 0.0) return velocity;",
-                "    vec3 tangent = velocity - normal * normal_speed;",
+                "    float3 tangent = velocity - normal * normal_speed;",
                 "    return tangent * (1.0 - clamp(friction, 0.0, 1.0))",
                 "         - normal * normal_speed * clamp(restitution, 0.0, 1.0);",
                 "}",
@@ -2698,27 +2838,25 @@ def _volume_interface_glsl(layout: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _texture_parameter_glsl(layout: dict[str, Any]) -> str:
+def _texture_parameter_slang(layout: dict[str, Any]) -> str:
     parameters = tuple(layout.get("texture2d_parameters", ()))
     declarations = [
-        f"layout(set = 2, binding = {int(parameter['texture_binding'])}) "
-        f"uniform sampler2D inx_parameter_texture_{int(parameter['resource_index'])};"
+        f"[[vk::binding({int(parameter['texture_binding'])}, 2)]] Sampler2D<float4> inx_parameter_texture_{int(parameter['resource_index'])};"
         for parameter in parameters
     ]
     if not layout.get("texture2d_sampling", False):
         return "\n".join(declarations)
     cases = [
-        f"        case {_texture_resource_handle(str(parameter['stable_id']))}u: "
-        f"return texture(inx_parameter_texture_{int(parameter['resource_index'])}, uv);"
+        f"        case {_texture_resource_handle(str(parameter['stable_id']))}u: return inx_parameter_texture_{int(parameter['resource_index'])}.SampleLevel(uv, 0.0);"
         for parameter in parameters
     ]
     return "\n".join(
         (
             *declarations,
-            "vec4 inx_sample_parameter_texture(uint handle, vec2 uv) {",
+            "float4 inx_sample_parameter_texture(uint handle, float2 uv) {",
             "    switch (handle) {",
             *cases,
-            "        default: return vec4(0.0);",
+            "        default: return float4(0.0);",
             "    }",
             "}",
         )
@@ -2732,78 +2870,67 @@ def _texture_resource_handle(stable_id: str) -> int:
 
 
 def _empty_compute_main() -> str:
-    return "\nvoid main() {}\n"
+    return """
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;}
+"""
 
 
-def _contact_bindings_glsl(set_index: int) -> str:
+def _contact_bindings_slang(set_index: int) -> str:
     set_index = int(set_index)
     return f"""
 struct InxParticleContactRecord {{
-    uvec4 identity;
-    vec4 point_penetration;
-    vec4 normal_speed;
-    vec4 relative_velocity;
-    vec4 material;
-    uvec4 metadata;
+    uint4 identity;
+    float4 point_penetration;
+    float4 normal_speed;
+    float4 relative_velocity;
+    float4 material;
+    uint4 metadata;
 }};
 struct InxParticleContactHashSlot {{
-    uvec4 key;
-    uvec4 value;
+    InxAtomicKey key;
+    uint4 value;
 }};
 struct InxParticleContactWorkItem {{
-    uvec4 identity;
-    uvec4 dispatch;
+    uint4 identity;
+    uint4 dispatch;
 }};
 struct InxParticleContactJoinState {{
-    uvec4 identity;
-    uvec4 context;
-    uvec4 state;
+    uint4 identity;
+    uint4 context;
+    uint4 state;
 }};
-layout(std430, set = {set_index}, binding = 0) buffer ParticleContactRecords {{
-    InxParticleContactRecord contact_records[];
-}};
-layout(std430, set = {set_index}, binding = 1) buffer ParticleContactHashSlots {{
-    InxParticleContactHashSlot contact_hash_slots[];
-}};
-layout(std430, set = {set_index}, binding = 2) buffer ParticleContactRecordIndices {{
-    uint contact_particle_record_indices[];
-}};
-layout(std430, set = {set_index}, binding = 3) buffer ParticleContactParticleStates {{
-    uvec4 contact_particle_states[];
-}};
-layout(std430, set = {set_index}, binding = 4) buffer ParticleContactWorkItems {{
-    InxParticleContactWorkItem contact_work_items[];
-}};
-layout(std430, set = {set_index}, binding = 5) buffer ParticleContactDispatchIndirect {{
-    uvec4 contact_dispatch_indirect;
-}};
-layout(std430, set = {set_index}, binding = 6) buffer ParticleContactCounters {{
-    uint contact_overflow_count;
-    uint contact_work_item_overflow_count;
-    uint contact_current_simulation_step;
-    uint contact_reset_serial;
-    uint contact_current_record_count;
-    uint contact_work_item_count;
-    uint contact_max_per_particle;
-    uint multi_contact_particle_count;
-    uint contact_retained_order_hash;
-    uint contact_dropped_order_hash;
-    uint contact_min_particle_index;
-    uint contact_max_particle_index;
-}} contact_counters;
-layout(std430, set = {set_index}, binding = 7) buffer ParticleContactContinuationSnapshots {{
-    uint contact_continuation_snapshot_words[];
-}};
-layout(std430, set = {set_index}, binding = 8) buffer ParticleContactContinuationJoinStates {{
-    InxParticleContactJoinState contact_continuation_join_states[];
+struct InxContactJoinStorage {{
+    InxAtomicKey identity;
+    InxAtomicStatus context;
+    InxAtomicUint4 state;
+    [ForceInline][__ref] InxParticleContactJoinState load() {{
+        InxParticleContactJoinState value;
+        value.identity = identity.load(); value.context = context.load(); value.state = state.load();
+        return value;
+    }}
 }};
 
-const uint INX_CONTACTS_PER_PARTICLE = 8u;
-const uint INX_CONTACT_INVALID_INDEX = 0xffffffffu;
-const uint INX_CONTACT_JOIN_EMPTY = 0xffffffffu;
-const uint INX_CONTACT_JOIN_TOMBSTONE = 0xfffffffeu;
-const uint INX_CONTACT_WORK_COUNT_BITS = 5u;
-const uint INX_CONTACT_WORK_COUNT_MASK = 31u;
+[[vk::binding(0, {set_index})]] RWStructuredBuffer<InxParticleContactRecord> contact_records;
+[[vk::binding(1, {set_index})]] RWStructuredBuffer<InxParticleContactHashSlot> contact_hash_slots;
+[[vk::binding(2, {set_index})]] RWStructuredBuffer<Atomic<uint>> contact_particle_record_indices;
+[[vk::binding(3, {set_index})]] RWStructuredBuffer<uint4> contact_particle_states;
+[[vk::binding(4, {set_index})]] RWStructuredBuffer<InxParticleContactWorkItem> contact_work_items;
+[[vk::binding(5, {set_index})]] RWStructuredBuffer<uint4> contact_dispatch_indirect;
+[[vk::binding(6, {set_index})]] RWStructuredBuffer<Atomic<uint>> contact_counters_words;
+[[vk::binding(7, {set_index})]] RWStructuredBuffer<Atomic<uint>> contact_continuation_snapshot_words;
+[[vk::binding(8, {set_index})]] RWStructuredBuffer<InxContactJoinStorage> contact_continuation_join_states;
+
+static const uint INX_CONTACTS_PER_PARTICLE = 8u;
+static const uint INX_CONTACT_INVALID_INDEX = 0xffffffffu;
+static const uint INX_CONTACT_JOIN_EMPTY = 0xffffffffu;
+static const uint INX_CONTACT_JOIN_TOMBSTONE = 0xfffffffeu;
+static const uint INX_CONTACT_WORK_COUNT_BITS = 5u;
+static const uint INX_CONTACT_WORK_COUNT_MASK = 31u;
 
 uint inx_contact_record_capacity() {{
     return min(pc.capacity * INX_CONTACTS_PER_PARTICLE, 65536u);
@@ -2817,10 +2944,10 @@ uint inx_contact_hash_capacity() {{
 }}
 
 uint inx_contact_join_capacity() {{
-    return uint(contact_continuation_join_states.length());
+    return uint(inx_buffer_count(contact_continuation_join_states));
 }}
 
-uint inx_contact_hash(uvec4 key) {{
+uint inx_contact_hash(uint4 key) {{
     uint value = key.x * 0x8da6b343u;
     value ^= key.y * 0xd8163841u;
     value ^= key.z * 0xcb1ab31fu;
@@ -2831,23 +2958,23 @@ uint inx_contact_hash(uvec4 key) {{
     return value;
 }}
 
-uint inx_contact_generation(uvec4 key, uint entered_step) {{
+uint inx_contact_generation(uint4 key, uint entered_step) {{
     uint generation = inx_contact_hash(
-        key ^ uvec4(entered_step, entered_step * 0x9e3779b9u,
+        key ^ uint4(entered_step, entered_step * 0x9e3779b9u,
                     entered_step * 0x85ebca6bu, entered_step * 0xc2b2ae35u));
     return generation == 0u ? 1u : generation;
 }}
 
-uint inx_find_contact_record(uint page, uvec4 key) {{
+uint inx_find_contact_record(uint page, uint4 key) {{
     uint hash_capacity = inx_contact_hash_capacity();
     uint hash_mask = hash_capacity - 1u;
     uint hash_slot = inx_contact_hash(key) & hash_mask;
     for (uint probe = 0u; probe < hash_capacity; ++probe) {{
         uint physical_hash_slot = page * hash_capacity + hash_slot;
-        uvec4 candidate = contact_hash_slots[physical_hash_slot].key;
+        uint4 candidate = contact_hash_slots[physical_hash_slot].key.load();
         if (candidate.x == INX_CONTACT_INVALID_INDEX)
             return INX_CONTACT_INVALID_INDEX;
-        if (all(equal(candidate, key)))
+        if (all((candidate == key)))
             return contact_hash_slots[physical_hash_slot].value.x;
         hash_slot = (hash_slot + 1u) & hash_mask;
     }}
@@ -2855,24 +2982,23 @@ uint inx_find_contact_record(uint page, uvec4 key) {{
 }}
 
 void inx_store_contact(uint particle_index, uint contact_order,
-                       uvec2 collider_id,
-                       vec3 world_point, vec3 world_normal,
-                       vec3 world_relative_velocity, float world_penetration,
-                       bool is_trigger, vec4 material, float simulation_scale) {{
+                       uint2 collider_id,
+                       float3 world_point, float3 world_normal,
+                       float3 world_relative_velocity, float world_penetration,
+                       bool is_trigger, float4 material, float simulation_scale) {{
     if (particle_index >= pc.capacity) return;
-    uvec4 particle_state = contact_particle_states[particle_index];
+    uint4 particle_state = contact_particle_states[particle_index];
     uint generation = states[particle_index].spawn_generation;
     if (particle_state.x != generation || particle_state.y != pc.simulation_step) {{
-        particle_state = uvec4(generation, pc.simulation_step, 0u, 0u);
+        particle_state = uint4(generation, pc.simulation_step, 0u, 0u);
         contact_particle_states[particle_index] = particle_state;
     }}
 
     uint contact_slot = particle_state.z;
     if (contact_slot >= INX_CONTACTS_PER_PARTICLE) {{
         if ((pc.diagnostic_flags & 1u) != 0u) {{
-            atomicAdd(contact_counters.contact_overflow_count, 1u);
-            atomicAdd(contact_counters.contact_dropped_order_hash,
-                      inx_contact_hash(uvec4(collider_id, contact_order, 1u)));
+            contact_counters_words[0].add(1u);
+            contact_counters_words[9].add(inx_contact_hash(uint4(collider_id, contact_order, 1u)));
         }}
         return;
     }}
@@ -2880,57 +3006,55 @@ void inx_store_contact(uint particle_index, uint contact_order,
     // indices still preserve the eight stable slots, while allocation no
     // longer privileges particle indices below record_capacity / 8.
     uint record_capacity = inx_contact_record_capacity();
-    uint local_record = atomicAdd(contact_counters.contact_current_record_count, 1u);
+    uint local_record = contact_counters_words[4].add(1u);
     if (local_record >= record_capacity) {{
         if ((pc.diagnostic_flags & 1u) != 0u) {{
-            atomicAdd(contact_counters.contact_overflow_count, 1u);
-            atomicAdd(contact_counters.contact_dropped_order_hash,
-                      inx_contact_hash(uvec4(collider_id, contact_order, 1u)));
+            contact_counters_words[0].add(1u);
+            contact_counters_words[9].add(inx_contact_hash(uint4(collider_id, contact_order, 1u)));
         }}
         return;
     }}
 
     uint current_page = pc.simulation_step & 1u;
     uint record_index = current_page * record_capacity + local_record;
-    vec3 transformed_normal =
-        transpose(mat3(transforms.simulation_to_world)) * world_normal;
+    float3 transformed_normal =
+        mul(transpose(float3x3(transforms.simulation_to_world)), world_normal);
     float normal_length = length(transformed_normal);
-    vec3 simulation_normal = normal_length > 1.0e-6
+    float3 simulation_normal = normal_length > 1.0e-6
         ? transformed_normal / normal_length
-        : vec3(0.0, 1.0, 0.0);
-    vec3 simulation_point =
-        (transforms.world_to_simulation * vec4(world_point, 1.0)).xyz;
-    vec3 simulation_relative_velocity =
-        (transforms.world_to_simulation * vec4(world_relative_velocity, 0.0)).xyz;
+        : float3(0.0, 1.0, 0.0);
+    float3 simulation_point =
+        (mul(transforms.world_to_simulation, float4(world_point, 1.0))).xyz;
+    float3 simulation_relative_velocity =
+        (mul(transforms.world_to_simulation, float4(world_relative_velocity, 0.0))).xyz;
     float simulation_penetration =
         world_penetration / max(simulation_scale, 1.0e-6);
 
     contact_records[record_index].identity =
-        uvec4(particle_index, generation, collider_id.x, collider_id.y);
+        uint4(particle_index, generation, collider_id.x, collider_id.y);
     contact_records[record_index].point_penetration =
-        vec4(simulation_point, simulation_penetration);
-    contact_records[record_index].normal_speed = vec4(
+        float4(simulation_point, simulation_penetration);
+    contact_records[record_index].normal_speed = float4(
         simulation_normal,
         dot(simulation_relative_velocity, simulation_normal));
     contact_records[record_index].relative_velocity =
-        vec4(simulation_relative_velocity, 0.0);
+        float4(simulation_relative_velocity, 0.0);
     contact_records[record_index].material = material;
     contact_records[record_index].metadata =
-        uvec4(is_trigger ? 1u : 0u, pc.simulation_step, contact_slot, 0u);
+        uint4(is_trigger ? 1u : 0u, pc.simulation_step, contact_slot, 0u);
 
     uint index_base = current_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
         + particle_index * INX_CONTACTS_PER_PARTICLE;
-    contact_particle_record_indices[index_base + contact_slot] = record_index;
+    contact_particle_record_indices[index_base + contact_slot].store(record_index);
     particle_state.z = contact_slot + 1u;
     contact_particle_states[particle_index] = particle_state;
     if ((pc.diagnostic_flags & 1u) != 0u) {{
-        atomicMax(contact_counters.contact_max_per_particle, contact_slot + 1u);
-        atomicAdd(contact_counters.contact_retained_order_hash,
-                  inx_contact_hash(uvec4(collider_id, contact_slot, 0u)));
-        atomicMin(contact_counters.contact_min_particle_index, particle_index);
-        atomicMax(contact_counters.contact_max_particle_index, particle_index);
+        contact_counters_words[6].max(contact_slot + 1u);
+        contact_counters_words[8].add(inx_contact_hash(uint4(collider_id, contact_slot, 0u)));
+        contact_counters_words[10].min(particle_index);
+        contact_counters_words[11].max(particle_index);
         if (contact_slot == 1u)
-            atomicAdd(contact_counters.multi_contact_particle_count, 1u);
+            contact_counters_words[7].add(1u);
     }}
 }}
 """
@@ -2938,46 +3062,48 @@ void inx_store_contact(uint particle_index, uint contact_order,
 
 def _contact_prepare_main() -> str:
     return """
-void main() {
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
     if (!inx_current_emitter_playing()) return;
-    uint particle_index = gl_GlobalInvocationID.x;
+    uint particle_index = inx_dispatch_id.x;
     uint current_page = pc.simulation_step & 1u;
     bool reset_all = (pc.diagnostic_flags & 4u) != 0u;
     if (particle_index < pc.capacity) {
         if (reset_all) {
             contact_particle_states[particle_index] =
-                uvec4(INX_CONTACT_INVALID_INDEX, 0u, 0u, 0u);
+                uint4(INX_CONTACT_INVALID_INDEX, 0u, 0u, 0u);
             for (uint page = 0u; page < 2u; ++page) {
                 uint page_base = page * pc.capacity * INX_CONTACTS_PER_PARTICLE
                     + particle_index * INX_CONTACTS_PER_PARTICLE;
                 for (uint slot = 0u; slot < INX_CONTACTS_PER_PARTICLE; ++slot)
-                    contact_particle_record_indices[page_base + slot] =
-                        INX_CONTACT_INVALID_INDEX;
+                    contact_particle_record_indices[page_base + slot].store(INX_CONTACT_INVALID_INDEX);
             }
         } else {
-            uvec4 previous_state = contact_particle_states[particle_index];
+            uint4 previous_state = contact_particle_states[particle_index];
             uint particle_generation = states[particle_index].spawn_generation;
             uint previous_count = previous_state.x == particle_generation
                 && previous_state.y + 1u == pc.simulation_step
                 ? min(previous_state.z, INX_CONTACTS_PER_PARTICLE)
                 : 0u;
-            contact_particle_states[particle_index] = uvec4(
+            contact_particle_states[particle_index] = uint4(
                 particle_generation, pc.simulation_step, 0u, previous_count);
 
             uint current_base = current_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
                 + particle_index * INX_CONTACTS_PER_PARTICLE;
             for (uint slot = 0u; slot < INX_CONTACTS_PER_PARTICLE; ++slot)
-                contact_particle_record_indices[current_base + slot] =
-                    INX_CONTACT_INVALID_INDEX;
+                contact_particle_record_indices[current_base + slot].store(INX_CONTACT_INVALID_INDEX);
         }
 
     }
 
     if (reset_all && particle_index < inx_contact_join_capacity()) {
-        contact_continuation_join_states[particle_index].identity =
-            uvec4(INX_CONTACT_JOIN_EMPTY);
-        contact_continuation_join_states[particle_index].context = uvec4(0u);
-        contact_continuation_join_states[particle_index].state = uvec4(0u);
+        contact_continuation_join_states[particle_index].identity.store(uint4(INX_CONTACT_JOIN_EMPTY));
+        contact_continuation_join_states[particle_index].context.store(uint4(0u));
+        contact_continuation_join_states[particle_index].state.store(uint4(0u));
     }
 
     uint hash_capacity = inx_contact_hash_capacity();
@@ -2986,26 +3112,26 @@ void main() {
         uint page_count = reset_all ? 2u : 1u;
         for (uint page_offset = 0u; page_offset < page_count; ++page_offset) {
             uint hash_slot = (first_page + page_offset) * hash_capacity + particle_index;
-            contact_hash_slots[hash_slot].key = uvec4(INX_CONTACT_INVALID_INDEX);
-            contact_hash_slots[hash_slot].value = uvec4(0u);
+            contact_hash_slots[hash_slot].key.store(uint4(INX_CONTACT_INVALID_INDEX));
+            contact_hash_slots[hash_slot].value = uint4(0u);
         }
     }
 
     if (particle_index == 0u) {
-        contact_counters.contact_overflow_count = 0u;
-        contact_counters.contact_work_item_overflow_count = 0u;
-        contact_counters.contact_current_simulation_step = pc.simulation_step;
-        contact_counters.contact_current_record_count = 0u;
-        contact_counters.contact_work_item_count = 0u;
-        contact_counters.contact_max_per_particle = 0u;
-        contact_counters.multi_contact_particle_count = 0u;
-        contact_counters.contact_retained_order_hash = 0u;
-        contact_counters.contact_dropped_order_hash = 0u;
-        contact_counters.contact_min_particle_index = INX_CONTACT_INVALID_INDEX;
-        contact_counters.contact_max_particle_index = 0u;
+        contact_counters_words[0].store(0u);
+        contact_counters_words[1].store(0u);
+        contact_counters_words[2].store(pc.simulation_step);
+        contact_counters_words[4].store(0u);
+        contact_counters_words[5].store(0u);
+        contact_counters_words[6].store(0u);
+        contact_counters_words[7].store(0u);
+        contact_counters_words[8].store(0u);
+        contact_counters_words[9].store(0u);
+        contact_counters_words[10].store(INX_CONTACT_INVALID_INDEX);
+        contact_counters_words[11].store(0u);
         if (reset_all)
-            contact_counters.contact_reset_serial = pc.simulation_step + 1u;
-        contact_dispatch_indirect = uvec4(
+            contact_counters_words[3].store(pc.simulation_step + 1u);
+        contact_dispatch_indirect[0] = uint4(
             (pc.capacity + 255u) / 256u, 1u, 1u, 0u);
     }
 }
@@ -3014,12 +3140,17 @@ void main() {
 
 def _contact_solve_main() -> str:
     return """
-void main() {
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
     if (!inx_current_emitter_playing()) return;
-    uint particle_index = gl_GlobalInvocationID.x;
+    uint particle_index = inx_dispatch_id.x;
     if (particle_index >= pc.capacity) return;
 
-    uvec4 particle_state = contact_particle_states[particle_index];
+    uint4 particle_state = contact_particle_states[particle_index];
     uint generation = states[particle_index].spawn_generation;
     if (particle_state.x != generation || particle_state.y != pc.simulation_step)
         return;
@@ -3033,9 +3164,9 @@ void main() {
         + particle_index * INX_CONTACTS_PER_PARTICLE;
     uint contact_count = min(particle_state.z, INX_CONTACTS_PER_PARTICLE);
     for (uint contact_slot = 0u; contact_slot < contact_count; ++contact_slot) {
-        uint record_index = contact_particle_record_indices[index_base + contact_slot];
+        uint record_index = contact_particle_record_indices[index_base + contact_slot].load();
         if (record_index == INX_CONTACT_INVALID_INDEX) continue;
-        uvec4 key = contact_records[record_index].identity;
+        uint4 key = contact_records[record_index].identity;
         uint previous_record = inx_find_contact_record(previous_page, key);
         contact_records[record_index].metadata.w =
             previous_record != INX_CONTACT_INVALID_INDEX
@@ -3044,15 +3175,12 @@ void main() {
         uint hash_slot = inx_contact_hash(key) & hash_mask;
         for (uint probe = 0u; probe < hash_capacity; ++probe) {
             uint physical_hash_slot = current_page * hash_capacity + hash_slot;
-            uint owner = atomicCompSwap(
-                contact_hash_slots[physical_hash_slot].key.x,
-                INX_CONTACT_INVALID_INDEX,
-                key.x);
+            uint owner = contact_hash_slots[physical_hash_slot].key.x.compareExchange(INX_CONTACT_INVALID_INDEX, key.x);
             if (owner == INX_CONTACT_INVALID_INDEX || owner == key.x) {
                 if (owner == INX_CONTACT_INVALID_INDEX)
-                    contact_hash_slots[physical_hash_slot].key.yzw = key.yzw;
-                if (all(equal(contact_hash_slots[physical_hash_slot].key, key))) {
-                    contact_hash_slots[physical_hash_slot].value = uvec4(
+                    contact_hash_slots[physical_hash_slot].key.store_tail(key.yzw);
+                if (all((contact_hash_slots[physical_hash_slot].key.load() == key))) {
+                    contact_hash_slots[physical_hash_slot].value = uint4(
                         record_index,
                         pc.simulation_step,
                         contact_slot,
@@ -3063,7 +3191,7 @@ void main() {
             hash_slot = (hash_slot + 1u) & hash_mask;
             if (probe + 1u == hash_capacity
                 && (pc.diagnostic_flags & 1u) != 0u)
-                atomicAdd(contact_counters.contact_overflow_count, 1u);
+                contact_counters_words[0].add(1u);
         }
     }
 
@@ -3079,9 +3207,9 @@ void main() {
 
     for (uint lifecycle = 0u; lifecycle < 2u; ++lifecycle) {
         for (uint contact_slot = 0u; contact_slot < contact_count; ++contact_slot) {
-            uint record_index = contact_particle_record_indices[index_base + contact_slot];
+            uint record_index = contact_particle_record_indices[index_base + contact_slot].load();
             if (record_index == INX_CONTACT_INVALID_INDEX) continue;
-            uvec4 key = contact_records[record_index].identity;
+            uint4 key = contact_records[record_index].identity;
             bool existed = inx_find_contact_record(previous_page, key)
                 != INX_CONTACT_INVALID_INDEX;
             if ((lifecycle == 0u && existed) || (lifecycle == 1u && !existed))
@@ -3091,9 +3219,9 @@ void main() {
     }
 
     for (uint contact_slot = 0u; contact_slot < previous_count; ++contact_slot) {
-        uint record_index = contact_particle_record_indices[previous_base + contact_slot];
+        uint record_index = contact_particle_record_indices[previous_base + contact_slot].load();
         if (record_index == INX_CONTACT_INVALID_INDEX) continue;
-        uvec4 key = contact_records[record_index].identity;
+        uint4 key = contact_records[record_index].identity;
         if (inx_find_contact_record(current_page, key) != INX_CONTACT_INVALID_INDEX)
             continue;
         ++work_count;
@@ -3101,14 +3229,13 @@ void main() {
 
     uint work_base = work_count == 0u
         ? 0u
-        : atomicAdd(contact_counters.contact_work_item_count, work_count);
+        : contact_counters_words[5].add(work_count);
     uint accepted_work_count = work_base < work_capacity
         ? min(work_count, work_capacity - work_base)
         : 0u;
     if (accepted_work_count < work_count
         && (pc.diagnostic_flags & 1u) != 0u)
-        atomicAdd(contact_counters.contact_work_item_overflow_count,
-                  work_count - accepted_work_count);
+        contact_counters_words[1].add(work_count - accepted_work_count);
     particle_state.w = (work_base << INX_CONTACT_WORK_COUNT_BITS)
         | accepted_work_count;
     contact_particle_states[particle_index] = particle_state;
@@ -3120,16 +3247,16 @@ void main() {
         for (uint contact_slot = 0u;
              contact_slot < contact_count && local_work < accepted_work_count;
              ++contact_slot) {
-            uint record_index = contact_particle_record_indices[index_base + contact_slot];
+            uint record_index = contact_particle_record_indices[index_base + contact_slot].load();
             if (record_index == INX_CONTACT_INVALID_INDEX) continue;
-            uvec4 key = contact_records[record_index].identity;
+            uint4 key = contact_records[record_index].identity;
             bool existed = inx_find_contact_record(previous_page, key)
                 != INX_CONTACT_INVALID_INDEX;
             if ((lifecycle == 0u && existed) || (lifecycle == 1u && !existed))
                 continue;
             uint work_index = work_base + local_work++;
             contact_work_items[work_index].identity = key;
-            contact_work_items[work_index].dispatch = uvec4(
+            contact_work_items[work_index].dispatch = uint4(
                 lifecycle, record_index, pc.simulation_step,
                 contact_records[record_index].metadata.w);
         }
@@ -3137,14 +3264,14 @@ void main() {
     for (uint contact_slot = 0u;
          contact_slot < previous_count && local_work < accepted_work_count;
          ++contact_slot) {
-        uint record_index = contact_particle_record_indices[previous_base + contact_slot];
+        uint record_index = contact_particle_record_indices[previous_base + contact_slot].load();
         if (record_index == INX_CONTACT_INVALID_INDEX) continue;
-        uvec4 key = contact_records[record_index].identity;
+        uint4 key = contact_records[record_index].identity;
         if (inx_find_contact_record(current_page, key) != INX_CONTACT_INVALID_INDEX)
             continue;
         uint work_index = work_base + local_work++;
         contact_work_items[work_index].identity = key;
-        contact_work_items[work_index].dispatch = uvec4(
+        contact_work_items[work_index].dispatch = uint4(
             2u, record_index, pc.simulation_step,
             contact_records[record_index].metadata.w);
     }
@@ -3183,9 +3310,14 @@ def _contact_dispatch_main(
         else ""
     )
     return f"""
-void main() {{
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {{
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
     if (!inx_current_emitter_playing()) return;
-    uint particle_index = gl_GlobalInvocationID.x;
+    uint particle_index = inx_dispatch_id.x;
     if (particle_index >= pc.capacity) return;
     ParticleState state = states[particle_index];
     if ((state.lifecycle_flags & INX_PARTICLE_ALIVE) == 0u) return;
@@ -3210,24 +3342,24 @@ void main() {{
         uint record_index = work.dispatch.y;
         if (record_index >= inx_contact_record_capacity() * 2u) continue;
         InxParticleContactRecord contact = contact_records[record_index];
-        if (!all(equal(contact.identity, work.identity))) continue;
+        if (!all((contact.identity == work.identity))) continue;
         if (contact.metadata.w == 0u || contact.metadata.w != work.dispatch.w)
             continue;
 
         uint inx_contact_lifecycle = work.dispatch.x;
 {continuation_context}
-        state.{field("builtin.collision_hit")} =
+        state.{field('builtin.collision_hit')} =
             inx_contact_lifecycle == 2u ? 0u : 1u;
-        state.{field("builtin.collision_point")} = contact.point_penetration.xyz;
-        state.{field("builtin.collision_penetration")} =
+        state.{field('builtin.collision_point')} = contact.point_penetration.xyz;
+        state.{field('builtin.collision_penetration')} =
             contact.point_penetration.w;
-        state.{field("builtin.collision_normal")} = contact.normal_speed.xyz;
-        state.{field("builtin.collision_relative_velocity")} =
+        state.{field('builtin.collision_normal')} = contact.normal_speed.xyz;
+        state.{field('builtin.collision_relative_velocity')} =
             contact.relative_velocity.xyz;
-        state.{field("builtin.collision_is_trigger")} = contact.metadata.x;
-        state.{field("builtin.collision_material")} = contact.material;
-        state.{field("builtin.collision_collider_id_low")} = contact.identity.z;
-        state.{field("builtin.collision_collider_id_high")} = contact.identity.w;
+        state.{field('builtin.collision_is_trigger')} = contact.metadata.x;
+        state.{field('builtin.collision_material')} = contact.material;
+        state.{field('builtin.collision_collider_id_low')} = contact.identity.z;
+        state.{field('builtin.collision_collider_id_high')} = contact.identity.w;
 
         inx_stage_suspended = false;
         inx_continuation_resuspended = false;
@@ -3236,11 +3368,11 @@ void main() {{
         }}
         if ((pc.diagnostic_flags & 1u) != 0u) {{
             if (inx_contact_lifecycle == 0u)
-                atomicAdd(counters.collision_enter_count, 1u);
+                counters_words[7].add(1u);
             else if (inx_contact_lifecycle == 1u)
-                atomicAdd(counters.collision_stay_count, 1u);
+                counters_words[8].add(1u);
             else if (inx_contact_lifecycle == 2u)
-                atomicAdd(counters.collision_exit_count, 1u);
+                counters_words[9].add(1u);
         }}
         particle_alive = particle_alive && ({finite});
         if (!particle_alive) break;
@@ -3253,7 +3385,7 @@ void main() {{
 """
 
 
-def _continuation_bindings_glsl(
+def _continuation_bindings_slang(
     set_index: int, *, contact_context: bool = False
 ) -> str:
     set_index = int(set_index)
@@ -3266,30 +3398,30 @@ void inx_store_continuation_context(uint continuation_record_index) {
     InxParticleContactRecord source =
         contact_records[inx_continuation_context_record_index];
     uint base = continuation_record_index * 24u;
-    contact_continuation_snapshot_words[base + 0u] = source.identity.x;
-    contact_continuation_snapshot_words[base + 1u] = source.identity.y;
-    contact_continuation_snapshot_words[base + 2u] = source.identity.z;
-    contact_continuation_snapshot_words[base + 3u] = source.identity.w;
-    contact_continuation_snapshot_words[base + 4u] = floatBitsToUint(source.point_penetration.x);
-    contact_continuation_snapshot_words[base + 5u] = floatBitsToUint(source.point_penetration.y);
-    contact_continuation_snapshot_words[base + 6u] = floatBitsToUint(source.point_penetration.z);
-    contact_continuation_snapshot_words[base + 7u] = floatBitsToUint(source.point_penetration.w);
-    contact_continuation_snapshot_words[base + 8u] = floatBitsToUint(source.normal_speed.x);
-    contact_continuation_snapshot_words[base + 9u] = floatBitsToUint(source.normal_speed.y);
-    contact_continuation_snapshot_words[base + 10u] = floatBitsToUint(source.normal_speed.z);
-    contact_continuation_snapshot_words[base + 11u] = floatBitsToUint(source.normal_speed.w);
-    contact_continuation_snapshot_words[base + 12u] = floatBitsToUint(source.relative_velocity.x);
-    contact_continuation_snapshot_words[base + 13u] = floatBitsToUint(source.relative_velocity.y);
-    contact_continuation_snapshot_words[base + 14u] = floatBitsToUint(source.relative_velocity.z);
-    contact_continuation_snapshot_words[base + 15u] = floatBitsToUint(source.relative_velocity.w);
-    contact_continuation_snapshot_words[base + 16u] = floatBitsToUint(source.material.x);
-    contact_continuation_snapshot_words[base + 17u] = floatBitsToUint(source.material.y);
-    contact_continuation_snapshot_words[base + 18u] = floatBitsToUint(source.material.z);
-    contact_continuation_snapshot_words[base + 19u] = floatBitsToUint(source.material.w);
-    contact_continuation_snapshot_words[base + 20u] = source.metadata.x;
-    contact_continuation_snapshot_words[base + 21u] = source.metadata.y;
-    contact_continuation_snapshot_words[base + 22u] = source.metadata.z;
-    contact_continuation_snapshot_words[base + 23u] = source.metadata.w;
+    contact_continuation_snapshot_words[base + 0u].store(source.identity.x);
+    contact_continuation_snapshot_words[base + 1u].store(source.identity.y);
+    contact_continuation_snapshot_words[base + 2u].store(source.identity.z);
+    contact_continuation_snapshot_words[base + 3u].store(source.identity.w);
+    contact_continuation_snapshot_words[base + 4u].store(asuint(source.point_penetration.x));
+    contact_continuation_snapshot_words[base + 5u].store(asuint(source.point_penetration.y));
+    contact_continuation_snapshot_words[base + 6u].store(asuint(source.point_penetration.z));
+    contact_continuation_snapshot_words[base + 7u].store(asuint(source.point_penetration.w));
+    contact_continuation_snapshot_words[base + 8u].store(asuint(source.normal_speed.x));
+    contact_continuation_snapshot_words[base + 9u].store(asuint(source.normal_speed.y));
+    contact_continuation_snapshot_words[base + 10u].store(asuint(source.normal_speed.z));
+    contact_continuation_snapshot_words[base + 11u].store(asuint(source.normal_speed.w));
+    contact_continuation_snapshot_words[base + 12u].store(asuint(source.relative_velocity.x));
+    contact_continuation_snapshot_words[base + 13u].store(asuint(source.relative_velocity.y));
+    contact_continuation_snapshot_words[base + 14u].store(asuint(source.relative_velocity.z));
+    contact_continuation_snapshot_words[base + 15u].store(asuint(source.relative_velocity.w));
+    contact_continuation_snapshot_words[base + 16u].store(asuint(source.material.x));
+    contact_continuation_snapshot_words[base + 17u].store(asuint(source.material.y));
+    contact_continuation_snapshot_words[base + 18u].store(asuint(source.material.z));
+    contact_continuation_snapshot_words[base + 19u].store(asuint(source.material.w));
+    contact_continuation_snapshot_words[base + 20u].store(source.metadata.x);
+    contact_continuation_snapshot_words[base + 21u].store(source.metadata.y);
+    contact_continuation_snapshot_words[base + 22u].store(source.metadata.z);
+    contact_continuation_snapshot_words[base + 23u].store(source.metadata.w);
 }
 """
         if contact_context
@@ -3300,7 +3432,7 @@ void inx_store_continuation_context(uint continuation_record_index) {
     )
     contact_join_functions = (
         """
-uint inx_contact_join_hash(uvec4 identity, uvec3 context) {
+uint inx_contact_join_hash(uint4 identity, uint3 context) {
     uint value = inx_contact_hash(identity);
     value ^= context.x * 0x9e3779b9u;
     value ^= context.y * 0x85ebca6bu;
@@ -3312,24 +3444,24 @@ uint inx_contact_join_hash(uvec4 identity, uvec3 context) {
 }
 
 bool inx_contact_join_key_matches(
-    uint slot_index, uvec4 identity, uvec3 context
+    uint slot_index, uint4 identity, uint3 context
 ) {
     InxParticleContactJoinState slot =
-        contact_continuation_join_states[slot_index];
+        contact_continuation_join_states[slot_index].load();
     return slot.context.w == 1u
-        && all(equal(slot.identity, identity))
-        && all(equal(slot.context.xyz, context));
+        && all((slot.identity == identity))
+        && all((slot.context.xyz == context));
 }
 
 bool inx_contact_join_slot_stale(uint slot_index) {
     InxParticleContactJoinState slot =
-        contact_continuation_join_states[slot_index];
+        contact_continuation_join_states[slot_index].load();
     if (slot.context.w != 1u) return false;
     uint owner = slot.identity.x;
-    return owner >= continuation_counters.particle_capacity
+    return owner >= continuation_counters_words[17].load()
         || states[owner].spawn_generation != slot.identity.y
         || (states[owner].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
-        || slot.context.z != continuation_counters.program_generation;
+        || slot.context.z != continuation_counters_words[8].load();
 }
 
 bool inx_contact_join_find(
@@ -3339,22 +3471,22 @@ bool inx_contact_join_find(
     bool create,
     out uint slot_index
 ) {
+    slot_index = 0u;
     slot_index = INX_CONTINUATION_INVALID_INDEX;
     uint capacity = inx_contact_join_capacity();
     if (capacity == 0u) return false;
-    uvec4 identity = uvec4(
+    uint4 identity = uint4(
         particle_index, particle_generation,
         inx_continuation_context_identity_low,
         inx_continuation_context_identity_high);
-    uvec3 context = uvec3(
+    uint3 context = uint3(
         inx_continuation_context_generation,
         join_index,
-        continuation_counters.program_generation);
+        continuation_counters_words[8].load());
     uint mask = capacity - 1u;
     uint candidate = inx_contact_join_hash(identity, context) & mask;
     for (uint probe = 0u; probe < capacity; ++probe) {
-        uint owner = atomicAdd(
-            contact_continuation_join_states[candidate].identity.x, 0u);
+        uint owner = contact_continuation_join_states[candidate].identity.x.add(0u);
         if (owner == INX_CONTACT_JOIN_EMPTY
             || owner == INX_CONTACT_JOIN_TOMBSTONE) {
             if (!create) {
@@ -3362,20 +3494,14 @@ bool inx_contact_join_find(
                 candidate = (candidate + 1u) & mask;
                 continue;
             }
-            uint observed = atomicCompSwap(
-                contact_continuation_join_states[candidate].identity.x,
-                owner,
-                particle_index);
+            uint observed = contact_continuation_join_states[candidate].identity.x.compareExchange(owner, particle_index);
             if (observed == owner) {
-                atomicExchange(
-                    contact_continuation_join_states[candidate].context.w, 0u);
-                contact_continuation_join_states[candidate].identity.yzw =
-                    identity.yzw;
-                contact_continuation_join_states[candidate].context.xyz = context;
-                contact_continuation_join_states[candidate].state = uvec4(0u);
-                memoryBarrierBuffer();
-                atomicExchange(
-                    contact_continuation_join_states[candidate].context.w, 1u);
+                contact_continuation_join_states[candidate].context.w.exchange(0u);
+                contact_continuation_join_states[candidate].identity.store_tail(identity.yzw);
+                contact_continuation_join_states[candidate].context.store_head(context);
+                contact_continuation_join_states[candidate].state.store(uint4(0u));
+                DeviceMemoryBarrier();
+                contact_continuation_join_states[candidate].context.w.exchange(1u);
                 slot_index = candidate;
                 return true;
             }
@@ -3383,11 +3509,9 @@ bool inx_contact_join_find(
         }
         if (owner == particle_index) {
             for (uint spin = 0u; spin < 16u; ++spin) {
-                if (atomicAdd(
-                        contact_continuation_join_states[candidate].context.w,
-                        0u) == 1u)
+                if (contact_continuation_join_states[candidate].context.w.add(0u) == 1u)
                     break;
-                memoryBarrierBuffer();
+                DeviceMemoryBarrier();
             }
             if (inx_contact_join_key_matches(candidate, identity, context)) {
                 slot_index = candidate;
@@ -3397,13 +3521,9 @@ bool inx_contact_join_find(
         if (owner != INX_CONTACT_JOIN_EMPTY
             && owner != INX_CONTACT_JOIN_TOMBSTONE
             && inx_contact_join_slot_stale(candidate)) {
-            atomicExchange(
-                contact_continuation_join_states[candidate].context.w, 0u);
-            memoryBarrierBuffer();
-            if (atomicCompSwap(
-                    contact_continuation_join_states[candidate].identity.x,
-                    owner,
-                    INX_CONTACT_JOIN_TOMBSTONE) == owner) {
+            contact_continuation_join_states[candidate].context.w.exchange(0u);
+            DeviceMemoryBarrier();
+            if (contact_continuation_join_states[candidate].identity.x.compareExchange(owner, INX_CONTACT_JOIN_TOMBSTONE) == owner) {
                 continue;
             }
         }
@@ -3418,32 +3538,24 @@ uint inx_contact_continuation_join_begin(
     uint join_index,
     uint expected_mask
 ) {
-    if (particle_index >= continuation_counters.particle_capacity
-        || join_index >= continuation_counters.join_count
+    if (particle_index >= continuation_counters_words[17].load()
+        || join_index >= continuation_counters_words[15].load()
         || expected_mask == 0u)
         return 0u;
     uint slot_index;
     if (!inx_contact_join_find(
             particle_index, particle_generation, join_index, true, slot_index))
         return 0u;
-    uint token = atomicAdd(
-        contact_continuation_join_states[slot_index].state.x, 0u);
+    uint token = contact_continuation_join_states[slot_index].state.x.add(0u);
     if (token != 0u) return token;
-    uint replacement = atomicAdd(
-        continuation_counters.branch_token_counter, 1u);
+    uint replacement = continuation_counters_words[18].add(1u);
     if (replacement == 0u)
-        replacement = atomicAdd(
-            continuation_counters.branch_token_counter, 1u);
-    uint observed = atomicCompSwap(
-        contact_continuation_join_states[slot_index].state.x,
-        0u,
-        replacement);
+        replacement = continuation_counters_words[18].add(1u);
+    uint observed = contact_continuation_join_states[slot_index].state.x.compareExchange(0u, replacement);
     if (observed != 0u) return observed;
-    atomicExchange(
-        contact_continuation_join_states[slot_index].state.y,
-        expected_mask);
-    atomicExchange(contact_continuation_join_states[slot_index].state.z, 0u);
-    memoryBarrierBuffer();
+    contact_continuation_join_states[slot_index].state.y.exchange(expected_mask);
+    contact_continuation_join_states[slot_index].state.z.exchange(0u);
+    DeviceMemoryBarrier();
     return replacement;
 }
 
@@ -3456,10 +3568,8 @@ bool inx_contact_continuation_join_has_arrived(
     uint slot_index;
     return inx_contact_join_find(
             particle_index, particle_generation, join_index, false, slot_index)
-        && atomicAdd(
-               contact_continuation_join_states[slot_index].state.x, 0u) != 0u
-        && (atomicAdd(
-                contact_continuation_join_states[slot_index].state.z, 0u)
+        && contact_continuation_join_states[slot_index].state.x.add(0u) != 0u
+        && (contact_continuation_join_states[slot_index].state.z.add(0u)
             & arrival_bit) != 0u;
 }
 
@@ -3480,29 +3590,21 @@ bool inx_contact_continuation_join_arrive(
     uint slot_index;
     if (!inx_contact_join_find(
             particle_index, particle_generation, join_index, false, slot_index)
-        || atomicAdd(
-               contact_continuation_join_states[slot_index].state.x, 0u) != token)
+        || contact_continuation_join_states[slot_index].state.x.add(0u) != token)
         return false;
-    uint expected = atomicAdd(
-        contact_continuation_join_states[slot_index].state.y, 0u);
+    uint expected = contact_continuation_join_states[slot_index].state.y.add(0u);
     uint accepted = arrival_mask & expected;
-    uint previous = atomicOr(
-        contact_continuation_join_states[slot_index].state.z, accepted);
+    uint previous = contact_continuation_join_states[slot_index].state.z.or(accepted);
     uint combined = previous | accepted;
     if ((combined & expected) != expected || (previous & expected) == expected)
         return false;
-    if (atomicCompSwap(
-            contact_continuation_join_states[slot_index].state.x,
-            token,
-            0u) != token)
+    if (contact_continuation_join_states[slot_index].state.x.compareExchange(token, 0u) != token)
         return false;
-    atomicExchange(contact_continuation_join_states[slot_index].state.y, 0u);
-    atomicExchange(contact_continuation_join_states[slot_index].state.z, 0u);
-    memoryBarrierBuffer();
-    atomicExchange(contact_continuation_join_states[slot_index].context.w, 0u);
-    atomicExchange(
-        contact_continuation_join_states[slot_index].identity.x,
-        INX_CONTACT_JOIN_TOMBSTONE);
+    contact_continuation_join_states[slot_index].state.y.exchange(0u);
+    contact_continuation_join_states[slot_index].state.z.exchange(0u);
+    DeviceMemoryBarrier();
+    contact_continuation_join_states[slot_index].context.w.exchange(0u);
+    contact_continuation_join_states[slot_index].identity.x.exchange(INX_CONTACT_JOIN_TOMBSTONE);
     return true;
 }
 """
@@ -3533,96 +3635,51 @@ bool inx_contact_continuation_join_arrive(
 """
     )
     return f"""
-layout(std430, set = {set_index}, binding = 0) buffer ParticleContinuationRecords {{
-    uint continuation_record_words[];
-}};
-layout(std430, set = {set_index}, binding = 1) buffer ParticleContinuationFreeList {{
-    uint continuation_free_records[];
-}};
-layout(std430, set = {set_index}, binding = 2) buffer ParticleContinuationReadyQueue {{
-    uint continuation_ready_records[];
-}};
-layout(std430, set = {set_index}, binding = 3) buffer ParticleContinuationActiveQueueA {{
-    uint continuation_active_records_a[];
-}};
-layout(std430, set = {set_index}, binding = 4) buffer ParticleContinuationActiveQueueB {{
-    uint continuation_active_records_b[];
-}};
-layout(std430, set = {set_index}, binding = 5) buffer ParticleContinuationCounters {{
-    uint free_count;
-    uint active_count_a;
-    uint active_count_b;
-    uint ready_count;
-    uint dropped_capacity;
-    uint stale_generation;
-    uint resumed_count;
-    uint completed_count;
-    uint program_generation;
-    uint reset_serial;
-    uint current_simulation_step;
-    uint elapsed_time_low;
-    uint elapsed_time_high;
-    uint record_stride_words;
-    uint lane_count;
-    uint join_count;
-    uint continuation_capacity;
-    uint particle_capacity;
-    uint branch_token_counter;
-    uint reserved;
-}} continuation_counters;
-layout(std430, set = {set_index}, binding = 6) buffer ParticleContinuationClassifyIndirect {{
-    uint continuation_classify_x;
-    uint continuation_classify_y;
-    uint continuation_classify_z;
-    uint continuation_classify_reserved;
-}};
-layout(std430, set = {set_index}, binding = 7) buffer ParticleContinuationDispatchIndirect {{
-    uint continuation_dispatch_x;
-    uint continuation_dispatch_y;
-    uint continuation_dispatch_z;
-    uint continuation_dispatch_reserved;
-}};
-layout(std430, set = {set_index}, binding = 8) buffer ParticleContinuationLaneSlots {{
-    uint continuation_lane_slots[];
-}};
-layout(std430, set = {set_index}, binding = 9) buffer ParticleContinuationJoinStates {{
-    uvec4 continuation_join_states[];
-}};
+[[vk::binding(0, {set_index})]] RWStructuredBuffer<Atomic<uint>> continuation_record_words;
+[[vk::binding(1, {set_index})]] RWStructuredBuffer<Atomic<uint>> continuation_free_records;
+[[vk::binding(2, {set_index})]] RWStructuredBuffer<Atomic<uint>> continuation_ready_records;
+[[vk::binding(3, {set_index})]] RWStructuredBuffer<Atomic<uint>> continuation_active_records_a;
+[[vk::binding(4, {set_index})]] RWStructuredBuffer<Atomic<uint>> continuation_active_records_b;
+[[vk::binding(5, {set_index})]] RWStructuredBuffer<Atomic<uint>> continuation_counters_words;
+[[vk::binding(6, {set_index})]] RWStructuredBuffer<Atomic<uint>> ParticleContinuationClassifyIndirect_words;
+[[vk::binding(7, {set_index})]] RWStructuredBuffer<Atomic<uint>> ParticleContinuationDispatchIndirect_words;
+[[vk::binding(8, {set_index})]] RWStructuredBuffer<Atomic<uint>> continuation_lane_slots;
+[[vk::binding(9, {set_index})]] RWStructuredBuffer<InxAtomicUint4> continuation_join_states;
 
-const uint INX_CONTINUATION_FLAG_SECONDS = 1u;
-const uint INX_CONTINUATION_FLAG_UNTIL_FRAMES = 2u;
-const uint INX_CONTINUATION_FLAG_UNTIL_SECONDS = 4u;
-const uint INX_CONTINUATION_INVALID_INDEX = 0xffffffffu;
-const uint INX_CONTINUATION_CONTEXT_CONTACT = 1u;
+static const uint INX_CONTINUATION_FLAG_SECONDS = 1u;
+static const uint INX_CONTINUATION_FLAG_UNTIL_FRAMES = 2u;
+static const uint INX_CONTINUATION_FLAG_UNTIL_SECONDS = 4u;
+static const uint INX_CONTINUATION_INVALID_INDEX = 0xffffffffu;
+static const uint INX_CONTINUATION_CONTEXT_CONTACT = 1u;
 
-uint inx_continuation_context_kind = 0u;
-uint inx_continuation_context_lifecycle = 0u;
-uint inx_continuation_context_generation = 0u;
-uint inx_continuation_context_identity_low = 0u;
-uint inx_continuation_context_identity_high = 0u;
-uint inx_continuation_context_record_index = INX_CONTINUATION_INVALID_INDEX;
-uint inx_last_continuation_record_index = INX_CONTINUATION_INVALID_INDEX;
+static uint inx_continuation_context_kind = 0u;
+static uint inx_continuation_context_lifecycle = 0u;
+static uint inx_continuation_context_generation = 0u;
+static uint inx_continuation_context_identity_low = 0u;
+static uint inx_continuation_context_identity_high = 0u;
+static uint inx_continuation_context_record_index = INX_CONTINUATION_INVALID_INDEX;
+static uint inx_last_continuation_record_index = INX_CONTINUATION_INVALID_INDEX;
 
 {contact_snapshot_store}
 
 uint inx_continuation_record_base(uint record_index) {{
-    return record_index * continuation_counters.record_stride_words;
+    return record_index * continuation_counters_words[13].load();
 }}
 
 uint inx_continuation_linear_index() {{
-    return gl_GlobalInvocationID.x
-         + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    return inx_dispatch_id.x
+         + inx_dispatch_id.y * WorkgroupCount().x * uint3(256, 1, 1).x;
 }}
 
 bool inx_continuation_lane_pending(uint particle_index, uint lane_index) {{
-    if (particle_index >= continuation_counters.particle_capacity
-        || lane_index >= continuation_counters.lane_count) return false;
-    uint slot = particle_index * continuation_counters.lane_count + lane_index;
-    return atomicAdd(continuation_lane_slots[slot], 0u) != 0u;
+    if (particle_index >= continuation_counters_words[17].load()
+        || lane_index >= continuation_counters_words[14].load()) return false;
+    uint slot = particle_index * continuation_counters_words[14].load() + lane_index;
+    return continuation_lane_slots[slot].add(0u) != 0u;
 }}
 
 uint inx_continuation_join_state_index(uint particle_index, uint join_index) {{
-    return particle_index * continuation_counters.join_count + join_index;
+    return particle_index * continuation_counters_words[15].load() + join_index;
 }}
 
 uint inx_particle_continuation_join_begin(
@@ -3631,26 +3688,24 @@ uint inx_particle_continuation_join_begin(
     uint join_index,
     uint expected_mask
 ) {{
-    if (particle_index >= continuation_counters.particle_capacity
-        || join_index >= continuation_counters.join_count
+    if (particle_index >= continuation_counters_words[17].load()
+        || join_index >= continuation_counters_words[15].load()
         || expected_mask == 0u) return 0u;
     uint state_index = inx_continuation_join_state_index(particle_index, join_index);
-    uint token = atomicAdd(continuation_join_states[state_index].x, 0u);
-    uint generation = atomicAdd(continuation_join_states[state_index].w, 0u);
+    uint token = continuation_join_states[state_index].x.add(0u);
+    uint generation = continuation_join_states[state_index].w.add(0u);
     if (token != 0u && generation == particle_generation) return token;
 
-    uint replacement = atomicAdd(continuation_counters.branch_token_counter, 1u);
+    uint replacement = continuation_counters_words[18].add(1u);
     if (replacement == 0u) {{
-        replacement = atomicAdd(continuation_counters.branch_token_counter, 1u);
+        replacement = continuation_counters_words[18].add(1u);
     }}
-    uint observed = atomicCompSwap(
-        continuation_join_states[state_index].x, token, replacement
-    );
+    uint observed = continuation_join_states[state_index].x.compareExchange(token, replacement);
     if (observed != token) return observed;
-    atomicExchange(continuation_join_states[state_index].y, expected_mask);
-    atomicExchange(continuation_join_states[state_index].z, 0u);
-    atomicExchange(continuation_join_states[state_index].w, particle_generation);
-    memoryBarrierBuffer();
+    continuation_join_states[state_index].y.exchange(expected_mask);
+    continuation_join_states[state_index].z.exchange(0u);
+    continuation_join_states[state_index].w.exchange(particle_generation);
+    DeviceMemoryBarrier();
     return replacement;
 }}
 
@@ -3660,12 +3715,12 @@ bool inx_particle_continuation_join_has_arrived(
     uint join_index,
     uint arrival_bit
 ) {{
-    if (particle_index >= continuation_counters.particle_capacity
-        || join_index >= continuation_counters.join_count) return false;
+    if (particle_index >= continuation_counters_words[17].load()
+        || join_index >= continuation_counters_words[15].load()) return false;
     uint state_index = inx_continuation_join_state_index(particle_index, join_index);
-    return atomicAdd(continuation_join_states[state_index].x, 0u) != 0u
-        && atomicAdd(continuation_join_states[state_index].w, 0u) == particle_generation
-        && (atomicAdd(continuation_join_states[state_index].z, 0u) & arrival_bit) != 0u;
+    return continuation_join_states[state_index].x.add(0u) != 0u
+        && continuation_join_states[state_index].w.add(0u) == particle_generation
+        && (continuation_join_states[state_index].z.add(0u) & arrival_bit) != 0u;
 }}
 
 bool inx_particle_continuation_join_arrive(
@@ -3684,26 +3739,26 @@ bool inx_particle_continuation_join_arrive(
         );
     }}
     if (token == 0u
-        || particle_index >= continuation_counters.particle_capacity
-        || join_index >= continuation_counters.join_count) return false;
+        || particle_index >= continuation_counters_words[17].load()
+        || join_index >= continuation_counters_words[15].load()) return false;
     uint state_index = inx_continuation_join_state_index(particle_index, join_index);
-    if (atomicAdd(continuation_join_states[state_index].x, 0u) != token
-        || atomicAdd(continuation_join_states[state_index].w, 0u) != particle_generation) {{
+    if (continuation_join_states[state_index].x.add(0u) != token
+        || continuation_join_states[state_index].w.add(0u) != particle_generation) {{
         return false;
     }}
-    uint expected = atomicAdd(continuation_join_states[state_index].y, 0u);
+    uint expected = continuation_join_states[state_index].y.add(0u);
     uint accepted = arrival_mask & expected;
-    uint previous = atomicOr(continuation_join_states[state_index].z, accepted);
+    uint previous = continuation_join_states[state_index].z.or(accepted);
     uint combined = previous | accepted;
     if ((combined & expected) != expected || (previous & expected) == expected) {{
         return false;
     }}
-    if (atomicCompSwap(continuation_join_states[state_index].x, token, 0u) != token) {{
+    if (continuation_join_states[state_index].x.compareExchange(token, 0u) != token) {{
         return false;
     }}
-    atomicExchange(continuation_join_states[state_index].y, 0u);
-    atomicExchange(continuation_join_states[state_index].z, 0u);
-    atomicExchange(continuation_join_states[state_index].w, 0u);
+    continuation_join_states[state_index].y.exchange(0u);
+    continuation_join_states[state_index].z.exchange(0u);
+    continuation_join_states[state_index].w.exchange(0u);
     return true;
 }}
 
@@ -3764,49 +3819,51 @@ bool inx_continuation_join_arrive(
 }}
 
 uint inx_continuation_pop_free() {{
-    uint observed = atomicAdd(continuation_counters.free_count, 0u);
+    uint observed = continuation_counters_words[0].add(0u);
     while (observed > 0u) {{
-        uint prior = atomicCompSwap(continuation_counters.free_count, observed, observed - 1u);
-        if (prior == observed) return continuation_free_records[observed - 1u];
+        uint prior = continuation_counters_words[0].compareExchange(observed, observed - 1u);
+        if (prior == observed) return continuation_free_records[observed - 1u].load();
         observed = prior;
     }}
     return INX_CONTINUATION_INVALID_INDEX;
 }}
 
 void inx_continuation_push_free(uint record_index) {{
-    uint destination = atomicAdd(continuation_counters.free_count, 1u);
-    if (destination < continuation_counters.continuation_capacity) {{
-        continuation_free_records[destination] = record_index;
+    uint destination = continuation_counters_words[0].add(1u);
+    if (destination < continuation_counters_words[16].load()) {{
+        continuation_free_records[destination].store(record_index);
     }} else {{
-        atomicAdd(continuation_counters.free_count, 0xffffffffu);
-        atomicAdd(continuation_counters.dropped_capacity, 1u);
+        continuation_counters_words[0].add(0xffffffffu);
+        continuation_counters_words[4].add(1u);
     }}
 }}
 
 bool inx_continuation_append_active(uint record_index) {{
-    bool write_a = (continuation_counters.current_simulation_step & 1u) != 0u;
+    bool write_a = (continuation_counters_words[10].load() & 1u) != 0u;
     uint destination = write_a
-        ? atomicAdd(continuation_counters.active_count_a, 1u)
-        : atomicAdd(continuation_counters.active_count_b, 1u);
-    if (destination >= continuation_counters.continuation_capacity) {{
-        if (write_a) atomicAdd(continuation_counters.active_count_a, 0xffffffffu);
-        else atomicAdd(continuation_counters.active_count_b, 0xffffffffu);
+        ? continuation_counters_words[1].add(1u)
+        : continuation_counters_words[2].add(1u);
+    if (destination >= continuation_counters_words[16].load()) {{
+        if (write_a) continuation_counters_words[1].add(0xffffffffu);
+        else continuation_counters_words[2].add(0xffffffffu);
         return false;
     }}
-    if (write_a) continuation_active_records_a[destination] = record_index;
-    else continuation_active_records_b[destination] = record_index;
+    if (write_a) continuation_active_records_a[destination].store(record_index);
+    else continuation_active_records_b[destination].store(record_index);
     return true;
 }}
 
 void inx_continuation_add_seconds(float seconds, out uint wake_low, out uint wake_high) {{
+    wake_low = 0u;
+    wake_high = 0u;
     float duration = max(seconds, 0.0);
     float high_chunks = floor(duration / 4.294967296);
     uint add_high = uint(min(high_chunks, 4294967040.0));
     float remainder = max(duration - high_chunks * 4.294967296, 0.0);
     uint add_low = uint(min(floor(remainder * 1000000000.0 + 0.5), 4294967040.0));
-    wake_low = continuation_counters.elapsed_time_low + add_low;
-    uint carry = wake_low < continuation_counters.elapsed_time_low ? 1u : 0u;
-    wake_high = continuation_counters.elapsed_time_high + add_high + carry;
+    wake_low = continuation_counters_words[11].load() + add_low;
+    uint carry = wake_low < continuation_counters_words[11].load() ? 1u : 0u;
+    wake_high = continuation_counters_words[12].load() + add_high + carry;
 }}
 
 bool inx_continuation_suspend(
@@ -3823,18 +3880,18 @@ bool inx_continuation_suspend(
     uint existing_record
 ) {{
     inx_last_continuation_record_index = existing_record;
-    if (particle_index >= continuation_counters.particle_capacity
-        || lane_index >= continuation_counters.lane_count) {{
-        atomicAdd(continuation_counters.dropped_capacity, 1u);
+    if (particle_index >= continuation_counters_words[17].load()
+        || lane_index >= continuation_counters_words[14].load()) {{
+        continuation_counters_words[4].add(1u);
         return false;
     }}
-    uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
+    uint lane_slot = particle_index * continuation_counters_words[14].load() + lane_index;
     bool uses_lane_slot = inx_continuation_context_kind == 0u;
     uint record_index = existing_record;
     bool reusing_record = record_index != INX_CONTINUATION_INVALID_INDEX;
     if (record_index == INX_CONTINUATION_INVALID_INDEX) {{
         if (uses_lane_slot) {{
-            uint pending_slot = atomicAdd(continuation_lane_slots[lane_slot], 0u);
+            uint pending_slot = continuation_lane_slots[lane_slot].add(0u);
             if (pending_slot != 0u) {{
                 inx_last_continuation_record_index = pending_slot - 1u;
                 return true;
@@ -3842,21 +3899,19 @@ bool inx_continuation_suspend(
         }}
         record_index = inx_continuation_pop_free();
         if (record_index == INX_CONTINUATION_INVALID_INDEX) {{
-            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            continuation_counters_words[4].add(1u);
             return false;
         }}
         if (uses_lane_slot) {{
-            uint previous = atomicCompSwap(
-                continuation_lane_slots[lane_slot], 0u, record_index + 1u
-            );
+            uint previous = continuation_lane_slots[lane_slot].compareExchange(0u, record_index + 1u);
             if (previous != 0u) {{
                 inx_continuation_push_free(record_index);
                 return true;
             }}
         }}
     }} else if (uses_lane_slot
-        && atomicAdd(continuation_lane_slots[lane_slot], 0u) != record_index + 1u) {{
-        atomicAdd(continuation_counters.stale_generation, 1u);
+        && continuation_lane_slots[lane_slot].add(0u) != record_index + 1u) {{
+        continuation_counters_words[5].add(1u);
         return false;
     }}
     uint branch_token = 0u;
@@ -3866,39 +3921,39 @@ bool inx_continuation_suspend(
         );
         if (branch_token == 0u) {{
             if (!reusing_record && uses_lane_slot) {{
-                atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+                continuation_lane_slots[lane_slot].compareExchange(record_index + 1u, 0u);
             }}
             if (!reusing_record) inx_continuation_push_free(record_index);
-            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            continuation_counters_words[4].add(1u);
             return false;
         }}
     }}
     uint base = inx_continuation_record_base(record_index);
-    continuation_record_words[base + 0u] = particle_index;
-    continuation_record_words[base + 1u] = particle_generation;
-    continuation_record_words[base + 2u] = continuation_counters.program_generation;
-    continuation_record_words[base + 3u] = resume_program_counter;
-    continuation_record_words[base + 4u] = wake_frame;
-    continuation_record_words[base + 5u] = wake_time_low;
-    continuation_record_words[base + 6u] = wake_time_high;
-    continuation_record_words[base + 7u] = lane_index;
-    continuation_record_words[base + 8u] = branch_token;
-    continuation_record_words[base + 9u] = join_index;
-    continuation_record_words[base + 10u] = inx_continuation_context_kind;
-    continuation_record_words[base + 11u] = flags;
-    continuation_record_words[base + 12u] = 0u;
-    continuation_record_words[base + 13u] = 0u;
-    continuation_record_words[base + 14u] = inx_continuation_context_lifecycle;
-    continuation_record_words[base + 15u] = inx_continuation_context_generation;
+    continuation_record_words[base + 0u].store(particle_index);
+    continuation_record_words[base + 1u].store(particle_generation);
+    continuation_record_words[base + 2u].store(continuation_counters_words[8].load());
+    continuation_record_words[base + 3u].store(resume_program_counter);
+    continuation_record_words[base + 4u].store(wake_frame);
+    continuation_record_words[base + 5u].store(wake_time_low);
+    continuation_record_words[base + 6u].store(wake_time_high);
+    continuation_record_words[base + 7u].store(lane_index);
+    continuation_record_words[base + 8u].store(branch_token);
+    continuation_record_words[base + 9u].store(join_index);
+    continuation_record_words[base + 10u].store(inx_continuation_context_kind);
+    continuation_record_words[base + 11u].store(flags);
+    continuation_record_words[base + 12u].store(0u);
+    continuation_record_words[base + 13u].store(0u);
+    continuation_record_words[base + 14u].store(inx_continuation_context_lifecycle);
+    continuation_record_words[base + 15u].store(inx_continuation_context_generation);
     if (!reusing_record) inx_store_continuation_context(record_index);
     inx_last_continuation_record_index = record_index;
-    memoryBarrierBuffer();
+    DeviceMemoryBarrier();
     if (!inx_continuation_append_active(record_index)) {{
         if (!reusing_record && uses_lane_slot) {{
-            atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+            continuation_lane_slots[lane_slot].compareExchange(record_index + 1u, 0u);
         }}
         if (!reusing_record) inx_continuation_push_free(record_index);
-        atomicAdd(continuation_counters.dropped_capacity, 1u);
+        continuation_counters_words[4].add(1u);
         return false;
     }}
     return true;
@@ -3919,7 +3974,7 @@ bool inx_suspend_frames(
         particle_generation,
         lane_index,
         resume_program_counter,
-        continuation_counters.current_simulation_step + uint(max(frames, 0)),
+        continuation_counters_words[10].load() + uint(max(frames, 0)),
         0u,
         0u,
         0u,
@@ -3971,11 +4026,11 @@ bool inx_until_frames(
     if (existing_record == INX_CONTINUATION_INVALID_INDEX && duration == 0u) {{
         return false;
     }}
-    uint deadline = continuation_counters.current_simulation_step + duration;
+    uint deadline = continuation_counters_words[10].load() + duration;
     if (existing_record != INX_CONTINUATION_INVALID_INDEX) {{
         uint existing_base = inx_continuation_record_base(existing_record);
-        deadline = continuation_record_words[existing_base + 12u];
-        if (int(continuation_counters.current_simulation_step - deadline) >= 0) {{
+        deadline = continuation_record_words[existing_base + 12u].load();
+        if (int(continuation_counters_words[10].load() - deadline) >= 0) {{
             return false;
         }}
     }}
@@ -3984,7 +4039,7 @@ bool inx_until_frames(
         particle_generation,
         lane_index,
         resume_program_counter,
-        continuation_counters.current_simulation_step + 1u,
+        continuation_counters_words[10].load() + 1u,
         0u,
         0u,
         INX_CONTINUATION_FLAG_UNTIL_FRAMES,
@@ -3996,7 +4051,7 @@ bool inx_until_frames(
         uint record_index = inx_last_continuation_record_index;
         if (record_index != INX_CONTINUATION_INVALID_INDEX) {{
             uint base = inx_continuation_record_base(record_index);
-            continuation_record_words[base + 12u] = deadline;
+            continuation_record_words[base + 12u].store(deadline);
         }}
     }}
     return suspended;
@@ -4021,11 +4076,11 @@ bool inx_until_seconds(
     inx_continuation_add_seconds(duration, deadline_low, deadline_high);
     if (existing_record != INX_CONTINUATION_INVALID_INDEX) {{
         uint existing_base = inx_continuation_record_base(existing_record);
-        deadline_low = continuation_record_words[existing_base + 12u];
-        deadline_high = continuation_record_words[existing_base + 13u];
-        bool reached = continuation_counters.elapsed_time_high > deadline_high
-            || (continuation_counters.elapsed_time_high == deadline_high
-                && continuation_counters.elapsed_time_low >= deadline_low);
+        deadline_low = continuation_record_words[existing_base + 12u].load();
+        deadline_high = continuation_record_words[existing_base + 13u].load();
+        bool reached = continuation_counters_words[12].load() > deadline_high
+            || (continuation_counters_words[12].load() == deadline_high
+                && continuation_counters_words[11].load() >= deadline_low);
         if (reached) return false;
     }}
     bool suspended = inx_continuation_suspend(
@@ -4033,7 +4088,7 @@ bool inx_until_seconds(
         particle_generation,
         lane_index,
         resume_program_counter,
-        continuation_counters.current_simulation_step + 1u,
+        continuation_counters_words[10].load() + 1u,
         0u,
         0u,
         INX_CONTINUATION_FLAG_UNTIL_SECONDS,
@@ -4045,8 +4100,8 @@ bool inx_until_seconds(
         uint record_index = inx_last_continuation_record_index;
         if (record_index != INX_CONTINUATION_INVALID_INDEX) {{
             uint base = inx_continuation_record_base(record_index);
-            continuation_record_words[base + 12u] = deadline_low;
-            continuation_record_words[base + 13u] = deadline_high;
+            continuation_record_words[base + 12u].store(deadline_low);
+            continuation_record_words[base + 13u].store(deadline_high);
         }}
     }}
     return suspended;
@@ -4054,9 +4109,9 @@ bool inx_until_seconds(
 """
 
 
-def _continuation_scheduler_constants_glsl() -> str:
+def _continuation_scheduler_constants_slang() -> str:
     return """
-layout(push_constant) uniform ParticleContinuationConstants {
+struct ParticleContinuationConstants { 
     uint capacity;
     uint particle_capacity;
     uint lane_count;
@@ -4073,83 +4128,93 @@ layout(push_constant) uniform ParticleContinuationConstants {
     uint reserved0;
     uint reserved1;
     uint reserved2;
-} continuation_pc;
+ };
+[[vk::push_constant]] ConstantBuffer<ParticleContinuationConstants> continuation_pc;
 """
 
 
-def _continuation_prepare_glsl() -> str:
+def _continuation_prepare_slang() -> str:
     return (
-        "#version 450\n\n"
-        "layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n"
-        + _continuation_bindings_glsl(0)
-        + _continuation_scheduler_constants_glsl()
+        _COMPUTE_COMMON
         + """
-void main() {
+
+"""
+        + _continuation_bindings_slang(0)
+        + _continuation_scheduler_constants_slang()
+        + """
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
     uint index = inx_continuation_linear_index();
     if (continuation_pc.reset_requested != 0u) {
         if (index < continuation_pc.capacity) {
-            continuation_free_records[index] = index;
+            continuation_free_records[index].store(index);
         }
         uint lane_slot_count = continuation_pc.particle_capacity * continuation_pc.lane_count;
-        if (index < lane_slot_count) continuation_lane_slots[index] = 0u;
+        if (index < lane_slot_count) continuation_lane_slots[index].store(0u);
         uint join_state_count = continuation_pc.particle_capacity * continuation_pc.join_count;
-        if (index < join_state_count) continuation_join_states[index] = uvec4(0u);
+        if (index < join_state_count) continuation_join_states[index].store(uint4(0u));
     }
     if (index != 0u) return;
 
     uint active_count = 0u;
     if (continuation_pc.reset_requested != 0u) {
-        continuation_counters.free_count = continuation_pc.capacity;
-        continuation_counters.active_count_a = 0u;
-        continuation_counters.active_count_b = 0u;
-        continuation_counters.ready_count = 0u;
-        continuation_counters.dropped_capacity = 0u;
-        continuation_counters.stale_generation = 0u;
-        continuation_counters.resumed_count = 0u;
-        continuation_counters.completed_count = 0u;
-        continuation_counters.branch_token_counter = 1u;
+        continuation_counters_words[0].store(continuation_pc.capacity);
+        continuation_counters_words[1].store(0u);
+        continuation_counters_words[2].store(0u);
+        continuation_counters_words[3].store(0u);
+        continuation_counters_words[4].store(0u);
+        continuation_counters_words[5].store(0u);
+        continuation_counters_words[6].store(0u);
+        continuation_counters_words[7].store(0u);
+        continuation_counters_words[18].store(1u);
     } else {
         bool read_a = (continuation_pc.simulation_step & 1u) == 0u;
         active_count = read_a
-            ? continuation_counters.active_count_a
-            : continuation_counters.active_count_b;
-        if (read_a) continuation_counters.active_count_b = 0u;
-        else continuation_counters.active_count_a = 0u;
-        continuation_counters.ready_count = 0u;
+            ? continuation_counters_words[1].load()
+            : continuation_counters_words[2].load();
+        if (read_a) continuation_counters_words[2].store(0u);
+        else continuation_counters_words[1].store(0u);
+        continuation_counters_words[3].store(0u);
     }
-    continuation_counters.program_generation = continuation_pc.program_generation;
-    continuation_counters.reset_serial = continuation_pc.reset_serial;
-    continuation_counters.current_simulation_step = continuation_pc.simulation_step;
-    continuation_counters.elapsed_time_low = continuation_pc.elapsed_time_low;
-    continuation_counters.elapsed_time_high = continuation_pc.elapsed_time_high;
-    continuation_counters.record_stride_words = continuation_pc.record_stride_words;
-    continuation_counters.lane_count = continuation_pc.lane_count;
-    continuation_counters.join_count = continuation_pc.join_count;
-    continuation_counters.continuation_capacity = continuation_pc.capacity;
-    continuation_counters.particle_capacity = continuation_pc.particle_capacity;
+    continuation_counters_words[8].store(continuation_pc.program_generation);
+    continuation_counters_words[9].store(continuation_pc.reset_serial);
+    continuation_counters_words[10].store(continuation_pc.simulation_step);
+    continuation_counters_words[11].store(continuation_pc.elapsed_time_low);
+    continuation_counters_words[12].store(continuation_pc.elapsed_time_high);
+    continuation_counters_words[13].store(continuation_pc.record_stride_words);
+    continuation_counters_words[14].store(continuation_pc.lane_count);
+    continuation_counters_words[15].store(continuation_pc.join_count);
+    continuation_counters_words[16].store(continuation_pc.capacity);
+    continuation_counters_words[17].store(continuation_pc.particle_capacity);
 
     uint group_count = (active_count + 255u) / 256u;
     uint group_x = min(group_count, 65535u);
     uint group_y = group_count == 0u ? 1u : (group_count + group_x - 1u) / group_x;
-    continuation_classify_x = group_x;
-    continuation_classify_y = group_y;
-    continuation_classify_z = 1u;
-    continuation_classify_reserved = 0u;
-    continuation_dispatch_x = group_x;
-    continuation_dispatch_y = group_y;
-    continuation_dispatch_z = 1u;
-    continuation_dispatch_reserved = 0u;
+    ParticleContinuationClassifyIndirect_words[0].store(group_x);
+    ParticleContinuationClassifyIndirect_words[1].store(group_y);
+    ParticleContinuationClassifyIndirect_words[2].store(1u);
+    ParticleContinuationClassifyIndirect_words[3].store(0u);
+    ParticleContinuationDispatchIndirect_words[0].store(group_x);
+    ParticleContinuationDispatchIndirect_words[1].store(group_y);
+    ParticleContinuationDispatchIndirect_words[2].store(1u);
+    ParticleContinuationDispatchIndirect_words[3].store(0u);
 }
 """
     )
 
 
-def _continuation_classify_glsl() -> str:
+def _continuation_classify_slang() -> str:
     return (
-        "#version 450\n\n"
-        "layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;\n"
-        + _continuation_bindings_glsl(0)
-        + _continuation_scheduler_constants_glsl()
+        _COMPUTE_COMMON
+        + """
+
+"""
+        + _continuation_bindings_slang(0)
+        + _continuation_scheduler_constants_slang()
         + """
 bool inx_continuation_time_reached(uint wake_low, uint wake_high) {
     return continuation_pc.elapsed_time_high > wake_high
@@ -4158,58 +4223,63 @@ bool inx_continuation_time_reached(uint wake_low, uint wake_high) {
 }
 
 void inx_continuation_discard(uint record_index, uint base) {
-    uint particle_index = continuation_record_words[base + 0u];
-    uint lane_index = continuation_record_words[base + 7u];
-    bool uses_lane_slot = continuation_record_words[base + 10u] == 0u;
+    uint particle_index = continuation_record_words[base + 0u].load();
+    uint lane_index = continuation_record_words[base + 7u].load();
+    bool uses_lane_slot = continuation_record_words[base + 10u].load() == 0u;
     if (uses_lane_slot
         && particle_index < continuation_pc.particle_capacity
         && lane_index < continuation_pc.lane_count) {
         uint lane_slot = particle_index * continuation_pc.lane_count + lane_index;
-        atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+        continuation_lane_slots[lane_slot].compareExchange(record_index + 1u, 0u);
     }
     inx_continuation_push_free(record_index);
 }
 
-void main() {
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
     uint queue_index = inx_continuation_linear_index();
     bool read_a = (continuation_pc.simulation_step & 1u) == 0u;
     uint active_count = read_a
-        ? continuation_counters.active_count_a
-        : continuation_counters.active_count_b;
+        ? continuation_counters_words[1].load()
+        : continuation_counters_words[2].load();
     if (queue_index >= active_count) return;
     uint record_index = read_a
-        ? continuation_active_records_a[queue_index]
-        : continuation_active_records_b[queue_index];
+        ? continuation_active_records_a[queue_index].load()
+        : continuation_active_records_b[queue_index].load();
     if (record_index >= continuation_pc.capacity) {
-        atomicAdd(continuation_counters.stale_generation, 1u);
+        continuation_counters_words[5].add(1u);
         return;
     }
     uint base = inx_continuation_record_base(record_index);
-    if (continuation_record_words[base + 2u] != continuation_pc.program_generation) {
-        atomicAdd(continuation_counters.stale_generation, 1u);
+    if (continuation_record_words[base + 2u].load() != continuation_pc.program_generation) {
+        continuation_counters_words[5].add(1u);
         inx_continuation_discard(record_index, base);
         return;
     }
-    uint flags = continuation_record_words[base + 11u];
+    uint flags = continuation_record_words[base + 11u].load();
     bool ready = (flags & INX_CONTINUATION_FLAG_SECONDS) != 0u
         ? inx_continuation_time_reached(
-            continuation_record_words[base + 5u],
-            continuation_record_words[base + 6u]
+            continuation_record_words[base + 5u].load(),
+            continuation_record_words[base + 6u].load()
           )
-        : int(continuation_pc.simulation_step - continuation_record_words[base + 4u]) >= 0;
+        : int(continuation_pc.simulation_step - continuation_record_words[base + 4u].load()) >= 0;
     if (!ready) {
         if (!inx_continuation_append_active(record_index)) {
-            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            continuation_counters_words[4].add(1u);
             inx_continuation_discard(record_index, base);
         }
         return;
     }
-    uint destination = atomicAdd(continuation_counters.ready_count, 1u);
+    uint destination = continuation_counters_words[3].add(1u);
     if (destination < continuation_pc.capacity) {
-        continuation_ready_records[destination] = record_index;
+        continuation_ready_records[destination].store(record_index);
     } else {
-        atomicAdd(continuation_counters.ready_count, 0xffffffffu);
-        atomicAdd(continuation_counters.dropped_capacity, 1u);
+        continuation_counters_words[3].add(0xffffffffu);
+        continuation_counters_words[4].add(1u);
         inx_continuation_discard(record_index, base);
     }
 }
@@ -4217,7 +4287,7 @@ void main() {
     )
 
 
-def _continuation_dispatch_glsl(
+def _continuation_dispatch_slang(
     emitter: ParticleEmitterKernelIR,
     fields: tuple[tuple[str, TypeRef, str], ...],
     data_interface_layout: dict[str, Any],
@@ -4243,16 +4313,16 @@ def _continuation_dispatch_glsl(
 
     contact_validation = (
         """
-    if (continuation_record_words[record_base + 10u]
+    if (continuation_record_words[record_base + 10u].load()
         == INX_CONTINUATION_CONTEXT_CONTACT) {
         uint snapshot_base = inx_continuation_record_index * 24u;
-        if (contact_continuation_snapshot_words[snapshot_base + 0u]
+        if (contact_continuation_snapshot_words[snapshot_base + 0u].load()
                 != particle_index
-            || contact_continuation_snapshot_words[snapshot_base + 1u]
+            || contact_continuation_snapshot_words[snapshot_base + 1u].load()
                 != particle_generation
-            || contact_continuation_snapshot_words[snapshot_base + 23u]
-                != continuation_record_words[record_base + 15u]) {
-            atomicAdd(continuation_counters.stale_generation, 1u);
+            || contact_continuation_snapshot_words[snapshot_base + 23u].load()
+                != continuation_record_words[record_base + 15u].load()) {
+            continuation_counters_words[5].add(1u);
             inx_finish_continuation(
                 inx_continuation_record_index, particle_index, lane_index
             );
@@ -4268,36 +4338,36 @@ def _continuation_dispatch_glsl(
     if (inx_continuation_context_kind == INX_CONTINUATION_CONTEXT_CONTACT) {{
         uint snapshot_base = inx_continuation_record_index * 24u;
         inx_continuation_context_identity_low =
-            contact_continuation_snapshot_words[snapshot_base + 2u];
+            contact_continuation_snapshot_words[snapshot_base + 2u].load();
         inx_continuation_context_identity_high =
-            contact_continuation_snapshot_words[snapshot_base + 3u];
-        state.{contact_field("builtin.collision_hit")} =
+            contact_continuation_snapshot_words[snapshot_base + 3u].load();
+        state.{contact_field('builtin.collision_hit')} =
             inx_contact_lifecycle == 2u ? 0u : 1u;
-        state.{contact_field("builtin.collision_point")} = vec3(
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 4u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 5u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 6u]));
-        state.{contact_field("builtin.collision_penetration")} =
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 7u]);
-        state.{contact_field("builtin.collision_normal")} = vec3(
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 8u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 9u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 10u]));
-        state.{contact_field("builtin.collision_relative_velocity")} = vec3(
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 12u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 13u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 14u]));
-        state.{contact_field("builtin.collision_material")} = vec4(
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 16u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 17u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 18u]),
-            uintBitsToFloat(contact_continuation_snapshot_words[snapshot_base + 19u]));
-        state.{contact_field("builtin.collision_is_trigger")} =
-            contact_continuation_snapshot_words[snapshot_base + 20u];
-        state.{contact_field("builtin.collision_collider_id_low")} =
-            contact_continuation_snapshot_words[snapshot_base + 2u];
-        state.{contact_field("builtin.collision_collider_id_high")} =
-            contact_continuation_snapshot_words[snapshot_base + 3u];
+        state.{contact_field('builtin.collision_point')} = float3(
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 4u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 5u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 6u].load()));
+        state.{contact_field('builtin.collision_penetration')} =
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 7u].load());
+        state.{contact_field('builtin.collision_normal')} = float3(
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 8u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 9u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 10u].load()));
+        state.{contact_field('builtin.collision_relative_velocity')} = float3(
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 12u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 13u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 14u].load()));
+        state.{contact_field('builtin.collision_material')} = float4(
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 16u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 17u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 18u].load()),
+            asfloat(contact_continuation_snapshot_words[snapshot_base + 19u].load()));
+        state.{contact_field('builtin.collision_is_trigger')} =
+            contact_continuation_snapshot_words[snapshot_base + 20u].load();
+        state.{contact_field('builtin.collision_collider_id_low')} =
+            contact_continuation_snapshot_words[snapshot_base + 2u].load();
+        state.{contact_field('builtin.collision_collider_id_high')} =
+            contact_continuation_snapshot_words[snapshot_base + 3u].load();
     }}
 """
         if collision_enabled
@@ -4376,11 +4446,13 @@ def _continuation_dispatch_glsl(
             event_type = events.event_types[event_index]
             prefix = _event_state_prefix(event_index)
             head_field = next(
-                field for stable_id, _type, field in fields
+                field
+                for stable_id, _type, field in fields
                 if stable_id == f"{prefix}.head"
             )
             active_field = next(
-                field for stable_id, _type, field in fields
+                field
+                for stable_id, _type, field in fields
                 if stable_id == f"{prefix}.active"
             )
             other_lanes = sorted(
@@ -4430,9 +4502,7 @@ def _continuation_dispatch_glsl(
         continuation_dispatch=True,
         contact_enabled=collision_enabled,
     )
-    bindings = _continuation_bindings_glsl(
-        5, contact_context=collision_enabled
-    )
+    bindings = _continuation_bindings_slang(5, contact_context=collision_enabled)
     switch_cases = "\n".join(cases)
     return (
         prelude
@@ -4440,35 +4510,40 @@ def _continuation_dispatch_glsl(
         + f"""
 void inx_finish_continuation(uint record_index, uint particle_index, uint lane_index) {{
     uint base = inx_continuation_record_base(record_index);
-    bool uses_lane_slot = continuation_record_words[base + 10u] == 0u;
+    bool uses_lane_slot = continuation_record_words[base + 10u].load() == 0u;
     if (uses_lane_slot
-        && particle_index < continuation_counters.particle_capacity
-        && lane_index < continuation_counters.lane_count) {{
-        uint lane_slot = particle_index * continuation_counters.lane_count + lane_index;
-        atomicCompSwap(continuation_lane_slots[lane_slot], record_index + 1u, 0u);
+        && particle_index < continuation_counters_words[17].load()
+        && lane_index < continuation_counters_words[14].load()) {{
+        uint lane_slot = particle_index * continuation_counters_words[14].load() + lane_index;
+        continuation_lane_slots[lane_slot].compareExchange(record_index + 1u, 0u);
     }}
     inx_continuation_push_free(record_index);
 }}
 
-void main() {{
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {{
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
     uint ready_index = inx_continuation_linear_index();
-    if (ready_index >= continuation_counters.ready_count) return;
-    uint inx_continuation_record_index = continuation_ready_records[ready_index];
+    if (ready_index >= continuation_counters_words[3].load()) return;
+    uint inx_continuation_record_index = continuation_ready_records[ready_index].load();
     if (inx_continuation_record_index >= pc.continuation_capacity) return;
     uint record_base = inx_continuation_record_base(inx_continuation_record_index);
-    uint particle_index = continuation_record_words[record_base + 0u];
-    uint particle_generation = continuation_record_words[record_base + 1u];
-    uint record_program_generation = continuation_record_words[record_base + 2u];
-    uint resume_program_counter = continuation_record_words[record_base + 3u];
-    uint lane_index = continuation_record_words[record_base + 7u];
-    uint inx_continuation_record_branch_token = continuation_record_words[record_base + 8u];
-    uint inx_continuation_record_join_index = continuation_record_words[record_base + 9u];
+    uint particle_index = continuation_record_words[record_base + 0u].load();
+    uint particle_generation = continuation_record_words[record_base + 1u].load();
+    uint record_program_generation = continuation_record_words[record_base + 2u].load();
+    uint resume_program_counter = continuation_record_words[record_base + 3u].load();
+    uint lane_index = continuation_record_words[record_base + 7u].load();
+    uint inx_continuation_record_branch_token = continuation_record_words[record_base + 8u].load();
+    uint inx_continuation_record_join_index = continuation_record_words[record_base + 9u].load();
     if (record_program_generation != pc.continuation_program_generation
         || particle_index >= pc.capacity
         || lane_index >= pc.continuation_lane_count
         || (states[particle_index].lifecycle_flags & INX_PARTICLE_ALIVE) == 0u
         || states[particle_index].spawn_generation != particle_generation) {{
-        atomicAdd(continuation_counters.stale_generation, 1u);
+        continuation_counters_words[5].add(1u);
         inx_finish_continuation(
             inx_continuation_record_index, particle_index, lane_index
         );
@@ -4476,7 +4551,7 @@ void main() {{
     }}
     if (!inx_current_emitter_playing()) {{
         if (!inx_continuation_append_active(inx_continuation_record_index)) {{
-            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            continuation_counters_words[4].add(1u);
             inx_finish_continuation(
                 inx_continuation_record_index, particle_index, lane_index
             );
@@ -4485,26 +4560,23 @@ void main() {{
     }}
 {contact_validation}
 
-    uint previous_lifecycle_flags = atomicOr(
-        states[particle_index].lifecycle_flags,
-        INX_PARTICLE_CONTINUATION_LOCK
-    );
+    uint previous_lifecycle_flags = states[particle_index].lifecycle_flags.or(INX_PARTICLE_CONTINUATION_LOCK);
     if ((previous_lifecycle_flags & INX_PARTICLE_CONTINUATION_LOCK) != 0u) {{
         if (!inx_continuation_append_active(inx_continuation_record_index)) {{
-            atomicAdd(continuation_counters.dropped_capacity, 1u);
+            continuation_counters_words[4].add(1u);
             inx_finish_continuation(
                 inx_continuation_record_index, particle_index, lane_index
             );
         }}
         return;
     }}
-    memoryBarrierBuffer();
+    DeviceMemoryBarrier();
 
     ParticleState state = states[particle_index];
-    inx_continuation_context_kind = continuation_record_words[record_base + 10u];
-    uint inx_contact_lifecycle = continuation_record_words[record_base + 14u];
+    inx_continuation_context_kind = continuation_record_words[record_base + 10u].load();
+    uint inx_contact_lifecycle = continuation_record_words[record_base + 14u].load();
     inx_continuation_context_lifecycle = inx_contact_lifecycle;
-    inx_continuation_context_generation = continuation_record_words[record_base + 15u];
+    inx_continuation_context_generation = continuation_record_words[record_base + 15u].load();
     inx_continuation_context_record_index = INX_CONTINUATION_INVALID_INDEX;
 {contact_restore}
     bool particle_alive = true;
@@ -4513,25 +4585,22 @@ void main() {{
     switch (resume_program_counter) {{
 {switch_cases}
         default:
-            atomicAdd(continuation_counters.stale_generation, 1u);
+            continuation_counters_words[5].add(1u);
             break;
     }}
     state.lifecycle_flags = particle_alive
         ? (state.lifecycle_flags | INX_PARTICLE_CONTINUATION_LOCK)
         : INX_PARTICLE_CONTINUATION_LOCK;
     states[particle_index] = state;
-    memoryBarrierBuffer();
-    atomicAnd(
-        states[particle_index].lifecycle_flags,
-        ~INX_PARTICLE_CONTINUATION_LOCK
-    );
+    DeviceMemoryBarrier();
+    states[particle_index].lifecycle_flags.and(~INX_PARTICLE_CONTINUATION_LOCK);
     if (!inx_continuation_resuspended) {{
         inx_finish_continuation(
             inx_continuation_record_index, particle_index, lane_index
         );
-        atomicAdd(continuation_counters.completed_count, 1u);
+        continuation_counters_words[7].add(1u);
     }} else {{
-        atomicAdd(continuation_counters.resumed_count, 1u);
+        continuation_counters_words[6].add(1u);
     }}
 }}
 """
@@ -4559,9 +4628,9 @@ def _continuation_source(
         64,
         len(continuation_lane_indices),
         join_count,
-        _continuation_prepare_glsl(),
-        _continuation_classify_glsl(),
-        _continuation_dispatch_glsl(
+        _continuation_prepare_slang(),
+        _continuation_classify_slang(),
+        _continuation_dispatch_slang(
             emitter,
             fields,
             data_interface_layout,
@@ -4585,27 +4654,28 @@ def _shader_prelude(
     contact_enabled: bool = False,
 ) -> str:
     state_fields = "\n".join(
-        f"    {_storage_type(value_type)} {field};"
+        _storage_declaration(value_type, field)
         for _stable_id, value_type, field in fields
     )
-    data_interface_glsl = "\n".join(
+    data_interface_slang = "\n".join(
         part
         for part in (
-            _mesh_shape_glsl(data_interface_layout),
-            _volume_interface_glsl(data_interface_layout),
-            _texture_parameter_glsl(data_interface_layout),
+            _mesh_shape_slang(data_interface_layout),
+            _volume_interface_slang(data_interface_layout),
+            _texture_parameter_slang(data_interface_layout),
         )
         if part
     )
-    parameter_glsl = (
-        "layout(std430, set = 3, binding = 2) buffer "
-        "ParticleParameters { uvec4 parameter_words[]; };"
+    parameter_slang = (
+        "[[vk::binding(2, 3)]] RWStructuredBuffer<uint4> parameter_words;"
         if parameter_slots
         else ""
     )
-    perceptual_gradient_glsl = _curve_interpolation_glsl() + _perceptual_gradient_glsl()
-    ramp_parameter_glsl = _ramp_parameter_glsl(parameter_slots)
-    contact_glsl = _contact_bindings_glsl(7) if contact_enabled else ""
+    perceptual_gradient_slang = (
+        _curve_interpolation_slang() + _perceptual_gradient_slang()
+    )
+    ramp_parameter_slang = _ramp_parameter_slang(parameter_slots)
+    contact_slang = _contact_bindings_slang(7) if contact_enabled else ""
     contact_store_call = (
         """inx_store_contact(
             particle_index, contact_hit_order, collider_id,
@@ -4617,7 +4687,7 @@ def _shader_prelude(
         else ""
     )
     push_constants = (
-        """layout(push_constant) uniform ParticlePushConstants {
+        """struct ParticlePushConstants { 
     uint continuation_capacity;
     uint capacity;
     uint continuation_lane_count;
@@ -4634,9 +4704,10 @@ def _shader_prelude(
     uint diagnostic_flags;
     uint continuation_reserved0;
     uint continuation_reserved1;
-} pc;"""
+ };
+[[vk::push_constant]] ConstantBuffer<ParticlePushConstants> pc;"""
         if continuation_dispatch
-        else """layout(push_constant) uniform ParticlePushConstants {
+        else """struct ParticlePushConstants { 
     uint capacity;
     uint invocation_count;
     uint spawn_base_id;
@@ -4649,29 +4720,22 @@ def _shader_prelude(
     uint alive_write_slot;
     uint use_alive_list;
     uint reserved;
-} pc;"""
+ };
+[[vk::push_constant]] ConstantBuffer<ParticlePushConstants> pc;"""
     )
-    return f"""#version 450
-#ifndef INX_WEBGPU
-#extension GL_KHR_shader_subgroup_basic : require
-#extension GL_KHR_shader_subgroup_ballot : require
-#endif
+    return (
+        _COMPUTE_COMMON
+        + f"""
 
-layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-shared uint inx_particle_render_local_count;
-shared uint inx_particle_render_group_base;
-shared uint inx_particle_render_subgroup_counts[64];
-shared uint inx_particle_init_old_free_count;
-shared uint inx_particle_init_accepted_count;
-shared uint inx_particle_alive_local_count;
-shared uint inx_particle_alive_group_base;
-shared uint inx_particle_alive_subgroup_counts[64];
 
-const uint INX_PARTICLE_ALIVE = 1u;
-const uint INX_PARTICLE_INIT_COMPLETE = 2u;
-const uint INX_PARTICLE_RECYCLE_PENDING = 4u;
-const uint INX_PARTICLE_CONTINUATION_LOCK = 0x80000000u;
+groupshared uint inx_particle_init_old_free_count;
+groupshared uint inx_particle_init_accepted_count;
+
+static const uint INX_PARTICLE_ALIVE = 1u;
+static const uint INX_PARTICLE_INIT_COMPLETE = 2u;
+static const uint INX_PARTICLE_RECYCLE_PENDING = 4u;
+static const uint INX_PARTICLE_CONTINUATION_LOCK = 0x80000000u;
 
 struct ParticleState {{
     uint lifecycle_flags;
@@ -4682,127 +4746,90 @@ struct ParticleState {{
 }};
 
 struct ParticleRenderInstance {{
-    vec4 position_size;
-    vec4 color;
-    vec4 rotation_custom;
-    vec4 scale_custom;
-    uvec4 ribbon_data;
-    vec4 custom_data;
-    vec4 previous_position_history;
+    float4 position_size;
+    float4 color;
+    float4 rotation_custom;
+    float4 scale_custom;
+    uint4 ribbon_data;
+    float4 custom_data;
+    float4 previous_position_history;
 }};
 
 struct ParticleVisibilityInstance {{
-    vec4 position_radius;
+    float4 position_radius;
 }};
 
-layout(std430, set = 0, binding = 0) buffer ParticleStates {{ ParticleState states[]; }};
-layout(std430, set = 0, binding = 1) buffer ParticleFreeList {{ uint free_slots[]; }};
-layout(std430, set = 0, binding = 2) buffer ParticleCounters {{
-    uint free_count;
-    uint visible_count;
-    uint dropped_count;
-    uint reserved_count;
-    uint collision_hit_count;
-    uint collision_response_count;
-    uint collision_trigger_count;
-    uint collision_enter_count;
-    uint collision_stay_count;
-    uint collision_exit_count;
-    uint collision_max_outward_speed_bits;
-    uint collision_max_tangent_speed_bits;
-    uint collision_candidate_overflow_count;
-    uint event_counters[];
-}} counters;
-layout(std430, set = 0, binding = 3) buffer ParticleInstances {{ ParticleRenderInstance instances[]; }};
-layout(std430, set = 0, binding = 4) buffer ParticleIndirect {{
-    uint vertex_count;
-    uint instance_count;
-    uint first_vertex;
-    uint first_instance;
-}} indirect_args;
-layout(std140, set = 0, binding = 5) uniform ParticleTransforms {{
-    mat4 emitter_to_world;
-    mat4 world_to_emitter;
-    mat4 simulation_to_world;
-    mat4 world_to_simulation;
-}} transforms;
-layout(std430, set = 0, binding = 6) buffer ParticleRenderIndices {{ uint render_indices[]; }};
-layout(std430, set = 0, binding = 7) buffer ParticleAliveIndicesA {{ uint alive_indices_a[]; }};
-layout(std430, set = 0, binding = 8) buffer ParticleAliveIndicesB {{ uint alive_indices_b[]; }};
-layout(std430, set = 0, binding = 9) buffer ParticleAliveDispatch {{ uvec4 alive_dispatch_args[2]; }};
-layout(std430, set = 0, binding = 10) buffer ParticleAliveControl {{
-    uint alive_counts[2];
-    uint alive_control_reserved0;
-    uint alive_control_reserved1;
-}} alive_control;
-layout(std430, set = 0, binding = 11) buffer ParticleVisibility {{
-    ParticleVisibilityInstance visibility[];
-}};
-{parameter_glsl}
+[[vk::binding(0, 0)]] RWStructuredBuffer<ParticleState> states;
+[[vk::binding(1, 0)]] RWStructuredBuffer<Atomic<uint>> free_slots;
+[[vk::binding(2, 0)]] RWStructuredBuffer<Atomic<uint>> counters_words;
+[[vk::binding(3, 0)]] RWStructuredBuffer<ParticleRenderInstance> instances;
+[[vk::binding(4, 0)]] RWStructuredBuffer<Atomic<uint>> indirect_args_words;
+struct ParticleTransforms {{ 
+    column_major float4x4 emitter_to_world;
+    column_major float4x4 world_to_emitter;
+    column_major float4x4 simulation_to_world;
+    column_major float4x4 world_to_simulation;
+ }};
+[[vk::binding(5, 0)]] ConstantBuffer<ParticleTransforms> transforms;
+[[vk::binding(6, 0)]] RWStructuredBuffer<Atomic<uint>> render_indices;
+[[vk::binding(7, 0)]] RWStructuredBuffer<Atomic<uint>> alive_indices_a;
+[[vk::binding(8, 0)]] RWStructuredBuffer<Atomic<uint>> alive_indices_b;
+[[vk::binding(9, 0)]] RWStructuredBuffer<uint4> alive_dispatch_args;
+[[vk::binding(10, 0)]] RWStructuredBuffer<Atomic<uint>> alive_control_words;
+[[vk::binding(11, 0)]] RWStructuredBuffer<ParticleVisibilityInstance> visibility;
+{parameter_slang}
 struct InxParticleAffine {{
-    vec4 row0;
-    vec4 row1;
-    vec4 row2;
+    float4 row0;
+    float4 row1;
+    float4 row2;
 }};
 struct InxParticleCollider {{
     InxParticleAffine collider_to_world;
     InxParticleAffine world_to_collider;
     InxParticleAffine previous_world_to_collider;
-    vec4 shape;
-    uvec4 geometry;
-    vec4 linear_velocity;
-    vec4 angular_velocity;
-    vec4 center_of_mass;
-    vec4 material;
-    vec4 world_aabb_min;
-    vec4 world_aabb_max;
-    vec4 previous_world_aabb_min;
-    vec4 previous_world_aabb_max;
-    uvec4 metadata;
-    uvec4 identity;
+    float4 shape;
+    uint4 geometry;
+    float4 linear_velocity;
+    float4 angular_velocity;
+    float4 center_of_mass;
+    float4 material;
+    float4 world_aabb_min;
+    float4 world_aabb_max;
+    float4 previous_world_aabb_min;
+    float4 previous_world_aabb_max;
+    uint4 metadata;
+    uint4 identity;
 }};
 struct InxParticleCollisionBvhNode {{
-    vec4 bounds_min;
-    vec4 bounds_max;
-    uvec4 metadata;
+    float4 bounds_min;
+    float4 bounds_max;
+    uint4 metadata;
 }};
-layout(std430, set = 6, binding = 0) readonly buffer ParticleCollisionSceneHeader {{
+struct ParticleCollisionSceneHeader {{ 
     uint collider_count;
     uint static_collider_count;
     uint collision_scene_revision_low;
     uint collision_scene_revision_high;
-    vec4 grid_min_inv_cell_size;
-    uvec4 grid_dimensions;
-    uvec4 topology;
-}} inx_collision_scene;
-layout(std430, set = 6, binding = 1) readonly buffer ParticleCollisionSceneRecords {{
-    InxParticleCollider particle_colliders[];
-}};
-layout(std430, set = 6, binding = 2) readonly buffer ParticleCollisionGridOffsets {{
-    uint particle_collision_grid_offsets[];
-}};
-layout(std430, set = 6, binding = 3) readonly buffer ParticleCollisionGridColliderIndices {{
-    uint particle_collision_grid_collider_indices[];
-}};
-layout(std430, set = 6, binding = 4) readonly buffer ParticleCollisionMeshVertices {{
-    vec4 particle_collision_mesh_vertices[];
-}};
-layout(std430, set = 6, binding = 5) readonly buffer ParticleCollisionMeshIndices {{
-    uint particle_collision_mesh_indices[];
-}};
-layout(std430, set = 6, binding = 6) readonly buffer ParticleCollisionMeshBvh {{
-    InxParticleCollisionBvhNode particle_collision_mesh_bvh[];
-}};
-layout(std430, set = 0, binding = 15) readonly buffer ParticleSimulationControl {{
+    float4 grid_min_inv_cell_size;
+    uint4 grid_dimensions;
+    uint4 topology;
+ }};
+[[vk::binding(0, 6)]] StructuredBuffer<ParticleCollisionSceneHeader> inx_collision_scene;
+[[vk::binding(1, 6)]] StructuredBuffer<InxParticleCollider> particle_colliders;
+[[vk::binding(2, 6)]] StructuredBuffer<uint> particle_collision_grid_offsets;
+[[vk::binding(3, 6)]] StructuredBuffer<uint> particle_collision_grid_collider_indices;
+[[vk::binding(4, 6)]] StructuredBuffer<float4> particle_collision_mesh_vertices;
+[[vk::binding(5, 6)]] StructuredBuffer<uint> particle_collision_mesh_indices;
+[[vk::binding(6, 6)]] StructuredBuffer<InxParticleCollisionBvhNode> particle_collision_mesh_bvh;
+struct ParticleSimulationControl {{ 
     uint any_view_visible;
     uint simulation_allowed;
     uint offscreen_policy;
     uint simulation_control_reserved;
-}} simulation_control;
-layout(std430, set = 3, binding = 0) buffer ParticleEmitterBurstQueues {{
-    uint emitter_burst_request_counts[];
-}};
-layout(std430, set = 3, binding = 1) readonly buffer ParticleEmitterSpawnMetadata {{
+ }};
+[[vk::binding(15, 0)]] StructuredBuffer<ParticleSimulationControl> simulation_control;
+[[vk::binding(0, 3)]] RWStructuredBuffer<Atomic<uint>> emitter_burst_request_counts;
+struct ParticleEmitterSpawnMetadata {{ 
     uint spawn_count;
     uint spawn_base_id;
     uint spawn_generation;
@@ -4811,53 +4838,46 @@ layout(std430, set = 3, binding = 1) readonly buffer ParticleEmitterSpawnMetadat
     uint spawn_dispatch_group_count_y;
     uint spawn_dispatch_group_count_z;
     uint spawn_metadata_reserved;
-}} emitter_spawn;
-layout(std430, set = 3, binding = 3) buffer ParticleEmitterPlayingRequests {{
-    uint emitter_playing_requests[];
-}};
-layout(std430, set = 3, binding = 4) readonly buffer ParticleEmitterPlayingStates {{
-    uint emitter_playing_states[];
-}};
-{data_interface_glsl}
+ }};
+[[vk::binding(1, 3)]] StructuredBuffer<ParticleEmitterSpawnMetadata> emitter_spawn;
+[[vk::binding(3, 3)]] RWStructuredBuffer<Atomic<uint>> emitter_playing_requests;
+[[vk::binding(4, 3)]] StructuredBuffer<uint> emitter_playing_states;
+{data_interface_slang}
 {push_constants}
-{perceptual_gradient_glsl}
-{ramp_parameter_glsl}
-{contact_glsl}
+{perceptual_gradient_slang}
+{ramp_parameter_slang}
+{contact_slang}
 
-const uint INX_EMITTER_SEED = {emitter_seed}u;
-const uint INX_GRAPH_EMITTER_INDEX = {int(emitter_index)}u;
-const uint INX_INVALID_INDEX = 0xffffffffu;
+static const uint INX_EMITTER_SEED = {emitter_seed}u;
+static const uint INX_GRAPH_EMITTER_INDEX = {int(emitter_index)}u;
+static const uint INX_INVALID_INDEX = 0xffffffffu;
 
 bool inx_current_emitter_playing() {{
     return emitter_playing_states[INX_GRAPH_EMITTER_INDEX] != 0u;
 }}
 
 void inx_request_emitter_playing(uint target_emitter_index, bool playing) {{
-    atomicExchange(
-        emitter_playing_requests[target_emitter_index],
-        playing ? 2u : 1u);
+    emitter_playing_requests[target_emitter_index].exchange(playing ? 2u : 1u);
 }}
 
 void inx_enqueue_burst(uint target_emitter_index, uint count) {{
     if (count == 0u) return;
-    uint observed = atomicAdd(emitter_burst_request_counts[target_emitter_index], 0u);
+    uint observed = emitter_burst_request_counts[target_emitter_index].add(0u);
     for (;;) {{
         uint desired = observed > 0xffffffffu - count
             ? 0xffffffffu
             : observed + count;
-        uint prior = atomicCompSwap(
-            emitter_burst_request_counts[target_emitter_index], observed, desired
-        );
+        uint prior = emitter_burst_request_counts[target_emitter_index].compareExchange(observed, desired);
         if (prior == observed) return;
         observed = prior;
     }}
 }}
 
 uint inx_pop_free() {{
-    uint observed = atomicAdd(counters.free_count, 0u);
+    uint observed = counters_words[0].add(0u);
     while (observed > 0u) {{
-        uint prior = atomicCompSwap(counters.free_count, observed, observed - 1u);
-        if (prior == observed) return free_slots[observed - 1u];
+        uint prior = counters_words[0].compareExchange(observed, observed - 1u);
+        if (prior == observed) return free_slots[observed - 1u].load();
         observed = prior;
     }}
     return INX_INVALID_INDEX;
@@ -4865,13 +4885,13 @@ uint inx_pop_free() {{
 
 uint inx_reserve_free_block(uint requested_count, out uint old_free_count) {{
     old_free_count = 0u;
+    old_free_count = 0u;
     if (requested_count == 0u) return 0u;
-    uint observed = atomicAdd(counters.free_count, 0u);
+    uint observed = counters_words[0].add(0u);
     uint attempt_limit = pc.capacity == 0xffffffffu ? 0xffffffffu : pc.capacity + 1u;
     for (uint attempt = 0u; attempt < attempt_limit && observed > 0u; ++attempt) {{
         uint accepted_count = min(requested_count, observed);
-        uint prior = atomicCompSwap(
-            counters.free_count, observed, observed - accepted_count);
+        uint prior = counters_words[0].compareExchange(observed, observed - accepted_count);
         if (prior == observed) {{
             old_free_count = observed;
             return accepted_count;
@@ -4882,34 +4902,34 @@ uint inx_reserve_free_block(uint requested_count, out uint old_free_count) {{
 }}
 
 void inx_push_free(uint particle_index) {{
-    uint destination = atomicAdd(counters.free_count, 1u);
-    if (destination < pc.capacity) free_slots[destination] = particle_index;
-    else atomicAdd(counters.free_count, 0xffffffffu);
+    uint destination = counters_words[0].add(1u);
+    if (destination < pc.capacity) free_slots[destination].store(particle_index);
+    else counters_words[0].add(0xffffffffu);
 }}
 
 uint inx_alive_count(uint slot) {{
-    return min(alive_control.alive_counts[min(slot, 1u)], pc.capacity);
+    return min(alive_control_words[0u + min(slot, 1u)].load(), pc.capacity);
 }}
 
 uint inx_alive_index(uint slot, uint index) {{
-    return slot == 0u ? alive_indices_a[index] : alive_indices_b[index];
+    return slot == 0u ? alive_indices_a[index].load() : alive_indices_b[index].load();
 }}
 
 bool inx_append_alive(uint slot, uint particle_index) {{
-    uint destination = atomicAdd(alive_control.alive_counts[min(slot, 1u)], 1u);
+    uint destination = alive_control_words[0u + min(slot, 1u)].add(1u);
     if (destination >= pc.capacity) {{
-        atomicAdd(alive_control.alive_counts[min(slot, 1u)], 0xffffffffu);
+        alive_control_words[0u + min(slot, 1u)].add(0xffffffffu);
         return false;
     }}
-    if (slot == 0u) alive_indices_a[destination] = particle_index;
-    else alive_indices_b[destination] = particle_index;
+    if (slot == 0u) alive_indices_a[destination].store(particle_index);
+    else alive_indices_b[destination].store(particle_index);
     return true;
 }}
 
 void inx_store_alive(uint slot, uint index, uint particle_index) {{
     if (index >= pc.capacity) return;
-    if (slot == 0u) alive_indices_a[index] = particle_index;
-    else alive_indices_b[index] = particle_index;
+    if (slot == 0u) alive_indices_a[index].store(particle_index);
+    else alive_indices_b[index].store(particle_index);
 }}
 
 uint inx_random_u32(uint node_seed, uint particle_id, uint generation, uint random_slot) {{
@@ -4934,7 +4954,7 @@ float inx_random_range(float low, float high, uint node_seed, uint random_slot, 
     return low + inx_random01(node_seed, random_slot, particle_id, generation) * (high - low);
 }}
 
-uint inx_noise_hash(uvec3 cell, uint seed) {{
+uint inx_noise_hash(uint3 cell, uint seed) {{
     uint value = cell.x * 0x8da6b343u;
     value ^= cell.y * 0xd8163841u;
     value ^= cell.z * 0xcb1ab31fu;
@@ -4944,148 +4964,150 @@ uint inx_noise_hash(uvec3 cell, uint seed) {{
     return value;
 }}
 
-float inx_noise_corner(ivec3 cell, uint seed) {{
-    return float(inx_noise_hash(uvec3(cell), seed) >> 8u) * (1.0 / 16777216.0);
+float inx_noise_corner(int3 cell, uint seed) {{
+    return float(inx_noise_hash(uint3(cell), seed) >> 8u) * (1.0 / 16777216.0);
 }}
 
-float inx_value_noise_3d(vec3 position, float frequency, uint seed) {{
-    vec3 scaled = position * frequency;
-    ivec3 base = ivec3(floor(scaled));
-    vec3 fraction = fract(scaled);
-    vec3 smooth_value = fraction * fraction * (vec3(3.0) - vec3(2.0) * fraction);
-    float z0y0 = mix(inx_noise_corner(base + ivec3(0, 0, 0), seed),
-                      inx_noise_corner(base + ivec3(1, 0, 0), seed), smooth_value.x);
-    float z0y1 = mix(inx_noise_corner(base + ivec3(0, 1, 0), seed),
-                      inx_noise_corner(base + ivec3(1, 1, 0), seed), smooth_value.x);
-    float z1y0 = mix(inx_noise_corner(base + ivec3(0, 0, 1), seed),
-                      inx_noise_corner(base + ivec3(1, 0, 1), seed), smooth_value.x);
-    float z1y1 = mix(inx_noise_corner(base + ivec3(0, 1, 1), seed),
-                      inx_noise_corner(base + ivec3(1, 1, 1), seed), smooth_value.x);
-    return mix(mix(z0y0, z0y1, smooth_value.y),
-               mix(z1y0, z1y1, smooth_value.y), smooth_value.z);
+float inx_value_noise_3d(float3 position, float frequency, uint seed) {{
+    float3 scaled = position * frequency;
+    int3 base = int3(floor(scaled));
+    float3 fraction = frac(scaled);
+    float3 smooth_value = fraction * fraction * (float3(3.0) - float3(2.0) * fraction);
+    float z0y0 = lerp(inx_noise_corner(base + int3(0, 0, 0), seed),
+                      inx_noise_corner(base + int3(1, 0, 0), seed), smooth_value.x);
+    float z0y1 = lerp(inx_noise_corner(base + int3(0, 1, 0), seed),
+                      inx_noise_corner(base + int3(1, 1, 0), seed), smooth_value.x);
+    float z1y0 = lerp(inx_noise_corner(base + int3(0, 0, 1), seed),
+                      inx_noise_corner(base + int3(1, 0, 1), seed), smooth_value.x);
+    float z1y1 = lerp(inx_noise_corner(base + int3(0, 1, 1), seed),
+                      inx_noise_corner(base + int3(1, 1, 1), seed), smooth_value.x);
+    return lerp(lerp(z0y0, z0y1, smooth_value.y),
+               lerp(z1y0, z1y1, smooth_value.y), smooth_value.z);
 }}
 
-vec3 inx_vector_noise_3d(vec3 position, float frequency, uint seed) {{
-    return vec3(
+float3 inx_vector_noise_3d(float3 position, float frequency, uint seed) {{
+    return float3(
         inx_value_noise_3d(position, frequency, seed),
         inx_value_noise_3d(position, frequency, seed ^ 0x9e3779b9u),
         inx_value_noise_3d(position, frequency, seed ^ 0x85ebca6bu)
-    ) * 2.0 - vec3(1.0);
+    ) * 2.0 - float3(1.0);
 }}
 
-vec2 inx_safe_normalize(vec2 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec2(0.0); }}
-vec3 inx_safe_normalize(vec3 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec3(0.0); }}
-vec4 inx_safe_normalize(vec4 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : vec4(0.0); }}
+float2 inx_safe_normalize(float2 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : float2(0.0); }}
+float3 inx_safe_normalize(float3 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : float3(0.0); }}
+float4 inx_safe_normalize(float4 value) {{ float length_value = length(value); return length_value > 0.0 ? value / length_value : float4(0.0); }}
 
-vec3 inx_target_position_velocity(
-    vec3 position,
-    vec3 velocity,
-    vec3 target,
+float3 inx_target_position_velocity(
+    float3 position,
+    float3 velocity,
+    float3 target,
     float speed,
     float responsiveness,
     float arrival_radius,
     float delta_time
 ) {{
-    vec3 offset = target - position;
+    float3 offset = target - position;
     float distance_to_target = length(offset);
-    vec3 direction = distance_to_target > 0.000001
+    float3 direction = distance_to_target > 0.000001
         ? offset / distance_to_target
-        : vec3(0.0);
+        : float3(0.0);
     float arrival = arrival_radius > 0.000001
         ? clamp(distance_to_target / arrival_radius, 0.0, 1.0)
         : 1.0;
-    vec3 desired_velocity = direction * max(speed, 0.0) * arrival;
+    float3 desired_velocity = direction * max(speed, 0.0) * arrival;
     float blend = 1.0 - exp(-max(responsiveness, 0.0) * max(delta_time, 0.0));
-    return mix(velocity, desired_velocity, clamp(blend, 0.0, 1.0));
+    return lerp(velocity, desired_velocity, clamp(blend, 0.0, 1.0));
 }}
 
-vec3 inx_collide_plane_position(vec3 position, vec3 velocity, vec3 point, vec3 normal,
+float3 inx_collide_plane_position(float3 position, float3 velocity, float3 point, float3 normal,
                                 float radius, float restitution, float friction) {{
-    vec3 n = inx_safe_normalize(normal);
+    float3 n = inx_safe_normalize(normal);
     float penetration = max(radius, 0.0) - dot(position - point, n);
     return penetration > 0.0 ? position + n * penetration : position;
 }}
 
-vec3 inx_collide_plane_velocity(vec3 position, vec3 velocity, vec3 point, vec3 normal,
+float3 inx_collide_plane_velocity(float3 position, float3 velocity, float3 point, float3 normal,
                                 float radius, float restitution, float friction) {{
-    vec3 n = inx_safe_normalize(normal);
+    float3 n = inx_safe_normalize(normal);
     float normal_speed = dot(velocity, n);
     bool collision = dot(position - point, n) < max(radius, 0.0) && normal_speed < 0.0;
     if (!collision) return velocity;
-    vec3 tangent_velocity = velocity - n * normal_speed;
+    float3 tangent_velocity = velocity - n * normal_speed;
     return tangent_velocity * (1.0 - clamp(friction, 0.0, 1.0))
          - n * normal_speed * clamp(restitution, 0.0, 1.0);
 }}
 
-vec3 inx_sphere_collision_normal(vec3 position, vec3 velocity, vec3 center) {{
-    vec3 delta = position - center;
+float3 inx_sphere_collision_normal(float3 position, float3 velocity, float3 center) {{
+    float3 delta = position - center;
     float distance_value = length(delta);
     if (distance_value > 1.0e-6) return delta / distance_value;
     float speed = length(velocity);
-    return speed > 1.0e-6 ? -velocity / speed : vec3(0.0, 1.0, 0.0);
+    return speed > 1.0e-6 ? -velocity / speed : float3(0.0, 1.0, 0.0);
 }}
 
-vec3 inx_collide_sphere_position(vec3 position, vec3 velocity, vec3 center,
+float3 inx_collide_sphere_position(float3 position, float3 velocity, float3 center,
                                  float sphere_radius, float particle_radius,
                                  float restitution, float friction) {{
-    vec3 n = inx_sphere_collision_normal(position, velocity, center);
+    float3 n = inx_sphere_collision_normal(position, velocity, center);
     float combined_radius = max(sphere_radius, 0.0) + max(particle_radius, 0.0);
     float penetration = combined_radius - length(position - center);
     return penetration > 0.0 ? position + n * penetration : position;
 }}
 
-vec3 inx_collide_sphere_velocity(vec3 position, vec3 velocity, vec3 center,
+float3 inx_collide_sphere_velocity(float3 position, float3 velocity, float3 center,
                                  float sphere_radius, float particle_radius,
                                  float restitution, float friction) {{
-    vec3 n = inx_sphere_collision_normal(position, velocity, center);
+    float3 n = inx_sphere_collision_normal(position, velocity, center);
     float normal_speed = dot(velocity, n);
     float combined_radius = max(sphere_radius, 0.0) + max(particle_radius, 0.0);
     bool collision = length(position - center) < combined_radius && normal_speed < 0.0;
     if (!collision) return velocity;
-    vec3 tangent_velocity = velocity - n * normal_speed;
+    float3 tangent_velocity = velocity - n * normal_speed;
     return tangent_velocity * (1.0 - clamp(friction, 0.0, 1.0))
          - n * normal_speed * clamp(restitution, 0.0, 1.0);
 }}
 
-ivec3 inx_collision_grid_cell(vec3 world_position) {{
-    vec3 relative = (world_position - inx_collision_scene.grid_min_inv_cell_size.xyz)
-                  * inx_collision_scene.grid_min_inv_cell_size.w;
-    return clamp(ivec3(floor(relative)), ivec3(0),
-                 ivec3(inx_collision_scene.grid_dimensions.xyz) - ivec3(1));
+int3 inx_collision_grid_cell(float3 world_position) {{
+    float3 relative = (world_position - inx_collision_scene[0].grid_min_inv_cell_size.xyz)
+                  * inx_collision_scene[0].grid_min_inv_cell_size.w;
+    return clamp(int3(floor(relative)), int3(0),
+                 int3(inx_collision_scene[0].grid_dimensions.xyz) - int3(1));
 }}
 
-uint inx_collision_grid_index(ivec3 cell) {{
-    uvec3 dimensions = inx_collision_scene.grid_dimensions.xyz;
+uint inx_collision_grid_index(int3 cell) {{
+    uint3 dimensions = inx_collision_scene[0].grid_dimensions.xyz;
     return uint(cell.x) + dimensions.x * (uint(cell.y) + dimensions.y * uint(cell.z));
 }}
 
-vec3 inx_particle_affine_point(InxParticleAffine transform_value, vec3 point_value) {{
-    vec4 homogeneous = vec4(point_value, 1.0);
-    return vec3(dot(transform_value.row0, homogeneous),
+float3 inx_particle_affine_point(InxParticleAffine transform_value, float3 point_value) {{
+    float4 homogeneous = float4(point_value, 1.0);
+    return float3(dot(transform_value.row0, homogeneous),
                 dot(transform_value.row1, homogeneous),
                 dot(transform_value.row2, homogeneous));
 }}
 
-mat3 inx_particle_affine_linear(InxParticleAffine transform_value) {{
-    return mat3(vec3(transform_value.row0.x, transform_value.row1.x, transform_value.row2.x),
-                vec3(transform_value.row0.y, transform_value.row1.y, transform_value.row2.y),
-                vec3(transform_value.row0.z, transform_value.row1.z, transform_value.row2.z));
+float3x3 inx_particle_affine_linear(InxParticleAffine transform_value) {{
+    return transpose(float3x3(float3(transform_value.row0.x, transform_value.row1.x, transform_value.row2.x),
+                float3(transform_value.row0.y, transform_value.row1.y, transform_value.row2.y),
+                float3(transform_value.row0.z, transform_value.row1.z, transform_value.row2.z)));
 }}
 
 float inx_collision_local_radius(InxParticleAffine world_to_collider, float world_radius) {{
-    mat3 linear = inx_particle_affine_linear(world_to_collider);
+    float3x3 linear = inx_particle_affine_linear(world_to_collider);
     float inverse_scale = max(length(linear[0]), max(length(linear[1]), length(linear[2])));
     return max(world_radius, 0.0) * inverse_scale;
 }}
 
-vec3 inx_collision_world_normal(InxParticleCollider collider, vec3 local_normal) {{
+float3 inx_collision_world_normal(InxParticleCollider collider, float3 local_normal) {{
     return inx_safe_normalize(
-        transpose(inx_particle_affine_linear(collider.world_to_collider)) * local_normal);
+        mul(transpose(inx_particle_affine_linear(collider.world_to_collider)), local_normal));
 }}
 
-bool inx_sweep_sphere(vec3 start_position, vec3 end_position, float radius,
-                      out float hit_time, out vec3 hit_normal) {{
-    vec3 displacement = end_position - start_position;
+bool inx_sweep_sphere(float3 start_position, float3 end_position, float radius,
+                      out float hit_time, out float3 hit_normal) {{
+    hit_time = float(0.0);
+    hit_normal = float3(0.0);
+    float3 displacement = end_position - start_position;
     float radius_squared = radius * radius;
     float start_distance = dot(start_position, start_position) - radius_squared;
     // Initial overlap is handled by the shape's penetration solver. Treating
@@ -5099,19 +5121,21 @@ bool inx_sweep_sphere(vec3 start_position, vec3 end_position, float radius,
     if (discriminant < 0.0) return false;
     float candidate = (-projected - sqrt(discriminant)) / displacement_squared;
     if (candidate < 0.0 || candidate > 1.0) return false;
-    vec3 point = start_position + displacement * candidate;
+    float3 point = start_position + displacement * candidate;
     hit_time = candidate;
     hit_normal = inx_safe_normalize(point);
     return true;
 }}
 
-bool inx_sweep_box(vec3 start_position, vec3 end_position, vec3 half_extent,
-                   out float hit_time, out vec3 hit_normal) {{
-    if (all(lessThanEqual(abs(start_position), half_extent))) return false;
-    vec3 displacement = end_position - start_position;
+bool inx_sweep_box(float3 start_position, float3 end_position, float3 half_extent,
+                   out float hit_time, out float3 hit_normal) {{
+    hit_time = float(0.0);
+    hit_normal = float3(0.0);
+    if (all((abs(start_position) <= half_extent))) return false;
+    float3 displacement = end_position - start_position;
     float entry_time = 0.0;
     float exit_time = 1.0;
-    vec3 entry_normal = vec3(0.0);
+    float3 entry_normal = float3(0.0);
     for (uint axis = 0u; axis < 3u; ++axis) {{
         if (abs(displacement[axis]) <= 1.0e-7) {{
             if (start_position[axis] < -half_extent[axis] ||
@@ -5131,7 +5155,7 @@ bool inx_sweep_box(vec3 start_position, vec3 end_position, vec3 half_extent,
         }}
         if (near_time > entry_time) {{
             entry_time = near_time;
-            entry_normal = vec3(0.0);
+            entry_normal = float3(0.0);
             entry_normal[axis] = normal_sign;
         }}
         exit_time = min(exit_time, far_time);
@@ -5144,26 +5168,28 @@ bool inx_sweep_box(vec3 start_position, vec3 end_position, vec3 half_extent,
     return true;
 }}
 
-bool inx_sweep_capsule(vec3 start_position, vec3 end_position, uint axis,
+bool inx_sweep_capsule(float3 start_position, float3 end_position, uint axis,
                        float half_segment, float radius,
-                       out float hit_time, out vec3 hit_normal) {{
-    vec3 segment_start = vec3(0.0);
-    vec3 segment_end = vec3(0.0);
+                       out float hit_time, out float3 hit_normal) {{
+    hit_time = float(0.0);
+    hit_normal = float3(0.0);
+    float3 segment_start = float3(0.0);
+    float3 segment_end = float3(0.0);
     segment_start[axis] = -half_segment;
     segment_end[axis] = half_segment;
-    vec3 capsule_axis = segment_end - segment_start;
+    float3 capsule_axis = segment_end - segment_start;
     float axis_length_squared = dot(capsule_axis, capsule_axis);
     if (axis_length_squared <= 1.0e-12)
         return inx_sweep_sphere(start_position, end_position, radius, hit_time, hit_normal);
 
     float start_axis_fraction = clamp(
         dot(start_position - segment_start, capsule_axis) / axis_length_squared, 0.0, 1.0);
-    vec3 start_closest = segment_start + capsule_axis * start_axis_fraction;
+    float3 start_closest = segment_start + capsule_axis * start_axis_fraction;
     if (dot(start_position - start_closest, start_position - start_closest) <= radius * radius)
         return false;
 
-    vec3 displacement = end_position - start_position;
-    vec3 from_segment_start = start_position - segment_start;
+    float3 displacement = end_position - start_position;
+    float3 from_segment_start = start_position - segment_start;
     float axis_dot_displacement = dot(capsule_axis, displacement);
     float axis_dot_origin = dot(capsule_axis, from_segment_start);
     float displacement_dot_origin = dot(displacement, from_segment_start);
@@ -5179,15 +5205,15 @@ bool inx_sweep_capsule(vec3 start_position, vec3 end_position, uint axis,
 
     bool found = false;
     float earliest = 2.0;
-    vec3 earliest_normal = vec3(0.0);
+    float3 earliest_normal = float3(0.0);
     float cylinder_discriminant = cylinder_b * cylinder_b - cylinder_a * cylinder_c;
     if (abs(cylinder_a) > 1.0e-12 && cylinder_discriminant >= 0.0) {{
         float candidate = (-cylinder_b - sqrt(cylinder_discriminant)) / cylinder_a;
         float axis_position = axis_dot_origin + candidate * axis_dot_displacement;
         if (candidate >= 0.0 && candidate <= 1.0 &&
             axis_position > 0.0 && axis_position < axis_length_squared) {{
-            vec3 point = start_position + displacement * candidate;
-            vec3 axis_point = segment_start + capsule_axis * (axis_position / axis_length_squared);
+            float3 point = start_position + displacement * candidate;
+            float3 axis_point = segment_start + capsule_axis * (axis_position / axis_length_squared);
             earliest = candidate;
             earliest_normal = inx_safe_normalize(point - axis_point);
             found = true;
@@ -5195,7 +5221,7 @@ bool inx_sweep_capsule(vec3 start_position, vec3 end_position, uint axis,
     }}
 
     float cap_time = 0.0;
-    vec3 cap_normal = vec3(0.0);
+    float3 cap_normal = float3(0.0);
     if (inx_sweep_sphere(start_position - segment_start, end_position - segment_start,
                          radius, cap_time, cap_normal) && cap_time < earliest) {{
         earliest = cap_time;
@@ -5214,21 +5240,21 @@ bool inx_sweep_capsule(vec3 start_position, vec3 end_position, uint axis,
     return true;
 }}
 
-vec3 inx_closest_point_triangle(vec3 point_value, vec3 a, vec3 b, vec3 c) {{
-    vec3 ab = b - a;
-    vec3 ac = c - a;
-    vec3 ap = point_value - a;
+float3 inx_closest_point_triangle(float3 point_value, float3 a, float3 b, float3 c) {{
+    float3 ab = b - a;
+    float3 ac = c - a;
+    float3 ap = point_value - a;
     float d1 = dot(ab, ap);
     float d2 = dot(ac, ap);
     if (d1 <= 0.0 && d2 <= 0.0) return a;
-    vec3 bp = point_value - b;
+    float3 bp = point_value - b;
     float d3 = dot(ab, bp);
     float d4 = dot(ac, bp);
     if (d3 >= 0.0 && d4 <= d3) return b;
     float vc = d1 * d4 - d3 * d2;
     if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0)
         return a + ab * (d1 / max(d1 - d3, 1.0e-12));
-    vec3 cp = point_value - c;
+    float3 cp = point_value - c;
     float d5 = dot(ab, cp);
     float d6 = dot(ac, cp);
     if (d6 >= 0.0 && d5 <= d6) return c;
@@ -5242,29 +5268,31 @@ vec3 inx_closest_point_triangle(vec3 point_value, vec3 a, vec3 b, vec3 c) {{
     return a + ab * (vb / denominator) + ac * (vc / denominator);
 }}
 
-bool inx_point_in_triangle(vec3 point_value, vec3 a, vec3 b, vec3 c, vec3 normal_value) {{
+bool inx_point_in_triangle(float3 point_value, float3 a, float3 b, float3 c, float3 normal_value) {{
     const float epsilon = -1.0e-5;
     return dot(cross(b - a, point_value - a), normal_value) >= epsilon &&
            dot(cross(c - b, point_value - b), normal_value) >= epsilon &&
            dot(cross(a - c, point_value - c), normal_value) >= epsilon;
 }}
 
-bool inx_sweep_segment_capsule(vec3 start_position, vec3 end_position, vec3 segment_start,
-                               vec3 segment_end, float radius,
-                               out float hit_time, out vec3 hit_normal) {{
-    vec3 capsule_axis = segment_end - segment_start;
+bool inx_sweep_segment_capsule(float3 start_position, float3 end_position, float3 segment_start,
+                               float3 segment_end, float radius,
+                               out float hit_time, out float3 hit_normal) {{
+    hit_time = float(0.0);
+    hit_normal = float3(0.0);
+    float3 capsule_axis = segment_end - segment_start;
     float axis_length_squared = dot(capsule_axis, capsule_axis);
     if (axis_length_squared <= 1.0e-12)
         return inx_sweep_sphere(start_position - segment_start, end_position - segment_start,
                                 radius, hit_time, hit_normal);
     float start_fraction = clamp(dot(start_position - segment_start, capsule_axis) /
                                  axis_length_squared, 0.0, 1.0);
-    vec3 start_closest = segment_start + capsule_axis * start_fraction;
+    float3 start_closest = segment_start + capsule_axis * start_fraction;
     if (dot(start_position - start_closest, start_position - start_closest) <= radius * radius)
         return false;
 
-    vec3 displacement = end_position - start_position;
-    vec3 origin = start_position - segment_start;
+    float3 displacement = end_position - start_position;
+    float3 origin = start_position - segment_start;
     float axis_dot_displacement = dot(capsule_axis, displacement);
     float axis_dot_origin = dot(capsule_axis, origin);
     float displacement_dot_origin = dot(displacement, origin);
@@ -5276,22 +5304,22 @@ bool inx_sweep_segment_capsule(vec3 start_position, vec3 end_position, vec3 segm
              - radius * radius * axis_length_squared;
     bool found = false;
     float earliest = 2.0;
-    vec3 earliest_normal = vec3(0.0);
+    float3 earliest_normal = float3(0.0);
     float discriminant = qb * qb - qa * qc;
     if (abs(qa) > 1.0e-12 && discriminant >= 0.0) {{
         float candidate = (-qb - sqrt(discriminant)) / qa;
         float axis_position = axis_dot_origin + candidate * axis_dot_displacement;
         if (candidate >= 0.0 && candidate <= 1.0 && axis_position > 0.0 &&
             axis_position < axis_length_squared) {{
-            vec3 center = start_position + displacement * candidate;
-            vec3 edge_point = segment_start + capsule_axis * (axis_position / axis_length_squared);
+            float3 center = start_position + displacement * candidate;
+            float3 edge_point = segment_start + capsule_axis * (axis_position / axis_length_squared);
             earliest = candidate;
             earliest_normal = inx_safe_normalize(center - edge_point);
             found = true;
         }}
     }}
     float candidate_time = 0.0;
-    vec3 candidate_normal = vec3(0.0);
+    float3 candidate_normal = float3(0.0);
     if (inx_sweep_sphere(start_position - segment_start, end_position - segment_start,
                          radius, candidate_time, candidate_normal) && candidate_time < earliest) {{
         earliest = candidate_time;
@@ -5310,27 +5338,29 @@ bool inx_sweep_segment_capsule(vec3 start_position, vec3 end_position, vec3 segm
     return true;
 }}
 
-bool inx_sweep_triangle(vec3 start_position, vec3 end_position, float radius,
-                        vec3 a, vec3 b, vec3 c,
-                        out float hit_time, out vec3 hit_normal) {{
-    vec3 raw_normal = cross(b - a, c - a);
+bool inx_sweep_triangle(float3 start_position, float3 end_position, float radius,
+                        float3 a, float3 b, float3 c,
+                        out float hit_time, out float3 hit_normal) {{
+    hit_time = float(0.0);
+    hit_normal = float3(0.0);
+    float3 raw_normal = cross(b - a, c - a);
     float normal_length = length(raw_normal);
     if (normal_length <= 1.0e-8) return false;
-    vec3 triangle_normal = raw_normal / normal_length;
-    vec3 displacement = end_position - start_position;
+    float3 triangle_normal = raw_normal / normal_length;
+    float3 displacement = end_position - start_position;
     float start_distance = dot(start_position - a, triangle_normal);
     float distance_delta = dot(displacement, triangle_normal);
     bool found = false;
     float earliest = 2.0;
-    vec3 earliest_normal = vec3(0.0);
+    float3 earliest_normal = float3(0.0);
     if (abs(distance_delta) > 1.0e-12) {{
         for (int side = -1; side <= 1; side += 2) {{
             float signed_radius = float(side) * radius;
             float candidate = (signed_radius - start_distance) / distance_delta;
             if (candidate < 0.0 || candidate > 1.0 || candidate >= earliest) continue;
-            vec3 center = start_position + displacement * candidate;
-            vec3 contact = center - triangle_normal * signed_radius;
-            vec3 oriented_normal = triangle_normal * float(side);
+            float3 center = start_position + displacement * candidate;
+            float3 contact = center - triangle_normal * signed_radius;
+            float3 oriented_normal = triangle_normal * float(side);
             if (inx_point_in_triangle(contact, a, b, c, triangle_normal) &&
                 dot(displacement, oriented_normal) < 0.0) {{
                 earliest = candidate;
@@ -5340,7 +5370,7 @@ bool inx_sweep_triangle(vec3 start_position, vec3 end_position, float radius,
         }}
     }}
     float edge_time = 0.0;
-    vec3 edge_normal = vec3(0.0);
+    float3 edge_normal = float3(0.0);
     if (inx_sweep_segment_capsule(start_position, end_position, a, b, radius,
                                   edge_time, edge_normal) && edge_time < earliest) {{
         earliest = edge_time; earliest_normal = edge_normal; found = true;
@@ -5359,21 +5389,23 @@ bool inx_sweep_triangle(vec3 start_position, vec3 end_position, float radius,
     return true;
 }}
 
-bool inx_mesh_node_overlaps_sweep(InxParticleCollisionBvhNode node, vec3 start_position,
-                                  vec3 end_position, float radius) {{
-    vec3 swept_min = min(start_position, end_position) - vec3(radius);
-    vec3 swept_max = max(start_position, end_position) + vec3(radius);
-    return !any(lessThan(swept_max, node.bounds_min.xyz)) &&
-           !any(greaterThan(swept_min, node.bounds_max.xyz));
+bool inx_mesh_node_overlaps_sweep(InxParticleCollisionBvhNode node, float3 start_position,
+                                  float3 end_position, float radius) {{
+    float3 swept_min = min(start_position, end_position) - float3(radius);
+    float3 swept_max = max(start_position, end_position) + float3(radius);
+    return !any((swept_max < node.bounds_min.xyz)) &&
+           !any((swept_min > node.bounds_max.xyz));
 }}
 
-bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_position,
-                        vec3 world_position, float world_radius,
-                        out vec3 corrected_world_position, out vec3 world_normal) {{
-    if (collider.geometry.w == 0u || collider.geometry.z >= inx_collision_scene.topology.z)
+bool inx_collision_mesh(InxParticleCollider collider, float3 previous_world_position,
+                        float3 world_position, float world_radius,
+                        out float3 corrected_world_position, out float3 world_normal) {{
+    corrected_world_position = float3(0.0);
+    world_normal = float3(0.0);
+    if (collider.geometry.w == 0u || collider.geometry.z >= inx_collision_scene[0].topology.z)
         return false;
-    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
-    vec3 local_previous =
+    float3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    float3 local_previous =
         inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
     float local_radius = inx_collision_local_radius(collider.world_to_collider, world_radius);
     // A cooked convex hull is a solid, while a triangle mesh is a surface.
@@ -5381,18 +5413,18 @@ bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_positi
     // for particles starting inside, including points far from the surface BVH.
     if ((collider.metadata.z & 4u) != 0u) {{
         InxParticleCollisionBvhNode root = particle_collision_mesh_bvh[collider.geometry.z];
-        if (all(greaterThanEqual(local_previous, root.bounds_min.xyz)) &&
-            all(lessThanEqual(local_previous, root.bounds_max.xyz))) {{
+        if (all((local_previous >= root.bounds_min.xyz)) &&
+            all((local_previous <= root.bounds_max.xyz))) {{
             bool start_inside = true;
             bool end_inside = true;
             float nearest_plane = -3.402823e38;
-            vec3 outward = vec3(0.0);
+            float3 outward = float3(0.0);
             for (uint triangle = 0u; triangle < collider.geometry.w; ++triangle) {{
                 uint first = collider.geometry.y + triangle * 3u;
-                vec3 a = particle_collision_mesh_vertices[particle_collision_mesh_indices[first]].xyz;
-                vec3 b = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 1u]].xyz;
-                vec3 c = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 2u]].xyz;
-                vec3 normal = inx_safe_normalize(cross(b - a, c - a));
+                float3 a = particle_collision_mesh_vertices[particle_collision_mesh_indices[first]].xyz;
+                float3 b = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 1u]].xyz;
+                float3 c = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 2u]].xyz;
+                float3 normal = inx_safe_normalize(cross(b - a, c - a));
                 float distance = dot(local_position - a, normal);
                 if (dot(local_previous - a, normal) > 0.0) {{ start_inside = false; break; }}
                 end_inside = end_inside && distance <= 0.0;
@@ -5412,14 +5444,14 @@ bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_positi
     stack[0] = collider.geometry.z;
     bool found_sweep = false;
     float earliest = 2.0;
-    vec3 earliest_normal = vec3(0.0);
+    float3 earliest_normal = float3(0.0);
     bool found_overlap = false;
     float closest_distance_squared = local_radius * local_radius;
-    vec3 closest_normal = vec3(0.0);
-    vec3 closest_surface = vec3(0.0);
+    float3 closest_normal = float3(0.0);
+    float3 closest_surface = float3(0.0);
     while (stack_size > 0u) {{
         uint node_index = stack[--stack_size];
-        if (node_index >= inx_collision_scene.topology.z) continue;
+        if (node_index >= inx_collision_scene[0].topology.z) continue;
         InxParticleCollisionBvhNode node = particle_collision_mesh_bvh[node_index];
         if (!inx_mesh_node_overlaps_sweep(node, local_previous, local_position, local_radius)) continue;
         if (node.metadata.w == 0u) {{
@@ -5430,25 +5462,25 @@ bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_positi
         }}
         for (uint triangle = 0u; triangle < node.metadata.w; ++triangle) {{
             uint first_index = node.metadata.z + triangle * 3u;
-            if (first_index + 2u >= inx_collision_scene.topology.y) continue;
+            if (first_index + 2u >= inx_collision_scene[0].topology.y) continue;
             uint ia = particle_collision_mesh_indices[first_index];
             uint ib = particle_collision_mesh_indices[first_index + 1u];
             uint ic = particle_collision_mesh_indices[first_index + 2u];
-            if (ia >= inx_collision_scene.topology.x || ib >= inx_collision_scene.topology.x ||
-                ic >= inx_collision_scene.topology.x) continue;
-            vec3 a = particle_collision_mesh_vertices[ia].xyz;
-            vec3 b = particle_collision_mesh_vertices[ib].xyz;
-            vec3 c = particle_collision_mesh_vertices[ic].xyz;
+            if (ia >= inx_collision_scene[0].topology.x || ib >= inx_collision_scene[0].topology.x ||
+                ic >= inx_collision_scene[0].topology.x) continue;
+            float3 a = particle_collision_mesh_vertices[ia].xyz;
+            float3 b = particle_collision_mesh_vertices[ib].xyz;
+            float3 c = particle_collision_mesh_vertices[ic].xyz;
             float candidate_time = 0.0;
-            vec3 candidate_normal = vec3(0.0);
+            float3 candidate_normal = float3(0.0);
             if (inx_sweep_triangle(local_previous, local_position, local_radius, a, b, c,
                                    candidate_time, candidate_normal) && candidate_time < earliest) {{
                 earliest = candidate_time;
                 earliest_normal = candidate_normal;
                 found_sweep = true;
             }}
-            vec3 surface = inx_closest_point_triangle(local_position, a, b, c);
-            vec3 delta = local_position - surface;
+            float3 surface = inx_closest_point_triangle(local_position, a, b, c);
+            float3 delta = local_position - surface;
             float distance_squared = dot(delta, delta);
             if (distance_squared < closest_distance_squared) {{
                 closest_distance_squared = distance_squared;
@@ -5460,13 +5492,13 @@ bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_positi
             }}
         }}
     }}
-    vec3 local_normal = vec3(0.0);
+    float3 local_normal = float3(0.0);
     if (found_sweep) {{
-        local_position = mix(local_previous, local_position, earliest);
+        local_position = lerp(local_previous, local_position, earliest);
         local_normal = earliest_normal;
     }} else if (found_overlap) {{
         local_normal = dot(closest_normal, closest_normal) > 0.0
-                         ? closest_normal : vec3(0.0, 1.0, 0.0);
+                         ? closest_normal : float3(0.0, 1.0, 0.0);
         local_position = closest_surface + local_normal * local_radius;
     }} else {{
         return false;
@@ -5476,37 +5508,39 @@ bool inx_collision_mesh(InxParticleCollider collider, vec3 previous_world_positi
     return true;
 }}
 
-float inx_rounded_box_distance(vec3 point, vec3 core, float radius) {{
-    vec3 signed_face = abs(point) - core;
-    vec3 outside = max(signed_face, vec3(0.0));
+float inx_rounded_box_distance(float3 point, float3 core, float radius) {{
+    float3 signed_face = abs(point) - core;
+    float3 outside = max(signed_face, float3(0.0));
     float scale = max(outside.x, max(outside.y, outside.z));
     float distance_value = scale > 0.0 ? scale * length(outside / scale) : 0.0;
     return distance_value + min(max(signed_face.x, max(signed_face.y, signed_face.z)), 0.0) - radius;
 }}
 
-vec3 inx_rounded_box_normal(vec3 point, vec3 core) {{
-    vec3 delta = point - clamp(point, -core, core);
+float3 inx_rounded_box_normal(float3 point, float3 core) {{
+    float3 delta = point - clamp(point, -core, core);
     float scale = max(abs(delta.x), max(abs(delta.y), abs(delta.z)));
     if (scale > 0.0) return normalize(delta / scale);
-    vec3 slack = core - abs(point);
+    float3 slack = core - abs(point);
     uint axis = slack.y < slack.x ? 1u : 0u;
     if (slack.z < slack[axis]) axis = 2u;
-    vec3 normal = vec3(0.0);
+    float3 normal = float3(0.0);
     normal[axis] = point[axis] < 0.0 ? -1.0 : 1.0;
     return normal;
 }}
 
-bool inx_sweep_rounded_box(vec3 start_position, vec3 end_position, vec3 core, float radius,
-                           out float hit_time, out vec3 hit_normal) {{
+bool inx_sweep_rounded_box(float3 start_position, float3 end_position, float3 core, float radius,
+                           out float hit_time, out float3 hit_normal) {{
+    hit_time = float(0.0);
+    hit_normal = float3(0.0);
     // Distance to the finite AABB core is quadratic on each interval between
     // its six slab crossings. Solve those intervals exactly, without time
     // stepping, a parallel epsilon, or a sharp outer-box approximation.
     hit_time = 0.0;
-    hit_normal = vec3(0.0);
+    hit_normal = float3(0.0);
     float scale = max(max(abs(start_position.x), max(abs(start_position.y), abs(start_position.z))),
                       max(max(core.x, max(core.y, core.z)), radius));
-    vec3 displacement = (end_position - start_position) / scale;
-    vec3 origin = start_position / scale;
+    float3 displacement = (end_position - start_position) / scale;
+    float3 origin = start_position / scale;
     core /= scale;
     radius /= scale;
     float breaks[8];
@@ -5534,10 +5568,10 @@ bool inx_sweep_rounded_box(vec3 start_position, vec3 end_position, vec3 core, fl
         float start = breaks[interval];
         float width = breaks[interval + 1u] - start;
         if (width <= 0.0) continue;
-        vec3 at_start = origin + start * displacement;
-        vec3 middle = origin + (start + .5 * width) * displacement;
-        vec3 offset = vec3(0.0);
-        vec3 velocity = vec3(0.0);
+        float3 at_start = origin + start * displacement;
+        float3 middle = origin + (start + .5 * width) * displacement;
+        float3 offset = float3(0.0);
+        float3 velocity = float3(0.0);
         for (uint axis = 0u; axis < 3u; ++axis) {{
             if (middle[axis] < -core[axis] || middle[axis] > core[axis]) {{
                 offset[axis] = at_start[axis] - (middle[axis] < 0.0 ? -core[axis] : core[axis]);
@@ -5547,17 +5581,17 @@ bool inx_sweep_rounded_box(vec3 start_position, vec3 end_position, vec3 core, fl
         float root = 0.0;
         float offset_scale = max(max(abs(offset.x), max(abs(offset.y), abs(offset.z))), radius);
         if (offset_scale > 0.0) {{
-            vec3 scaled_offset = offset / offset_scale;
+            float3 scaled_offset = offset / offset_scale;
             float scaled_radius = radius / offset_scale;
             float c = dot(scaled_offset, scaled_offset) - scaled_radius * scaled_radius;
             if (c > 0.0) {{
                 float velocity_scale = max(abs(velocity.x), max(abs(velocity.y), abs(velocity.z)));
                 if (velocity_scale == 0.0) continue;
-                vec3 scaled_velocity = velocity / velocity_scale;
+                float3 scaled_velocity = velocity / velocity_scale;
                 float aa = dot(scaled_velocity, scaled_velocity);
                 float bb = dot(scaled_offset, scaled_velocity);
                 if (bb >= 0.0) continue;
-                vec3 perpendicular = scaled_offset - scaled_velocity * (bb / aa);
+                float3 perpendicular = scaled_offset - scaled_velocity * (bb / aa);
                 float discriminant = aa * (scaled_radius * scaled_radius - dot(perpendicular, perpendicular));
                 if (discriminant < 0.0) continue;
                 root = (c / (-bb + sqrt(discriminant))) * offset_scale / velocity_scale;
@@ -5571,25 +5605,27 @@ bool inx_sweep_rounded_box(vec3 start_position, vec3 end_position, vec3 core, fl
     return false;
 }}
 
-bool inx_collision_box(InxParticleCollider collider, vec3 previous_world_position,
-                       vec3 world_position, float world_radius,
-                       out vec3 corrected_world_position, out vec3 world_normal) {{
-    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
-    vec3 local_previous =
+bool inx_collision_box(InxParticleCollider collider, float3 previous_world_position,
+                       float3 world_position, float world_radius,
+                       out float3 corrected_world_position, out float3 world_normal) {{
+    corrected_world_position = float3(0.0);
+    world_normal = float3(0.0);
+    float3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    float3 local_previous =
         inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
     float convex_radius = max(collider.shape.w, 0.0);
-    vec3 core = max(collider.shape.xyz * .5 - vec3(convex_radius), vec3(0.0));
+    float3 core = max(collider.shape.xyz * .5 - float3(convex_radius), float3(0.0));
     float radius = convex_radius + inx_collision_local_radius(collider.world_to_collider, world_radius);
-    vec3 local_normal = vec3(0.0);
+    float3 local_normal = float3(0.0);
     float hit_time = 0.0;
     bool start_inside = inx_rounded_box_distance(local_previous, core, radius) <= 0.0;
     if (!start_inside && inx_sweep_rounded_box(local_previous, local_position, core, radius,
                                                hit_time, local_normal)) {{
-        local_position = mix(local_previous, local_position, hit_time);
+        local_position = lerp(local_previous, local_position, hit_time);
     }} else if (inx_rounded_box_distance(local_position, core, radius) <= 0.0) {{
         local_normal = inx_rounded_box_normal(local_position, core);
-        vec3 closest = clamp(local_position, -core, core);
-        if (any(notEqual(closest, local_position))) {{
+        float3 closest = clamp(local_position, -core, core);
+        if (any((closest != local_position))) {{
             local_position = closest + radius * local_normal;
         }} else {{
             uint axis = abs(local_normal.y) > 0.0 ? 1u : abs(local_normal.z) > 0.0 ? 2u : 0u;
@@ -5603,27 +5639,29 @@ bool inx_collision_box(InxParticleCollider collider, vec3 previous_world_positio
     return true;
 }}
 
-bool inx_collision_sphere(InxParticleCollider collider, vec3 previous_world_position,
-                          vec3 world_position, float world_radius,
-                          out vec3 corrected_world_position, out vec3 world_normal) {{
-    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
-    vec3 local_previous =
+bool inx_collision_sphere(InxParticleCollider collider, float3 previous_world_position,
+                          float3 world_position, float world_radius,
+                          out float3 corrected_world_position, out float3 world_normal) {{
+    corrected_world_position = float3(0.0);
+    world_normal = float3(0.0);
+    float3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    float3 local_previous =
         inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
     float combined_radius = max(collider.shape.x, 0.0)
                           + inx_collision_local_radius(collider.world_to_collider, world_radius);
     float distance_value = length(local_position);
-    vec3 local_normal = vec3(0.0);
+    float3 local_normal = float3(0.0);
     float hit_time = 0.0;
     bool start_inside = dot(local_previous, local_previous) <= combined_radius * combined_radius;
     if (!start_inside &&
         inx_sweep_sphere(local_previous, local_position, combined_radius,
                          hit_time, local_normal)) {{
-        local_position = mix(local_previous, local_position, hit_time);
+        local_position = lerp(local_previous, local_position, hit_time);
     }} else if (distance_value < combined_radius) {{
         local_normal = distance_value > 1.0e-6
                            ? local_position / distance_value
                            : inx_safe_normalize(local_previous - local_position);
-        if (dot(local_normal, local_normal) == 0.0) local_normal = vec3(0.0, 1.0, 0.0);
+        if (dot(local_normal, local_normal) == 0.0) local_normal = float3(0.0, 1.0, 0.0);
         local_position = local_normal * combined_radius;
     }} else {{
         return false;
@@ -5633,22 +5671,24 @@ bool inx_collision_sphere(InxParticleCollider collider, vec3 previous_world_posi
     return true;
 }}
 
-bool inx_collision_capsule(InxParticleCollider collider, vec3 previous_world_position,
-                           vec3 world_position, float world_radius,
-                           out vec3 corrected_world_position, out vec3 world_normal) {{
-    vec3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
-    vec3 local_previous =
+bool inx_collision_capsule(InxParticleCollider collider, float3 previous_world_position,
+                           float3 world_position, float world_radius,
+                           out float3 corrected_world_position, out float3 world_normal) {{
+    corrected_world_position = float3(0.0);
+    world_normal = float3(0.0);
+    float3 local_position = inx_particle_affine_point(collider.world_to_collider, world_position);
+    float3 local_previous =
         inx_particle_affine_point(collider.previous_world_to_collider, previous_world_position);
     uint axis = min(uint(max(collider.shape.z, 0.0)), 2u);
     float radius = max(collider.shape.x, 0.0)
                  + inx_collision_local_radius(collider.world_to_collider, world_radius);
     float half_segment = max(collider.shape.y * 0.5 - collider.shape.x, 0.0);
-    vec3 closest = vec3(0.0);
+    float3 closest = float3(0.0);
     closest[axis] = clamp(local_position[axis], -half_segment, half_segment);
-    vec3 delta = local_position - closest;
+    float3 delta = local_position - closest;
     float distance_value = length(delta);
-    vec3 local_normal = vec3(0.0);
-    vec3 previous_closest = vec3(0.0);
+    float3 local_normal = float3(0.0);
+    float3 previous_closest = float3(0.0);
     previous_closest[axis] = clamp(local_previous[axis], -half_segment, half_segment);
     bool start_inside = dot(local_previous - previous_closest,
                             local_previous - previous_closest) <= radius * radius;
@@ -5656,9 +5696,9 @@ bool inx_collision_capsule(InxParticleCollider collider, vec3 previous_world_pos
     if (!start_inside &&
         inx_sweep_capsule(local_previous, local_position, axis, half_segment, radius,
                           hit_time, local_normal)) {{
-        local_position = mix(local_previous, local_position, hit_time);
+        local_position = lerp(local_previous, local_position, hit_time);
     }} else if (distance_value < radius) {{
-        local_normal = distance_value > 1.0e-6 ? delta / distance_value : vec3(0.0, 1.0, 0.0);
+        local_normal = distance_value > 1.0e-6 ? delta / distance_value : float3(0.0, 1.0, 0.0);
         local_position = closest + local_normal * radius;
     }} else {{
         return false;
@@ -5668,44 +5708,50 @@ bool inx_collision_capsule(InxParticleCollider collider, vec3 previous_world_pos
     return true;
 }}
 
-bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inout vec3 simulation_velocity,
+bool inx_collide_scene(uint particle_index, inout float3 simulation_position, inout float3 simulation_velocity,
                        float particle_radius, uint layer_mask, bool include_triggers,
                        float restitution_scale, float friction_scale,
-                       out vec3 simulation_collision_normal,
-                       out vec3 simulation_contact_point,
-                       out vec3 simulation_relative_velocity,
+                       out float3 simulation_collision_normal,
+                       out float3 simulation_contact_point,
+                       out float3 simulation_relative_velocity,
                        out float simulation_penetration,
                        out bool collision_is_trigger,
-                       out vec4 collision_material,
-                       out uvec2 collision_collider_id) {{
-    simulation_collision_normal = vec3(0.0);
+                       out float4 collision_material,
+                       out uint2 collision_collider_id) {{
+    simulation_collision_normal = float3(0.0);
+    simulation_contact_point = float3(0.0);
+    simulation_relative_velocity = float3(0.0);
+    simulation_penetration = float(0.0);
+    collision_is_trigger = false;
+    collision_material = float4(0.0);
+    simulation_collision_normal = float3(0.0);
     simulation_contact_point = simulation_position;
-    simulation_relative_velocity = vec3(0.0);
+    simulation_relative_velocity = float3(0.0);
     simulation_penetration = 0.0;
     collision_is_trigger = false;
-    collision_material = vec4(0.0);
-    collision_collider_id = uvec2(0u);
-    if (inx_collision_scene.collider_count == 0u || layer_mask == 0u) return false;
+    collision_material = float4(0.0);
+    collision_collider_id = uint2(0u);
+    if (inx_collision_scene[0].collider_count == 0u || layer_mask == 0u) return false;
 
-    vec3 world_position = (transforms.simulation_to_world * vec4(simulation_position, 1.0)).xyz;
-    vec3 world_velocity = (transforms.simulation_to_world * vec4(simulation_velocity, 0.0)).xyz;
+    float3 world_position = (mul(transforms.simulation_to_world, float4(simulation_position, 1.0))).xyz;
+    float3 world_velocity = (mul(transforms.simulation_to_world, float4(simulation_velocity, 0.0))).xyz;
     bool any_hit = false;
     bool primary_contact_set = false;
     uint contact_hit_order = 0u;
-    vec3 primary_world_normal = vec3(0.0, 1.0, 0.0);
-    vec3 primary_world_point = world_position;
-    vec3 primary_world_relative_velocity = vec3(0.0);
+    float3 primary_world_normal = float3(0.0, 1.0, 0.0);
+    float3 primary_world_point = world_position;
+    float3 primary_world_relative_velocity = float3(0.0);
     float primary_world_penetration = 0.0;
     bool primary_is_trigger = false;
-    vec4 primary_material = vec4(0.0);
-    uvec2 primary_collider_id = uvec2(0u);
-    float simulation_scale = max(length(transforms.simulation_to_world[0].xyz),
-                                 max(length(transforms.simulation_to_world[1].xyz),
-                                     length(transforms.simulation_to_world[2].xyz)));
+    float4 primary_material = float4(0.0);
+    uint2 primary_collider_id = uint2(0u);
+    float simulation_scale = max(length(transpose(transforms.simulation_to_world)[0].xyz),
+                                 max(length(transpose(transforms.simulation_to_world)[1].xyz),
+                                     length(transpose(transforms.simulation_to_world)[2].xyz)));
     float world_radius = max(particle_radius, 0.0) * simulation_scale;
-    vec3 previous_world_position = world_position - world_velocity * pc.delta_time;
-    ivec3 query_min = inx_collision_grid_cell(min(previous_world_position, world_position) - vec3(world_radius));
-    ivec3 query_max = inx_collision_grid_cell(max(previous_world_position, world_position) + vec3(world_radius));
+    float3 previous_world_position = world_position - world_velocity * pc.delta_time;
+    int3 query_min = inx_collision_grid_cell(min(previous_world_position, world_position) - float3(world_radius));
+    int3 query_max = inx_collision_grid_cell(max(previous_world_position, world_position) + float3(world_radius));
 
     // Gather before resolving so response order depends only on stable collider
     // identity, never broadphase cell traversal. The bounded private array is
@@ -5717,29 +5763,29 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
     for (int z = query_min.z; z <= query_max.z; ++z) {{
         for (int y = query_min.y; y <= query_max.y; ++y) {{
             for (int x = query_min.x; x <= query_max.x; ++x) {{
-                ivec3 cell = ivec3(x, y, z);
+                int3 cell = int3(x, y, z);
                 uint cell_index = inx_collision_grid_index(cell);
                 uint first = particle_collision_grid_offsets[cell_index];
                 uint last = particle_collision_grid_offsets[cell_index + 1u];
                 for (uint reference = first; reference < last; ++reference) {{
                     uint collider_index = particle_collision_grid_collider_indices[reference];
-                    if (collider_index >= inx_collision_scene.collider_count) continue;
+                    if (collider_index >= inx_collision_scene[0].collider_count) continue;
                     InxParticleCollider collider = particle_colliders[collider_index];
                     if ((collider.metadata.y & layer_mask) == 0u) continue;
                     if (!include_triggers && (collider.metadata.z & 1u) != 0u) continue;
 
-                    vec3 collider_swept_min =
+                    float3 collider_swept_min =
                         min(collider.previous_world_aabb_min.xyz, collider.world_aabb_min.xyz);
-                    vec3 collider_swept_max =
+                    float3 collider_swept_max =
                         max(collider.previous_world_aabb_max.xyz, collider.world_aabb_max.xyz);
-                    ivec3 collider_min_cell = inx_collision_grid_cell(collider_swept_min);
-                    if (any(notEqual(cell, max(query_min, collider_min_cell)))) continue;
-                    vec3 particle_swept_min =
-                        min(previous_world_position, world_position) - vec3(world_radius);
-                    vec3 particle_swept_max =
-                        max(previous_world_position, world_position) + vec3(world_radius);
-                    if (any(lessThan(particle_swept_max, collider_swept_min)) ||
-                        any(greaterThan(particle_swept_min, collider_swept_max)))
+                    int3 collider_min_cell = inx_collision_grid_cell(collider_swept_min);
+                    if (any((cell != max(query_min, collider_min_cell)))) continue;
+                    float3 particle_swept_min =
+                        min(previous_world_position, world_position) - float3(world_radius);
+                    float3 particle_swept_max =
+                        max(previous_world_position, world_position) + float3(world_radius);
+                    if (any((particle_swept_max < collider_swept_min)) ||
+                        any((particle_swept_min > collider_swept_max)))
                         continue;
 
                     uint insertion = candidate_count;
@@ -5750,7 +5796,7 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
                             duplicate = true;
                             break;
                         }}
-                        uvec2 existing_id = particle_colliders[existing_index].identity.xy;
+                        uint2 existing_id = particle_colliders[existing_index].identity.xy;
                         bool lower_identity = collider.identity.y < existing_id.y ||
                             (collider.identity.y == existing_id.y &&
                              collider.identity.x < existing_id.x);
@@ -5765,7 +5811,7 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
                         ++candidate_count;
                     }} else {{
                         if ((pc.diagnostic_flags & 1u) != 0u)
-                            atomicAdd(counters.collision_candidate_overflow_count, 1u);
+                            counters_words[12].add(1u);
                         if (insertion < candidate_capacity) {{
                             for (uint slot = candidate_capacity - 1u; slot > insertion; --slot)
                                 candidate_indices[slot] = candidate_indices[slot - 1u];
@@ -5784,8 +5830,8 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
         uint collider_index = candidate_indices[candidate];
         InxParticleCollider collider = particle_colliders[collider_index];
 
-        vec3 corrected_world_position = world_position;
-        vec3 world_normal = vec3(0.0, 1.0, 0.0);
+        float3 corrected_world_position = world_position;
+        float3 world_normal = float3(0.0, 1.0, 0.0);
         bool hit = collider.metadata.x == 0u
                                    ? inx_collision_box(collider, previous_world_position,
                                                        world_position, world_radius,
@@ -5808,18 +5854,18 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
         any_hit = true;
         bool is_trigger = (collider.metadata.z & 1u) != 0u;
         if ((pc.diagnostic_flags & 1u) != 0u) {{
-            atomicAdd(counters.collision_hit_count, 1u);
+            counters_words[4].add(1u);
             if (is_trigger)
-                atomicAdd(counters.collision_trigger_count, 1u);
+                counters_words[6].add(1u);
             else
-                atomicAdd(counters.collision_response_count, 1u);
+                counters_words[5].add(1u);
         }}
-        vec3 surface_point = corrected_world_position - world_normal * world_radius;
-        vec3 surface_velocity = collider.linear_velocity.xyz +
+        float3 surface_point = corrected_world_position - world_normal * world_radius;
+        float3 surface_velocity = collider.linear_velocity.xyz +
             cross(collider.angular_velocity.xyz, surface_point - collider.center_of_mass.xyz);
-        vec3 relative_velocity = world_velocity - surface_velocity;
+        float3 relative_velocity = world_velocity - surface_velocity;
         float penetration = length(corrected_world_position - world_position);
-        uvec2 collider_id = collider.identity.xy;
+        uint2 collider_id = collider.identity.xy;
         bool lower_identity = collider_id.y < primary_collider_id.y ||
             (collider_id.y == primary_collider_id.y &&
              collider_id.x < primary_collider_id.x);
@@ -5839,7 +5885,7 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
         world_position = corrected_world_position;
         float normal_speed = dot(relative_velocity, world_normal);
         if (normal_speed < 0.0) {{
-            vec3 tangent_velocity = relative_velocity - world_normal * normal_speed;
+            float3 tangent_velocity = relative_velocity - world_normal * normal_speed;
             float friction = clamp(collider.material.x * max(friction_scale, 0.0), 0.0, 1.0);
             float restitution = clamp(collider.material.y * max(restitution_scale, 0.0), 0.0, 1.0);
             relative_velocity = tangent_velocity * (1.0 - friction)
@@ -5847,28 +5893,26 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
             world_velocity = relative_velocity + surface_velocity;
             if ((pc.diagnostic_flags & 1u) != 0u) {{
                 float outward_speed = max(dot(relative_velocity, world_normal), 0.0);
-                vec3 response_tangent =
+                float3 response_tangent =
                     relative_velocity - world_normal * dot(relative_velocity, world_normal);
-                atomicMax(counters.collision_max_outward_speed_bits,
-                          floatBitsToUint(outward_speed));
-                atomicMax(counters.collision_max_tangent_speed_bits,
-                          floatBitsToUint(length(response_tangent)));
+                counters_words[10].max(asuint(outward_speed));
+                counters_words[11].max(asuint(length(response_tangent)));
             }}
         }}
     }}
-    simulation_position = (transforms.world_to_simulation * vec4(world_position, 1.0)).xyz;
-    simulation_velocity = (transforms.world_to_simulation * vec4(world_velocity, 0.0)).xyz;
+    simulation_position = (mul(transforms.world_to_simulation, float4(world_position, 1.0))).xyz;
+    simulation_velocity = (mul(transforms.world_to_simulation, float4(world_velocity, 0.0))).xyz;
     if (primary_contact_set) {{
-        vec3 transformed_normal =
-            transpose(mat3(transforms.simulation_to_world)) * primary_world_normal;
+        float3 transformed_normal =
+            mul(transpose(float3x3(transforms.simulation_to_world)), primary_world_normal);
         float normal_length = length(transformed_normal);
         simulation_collision_normal = normal_length > 1.0e-6
                                           ? transformed_normal / normal_length
-                                          : vec3(0.0, 1.0, 0.0);
+                                          : float3(0.0, 1.0, 0.0);
         simulation_contact_point =
-            (transforms.world_to_simulation * vec4(primary_world_point, 1.0)).xyz;
+            (mul(transforms.world_to_simulation, float4(primary_world_point, 1.0))).xyz;
         simulation_relative_velocity =
-            (transforms.world_to_simulation * vec4(primary_world_relative_velocity, 0.0)).xyz;
+            (mul(transforms.world_to_simulation, float4(primary_world_relative_velocity, 0.0))).xyz;
         simulation_penetration = primary_world_penetration / max(simulation_scale, 1.0e-6);
         collision_is_trigger = primary_is_trigger;
         collision_material = primary_material;
@@ -5877,88 +5921,90 @@ bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inou
     return any_hit;
 }}
 
-vec3 inx_shape_random(uvec3 slots, uint particle_id, uint generation) {{
-    return vec3(inx_random01(0u, slots.x, particle_id, generation),
+float3 inx_shape_random(uint3 slots, uint particle_id, uint generation) {{
+    return float3(inx_random01(0u, slots.x, particle_id, generation),
                 inx_random01(0u, slots.y, particle_id, generation),
                 inx_random01(0u, slots.z, particle_id, generation));
 }}
 
-vec3 inx_shape_direction(uint kind, float angle_degrees, uvec3 slots, uint particle_id, uint generation) {{
-    if (kind == 0u) return vec3(0.0, 0.0, 1.0);
-    vec3 random_value = inx_shape_random(slots, particle_id, generation);
+float3 inx_shape_direction(uint kind, float angle_degrees, uint3 slots, uint particle_id, uint generation) {{
+    if (kind == 0u) return float3(0.0, 0.0, 1.0);
+    float3 random_value = inx_shape_random(slots, particle_id, generation);
     float cosine_limit = kind == 3u ? cos(radians(angle_degrees)) : -1.0;
-    float z = mix(cosine_limit, 1.0, random_value.x);
+    float z = lerp(cosine_limit, 1.0, random_value.x);
     float phi = random_value.y * 6.283185307179586;
     float radial = sqrt(max(0.0, 1.0 - z * z));
-    return vec3(cos(phi) * radial, sin(phi) * radial, z);
+    return float3(cos(phi) * radial, sin(phi) * radial, z);
 }}
 
-vec3 inx_sample_shape_direction(uint kind, float radius, float angle_degrees, vec3 dimensions, uvec3 slots, uint particle_id, uint generation) {{
+float3 inx_sample_shape_direction(uint kind, float radius, float angle_degrees, float3 dimensions, uint3 slots, uint particle_id, uint generation) {{
     return inx_shape_direction(kind, angle_degrees, slots, particle_id, generation);
 }}
 
-vec3 inx_sample_shape_position(uint kind, float radius, float angle_degrees, vec3 dimensions, uvec3 slots, uint particle_id, uint generation) {{
-    vec3 random_value = inx_shape_random(slots, particle_id, generation);
-    if (kind == 0u) return vec3(0.0);
-    if (kind == 2u) return (random_value - vec3(0.5)) * dimensions;
+float3 inx_sample_shape_position(uint kind, float radius, float angle_degrees, float3 dimensions, uint3 slots, uint particle_id, uint generation) {{
+    float3 random_value = inx_shape_random(slots, particle_id, generation);
+    if (kind == 0u) return float3(0.0);
+    if (kind == 2u) return (random_value - float3(0.5)) * dimensions;
     if (kind == 3u) {{
         float radial = sqrt(random_value.x) * radius;
         float phi = random_value.y * 6.283185307179586;
-        return vec3(cos(phi) * radial, sin(phi) * radial, 0.0);
+        return float3(cos(phi) * radial, sin(phi) * radial, 0.0);
     }}
     return inx_shape_direction(kind, angle_degrees, slots, particle_id, generation) * (pow(random_value.z, 1.0 / 3.0) * radius);
 }}
 
-#ifdef INX_WEBGPU
 bool inx_finite(float value) {{ return value == value && abs(value) <= 3.402823466e38; }}
-bool inx_finite(vec2 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec2(3.402823466e38))); }}
-bool inx_finite(vec3 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec3(3.402823466e38))); }}
-bool inx_finite(vec4 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec4(3.402823466e38))); }}
-#else
-bool inx_finite(float value) {{ return !isnan(value) && !isinf(value); }}
-bool inx_finite(vec2 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
-bool inx_finite(vec3 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
-bool inx_finite(vec4 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
-#endif
+bool inx_finite(float2 value) {{ return all((value == value)) && all((abs(value) <= float2(3.402823466e38))); }}
+bool inx_finite(float3 value) {{ return all((value == value)) && all((abs(value) <= float3(3.402823466e38))); }}
+bool inx_finite(float4 value) {{ return all((value == value)) && all((abs(value) <= float4(3.402823466e38))); }}
+
 """
+    )
 
 
 def _bootstrap_main(event_type_count: int) -> str:
     return """
-void main() {
-    uint index = gl_GlobalInvocationID.x;
-    if (index < INX_EVENT_COUNTER_COUNTu) counters.event_counters[index] = 0u;
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
+    uint index = inx_dispatch_id.x;
+    if (index < INX_EVENT_COUNTER_COUNTu) counters_words[13u + index].store(0u);
     if (index >= pc.capacity) return;
     states[index].lifecycle_flags = 0u;
     states[index].spawn_generation = 0u;
     states[index].update_resume_step = 0xffffffffu;
     states[index].rendering_resume_step = 0xffffffffu;
-    free_slots[index] = index;
+    free_slots[index].store(index);
     if (index == 0u) {
-        counters.free_count = pc.capacity;
-        counters.visible_count = 0u;
-        counters.dropped_count = 0u;
-        counters.reserved_count = 0u;
-        counters.collision_hit_count = 0u;
-        counters.collision_response_count = 0u;
-        counters.collision_trigger_count = 0u;
-        counters.collision_enter_count = 0u;
-        counters.collision_stay_count = 0u;
-        counters.collision_exit_count = 0u;
-        counters.collision_max_outward_speed_bits = 0u;
-        counters.collision_max_tangent_speed_bits = 0u;
-        counters.collision_candidate_overflow_count = 0u;
-        indirect_args.vertex_count = 6u;
-        indirect_args.instance_count = 0u;
-        indirect_args.first_vertex = 0u;
-        indirect_args.first_instance = 0u;
-        alive_control.alive_counts[0] = 0u;
-        alive_control.alive_counts[1] = 0u;
-        alive_dispatch_args[0] = uvec4(0u, 1u, 1u, 0u);
-        alive_dispatch_args[1] = uvec4(0u, 1u, 1u, 0u);
+        counters_words[0].store(pc.capacity);
+        counters_words[1].store(0u);
+        counters_words[2].store(0u);
+        counters_words[3].store(0u);
+        counters_words[4].store(0u);
+        counters_words[5].store(0u);
+        counters_words[6].store(0u);
+        counters_words[7].store(0u);
+        counters_words[8].store(0u);
+        counters_words[9].store(0u);
+        counters_words[10].store(0u);
+        counters_words[11].store(0u);
+        counters_words[12].store(0u);
+        indirect_args_words[0].store(6u);
+        indirect_args_words[1].store(0u);
+        indirect_args_words[2].store(0u);
+        indirect_args_words[3].store(0u);
+        alive_control_words[0u + 0].store(0u);
+        alive_control_words[0u + 1].store(0u);
+        alive_dispatch_args[0] = uint4(0u, 1u, 1u, 0u);
+        alive_dispatch_args[1] = uint4(0u, 1u, 1u, 0u);
     }
 }
-""".replace("INX_EVENT_COUNTER_COUNT", str(event_type_count * 3))
+""".replace(
+        "INX_EVENT_COUNTER_COUNT", str(event_type_count * 3)
+    )
 
 
 def _init_main(
@@ -5969,13 +6015,18 @@ def _init_main(
     id_field = next(field for stable, _type, field in fields if stable == "builtin.id")
     finite = _finite_state_check(emitter.init, fields)
     return f"""
-void main() {{
-    uint invocation = gl_GlobalInvocationID.x;
-    uint group_first_invocation = invocation - gl_LocalInvocationIndex;
-    if (gl_LocalInvocationIndex == 0u) {{
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {{
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
+    uint invocation = inx_dispatch_id.x;
+    uint group_first_invocation = invocation - inx_group_index;
+    if (inx_group_index == 0u) {{
         uint authoritative_spawn_count = pc.reserved != 0u
             ? pc.invocation_count
-            : emitter_spawn.spawn_count;
+            : emitter_spawn[0].spawn_count;
         uint requested_count = 0u;
         // Spawn Prepare is the authority for this frame. Rechecking mutable
         // play/simulation state here can discard a burst that was already
@@ -5983,30 +6034,30 @@ void main() {{
         // without Spawn Prepare explicitly select the push-constant schedule.
         if (group_first_invocation < authoritative_spawn_count) {{
             requested_count = min(
-                gl_WorkGroupSize.x,
+                uint3(256, 1, 1).x,
                 authoritative_spawn_count - group_first_invocation);
         }}
         inx_particle_init_accepted_count = inx_reserve_free_block(
             requested_count, inx_particle_init_old_free_count);
-        atomicAdd(counters.reserved_count, inx_particle_init_accepted_count);
+        counters_words[3].add(inx_particle_init_accepted_count);
         uint dropped_count = requested_count - inx_particle_init_accepted_count;
         if (dropped_count > 0u)
-            atomicAdd(counters.dropped_count, dropped_count);
+            counters_words[2].add(dropped_count);
     }}
-    barrier();
-    if (gl_LocalInvocationIndex >= inx_particle_init_accepted_count) return;
+    GroupMemoryBarrierWithGroupSync();
+    if (inx_group_index >= inx_particle_init_accepted_count) return;
     uint particle_index = free_slots[
-        inx_particle_init_old_free_count - 1u - gl_LocalInvocationIndex];
+        inx_particle_init_old_free_count - 1u - inx_group_index].load();
     ParticleState state = states[particle_index];
     state.lifecycle_flags = INX_PARTICLE_ALIVE;
     state.update_resume_step = 0xffffffffu;
     state.rendering_resume_step = 0xffffffffu;
     uint authoritative_spawn_base_id = pc.reserved != 0u
         ? pc.spawn_base_id
-        : emitter_spawn.spawn_base_id;
+        : emitter_spawn[0].spawn_base_id;
     uint authoritative_spawn_generation = pc.reserved != 0u
         ? pc.spawn_generation
-        : emitter_spawn.spawn_generation;
+        : emitter_spawn[0].spawn_generation;
     uint particle_id = authoritative_spawn_base_id + invocation;
     state.{id_field} = particle_id;
     state.spawn_generation = authoritative_spawn_generation + uint(particle_id < authoritative_spawn_base_id);
@@ -6015,7 +6066,7 @@ void main() {{
 {body}
     bool initialized_state_finite = ({finite});
     particle_alive = particle_alive && initialized_state_finite;
-    if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);
+    if (!initialized_state_finite) counters_words[2].add(1u);
     if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
     // Init only consumes free slots. Returning a rejected slot here could
     // overwrite a different workgroup's reservation before it reads the slot.
@@ -6026,7 +6077,7 @@ void main() {{
     if (pc.use_alive_list != 0u && !inx_append_alive(pc.alive_read_slot, particle_index)) {{
         state.lifecycle_flags = INX_PARTICLE_RECYCLE_PENDING;
         states[particle_index] = state;
-        atomicAdd(counters.dropped_count, 1u);
+        counters_words[2].add(1u);
     }}
 }}
 """
@@ -6034,39 +6085,9 @@ void main() {{
 
 def _alive_compact_tail(candidate: str, particle_index: str) -> str:
     return f"""
-#ifdef INX_WEBGPU
-    if ({candidate}) {{
-        uint inx_particle_alive_output = atomicAdd(
-            alive_control.alive_counts[pc.alive_write_slot], 1u);
-        inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
-    }}
-#else
-    uvec4 inx_particle_alive_mask = subgroupBallot({candidate});
-    uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
-        inx_particle_alive_mask);
-    if (subgroupElect())
-        inx_particle_alive_subgroup_counts[gl_SubgroupID] =
-            subgroupBallotBitCount(inx_particle_alive_mask);
-    barrier();
-    uint inx_particle_alive_subgroup_count = min(
-        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
-    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg)
-        inx_particle_alive_local_index += inx_particle_alive_subgroup_counts[inx_sg];
-    if (gl_LocalInvocationIndex == 0u) {{
-        inx_particle_alive_local_count = 0u;
-        for (uint inx_sg = 0u; inx_sg < inx_particle_alive_subgroup_count; ++inx_sg)
-            inx_particle_alive_local_count += inx_particle_alive_subgroup_counts[inx_sg];
-        inx_particle_alive_group_base = atomicAdd(
-            alive_control.alive_counts[pc.alive_write_slot],
-            inx_particle_alive_local_count);
-    }}
-    barrier();
-    if ({candidate}) {{
-        uint inx_particle_alive_output =
-            inx_particle_alive_group_base + inx_particle_alive_local_index;
-        inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
-    }}
-#endif
+    uint inx_alive_output = inx_reserve_active(alive_control_words[pc.alive_write_slot], {candidate});
+    if ({candidate})
+        inx_store_alive(pc.alive_write_slot, inx_alive_output, {particle_index});
 """
 
 
@@ -6076,10 +6097,17 @@ def _update_main(
     fields: tuple[tuple[str, TypeRef, str], ...],
 ) -> str:
     finite = _finite_state_check(emitter.update, fields)
-    alive_compact = _alive_compact_tail("inx_particle_active_candidate", "particle_index")
+    alive_compact = _alive_compact_tail(
+        "inx_particle_active_candidate", "particle_index"
+    )
     return f"""
-void main() {{
-    uint invocation = gl_GlobalInvocationID.x;
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {{
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
+    uint invocation = inx_dispatch_id.x;
     uint input_count = pc.use_alive_list != 0u
         ? inx_alive_count(pc.alive_read_slot)
         : pc.capacity;
@@ -6089,7 +6117,7 @@ void main() {{
             ? inx_alive_index(pc.alive_read_slot, invocation)
             : invocation)
         : 0u;
-    ParticleState state;
+    ParticleState state = {{}};
     bool particle_alive = false;
     bool particle_was_alive = false;
     bool particle_pending_recycle = false;
@@ -6101,7 +6129,7 @@ void main() {{
         particle_pending_recycle = (state.lifecycle_flags & INX_PARTICLE_RECYCLE_PENDING) != 0u;
         bool run_update = particle_alive
             && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u
-            && simulation_control.simulation_allowed != 0u
+            && simulation_control[0].simulation_allowed != 0u
             && inx_current_emitter_playing();
         if (run_update) {{
 {body}
@@ -6120,32 +6148,37 @@ void main() {{
 
 def _render_reset_main() -> str:
     return """
-void main() {
-    if (gl_GlobalInvocationID.x != 0u) return;
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
+    if (inx_dispatch_id.x != 0u) return;
     if ((pc.diagnostic_flags & 8u) != 0u)
-        alive_control.alive_counts[pc.alive_write_slot] = 0u;
+        alive_control_words[0u + pc.alive_write_slot].store(0u);
     uint alive_count = pc.use_alive_list != 0u
         ? inx_alive_count(pc.alive_read_slot)
         : pc.capacity;
-    alive_dispatch_args[pc.alive_read_slot] = uvec4(
+    alive_dispatch_args[pc.alive_read_slot] = uint4(
         (alive_count + 255u) / 256u, 1u, 1u, 0u);
     if ((pc.diagnostic_flags & 2u) != 0u) {
-        counters.collision_hit_count = 0u;
-        counters.collision_response_count = 0u;
-        counters.collision_trigger_count = 0u;
-        counters.collision_enter_count = 0u;
-        counters.collision_stay_count = 0u;
-        counters.collision_exit_count = 0u;
-        counters.collision_max_outward_speed_bits = 0u;
-        counters.collision_max_tangent_speed_bits = 0u;
-        counters.collision_candidate_overflow_count = 0u;
+        counters_words[4].store(0u);
+        counters_words[5].store(0u);
+        counters_words[6].store(0u);
+        counters_words[7].store(0u);
+        counters_words[8].store(0u);
+        counters_words[9].store(0u);
+        counters_words[10].store(0u);
+        counters_words[11].store(0u);
+        counters_words[12].store(0u);
     }
-    if (simulation_control.simulation_allowed == 0u) return;
-    counters.visible_count = 0u;
-    indirect_args.vertex_count = 6u;
-    indirect_args.instance_count = 0u;
-    indirect_args.first_vertex = 0u;
-    indirect_args.first_instance = 0u;
+    if (simulation_control[0].simulation_allowed == 0u) return;
+    counters_words[1].store(0u);
+    indirect_args_words[0].store(6u);
+    indirect_args_words[1].store(0u);
+    indirect_args_words[2].store(0u);
+    indirect_args_words[3].store(0u);
 }
 """
 
@@ -6159,159 +6192,58 @@ def _render_instance_write(
     rotation = exports["builtin.rotation"]
     age = exports["builtin.age"]
     lifetime = exports["builtin.lifetime"]
-    orientation = exports.get("builtin.orientation", "vec3(0.0)")
-    scale = exports.get("builtin.scale", "vec3(1.0)")
+    orientation = exports.get("builtin.orientation", "float3(0.0)")
+    scale = exports.get("builtin.scale", "float3(1.0)")
     particle_id = exports["builtin.id"]
     ribbon_strip_id = exports.get("builtin.ribbon_strip_id", "0u")
     ribbon_order = exports.get("builtin.ribbon_order", particle_id)
     ribbon_break = exports.get("builtin.ribbon_break", "false")
     flipbook_frame = exports.get("builtin.flipbook_frame", "0.0")
     velocity = exports["builtin.velocity"]
-    world_position = f"(transforms.simulation_to_world * vec4({position}, 1.0)).xyz"
-    world_velocity = f"(transforms.simulation_to_world * vec4({velocity}, 0.0)).xyz"
-    world_scale = (
-        "vec3(length(transforms.simulation_to_world[0].xyz), "
-        "length(transforms.simulation_to_world[1].xyz), "
-        "length(transforms.simulation_to_world[2].xyz))"
+    world_position = (
+        f"(mul(transforms.simulation_to_world, float4({position}, 1.0))).xyz"
     )
+    world_velocity = (
+        f"(mul(transforms.simulation_to_world, float4({velocity}, 0.0))).xyz"
+    )
+    world_scale = "float3(length(transpose(transforms.simulation_to_world)[0].xyz), length(transpose(transforms.simulation_to_world)[1].xyz), length(transpose(transforms.simulation_to_world)[2].xyz))"
     return f"""
             ParticleRenderInstance previous_instance = instances[{particle_index}];
             bool history_valid = previous_instance.ribbon_data.w == {particle_id} &&
-                floatBitsToUint(previous_instance.previous_position_history.w) == state.spawn_generation;
+                asuint(previous_instance.previous_position_history.w) == state.spawn_generation;
             float visibility_radius = abs({size}) * max(
                 max(abs((({scale}) * {world_scale}).x), abs((({scale}) * {world_scale}).y)),
                 abs((({scale}) * {world_scale}).z)) * 1.41421356237;
-            instances[{particle_index}].position_size = vec4({world_position}, {size});
-            visibility[{particle_index}].position_radius = vec4({world_position}, visibility_radius);
+            instances[{particle_index}].position_size = float4({world_position}, {size});
+            visibility[{particle_index}].position_radius = float4({world_position}, visibility_radius);
             instances[{particle_index}].color = {color};
-            instances[{particle_index}].rotation_custom = vec4({rotation}, {orientation});
+            instances[{particle_index}].rotation_custom = float4({rotation}, {orientation});
             float normalized_age = clamp(({age}) / max(({lifetime}), 0.000001), 0.0, 1.0);
-            instances[{particle_index}].scale_custom = vec4(({scale}) * {world_scale}, normalized_age);
-            instances[{particle_index}].ribbon_data = uvec4(
+            instances[{particle_index}].scale_custom = float4(({scale}) * {world_scale}, normalized_age);
+            instances[{particle_index}].ribbon_data = uint4(
                 {ribbon_strip_id}, {ribbon_order}, ({ribbon_break}) ? 1u : 0u, {particle_id});
-            instances[{particle_index}].custom_data = vec4({flipbook_frame}, {world_velocity});
-            instances[{particle_index}].previous_position_history = vec4(
+            instances[{particle_index}].custom_data = float4({flipbook_frame}, {world_velocity});
+            instances[{particle_index}].previous_position_history = float4(
                 history_valid ? previous_instance.position_size.xyz : {world_position},
-                uintBitsToFloat(state.spawn_generation));
-            render_indices[{output_index}] = {particle_index};
+                asfloat(state.spawn_generation));
+            render_indices[{output_index}].store({particle_index});
 """
 
 
 def _render_compact_tail(instance_write: str) -> str:
     return f"""
-#ifdef INX_WEBGPU
-    if (inx_particle_render_candidate) {{
-        uint output_index = atomicAdd(counters.visible_count, 1u);
-        if (output_index < pc.capacity) {{
-            atomicAdd(indirect_args.instance_count, 1u);
+    uint output_index = inx_reserve_visible(counters_words[1], indirect_args_words[1],
+                                            inx_particle_render_candidate, pc.capacity);
+    if (inx_particle_render_candidate && output_index < pc.capacity) {{
 {instance_write}
-        }} else {{
-            atomicAdd(counters.visible_count, 0xffffffffu);
-        }}
     }}
-#else
-    uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
-    uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
-        inx_particle_render_mask);
-    if (subgroupElect())
-        inx_particle_render_subgroup_counts[gl_SubgroupID] =
-            subgroupBallotBitCount(inx_particle_render_mask);
-    barrier();
-    uint inx_particle_render_subgroup_count = min(
-        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
-    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg)
-        inx_particle_render_local_index += inx_particle_render_subgroup_counts[inx_sg];
-    if (gl_LocalInvocationIndex == 0u) {{
-        inx_particle_render_local_count = 0u;
-        for (uint inx_sg = 0u; inx_sg < inx_particle_render_subgroup_count; ++inx_sg)
-            inx_particle_render_local_count += inx_particle_render_subgroup_counts[inx_sg];
-        inx_particle_render_group_base = atomicAdd(counters.visible_count,
-            inx_particle_render_local_count);
-        uint available_count = inx_particle_render_group_base < pc.capacity
-            ? pc.capacity - inx_particle_render_group_base : 0u;
-        uint committed_count = min(inx_particle_render_local_count, available_count);
-        if (committed_count > 0u)
-            atomicAdd(indirect_args.instance_count, committed_count);
-    }}
-    barrier();
-    if (inx_particle_render_candidate) {{
-        uint output_index = inx_particle_render_group_base + inx_particle_render_local_index;
-        if (output_index < pc.capacity) {{
-{instance_write}
-        }}
-    }}
-#endif
 """
 
 
 def _fused_compact_tail(instance_write: str) -> str:
-    return f"""
-#ifdef INX_WEBGPU
-    if (inx_particle_active_candidate) {{
-        uint alive_output = atomicAdd(
-            alive_control.alive_counts[pc.alive_write_slot], 1u);
-        inx_store_alive(pc.alive_write_slot, alive_output, particle_index);
-    }}
-    if (inx_particle_render_candidate) {{
-        uint output_index = atomicAdd(counters.visible_count, 1u);
-        if (output_index < pc.capacity) {{
-            atomicAdd(indirect_args.instance_count, 1u);
-{instance_write}
-        }} else {{
-            atomicAdd(counters.visible_count, 0xffffffffu);
-        }}
-    }}
-#else
-    uvec4 inx_particle_alive_mask = subgroupBallot(inx_particle_active_candidate);
-    uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
-    uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
-        inx_particle_alive_mask);
-    uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
-        inx_particle_render_mask);
-    if (subgroupElect()) {{
-        inx_particle_alive_subgroup_counts[gl_SubgroupID] =
-            subgroupBallotBitCount(inx_particle_alive_mask);
-        inx_particle_render_subgroup_counts[gl_SubgroupID] =
-            subgroupBallotBitCount(inx_particle_render_mask);
-    }}
-    barrier();
-    uint inx_particle_subgroup_count = min(
-        (gl_WorkGroupSize.x + gl_SubgroupSize - 1u) / gl_SubgroupSize, 64u);
-    for (uint inx_sg = 0u; inx_sg < gl_SubgroupID; ++inx_sg) {{
-        inx_particle_alive_local_index += inx_particle_alive_subgroup_counts[inx_sg];
-        inx_particle_render_local_index += inx_particle_render_subgroup_counts[inx_sg];
-    }}
-    if (gl_LocalInvocationIndex == 0u) {{
-        inx_particle_alive_local_count = 0u;
-        inx_particle_render_local_count = 0u;
-        for (uint inx_sg = 0u; inx_sg < inx_particle_subgroup_count; ++inx_sg) {{
-            inx_particle_alive_local_count += inx_particle_alive_subgroup_counts[inx_sg];
-            inx_particle_render_local_count += inx_particle_render_subgroup_counts[inx_sg];
-        }}
-        inx_particle_alive_group_base = atomicAdd(
-            alive_control.alive_counts[pc.alive_write_slot],
-            inx_particle_alive_local_count);
-        inx_particle_render_group_base = atomicAdd(
-            counters.visible_count, inx_particle_render_local_count);
-        uint available_count = inx_particle_render_group_base < pc.capacity
-            ? pc.capacity - inx_particle_render_group_base : 0u;
-        uint committed_count = min(inx_particle_render_local_count, available_count);
-        if (committed_count > 0u)
-            atomicAdd(indirect_args.instance_count, committed_count);
-    }}
-    barrier();
-    if (inx_particle_active_candidate) {{
-        uint alive_output = inx_particle_alive_group_base + inx_particle_alive_local_index;
-        inx_store_alive(pc.alive_write_slot, alive_output, particle_index);
-    }}
-    if (inx_particle_render_candidate) {{
-        uint output_index = inx_particle_render_group_base + inx_particle_render_local_index;
-        if (output_index < pc.capacity) {{
-{instance_write}
-        }}
-    }}
-#endif
-"""
+    return _alive_compact_tail(
+        "inx_particle_active_candidate", "particle_index"
+    ) + _render_compact_tail(instance_write)
 
 
 def _rendering_finite(exports: dict[str, str]) -> str:
@@ -6323,9 +6255,16 @@ def _rendering_finite(exports: dict[str, str]) -> str:
             _finite_expression(exports["builtin.rotation"], TypeRef(ValueType.F32)),
             _finite_expression(exports["builtin.age"], TypeRef(ValueType.F32)),
             _finite_expression(exports["builtin.lifetime"], TypeRef(ValueType.F32)),
-            _finite_expression(exports.get("builtin.orientation", "vec3(0.0)"), TypeRef(ValueType.VEC3)),
-            _finite_expression(exports.get("builtin.scale", "vec3(1.0)"), TypeRef(ValueType.VEC3)),
-            _finite_expression(exports.get("builtin.flipbook_frame", "0.0"), TypeRef(ValueType.F32)),
+            _finite_expression(
+                exports.get("builtin.orientation", "float3(0.0)"),
+                TypeRef(ValueType.VEC3),
+            ),
+            _finite_expression(
+                exports.get("builtin.scale", "float3(1.0)"), TypeRef(ValueType.VEC3)
+            ),
+            _finite_expression(
+                exports.get("builtin.flipbook_frame", "0.0"), TypeRef(ValueType.F32)
+            ),
         )
     )
 
@@ -6334,15 +6273,15 @@ def _render_export_snapshots(
     exports: dict[str, str],
 ) -> tuple[str, str, dict[str, str]]:
     export_types = (
-        ("builtin.position", "vec3", "vec3(0.0)"),
-        ("builtin.velocity", "vec3", "vec3(0.0)"),
+        ("builtin.position", "float3", "float3(0.0)"),
+        ("builtin.velocity", "float3", "float3(0.0)"),
         ("builtin.size", "float", "0.0"),
-        ("builtin.color", "vec4", "vec4(0.0)"),
+        ("builtin.color", "float4", "float4(0.0)"),
         ("builtin.rotation", "float", "0.0"),
         ("builtin.age", "float", "0.0"),
         ("builtin.lifetime", "float", "0.0"),
-        ("builtin.orientation", "vec3", "vec3(0.0)"),
-        ("builtin.scale", "vec3", "vec3(1.0)"),
+        ("builtin.orientation", "float3", "float3(0.0)"),
+        ("builtin.scale", "float3", "float3(1.0)"),
         ("builtin.id", "uint", "0u"),
         ("builtin.ribbon_strip_id", "uint", "0u"),
         ("builtin.ribbon_order", "uint", "0u"),
@@ -6352,12 +6291,12 @@ def _render_export_snapshots(
     declarations = []
     assignments = []
     snapshots = {}
-    for stable_id, glsl_type, default in export_types:
+    for stable_id, storage_type, default in export_types:
         expression = exports.get(stable_id)
         if expression is None:
             continue
         name = f"inx_render_export_{stable_id.removeprefix('builtin.')}"
-        declarations.append(f"    {glsl_type} {name} = {default};")
+        declarations.append(f"    {storage_type} {name} = {default};")
         assignments.append(f"                {name} = {expression};")
         snapshots[stable_id] = name
     return "\n".join(declarations), "\n".join(assignments), snapshots
@@ -6375,8 +6314,13 @@ def _rendering_main(body: str, exports: dict[str, str]) -> str:
     )
     compact_tail = _render_compact_tail(instance_write)
     return f"""
-void main() {{
-    uint invocation = gl_GlobalInvocationID.x;
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {{
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
+    uint invocation = inx_dispatch_id.x;
     uint input_count = pc.use_alive_list != 0u
         ? inx_alive_count(pc.alive_read_slot)
         : pc.capacity;
@@ -6386,10 +6330,10 @@ void main() {{
             : invocation)
         : 0u;
     bool inx_particle_render_candidate =
-        simulation_control.simulation_allowed != 0u
+        simulation_control[0].simulation_allowed != 0u
         && inx_current_emitter_playing()
         && invocation < input_count;
-    ParticleState state;
+    ParticleState state = {{}};
 {snapshot_declarations}
     bool particle_alive = false;
     bool inx_stage_suspended = false;
@@ -6439,8 +6383,13 @@ def _update_rendering_fused_main(
     compact_tail = _fused_compact_tail(instance_write)
     state_commit = "states[particle_index] = state;" if update_state_write else ""
     return f"""
-void main() {{
-    uint invocation = gl_GlobalInvocationID.x;
+[shader("compute")][numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_GroupThreadID,
+          uint group_index : SV_GroupIndex) {{
+    inx_dispatch_id = dispatch_id;
+    inx_group_thread_id = group_thread_id;
+    inx_group_index = group_index;
+    uint invocation = inx_dispatch_id.x;
     uint input_count = pc.use_alive_list != 0u
         ? inx_alive_count(pc.alive_read_slot)
         : pc.capacity;
@@ -6451,7 +6400,7 @@ void main() {{
             : invocation)
         : 0u;
     bool inx_particle_render_candidate = false;
-    ParticleState state;
+    ParticleState state = {{}};
 {snapshot_declarations}
     bool particle_alive = false;
     bool particle_was_alive = false;
@@ -6465,7 +6414,7 @@ void main() {{
         inx_particle_render_candidate =
             particle_was_alive
             && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u
-            && simulation_control.simulation_allowed != 0u
+            && simulation_control[0].simulation_allowed != 0u
             && inx_current_emitter_playing();
         if (inx_particle_render_candidate) {{
 {update_body}
@@ -6518,7 +6467,13 @@ def _finite_expression(expression: str, value_type: TypeRef) -> str:
     kind = value_type.value_type
     if kind in {ValueType.BOOL, ValueType.I32, ValueType.U32}:
         return "true"
-    if kind in {ValueType.F32, ValueType.VEC2, ValueType.VEC3, ValueType.VEC4, ValueType.COLOR}:
+    if kind in {
+        ValueType.F32,
+        ValueType.VEC2,
+        ValueType.VEC3,
+        ValueType.VEC4,
+        ValueType.COLOR,
+    }:
         return f"inx_finite({expression})"
     if kind is ValueType.MAT3:
         return " && ".join(f"inx_finite(({expression})[{index}])" for index in range(3))
@@ -6527,59 +6482,55 @@ def _finite_expression(expression: str, value_type: TypeRef) -> str:
     raise GpuParticleCompileError(f"GPU finite check does not support {kind.value}")
 
 
-def _space_conversion(expression: str, result_type: TypeRef | None, immediate: dict[str, Any]) -> str:
+def _space_conversion(
+    expression: str, result_type: TypeRef | None, immediate: dict[str, Any]
+) -> str:
     if result_type is None or result_type.value_type is not ValueType.VEC3:
-        raise GpuParticleCompileError("GPU space conversion currently requires vec3")
+        raise GpuParticleCompileError("GPU space conversion requires float3")
     source = CoordinateSpace(immediate["from"])
     target = CoordinateSpace(immediate["to"])
-    if source is target:
+    if source is target or CoordinateSpace.NONE in {source, target}:
         return expression
-    if source is CoordinateSpace.NONE or target is CoordinateSpace.NONE:
-        return expression
-    supported = {CoordinateSpace.EMITTER_LOCAL, CoordinateSpace.SIMULATION, CoordinateSpace.WORLD}
-    if source not in supported or target not in supported:
+    matrices = {
+        CoordinateSpace.EMITTER_LOCAL: (
+            "transforms.emitter_to_world",
+            "transforms.world_to_emitter",
+        ),
+        CoordinateSpace.SIMULATION: (
+            "transforms.simulation_to_world",
+            "transforms.world_to_simulation",
+        ),
+        CoordinateSpace.WORLD: (None, None),
+    }
+    try:
+        source_to_world = matrices[source][0]
+        world_to_target = matrices[target][1]
+    except KeyError as error:
         raise GpuParticleCompileError(
-            f"GPU space conversion {source.value} -> {target.value} is not portable yet"
-        )
+            f"GPU space conversion {source.value} -> {target.value} is not supported"
+        ) from error
     semantic = str(immediate.get("semantic") or "direction")
     if semantic == "direction":
-        # One source→target linear map, then drop scale. Applying emitter and
-        # simulation rotations as two separate multiplies can re-apply the
-        # same parent euler when those uniforms are not a true inverse pair.
-        def _rotation(matrix: str) -> str:
-            return (
-                f"mat3(normalize({matrix}[0].xyz), "
-                f"normalize({matrix}[1].xyz), "
-                f"normalize({matrix}[2].xyz))"
-            )
-
-        if source is CoordinateSpace.EMITTER_LOCAL and target is CoordinateSpace.WORLD:
-            matrix = "transforms.emitter_to_world"
-        elif source is CoordinateSpace.WORLD and target is CoordinateSpace.EMITTER_LOCAL:
-            matrix = "transforms.world_to_emitter"
-        elif source is CoordinateSpace.SIMULATION and target is CoordinateSpace.WORLD:
-            matrix = "transforms.simulation_to_world"
-        elif source is CoordinateSpace.WORLD and target is CoordinateSpace.SIMULATION:
-            matrix = "transforms.world_to_simulation"
-        elif source is CoordinateSpace.EMITTER_LOCAL and target is CoordinateSpace.SIMULATION:
-            matrix = "(transforms.world_to_simulation * transforms.emitter_to_world)"
-        else:
-            matrix = "(transforms.world_to_emitter * transforms.simulation_to_world)"
-        return f"({_rotation(matrix)} * ({expression}))"
-    w = "1.0" if semantic == "position" else "0.0"
-    world = expression
-    if source is CoordinateSpace.EMITTER_LOCAL:
-        world = f"(transforms.emitter_to_world * vec4({expression}, {w})).xyz"
-    elif source is CoordinateSpace.SIMULATION:
-        world = f"(transforms.simulation_to_world * vec4({expression}, {w})).xyz"
-    if target is CoordinateSpace.EMITTER_LOCAL:
-        return f"(transforms.world_to_emitter * vec4({world}, {w})).xyz"
-    if target is CoordinateSpace.SIMULATION:
-        return f"(transforms.world_to_simulation * vec4({world}, {w})).xyz"
-    return world
+        matrix = (
+            f"mul({world_to_target}, {source_to_world})"
+            if source_to_world and world_to_target
+            else source_to_world or world_to_target
+        )
+        return f"mul(inx_rotation({matrix}), ({expression}))"
+    homogeneous = "1.0" if semantic == "position" else "0.0"
+    world = (
+        f"mul({source_to_world}, float4({expression}, {homogeneous})).xyz"
+        if source_to_world
+        else expression
+    )
+    return (
+        f"mul({world_to_target}, float4({world}, {homogeneous})).xyz"
+        if world_to_target
+        else world
+    )
 
 
-def _glsl_type(value_type: TypeRef | None) -> str:
+def _slang_type(value_type: TypeRef | None) -> str:
     if value_type is None:
         raise GpuParticleCompileError("GPU value is missing its type")
     try:
@@ -6588,12 +6539,12 @@ def _glsl_type(value_type: TypeRef | None) -> str:
             ValueType.I32: "int",
             ValueType.U32: "uint",
             ValueType.F32: "float",
-            ValueType.VEC2: "vec2",
-            ValueType.VEC3: "vec3",
-            ValueType.VEC4: "vec4",
-            ValueType.COLOR: "vec4",
-            ValueType.MAT3: "mat3",
-            ValueType.MAT4: "mat4",
+            ValueType.VEC2: "float2",
+            ValueType.VEC3: "float3",
+            ValueType.VEC4: "float4",
+            ValueType.COLOR: "float4",
+            ValueType.MAT3: "float3x3",
+            ValueType.MAT4: "float4x4",
         }[value_type.value_type]
     except KeyError as exc:
         raise GpuParticleCompileError(
@@ -6601,7 +6552,7 @@ def _glsl_type(value_type: TypeRef | None) -> str:
         ) from exc
 
 
-def _numeric_resize_glsl(
+def _numeric_resize_slang(
     expression: str,
     source_type: TypeRef,
     target_type: TypeRef | None,
@@ -6634,21 +6585,21 @@ def _numeric_resize_glsl(
             return f"float({value})"
         return value
 
-    target_glsl = _glsl_type(target_type)
+    target_slang = _slang_type(target_type)
     if source_dimension == 1:
         scalar = expression
         if source_type.value_type in {ValueType.I32, ValueType.U32}:
             scalar = f"float({scalar})"
-        return f"{target_glsl}({scalar})"
+        return f"{target_slang}({scalar})"
     if source_dimension == target_dimension:
         return expression
     if source_dimension > target_dimension:
         return f"({expression}).{'xyzw'[:target_dimension]}"
     zero_tail = ", ".join("0.0" for _ in range(target_dimension - source_dimension))
-    return f"{target_glsl}({expression}, {zero_tail})"
+    return f"{target_slang}({expression}, {zero_tail})"
 
 
-def _parameter_load_glsl(slot: int, value_type: TypeRef | None) -> str:
+def _parameter_load_slang(slot: int, value_type: TypeRef | None) -> str:
     if value_type is None:
         raise GpuParticleCompileError("parameter load is missing its result type")
     words = f"parameter_words[{int(slot)}]"
@@ -6660,7 +6611,7 @@ def _parameter_load_glsl(slot: int, value_type: TypeRef | None) -> str:
     if kind is ValueType.U32:
         return f"{words}.x"
     if kind is ValueType.F32:
-        return f"uintBitsToFloat({words}.x)"
+        return f"asfloat({words}.x)"
     swizzles = {
         ValueType.VEC2: "xy",
         ValueType.VEC3: "xyz",
@@ -6669,29 +6620,27 @@ def _parameter_load_glsl(slot: int, value_type: TypeRef | None) -> str:
     }
     swizzle = swizzles.get(kind)
     if swizzle is None:
-        raise GpuParticleCompileError(
-            f"GPU parameters do not support {kind.value!r}"
-        )
-    return f"uintBitsToFloat({words}.{swizzle})"
+        raise GpuParticleCompileError(f"GPU parameters do not support {kind.value!r}")
+    return f"asfloat({words}.{swizzle})"
 
 
-def _parameter_store_glsl(slot: int, value_type: TypeRef, expression: str) -> str:
+def _parameter_store_slang(slot: int, value_type: TypeRef, expression: str) -> str:
     words = f"parameter_words[{int(slot)}]"
     kind = value_type.value_type
     if kind is ValueType.BOOL:
-        encoded = f"uvec4(({expression}) ? 1u : 0u, 0u, 0u, 0u)"
+        encoded = f"uint4(({expression}) ? 1u : 0u, 0u, 0u, 0u)"
     elif kind is ValueType.I32:
-        encoded = f"uvec4(uint({expression}), 0u, 0u, 0u)"
+        encoded = f"uint4(uint({expression}), 0u, 0u, 0u)"
     elif kind is ValueType.U32:
-        encoded = f"uvec4({expression}, 0u, 0u, 0u)"
+        encoded = f"uint4({expression}, 0u, 0u, 0u)"
     elif kind is ValueType.F32:
-        encoded = f"uvec4(floatBitsToUint({expression}), 0u, 0u, 0u)"
+        encoded = f"uint4(asuint({expression}), 0u, 0u, 0u)"
     elif kind is ValueType.VEC2:
-        encoded = f"uvec4(floatBitsToUint({expression}), 0u, 0u)"
+        encoded = f"uint4(asuint({expression}), 0u, 0u)"
     elif kind is ValueType.VEC3:
-        encoded = f"uvec4(floatBitsToUint({expression}), 0u)"
+        encoded = f"uint4(asuint({expression}), 0u)"
     elif kind in {ValueType.VEC4, ValueType.COLOR}:
-        encoded = f"floatBitsToUint({expression})"
+        encoded = f"asuint({expression})"
     else:
         raise GpuParticleCompileError(
             f"GPU writable parameters do not support {kind.value!r}"
@@ -6719,7 +6668,7 @@ def _parameter_slot_layout(
     return slots, cursor
 
 
-def _ramp_parameter_glsl(
+def _ramp_parameter_slang(
     parameter_slots: Mapping[str, tuple[int, TypeRef]],
 ) -> str:
     kinds = {value_type.value_type for _slot, value_type in parameter_slots.values()}
@@ -6736,11 +6685,11 @@ float inx_wrap_curve_parameter_time(float value, float first, float last, uint m
 }}
 
 float inx_sample_curve_parameter(uint base_slot, float sample_time) {{
-    uvec4 header = parameter_words[base_slot];
+    uint4 header = parameter_words[base_slot];
     uint count = min(header.x, {MAX_RAMP_KEYS}u);
     if (count == 0u) return 0.0;
-    vec4 first_key = uintBitsToFloat(parameter_words[base_slot + 1u]);
-    vec4 last_key = uintBitsToFloat(parameter_words[base_slot + 1u + (count - 1u) * 2u]);
+    float4 first_key = asfloat(parameter_words[base_slot + 1u]);
+    float4 last_key = asfloat(parameter_words[base_slot + 1u + (count - 1u) * 2u]);
     float time = sample_time;
     if (time < first_key.x)
         time = inx_wrap_curve_parameter_time(time, first_key.x, last_key.x, header.y);
@@ -6748,16 +6697,16 @@ float inx_sample_curve_parameter(uint base_slot, float sample_time) {{
         time = inx_wrap_curve_parameter_time(time, first_key.x, last_key.x, header.z);
     if (count == 1u || time < first_key.x) return first_key.y;
     if (time >= last_key.x) return last_key.y;
-    if (time == first_key.x && uintBitsToFloat(parameter_words[base_slot+3u].x) == first_key.x)
+    if (time == first_key.x && asfloat(parameter_words[base_slot+3u].x) == first_key.x)
         return first_key.y;
-    vec4 left = first_key;
+    float4 left = first_key;
     for (uint index = 1u; index < {MAX_RAMP_KEYS}u; ++index) {{
         if (index >= count) break;
-        vec4 right = uintBitsToFloat(parameter_words[base_slot + 1u + index * 2u]);
+        float4 right = asfloat(parameter_words[base_slot + 1u + index * 2u]);
         if (time < right.x) {{
-            vec3 left_weights = uintBitsToFloat(parameter_words[base_slot + 2u + (index-1u)*2u]).xyz;
-            vec3 right_weights = uintBitsToFloat(parameter_words[base_slot + 2u + index*2u]).xyz;
-            float inverse_span = uintBitsToFloat(parameter_words[base_slot + 2u + (index-1u)*2u].w);
+            float3 left_weights = asfloat(parameter_words[base_slot + 2u + (index-1u)*2u]).xyz;
+            float3 right_weights = asfloat(parameter_words[base_slot + 2u + index*2u]).xyz;
+            float inverse_span = asfloat(parameter_words[base_slot + 2u + (index-1u)*2u].w);
             return inx_curve_segment(time, left, right, left_weights, right_weights, inverse_span);
         }}
         left = right;
@@ -6769,32 +6718,32 @@ float inx_sample_curve_parameter(uint base_slot, float sample_time) {{
     if ValueType.GRADIENT in kinds:
         parts.append(
             f"""
-vec4 inx_gradient_parameter_key(uint base_slot, uint index) {{
-    vec4 rgb_time = uintBitsToFloat(parameter_words[base_slot + 1u + index * 2u]);
-    vec4 alpha = uintBitsToFloat(parameter_words[base_slot + 2u + index * 2u]);
-    return vec4(rgb_time.yzw, alpha.x);
+float4 inx_gradient_parameter_key(uint base_slot, uint index) {{
+    float4 rgb_time = asfloat(parameter_words[base_slot + 1u + index * 2u]);
+    float4 alpha = asfloat(parameter_words[base_slot + 2u + index * 2u]);
+    return float4(rgb_time.yzw, alpha.x);
 }}
 
 float inx_gradient_parameter_time(uint base_slot, uint index) {{
-    return uintBitsToFloat(parameter_words[base_slot + 1u + index * 2u].x);
+    return asfloat(parameter_words[base_slot + 1u + index * 2u].x);
 }}
 
-vec4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
-    uvec4 header = parameter_words[base_slot];
+float4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
+    uint4 header = parameter_words[base_slot];
     uint count = clamp(header.x, 1u, {MAX_RAMP_KEYS}u);
     float first_time = inx_gradient_parameter_time(base_slot, 0u);
-    vec4 first_color = inx_gradient_parameter_key(base_slot, 0u);
+    float4 first_color = inx_gradient_parameter_key(base_slot, 0u);
     if (count == 1u || sample_time <= first_time) return first_color;
     uint last_index = count - 1u;
     float last_time = inx_gradient_parameter_time(base_slot, last_index);
-    vec4 last_color = inx_gradient_parameter_key(base_slot, last_index);
+    float4 last_color = inx_gradient_parameter_key(base_slot, last_index);
     float time = clamp(sample_time, first_time, last_time);
     float left_time = first_time;
-    vec4 left_color = first_color;
+    float4 left_color = first_color;
     for (uint index = 1u; index < {MAX_RAMP_KEYS}u; ++index) {{
         if (index >= count) break;
         float right_time = inx_gradient_parameter_time(base_slot, index);
-        vec4 right_color = inx_gradient_parameter_key(base_slot, index);
+        float4 right_color = inx_gradient_parameter_key(base_slot, index);
         if (time < right_time) {{
             if (header.y == 1u) return left_color;
             float factor = clamp(
@@ -6803,7 +6752,7 @@ vec4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
                 1.0);
             return header.y == 2u
                 ? inx_mix_perceptual_gradient(left_color, right_color, factor)
-                : mix(left_color, right_color, factor);
+                : lerp(left_color, right_color, factor);
         }}
         left_time = right_time;
         left_color = right_color;
@@ -6815,8 +6764,8 @@ vec4 inx_sample_gradient_parameter(uint base_slot, float sample_time) {{
     return "\n".join(parts)
 
 
-def _curve_interpolation_glsl() -> str:
-    return r"""
+def _curve_interpolation_slang() -> str:
+    return """
 float inx_curve_cube_root(float value) {
     if (value == 0.0) return 0.0;
     precise float logarithm = log(abs(value));
@@ -6847,7 +6796,7 @@ float inx_curve_time_parameter(float time, float first, float second) {
         precise float discriminant = q3+r2;
         if (discriminant < 0.0) {
             precise float radius = inx_curve_cube_root(sqrt(r2-discriminant))*2.0;
-            precise float angle = atan(sqrt(-discriminant), r)/3.0;
+            precise float angle = atan2(sqrt(-discriminant), r)/3.0;
             parameter = radius*cos(angle)+shift;
             if (inx_curve_parameter_inside(parameter)) return parameter;
             parameter = radius*cos(angle+2.094395160675048828125)+shift;
@@ -6872,12 +6821,12 @@ float inx_curve_time_parameter(float time, float first, float second) {
     }
     return inx_curve_parameter_inside(parameter) ? parameter : (time < 0.5 ? 0.0 : 1.0);
 }
-float inx_curve_segment(float time, vec4 left, vec4 right, vec3 lw, vec3 rw, float inverse_span) {
+float inx_curve_segment(float time, float4 left, float4 right, float3 lw, float3 rw, float inverse_span) {
     float duration = right.x-left.x;
     if (duration <= 0.0) return right.y;
     if (time >= right.x) return right.y;
     if (isinf(left.w) || isinf(right.z)) {
-        float infinity = uintBitsToFloat(0x7f800000u);
+        float infinity = asfloat(0x7f800000u);
         return left.w == infinity || right.z == infinity ? left.y : right.y;
     }
     bool wo = (uint(lw.z) & 2u) != 0u;
@@ -6901,7 +6850,7 @@ float inx_curve_segment(float time, vec4 left, vec4 right, vec3 lw, vec3 rw, flo
     precise float t = (time-left.x)/duration;
     float w0 = wo ? lw.y : 1.0/3.0;
     float w1 = wi ? rw.x : 1.0/3.0;
-    if (isinf(w0) || isnan(w0) || isinf(w1) || isnan(w1)) return uintBitsToFloat(0x7fc00000u);
+    if (isinf(w0) || isnan(w0) || isinf(w1) || isnan(w1)) return asfloat(0x7fc00000u);
     precise float u = inx_curve_time_parameter(t,w0,1.0-w1);
     precise float v = 1.0-u;
     precise float u2 = u*u;
@@ -6922,43 +6871,43 @@ float inx_curve_segment(float time, vec4 left, vec4 right, vec3 lw, vec3 rw, flo
 """
 
 
-def _perceptual_gradient_glsl() -> str:
-    return r"""
-vec3 inx_linear_rgb_to_oklab(vec3 color) {
-    vec3 lms = mat3(
+def _perceptual_gradient_slang() -> str:
+    return """
+float3 inx_linear_rgb_to_oklab(float3 color) {
+    float3 lms = mul(transpose(float3x3(
         0.4122214708, 0.2119034982, 0.0883024619,
         0.5363325363, 0.6806995451, 0.2817188376,
         0.0514459929, 0.1073969566, 0.6299787005
-    ) * color;
-    vec3 root = sign(lms) * pow(abs(lms), vec3(1.0 / 3.0));
-    return mat3(
+    )), color);
+    float3 root = sign(lms) * pow(abs(lms), float3(1.0 / 3.0));
+    return mul(transpose(float3x3(
         0.2104542553, 1.9779984951, 0.0259040371,
         0.7936177850, -2.4285922050, 0.7827717662,
         -0.0040720468, 0.4505937099, -0.8086757660
-    ) * root;
+    )), root);
 }
 
-vec3 inx_oklab_to_linear_rgb(vec3 color) {
-    vec3 root = mat3(
+float3 inx_oklab_to_linear_rgb(float3 color) {
+    float3 root = mul(transpose(float3x3(
         1.0, 1.0, 1.0,
         0.3963377774, -0.1055613458, -0.0894841775,
         0.2158037573, -0.0638541728, -1.2914855480
-    ) * color;
-    vec3 lms = root * root * root;
-    return mat3(
+    )), color);
+    float3 lms = root * root * root;
+    return mul(transpose(float3x3(
         4.0767416621, -1.2684380046, -0.0041960863,
         -3.3077115913, 2.6097574011, -0.7034186147,
         0.2309699292, -0.3413193965, 1.7076147010
-    ) * lms;
+    )), lms);
 }
 
-vec4 inx_mix_perceptual_gradient(vec4 left, vec4 right, float factor) {
-    vec3 color = inx_oklab_to_linear_rgb(mix(
+float4 inx_mix_perceptual_gradient(float4 left, float4 right, float factor) {
+    float3 color = inx_oklab_to_linear_rgb(lerp(
         inx_linear_rgb_to_oklab(left.rgb),
         inx_linear_rgb_to_oklab(right.rgb),
         factor
     ));
-    return vec4(color, mix(left.a, right.a, factor));
+    return float4(color, lerp(left.a, right.a, factor));
 }
 """
 
@@ -7012,9 +6961,23 @@ def pack_gpu_particle_parameters(
                         ),
                     )
                 )
-                inverse = _curve_inverse_span(key, keys[index+1]) if index+1 < len(keys) else 0.0
-                encoded.extend(struct.unpack("<4I", struct.pack(
-                    "<4f", key.in_weight, key.out_weight, float(int(key.weighted_mode) & 3), inverse)))
+                inverse = (
+                    _curve_inverse_span(key, keys[index + 1])
+                    if index + 1 < len(keys)
+                    else 0.0
+                )
+                encoded.extend(
+                    struct.unpack(
+                        "<4I",
+                        struct.pack(
+                            "<4f",
+                            key.in_weight,
+                            key.out_weight,
+                            float(int(key.weighted_mode) & 3),
+                            inverse,
+                        ),
+                    )
+                )
         elif kind is ValueType.GRADIENT:
             try:
                 gradient = Gradient.from_dict(value)
@@ -7137,7 +7100,9 @@ def pack_gpu_particle_parameter_updates(
         if stable_id not in selected:
             continue
         if parameter.value_type.value_type in {ValueType.TEXTURE2D, ValueType.MESH}:
-            raise GpuParticleCompileError("particle resource parameters require a GPU binding rebuild")
+            raise GpuParticleCompileError(
+                "particle resource parameters require a GPU binding rebuild"
+            )
         value = overrides.get(stable_id, parameter.default)
         words = pack_gpu_particle_parameters((parameter,), {stable_id: value})
         updates.append((slots[stable_id][0] * 4, words))
@@ -7146,19 +7111,25 @@ def pack_gpu_particle_parameter_updates(
 
 def _storage_type(value_type: TypeRef) -> str:
     return (
-        "uint"
-        if value_type.value_type is ValueType.BOOL
-        else _glsl_type(value_type)
+        "uint" if value_type.value_type is ValueType.BOOL else _slang_type(value_type)
     )
 
 
 def _storage_encode(expression: str, value_type: TypeRef) -> str:
     """Encode a logical value for the fixed std430 particle state ABI."""
-    return f"({expression} ? 1u : 0u)" if value_type.value_type is ValueType.BOOL else expression
+    return (
+        f"({expression} ? 1u : 0u)"
+        if value_type.value_type is ValueType.BOOL
+        else expression
+    )
 
 
 def _storage_decode(expression: str, value_type: TypeRef) -> str:
-    return f"({expression} != 0u)" if value_type.value_type is ValueType.BOOL else expression
+    return (
+        f"({expression} != 0u)"
+        if value_type.value_type is ValueType.BOOL
+        else expression
+    )
 
 
 def _value_name(value_id: str, prefix: str = "") -> str:
@@ -7167,7 +7138,7 @@ def _value_name(value_id: str, prefix: str = "") -> str:
     return f"{prefix}v{value_id[1:]}"
 
 
-def _glsl_literal(value: Any, value_type: TypeRef | None) -> str:
+def _slang_literal(value: Any, value_type: TypeRef | None) -> str:
     if value_type is None:
         raise GpuParticleCompileError("constant is missing its type")
     kind = value_type.value_type
@@ -7189,18 +7160,21 @@ def _glsl_literal(value: Any, value_type: TypeRef | None) -> str:
     }.get(kind)
     if component_count is None:
         raise GpuParticleCompileError(f"GPU literal does not support {kind.value}")
-    return f"{_glsl_type(value_type)}(" + ", ".join(_float_literal(item) for item in value) + ")"
-
-
-
-
+    literal = (
+        f"{_slang_type(value_type)}("
+        + ", ".join(_float_literal(item) for item in value)
+        + ")"
+    )
+    return (
+        f"transpose({literal})" if kind in {ValueType.MAT3, ValueType.MAT4} else literal
+    )
 
 
 def _float_literal(value: Any) -> str:
     value = float(value)
     if not math.isfinite(value):
         bits = struct.unpack("<I", struct.pack("<f", value))[0]
-        return f"uintBitsToFloat(0x{bits:08x}u)"
+        return f"asfloat(0x{bits:08x}u)"
     result = format(value, ".9g")
     if "." not in result and "e" not in result.lower():
         result += ".0"
@@ -7208,12 +7182,14 @@ def _float_literal(value: Any) -> str:
 
 
 def _vector_literal(values: Any, count: int) -> str:
-    return f"vec{count}(" + ", ".join(_float_literal(item) for item in values) + ")"
+    return f"float{count}(" + ", ".join(_float_literal(item) for item in values) + ")"
 
 
 def _shape_kind(value: str) -> int:
     try:
-        return {"point": 0, "sphere": 1, "box": 2, "cone": 3, "mesh": 4, "sdf": 5}[value]
+        return {"point": 0, "sphere": 1, "box": 2, "cone": 3, "mesh": 4, "sdf": 5}[
+            value
+        ]
     except KeyError as exc:
         raise GpuParticleCompileError(f"unsupported particle shape {value!r}") from exc
 
@@ -7222,7 +7198,7 @@ __all__ = [
     "GpuParticleCompileError",
     "GpuParticleContinuationSource",
     "GpuParticleEmitterSource",
-    "GpuParticleGlslLowerer",
+    "GpuParticleLowerer",
     "GpuParticleProgramSource",
     "build_gpu_particle_migration",
     "compile_gpu_particle_spirv",
@@ -7231,3 +7207,12 @@ __all__ = [
     "pack_gpu_particle_parameter_updates",
     "validate_gpu_particle_spirv",
 ]
+
+
+def _storage_declaration(value_type: TypeRef, name: str) -> str:
+    major = (
+        "column_major "
+        if value_type.value_type in {ValueType.MAT3, ValueType.MAT4}
+        else ""
+    )
+    return f"    {major}{_storage_type(value_type)} {name};"

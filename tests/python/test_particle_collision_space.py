@@ -1,4 +1,5 @@
 """Authoring-space semantics and Vulkan execution of the actual lowered conversion."""
+
 import struct
 
 import numpy as np
@@ -8,12 +9,19 @@ from infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, Port
 from infernux.graph.types import CoordinateSpace, TypeRef, ValueType
 from infernux.lib import _Infernux as native
 from infernux.particle import (
-    EmitterSettings, GpuParticleGlslLowerer, ParticleEmitterAsset, ParticleGraphAsset,
-    ParticleGraphCompiler, ParticleKernelLowerer, ParticleParameter, SimulationSpace,
+    EmitterSettings,
+    GpuParticleLowerer,
+    ParticleEmitterAsset,
+    ParticleGraphAsset,
+    ParticleGraphCompiler,
+    ParticleKernelLowerer,
+    ParticleParameter,
+    SimulationSpace,
     pack_gpu_particle_parameters,
 )
-from infernux.particle import gpu_glsl_backend as backend
+from infernux.particle import gpu_backend as backend
 from infernux.particle.kernel_ir import ParticleKernelFunction
+from test_particle_gpu_backend import _compile_sources
 
 
 CASES = [
@@ -23,38 +31,61 @@ CASES = [
     ("particle.attribute.position", "value", "position"),
     ("particle.motion.target_position", "target", "position"),
 ]
-WORLD_VALUE = [12., 3., 4.]
+WORLD_VALUE = [12.0, 3.0, 4.0]
 
 
 def _spatial_program(node_type, port):
-    update = GraphDocument("particle.update", nodes=(
-        GraphNodeRecord("root.update", "particle.root.update"),
-        GraphNodeRecord("world", "particle.parameter", properties={"parameter": "world"}),
-        GraphNodeRecord("operation", node_type),
-    ), links=(
-        GraphLinkRecord("exec", "root.update", "out", "operation", "in", PortKind.EXEC),
-        GraphLinkRecord("value", "world", "value", "operation", port, PortKind.VALUE),
-    ))
+    update = GraphDocument(
+        "particle.update",
+        nodes=(
+            GraphNodeRecord("root.update", "particle.root.update"),
+            GraphNodeRecord(
+                "world", "particle.parameter", properties={"parameter": "world"}
+            ),
+            GraphNodeRecord("operation", node_type),
+        ),
+        links=(
+            GraphLinkRecord(
+                "exec", "root.update", "out", "operation", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "value", "world", "value", "operation", port, PortKind.VALUE
+            ),
+        ),
+    )
     asset = ParticleGraphAsset(
-        parameters=(ParticleParameter(
-            "world", "World", TypeRef(ValueType.VEC3, CoordinateSpace.WORLD), WORLD_VALUE,
-        ),),
-        emitters=(ParticleEmitterAsset(
-            settings=EmitterSettings(simulation_space=SimulationSpace.LOCAL), update=update,
-        ),),
+        parameters=(
+            ParticleParameter(
+                "world",
+                "World",
+                TypeRef(ValueType.VEC3, CoordinateSpace.WORLD),
+                WORLD_VALUE,
+            ),
+        ),
+        emitters=(
+            ParticleEmitterAsset(
+                settings=EmitterSettings(simulation_space=SimulationSpace.LOCAL),
+                update=update,
+            ),
+        ),
     )
     kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
-    conversion, = (item for item in kernel.emitters[0].update.instructions
-                   if item.opcode == "convert_space" and item.source.node_uid == "operation")
+    (conversion,) = (
+        item
+        for item in kernel.emitters[0].update.instructions
+        if item.opcode == "convert_space" and item.source.node_uid == "operation"
+    )
     return kernel, conversion
 
 
 @pytest.mark.parametrize("node_type,port,semantic", CASES)
-def test_spatial_inputs_compile_with_their_declared_semantics(node_type, port, semantic):
+def test_spatial_inputs_compile_with_their_declared_semantics(
+    node_type, port, semantic
+):
     kernel, conversion = _spatial_program(node_type, port)
     assert conversion.immediate_dict()["semantic"] == semantic
-    stages = GpuParticleGlslLowerer().lower(kernel).emitters[0].stages()
-    compiled = native._compile_compute_glsl_batch(stages, "particle-collision-space")
+    stages = GpuParticleLowerer().lower(kernel).emitters[0].stages()
+    compiled = _compile_sources(stages, "particle-collision-space")
     assert all(bytes(value)[:4] == b"\x03\x02\x23\x07" for value in compiled.values())
 
 
@@ -68,28 +99,40 @@ def _conversion_probe(kernel, conversion):
         if instruction.result_id in wanted:
             selected.append(instruction)
             wanted.update(operand.value_id for operand in instruction.operands)
-    function = ParticleKernelFunction(emitter.update.stage, tuple(reversed(selected)), (), ())
+    function = ParticleKernelFunction(
+        emitter.update.stage, tuple(reversed(selected)), (), ()
+    )
     slots, _ = backend._parameter_slot_layout(kernel.parameters)
     compiler = backend._StageCompiler(
-        emitter, backend._attribute_fields(emitter), {}, kernel.events, 0, parameter_slots=slots,
+        emitter,
+        backend._attribute_fields(emitter),
+        {},
+        kernel.events,
+        0,
+        parameter_slots=slots,
     )
     body, _ = compiler.compile(function)
     result = compiler._values[conversion.result_id]
-    return f"""#version 450
-layout(local_size_x=1) in;
-layout(std430, set=0, binding=0) buffer Result {{ vec4 result; }};
-layout(std430, set=0, binding=1) readonly buffer Parameters {{ uvec4 parameter_words[]; }};
-layout(std430, set=0, binding=2) readonly buffer Transforms {{
-    mat4 emitter_to_world;
-    mat4 world_to_emitter;
-    mat4 simulation_to_world;
-    mat4 world_to_simulation;
-}} transforms;
+    return (
+        backend._COMPUTE_COMMON
+        + f"""
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> result_values;
+[[vk::binding(1, 0)]] StructuredBuffer<uint4> parameter_words;
+struct Transforms {{
+    column_major float4x4 emitter_to_world;
+    column_major float4x4 world_to_emitter;
+    column_major float4x4 simulation_to_world;
+    column_major float4x4 world_to_simulation;
+}};
+[[vk::binding(2, 0)]] StructuredBuffer<Transforms> transform_values;
+[shader("compute")][numthreads(1, 1, 1)]
 void main() {{
+    Transforms transforms = transform_values[0];
 {body}
-    result = vec4({result}, 1.0);
+    result_values[0] = float4({result}, 1.0);
 }}
 """
+    )
 
 
 def _transform(case):
@@ -97,29 +140,40 @@ def _transform(case):
     scale = np.ones(3, dtype=np.float32)
     translation = np.zeros(3, dtype=np.float32)
     if case in {"rotation", "combined"}:
-        rotation = np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]], dtype=np.float32)
+        rotation = np.array(
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32
+        )
     if case in {"translation", "combined"}:
-        translation = np.array([10., -2., 5.], dtype=np.float32)
+        translation = np.array([10.0, -2.0, 5.0], dtype=np.float32)
     if case == "scale":
-        scale = np.array([2., 3., 4.], dtype=np.float32)
+        scale = np.array([2.0, 3.0, 4.0], dtype=np.float32)
     if case == "combined":
-        scale *= 2.
+        scale *= 2.0
     matrix = np.eye(4, dtype=np.float32)
     matrix[:3, :3] = rotation @ np.diag(scale)
     matrix[:3, 3] = translation
     return matrix, rotation
 
 
-@pytest.mark.parametrize("case", ["identity", "translation", "rotation", "scale", "combined"])
+@pytest.mark.parametrize(
+    "case", ["identity", "translation", "rotation", "scale", "combined"]
+)
 @pytest.mark.parametrize("node_type,port,semantic", CASES)
-def test_collision_operand_conversion_executes_on_gpu(engine, node_type, port, semantic, case):
+def test_collision_operand_conversion_executes_on_gpu(
+    engine, node_type, port, semantic, case
+):
     kernel, conversion = _spatial_program(node_type, port)
     source = _conversion_probe(kernel, conversion)
-    spirv = native._compile_compute_glsl_batch({"conversion": source}, "particle-space-readback")["conversion"]
+    spirv = _compile_sources({"conversion": source}, "particle-space-readback")[
+        "conversion"
+    ]
     matrix, rotation = _transform(case)
     inverse = np.linalg.inv(matrix).astype(np.float32)
-    expected = ((inverse @ np.array([*WORLD_VALUE, 1.], dtype=np.float32))[:3]
-                if semantic == "position" else rotation.T @ np.asarray(WORLD_VALUE, dtype=np.float32))
+    expected = (
+        (inverse @ np.array([*WORLD_VALUE, 1.0], dtype=np.float32))[:3]
+        if semantic == "position"
+        else rotation.T @ np.asarray(WORLD_VALUE, dtype=np.float32)
+    )
     host = engine._acquire_compute_host()
     result = host.create_buffer(4, "float32", 1)
     words = pack_gpu_particle_parameters(kernel.parameters)
@@ -127,7 +181,9 @@ def test_collision_operand_conversion_executes_on_gpu(engine, node_type, port, s
     transforms = host.create_buffer(64, "float32", 1)
     program = host.create_kernel(spirv, buffer_binding_count=3)
     parameters.set_bytes(struct.pack(f"<{len(words)}I", *words))
-    transforms.set_bytes(b"".join(m.tobytes(order="F") for m in (matrix, inverse, matrix, inverse)))
+    transforms.set_bytes(
+        b"".join(m.tobytes(order="F") for m in (matrix, inverse, matrix, inverse))
+    )
     try:
         program.dispatch([result, parameters, transforms])
         observed = struct.unpack("<4f", bytes(result.get_bytes(16)))

@@ -119,26 +119,25 @@ def particle_shader_property_port_id(name: str) -> str:
     return f"shader.{str(name).strip()}"
 
 
-def _particle_fragment_shader_catalog():
-    """Return the imported fragment shader schema used by Particle Outputs."""
-    try:
-        from infernux.engine.ui.inspector_shader_utils import (
-            _get_shader_properties_cached,
-            get_shader_candidates,
-        )
+def _particle_fragment_shader_catalog(shader_ids):
+    """Prepare only the shader schemas consumed by this particle asset."""
+    from infernux.engine.ui.inspector_shader_utils import (
+        _get_shader_properties_cached,
+        get_shader_candidates,
+    )
 
-        choices = tuple(
-            (str(label), str(shader_id))
-            for label, shader_id in get_shader_candidates(".frag")
-            if str(shader_id)
-        )
-        properties = {
-            shader_id: tuple(_get_shader_properties_cached(shader_id, ".frag"))
-            for _label, shader_id in choices
-        }
-        return choices, properties
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        return (("infernux/particle/unlit", "infernux/particle/unlit"),), {"infernux/particle/unlit": ()}
+    choices = tuple(
+        (str(label), str(shader_id))
+        for label, shader_id in get_shader_candidates(".frag")
+        if str(shader_id)
+    )
+    properties = {}
+    for shader_id in sorted(shader_ids):
+        schema = _get_shader_properties_cached(shader_id, ".frag")
+        if schema is None:
+            raise ValueError(f"Particle output shader is unavailable: {shader_id}")
+        properties[shader_id] = tuple(schema)
+    return choices, properties
 
 
 def _shader_property_default(item: Mapping[str, Any], value_type: TypeRef):
@@ -209,9 +208,13 @@ def particle_graph_node_definitions(asset) -> ParticleGraphNodeDefinitionSet:
     for definition in COMMON_NODE_REGISTRY.definitions():
         registry.register(definition)
 
-    fragment_shader_choices, fragment_shader_properties = (
-        _particle_fragment_shader_catalog()
-    )
+    shader_ids = {
+        str(node.properties.get("shader", "infernux/particle/unlit")).strip()
+        for emitter in asset.emitters
+        for node in emitter.rendering.nodes
+        if node.type_id in {"particle.output.sprite", "particle.output.mesh", "particle.output.ribbon"}
+    }
+    fragment_shader_choices, fragment_shader_properties = _particle_fragment_shader_catalog(shader_ids)
 
     emitter_choices = tuple(
         (emitter.name, emitter.stable_id) for emitter in asset.emitters

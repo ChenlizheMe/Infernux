@@ -21,8 +21,8 @@ from .asset import ParticleGraphAsset
 from .hir import ParticleGraphCompiler, ParticleProgramHIR
 from .kernel_ir import ParticleKernelLowerer, ParticleKernelProgram
 from .runtime_metadata import decode_particle_runtime_metadata
-from .gpu_glsl_backend import (
-    GpuParticleGlslLowerer,
+from .gpu_backend import (
+    GpuParticleLowerer,
     compile_gpu_particle_spirv,
     decode_gpu_particle_spirv,
     validate_gpu_particle_spirv,
@@ -804,7 +804,7 @@ class ParticleArtifactRegistry:
         hir = _program_to_dict(program)
         kernel_program = ParticleKernelLowerer().lower(program)
         kernel_ir = kernel_program.to_dict()
-        gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
+        gpu_program = GpuParticleLowerer().lower(kernel_program)
         gpu_glsl = gpu_program.to_dict()
         gpu_spirv = compile_gpu_particle_spirv(gpu_program)
         return _CompiledParticleArtifact(
@@ -1165,7 +1165,7 @@ class ParticleArtifactRegistry:
             kernel_program = ParticleKernelProgram.from_dict(payload["kernel_ir"])
             if kernel_program.source_behavior_hash != payload["behavior_hash"]:
                 return None
-            gpu_program = GpuParticleGlslLowerer().lower(kernel_program)
+            gpu_program = GpuParticleLowerer().lower(kernel_program)
             gpu_glsl = gpu_program.to_dict()
             if payload["gpu_glsl"] != gpu_glsl:
                 return None

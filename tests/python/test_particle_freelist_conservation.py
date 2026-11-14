@@ -1,4 +1,5 @@
 """Run generated particle stages on Vulkan and verify resident slot ownership."""
+
 import re
 import struct
 
@@ -6,7 +7,12 @@ import numpy as np
 import pytest
 
 from infernux.lib import _Infernux
-from infernux.particle import GpuParticleGlslLowerer, ParticleKernelLowerer, ParticleScriptCompiler
+from infernux.particle import (
+    GpuParticleLowerer,
+    ParticleKernelLowerer,
+    ParticleScriptCompiler,
+)
+from test_particle_gpu_backend import _compile_sources
 
 
 def _source(rejection):
@@ -32,8 +38,10 @@ class Conservation(ParticleScript):
         def rendering(self, ctx, particles):
             particles.sprite()
 """
-    hir = ParticleScriptCompiler().compile(script, source_name="Conservation.particle.py")
-    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir)).emitters[0]
+    hir = ParticleScriptCompiler().compile(
+        script, source_name="Conservation.particle.py"
+    )
+    return GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir)).emitters[0]
 
 
 @pytest.fixture(scope="module")
@@ -46,22 +54,32 @@ def particle_kernels(engine):
     addresses.update({(3, index): 16 + index for index in range(5)})
     addresses.update({(6, index): 21 + index for index in range(7)})
     bindings = [(index, "uniform" if index == 5 else "storage") for index in range(28)]
-    pattern = re.compile(r"set\s*=\s*(\d+)\s*,\s*binding\s*=\s*(\d+)")
+    pattern = re.compile(r"\[\[vk::binding\(\s*(\d+)\s*,\s*(\d+)\s*\)\]\]")
     state = [host, bundles, bindings]
     try:
-        for rejection, portable in [(mode, portable) for mode in ("half", "all", "none", "nonfinite")
-                                    for portable in (False, True)]:
+        for rejection in ("half", "all", "none", "nonfinite"):
             emitter = _source(rejection)
-            stages = {name: pattern.sub(lambda match: f"set = 0, binding = {addresses[int(match[1]), int(match[2])]}", source)
-                      for name, source in emitter.stages().items()
-                      if name in ("bootstrap", "init", "update", "update_rendering_fused", "render_reset")}
-            if portable:
-                stages = {name: source.replace("#version 450", "#version 450\n#define INX_WEBGPU 1", 1)
-                          for name, source in stages.items()}
-            compiled = _Infernux._compile_compute_glsl_batch(stages, f"test-particle-slots-{rejection}")
-            kernels = {name: host._create_kernel_from_compiler(code, bindings, 48)
-                       for name, code in compiled.items()}
-            bundles[rejection, portable] = (emitter, kernels)
+            stages = {
+                name: pattern.sub(
+                    lambda match: f"[[vk::binding({addresses[int(match[2]), int(match[1])]}, 0)]]",
+                    source,
+                )
+                for name, source in emitter.stages().items()
+                if name
+                in (
+                    "bootstrap",
+                    "init",
+                    "update",
+                    "update_rendering_fused",
+                    "render_reset",
+                )
+            }
+            compiled = _compile_sources(stages, f"test-particle-slots-{rejection}")
+            kernels = {
+                name: host._create_kernel_from_compiler(code, bindings, 48)
+                for name, code in compiled.items()
+            }
+            bundles[rejection] = (emitter, kernels)
         yield state
     finally:
         for emitter, kernels in bundles.values():
@@ -73,24 +91,51 @@ def particle_kernels(engine):
         kernel = kernels = host = None
 
 
-@pytest.mark.parametrize('capacity,rejection,fused,use_alive,native_schedule,portable', [
-    (257, 'half', False, True, True, False), (65536, 'half', True, True, True, False),
-    (257, 'half', False, False, True, False), (65536, 'half', True, False, True, False),
-    (1048576, 'half', False, True, False, True), (257, 'half', True, True, False, True),
-    (65536, 'half', False, False, False, True), (257, 'half', True, False, False, True),
-    (1, 'all', False, True, True, False), (65536, 'all', True, False, False, True),
-    (65536, 'nonfinite', True, False, True, False), (257, 'nonfinite', False, True, False, True),
-    (257, 'none', False, True, True, False), (65536, 'none', True, True, False, True),
-])
+@pytest.mark.parametrize(
+    "capacity,rejection,fused,use_alive,native_schedule",
+    [
+        (257, "half", False, True, True),
+        (65536, "half", True, True, True),
+        (257, "half", False, False, True),
+        (65536, "half", True, False, True),
+        (1048576, "half", False, True, False),
+        (257, "half", True, True, False),
+        (65536, "half", False, False, False),
+        (257, "half", True, False, False),
+        (1, "all", False, True, True),
+        (65536, "all", True, False, False),
+        (65536, "nonfinite", True, False, True),
+        (257, "nonfinite", False, True, False),
+        (257, "none", False, True, True),
+        (65536, "none", True, True, False),
+    ],
+)
 def test_init_rejection_preserves_free_alive_partition(
-    particle_kernels, capacity, rejection, fused, use_alive, native_schedule, portable,
+    particle_kernels,
+    capacity,
+    rejection,
+    fused,
+    use_alive,
+    native_schedule,
 ):
     host, bundles, bindings = particle_kernels
-    emitter, kernels = bundles[rejection, portable]
-    sizes = {0: capacity * emitter.state_stride // 4, 1: capacity, 2: 16,
-             3: capacity * 28, 4: 4, 5: 64, 6: capacity,
-             7: capacity, 8: capacity, 9: 8, 10: 4, 11: capacity * 4,
-             15: 4, 17: 8}
+    emitter, kernels = bundles[rejection]
+    sizes = {
+        0: capacity * emitter.state_stride // 4,
+        1: capacity,
+        2: 16,
+        3: capacity * 28,
+        4: 4,
+        5: 64,
+        6: capacity,
+        7: capacity,
+        8: capacity,
+        9: 8,
+        10: 4,
+        11: capacity * 4,
+        15: 4,
+        17: 8,
+    }
     buffers = []
     buffer = None
     stages = None
@@ -98,17 +143,44 @@ def test_init_rejection_preserves_free_alive_partition(
         for index, _kind in bindings:
             buffer = host.create_buffer(sizes.get(index, 4), "uint32")
             buffers.append(buffer)
-        buffers[5].set_bytes(np.tile(np.eye(4, dtype=np.float32).reshape(-1), 4).tobytes())
+        buffers[5].set_bytes(
+            np.tile(np.eye(4, dtype=np.float32).reshape(-1), 4).tobytes()
+        )
         buffers[15].set_bytes(struct.pack("<4I", 1, 1, 0, 0))
         buffers[20].set_bytes(struct.pack("<4I", 1, 0, 0, 0))
         accesses = ["read_write"] * len(bindings)
         accesses[5] = "read"
+
         def constants(*, step=0, read=0, alive=False, dt=0.0, flags=0):
-            return struct.pack("<6If5I", capacity, capacity, step * capacity, 1, 17, step,
-                               dt, flags, read, read ^ 1, int(alive), int(not native_schedule))
+            return struct.pack(
+                "<6If5I",
+                capacity,
+                capacity,
+                step * capacity,
+                1,
+                17,
+                step,
+                dt,
+                flags,
+                read,
+                read ^ 1,
+                int(alive),
+                int(not native_schedule),
+            )
+
         def dispatch(name, push, count):
-            # These generated GLSL stages do not supply compiler range proofs.
-            return (kernels[name], buffers, accesses, push, (count + 255) // 256, 1, 1, None)
+            # This isolated harness supplies explicit dispatch sizes and bindings.
+            return (
+                kernels[name],
+                buffers,
+                accesses,
+                push,
+                (count + 255) // 256,
+                1,
+                1,
+                None,
+            )
+
         stages = [dispatch("bootstrap", constants(), capacity)]
         host.dispatch_batch(stages)
         read_slot = 0
@@ -118,35 +190,80 @@ def test_init_rejection_preserves_free_alive_partition(
             # Initial full-capacity scanning models the first frame after state
             # migration. Subsequent frames use the compact list just published.
             list_ready = use_alive or step != 0
-            buffers[18].set_bytes(struct.pack("<4I", step * capacity + capacity // 2, 0, 0, 0))
+            buffers[18].set_bytes(
+                struct.pack("<4I", step * capacity + capacity // 2, 0, 0, 0)
+            )
             # Native SpawnPrepare limits accepted requests to the available
             # slots. Portable hosts use push constants without this pass.
-            buffers[17].set_bytes(struct.pack("<8I", free_count, step * capacity, 1, 0,
-                                              (free_count + 255) // 256, 1, 1, free_count))
+            buffers[17].set_bytes(
+                struct.pack(
+                    "<8I",
+                    free_count,
+                    step * capacity,
+                    1,
+                    0,
+                    (free_count + 255) // 256,
+                    1,
+                    1,
+                    free_count,
+                )
+            )
             push = constants(step=step, read=read_slot, alive=list_ready)
             prepare = constants(step=step, read=read_slot, alive=list_ready, flags=8)
-            update = constants(step=step, read=read_slot, alive=list_ready, dt=1.0 if step == 5 else 0.0)
-            stages = [dispatch("init", push, capacity), dispatch("render_reset", prepare, 1),
-                      dispatch("update_rendering_fused" if fused else "update", update, capacity)]
+            update = constants(
+                step=step,
+                read=read_slot,
+                alive=list_ready,
+                dt=1.0 if step == 5 else 0.0,
+            )
+            stages = [
+                dispatch("init", push, capacity),
+                dispatch("render_reset", prepare, 1),
+                dispatch(
+                    "update_rendering_fused" if fused else "update", update, capacity
+                ),
+            ]
             host.dispatch_batch(stages)
             read_slot ^= 1
             counters = np.frombuffer(buffers[2].get_bytes(64), np.uint32)
             control = np.frombuffer(buffers[10].get_bytes(16), np.uint32)
             free_count, alive_count = int(counters[0]), int(control[read_slot])
-            assert free_count + alive_count == capacity, (step, free_count, alive_count, capacity)
-            free = np.frombuffer(buffers[1].get_bytes(capacity * 4), np.uint32)[:free_count]
-            alive = np.frombuffer(buffers[7 + read_slot].get_bytes(capacity * 4), np.uint32)[:alive_count]
-            np.testing.assert_array_equal(np.sort(np.concatenate((free, alive))), all_slots,
-                                          err_msg=f"step={step} capacity={capacity} mode={rejection}")
-            states = np.frombuffer(buffers[0].get_bytes(capacity * emitter.state_stride), np.uint32).reshape(capacity, -1)
-            np.testing.assert_array_equal(np.flatnonzero(states[:, 0] & 1), np.sort(alive))
-            assert np.all(states[free, 0] == 0), "Recycled slots retained lifecycle state"
+            assert free_count + alive_count == capacity, (
+                step,
+                free_count,
+                alive_count,
+                capacity,
+            )
+            free = np.frombuffer(buffers[1].get_bytes(capacity * 4), np.uint32)[
+                :free_count
+            ]
+            alive = np.frombuffer(
+                buffers[7 + read_slot].get_bytes(capacity * 4), np.uint32
+            )[:alive_count]
+            np.testing.assert_array_equal(
+                np.sort(np.concatenate((free, alive))),
+                all_slots,
+                err_msg=f"step={step} capacity={capacity} mode={rejection}",
+            )
+            states = np.frombuffer(
+                buffers[0].get_bytes(capacity * emitter.state_stride), np.uint32
+            ).reshape(capacity, -1)
+            np.testing.assert_array_equal(
+                np.flatnonzero(states[:, 0] & 1), np.sort(alive)
+            )
+            assert np.all(
+                states[free, 0] == 0
+            ), "Recycled slots retained lifecycle state"
             if rejection in ("all", "nonfinite") or step == 5:
                 assert alive_count == 0 and free_count == capacity
             if rejection == "none" and step != 5:
                 assert alive_count == capacity
             if rejection == "half":
-                id_offset = next(field[3] // 4 for field in emitter.attribute_fields if field[0] == "builtin.id")
+                id_offset = next(
+                    field[3] // 4
+                    for field in emitter.attribute_fields
+                    if field[0] == "builtin.id"
+                )
                 assert np.all(states[alive, id_offset] % capacity >= capacity // 2)
     finally:
         for kernel in kernels.values():

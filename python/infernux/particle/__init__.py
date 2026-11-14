@@ -7,7 +7,7 @@ from .script import *
 from .artifact import *
 from .kernel_ir import *
 from .kernel_semantics import *
-from .gpu_glsl_backend import *
+from .gpu_backend import *
 from .gpu_control import *
 from .runtime_metadata import *
 from .runtime_compatibility import *

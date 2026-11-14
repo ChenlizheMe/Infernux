@@ -6,13 +6,13 @@ import struct
 
 import pytest
 
-import infernux.particle.gpu_glsl_backend as gpu_backend
+import infernux.particle.gpu_backend as gpu_backend
 
 from infernux.lib import _Infernux as native
 from infernux.particle import (
     EmitterSettings,
     EmitterShape,
-    GpuParticleGlslLowerer,
+    GpuParticleLowerer,
     GpuParticleCompileError,
     ParticleAttribute,
     ParticleEmitterAsset,
@@ -49,10 +49,23 @@ from infernux.particle.asset import particle_attribute_cache_id
 def _gpu_source():
     hir = ParticleGraphCompiler().compile(ParticleGraphAsset(stable_id="gpu-particle"))
     kernel = ParticleKernelLowerer().lower(hir)
-    return GpuParticleGlslLowerer().lower(kernel)
+    return GpuParticleLowerer().lower(kernel)
 
 
-def test_gpu_particle_graphics_cook_uses_shared_slang_and_reuses_prepared_code(monkeypatch):
+def _compile_sources(sources, label):
+    compiled = {}
+    for stage, source in sources.items():
+        result = native._compile_shader_program(
+            source,
+            f"<{label}:{stage}>",
+            f"particle_test_{stage}",
+            targets=["spirv", "wgsl"],
+        )
+        compiled[stage] = bytes(result["targets"][0]["entries"][0]["code"])
+    return compiled
+
+
+def test_gpu_particle_cook_uses_shared_slang_and_reuses_prepared_code(monkeypatch):
     calls = []
     compile_program = native._compile_shader_program
 
@@ -65,12 +78,17 @@ def test_gpu_particle_graphics_cook_uses_shared_slang_and_reuses_prepared_code(m
 
     monkeypatch.setattr(native, "_compile_shader_program", compile_graphics)
     monkeypatch.setattr(native, "_compile_graphics_glsl_batch", reject_graphics_glsl)
+    monkeypatch.setattr(native, "_compile_compute_glsl_batch", reject_graphics_glsl)
     gpu_backend._SPIRV_DESCRIPTOR_CACHE.clear()
     source = _gpu_source()
     first = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(first, source) is first
     graphics = gpu_backend._particle_graphics_sources()
-    assert len(calls) == len({text for stages in graphics.values() for text in stages.values()})
+    unique_sources = {text for stages in graphics.values() for text in stages.values()}
+    unique_sources.update(
+        text for emitter in source.emitters for text in emitter.stages().values()
+    )
+    assert len(calls) == len(unique_sources)
     assert set(first["billboard"]) == set(graphics["billboard"])
     assert set(first["mesh"]) == set(graphics["mesh"])
     calls.clear()
@@ -78,12 +96,12 @@ def test_gpu_particle_graphics_cook_uses_shared_slang_and_reuses_prepared_code(m
     assert calls == []
 
 
-def _assert_generated_values_are_declared(glsl: str) -> None:
-    value_names = set(re.findall(r"\bv\d+\b", glsl))
+def _assert_generated_values_are_declared(source: str) -> None:
+    value_names = set(re.findall(r"\bv\d+\b", source))
     declarations = set(
         re.findall(
-            r"\b(?:bool|int|uint|float|[biu]?vec[234]|mat[234])\s+(v\d+)\b",
-            glsl,
+            r"\b(?:bool|int|uint|float|(?:bool|int|uint|float)[234]|float[234]x[234])\s+(v\d+)\b",
+            source,
         )
     )
     assert value_names <= declarations
@@ -114,16 +132,24 @@ def _if_asset():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("condition", "common.constant.bool", properties={"value": True}),
+            GraphNodeRecord(
+                "condition", "common.constant.bool", properties={"value": True}
+            ),
             GraphNodeRecord("if", "particle.control.if"),
-            GraphNodeRecord("true-size", "particle.attribute.size", properties={"value": 2.0}),
-            GraphNodeRecord("false-size", "particle.attribute.size", properties={"value": 0.5}),
+            GraphNodeRecord(
+                "true-size", "particle.attribute.size", properties={"value": 2.0}
+            ),
+            GraphNodeRecord(
+                "false-size", "particle.attribute.size", properties={"value": 0.5}
+            ),
         ),
         links=(
             GraphLinkRecord("root-if", "root.update", "out", "if", "in", PortKind.EXEC),
             GraphLinkRecord("condition-if", "condition", "value", "if", "condition"),
             GraphLinkRecord("if-true", "if", "true", "true-size", "in", PortKind.EXEC),
-            GraphLinkRecord("if-false", "if", "false", "false-size", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "if-false", "if", "false", "false-size", "in", PortKind.EXEC
+            ),
         ),
     )
     return ParticleGraphAsset(
@@ -241,10 +267,18 @@ def _collision_wait_join_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-wait", "root.collision_enter", "out", "wait", "in", PortKind.EXEC),
-            GraphLinkRecord("frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE),
-            GraphLinkRecord("wait-size", "wait", "out", "delayed-size", "in", PortKind.EXEC),
-            GraphLinkRecord("size-join", "delayed-size", "out", "join", "in0", PortKind.EXEC),
+            GraphLinkRecord(
+                "root-wait", "root.collision_enter", "out", "wait", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE
+            ),
+            GraphLinkRecord(
+                "wait-size", "wait", "out", "delayed-size", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "size-join", "delayed-size", "out", "join", "in0", PortKind.EXEC
+            ),
             GraphLinkRecord(
                 "root-position",
                 "root.collision_enter",
@@ -261,7 +295,9 @@ def _collision_wait_join_asset():
                 "in1",
                 PortKind.EXEC,
             ),
-            GraphLinkRecord("join-tail", "join", "out", "tail-color", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "join-tail", "join", "out", "tail-color", "in", PortKind.EXEC
+            ),
         ),
     )
     return ParticleGraphAsset(
@@ -284,7 +320,9 @@ def _wait_asset(*, fork: bool = False):
     ]
     links = [
         GraphLinkRecord("root-wait", "root.update", "out", "wait", "in", PortKind.EXEC),
-        GraphLinkRecord("frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE),
+        GraphLinkRecord(
+            "frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE
+        ),
         GraphLinkRecord("wait-tail", "wait", "out", "tail", "in", PortKind.EXEC),
     ]
     if fork:
@@ -310,7 +348,9 @@ def _wait_asset(*, fork: bool = False):
         emitters=(
             ParticleEmitterAsset(
                 settings=EmitterSettings(capacity=512),
-                update=GraphDocument("particle.update", nodes=tuple(nodes), links=tuple(links)),
+                update=GraphDocument(
+                    "particle.update", nodes=tuple(nodes), links=tuple(links)
+                ),
             ),
         ),
     )
@@ -321,7 +361,9 @@ def _wait_acceleration_asset():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("wait", "particle.control.wait_frames", properties={"frames": 1}),
+            GraphNodeRecord(
+                "wait", "particle.control.wait_frames", properties={"frames": 1}
+            ),
             GraphNodeRecord(
                 "accelerate",
                 "particle.attribute.velocity",
@@ -329,8 +371,12 @@ def _wait_acceleration_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-wait", "root.update", "out", "wait", "in", PortKind.EXEC),
-            GraphLinkRecord("wait-accelerate", "wait", "out", "accelerate", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "root-wait", "root.update", "out", "wait", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "wait-accelerate", "wait", "out", "accelerate", "in", PortKind.EXEC
+            ),
         ),
     )
     return ParticleGraphAsset(
@@ -345,7 +391,9 @@ def _two_wait_asset():
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("frames", "common.constant.i32", properties={"value": 2}),
-            GraphNodeRecord("seconds", "common.constant.f32", properties={"value": 0.25}),
+            GraphNodeRecord(
+                "seconds", "common.constant.f32", properties={"value": 0.25}
+            ),
             GraphNodeRecord("wait.frames", "particle.control.wait_frames"),
             GraphNodeRecord("wait.seconds", "particle.control.wait_seconds"),
             GraphNodeRecord("tail", "particle.attribute.size"),
@@ -493,10 +541,18 @@ def _until_velocity_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-down", "root.update", "out", "velocity.down", "in", PortKind.EXEC),
-            GraphLinkRecord("down-until", "velocity.down", "out", "until.down", "in", PortKind.EXEC),
-            GraphLinkRecord("until-side", "until.down", "out", "velocity.side", "in", PortKind.EXEC),
-            GraphLinkRecord("side-until", "velocity.side", "out", "until.side", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "root-down", "root.update", "out", "velocity.down", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "down-until", "velocity.down", "out", "until.down", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "until-side", "until.down", "out", "velocity.side", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "side-until", "velocity.side", "out", "until.side", "in", PortKind.EXEC
+            ),
         ),
     )
     return ParticleGraphAsset(
@@ -530,18 +586,26 @@ def _wait_join_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-wait", "root.update", "out", "wait", "in", PortKind.EXEC),
-            GraphLinkRecord("frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE),
+            GraphLinkRecord(
+                "root-wait", "root.update", "out", "wait", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "frames-wait", "frames", "value", "wait", "frames", PortKind.VALUE
+            ),
             GraphLinkRecord("wait-left", "wait", "out", "left", "in", PortKind.EXEC),
             GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.EXEC),
-            GraphLinkRecord("root-right", "root.update", "out", "right", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "root-right", "root.update", "out", "right", "in", PortKind.EXEC
+            ),
             GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.EXEC),
             GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.EXEC),
         ),
     )
     return ParticleGraphAsset(
         stable_id="wait-join-gpu",
-        emitters=(ParticleEmitterAsset(settings=EmitterSettings(capacity=512), update=update),),
+        emitters=(
+            ParticleEmitterAsset(settings=EmitterSettings(capacity=512), update=update),
+        ),
     )
 
 
@@ -551,10 +615,14 @@ def _dual_wait_join_asset():
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
             GraphNodeRecord("frames", "common.constant.i32", properties={"value": 2}),
-            GraphNodeRecord("seconds", "common.constant.f32", properties={"value": 0.25}),
+            GraphNodeRecord(
+                "seconds", "common.constant.f32", properties={"value": 0.25}
+            ),
             GraphNodeRecord("wait.left", "particle.control.wait_frames"),
             GraphNodeRecord("wait.right", "particle.control.wait_seconds"),
-            GraphNodeRecord("left", "particle.attribute.size", properties={"value": 2.0}),
+            GraphNodeRecord(
+                "left", "particle.attribute.size", properties={"value": 2.0}
+            ),
             GraphNodeRecord(
                 "right",
                 "particle.attribute.position",
@@ -568,20 +636,39 @@ def _dual_wait_join_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-left", "root.update", "out", "wait.left", "in", PortKind.EXEC),
-            GraphLinkRecord("frames-left", "frames", "value", "wait.left", "frames", PortKind.VALUE),
-            GraphLinkRecord("left-tail", "wait.left", "out", "left", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "root-left", "root.update", "out", "wait.left", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "frames-left", "frames", "value", "wait.left", "frames", PortKind.VALUE
+            ),
+            GraphLinkRecord(
+                "left-tail", "wait.left", "out", "left", "in", PortKind.EXEC
+            ),
             GraphLinkRecord("left-join", "left", "out", "join", "in0", PortKind.EXEC),
-            GraphLinkRecord("root-right", "root.update", "out", "wait.right", "in", PortKind.EXEC),
-            GraphLinkRecord("seconds-right", "seconds", "value", "wait.right", "seconds", PortKind.VALUE),
-            GraphLinkRecord("right-tail", "wait.right", "out", "right", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "root-right", "root.update", "out", "wait.right", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "seconds-right",
+                "seconds",
+                "value",
+                "wait.right",
+                "seconds",
+                PortKind.VALUE,
+            ),
+            GraphLinkRecord(
+                "right-tail", "wait.right", "out", "right", "in", PortKind.EXEC
+            ),
             GraphLinkRecord("right-join", "right", "out", "join", "in1", PortKind.EXEC),
             GraphLinkRecord("join-tail", "join", "out", "tail", "in", PortKind.EXEC),
         ),
     )
     return ParticleGraphAsset(
         stable_id="dual-wait-join-gpu",
-        emitters=(ParticleEmitterAsset(settings=EmitterSettings(capacity=512), update=update),),
+        emitters=(
+            ParticleEmitterAsset(settings=EmitterSettings(capacity=512), update=update),
+        ),
     )
 
 
@@ -602,8 +689,12 @@ def _dual_init_wait_asset():
             ),
         ),
         links=(
-            GraphLinkRecord("root-left", "root.init", "out", "wait.left", "in", PortKind.EXEC),
-            GraphLinkRecord("root-right", "root.init", "out", "wait.right", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "root-left", "root.init", "out", "wait.left", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "root-right", "root.init", "out", "wait.right", "in", PortKind.EXEC
+            ),
         ),
     )
     return ParticleGraphAsset(
@@ -617,10 +708,16 @@ def _nested_wait_join_asset():
         "particle.update",
         nodes=(
             GraphNodeRecord("root.update", "particle.root.update"),
-            GraphNodeRecord("frames.first", "common.constant.i32", properties={"value": 2}),
-            GraphNodeRecord("frames.second", "common.constant.i32", properties={"value": 3}),
+            GraphNodeRecord(
+                "frames.first", "common.constant.i32", properties={"value": 2}
+            ),
+            GraphNodeRecord(
+                "frames.second", "common.constant.i32", properties={"value": 3}
+            ),
             GraphNodeRecord("wait.first", "particle.control.wait_frames"),
-            GraphNodeRecord("first.left", "particle.attribute.size", properties={"value": 2.0}),
+            GraphNodeRecord(
+                "first.left", "particle.attribute.size", properties={"value": 2.0}
+            ),
             GraphNodeRecord(
                 "first.right",
                 "particle.attribute.position",
@@ -765,8 +862,10 @@ def _nested_wait_join_asset():
 
 @pytest.mark.parametrize("fork", [False, True])
 def test_gpu_wait_emits_bounded_continuation_program_and_valid_spirv(fork):
-    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(_wait_asset(fork=fork)))
-    source = GpuParticleGlslLowerer().lower(kernel)
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_wait_asset(fork=fork))
+    )
+    source = GpuParticleLowerer().lower(kernel)
     emitter = source.emitters[0]
     continuation = emitter.continuation
 
@@ -774,7 +873,9 @@ def test_gpu_wait_emits_bounded_continuation_program_and_valid_spirv(fork):
     assert continuation.record_stride == 64
     assert continuation.lane_count == 1
     assert continuation.join_count == 0
-    assert "layout(std430, set = 5, binding = 0)" in emitter.update
+    assert (
+        "RWStructuredBuffer<Atomic<uint>> continuation_record_words" in emitter.update
+    )
     assert "inx_suspend_frames(" in emitter.update
     assert "case 1u:" in continuation.dispatch
     assert "state.a_builtin_size =" in continuation.dispatch
@@ -794,29 +895,33 @@ def test_gpu_wait_emits_bounded_continuation_program_and_valid_spirv(fork):
 
 
 def test_gpu_until_repeats_preceding_attribute_operation_and_compiles_valid_spirv():
-    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(_until_velocity_asset()))
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_until_velocity_asset())
+    )
     emitter = kernel.emitters[0]
     assert [item.resume_node_uid for item in emitter.suspensions] == [
         "velocity.down",
         "velocity.side",
     ]
 
-    source = GpuParticleGlslLowerer().lower(kernel)
+    source = GpuParticleLowerer().lower(kernel)
     continuation = source.emitters[0].continuation
     assert continuation is not None
     assert "inx_until_seconds(" in source.emitters[0].update
     assert "inx_until_frames(" in source.emitters[0].update
     assert "INX_CONTINUATION_FLAG_UNTIL_SECONDS" in source.emitters[0].update
     assert "INX_CONTINUATION_FLAG_UNTIL_FRAMES" in source.emitters[0].update
-    assert continuation.dispatch.count("case ") == 2
+    assert len(re.findall(r"case \d+u?:", continuation.dispatch)) == 2
     assert continuation.dispatch.count("state.a_builtin_velocity =") >= 2
     compiled = compile_gpu_particle_spirv(source)
     validate_gpu_particle_spirv(compiled, source)
 
 
 def test_gpu_nested_wait_joins_move_the_continuation_to_the_next_join():
-    source = GpuParticleGlslLowerer().lower(
-        ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(_nested_wait_join_asset()))
+    source = GpuParticleLowerer().lower(
+        ParticleKernelLowerer().lower(
+            ParticleGraphCompiler().compile(_nested_wait_join_asset())
+        )
     )
     emitter = source.emitters[0]
     continuation = emitter.continuation
@@ -824,7 +929,7 @@ def test_gpu_nested_wait_joins_move_the_continuation_to_the_next_join():
     assert continuation is not None
     assert continuation.lane_count == 2
     assert continuation.join_count == 2
-    assert continuation.dispatch.count("case ") == 2
+    assert len(re.findall(r"case \d+u?:", continuation.dispatch)) == 2
     assert "state.a_builtin_velocity =" in continuation.dispatch
     assert "state.a_builtin_rotation =" in continuation.dispatch
     assert "inx_continuation_record_join_index == 0u" in continuation.dispatch
@@ -835,20 +940,37 @@ def test_gpu_nested_wait_joins_move_the_continuation_to_the_next_join():
 
 
 def test_contact_wait_join_uses_full_contact_identity_and_valid_spirv():
-    kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(_collision_wait_join_asset()))
-    source = GpuParticleGlslLowerer().lower(kernel)
+    kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(_collision_wait_join_asset())
+    )
+    source = GpuParticleLowerer().lower(kernel)
     emitter = source.emitters[0]
     continuation = emitter.continuation
 
     assert continuation is not None
     assert continuation.join_count == 1
-    assert "ParticleContactContinuationJoinStates" in emitter.contact_dispatch
+    assert (
+        "RWStructuredBuffer<InxContactJoinStorage> contact_continuation_join_states"
+        in emitter.contact_dispatch
+    )
     assert "inx_contact_continuation_join_begin" in emitter.contact_dispatch
-    assert "inx_continuation_context_identity_low = contact.identity.z" in emitter.contact_dispatch
-    assert "inx_continuation_context_identity_high = contact.identity.w" in emitter.contact_dispatch
+    assert (
+        "inx_continuation_context_identity_low = contact.identity.z"
+        in emitter.contact_dispatch
+    )
+    assert (
+        "inx_continuation_context_identity_high = contact.identity.w"
+        in emitter.contact_dispatch
+    )
     assert "inx_contact_continuation_join_arrive" in continuation.dispatch
-    assert "contact_continuation_snapshot_words[snapshot_base + 2u]" in continuation.dispatch
-    assert "contact_continuation_snapshot_words[snapshot_base + 3u]" in continuation.dispatch
+    assert (
+        "contact_continuation_snapshot_words[snapshot_base + 2u]"
+        in continuation.dispatch
+    )
+    assert (
+        "contact_continuation_snapshot_words[snapshot_base + 3u]"
+        in continuation.dispatch
+    )
     assert "contact Wait/Until branches cannot Join" not in continuation.dispatch
 
     compiled = compile_gpu_particle_spirv(source)
@@ -857,14 +979,22 @@ def test_contact_wait_join_uses_full_contact_identity_and_valid_spirv():
 
 def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     hir = ParticleGraphCompiler().compile(_scene_collision_asset())
-    assert not any(operation.opcode == "collision.scene" for operation in hir.emitters[0].update.flow.iter_operations())
+    assert not any(
+        operation.opcode == "collision.scene"
+        for operation in hir.emitters[0].update.flow.iter_operations()
+    )
 
     kernel = ParticleKernelLowerer().lower(hir)
     collision_instructions = [
-        value for value in kernel.emitters[0].update.instructions if value.opcode == "collide_scene"
+        value
+        for value in kernel.emitters[0].update.instructions
+        if value.opcode == "collide_scene"
     ]
     assert len(collision_instructions) == 1
-    assert not any(value.opcode == "record_collision_diagnostics" for value in kernel.emitters[0].update.instructions)
+    assert not any(
+        value.opcode == "record_collision_diagnostics"
+        for value in kernel.emitters[0].update.instructions
+    )
     instruction = collision_instructions[0]
     assert instruction.result_id == ""
     assert [operand.value_type.value_type for operand in instruction.operands] == [
@@ -890,148 +1020,45 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         "velocity_attribute": "builtin.velocity",
     }
 
-    source = GpuParticleGlslLowerer().lower(kernel)
+    source = GpuParticleLowerer().lower(kernel)
     assert source.emitters[0].collision_enabled is True
-    update_source = source.emitters[0].update
-    assert "struct InxParticleAffine" in update_source
-    assert "vec4 row0;" in update_source
-    assert "vec4 row1;" in update_source
-    assert "vec4 row2;" in update_source
-    assert "InxParticleAffine collider_to_world;" in update_source
-    assert "InxParticleAffine world_to_collider;" in update_source
-    assert "InxParticleAffine previous_world_to_collider;" in update_source
-    assert "uvec4 geometry;" in update_source
-    assert "mat4 collider_to_world;" not in update_source
-    assert "mat4 world_to_collider;" not in update_source
-    assert "inx_particle_affine_point" in update_source
-    assert "inx_particle_affine_linear" in update_source
-    collider_fields = (
-        "vec4 material;",
-        "vec4 world_aabb_min;",
-        "vec4 world_aabb_max;",
-        "uvec4 metadata;",
-        "uvec4 identity;",
+    # Compare both compiled layouts with the scene records consumed by the
+    # native GPU collision producer, rather than checking generated syntax.
+    compiled = native._compile_shader_program(
+        source.emitters[0].update,
+        "<particle-collision-layout>",
+        "particle_collision_layout",
+        targets=["spirv", "wgsl"],
     )
-    assert [update_source.index(field) for field in collider_fields] == sorted(
-        update_source.index(field) for field in collider_fields
-    )
-    for binding in range(7):
-        assert f"set = 6, binding = {binding}" in update_source
-    assert "inx_collide_scene(" in update_source
-    assert "bool inx_collide_scene(" in update_source
-    assert "out vec3 simulation_collision_normal" in update_source
-    assert "out vec3 simulation_contact_point" in update_source
-    assert "out vec3 simulation_relative_velocity" in update_source
-    assert "out float simulation_penetration" in update_source
-    assert "out bool collision_is_trigger" in update_source
-    assert "out vec4 collision_material" in update_source
-    assert "out uvec2 collision_collider_id" in update_source
-    assert "primary_collider_id = collider_id" in update_source
-    assert "if (is_trigger) continue;" in update_source
-    assert update_source.index("atomicAdd(counters.collision_trigger_count, 1u);") < update_source.index(
-        "if (is_trigger) continue;"
-    )
-    assert "state.a_builtin_collision_collider_id_low" in update_source
-    assert "state.a_builtin_collision_collider_id_high" in update_source
-    assert "uint collision_hit_count;" in update_source
-    assert "uint collision_exit_count;" in update_source
-    assert "uint collision_max_outward_speed_bits;" in update_source
-    assert "uint collision_max_tangent_speed_bits;" in update_source
-    assert "uint collision_candidate_overflow_count;" in update_source
-    assert "uint candidate_indices[16];" in update_source
-    assert "particle_colliders[existing_index].identity.xy" in update_source
-    assert "atomicAdd(counters.collision_candidate_overflow_count, 1u);" in update_source
-    assert update_source.index("uint candidate_indices[16];") < update_source.index(
-        "for (uint candidate = 0u; candidate < candidate_count; ++candidate)"
-    )
-    render_reset_source = source.emitters[0].render_reset
-    assert "(pc.diagnostic_flags & 2u) != 0u" in render_reset_source
-    assert "counters.collision_hit_count = 0u;" in render_reset_source
-    assert "counters.collision_max_outward_speed_bits = 0u;" in render_reset_source
-    assert "counters.collision_max_tangent_speed_bits = 0u;" in render_reset_source
-    assert "counters.collision_candidate_overflow_count = 0u;" in render_reset_source
-    assert render_reset_source.index("counters.collision_hit_count = 0u;") < render_reset_source.index(
-        "simulation_control.simulation_allowed == 0u"
-    )
-    assert "particle_collision_grid_offsets[cell_index + 1u]" in update_source
-    assert "bool inx_sweep_box(" in update_source
-    assert "bool inx_sweep_sphere(" in update_source
-    assert "bool inx_sweep_capsule(" in update_source
-    assert "bool inx_sweep_triangle(" in update_source
-    assert "bool inx_collision_mesh(" in update_source
-    assert "particle_collision_mesh_bvh[node_index]" in update_source
-    assert "collider.metadata.x == 3u" in update_source
-    assert "vec3 collider_swept_min" in update_source
-    assert "collider.previous_world_aabb_min.xyz" in update_source
-    assert "collider.previous_world_aabb_max.xyz" in update_source
-    assert "vec3 particle_swept_min" in update_source
-    assert "collider.previous_world_to_collider" in update_source
-    assert "previous_world_position + collider_displacement" not in update_source
-    assert update_source.index("inx_sweep_box(local_previous") < update_source.index(
-        "else if (all(lessThanEqual(abs(local_position), half_extent)))"
-    )
-
-    contact_prepare_source = source.emitters[0].contact_prepare
-    for binding in range(8):
-        assert f"set = 7, binding = {binding}" in contact_prepare_source
-    assert "const uint INX_CONTACTS_PER_PARTICLE = 8u;" in contact_prepare_source
-    assert "uint current_page = pc.simulation_step & 1u;" in contact_prepare_source
-    assert "previous_state.y + 1u == pc.simulation_step" in contact_prepare_source
-    assert "contact_particle_record_indices[current_base + slot]" in contact_prepare_source
-    assert "contact_counters.contact_current_record_count = 0u;" in contact_prepare_source
-    assert "contact_counters.contact_max_per_particle = 0u;" in contact_prepare_source
-    assert "contact_counters.multi_contact_particle_count = 0u;" in contact_prepare_source
-    assert "contact_counters.contact_retained_order_hash = 0u;" in contact_prepare_source
-    assert "contact_counters.contact_dropped_order_hash = 0u;" in contact_prepare_source
-    assert "contact_counters.contact_min_particle_index = INX_CONTACT_INVALID_INDEX;" in contact_prepare_source
-    assert "contact_counters.contact_max_particle_index = 0u;" in contact_prepare_source
-    assert "contact_hash_slots[hash_slot].key = uvec4(INX_CONTACT_INVALID_INDEX);" in contact_prepare_source
-    assert "bool reset_all = (pc.diagnostic_flags & 4u) != 0u;" in contact_prepare_source
-    assert "for (uint page = 0u; page < 2u; ++page)" in contact_prepare_source
-    assert (
-        "contact_particle_states[particle_index] =\n                uvec4(INX_CONTACT_INVALID_INDEX"
-        in contact_prepare_source
-    )
-    assert "(pc.capacity + 255u) / 256u" in contact_prepare_source
-    assert "particle_index * INX_CONTACTS_PER_PARTICLE * 2u" not in contact_prepare_source
-    assert "inx_store_contact(" in update_source
-    assert "atomicAdd(contact_counters.contact_current_record_count, 1u)" in update_source
-    assert "particle_index * INX_CONTACTS_PER_PARTICLE + contact_slot" not in update_source
-    assert "bounded global sparse pool" in update_source
-    assert "privileges particle indices" in update_source
-    assert "first eight actual" in update_source
-    assert "particle_state = uvec4(generation, pc.simulation_step, 0u, 0u);" in update_source
-    assert "atomicAdd(contact_counters.contact_current_record_count, 1u);" in update_source
-    assert "(pc.diagnostic_flags & 1u) != 0u" in update_source
-    assert "atomicMax(contact_counters.contact_max_per_particle, contact_slot + 1u);" in update_source
-    assert "atomicAdd(contact_counters.multi_contact_particle_count, 1u);" in update_source
-    assert "atomicAdd(contact_counters.contact_retained_order_hash" in update_source
-    assert "atomicAdd(contact_counters.contact_dropped_order_hash" in update_source
-    assert "uvec4(collider_id, contact_slot, 0u)" in update_source
-    assert "uvec4(collider_id, contact_order, 1u)" in update_source
-    assert "atomicMin(contact_counters.contact_min_particle_index, particle_index);" in update_source
-    assert "atomicMax(contact_counters.contact_max_particle_index, particle_index);" in update_source
-    assert "inx_collide_scene(particle_index, " in update_source
-    assert "particle_index, contact_hit_order, collider_id" in update_source
-    assert "struct InxParticleContactRecord" in update_source
-
-    contact_solve_source = source.emitters[0].contact_solve
-    assert "uint hash_slot = inx_contact_hash(key) & hash_mask;" in contact_solve_source
-    assert "atomicCompSwap(" in contact_solve_source
-    assert "contact_hash_slots[physical_hash_slot].value = uvec4(" in contact_solve_source
-    assert "uint inx_find_contact_record(uint page, uvec4 key)" in contact_solve_source
-    assert "for (uint lifecycle = 0u; lifecycle < 2u; ++lifecycle)" in contact_solve_source
-    assert "contact_work_items[work_index].dispatch = uvec4(" in contact_solve_source
-    assert "2u, record_index, pc.simulation_step," in contact_solve_source
-    assert "contact_records[record_index].metadata.w" in contact_solve_source
-    assert "atomicAdd(contact_counters.contact_work_item_count, work_count);" in contact_solve_source
-    assert "uint work_capacity = record_capacity * 2u;" in contact_solve_source
-    assert "one contiguous" in contact_solve_source
-    assert "particle_index * INX_CONTACTS_PER_PARTICLE * 2u" not in contact_solve_source
-
-    contact_dispatch_source = source.emitters[0].contact_dispatch
-    assert "packed_work_range >> INX_CONTACT_WORK_COUNT_BITS" in contact_dispatch_source
-    assert "local_work < work_count" in contact_dispatch_source
+    collider_offsets = {
+        "collider_to_world": 0,
+        "world_to_collider": 48,
+        "previous_world_to_collider": 96,
+        "shape": 144,
+        "geometry": 160,
+        "linear_velocity": 176,
+        "angular_velocity": 192,
+        "center_of_mass": 208,
+        "material": 224,
+        "world_aabb_min": 240,
+        "world_aabb_max": 256,
+        "previous_world_aabb_min": 272,
+        "previous_world_aabb_max": 288,
+        "metadata": 304,
+        "identity": 320,
+    }
+    for target in compiled["targets"]:
+        resources = {
+            (resource["set"], resource["binding"]): resource
+            for resource in target["resources"]
+        }
+        scene = resources[6, 0]
+        assert scene["element_stride"] == 64
+        colliders = resources[6, 1]
+        assert colliders["element_stride"] == 336
+        assert {
+            field["name"]: field["offset"] for field in colliders["value"]["fields"]
+        } == collider_offsets
 
     payload = compile_gpu_particle_spirv(source)
     assert validate_gpu_particle_spirv(payload, source) is payload
@@ -1056,10 +1083,16 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
             GraphNodeRecord("sample", "common.texture.sample2d"),
         ),
         links=(
-            GraphLinkRecord("stream", "root.update", "out", "set-color", "in", PortKind.EXEC),
-            GraphLinkRecord("texture-value", "texture", "value", "sample", "texture", PortKind.VALUE),
+            GraphLinkRecord(
+                "stream", "root.update", "out", "set-color", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "texture-value", "texture", "value", "sample", "texture", PortKind.VALUE
+            ),
             GraphLinkRecord("uv-value", "uv", "value", "sample", "uv", PortKind.VALUE),
-            GraphLinkRecord("sample-color", "sample", "color", "set-color", "value", PortKind.VALUE),
+            GraphLinkRecord(
+                "sample-color", "sample", "color", "set-color", "value", PortKind.VALUE
+            ),
         ),
     )
     default = AssetReference("smoke-guid", "Assets/VFX/Smoke.png")
@@ -1075,7 +1108,7 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
         emitters=(ParticleEmitterAsset(update=update),),
     )
     kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(asset))
-    source = GpuParticleGlslLowerer().lower(kernel)
+    source = GpuParticleLowerer().lower(kernel)
     emitter = source.emitters[0]
 
     assert pack_gpu_particle_parameters(kernel.parameters) == (0, 0, 0, 0)
@@ -1089,7 +1122,10 @@ def test_gpu_texture2d_parameter_lowers_to_rhi_resource_and_sample():
             "default": default.to_dict(),
         }
     ]
-    assert "layout(set = 2, binding = 1) uniform sampler2D inx_parameter_texture_0;" in emitter.update
+    assert (
+        "[[vk::binding(1, 2)]] Sampler2D<float4> inx_parameter_texture_0;"
+        in emitter.update
+    )
     texture_handle = gpu_backend._texture_resource_handle("smoke-texture")
     assert f"inx_sample_parameter_texture({texture_handle}u," in emitter.update
     payload = compile_gpu_particle_spirv(source)
@@ -1111,15 +1147,19 @@ def _kill_if_gpu_source():
             GraphNodeRecord("older", "common.compare.greater_than"),
         ),
         links=(
-            GraphLinkRecord("stream", "root.update", "out", "kill", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "stream", "root.update", "out", "kill", "in", PortKind.EXEC
+            ),
             GraphLinkRecord("a", "age", "value", "older", "a", PortKind.VALUE),
             GraphLinkRecord("b", "limit", "value", "older", "b", PortKind.VALUE),
-            GraphLinkRecord("condition", "older", "result", "kill", "condition", PortKind.VALUE),
+            GraphLinkRecord(
+                "condition", "older", "result", "kill", "condition", PortKind.VALUE
+            ),
         ),
     )
     emitter = ParticleEmitterAsset(stable_id="kill", update=update)
     hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
-    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    return GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
 def _event_queue_program():
@@ -1128,7 +1168,9 @@ def _event_queue_program():
         "Impact",
         4,
         (
-            ParticleEventField("position", "Position", TypeRef(ValueType.VEC3), [1.0, 2.0, 3.0]),
+            ParticleEventField(
+                "position", "Position", TypeRef(ValueType.VEC3), [1.0, 2.0, 3.0]
+            ),
             ParticleEventField("kind", "Kind", TypeRef(ValueType.U32), 7),
             ParticleEventField("weight", "Weight", TypeRef(ValueType.F32), 2.5),
         ),
@@ -1147,7 +1189,11 @@ def _event_queue_program():
                 },
             ),
         ),
-        links=(GraphLinkRecord("trigger.exec", "root.update", "out", "trigger", "in", PortKind.EXEC),),
+        links=(
+            GraphLinkRecord(
+                "trigger.exec", "root.update", "out", "trigger", "in", PortKind.EXEC
+            ),
+        ),
     )
     event_graph = GraphDocument(
         "particle.event",
@@ -1160,7 +1206,9 @@ def _event_queue_program():
             GraphNodeRecord("set.size", "particle.attribute.size"),
         ),
         links=(
-            GraphLinkRecord("event.exec", "root.event", "out", "set.size", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "event.exec", "root.event", "out", "set.size", "in", PortKind.EXEC
+            ),
             GraphLinkRecord(
                 "event.weight",
                 "root.event",
@@ -1178,10 +1226,14 @@ def _event_queue_program():
     )
     kernel = ParticleKernelLowerer().lower(
         ParticleGraphCompiler().compile(
-            ParticleGraphAsset(stable_id="event-queue-graph", emitters=(emitter,), event_types=(impact,))
+            ParticleGraphAsset(
+                stable_id="event-queue-graph",
+                emitters=(emitter,),
+                event_types=(impact,),
+            )
         )
     )
-    return kernel, GpuParticleGlslLowerer().lower(kernel)
+    return kernel, GpuParticleLowerer().lower(kernel)
 
 
 def test_gpu_event_fanout_stays_non_reentrant_until_every_waiting_branch_finishes():
@@ -1294,11 +1346,16 @@ def test_gpu_event_fanout_stays_non_reentrant_until_every_waiting_branch_finishe
     assert len(event_suspensions) == 2
     assert len({item.lane_stable_id for item in event_suspensions}) == 2
 
-    gpu = GpuParticleGlslLowerer().lower(kernel)
+    gpu = GpuParticleLowerer().lower(kernel)
     update_source = gpu.emitters[0].update
     continuation_source = gpu.emitters[0].continuation.stages()["dispatch"]
     assert update_source.count("!inx_continuation_lane_pending(particle_index") >= 2
-    assert continuation_source.count("if (!inx_continuation_resuspended && !inx_continuation_lane_pending") == 2
+    assert (
+        continuation_source.count(
+            "if (!inx_continuation_resuspended && !inx_continuation_lane_pending"
+        )
+        == 2
+    )
     assert continuation_source.count("a_internal_event_0_active = 0u") == 2
     assert validate_gpu_particle_spirv(compile_gpu_particle_spirv(gpu), gpu)
 
@@ -1321,14 +1378,16 @@ def _noise_gpu_source():
             ),
         ),
         links=(
-            GraphLinkRecord("stream", "root.update", "out", "acceleration", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "stream", "root.update", "out", "acceleration", "in", PortKind.EXEC
+            ),
             GraphLinkRecord("position", "position", "value", "noise", "position"),
             GraphLinkRecord("noise", "noise", "value", "acceleration", "value"),
         ),
     )
     emitter = ParticleEmitterAsset(stable_id="noise", update=update)
     hir = ParticleGraphCompiler().compile(ParticleGraphAsset(emitters=(emitter,)))
-    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    return GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
 def _vector_field_gpu_source(*, boundary="zero", filtering="linear"):
@@ -1349,7 +1408,9 @@ def _vector_field_gpu_source(*, boundary="zero", filtering="linear"):
             ),
         ),
         links=(
-            GraphLinkRecord("stream", "root.update", "out", "acceleration", "in", PortKind.EXEC),
+            GraphLinkRecord(
+                "stream", "root.update", "out", "acceleration", "in", PortKind.EXEC
+            ),
             GraphLinkRecord("position", "position", "value", "sample", "position"),
             GraphLinkRecord("value", "sample", "value", "acceleration", "value"),
         ),
@@ -1366,8 +1427,10 @@ def _vector_field_gpu_source(*, boundary="zero", filtering="linear"):
             ),
         ),
     )
-    hir = ParticleGraphCompiler().compile(ParticleGraphAsset(stable_id="vector-field-gpu", emitters=(emitter,)))
-    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id="vector-field-gpu", emitters=(emitter,))
+    )
+    return GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
 def _sdf_gpu_source():
@@ -1386,7 +1449,11 @@ def _sdf_gpu_source():
                 },
             ),
         ),
-        links=(GraphLinkRecord("stream", "root.update", "out", "collision", "in", PortKind.EXEC),),
+        links=(
+            GraphLinkRecord(
+                "stream", "root.update", "out", "collision", "in", PortKind.EXEC
+            ),
+        ),
     )
     emitter = ParticleEmitterAsset(
         stable_id="sdf-emitter",
@@ -1398,8 +1465,10 @@ def _sdf_gpu_source():
             ),
         ),
     )
-    hir = ParticleGraphCompiler().compile(ParticleGraphAsset(stable_id="sdf-gpu", emitters=(emitter,)))
-    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id="sdf-gpu", emitters=(emitter,))
+    )
+    return GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
 def _sdf_sample_gpu_source():
@@ -1426,12 +1495,22 @@ def _sdf_sample_gpu_source():
             GraphNodeRecord("velocity", "particle.attribute.velocity"),
         ),
         links=(
-            GraphLinkRecord("root-size", "root.update", "out", "size", "in", PortKind.EXEC),
-            GraphLinkRecord("size-velocity", "size", "out", "velocity", "in", PortKind.EXEC),
-            GraphLinkRecord("position-distance", "position", "value", "distance", "position"),
-            GraphLinkRecord("position-gradient", "position", "value", "gradient", "position"),
+            GraphLinkRecord(
+                "root-size", "root.update", "out", "size", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "size-velocity", "size", "out", "velocity", "in", PortKind.EXEC
+            ),
+            GraphLinkRecord(
+                "position-distance", "position", "value", "distance", "position"
+            ),
+            GraphLinkRecord(
+                "position-gradient", "position", "value", "gradient", "position"
+            ),
             GraphLinkRecord("distance-size", "distance", "distance", "size", "value"),
-            GraphLinkRecord("gradient-velocity", "gradient", "gradient", "velocity", "value"),
+            GraphLinkRecord(
+                "gradient-velocity", "gradient", "gradient", "velocity", "value"
+            ),
         ),
     )
     emitter = ParticleEmitterAsset(
@@ -1444,8 +1523,10 @@ def _sdf_sample_gpu_source():
             ),
         ),
     )
-    hir = ParticleGraphCompiler().compile(ParticleGraphAsset(stable_id="sdf-sample-gpu", emitters=(emitter,)))
-    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id="sdf-sample-gpu", emitters=(emitter,))
+    )
+    return GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
 def _sdf_shape_gpu_source(mode: str):
@@ -1464,8 +1545,10 @@ def _sdf_shape_gpu_source(mode: str):
         ),
         data_interfaces=(interface,),
     )
-    hir = ParticleGraphCompiler().compile(ParticleGraphAsset(stable_id=f"sdf-{mode}-gpu", emitters=(emitter,)))
-    return GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir))
+    hir = ParticleGraphCompiler().compile(
+        ParticleGraphAsset(stable_id=f"sdf-{mode}-gpu", emitters=(emitter,))
+    )
+    return GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir))
 
 
 def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults():
@@ -1511,10 +1594,14 @@ def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults
             ),
         ),
     )
-    previous_kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(previous_asset))
-    next_kernel = ParticleKernelLowerer().lower(ParticleGraphCompiler().compile(next_asset))
-    previous_layout = GpuParticleGlslLowerer().lower(previous_kernel).emitters[0].to_dict()
-    next_layout = GpuParticleGlslLowerer().lower(next_kernel).emitters[0].to_dict()
+    previous_kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(previous_asset)
+    )
+    next_kernel = ParticleKernelLowerer().lower(
+        ParticleGraphCompiler().compile(next_asset)
+    )
+    previous_layout = GpuParticleLowerer().lower(previous_kernel).emitters[0].to_dict()
+    next_layout = GpuParticleLowerer().lower(next_kernel).emitters[0].to_dict()
 
     migration = build_gpu_particle_migration(
         previous_layout,
@@ -1525,11 +1612,17 @@ def test_gpu_layout_migration_descriptor_copies_stable_fields_and_packs_defaults
     assert migration["source_stride"] == previous_layout["state_stride"]
     assert migration["destination_stride"] == next_layout["state_stride"]
     assert len(migration["copy_ranges"]) == len(standard_particle_attributes())
-    temperature = next(field for field in next_layout["attribute_fields"] if field["stable_id"] == cache_id)
+    temperature = next(
+        field
+        for field in next_layout["attribute_fields"]
+        if field["stable_id"] == cache_id
+    )
     default_word = migration["default_state_words"][temperature["offset"] // 4]
     assert struct.unpack("<f", struct.pack("<I", default_word))[0] == pytest.approx(0.0)
     assert all(
-        item["source_offset"] % 4 == 0 and item["destination_offset"] % 4 == 0 and item["byte_size"] % 4 == 0
+        item["source_offset"] % 4 == 0
+        and item["destination_offset"] % 4 == 0
+        and item["byte_size"] % 4 == 0
         for item in migration["copy_ranges"]
     )
 
@@ -1569,14 +1662,19 @@ class MeshSampling(ParticleScript):
         def rendering(self, ctx, particles):
             particles.sprite()
 """
-    hir = ParticleScriptCompiler().compile(source, source_name="MeshSampling.particle.py")
-    emitter = GpuParticleGlslLowerer().lower(ParticleKernelLowerer().lower(hir)).emitters[0]
+    hir = ParticleScriptCompiler().compile(
+        source, source_name="MeshSampling.particle.py"
+    )
+    emitter = GpuParticleLowerer().lower(ParticleKernelLowerer().lower(hir)).emitters[0]
 
     mesh_interfaces = emitter.data_interface_layout["mesh_interfaces"]
     assert len(mesh_interfaces) == 1
     assert mesh_interfaces[0]["stable_id"].startswith("sample.mesh.")
     assert mesh_interfaces[0]["mesh_parameter"] == "surface-mesh"
-    assert mesh_interfaces[0]["mesh"] == AssetReference(path_hint="Assets/Models/surface.fbx").to_dict()
+    assert (
+        mesh_interfaces[0]["mesh"]
+        == AssetReference(path_hint="Assets/Models/surface.fbx").to_dict()
+    )
     combined = emitter.init + emitter.update
     assert ".position" in combined
     assert ".normal" in combined
@@ -1591,17 +1689,21 @@ class MeshSampling(ParticleScript):
     assert "transformed_tangent -= result.normal" in combined
     assert "inx_mesh_vertex_0" in combined
     assert "inx_mesh_palette_0" in combined
-    assert "vec4 tangent" in combined
+    assert "float4 tangent" in combined
     assert "tangent_handedness" in combined
-    assert "determinant(mat3(mesh_to_simulation))" in combined
-    assert combined.count("readonly buffer InxMeshVertices0") == 2
+    assert "determinant(float3x3(mesh_to_simulation))" in combined
+    assert combined.count("StructuredBuffer<InxMeshVertex> inx_mesh_vertices_0") == 2
     assert "InxMeshVertices1" not in combined
-    compiled = native._compile_compute_glsl_batch(emitter.stages(), "particle-mesh-data-interface")
+    compiled = _compile_sources(emitter.stages(), "particle-mesh-data-interface")
     assert set(compiled) == set(emitter.stages())
 
 
-@pytest.mark.parametrize("mode,surface_literal", (("surface", "true"), ("volume", "false")))
-def test_gpu_sdf_emitter_shape_uses_bounded_spawn_only_sampling_and_valid_spirv(mode, surface_literal):
+@pytest.mark.parametrize(
+    "mode,surface_literal", (("surface", "true"), ("volume", "false"))
+)
+def test_gpu_sdf_emitter_shape_uses_bounded_spawn_only_sampling_and_valid_spirv(
+    mode, surface_literal
+):
     emitter = _sdf_shape_gpu_source(mode).emitters[0]
 
     assert emitter.data_interface_layout["volume_interfaces"] == [
@@ -1620,5 +1722,5 @@ def test_gpu_sdf_emitter_shape_uses_bounded_spawn_only_sampling_and_valid_spirv(
     assert emitter.init.count("inx_sample_sdf_shape_position_0") == 2
     assert emitter.update.count("inx_sample_sdf_shape_position_0") == 1
 
-    compiled = native._compile_compute_glsl_batch(emitter.stages(), f"particle-sdf-{mode}-shape-test")
+    compiled = _compile_sources(emitter.stages(), f"particle-sdf-{mode}-shape-test")
     assert set(compiled) == set(emitter.stages())
