@@ -400,7 +400,11 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
             return value.bodies.w & JointLimitsEnabled ? std::array<float, 2>{value.limits.x, value.limits.y}
                                                        : std::array<float, 2>{-glm::pi<float>(), glm::pi<float>()};
         };
-        if (limits(old) != limits(author))
+        const bool sliderLimitsChanged =
+            author.bodies.z == JointSlider && (((old.bodies.w ^ author.bodies.w) & JointLimitsEnabled) ||
+                                               ((author.bodies.w & JointLimitsEnabled) &&
+                                                (old.limits.x != author.limits.x || old.limits.y != author.limits.y)));
+        if (author.bodies.z == JointSlider ? sliderLimitsChanged : limits(old) != limits(author))
             flags |= JointResetWarmStart;
         if (old.passive.z != author.passive.z)
             flags |= JointResetRotor;
@@ -490,8 +494,9 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         if (row >= source.GetJoints().size())
             throw JoltGpuQueryRequestError("Jolt GPU joint motion row is absent from its retained catalog");
         const auto &joint = source.GetJoints()[row];
-        if (joint.row != row || joint.kind != JointHinge || joint.author.bodies.z != JointHinge || !joint.id ||
-            !(joint.author.bodies.w & JointEnabled) || joint.author.identity.x != static_cast<uint32_t>(joint.id) ||
+        if (joint.row != row || (joint.kind != JointHinge && joint.kind != JointSlider) ||
+            joint.author.bodies.z != joint.kind || !joint.id || !(joint.author.bodies.w & JointEnabled) ||
+            joint.author.identity.x != static_cast<uint32_t>(joint.id) ||
             joint.author.identity.y != static_cast<uint32_t>(joint.id >> 32) ||
             joint.author.identity.z != source.worldRow || joint.author.identity.z >= worldCount ||
             joint.author.identity.w)

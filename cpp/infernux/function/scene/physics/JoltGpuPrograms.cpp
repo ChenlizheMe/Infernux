@@ -275,21 +275,27 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             if (joint.identity.z != world || joint.identity.w || (!joint.identity.x && !joint.identity.y) ||
                 !inWorld(joint.bodies.y) ||
                 (joint.bodies.x != UINT32_MAX && (!inWorld(joint.bodies.x) || joint.bodies.x == joint.bodies.y)) ||
-                joint.bodies.z > 1 || (joint.bodies.w & ~15u))
+                joint.bodies.z > JointSlider || (joint.bodies.w & ~15u))
                 throw std::invalid_argument("Jolt GPU joint identity, endpoints or world range is invalid");
             for (const auto &value : {joint.ownerAnchor, joint.ownerAxis, joint.ownerLocalAnchor, joint.rootCOM1,
                                       joint.rootCOM2, joint.scale1, joint.scale2})
                 if (!Finite4(value) || value.w != 0)
                     throw std::invalid_argument("Jolt GPU joint anchor, axis, COM and scale must be finite");
             const auto &axis = joint.ownerAxis;
-            if (joint.bodies.z == 1 && std::abs(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z - 1.0f) > 1e-4f)
-                throw std::invalid_argument("Jolt GPU hinge axis must be normalized");
+            if ((joint.bodies.z == JointHinge || joint.bodies.z == JointSlider) &&
+                std::abs(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z - 1.0f) > 1e-4f)
+                throw std::invalid_argument("Jolt GPU joint axis must be normalized");
             if (!Finite4(joint.limits) || joint.limits.x > 0 || joint.limits.y < 0 ||
-                joint.limits.x < -3.14159265358979323846f || joint.limits.y > 3.14159265358979323846f ||
+                (joint.bodies.z != JointSlider &&
+                 (joint.limits.x < -3.14159265358979323846f || joint.limits.y > 3.14159265358979323846f)) ||
                 joint.limits.z || joint.limits.w || !Finite4(joint.motor) || joint.motor.y < 0 || joint.motor.z < 0 ||
                 joint.motor.w < 0 || !Finite4(joint.passive) || joint.passive.x < 0 || joint.passive.y < 0 ||
                 joint.passive.z < 0 || joint.passive.w)
                 throw std::invalid_argument("Jolt GPU joint limits, motor or passive settings are invalid");
+            if (joint.bodies.z == JointSlider &&
+                ((joint.bodies.w & JointMotorEnabled) || joint.motor.x || joint.motor.y || joint.motor.z ||
+                 joint.motor.w || joint.passive.x || joint.passive.y || joint.passive.z))
+                throw std::invalid_argument("Jolt GPU Slider has no motor or passive drive settings");
         }
         bodyEnd += range.y;
         leafEnd += leaves.y;

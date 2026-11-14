@@ -35,6 +35,18 @@ void RequireHinge(const JoltGpuScene::PublishedJoint &joint)
         throw std::logic_error("Constraint is not a hinge");
 }
 
+void ValidateSliderLimits(float minimum, float maximum)
+{
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > 0.0f || maximum < 0.0f || minimum > maximum)
+        throw std::invalid_argument("Slider limits must be ordered finite metres and span zero");
+}
+
+void RequireSlider(const JoltGpuScene::PublishedJoint &joint)
+{
+    if (joint.kind != JPH::GPU::JointSlider)
+        throw std::logic_error("Constraint is not a slider");
+}
+
 void SetJointFlag(JointAuthor &author, uint32_t flag, bool enabled)
 {
     author.bodies.w = enabled ? author.bodies.w | flag : author.bodies.w & ~flag;
@@ -85,10 +97,27 @@ uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint
     return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, author);
 }
 
-uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &, uint32_t, uint32_t, const glm::vec3 &,
-                                              const glm::vec3 &, const glm::vec3 &, bool, float, float, bool)
+uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                              const glm::vec3 &localBakedAnchor, const glm::vec3 &ownerAxis,
+                                              const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
+                                              float maximumDistance, bool enableCollision)
 {
-    throw std::logic_error("GPU CreateSliderConstraint has not been implemented");
+    auto &domain = DomainForBody(bodyIdA);
+    RequireOwnerThread();
+    ValidateSliderLimits(minimumDistance, maximumDistance);
+    (void)JointVector(ownerAxis);
+    if (glm::dot(ownerAxis, ownerAxis) <= 1e-12f)
+        throw std::invalid_argument("Slider axis must be non-zero");
+    JointAuthor author{};
+    author.bodies.z = JPH::GPU::JointSlider;
+    author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0) |
+                      (useLimits ? JPH::GPU::JointLimitsEnabled : 0);
+    author.ownerAnchor = JointVector(localBakedAnchor);
+    author.ownerAxis = JointVector(glm::normalize(ownerAxis));
+    author.ownerLocalAnchor = JointVector(localAnchor);
+    author.limits = {minimumDistance, maximumDistance, 0.0f, 0.0f};
+    RequireGpu(domain);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, author);
 }
 
 uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
@@ -252,7 +281,7 @@ void PhysicsWorld::ReadHingeMotion(const std::vector<HingeJoint *> &joints, floa
     std::vector<float> aggregate(joints.size() * 2);
     for (auto &group : groups) {
         std::vector<float> values(group.ids.size() * 2);
-        ReadJointMotion(*group.domain, group.ids, values.data());
+        ReadJointMotion(*group.domain, group.ids, values.data(), JPH::GPU::JointHinge);
         for (size_t local = 0; local < group.rows.size(); ++local) {
             aggregate[2 * group.rows[local]] = values[2 * local];
             aggregate[2 * group.rows[local] + 1] = values[2 * local + 1];
@@ -261,11 +290,13 @@ void PhysicsWorld::ReadHingeMotion(const std::vector<HingeJoint *> &joints, floa
     std::copy(aggregate.begin(), aggregate.end(), output);
 }
 
-void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output) const
+void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output,
+                                   uint32_t kind) const
 {
     RequireOwnerThread();
     if (!output && !ids.empty())
-        throw std::invalid_argument("Hinge motion requires output storage");
+        throw std::invalid_argument(kind == JPH::GPU::JointHinge ? "Hinge motion requires output storage"
+                                                                 : "Slider motion requires output storage");
     if (ids.empty())
         return;
     JoltGpuPreparedJointMotion prepared;
@@ -281,8 +312,10 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
                 rows.reserve(ids.size());
                 for (const auto id : ids) {
                     const auto found = identities.find(id);
-                    if (found == identities.end() || found->second->kind != JPH::GPU::JointHinge)
-                        throw JoltGpuQueryRequestError("Hinge motion requires an accepted hinge identity");
+                    if (found == identities.end() || found->second->kind != kind)
+                        throw JoltGpuQueryRequestError(kind == JPH::GPU::JointHinge
+                                                           ? "Hinge motion requires an accepted hinge identity"
+                                                           : "Slider motion requires an accepted slider identity");
                     rows.push_back(found->second->row);
                 }
                 prepared = m_gpuJoints->PrepareReadMotion(publication, rows);
@@ -293,14 +326,25 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
     if (requestError)
         std::rethrow_exception(requestError);
     if (!prepared.result)
-        throw std::runtime_error("GPU hinge motion did not produce a result");
+        throw std::runtime_error(kind == JPH::GPU::JointHinge ? "GPU hinge motion did not produce a result"
+                                                              : "GPU slider motion did not produce a result");
     FrameWorkOwner::Scope materialize(*m_gpuWork);
     prepared.result->CopyMotion(output, ids.size() * 2);
 }
 
-void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t, bool, float, float, bool)
+void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
+                                                  bool enableCollision)
 {
-    throw std::logic_error("GPU UpdateSliderConstraintSettings has not been implemented");
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
+    RequireOwnerThread();
+    ValidateSliderLimits(minimum, maximum);
+    RequireGpu(domain);
+    RequireSlider(m_gpuScene->GetAuthoredJoint(constraintId));
+    m_gpuScene->UpdateJoint(constraintId, [=](JointAuthor &author) {
+        SetJointFlag(author, JPH::GPU::JointLimitsEnabled, useLimits);
+        SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enableCollision);
+        author.limits = {minimum, maximum, 0.0f, 0.0f};
+    });
 }
 
 void PhysicsWorld::DestroyConstraintsForBody(uint32_t bodyId)
@@ -333,13 +377,16 @@ glm::vec2 PhysicsWorld::GetHingeConstraintMotionState(uint64_t constraintId) con
 {
     auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
     float motion[2];
-    ReadJointMotion(domain, {constraintId}, motion);
+    ReadJointMotion(domain, {constraintId}, motion, JPH::GPU::JointHinge);
     return {motion[0], motion[1]};
 }
 
-float PhysicsWorld::GetSliderConstraintPosition(uint64_t) const
+float PhysicsWorld::GetSliderConstraintPosition(uint64_t constraintId) const
 {
-    throw std::logic_error("GPU GetSliderConstraintPosition has not been implemented");
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
+    float motion[2];
+    ReadJointMotion(domain, {constraintId}, motion, JPH::GPU::JointSlider);
+    return motion[0];
 }
 
 uint64_t PhysicsWorld::CreateSwingTwistConstraint(PhysicsConstraintOwner &, uint32_t, uint32_t, const glm::vec3 &,
