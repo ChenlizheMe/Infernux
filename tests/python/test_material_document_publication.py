@@ -84,7 +84,12 @@ def test_document_reconciles_texture_publication(engine, imported_target, tmp_pa
             document["renderState"]["lineWidth"] = 0
         if api == "registry":
             material_path.write_text(json.dumps(document), encoding="utf-8")
-            accepted = registry.reload_asset(material_guid)
+            if edit == "invalid":
+                with pytest.raises(ValueError, match="lineWidth must be positive"):
+                    registry.reload_asset(material_guid)
+                accepted = False
+            else:
+                accepted = registry.reload_asset(material_guid)
             assert registry.load_material_by_guid(material_guid) is material
         else:
             accepted = (
@@ -137,18 +142,19 @@ def test_registry_shader_resolution_precedes_publication(rename_assets, stage, e
     document = copy.deepcopy(before)
     document["properties"]["metallic"] = {"type": 0, "value": 0.75}
     reference = document["shaders"][stage]
-    if edit == "wrong_type":
-        reference["guid"] = guid
-    elif edit == "wrong_stage":
+    if edit == "wrong_stage":
         reference["guid"] = assets["fragment" if stage == "vertex" else "vertex"][1]
     elif edit == "stale_label":
         reference["shader_id"] = "Old cached display label"
     elif edit == "missing_guid":
         reference["guid"] = "deadbeef" * 4
-    else:
-        document["renderState"]["lineWidth"] = 0
     assets["material_path"].write_text(json.dumps(document), encoding="utf-8")
-    accepted = registry.reload_asset(guid)
+    if edit == "wrong_stage":
+        with pytest.raises(RuntimeError, match="required fragment stage"):
+            registry.reload_asset(guid)
+        accepted = False
+    else:
+        accepted = registry.reload_asset(guid)
     assert accepted == (edit in ("stale_label", "missing_guid"))
     if not accepted:
         assert material.serialize_document() == before
@@ -172,19 +178,18 @@ def test_first_load_validates_resolved_shader_identity(rename_assets, stage, edi
     original = assets["material_path"].read_text(encoding="utf-8")
     document = json.loads(original)
     reference = document["shaders"][stage]
-    if edit == "wrong_type":
-        reference["guid"] = guid
-    elif edit == "wrong_stage":
+    if edit == "wrong_stage":
         reference["guid"] = assets["fragment" if stage == "vertex" else "vertex"][1]
     else:
         reference["shader_id"] = "Old cached display label"
     assets["material_path"].write_text(json.dumps(document), encoding="utf-8")
-    material = registry.load_material_by_guid(guid)
     if edit == "stale_label":
+        material = registry.load_material_by_guid(guid)
         assert material is not None
         assert material.serialize_document()["shaders"][stage]["shader_id"] == assets[stage][2]
     else:
-        assert material is None
+        with pytest.raises(RuntimeError, match="required fragment stage"):
+            registry.load_material_by_guid(guid)
         assets["material_path"].write_text(original, encoding="utf-8")
         registry.invalidate_asset(guid)
         assert registry.load_material_by_guid(guid) is not None
