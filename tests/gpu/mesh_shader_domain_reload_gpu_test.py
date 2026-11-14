@@ -98,6 +98,56 @@ class TransitionFragment(shader.surface):
             phase = frames = changed = 0
             ticket = None
             deadline = time.monotonic() + 30
+
+            def diagnostics():
+                return [entry for entry in console._get_visible_log_snapshot(2000)
+                        if entry['level'] in ('ERROR', 'FATAL', 'WARN', 'WARNING')]
+
+            def complete_phase(pixels):
+                nonlocal phase, changed
+                assert material.guid == proof['material_guid']
+                assert material.vert_shader_reference['guid'] == guids[0]
+                assert material.frag_shader_reference['guid'] == guids[1]
+                assert material.vert_shader_name == 'test/domain/vertex'
+                assert material.frag_shader_name == 'test/domain/fragment'
+                red = None if pixels is None else ((pixels[..., 0] > .8) & (pixels[..., 1] < .4) & (pixels[..., 2] < .4))
+                entries = diagnostics()
+                rejected = phase == 0 and not args.start_mesh or phase == 1 and args.start_mesh
+                owned = [entry for entry in entries if entry.get('diagnostic_owner')]
+                if (rejected and not owned) or (not rejected and (red.sum() <= 100 or entries)):
+                    return False
+                proof['phases'].append({'phase': phase, 'red_pixels': None if red is None else int(red.sum()),
+                                        'diagnostics': entries[:8]})
+                assert not [entry for entry in entries if 'Vulkan Validation Error:' in entry['message']]
+                if phase == 0 or (args.start_mesh and phase == 1):
+                    if args.start_mesh and phase == 0:
+                        assert red.sum() > 100 and not entries, proof['phases'][-1]
+                    else:
+                        # A rejected first publication has no image. An already
+                        # completed World retains its actual prior red image.
+                        assert (red.sum() > 100 if args.start_mesh else red is None) and len(owned) == 1
+                        if not args.start_mesh:
+                            assert owned[0]['diagnostic_owner'] == 'material.shader-domain', proof['phases'][-1]
+                        assert 'mesh' in owned[0]['message'].lower()
+                        assert Path(owned[0]['source_file']).name in {'Transition.mat', 'transition.frag.py'}, proof['phases'][-1]
+                    # Keep both source GUIDs, shader IDs and the material selection.
+                    next_sources = (full_vertex, full_fragment) if args.start_mesh and phase == 0 else (mesh_vertex, mesh_fragment)
+                    paths[1].write_text(next_sources[1], encoding='utf-8')
+                    imported = AssetManager.reimport_asset(str(paths[1]), database=database)
+                    assert imported.guid == guids[1] and imported.database_committed, imported.error
+                    if args.start_mesh and phase == 0:
+                        assert not imported and 'mesh shader' in imported.error.lower(), imported.error
+                    else:
+                        assert imported, imported.error
+                    phase += 1
+                    changed = frames
+                else:
+                    assert red.sum() > 100 and not entries, proof['phases'][-1]
+                    proof['passed'] = True
+                    print('PASS rejected shader source becomes Mesh without changing its GUID or shader ID', flush=True)
+                    native.exit()
+                return True
+
             def after_draw():
                 nonlocal phase, frames, changed, ticket
                 try:
@@ -106,48 +156,20 @@ class TransitionFragment(shader.surface):
                     if AssetManager.refresh_pending():
                         return
                     if ticket is None and frames >= changed + 10:
+                        world_id = SceneManager.instance()._current_runtime_world_id
+                        if phase == 0 and not args.start_mesh:
+                            if not diagnostics():
+                                return
+                            assert frontend._acquire_game_screen(world_id) is None
+                            complete_phase(None)
+                            return
+                        if frontend._acquire_game_screen(world_id) is None:
+                            return
                         ticket = frontend.request_render_target_readback(True)
                     elif ticket is not None and ticket.done:
-                        assert material.guid == proof['material_guid']
-                        assert material.vert_shader_reference['guid'] == guids[0]
-                        assert material.frag_shader_reference['guid'] == guids[1]
-                        assert material.vert_shader_name == 'test/domain/vertex'
-                        assert material.frag_shader_name == 'test/domain/fragment'
                         pixels = ticket.result_numpy().astype(np.float32)
-                        red = (pixels[...,0]>.8) & (pixels[...,1]<.4) & (pixels[...,2]<.4)
-                        diagnostics = [e for e in console._get_visible_log_snapshot(2000) if e['level'] in ('ERROR','FATAL','WARN','WARNING')]
-                        rejected = phase == 0 and not args.start_mesh or phase == 1 and args.start_mesh
-                        owned = [entry for entry in diagnostics if entry.get('diagnostic_owner')]
-                        if (rejected and not owned) or (not rejected and (red.sum() <= 100 or diagnostics)):
-                            ticket = None
-                            return
-                        proof['phases'].append({'phase': phase, 'red_pixels': int(red.sum()), 'diagnostics': diagnostics[:8]})
-                        assert not [e for e in diagnostics if 'Vulkan Validation Error:' in e['message']]
-                        if phase == 0 or (args.start_mesh and phase == 1):
-                            if args.start_mesh and phase == 0:
-                                assert red.sum() > 100 and not diagnostics, proof['phases'][-1]
-                            else:
-                                assert (red.sum() > 100 if args.start_mesh else not red.any()) and len(owned) == 1
-                                assert 'mesh' in owned[0]['message'].lower()
-                                assert Path(owned[0]['source_file']).name in {'Transition.mat', 'transition.frag.py'}, proof['phases'][-1]
-                            # Publish both source files before reimporting either;
-                            # keep GUIDs, shader IDs and material selection fixed.
-                            next_sources = (full_vertex, full_fragment) if args.start_mesh and phase == 0 else (mesh_vertex, mesh_fragment)
-                            paths[1].write_text(next_sources[1], encoding='utf-8')
-                            imported = AssetManager.reimport_asset(str(paths[1]), database=database)
-                            assert imported.guid == guids[1] and imported.database_committed, imported.error
-                            if args.start_mesh and phase == 0:
-                                assert not imported and 'mesh shader' in imported.error.lower(), imported.error
-                            else:
-                                assert imported, imported.error
-                            phase += 1
-                            changed = frames
-                            ticket = None
-                        else:
-                            assert red.sum()>100 and not diagnostics, proof['phases'][-1]
-                            proof['passed'] = True
-                            print('PASS rejected shader source becomes Mesh without changing its GUID or shader ID', flush=True)
-                            native.exit()
+                        complete_phase(pixels)
+                        ticket = None
                 except BaseException as error:
                     failures.append(error)
                     native.exit()
