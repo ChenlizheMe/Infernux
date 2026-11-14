@@ -16,6 +16,9 @@ if(INFERNUX_SLANG_ROOT)
             "${INFERNUX_SLANG_ROOT}/lib/libslang-compiler.a"
             "${INFERNUX_SLANG_ROOT}/lib/libcore.a"
             "${INFERNUX_SLANG_ROOT}/lib/libcompiler-core.a"
+            "${INFERNUX_SLANG_ROOT}/lib/libSPIRV-Tools-opt.a"
+            "${INFERNUX_SLANG_ROOT}/lib/libSPIRV-Tools-link.a"
+            "${INFERNUX_SLANG_ROOT}/lib/libSPIRV-Tools.a"
             "${INFERNUX_SLANG_ROOT}/lib/libcmark-gfm.a"
             "${INFERNUX_SLANG_ROOT}/lib/libminiz.a"
             "${INFERNUX_SLANG_ROOT}/lib/liblz4.a" "-Wl,--end-group")
@@ -55,6 +58,7 @@ else()
     set(SLANG_EMBED_CORE_MODULE ON CACHE BOOL "" FORCE)
     set(SLANG_EMBED_CORE_MODULE_SOURCE ON CACHE BOOL "" FORCE)
     set(SLANG_EMBED_STANDARD_MODULES ON CACHE BOOL "" FORCE)
+    set(SLANG_ENABLE_BUILTIN_SPIRV_TOOLS ON CACHE BOOL "" FORCE)
     set(SLANG_STANDARD_MODULE_DEVELOP_BUILD OFF CACHE BOOL "" FORCE)
     set(_infernux_slang_host_root "${CMAKE_BINARY_DIR}/slang-host")
     if(CMAKE_CROSSCOMPILING AND (NOT SLANG_GENERATORS_PATH OR
@@ -92,6 +96,7 @@ else()
                 -DSLANG_INSTALL_USER_SKILLS=OFF
                 -DSLANG_EMBED_CORE_MODULE=ON -DSLANG_EMBED_CORE_MODULE_SOURCE=ON
                 -DSLANG_EMBED_STANDARD_MODULES=OFF
+                -DSLANG_ENABLE_BUILTIN_SPIRV_TOOLS=OFF
                 -DSLANG_STANDARD_MODULE_DEVELOP_BUILD=OFF
             BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR>
                 --config Release --target all-generators --parallel 2
