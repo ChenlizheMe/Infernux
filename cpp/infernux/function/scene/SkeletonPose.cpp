@@ -2,7 +2,9 @@
 #include "Rigidbody.h"
 #include "Scene.h"
 #include "SkeletonInstance.h"
+#include "SkeletonPhysicsPoseRead.h"
 #include "Transform.h"
+#include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdexcept>
@@ -10,6 +12,14 @@
 
 namespace infernux
 {
+TransformECSStore &SkeletonPhysicsPoseRead::Prepare(const std::vector<Transform *> &transforms, Space space)
+{
+    auto &store = TransformECSStore::Instance();
+    if (!store.IsPhysicsPoseReadSuppressed())
+        PhysicsWorld::Instance().PrepareCpuPoseReads(transforms, space == Space::World);
+    return store;
+}
+
 std::vector<Transform *> SkeletonInstance::GetPhysicsControlledTransforms() const
 {
     auto *root = GetGameObject();
@@ -37,6 +47,7 @@ bool SkeletonInstance::PhysicsControlsPose() const
 void SkeletonInstance::CaptureAnimationPose()
 {
     EnsureBindings();
+    SkeletonPhysicsPoseRead reading(GetBones(), SkeletonPhysicsPoseRead::Space::Local);
     m_animationPose.clear();
     m_animationPose.reserve(m_nodes.size());
     for (size_t index = 0; index < m_nodes.size(); ++index) {
@@ -62,6 +73,8 @@ void SkeletonInstance::ApplyAnimationPose()
     if (!HasAnimationPose())
         throw std::logic_error("Skeleton has no animation target; sample or capture a pose first");
 
+    const auto controlledTransforms = GetPhysicsControlledTransforms();
+    SkeletonPhysicsPoseRead reading(controlledTransforms, SkeletonPhysicsPoseRead::Space::World);
     struct PhysicalPose
     {
         Transform *transform;
@@ -73,7 +86,7 @@ void SkeletonInstance::ApplyAnimationPose()
     // Capture the already presented world pose, including sleeping bodies and
     // frames without a solver step. This also retains explicit earlier script
     // edits. Animation must not turn these values into a teleport or a wake-up.
-    for (auto *transform : GetPhysicsControlledTransforms()) {
+    for (auto *transform : controlledTransforms) {
         physical.push_back({transform, transform->GetPosition(), transform->GetWorldRotation()});
         controlled.insert(transform);
         for (auto *object = transform->GetGameObject(); object; object = object->GetParent()) {
@@ -140,15 +153,20 @@ void SkeletonInstance::AlignAnimationRoot(Transform *physicalRoot, const glm::ve
     const auto found = std::find(bones.begin(), bones.end(), physicalRoot);
     if (found == bones.end() || !HasAnimationPose())
         return;
-    // Use the actually applied target, including authored scales preserved for
-    // independent physical attachments, rather than the unconstrained sample.
-    const auto delta = glm::normalize(physicalRotation * glm::conjugate(physicalRoot->GetWorldRotation()));
-    auto *owner = GetGameObject()->GetTransform();
     // An independent dynamic owner keeps its own pose authority. Otherwise
     // relocating the origin is an ordinary authored move, including any root collider.
     if (auto *body = GetGameObject()->GetComponent<Rigidbody>();
         body && body->IsEnabled() && !body->IsKinematic() && body->GetParticipatingBodyId() != 0xFFFFFFFF)
         return;
+    const auto controlledTransforms = GetPhysicsControlledTransforms();
+    auto dependencies = controlledTransforms;
+    dependencies.push_back(physicalRoot);
+    dependencies.push_back(GetGameObject()->GetTransform());
+    SkeletonPhysicsPoseRead reading(dependencies, SkeletonPhysicsPoseRead::Space::World);
+    // Use the actually applied target, including authored scales preserved for
+    // independent physical attachments, rather than the unconstrained sample.
+    const auto delta = glm::normalize(physicalRotation * glm::conjugate(physicalRoot->GetWorldRotation()));
+    auto *owner = GetGameObject()->GetTransform();
     const auto rotation = glm::normalize(delta * owner->GetWorldRotation());
     // Moving the character origin must not move independent dynamic attachments
     // or nested characters. Preserve their presented poses before changing the owner.
@@ -159,7 +177,7 @@ void SkeletonInstance::AlignAnimationRoot(Transform *physicalRoot, const glm::ve
         glm::quat rotation;
     };
     std::vector<PhysicalPose> physical;
-    for (auto *transform : GetPhysicsControlledTransforms())
+    for (auto *transform : controlledTransforms)
         physical.push_back({transform, transform->GetPosition(), transform->GetWorldRotation()});
     owner->SetRotation(rotation);
     // Evaluate the real hierarchy after rotation: under a nonuniformly scaled

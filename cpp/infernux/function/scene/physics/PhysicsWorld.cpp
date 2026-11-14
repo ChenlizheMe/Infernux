@@ -36,6 +36,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace infernux
@@ -1733,18 +1734,104 @@ PhysicsWorld::GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm:
     return batch;
 }
 
+const PhysicsBodyMotionState *PhysicsWorld::FindCachedMotionState(PhysicsDomain &domain, uint32_t id,
+                                                                  PhysicsStateFields fields) const
+{
+    const auto cached = domain.requestedMotion.find(id);
+    if ((!domain.stepPending || domain.stepCompleted) && !HasDomainControl(domain) &&
+        cached != domain.requestedMotion.end() &&
+        cached->second.generation == domain.queryGeneration.load(std::memory_order_acquire) &&
+        (static_cast<uint32_t>(fields) & ~static_cast<uint32_t>(cached->second.fields)) == 0)
+        return &cached->second.state;
+    return nullptr;
+}
+
+void PhysicsWorld::PrepareCpuPoseReads(const std::vector<Transform *> &requested, bool worldSpace)
+{
+    auto &transforms = TransformECSStore::Instance();
+    // Inherited author/cache maintenance deliberately reads stored CPU values.
+    // A new demand boundary must not promote those existing suppressed reads.
+    if (!IsInitialized() || transforms.IsPhysicsPoseReadSuppressed())
+        return;
+    std::vector<std::pair<Transform *, Rigidbody *>> physical;
+    std::unordered_map<Transform *, uint8_t> visited;
+    std::unordered_set<Rigidbody *> selectedBodies;
+    auto &physics = PhysicsECSStore::Instance();
+    const auto collect = [&](auto &&self, Transform *transform, bool world) -> void {
+        if (!transform)
+            return;
+        const uint8_t bit = world ? 2u : 1u;
+        if (visited[transform] & bit)
+            return;
+        visited[transform] |= bit;
+        auto *object = transform->GetGameObject();
+        if (!object || object->IsDestroying())
+            return;
+        // Local getters need parent affine data only for a stored world
+        // override; ordinary stored local TRS must respect disabled/static
+        // nearest-actor barriers instead of querying every higher ancestor.
+        const auto handle = transform->GetECSHandle();
+        if (world || (transforms.IsFrameCacheActiveFor(handle) && transforms.HasFrameCacheWorldPoseOverride(handle)))
+            if (auto *parent = object->GetParent())
+                self(self, parent->GetTransform(), true);
+        auto actorHandle = physics.FindActor(object);
+        while (object && !physics.IsValid(actorHandle)) {
+            object = object->GetParent();
+            actorHandle = physics.FindActor(object);
+        }
+        if (!physics.IsValid(actorHandle))
+            return;
+        const auto &actor = physics.GetActor(actorHandle);
+        auto *body = actor.rigidbody;
+        // This is the real lazy Transform dependency, including kinematic
+        // ancestors/bones that normal getters also query. No world body scan.
+        if (body && !object->IsDestroying() && body->IsEnabled() && !body->IsDestroyed() &&
+            actor.bodyId != UINT32_MAX && !actor.sceneSuspended && actor.runtimeWorld &&
+            actor.runtimeWorld->simulation.isPlaying && selectedBodies.insert(body).second) {
+            // Applying this actual body's sampled world pose requires its
+            // parent's affine transform, even for an eventual local consumer.
+            if (auto *parent = object->GetParent())
+                self(self, parent->GetTransform(), true);
+            physical.push_back({object->GetTransform(), body});
+        }
+    };
+    for (auto *transform : requested)
+        collect(collect, transform, worldSpace);
+    if (physical.empty())
+        return;
+    RequireOwnerThread();
+
+    constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Position) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::Rotation));
+    std::vector<Rigidbody *> missing;
+    missing.reserve(physical.size());
+    for (const auto &entry : physical) {
+        auto *body = entry.second;
+        auto &domain = DomainForComponent(*body);
+        RequireHealthyStep(domain);
+        RequireGpu(domain);
+        if (!FindCachedMotionState(domain, body->GetBodyId(), fields))
+            missing.push_back(body);
+    }
+    if (!missing.empty())
+        (void)GatherRigidbodyStates(missing, fields, false, false);
+
+    // Batch queries fill the existing per-domain requestedMotion cache. Apply
+    // it through the normal parent-first path, retaining all author/pending/
+    // FreezeRotation and health guards. This is still outside the read scope:
+    // a real intervening geometry control must be observed, never suppressed.
+    for (const auto &entry : physical)
+        EnsureCpuPhysicsPose(*entry.first);
+}
+
 PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint32_t id,
                                                      PhysicsStateFields fields) const
 {
     RequireOwnerThread();
     RequireHealthyStep(domain);
     RequireGpu(domain);
-    const auto cached = domain.requestedMotion.find(id);
-    if ((!domain.stepPending || domain.stepCompleted) && !HasDomainControl(domain) &&
-        cached != domain.requestedMotion.end() &&
-        cached->second.generation == domain.queryGeneration.load(std::memory_order_acquire) &&
-        (static_cast<uint32_t>(fields) & ~static_cast<uint32_t>(cached->second.fields)) == 0)
-        return cached->second.state;
+    if (const auto *cached = FindCachedMotionState(domain, id, fields))
+        return *cached;
     PhysicsBodyMotionState result;
     std::shared_ptr<JoltGpuQueryResult> motion;
     std::exception_ptr error;

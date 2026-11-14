@@ -445,9 +445,11 @@ class TransformECSStore
     void SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const glm::vec3 &position, const glm::quat &rotation,
                                        bool applyRotation);
 
-    // Cached local-space read (alias of live SoA, already O(1), but
-    // included for API symmetry).  Local getters don't need a separate
-    // cache array since SoA local data is already O(1).
+    // Memoize only the local channels derived from staged world overrides.
+    // Live local SoA remains authored/committed data until EndFrameCache.
+    // Caller must have checked the active frame and corresponding world bit.
+    [[nodiscard]] glm::vec3 GetFrameDerivedLocalPosition(uint32_t slotIndex);
+    [[nodiscard]] glm::quat GetFrameDerivedLocalRotation(uint32_t slotIndex);
 
     // Cached local-space write — marks slot dirty.
     void SetCachedLocalPosition(uint32_t slotIndex, const glm::vec3 &v);
@@ -510,6 +512,10 @@ class TransformECSStore
     // ── Frame Cache arrays (same length as Capacity()) ───────────────
     std::vector<glm::vec3> m_fcWorldPositions;
     std::vector<glm::quat> m_fcWorldRotations;
+    std::vector<glm::vec3> m_fcDerivedLocalPositions;
+    std::vector<glm::quat> m_fcDerivedLocalRotations;
+    // bit 0 = derived local position valid; bit 1 = derived local rotation valid.
+    std::vector<uint8_t> m_fcDerivedLocalValid;
     std::vector<uint8_t> m_fcRotationValid;
     // Dirty flags: bit 0 = world position dirty, bit 1 = world rotation dirty,
     // bit 2 = local position dirty, bit 3 = local scale dirty,

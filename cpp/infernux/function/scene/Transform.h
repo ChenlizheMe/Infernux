@@ -63,14 +63,7 @@ class Transform : public Component
         EnsureCpuPhysicsPose();
         auto &store = TransformECSStore::Instance();
         if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPositionOverride(m_ecsHandle)) {
-            const glm::vec3 world = store.GetCachedWorldPosition(m_ecsHandle.index);
-            const Transform *parent = GetParentTransformSafe();
-            const auto local = parent ? parent->InverseTransformPoint(world) : world;
-            if (store.GetRectLayout(m_ecsHandle)) {
-                store.ResolveRectLocalPosition(m_ecsHandle, local);
-                return store.GetLocalPosition(m_ecsHandle);
-            }
-            return local;
+            return store.GetFrameDerivedLocalPosition(m_ecsHandle.index);
         }
         return store.GetLocalPosition(m_ecsHandle);
     }

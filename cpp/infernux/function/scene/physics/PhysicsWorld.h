@@ -742,6 +742,10 @@ class PhysicsWorld
     friend class Infernux;
     /// Engine-owned services, borrowed until Shutdown; no external host lease.
     void BindGpuServices(std::unique_ptr<rhi::ComputeHost> host, FrameWorkOwner *work);
+    friend class SkeletonPhysicsPoseRead;
+    void PrepareCpuPoseReads(const std::vector<Transform *> &transforms, bool worldSpace);
+    [[nodiscard]] const PhysicsBodyMotionState *FindCachedMotionState(PhysicsDomain &domain, uint32_t bodyId,
+                                                                      PhysicsStateFields fields) const;
     friend class HingeJointBatch;
     void ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const;
     void SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets);

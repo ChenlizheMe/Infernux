@@ -5,6 +5,7 @@
 #include "Ragdoll.h"
 #include "Scene.h"
 #include "SceneManager.h"
+#include "SkeletonPhysicsPoseRead.h"
 #include "SkinnedMeshRenderer.h"
 #include "Transform.h"
 #include <core/math/TransformPose.h>
@@ -414,6 +415,11 @@ void SkeletonInstance::PublishRenderPoses()
         m_poseDirty = false;
         return;
     }
+    if (m_renderers.empty()) {
+        m_poseDirty = false;
+        return;
+    }
+    SkeletonPhysicsPoseRead reading(GetBones(), SkeletonPhysicsPoseRead::Space::Local);
     const auto matrices = GetRootSpaceMatrices();
     for (auto *renderer : m_renderers)
         renderer->PublishSkeletonPalette(matrices);

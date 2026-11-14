@@ -419,6 +419,18 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
         actor.lastSyncedPos = position;
         actor.lastSyncedRot = rotation;
         actor.lastScale = scale;
+        if (dynamicOwner) {
+            auto &body = GetRigidbody(actor.rigidbody->GetECSHandle());
+            body.lastSyncedPosition = position;
+            body.lastSyncedRotation = rotation;
+            body.lastAuthoredPoseRevision =
+                TransformECSStore::Instance().GetAuthoredPoseRevision(transform->GetECSHandle());
+        }
+        // Creation staged the complete current author pose and geometry.
+        // Earlier dirtiness may have been dequeued before a body existed.
+        actor.centerTransformDirty = false;
+        actor.shapeTransformDirty = false;
+        actor.ancestorPoseChannels = 0;
     } else {
         world.UpdateBodyShape(actor);
     }

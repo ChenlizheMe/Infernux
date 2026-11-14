@@ -189,6 +189,9 @@ TransformECSStore::Handle TransformECSStore::Allocate(Transform *owner)
         // Keep frame cache arrays in sync with capacity.
         m_fcWorldPositions.emplace_back(0.0f, 0.0f, 0.0f);
         m_fcWorldRotations.emplace_back(1.0f, 0.0f, 0.0f, 0.0f);
+        m_fcDerivedLocalPositions.emplace_back(0.0f);
+        m_fcDerivedLocalRotations.emplace_back(1.0f, 0.0f, 0.0f, 0.0f);
+        m_fcDerivedLocalValid.push_back(0);
         m_fcRotationValid.push_back(0);
         m_fcDirty.push_back(0);
         m_fcStamp.push_back(0);
@@ -207,6 +210,7 @@ TransformECSStore::Handle TransformECSStore::Allocate(Transform *owner)
     m_cachedWorldMatrices[index] = glm::mat4(1.0f);
     MarkWorldMatrixDirty(index);
     m_fcRotationValid[index] = 0;
+    m_fcDerivedLocalValid[index] = 0;
     m_fcDirty[index] = 0;
     m_fcStamp[index] = 0;
     m_owners[index] = owner;
@@ -227,6 +231,7 @@ void TransformECSStore::Release(Handle handle)
     m_owners[idx] = nullptr;
     m_alive[idx] = 0;
     m_fcRotationValid[idx] = 0;
+    m_fcDerivedLocalValid[idx] = 0;
     ++m_generations[idx];
     m_nextFree[idx] = m_freeListHead;
     m_freeListHead = idx;
@@ -249,14 +254,18 @@ void TransformECSStore::RebindOwner(Handle handle, Transform *owner)
     }
     if (m_owners[handle.index] != owner) {
         m_owners[handle.index] = owner;
+        InvalidateWorldMatrixCache(handle.index);
+        InvalidateFrameCacheDescendants(owner, true);
         ++m_structuralVersion;
     }
 }
 
 void TransformECSStore::NotifyOwnerWorldChanged(Handle handle)
 {
-    if (IsValid(handle))
+    if (IsValid(handle)) {
+        InvalidateWorldMatrixCache(handle.index);
         ++m_structuralVersion;
+    }
 }
 
 void TransformECSStore::Reserve(size_t capacity)
@@ -281,6 +290,9 @@ void TransformECSStore::Reserve(size_t capacity)
     m_nextFree.reserve(capacity);
     m_fcWorldPositions.reserve(capacity);
     m_fcWorldRotations.reserve(capacity);
+    m_fcDerivedLocalPositions.reserve(capacity);
+    m_fcDerivedLocalRotations.reserve(capacity);
+    m_fcDerivedLocalValid.reserve(capacity);
     m_fcRotationValid.reserve(capacity);
     m_fcDirty.reserve(capacity);
     m_fcStamp.reserve(capacity);
@@ -318,6 +330,7 @@ void TransformECSStore::SetSnapshot(Handle h, const TransformECSData &d)
     m_cachedWorldMatrices[i] = d.cachedWorldMatrix;
     m_worldMatrixDirty[i] = 0;
     m_fcRotationValid[i] = 0;
+    m_fcDerivedLocalValid[i] = 0;
     if (d.worldMatrixDirty)
         MarkWorldMatrixDirty(i);
     m_owners[i] = d.owner;
@@ -683,6 +696,9 @@ void TransformECSStore::BeginFrameCache()
     if (m_fcWorldPositions.size() < cap) {
         m_fcWorldPositions.resize(cap);
         m_fcWorldRotations.resize(cap);
+        m_fcDerivedLocalPositions.resize(cap);
+        m_fcDerivedLocalRotations.resize(cap);
+        m_fcDerivedLocalValid.resize(cap, 0);
         m_fcRotationValid.resize(cap, 0);
         m_fcDirty.resize(cap, 0);
         m_fcStamp.resize(cap, 0);
@@ -721,6 +737,7 @@ bool TransformECSStore::EndFrameCache()
     const auto commitSlot = [&](uint32_t i) {
         const uint8_t d = m_fcDirty[i];
         m_fcDirty[i] = 0;
+        m_fcDerivedLocalValid[i] = 0;
         if (d == 0 || i >= m_alive.size() || !m_alive[i]) {
             return;
         }
@@ -848,6 +865,7 @@ void TransformECSStore::EnsureFrameCacheSlot(uint32_t slotIndex)
     if (slotIndex >= m_fcStamp.size() || m_fcStamp[slotIndex] == m_frameCacheSerial)
         return;
 
+    m_fcDerivedLocalValid[slotIndex] = 0;
     const glm::mat4 &world = m_cachedWorldMatrices[slotIndex];
     m_fcWorldPositions[slotIndex] = glm::vec3(world[3]);
     if (!m_fcRotationValid[slotIndex]) {
@@ -855,6 +873,41 @@ void TransformECSStore::EnsureFrameCacheSlot(uint32_t slotIndex)
         m_fcRotationValid[slotIndex] = 1;
     }
     m_fcStamp[slotIndex] = m_frameCacheSerial;
+}
+
+glm::vec3 TransformECSStore::GetFrameDerivedLocalPosition(uint32_t slotIndex)
+{
+    EnsureFrameCacheSlot(slotIndex);
+    if ((m_fcDerivedLocalValid[slotIndex] & 0x01) != 0)
+        return m_fcDerivedLocalPositions[slotIndex];
+
+    const glm::vec3 world = m_fcWorldPositions[slotIndex];
+    const Transform *parent = m_owners[slotIndex]->GetParentTransformSafe();
+    glm::vec3 local = parent ? parent->InverseTransformPoint(world) : world;
+    if (m_rectLayouts[slotIndex]) {
+        ResolveRectLocalPosition({slotIndex, m_generations[slotIndex]}, local);
+        local = m_localPositions[slotIndex];
+    }
+    // Parent resolution and Rect layout may invalidate this slot. Publish the
+    // derived value only after that existing work has finished.
+    m_fcDerivedLocalPositions[slotIndex] = local;
+    m_fcDerivedLocalValid[slotIndex] |= 0x01;
+    return local;
+}
+
+glm::quat TransformECSStore::GetFrameDerivedLocalRotation(uint32_t slotIndex)
+{
+    EnsureFrameCacheSlot(slotIndex);
+    if ((m_fcDerivedLocalValid[slotIndex] & 0x02) != 0)
+        return m_fcDerivedLocalRotations[slotIndex];
+
+    // Retain root-down conjugation and per-level stored multiplication. A
+    // collapsed parent quaternion or inverse matrix would change semantics.
+    const glm::quat world = m_fcWorldRotations[slotIndex];
+    const glm::quat local = m_owners[slotIndex]->WorldRotationToLocal(world);
+    m_fcDerivedLocalRotations[slotIndex] = local;
+    m_fcDerivedLocalValid[slotIndex] |= 0x02;
+    return local;
 }
 
 void TransformECSStore::MarkFrameCacheDirty(uint32_t slotIndex, uint8_t bits)
@@ -868,6 +921,9 @@ void TransformECSStore::InvalidateWorldMatrixCache(uint32_t slotIndex)
 {
     if (slotIndex >= m_worldMatrixDirty.size())
         return;
+    // A pinned world channel still needs a new local value after any parent
+    // pose/scale/reparent change. Clear even if its matrix was already dirty.
+    m_fcDerivedLocalValid[slotIndex] = 0;
     if (m_worldMatrixDirty[slotIndex] == 0)
         m_worldMatrixDirty[slotIndex] = kWorldMatrixStagedDirty;
     if (!m_worldMatrixDirtyListed[slotIndex]) {
@@ -955,6 +1011,9 @@ void TransformECSStore::SetCachedWorldPoseFromPhysics(uint32_t slotIndex, const 
         m_worldEulerExact[slotIndex] = 0;
         MarkFrameCacheDirty(slotIndex, 0x02);
     }
+    // Once GetWorldMatrix can reuse override matrices, every replacement
+    // must invalidate the source slot as well as dependent descendants.
+    InvalidateWorldMatrixCache(slotIndex);
     InvalidateFrameCacheDescendants(m_owners[slotIndex], applyRotation);
 }
 
@@ -982,6 +1041,7 @@ void TransformECSStore::SetCachedLocalPosition(uint32_t slotIndex, const glm::ve
     MarkFrameCacheDirty(slotIndex, 0x44);
     m_fcDirty[slotIndex] &= static_cast<uint8_t>(~0x01);
     MarkWorldMatrixDirty(slotIndex);
+    InvalidateFrameCacheDescendants(m_owners[slotIndex], false);
 }
 
 void TransformECSStore::SetCachedLocalScale(uint32_t slotIndex, const glm::vec3 &v)
@@ -989,6 +1049,7 @@ void TransformECSStore::SetCachedLocalScale(uint32_t slotIndex, const glm::vec3 
     m_localScales[slotIndex] = v;
     MarkFrameCacheDirty(slotIndex, 0x48);
     MarkWorldMatrixDirty(slotIndex);
+    InvalidateFrameCacheDescendants(m_owners[slotIndex], false);
 }
 
 void TransformECSStore::SetCachedLocalRotation(uint32_t slotIndex, const glm::quat &q)
@@ -1001,6 +1062,7 @@ void TransformECSStore::SetCachedLocalRotation(uint32_t slotIndex, const glm::qu
     MarkFrameCacheDirty(slotIndex, 0x50);
     m_fcDirty[slotIndex] &= static_cast<uint8_t>(~0x02);
     MarkWorldMatrixDirty(slotIndex);
+    InvalidateFrameCacheDescendants(m_owners[slotIndex], true);
 }
 
 void TransformECSStore::SetCachedLocalEulerAngles(uint32_t slotIndex, const glm::vec3 &v)
@@ -1013,6 +1075,7 @@ void TransformECSStore::SetCachedLocalEulerAngles(uint32_t slotIndex, const glm:
     MarkFrameCacheDirty(slotIndex, 0x60);
     m_fcDirty[slotIndex] &= static_cast<uint8_t>(~0x02);
     MarkWorldMatrixDirty(slotIndex);
+    InvalidateFrameCacheDescendants(m_owners[slotIndex], true);
 }
 
 } // namespace infernux

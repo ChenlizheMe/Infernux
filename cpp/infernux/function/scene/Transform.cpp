@@ -366,11 +366,9 @@ const glm::mat4 &Transform::GetWorldMatrix() const
 {
     EnsureCpuPhysicsPose();
     auto &store = TransformECSStore::Instance();
-    // Cached world channels resolve through the local getters, preserving
-    // the same parent affine transform before and after frame publication.
-    const bool worldOverride =
-        store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPoseOverride(m_ecsHandle);
-    if (!worldOverride && !store.GetWorldMatrixDirty(m_ecsHandle)) {
+    // Staged world writes invalidate this matrix and its descendants. The
+    // local getters retain the existing affine interpretation of those writes.
+    if (!store.GetWorldMatrixDirty(m_ecsHandle)) {
         return store.GetCachedWorldMatrix(m_ecsHandle);
     }
 
@@ -416,7 +414,7 @@ glm::quat Transform::GetLocalRotation() const
     EnsureCpuPhysicsPose();
     auto &store = TransformECSStore::Instance();
     if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle))
-        return WorldRotationToLocal(store.GetCachedWorldRotation(m_ecsHandle.index));
+        return store.GetFrameDerivedLocalRotation(m_ecsHandle.index);
     return store.GetLocalRotation(m_ecsHandle);
 }
 
