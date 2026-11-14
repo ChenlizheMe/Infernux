@@ -326,17 +326,21 @@ void main() { output[0] = uniforms.rotation[1][2] + uniforms.rectangular[1][2] +
         }
         Require(preserve && separate, "Numerical programs lost float32 preservation or NoContraction");
 
-        // Standard modules are loaded beside the compiler. Their experimental
-        // gate must diagnose the module itself, not a missing packaged file.
-        bool standardModuleFound = false;
-        try {
-            compiler.Compile({"standard", "standard.compute.py",
-                              "import slang.numerics; [shader(\"compute\")] [numthreads(1,1,1)] void main() {}"},
-                             {}, {ShaderCodeTarget::SpirV});
-        } catch (const std::runtime_error &error) {
-            standardModuleFound = std::string(error.what()).find("experimental module") != std::string::npos;
+        // Every packaged standard-library family must deserialize from the
+        // compiler itself while preserving Slang's experimental-module rules.
+        for (const auto *module :
+             {"slang.numerics", "slang.neural", "slang.functional", "slang.numerics.differentiable"}) {
+            bool standardModuleFound = false;
+            try {
+                compiler.Compile(
+                    {"standard_module", "standard_module.compute.py",
+                     std::string("import ") + module + "; [shader(\"compute\")] [numthreads(1,1,1)] void main() {}"},
+                    {}, {ShaderCodeTarget::SpirV});
+            } catch (const std::runtime_error &error) {
+                standardModuleFound = std::string(error.what()).find("experimental module") != std::string::npos;
+            }
+            Require(standardModuleFound, "Embedded Slang standard module was not found");
         }
-        Require(standardModuleFound, "Packaged Slang standard modules were not found");
 
         for (auto target : {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}) {
             const auto native = CompileSlangNativeModule({"native_root", "native_root.slang", R"slang(

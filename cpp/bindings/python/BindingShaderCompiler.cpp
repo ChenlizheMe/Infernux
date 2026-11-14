@@ -111,7 +111,6 @@ void RegisterShaderCompilerBindings(py::module_ &m)
             PyErr_SetObject(g_shaderCompilationError, value.ptr());
         }
     });
-    m.attr("_slang_standard_module_name") = SlangCompiler::GetStandardModuleName();
     m.def(
         "_shader_source_path",
         [](const std::string &identifier, const std::string &kind) {
@@ -224,10 +223,6 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         }
         return result;
     });
-    m.def(
-        "_set_shader_module_directory",
-        [](const std::string &directory) { SlangCompiler::Get().SetStandardModuleDirectory(directory); },
-        py::call_guard<py::gil_scoped_release>());
     m.def(
         "_compile_shader_program",
         [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,

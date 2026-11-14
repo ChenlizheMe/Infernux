@@ -61,16 +61,14 @@ class SlangCompiler
 {
   public:
     static INFERNUX_SHADER_COMPILER_API SlangCompiler &Get();
-    static INFERNUX_SHADER_COMPILER_API const char *GetStandardModuleName() noexcept;
-    INFERNUX_SHADER_COMPILER_API void SetStandardModuleDirectory(std::string directory);
     INFERNUX_SHADER_COMPILER_API void SetAuthorFrontend(ShaderAuthorFrontend frontend);
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderAuthorSource
     PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader,
                         ShaderAuthorPhase phase = ShaderAuthorPhase::Program, const ShaderSourceModule &vertex = {});
 
     /// Libraries contain the frozen import/include closure with original source
-    /// paths. Relative includes use those paths; only packaged binary standard
-    /// modules are read from disk during compilation.
+    /// paths. Relative includes use those paths; built-in standard modules
+    /// are embedded in the resident compiler.
     INFERNUX_SHADER_COMPILER_API ShaderCompilation Compile(const ShaderSourceModule &source,
                                                            const std::vector<ShaderSourceModule> &libraries,
                                                            const std::vector<ShaderCodeTarget> &targets,

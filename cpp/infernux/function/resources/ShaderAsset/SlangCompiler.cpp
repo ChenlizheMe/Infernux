@@ -161,7 +161,6 @@ struct SlangCompiler::Impl
 {
     Slang::ComPtr<slang::IGlobalSession> global;
     std::string version;
-    std::string standardModuleDirectory;
     ShaderAuthorFrontend authorFrontend;
     // Slang sessions that share a global session must be used serially. The
     // Python caller releases the GIL before entering this compilation owner.
@@ -180,11 +179,6 @@ SlangCompiler &SlangCompiler::Get()
     return compiler;
 }
 
-const char *SlangCompiler::GetStandardModuleName() noexcept
-{
-    return INFERNUX_SLANG_MODULE_NAME;
-}
-
 SlangCompiler::SlangCompiler() : impl(std::make_unique<Impl>())
 {
 }
@@ -193,12 +187,6 @@ SlangCompiler::~SlangCompiler() = default;
 const std::string &SlangCompiler::GetVersion() const noexcept
 {
     return impl->version;
-}
-
-void SlangCompiler::SetStandardModuleDirectory(std::string directory)
-{
-    std::lock_guard lock(impl->mutex);
-    impl->standardModuleDirectory = std::move(directory);
 }
 
 void SlangCompiler::SetAuthorFrontend(ShaderAuthorFrontend frontend)
@@ -260,9 +248,9 @@ try {
     description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
     description.compilerOptionEntries = options;
     description.compilerOptionEntryCount = 5;
-    const std::array searchPaths{SlangModuleFiles::Mount, impl->standardModuleDirectory.c_str()};
+    const std::array searchPaths{SlangModuleFiles::Mount};
     description.searchPaths = searchPaths.data();
-    description.searchPathCount = impl->standardModuleDirectory.empty() ? 1 : 2;
+    description.searchPathCount = searchPaths.size();
     Slang::ComPtr<ISlangFileSystem> files(new SlangModuleFiles(source, libraries));
     description.fileSystem = files;
 

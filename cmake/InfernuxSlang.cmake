@@ -4,7 +4,6 @@ include_guard(GLOBAL)
 
 set(INFERNUX_SLANG_ROOT "" CACHE PATH "Prepared Slang SDK matching the pinned compiler")
 set(INFERNUX_SLANG_VERSION "2026.21")
-set(INFERNUX_SLANG_MODULE_NAME "slang-standard-module-${INFERNUX_SLANG_VERSION}")
 get_filename_component(_infernux_slang_engine_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 if(INFERNUX_SLANG_ROOT)
@@ -21,14 +20,14 @@ if(INFERNUX_SLANG_ROOT)
             "${INFERNUX_SLANG_ROOT}/lib/libminiz.a"
             "${INFERNUX_SLANG_ROOT}/lib/liblz4.a" "-Wl,--end-group")
         set(INFERNUX_SLANG_TARGET infernux_slang_sdk)
-        set(INFERNUX_SLANG_MODULE_DIR "${INFERNUX_SLANG_ROOT}/lib/${INFERNUX_SLANG_MODULE_NAME}")
     else()
+        # The requested SDK owns resolution, including after changing it in an
+        # existing build tree. Do not retain another SDK's cached package path.
+        unset(slang_DIR CACHE)
         find_package(slang ${INFERNUX_SLANG_VERSION} EXACT CONFIG REQUIRED
             PATHS "${INFERNUX_SLANG_ROOT}" "${INFERNUX_SLANG_ROOT}/cmake"
                   "${INFERNUX_SLANG_ROOT}/lib64/cmake/slang" NO_DEFAULT_PATH)
         set(INFERNUX_SLANG_TARGET slang::slang)
-        set(INFERNUX_SLANG_MODULE_DIR
-            "$<TARGET_FILE_DIR:${INFERNUX_SLANG_TARGET}>/${INFERNUX_SLANG_MODULE_NAME}")
     endif()
     set(INFERNUX_SLANG_NOTICES_DIR "${INFERNUX_SLANG_ROOT}/third-party-notices")
 else()
@@ -55,6 +54,7 @@ else()
     set(SLANG_INSTALL_USER_SKILLS OFF CACHE STRING "" FORCE)
     set(SLANG_EMBED_CORE_MODULE ON CACHE BOOL "" FORCE)
     set(SLANG_EMBED_CORE_MODULE_SOURCE ON CACHE BOOL "" FORCE)
+    set(SLANG_EMBED_STANDARD_MODULES ON CACHE BOOL "" FORCE)
     set(SLANG_STANDARD_MODULE_DEVELOP_BUILD OFF CACHE BOOL "" FORCE)
     set(_infernux_slang_host_root "${CMAKE_BINARY_DIR}/slang-host")
     if(CMAKE_CROSSCOMPILING AND (NOT SLANG_GENERATORS_PATH OR
@@ -91,6 +91,7 @@ else()
                 -DSLANG_EXCLUDE_DAWN=ON -DSLANG_EXCLUDE_TINT=ON
                 -DSLANG_INSTALL_USER_SKILLS=OFF
                 -DSLANG_EMBED_CORE_MODULE=ON -DSLANG_EMBED_CORE_MODULE_SOURCE=ON
+                -DSLANG_EMBED_STANDARD_MODULES=OFF
                 -DSLANG_STANDARD_MODULE_DEVELOP_BUILD=OFF
             BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR>
                 --config Release --target all-generators --parallel 2
@@ -121,9 +122,6 @@ else()
         endforeach()
     endif()
     set(INFERNUX_SLANG_TARGET slang)
-    set(INFERNUX_SLANG_MODULE_DIR
-        "$<TARGET_FILE_DIR:slang>/${INFERNUX_SLANG_MODULE_NAME}")
-    set(INFERNUX_SLANG_MODULE_TARGETS ${SLANG_STANDARD_MODULE_TARGETS})
     set(INFERNUX_SLANG_NOTICES_DIR "${CMAKE_BINARY_DIR}/slang-metadata/third-party-notices")
     add_custom_target(infernux_slang_metadata
         COMMAND ${CMAKE_COMMAND} --install "${slang_BINARY_DIR}"

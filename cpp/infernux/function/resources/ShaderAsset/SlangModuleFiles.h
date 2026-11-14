@@ -8,8 +8,6 @@
 
 #include <atomic>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <new>
 #include <slang-com-helper.h>
 #include <unordered_map>
@@ -90,13 +88,6 @@ class SlangModuleFiles final : public ISlangFileSystemExt
             }
             bytes += "\"\n";
             bytes += module.source;
-        } else if (file.extension() == ".slang-module") {
-            // Slang resolves packaged standard modules beside its library, or
-            // through the host's configured standard-module search path.
-            std::ifstream input(file, std::ios::binary);
-            if (!input)
-                return SLANG_E_NOT_FOUND;
-            bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
         } else {
             return SLANG_E_NOT_FOUND;
         }
@@ -124,11 +115,6 @@ class SlangModuleFiles final : public ISlangFileSystemExt
     {
         const auto file = Path(path);
         if (m_sources.find(file.generic_u8string()) != m_sources.end()) {
-            *out = SLANG_PATH_TYPE_FILE;
-            return SLANG_OK;
-        }
-        std::error_code error;
-        if (file.extension() == ".slang-module" && std::filesystem::is_regular_file(file, error)) {
             *out = SLANG_PATH_TYPE_FILE;
             return SLANG_OK;
         }

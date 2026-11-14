@@ -135,9 +135,6 @@ file(GLOB _slang_libraries
 if(NOT _slang_libraries)
     message(FATAL_ERROR "Wheel is missing the resident Slang compiler")
 endif()
-if(NOT IS_DIRECTORY "${_verify_root}/infernux/lib/${INFERNUX_SLANG_MODULE_NAME}")
-    message(FATAL_ERROR "Wheel is missing Slang's matching standard modules")
-endif()
 
 file(GLOB _wheel_metadata "${_verify_root}/*.dist-info/METADATA")
 list(LENGTH _wheel_metadata _wheel_metadata_count)

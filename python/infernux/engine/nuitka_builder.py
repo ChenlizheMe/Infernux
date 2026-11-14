@@ -1477,7 +1477,7 @@ class NuitkaBuilder:
         package_lib_dir = package_root / "lib"
         if path_key(native_payload_dir) != path_key(package_lib_dir):
             for path in sorted(
-                [*self._native_payload_files(native_payload_dir), *self._native_shader_module_files(native_payload_dir)],
+                self._native_payload_files(native_payload_dir),
                 key=lambda item: item.name.casefold(),
             ):
                 digest.update(f"native/{path.relative_to(native_payload_dir).as_posix()}".encode("utf-8"))
@@ -2606,18 +2606,6 @@ print(json.dumps({{
         )
 
     @staticmethod
-    def _native_shader_module_files(lib_dir: Path) -> list[Path]:
-        from infernux.lib import _Infernux
-
-        root = lib_dir / _Infernux._slang_standard_module_name
-        # Package preparation is the boundary for a missing toolchain payload.
-        # Iterate the root explicitly so a missing directory cannot be ignored.
-        children = tuple(root.iterdir())
-        return sorted((file for child in children for file in
-                       (child.rglob("*") if child.is_dir() else (child,)) if file.is_file()),
-                      key=lambda path: path.as_posix())
-
-    @staticmethod
     def _native_payload_files(lib_dir: Path) -> list[Path]:
         """Return one ABI-compatible extension module plus its shared libraries."""
         if sys.platform == "win32":
@@ -2821,11 +2809,6 @@ print(json.dumps({{
                     (dist_root / src.name).unlink()
                 except FileNotFoundError:
                     pass
-
-        for source in self._native_shader_module_files(lib_dir):
-            destination = target_dir / source.relative_to(lib_dir)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
 
         full_root_name = "_Infernux.pyd" if sys.platform == "win32" else "_Infernux.so"
         try:

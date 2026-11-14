@@ -41,21 +41,10 @@ add_custom_command(TARGET _Infernux POST_BUILD
     VERBATIM
 )
 
-# Standard modules are versioned by Slang and must accompany its compiler.
-# No LLVM, GLSL compiler wrapper, graphics runtime, or proxy DLL is staged.
-add_custom_command(TARGET _Infernux POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${INFERNUX_SLANG_MODULE_DIR}"
-        "$<TARGET_FILE_DIR:_Infernux>/slang-standard-module-${INFERNUX_SLANG_VERSION}"
-    VERBATIM)
-
 # A module or library target builds its own artifact. Publish the coupled
 # Python SDK only after both bindings and all runtime dependencies succeeded.
 # This explicit target also refreshes an up-to-date build without relinking.
 add_custom_target(stage_python_sdk ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${INFERNUX_SLANG_MODULE_DIR}"
-        "${PYTHON_TARGET_DIR}/slang-standard-module-${INFERNUX_SLANG_VERSION}"
     COMMAND ${CMAKE_COMMAND}
         "-DSOURCE=$<TARGET_FILE:_Infernux>"
         "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
@@ -246,9 +235,6 @@ if(UNIX)
                   "$<TARGET_LINKER_FILE:${INFERNUX_SLANG_TARGET}>"
         DESTINATION "python/infernux/lib" COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
 endif()
-install(DIRECTORY "${INFERNUX_SLANG_MODULE_DIR}/"
-    DESTINATION "python/infernux/lib/slang-standard-module-${INFERNUX_SLANG_VERSION}"
-    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
 install(FILES "${CMAKE_SOURCE_DIR}/external/slang_for_infernux/LICENSE"
     DESTINATION "python/infernux/resources/licenses/slang"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
