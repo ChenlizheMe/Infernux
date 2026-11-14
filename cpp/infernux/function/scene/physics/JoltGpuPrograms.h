@@ -19,13 +19,12 @@ namespace infernux
 using PhysicsColliderPair = std::array<uint64_t, 4>;
 using PhysicsColliderPairs = std::vector<PhysicsColliderPair>;
 
-// One accepted policy prefix. The frozen GPU words contain canonical ID64
-// pairs only; full lifetimes remain here for retained-source Sweep admission.
+// One accepted policy prefix, including every endpoint's full ID/generation.
+// Old and new generations of one ID may coexist while a Scene is retained.
 struct JoltGpuColliderPairs
 {
     std::shared_ptr<const PhysicsColliderPairs> identities;
-    std::map<uint64_t, uint64_t> lifetimes;
-    std::vector<JPH::GPU::QueryRecordWord> words;
+    std::vector<JPH::GPU::ColliderPairKey> keys;
     std::shared_ptr<rhi::ComputeBuffer> buffer;
 };
 struct JoltGpuColliderPairCapture

@@ -69,7 +69,8 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCou
         output.subShapeBits = leaf.mSubShapeIDCreator.GetNumBitsWritten();
         output.memberIndex = MemberIndex(shape, output.subShapeID, memberCount);
         output.model.meta.z = output.subShapeID.GetValue();
-        output.model.source = {0, 0, JPH::GPU::InvalidGeometryPayload, output.subShapeBits};
+        // The actor capture fills the real Collider ID and lifetime generation.
+        output.model.source = {};
         output.model.localPositionCOM = {float(leaf.mShapePositionCOM.GetX()), float(leaf.mShapePositionCOM.GetY()),
                                          float(leaf.mShapePositionCOM.GetZ()), 0.0f};
         output.model.localRotation = {leaf.mShapeRotation.GetX(), leaf.mShapeRotation.GetY(),

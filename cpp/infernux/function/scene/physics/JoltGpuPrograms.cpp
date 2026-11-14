@@ -237,8 +237,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             for (uint32_t leaf = record.meta.x; leaf < bodyLeafEnd + record.meta.y; ++leaf) {
                 const auto &shape = ModelRecord(model.shapes, shapeChanges, leaf);
                 if (shape.meta.y != body || (shape.meta.w & ~ShapeSensor) || shape.surface.x >= 32 ||
-                    shape.surface.z > MaterialCombineMaximum || shape.surface.w > MaterialCombineMaximum ||
-                    shape.source.w > 32)
+                    shape.surface.z > MaterialCombineMaximum || shape.surface.w > MaterialCombineMaximum)
                     throw std::invalid_argument("Jolt GPU leaf identity, flags or material mode is invalid");
                 if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 ||
                     !Normalized(shape.localRotation) || !Finite4(shape.material) || shape.material.x < 0 ||

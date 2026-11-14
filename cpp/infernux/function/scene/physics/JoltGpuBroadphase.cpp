@@ -145,7 +145,7 @@ constexpr PortLayout Ports[] = {
     {"runtime_worlds", sizeof(WorldRange), {"bodies", "leaves"}, 3u, false},
     {"contact_patches", sizeof(ContactPatch), {"leaves"}, 1u, false},
     {"indirect_arguments", sizeof(QueryRecordWord), {"value"}, 1u, false},
-    {"collider_pair_ignores", sizeof(QueryRecordWord), {"value"}, 1u, true}};
+    {"collider_pair_ignores", sizeof(ColliderPairKey), {"a", "b"}, 3u, true}};
 
 constexpr uint32_t MaxDispatchesPerPacket = 16;
 constexpr uint32_t ActiveRoundsPerWindow = 4;
@@ -328,12 +328,12 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         config.selection = settings.selection;
         config.selectedCounts = settings.selectedCounts;
         const auto &pairs = inputs.GetColliderPairs();
-        if (!pairs || pairs->words.size() > UINT32_MAX)
+        if (!pairs || pairs->keys.size() > UINT32_MAX)
             throw std::invalid_argument("Broadphase requires its accepted Collider policy");
         settingsPorts[ColliderPairs] = pairs->buffer;
         ValidateInput(settingsPorts[ColliderPairs]);
-        requireBytes(ColliderPairs, uint64_t(std::max<size_t>(1, pairs->words.size())) * sizeof(QueryRecordWord));
-        config.selectedCounts.w = static_cast<uint32_t>(pairs->words.size());
+        requireBytes(ColliderPairs, uint64_t(std::max<size_t>(1, pairs->keys.size())) * sizeof(ColliderPairKey));
+        config.selectedCounts.w = static_cast<uint32_t>(pairs->keys.size());
         config.round = {BroadphaseNeighborLimit, 0, 0, 0};
         rounds = n > 1 ? (n - 2u) / BroadphaseNeighborLimit + 1u : 1u;
         uint64_t words = 0;

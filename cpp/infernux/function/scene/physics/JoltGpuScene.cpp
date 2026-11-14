@@ -112,9 +112,9 @@ class JoltGpuScene::Impl
         JoltGpuControlWork Next()
         {
             auto host = scene->storage.GetHost();
-            const uint64_t total = std::max<size_t>(1, pairs->words.size());
+            const uint64_t total = std::max<size_t>(1, pairs->keys.size());
             if (!pairs->buffer) {
-                const uint64_t bytes = total * sizeof(QueryRecordWord);
+                const uint64_t bytes = total * sizeof(ColliderPairKey);
                 if (total > UINT32_MAX || !host.device.GetCapabilities().IsStorageBufferRangeValid(0, bytes))
                     throw std::length_error("Collider pair table exceeds device range");
                 pairs->buffer =
@@ -129,12 +129,12 @@ class JoltGpuScene::Impl
                 capture->value = pairs;
                 return {};
             }
-            const uint32_t count = static_cast<uint32_t>(std::min<uint64_t>(2048, total - first));
-            std::vector<uint8_t> bytes(uint64_t(count) * sizeof(QueryRecordWord));
-            if (!pairs->words.empty())
-                std::memcpy(bytes.data(), pairs->words.data() + first, bytes.size());
+            const uint32_t count = static_cast<uint32_t>(std::min<uint64_t>(1024, total - first));
+            std::vector<uint8_t> bytes(uint64_t(count) * sizeof(ColliderPairKey));
+            if (!pairs->keys.empty())
+                std::memcpy(bytes.data(), pairs->keys.data() + first, bytes.size());
             auto packet = rhi::PrepareComputeBatch(
-                host, {{pairs->buffer, uint64_t(first) * sizeof(QueryRecordWord), std::move(bytes)}}, {}, {});
+                host, {{pairs->buffer, uint64_t(first) * sizeof(ColliderPairKey), std::move(bytes)}}, {}, {});
             return {packet,
                     [self = shared_from_this(), count] {
                         self->first += count;
@@ -154,21 +154,16 @@ class JoltGpuScene::Impl
         }
         auto pairs = std::make_shared<JoltGpuColliderPairs>();
         pairs->identities = domain.acceptedPairs;
-        pairs->words.reserve(pairs->identities->size());
+        pairs->keys.reserve(pairs->identities->size());
         for (const auto &pair : *pairs->identities) {
-            const auto insert = [&](uint64_t id, uint64_t generation) {
-                const auto [entry, added] = pairs->lifetimes.emplace(id, generation);
-                if (!added && entry->second != generation)
-                    throw std::logic_error("Collider policy contains two generations of one identity");
-            };
-            insert(pair[0], pair[1]);
-            insert(pair[2], pair[3]);
-            pairs->words.push_back({{static_cast<uint32_t>(pair[0]), static_cast<uint32_t>(pair[0] >> 32),
-                                     static_cast<uint32_t>(pair[2]), static_cast<uint32_t>(pair[2] >> 32)}});
+            pairs->keys.push_back({{static_cast<uint32_t>(pair[0]), static_cast<uint32_t>(pair[0] >> 32),
+                                    static_cast<uint32_t>(pair[1]), static_cast<uint32_t>(pair[1] >> 32)},
+                                   {static_cast<uint32_t>(pair[2]), static_cast<uint32_t>(pair[2] >> 32),
+                                    static_cast<uint32_t>(pair[3]), static_cast<uint32_t>(pair[3] >> 32)}});
         }
-        std::sort(pairs->words.begin(), pairs->words.end(), [](const auto &a, const auto &b) {
-            return std::tie(a.value.y, a.value.x, a.value.w, a.value.z) <
-                   std::tie(b.value.y, b.value.x, b.value.w, b.value.z);
+        std::sort(pairs->keys.begin(), pairs->keys.end(), [](const auto &a, const auto &b) {
+            return std::tie(a.a.y, a.a.x, a.a.w, a.a.z, a.b.y, a.b.x, a.b.w, a.b.z) <
+                   std::tie(b.a.y, b.a.x, b.a.w, b.a.z, b.b.y, b.b.x, b.b.w, b.b.z);
         });
         auto upload = std::make_shared<PairUpload>();
         upload->scene = this;
@@ -820,6 +815,9 @@ class JoltGpuScene::Impl
             const auto colliderId = identity->leaves[ordinal].colliderId;
             leaf.model.source.x = static_cast<uint32_t>(colliderId);
             leaf.model.source.y = static_cast<uint32_t>(colliderId >> 32);
+            const auto colliderGeneration = identity->leaves[ordinal].colliderGeneration;
+            leaf.model.source.z = static_cast<uint32_t>(colliderGeneration);
+            leaf.model.source.w = static_cast<uint32_t>(colliderGeneration >> 32);
             change->leaves.push_back(std::move(leaf.model));
         }
         change->initialState = actor.initialState;

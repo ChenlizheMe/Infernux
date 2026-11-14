@@ -215,9 +215,12 @@ bool Zero(const Float4 &value)
 void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t bodyBase, uint32_t bodyCount,
                    bool hasPublication)
 {
+    const bool hasLifetime = query.lifetime.x || query.lifetime.y;
+    if (query.lifetime.z || query.lifetime.w)
+        throw JoltGpuQueryRequestError("GPU query source lifetime reserved words must be zero");
     if (query.meta.x == QueryGatherShapes || query.meta.x == QueryGatherMotion) {
         const bool motion = query.meta.x == QueryGatherMotion;
-        if (!hasPublication || query.source.x != InvalidQueryBodySlot || query.source.w ||
+        if (!hasPublication || hasLifetime || query.source.x != InvalidQueryBodySlot || query.source.w ||
             !Zero(query.positionMaximum) || !Zero(query.direction) || query.rotation.x || query.rotation.y ||
             query.rotation.z || query.rotation.w != 1 || !Finite(query.geometry))
             throw JoltGpuQueryRequestError(
@@ -245,7 +248,8 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
         (query.meta.w &
          ~(QueryTargetCollider | QueryExcludeBody | (cast ? (QuerySweepPolicy | QuerySweepPairPolicy) : 0u))) ||
         (sweep && (query.meta.w & QueryTargetCollider)) || ((query.meta.w & QuerySweepPairPolicy) && !sweep) ||
-        query.filter.y > 1 || (!sweep && (query.source.z || query.source.w)) || !Finite(query.positionMaximum) ||
+        query.filter.y > 1 || (!sweep && (query.source.z || query.source.w || hasLifetime)) ||
+        ((query.meta.w & QuerySweepPairPolicy) && !hasLifetime) || !Finite(query.positionMaximum) ||
         !Finite(query.direction) || !Finite(query.rotation) || !Finite(query.geometry) || query.direction.w != 0)
         throw JoltGpuQueryRequestError("Jolt GPU query contains an invalid operation, filter or finite input record");
     if ((query.meta.w & QueryExcludeBody) ? (query.source.x < bodyBase || query.source.x - bodyBase >= bodyCount)
@@ -341,22 +345,23 @@ struct QueryPolicyCopy : std::enable_shared_from_this<QueryPolicyCopy>
     std::shared_ptr<rhi::ComputeBuffer> source, target;
     std::vector<rhi::ComputeBufferUpdate> uploads;
     std::function<JoltGpuControlWork()> ready;
-    uint32_t first = 0, count = 0, targetBase = 0;
+    uint32_t first = 0, count = 0, targetBase = 0; // Pair indices; targetBase is a 16-byte word offset.
 
     JoltGpuControlWork Next()
     {
         if (first == count)
             return ready();
-        const uint32_t words = std::min(2048u, count - first);
-        const uint64_t stride = sizeof(QueryRecordWord);
+        const uint32_t pairs = std::min(1024u, count - first);
+        const uint64_t stride = sizeof(ColliderPairKey);
         std::vector<rhi::ComputeBufferCopy> copies{
             {source,
              target,
-             {uint64_t(first) * stride, (uint64_t(targetBase) + first) * stride, uint64_t(words) * stride}}};
+             {uint64_t(first) * stride, uint64_t(targetBase) * sizeof(QueryRecordWord) + uint64_t(first) * stride,
+              uint64_t(pairs) * stride}}};
         auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), {}, {}, std::move(copies));
         return {packet,
-                [self = shared_from_this(), words] {
-                    self->first += words;
+                [self = shared_from_this(), pairs] {
+                    self->first += pairs;
                     return self->Next();
                 },
                 JoltGpuControlWork::ResumeAfter::Acceptance};
@@ -610,14 +615,14 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     const auto pairs = result->publication ? result->publication->colliderPairs : nullptr;
     if (hasPairPolicy && !pairs)
         throw JoltGpuQueryRequestError("GPU source sweep requires its retained collider policy");
-    const uint64_t pairCount64 = hasPairPolicy ? pairs->words.size() : 0;
+    const uint64_t pairCount64 = hasPairPolicy ? pairs->keys.size() : 0;
     const uint64_t identityPrefix = std::max<uint64_t>(1, uint64_t(bodyCount) + (hasSweep ? leafCount : 0u));
-    if (identityPrefix > UINT32_MAX || pairCount64 > UINT32_MAX - identityPrefix)
+    if (identityPrefix > UINT32_MAX || pairCount64 > (UINT32_MAX - identityPrefix) / 2u)
         throw JoltGpuQueryRequestError("Jolt GPU query identity words exceed device indexing");
     const uint32_t pairCount = static_cast<uint32_t>(pairCount64);
     if (pairCount &&
         (!pairs->buffer || !pairs->buffer->IsFrozen() || !host.SharesServicesWith(pairs->buffer->GetHost()) ||
-         pairs->buffer->GetByteSize() != CheckedBytes(pairCount, sizeof(QueryRecordWord))))
+         pairs->buffer->GetByteSize() != CheckedBytes(pairCount, sizeof(ColliderPairKey))))
         throw JoltGpuQueryRequestError("GPU source sweep policy differs from its exact frozen generation");
     std::vector<QueryBodyIdentity> identities(static_cast<size_t>(identityPrefix));
     identities.front().ids.x = InvalidQueryBodySlot;
@@ -635,7 +640,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
             identities[bodyCount + local].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
         }
     }
-    allocate(BodyIdentities, identityPrefix + pairCount);
+    allocate(BodyIdentities, identityPrefix + pairCount64 * 2u);
     updates.push_back({buffers[BodyIdentities], 0, Bytes(identities.data(), identities.size())});
     const QueryCastParams castParameters{
         {castIterationQuantum, bodyCount, static_cast<uint32_t>(identityPrefix), pairCount}};

@@ -1055,18 +1055,17 @@ std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunQuery(PhysicsDomain &domain
                 std::vector<QueryInput> sweepInputs;
                 if (sweepColliderId) {
                     sweepInputs = requests;
-                    if (publication->colliderPairs) {
-                        const auto found = publication->colliderPairs->lifetimes.find(sweepColliderId);
-                        if (found != publication->colliderPairs->lifetimes.end() &&
-                            found->second == sweepColliderGeneration)
-                            for (auto &input : sweepInputs)
-                                input.meta.w |= QuerySweepPairPolicy;
+                    for (auto &input : sweepInputs) {
+                        input.meta.w |= QuerySweepPairPolicy;
+                        input.lifetime = {static_cast<uint32_t>(sweepColliderGeneration),
+                                          static_cast<uint32_t>(sweepColliderGeneration >> 32), 0, 0};
                     }
                     // Only this accepted publication can name the source slot.
                     // An unregistered Collider still excludes its GameObject.
                     for (const auto &actor : publication->directory->actors) {
                         if (!actor || !std::any_of(actor->leaves.begin(), actor->leaves.end(), [&](const auto &leaf) {
-                                return leaf.colliderId == sweepColliderId;
+                                return leaf.colliderId == sweepColliderId &&
+                                       leaf.colliderGeneration == sweepColliderGeneration;
                             }))
                             continue;
                         for (auto &input : sweepInputs) {
