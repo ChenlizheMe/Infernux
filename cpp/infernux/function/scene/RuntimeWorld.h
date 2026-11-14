@@ -14,6 +14,7 @@ namespace infernux
 {
 
 class Scene;
+struct PhysicsDomain;
 
 /// Scene ownership and simulation state; device and submission services stay shared.
 class RuntimeWorld final
@@ -144,6 +145,7 @@ class RuntimeWorld final
     RuntimeWorld &operator=(RuntimeWorld &&) = delete;
 
     const uint64_t id;
+    std::unique_ptr<PhysicsDomain> physics;
     SimulationState simulation;
     LifecycleState lifecycle;
     FrameState frame;

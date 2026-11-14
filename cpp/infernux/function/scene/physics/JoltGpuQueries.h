@@ -39,6 +39,9 @@ struct JoltGpuQueryExportBinding
     JoltGpuQueryExportField field;
     std::shared_ptr<rhi::ComputeBuffer> buffer;
     uint64_t byteOffset = 0;
+    uint32_t recordFirst = 0;
+    uint32_t recordCount = UINT32_MAX;
+    uint32_t bodyIndex = UINT32_MAX; // Aggregate input row for shape body-index projection.
 };
 
 /// Exact publication identity and one typed GPU record stream. Metadata and

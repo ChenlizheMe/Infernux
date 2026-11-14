@@ -1,13 +1,15 @@
 #include "JoltGpuScene.h"
 
-#include "JoltGpuBodyGrowth.h"
 #include "JoltGpuBodyMutations.h"
 #include "JoltGpuBroadphase.h"
 #include "JoltGpuConstraints.h"
 #include "JoltGpuJoints.h"
+#include "JoltGpuPackedLayout.h"
+#include <cstring>
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Rigidbody.h>
+#include <function/scene/RuntimeWorld.h>
 
 #include <algorithm>
 #include <cmath>
@@ -36,16 +38,6 @@ BodyState EmptyState()
     BodyState state{};
     state.rotation.w = 1.0f;
     return state;
-}
-
-JoltGpuModel EmptyModel(uint32_t capacity)
-{
-    JoltGpuModel model;
-    model.bodies.reserve(capacity);
-    for (uint32_t slot = 0; slot < capacity; ++slot)
-        model.bodies.push_back(Tombstone());
-    model.worlds.push_back({{0, capacity, 0, 0}, {0, 0, 0, 0}});
-    return model;
 }
 
 bool FiniteVector(const Float4 &value)
@@ -89,8 +81,27 @@ class JoltGpuScene::Impl
         TargetState target;
     };
 
+    struct Partition
+    {
+        RuntimeWorld *world = nullptr;
+        uint64_t id = 0;
+        uint32_t row = 0, capacity = 0, liveCount = 0;
+        std::vector<uint32_t> records;
+        std::vector<uint32_t> freeLocals;
+        std::vector<JoltGpuControlGroup> pending;
+        std::shared_ptr<PhysicsTargetBatch> pendingSources;
+        std::vector<TargetCompletion> pendingCompletions;
+        std::shared_ptr<const Publication> published;
+        JoltGpuTick::Status status = JoltGpuTick::Status::Idle;
+        uint64_t tickSerial = 0, controlSerial = 0, observedTick = 0, observedControl = 0;
+        bool admission = true, closed = false, cleanup = false, retiring = false, retired = false;
+    };
+
     struct Slot
     {
+        Partition *partition = nullptr;
+        uint32_t local = 0;
+        bool retiring = false;
         uint32_t bodyId = InvalidBodyId;
         PhysicsActorHandle actor;
         OwnerIdentity owner;
@@ -159,8 +170,9 @@ class JoltGpuScene::Impl
         target = {};
     }
 
-    PhysicsTargetSource AppendSource(const PhysicsTargetAuthor &author)
+    PhysicsTargetSource AppendSource(Partition &domain, const PhysicsTargetAuthor &author)
     {
+        auto &pendingSources = domain.pendingSources;
         if (!pendingSources) {
             pendingSources = std::make_shared<PhysicsTargetBatch>();
             pendingSources->records.reserve(slots.size() * 2);
@@ -180,41 +192,59 @@ class JoltGpuScene::Impl
                (HasAuthor(target.rotation, RotationChannel()) ? MotionBoundaryCarryAuthoredRotation : 0);
     }
 
-    Impl(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity, const ShaderTargetCode &stepTarget,
+    Impl(rhi::ComputeHost &host, FrameWorkOwner &budget, const ShaderTargetCode &stepTarget,
          const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
          const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
          JoltGpuJoints &jointProgram)
-        : actors(PhysicsECSStore::Instance()), storage(host, EmptyModel(capacity)), programs(host, stepTarget),
+        : actors(PhysicsECSStore::Instance()), work(budget), storage(host, JoltGpuModel{}), programs(host, stepTarget),
           broadphase(host, broadphaseTarget), constraints(host, constraintTarget), mutations(host, mutationTarget),
-          commands(host, commandTarget), joints(jointProgram), slots(capacity),
-          tick(work, storage, programs, broadphase, constraints)
+          commands(host, commandTarget), joints(jointProgram), tick(budget, storage, programs, broadphase, constraints)
     {
-        byId.reserve(capacity);
-        freeSlots.reserve(capacity);
-        for (uint32_t index = capacity; index > 0; --index)
-            freeSlots.push_back(index - 1);
-        initialization = storage.PrepareInitialization(std::vector<BodyState>(capacity, EmptyState()),
-                                                       std::vector<BodyForces>(capacity));
     }
 
-    ~Impl()
+    Partition &Domain(const RuntimeWorld &world) const
     {
-        Cancel();
+        const auto found = domains.find(world.id);
+        if (found == domains.end() || found->second->world != &world)
+            throw std::invalid_argument("GPU partition is not registered to this RuntimeWorld");
+        return *found->second;
     }
-
-    void RequireUsable() const
+    Partition &BodyDomain(uint32_t id) const
     {
-        if (cancelled || tick.GetStatus() == JoltGpuTick::Status::Cancelled ||
-            tick.GetStatus() == JoltGpuTick::Status::Failed)
-            throw std::logic_error("A cancelled or failed Jolt GPU scene must retire before replacement");
+        return *slots[RequireSlot(id)].partition;
+    }
+    uint32_t Packed(uint32_t record) const
+    {
+        const auto &slot = slots[record];
+        const auto row = slot.partition->row;
+        if (row >= storage.GetModel().worlds.size() || slot.local >= storage.GetModel().worlds[row].bodies.y)
+            throw std::logic_error("GPU body address precedes its accepted layout boundary");
+        return storage.GetModel().worlds[row].bodies.x + slot.local;
+    }
+    void RegisterPartition(RuntimeWorld &world, uint32_t capacity)
+    {
+        if (domains.count(world.id))
+            throw std::logic_error("GPU RuntimeWorld partition is already registered");
+        auto domain = std::make_unique<Partition>();
+        domain->world = &world;
+        domain->id = world.id;
+        domain->row = static_cast<uint32_t>(ordered.size());
+        auto *address = domain.get();
+        domains.emplace(world.id, std::move(domain));
+        ordered.push_back(address);
+        ReserveCapacity(world, capacity);
+        // Even a zero-capacity registration needs its real empty GPU world row.
+        if (!capacity)
+            QueueLayout(*address, 0u);
     }
 
     uint32_t RequireSlot(uint32_t id) const
     {
-        RequireUsable();
         const auto found = byId.find(id);
         if (found == byId.end())
             throw std::invalid_argument("Jolt GPU body identity is invalid or retired");
+        if (slots[found->second].retiring || slots[found->second].partition->closed)
+            throw std::invalid_argument("GPU body owner partition is closed or retiring");
         return found->second;
     }
 
@@ -226,7 +256,6 @@ class JoltGpuScene::Impl
 
     const PublishedJoint &GetAuthoredJoint(uint64_t id) const
     {
-        RequireUsable();
         const auto found = authoredJoints.find(id);
         if (found == authoredJoints.end())
             throw std::invalid_argument("GPU joint identity is invalid or retired");
@@ -242,27 +271,36 @@ class JoltGpuScene::Impl
         return *found;
     }
 
-    void QueueJointTopology()
+    void QueueJointTopology(Partition &domain)
     {
+        auto own = std::make_shared<std::vector<PublishedJoint>>();
+        for (const auto &[id, record] : authoredJoints)
+            if (slots[byId.at(record.value.bodyIdA)].partition == &domain)
+                own->push_back(record.value);
         auto catalog = std::make_shared<std::vector<PublishedJoint>>();
-        catalog->reserve(authoredJoints.size());
-        for (auto &[id, joint] : authoredJoints) {
-            joint.value.row = static_cast<uint32_t>(catalog->size());
-            catalog->push_back(joint.value);
-        }
         JoltGpuControlGroup group;
-        group.prepareModel = [this, catalog] {
+        group.prepareModel = [this, own, catalog, &domain] {
+            for (const auto &joint : acceptedJoints)
+                if (joint.author.identity.z != domain.row)
+                    catalog->push_back(joint);
+            catalog->insert(catalog->end(), own->begin(), own->end());
+            std::sort(catalog->begin(), catalog->end(), [this](const auto &a, const auto &b) {
+                const auto ar = slots[byId.at(a.bodyIdA)].partition->row;
+                const auto br = slots[byId.at(b.bodyIdA)].partition->row;
+                return ar != br ? ar < br : a.id < b.id;
+            });
             std::unordered_map<uint64_t, uint32_t> previous;
             for (const auto &joint : acceptedJoints)
                 previous.emplace(joint.id, joint.row);
             std::vector<JointAuthor> authors;
             std::vector<uint32_t> remap;
-            authors.reserve(catalog->size());
-            remap.reserve(catalog->size());
-            for (const auto &joint : *catalog) {
-                RequireOwnership(joint.author.bodies.y, joint.bodyIdA);
-                if (joint.bodyIdB != InvalidBodyId)
-                    RequireOwnership(joint.author.bodies.x, joint.bodyIdB);
+            for (auto &joint : *catalog) {
+                const auto owner = byId.at(joint.bodyIdA);
+                joint.row = static_cast<uint32_t>(authors.size());
+                joint.author.bodies.y = Packed(owner);
+                joint.author.bodies.x =
+                    joint.bodyIdB == InvalidBodyId ? InvalidQueryBodySlot : Packed(byId.at(joint.bodyIdB));
+                joint.author.identity.z = slots[owner].partition->row;
                 authors.push_back(joint.author);
                 const auto old = previous.find(joint.id);
                 remap.push_back(old == previous.end() ? InvalidQueryBodySlot : old->second);
@@ -274,13 +312,15 @@ class JoltGpuScene::Impl
                                                    std::move(prepared.updates), std::move(prepared.dispatches));
         };
         group.modelAccepted = [this, catalog]() noexcept { acceptedJoints.swap(*catalog); };
-        pending.push_back(std::move(group));
+        domain.pending.push_back(std::move(group));
     }
 
     uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody, JointAuthor author)
     {
         const auto a = RequireSlot(ownerBody);
         const auto b = connectedBody == InvalidBodyId ? InvalidQueryBodySlot : RequireSlot(connectedBody);
+        if (b != InvalidQueryBodySlot && slots[a].partition != slots[b].partition)
+            throw std::invalid_argument("GPU Joint endpoints belong to different RuntimeWorld owners");
         if (ownerBody == connectedBody || !slots[a].authored || (b != InvalidQueryBodySlot && !slots[b].authored))
             throw std::invalid_argument("A GPU joint requires distinct authored body endpoints");
         if (!nextJointId)
@@ -288,14 +328,14 @@ class JoltGpuScene::Impl
         const auto id = nextJointId++;
         author.bodies.x = b;
         author.bodies.y = a;
-        author.identity = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
+        author.identity = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), slots[a].partition->row, 0};
         author.rootCOM1 = b == InvalidQueryBodySlot ? Float4{} : slots[b].authored->rootCenterOfMass;
         author.rootCOM2 = slots[a].authored->rootCenterOfMass;
         author.scale1 = b == InvalidQueryBodySlot ? Float4{1, 1, 1, 0} : slots[b].authored->rootScale;
         author.scale2 = slots[a].authored->rootScale;
         PublishedJoint value{id, 0, ownerBody, connectedBody, author.bodies.z, author};
         authoredJoints.emplace(id, JointRecord{value, &owner});
-        QueueJointTopology();
+        QueueJointTopology(*slots[a].partition);
         return id;
     }
 
@@ -310,11 +350,16 @@ class JoltGpuScene::Impl
     {
         if (updates.empty())
             return;
+        auto &domain = BodyDomain(GetAuthoredJoint(updates.front().id).bodyIdA);
+        auto &pending = domain.pending;
         auto values = std::make_shared<std::vector<PublishedJoint>>();
         values->reserve(updates.size());
         for (const auto &update : updates) {
             auto value = GetAuthoredJoint(update.id);
+            if (&BodyDomain(value.bodyIdA) != &domain)
+                throw std::invalid_argument("GPU joint batch crosses RuntimeWorld domains");
             value.author = update.author;
+            value.author.identity = GetAuthoredJoint(update.id).author.identity;
             values->push_back(value);
         }
         JoltGpuControlGroup group;
@@ -323,6 +368,10 @@ class JoltGpuScene::Impl
             changes.reserve(values->size());
             for (auto &value : *values) {
                 value.row = AcceptedJoint(value.id).row;
+                value.author.bodies.x =
+                    value.bodyIdB == InvalidBodyId ? InvalidQueryBodySlot : Packed(byId.at(value.bodyIdB));
+                value.author.bodies.y = Packed(byId.at(value.bodyIdA));
+                value.author.identity.z = slots[byId.at(value.bodyIdA)].partition->row;
                 changes.push_back({value.row, value.author});
             }
             return joints.PrepareUpdate(storage, std::move(changes));
@@ -360,13 +409,15 @@ class JoltGpuScene::Impl
         if (found == authoredJoints.end())
             return;
         auto *owner = found->second.owner;
+        auto &domain = BodyDomain(found->second.value.bodyIdA);
         authoredJoints.erase(found);
-        QueueJointTopology();
+        QueueJointTopology(domain);
         owner->OnPhysicsConstraintDestroyed();
     }
 
     void DestroyJointsForBody(uint32_t bodyId)
     {
+        auto &domain = BodyDomain(bodyId);
         std::vector<PhysicsConstraintOwner *> owners;
         for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
             if (it->second.value.bodyIdA == bodyId || it->second.value.bodyIdB == bodyId) {
@@ -377,59 +428,152 @@ class JoltGpuScene::Impl
             }
         }
         if (!owners.empty())
-            QueueJointTopology();
+            QueueJointTopology(domain);
         for (auto *owner : owners)
             owner->OnPhysicsConstraintDestroyed();
     }
 
-    void ReserveCapacity(uint32_t capacity)
+    struct LayoutPlan
     {
-        const auto previous = static_cast<uint32_t>(slots.size());
-        if (capacity <= previous)
-            return;
-        if (!storage.GetHost().device.GetCapabilities().IsStorageBufferRangeValid(0, uint64_t(capacity) *
-                                                                                         sizeof(BodyModel)))
-            throw std::length_error("Jolt GPU body capacity exceeds the device storage range");
-        auto growth = std::make_shared<JoltGpuBodyGrowth>(storage, mutations, previous, capacity);
-        JoltGpuControlGroup preparation, acceptance;
-        preparation.prepareWork = [growth] { return growth->Prepare(); };
-        acceptance.prepareModel = [growth] { return growth->Commit(); };
-        pending.reserve(pending.size() + 2);
-        freeSlots.reserve(capacity);
-        slots.resize(capacity);
-        for (uint32_t index = capacity; index > previous; --index)
-            freeSlots.push_back(index - 1);
-        pending.push_back(std::move(preparation));
-        pending.push_back(std::move(acceptance));
+        JoltGpuModel model;
+        std::vector<uint32_t> bodies, joints;
+        std::vector<PublishedJoint> catalog;
+        std::vector<std::pair<uint32_t, std::shared_ptr<const PublishedActor>>> identities;
+    };
+
+    std::shared_ptr<LayoutPlan> BuildLayout(Partition &changed, uint32_t capacity)
+    {
+        auto plan = std::make_shared<LayoutPlan>();
+        const auto &old = storage.GetModel();
+        std::vector<uint32_t> capacities;
+        for (auto *domain : ordered) {
+            const uint32_t oldCount = domain->row < old.worlds.size() ? old.worlds[domain->row].bodies.y : 0u;
+            const uint32_t count = domain == &changed ? capacity : oldCount;
+            capacities.push_back(count);
+            for (uint32_t local = 0; local < count; ++local) {
+                const auto source = local < oldCount ? old.worlds[domain->row].bodies.x + local : UINT32_MAX;
+                auto body = source == UINT32_MAX ? Tombstone() : old.bodies[source];
+                const auto oldLeaf = body.meta.x;
+                body.meta.x = static_cast<uint32_t>(plan->model.shapes.size());
+                const auto target = static_cast<uint32_t>(plan->model.bodies.size());
+                for (uint32_t leaf = 0; leaf < body.meta.y; ++leaf) {
+                    auto shape = old.shapes[oldLeaf + leaf];
+                    shape.meta.y = target;
+                    plan->model.shapes.push_back(shape);
+                }
+                body.meta.w = domain->row;
+                plan->model.bodies.push_back(body);
+                plan->bodies.push_back(source);
+                if (local < domain->records.size() && domain->records[local] != UINT32_MAX) {
+                    const auto record = domain->records[local];
+                    if (slots[record].accepted) {
+                        auto identity = std::make_shared<PublishedActor>(*slots[record].accepted);
+                        identity->slot = target;
+                        plan->identities.emplace_back(record, std::move(identity));
+                    }
+                }
+            }
+        }
+        std::vector<uint32_t> bases;
+        uint32_t base = 0;
+        for (auto count : capacities) {
+            bases.push_back(base);
+            base += count;
+        }
+        for (const auto &joint : acceptedJoints) {
+            if (joint.author.identity.z == changed.row && !capacity)
+                continue;
+            auto value = joint;
+            const auto &a = slots[byId.at(value.bodyIdA)];
+            value.author.bodies.y = bases[a.partition->row] + a.local;
+            if (value.bodyIdB != InvalidBodyId) {
+                const auto &b = slots[byId.at(value.bodyIdB)];
+                value.author.bodies.x = bases[b.partition->row] + b.local;
+            }
+            value.row = static_cast<uint32_t>(plan->catalog.size());
+            plan->model.joints.push_back(value.author);
+            plan->joints.push_back(joint.row);
+            plan->catalog.push_back(value);
+        }
+        JoltGpuBuildWorldRanges(plan->model, capacities);
+        return plan;
     }
 
-    BodyAllocation Reserve(PhysicsActorHandle actor, OwnerIdentity owner)
+    void QueueLayout(Partition &domain, uint32_t capacity)
     {
-        RequireUsable();
-        if (!actors.IsValid(actor))
-            throw std::invalid_argument("Jolt GPU body requires a generation-aware actor handle");
-        const auto *object = actors.GetActor(actor).owner;
-        if (!object || owner.gameObjectId != object->GetID() || owner.target.GetGameObject() != object)
-            throw std::invalid_argument("Jolt GPU body owner identity does not resolve to its actor");
-        if (nextBodyId == InvalidBodyId)
-            throw std::overflow_error("Jolt GPU public body identity space is exhausted");
-        for (const auto &[id, index] : byId)
-            if (slots[index].actor == actor)
-                throw std::logic_error("The physics actor already owns a Jolt GPU body");
-        if (freeSlots.empty())
-            throw std::length_error("Jolt GPU scene has no retired capacity slot available");
-        const auto index = freeSlots.back();
-        const auto id = nextBodyId;
-        byId.emplace(id, index);
-        freeSlots.pop_back();
-        auto &slot = slots[index];
-        slot.bodyId = id;
-        slot.actor = actor;
-        slot.owner = std::move(owner);
-        slot.desiredResident = false;
-        slot.initialRigidbody = {};
-        ++nextBodyId;
-        return {id, index};
+        auto transaction = std::make_shared<std::shared_ptr<JoltGpuPackedLayout>>();
+        auto plan = std::make_shared<std::shared_ptr<LayoutPlan>>();
+        JoltGpuControlGroup prepare, commit;
+        prepare.prepareWork = [this, &domain, capacity, transaction, plan] {
+            *plan = BuildLayout(domain, capacity);
+            *transaction = std::make_shared<JoltGpuPackedLayout>(storage, mutations, work, (*plan)->model,
+                                                                 (*plan)->bodies, (*plan)->joints);
+            return (*transaction)->Prepare();
+        };
+        commit.prepareModel = [transaction] { return (*transaction)->Commit(); };
+        commit.modelAccepted = [this, plan]() noexcept {
+            for (const auto &[record, identity] : (*plan)->identities)
+                slots[record].accepted = identity;
+            acceptedJoints.swap((*plan)->catalog);
+            ++layoutGeneration;
+        };
+        domain.pending.push_back(std::move(prepare));
+        domain.pending.push_back(std::move(commit));
+    }
+    void ReserveCapacity(RuntimeWorld &world, uint32_t capacity)
+    {
+        auto &domain = Domain(world);
+        if (domain.closed)
+            throw std::logic_error("Cannot grow a closed GPU world partition");
+        if (capacity <= domain.capacity)
+            return;
+        const auto previous = domain.capacity;
+        domain.records.resize(capacity, UINT32_MAX);
+        domain.freeLocals.reserve(capacity);
+        for (uint32_t local = capacity; local > previous; --local)
+            domain.freeLocals.push_back(local - 1u);
+        domain.capacity = capacity;
+        QueueLayout(domain, capacity);
+    }
+
+    BodyAllocation Reserve(RuntimeWorld &world, uint32_t id, PhysicsActorHandle actor, OwnerIdentity owner)
+    {
+        auto &domain = Domain(world);
+        if (domain.closed || !actors.IsValid(actor) || id == InvalidBodyId || byId.count(id))
+            throw std::invalid_argument("GPU body reservation requires a new live author identity");
+        const auto &author = actors.GetActor(actor);
+        if (author.runtimeWorld != &world || author.bodyId != InvalidBodyId || !author.owner ||
+            owner.gameObjectId != author.owner->GetID() || owner.target.GetGameObject() != author.owner)
+            throw std::invalid_argument("GPU body ID / RuntimeWorld / owner do not match the actor registry");
+        if (domain.freeLocals.empty())
+            throw std::length_error("GPU world partition needs a capacity reservation");
+        const auto local = domain.freeLocals.back();
+        uint32_t record;
+        if (freeRecords.empty()) {
+            if (freeRecords.capacity() < slots.size() + 1u)
+                freeRecords.reserve(std::max(slots.size() + 1u, freeRecords.capacity() * 2u));
+            record = static_cast<uint32_t>(slots.size());
+            slots.emplace_back();
+        } else {
+            record = freeRecords.back();
+            freeRecords.pop_back();
+            slots[record] = Slot{};
+        }
+        slots[record].partition = &domain;
+        slots[record].local = local;
+        slots[record].bodyId = id;
+        slots[record].actor = actor;
+        slots[record].owner = std::move(owner);
+        domain.freeLocals.pop_back();
+        domain.records[local] = record;
+        ++domain.liveCount;
+        byId.emplace(id, record);
+        // A new capacity slot has no accepted GPU address until its layout.
+        const auto &worlds = storage.GetModel().worlds;
+        const uint32_t packed = domain.row < worlds.size() && local < worlds[domain.row].bodies.y
+                                    ? worlds[domain.row].bodies.x + local
+                                    : UINT32_MAX;
+        return {id, packed};
     }
 
     void CommitActor(const std::shared_ptr<ActorChange> &change) noexcept
@@ -489,12 +633,20 @@ class JoltGpuScene::Impl
             replacement.bodies[slot] = body;
         }
         const auto count = static_cast<uint32_t>(leafCount);
-        replacement.worlds.push_back({{0, static_cast<uint32_t>(replacement.bodies.size()), 0, 0}, {0, count, 0, 0}});
+        (void)count;
+        replacement.joints = accepted.joints;
+        std::vector<uint32_t> capacities;
+        for (const auto &world : accepted.worlds)
+            capacities.push_back(world.bodies.y);
+        JoltGpuBuildWorldRanges(replacement, capacities);
         return replacement;
     }
 
     void StageActor(uint32_t id, PreparedGpuActor actor)
     {
+        auto &domain = BodyDomain(id);
+        auto &pending = domain.pending;
+        auto &pendingCompletions = domain.pendingCompletions;
         const uint32_t index = RequireSlot(id);
         auto &slot = slots[index];
         const bool firstOwnership = !slot.authored;
@@ -537,7 +689,7 @@ class JoltGpuScene::Impl
         change->bodyId = id;
         change->model = actor.body;
         change->model.meta.x = 0;
-        change->model.meta.w = 0;
+        change->model.meta.w = slot.partition->row;
         change->model.meta.z =
             (change->model.meta.z & ~MotionNotResident) | (slot.desiredResident ? 0 : MotionNotResident);
         change->leaves.reserve(actor.geometry.leaves.size());
@@ -566,20 +718,25 @@ class JoltGpuScene::Impl
         JoltGpuControlGroup group;
         group.prepareModel = [this, change] {
             RequireOwnership(change->slot, change->bodyId);
+            const uint32_t packed = Packed(change->slot);
+            change->identity->slot = packed;
+            change->model.meta.w = slots[change->slot].partition->row;
+            for (auto &leaf : change->leaves)
+                leaf.meta.y = packed;
             const auto &previous = slots[change->slot].accepted;
             change->creation = !previous;
             change->identity->shapeRevision = previous ? previous->shapeRevision + 1 : 0;
             std::vector<BodyInitialization> initial;
             std::vector<CenterOfMassUpdate> rebases;
             if (change->creation) {
-                initial.push_back({{change->slot, 0, 0, 0}, change->initialState, {}});
+                initial.push_back({{packed, 0, 0, 0}, change->initialState, {}});
             } else {
                 const auto oldCOM = previous->rootCenterOfMass;
                 const auto newCOM = change->identity->rootCenterOfMass;
                 rebases.push_back(
-                    {{change->slot, 0, 0, 0}, {newCOM.x - oldCOM.x, newCOM.y - oldCOM.y, newCOM.z - oldCOM.z, 0.0f}});
+                    {{packed, 0, 0, 0}, {newCOM.x - oldCOM.x, newCOM.y - oldCOM.y, newCOM.z - oldCOM.z, 0.0f}});
             }
-            const auto &acceptedBody = storage.GetModel().bodies[change->slot];
+            const auto &acceptedBody = storage.GetModel().bodies[packed];
             if (acceptedBody.meta.y == change->leaves.size()) {
                 auto body = change->model;
                 body.meta.x = acceptedBody.meta.x;
@@ -587,15 +744,15 @@ class JoltGpuScene::Impl
                 leaves.reserve(change->leaves.size());
                 for (uint32_t leaf = 0; leaf < change->leaves.size(); ++leaf)
                     leaves.push_back({acceptedBody.meta.x + leaf, change->leaves[leaf]});
-                return mutations.Prepare(storage, {{change->slot, body}}, std::move(leaves), initial, rebases);
+                return mutations.Prepare(storage, {{packed, body}}, std::move(leaves), initial, rebases);
             }
-            return mutations.PrepareReplacement(storage, RepackModel(change->slot, change->model, change->leaves),
-                                                initial, rebases);
+            return mutations.PrepareReplacement(storage, RepackModel(packed, change->model, change->leaves), initial,
+                                                rebases);
         };
         group.modelAccepted = [this, change]() noexcept { CommitActor(change); };
         if (motionChanged) {
             BodyCommand boundary{};
-            boundary.meta = {index, CommandMotionBoundary, MotionBoundaryTypeChange | CarryFlags(slot.queuedTarget), 0};
+            boundary.meta = {id, CommandMotionBoundary, MotionBoundaryTypeChange | CarryFlags(slot.queuedTarget), 0};
             group.commands.push_back(boundary);
         }
         if (motion != MotionStatic) {
@@ -604,13 +761,13 @@ class JoltGpuScene::Impl
             // pending inputs, preserving the resident numerical pose/state.
             if (firstOwnership || (change->initializesRigidbody && change->hasInitialLinearVelocity)) {
                 BodyCommand linear{};
-                linear.meta = {index, CommandSetLinearVelocity, 0, 0};
+                linear.meta = {id, CommandSetLinearVelocity, 0, 0};
                 linear.value = change->initialState.linearVelocity;
                 group.commands.push_back(linear);
             }
             if (firstOwnership || (change->initializesRigidbody && change->hasInitialAngularVelocity)) {
                 BodyCommand angular{};
-                angular.meta = {index, CommandSetAngularVelocity, 0, 0};
+                angular.meta = {id, CommandSetAngularVelocity, 0, 0};
                 angular.value = change->initialState.angularVelocity;
                 group.commands.push_back(angular);
             }
@@ -628,6 +785,9 @@ class JoltGpuScene::Impl
 
     void SetResident(uint32_t id, bool resident, bool preserveVelocity)
     {
+        auto &domain = BodyDomain(id);
+        auto &pending = domain.pending;
+        auto &pendingCompletions = domain.pendingCompletions;
         const uint32_t index = RequireSlot(id);
         auto &slot = slots[index];
         if (slot.desiredResident == resident && (resident || preserveVelocity))
@@ -635,14 +795,15 @@ class JoltGpuScene::Impl
         JoltGpuControlGroup group;
         group.prepareModel = [this, index, id, resident] {
             RequireOwnership(index, id);
-            auto model = storage.GetModel().bodies[index];
+            const auto packed = Packed(index);
+            auto model = storage.GetModel().bodies[packed];
             model.meta.z = (model.meta.z & ~MotionNotResident) | (resident ? 0 : MotionNotResident);
-            return storage.PrepareModelUpdate({{index, model}}, {});
+            return storage.PrepareModelUpdate({{packed, model}}, {});
         };
         if (!resident) {
             pendingCompletions.reserve(pendingCompletions.size() + 2);
             BodyCommand boundary{};
-            boundary.meta = {index, CommandMotionBoundary,
+            boundary.meta = {id, CommandMotionBoundary,
                              preserveVelocity ? MotionBoundarySuspendPreserve : MotionBoundarySuspendReset, 0};
             group.commands.push_back(boundary);
         }
@@ -654,11 +815,14 @@ class JoltGpuScene::Impl
 
     PhysicsTargetSource QueueCommand(uint32_t id, BodyCommand command, const PhysicsTargetAuthor *author)
     {
+        auto &domain = BodyDomain(id);
+        auto &pending = domain.pending;
+        auto &pendingCompletions = domain.pendingCompletions;
         const uint32_t index = RequireSlot(id);
         auto &slot = slots[index];
         if (!slot.authored)
             throw std::logic_error("Jolt GPU actor must be staged before authoring a body command");
-        command.meta.x = index;
+        command.meta.x = id;
         const auto kind = command.meta.y;
         const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
         const uint8_t channels = (kind == CommandMovePosition   ? PositionChannel()
@@ -680,7 +844,7 @@ class JoltGpuScene::Impl
                 command.rootCOM.w = speed;
         }
         pendingCompletions.reserve(pendingCompletions.size() + 2);
-        const auto source = author ? AppendSource(*author) : PhysicsTargetSource{};
+        const auto source = author ? AppendSource(domain, *author) : PhysicsTargetSource{};
         if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted &&
             !pending.back().prepareWork) {
             pending.back().commands.push_back(command);
@@ -717,88 +881,98 @@ class JoltGpuScene::Impl
 
     void StageRetire(uint32_t id)
     {
+        auto &domain = BodyDomain(id);
+        auto &pending = domain.pending;
+        auto &pendingCompletions = domain.pendingCompletions;
         const uint32_t index = RequireSlot(id);
         DestroyJointsForBody(id);
         JoltGpuControlGroup group;
         group.prepareModel = [this, index, id] {
             RequireOwnership(index, id);
-            const BodyInitialization initial{{index, 0, 0, 0}, EmptyState(), {}};
-            const auto &body = storage.GetModel().bodies[index];
+            const auto packed = Packed(index);
+            const BodyInitialization initial{{packed, 0, 0, 0}, EmptyState(), {}};
+            const auto &body = storage.GetModel().bodies[packed];
             if (body.meta.y == 0) {
                 auto tombstone = Tombstone();
                 tombstone.meta.x = body.meta.x;
-                return mutations.Prepare(storage, {{index, tombstone}}, {}, {initial});
+                tombstone.meta.w = slots[index].partition->row;
+                return mutations.Prepare(storage, {{packed, tombstone}}, {}, {initial});
             }
-            return mutations.PrepareReplacement(storage, RepackModel(index, Tombstone(), {}), {initial});
+            return mutations.PrepareReplacement(storage, RepackModel(packed, Tombstone(), {}), {initial});
         };
-        group.modelAccepted = [this, index]() noexcept {
-            slots[index] = Slot{};
-            // Every reservation pops once and every retirement pushes once;
-            // Capacity planning reserves the complete slot range up front.
-            freeSlots.push_back(index);
+        group.modelAccepted = [this, index, id]() noexcept {
+            auto &slot = slots[index];
+            slot.partition->records[slot.local] = UINT32_MAX;
+            slot.partition->freeLocals.push_back(slot.local);
+            slot.accepted.reset();
+            slot.authored.reset();
+            freeRecords.push_back(index);
+            byId.erase(id);
         };
         pendingCompletions.reserve(pendingCompletions.size() + 2);
         pending.push_back(std::move(group));
         CancelTarget(slots[index].queuedTarget, pendingCompletions);
-        byId.erase(id);
+        slots[index].retiring = true;
+        --domain.liveCount;
     }
 
-    JoltGpuTickControl PrepareControl(uint64_t epoch, uint64_t step, bool controlOnly, Consumer consumer = {},
-                                      Consumer finalConsumer = {})
+    enum class WriterKind
     {
-        RequireUsable();
-        if (tick.GetStatus() != JoltGpuTick::Status::Idle && tick.GetStatus() != JoltGpuTick::Status::Complete)
-            throw std::logic_error("Jolt GPU scene cannot admit a second logical tick");
-        if (candidate)
-            throw std::logic_error("Publish the previous completed Jolt GPU tick before admitting its successor");
-        const auto prefixCapacity = slots.size();
+        Tick,
+        Control,
+        Work,
+        Cancelled,
+        Cleanup,
+        Retirement
+    };
+
+    JoltGpuTickControl PrepareControl(Partition &domain, uint64_t epoch, uint64_t step, bool controlOnly,
+                                      Consumer consumer, Consumer finalConsumer)
+    {
         auto publication = std::make_shared<Publication>();
+        publication->worldId = domain.id;
         publication->simulationEpoch = epoch;
         publication->fixedStepIndex = step;
-        publication->actors.resize(prefixCapacity);
-        publication->residentBodies.resize(prefixCapacity);
         auto prefix = std::make_shared<std::vector<PrefixTarget>>();
-        prefix->reserve(prefixCapacity);
-        for (const auto &slot : slots)
-            prefix->push_back({slot.bodyId, slot.queuedTarget});
-        auto completions = std::make_shared<std::vector<TargetCompletion>>(pendingCompletions);
-        completions->reserve(completions->size() + prefixCapacity * 2);
+        for (const auto index : domain.records)
+            if (index != UINT32_MAX)
+                prefix->push_back({slots[index].bodyId, slots[index].queuedTarget});
+        auto completions = std::make_shared<std::vector<TargetCompletion>>(domain.pendingCompletions);
+        completions->reserve(completions->size() + 2u * prefix->size());
         JoltGpuControlGroup capture;
-        capture.prepareModel = [this, publication, prefix, completions, prefixCapacity,
+        capture.prepareModel = [this, &domain, publication, prefix, completions,
                                 controlOnly]() -> std::unique_ptr<JoltGpuModelUpdate> {
-            if (storage.GetBodyCount() != prefixCapacity)
-                throw std::logic_error("Jolt GPU publication must match its accepted body-capacity prefix");
-            if (storage.GetBodyCount()) {
-                publication->bodyModels = storage.Get(Resource::BodyModels)->Freeze();
-                if (storage.GetShapeCount())
-                    publication->shapeModels = storage.Get(Resource::ShapeModels)->Freeze();
-                publication->worlds = storage.Get(Resource::Worlds)->Freeze();
-                if (controlOnly)
-                    publication->bodyStates = storage.Get(Resource::BodyStates)->Freeze();
-            }
-            publication->joints = acceptedJoints;
-            if (controlOnly && storage.GetJointCount())
-                publication->jointStream = storage.Get(Resource::Joints)->Freeze();
+            publication->layoutGeneration = layoutGeneration;
+            publication->bodyModels = storage.Get(Resource::BodyModels)->Freeze();
+            publication->shapeModels = storage.Get(Resource::ShapeModels)->Freeze();
+            publication->worlds = storage.Get(Resource::Worlds)->Freeze();
+            publication->actors.resize(storage.GetBodyCount());
+            publication->residentBodies.resize(storage.GetBodyCount());
             publication->leaves.resize(storage.GetShapeCount());
-            for (size_t index = 0; index < prefixCapacity; ++index) {
-                publication->actors[index] = slots[index].accepted;
-                publication->residentBodies[index] = (storage.GetModel().bodies[index].meta.z & MotionNotResident) == 0;
-                const auto &acceptedBody = storage.GetModel().bodies[index];
-                if (acceptedBody.meta.y != 0) {
-                    const auto &identity = publication->actors[index];
-                    if (!identity || identity->leaves.size() != acceptedBody.meta.y)
-                        throw std::logic_error("Jolt GPU publication leaf catalog differs from its accepted range");
-                    for (uint32_t leaf = 0; leaf < acceptedBody.meta.y; ++leaf)
-                        publication->leaves[acceptedBody.meta.x + leaf] = {static_cast<uint32_t>(index), leaf};
-                }
-                auto &slot = slots[index];
-                const auto &input = (*prefix)[index];
-                if (input.bodyId == InvalidBodyId || input.bodyId != slot.bodyId || !slot.accepted)
+            for (const auto &[id, index] : byId) {
+                const auto &slot = slots[index];
+                if (!slot.accepted)
                     continue;
-                // Every preceding model/command packet is now accepted. Only
-                // this captured prefix contributes target provenance; author
-                // calls made while it was pending belong to the next prefix.
-                const auto motion = storage.GetModel().bodies[index].meta.z;
+                const auto packed = Packed(index);
+                publication->actors[packed] = slot.accepted;
+                const auto &model = storage.GetModel().bodies[packed];
+                publication->residentBodies[packed] = (model.meta.z & MotionNotResident) == 0u;
+                if (slot.accepted->leaves.size() != model.meta.y)
+                    throw std::logic_error("GPU publication actor directory differs from accepted leaf layout");
+                for (uint32_t leaf = 0; leaf < model.meta.y; ++leaf)
+                    publication->leaves[model.meta.x + leaf] = {packed, leaf};
+            }
+            for (const auto &joint : acceptedJoints)
+                if (joint.author.identity.z == domain.row) {
+                    auto local = joint;
+                    local.row = static_cast<uint32_t>(publication->joints.size());
+                    publication->joints.push_back(local);
+                }
+            for (const auto &input : *prefix) {
+                const auto found = byId.find(input.bodyId);
+                if (found == byId.end() || !slots[found->second].accepted)
+                    continue;
+                const auto motion = storage.GetModel().bodies[Packed(found->second)].meta.z;
                 const bool drives = (motion & ~MotionNotResident) == MotionKinematic ||
                                     ((motion & ~MotionNotResident) == MotionStatic && input.target.temporaryStatic);
                 if (!controlOnly && !(motion & MotionNotResident) && drives && input.target.pending) {
@@ -808,140 +982,312 @@ class JoltGpuScene::Impl
             }
             return {};
         };
-        const std::shared_ptr<const Publication> retainedPublication = publication;
-        if (consumer)
-            capture.prepareWork = [retainedPublication, consumer = std::move(consumer)] {
-                return consumer(retainedPublication);
-            };
+        domain.pending.push_back(std::move(capture));
+        for (auto &group : domain.pending)
+            if (!group.commands.empty())
+                group.materializeCommands = [this, &domain](std::vector<BodyCommand> &values) {
+                    for (auto &command : values) {
+                        const auto found = byId.find(command.meta.x);
+                        if (found == byId.end() || slots[found->second].partition != &domain)
+                            throw std::logic_error("GPU command identity is not owned by the accepted partition");
+                        const auto record = found->second;
+                        command.meta.x = Packed(record);
+                        const auto kind = command.meta.y;
+                        const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
+                        if ((kind <= CommandSetPose || move) && slots[record].accepted) {
+                            const auto speed = command.rootCOM.w;
+                            command.rootCOM = slots[record].accepted->rootCenterOfMass;
+                            if (move)
+                                command.rootCOM.w = speed;
+                        }
+                    }
+                };
         JoltGpuTickControl control;
-        control.prepareFinalWork = [this, publication, retainedPublication, consumer = std::move(finalConsumer)](
-                                       const std::shared_ptr<rhi::ComputeBuffer> &states) {
-            publication->bodyStates = states;
-            if (storage.GetJointCount())
-                publication->jointStream = storage.Get(Resource::Joints)->Freeze();
-            // Numerical failure rejects the whole unpublished step. The last
-            // complete world stays available; a local guard is not a fallback.
-            return Then(joints.PrepareStatus(retainedPublication), [retainedPublication, consumer] {
-                return consumer ? consumer(retainedPublication) : JoltGpuControlWork{};
+        control.commandProgram = &commands;
+        control.groups = std::move(domain.pending);
+        domain.pendingSources.reset();
+        domain.pendingCompletions.clear();
+        const std::shared_ptr<const Publication> retained = publication;
+        control.prepareFinalWork = [this, publication, retained, consumer = std::move(consumer),
+                                    finalConsumer = std::move(finalConsumer)](const JoltGpuTickOutput &output) {
+            publication->worldRow = output.worldRow;
+            publication->bodyBase = output.bodyBase;
+            publication->bodyCount = output.bodyCount;
+            publication->leafBase = output.leafBase;
+            publication->leafCount = output.leafCount;
+            publication->jointBase = output.jointBase;
+            publication->jointCount = output.jointCount;
+            publication->bodyStates = output.states;
+            publication->jointStream = output.joints;
+            return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer] {
+                return Then(consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
+                    return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
+                });
             });
         };
-        // Reserve before moving any pending work so allocation failure leaves
-        // the authored queue intact and no initialization packet is orphaned.
-        pending.reserve(pending.size() + 1);
-        pending.push_back(std::move(capture));
-        control.initialization = std::move(initialization);
-        control.commandProgram = &commands;
-        control.groups = std::move(pending);
-        pendingSources.reset();
-        pendingCompletions.clear();
-        candidateCompletions = std::move(completions);
         candidate = std::move(publication);
-        candidateControlOnly = controlOnly;
-        if (!controlOnly) {
-            for (auto &slot : slots) {
+        candidateCompletions = std::move(completions);
+        if (!controlOnly)
+            for (const auto index : domain.records) {
+                if (index == UINT32_MAX)
+                    continue;
+                auto &slot = slots[index];
                 const bool drives =
                     slot.authored &&
                     (slot.authored->acceptedMotionType == MotionKinematic ||
                      (slot.authored->acceptedMotionType == MotionStatic && slot.queuedTarget.temporaryStatic));
-                if (!slot.desiredResident || !drives || !slot.queuedTarget.pending)
-                    continue;
-                // Hand ownership to this logical tick, without releasing the
-                // Rigidbody guard. Later type changes must not carry/snap an
-                // endpoint already consumed by this tick's requested duration.
-                slot.queuedTarget.pending = false;
-                slot.queuedTarget.position = {};
-                slot.queuedTarget.rotation = {};
+                if (slot.desiredResident && drives && slot.queuedTarget.pending) {
+                    slot.queuedTarget.pending = false;
+                    slot.queuedTarget.position = {};
+                    slot.queuedTarget.rotation = {};
+                }
             }
-        }
         return control;
     }
 
-    void BeginTick(uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters &parameters,
-                   Consumer finalConsumer)
+    bool TryBegin(Partition &domain, uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters *parameters,
+                  Consumer consumer, Consumer finalConsumer)
     {
-        auto control = PrepareControl(epoch, step, false, {}, std::move(finalConsumer));
-        try {
-            tick.Begin(dt, parameters, std::move(control));
-        } catch (...) {
-            // Begin may have retained a partial plan. This storage cannot be
-            // resumed by rebuilding author input or replaying commands.
-            Cancel();
-            throw;
-        }
-    }
-
-    void BeginControl(uint64_t epoch, Consumer consumer, Consumer finalConsumer)
-    {
-        const auto step = published && published->simulationEpoch == epoch ? published->fixedStepIndex : 0;
-        auto control = PrepareControl(epoch, step, true, std::move(consumer), std::move(finalConsumer));
-        try {
-            tick.BeginControl(std::move(control));
-        } catch (...) {
-            Cancel();
-            throw;
-        }
-    }
-
-    void BeginWork(JoltGpuControlWork work)
-    {
-        RequireUsable();
-        if (tick.GetStatus() != JoltGpuTick::Status::Idle && tick.GetStatus() != JoltGpuTick::Status::Complete)
-            throw std::logic_error("Jolt GPU scene work requires an idle or fully completed source");
-        if (candidate)
-            throw std::logic_error("Publish the completed Jolt GPU scene generation before borrowing its source");
-        JoltGpuTickControl control;
-        JoltGpuControlGroup group;
-        group.prepareWork = [work = std::move(work)]() mutable { return std::move(work); };
-        control.groups.push_back(std::move(group));
-        try {
-            tick.BeginControl(std::move(control));
-        } catch (...) {
-            Cancel();
-            throw;
-        }
-    }
-
-    bool PublishCompleted(bool controlOnly)
-    {
-        if (!candidate || candidateControlOnly != controlOnly || cancelled || !tick.IsComplete())
+        Service();
+        if (writer || domain.closed || !domain.admission)
             return false;
-        candidate->bodyStates = tick.GetCompletedBodyStates();
-        published = std::move(candidate);
-        if (candidateCompletions) {
-            for (const auto &completion : *candidateCompletions) {
-                const auto *author = completion.source.Get();
-                auto *body = author ? dynamic_cast<Rigidbody *>(author->rigidbody.GetComponent()) : nullptr;
-                if (body)
-                    body->CompletePhysicsTarget(completion.source, completion.channels);
-            }
+        auto control =
+            PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer), std::move(finalConsumer));
+        writer = &domain;
+        writerKind = parameters ? WriterKind::Tick : WriterKind::Control;
+        domain.status = JoltGpuTick::Status::Running;
+        tick.SetAdmissionEnabled(true);
+        try {
+            if (parameters)
+                tick.Begin(domain.row, dt, *parameters, std::move(control));
+            else
+                tick.BeginControl(domain.row, std::move(control));
+        } catch (...) {
+            Cancel(domain);
+            throw;
         }
-        candidateCompletions.reset();
         return true;
     }
 
-    void Cancel() noexcept
+    void PublishWriter()
     {
-        cancelled = true;
-        tick.Cancel();
-        if (initialization)
-            (void)initialization->Cancel();
-        initialization.reset();
-        pending.clear();
-        pendingSources.reset();
-        pendingCompletions.clear();
-        candidateCompletions.reset();
-        for (auto &slot : slots) {
-            slot.queuedTarget = {};
+        auto &domain = *writer;
+        if (candidate) {
+            domain.published = std::move(candidate);
+            if (writerKind == WriterKind::Control)
+                ++domain.controlSerial;
+            else
+                ++domain.tickSerial;
+            if (candidateCompletions)
+                for (const auto &completion : *candidateCompletions) {
+                    const auto *author = completion.source.Get();
+                    auto *body = author ? dynamic_cast<Rigidbody *>(author->rigidbody.GetComponent()) : nullptr;
+                    if (body)
+                        body->CompletePhysicsTarget(completion.source, completion.channels);
+                }
         }
-        candidate.reset();
-        byId.clear();
-        for (auto &[id, joint] : authoredJoints)
-            joint.owner->OnPhysicsConstraintDestroyed();
-        authoredJoints.clear();
-        acceptedJoints.clear();
+        candidateCompletions.reset();
+        domain.status = JoltGpuTick::Status::Complete;
+        writer = nullptr;
+    }
+
+    void Cancel(Partition &domain)
+    {
+        if (domain.retired)
+            return;
+        domain.closed = true;
+        domain.cleanup = true;
+        domain.observedTick = domain.tickSerial;
+        domain.observedControl = domain.controlSerial;
+        // Close and retire author owners while the RuntimeWorld/component
+        // lifetime is still held. GPU cleanup may run much later behind a
+        // neighboring writer and must not call a raw retired Joint owner.
+        for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
+            const auto found = byId.find(it->second.value.bodyIdA);
+            if (found != byId.end() && slots[found->second].partition == &domain) {
+                auto *owner = it->second.owner;
+                it = authoredJoints.erase(it);
+                owner->OnPhysicsConstraintDestroyed();
+            } else
+                ++it;
+        }
+        std::vector<TargetCompletion> targets = domain.pendingCompletions;
+        targets.reserve(targets.size() + domain.records.size() * 2u +
+                        (writer == &domain && candidateCompletions ? candidateCompletions->size() : 0u));
+        if (writer == &domain && candidateCompletions)
+            targets.insert(targets.end(), candidateCompletions->begin(), candidateCompletions->end());
+        domain.pending.clear();
+        domain.pendingSources.reset();
+        domain.pendingCompletions.clear();
+        for (const auto index : domain.records)
+            if (index != UINT32_MAX)
+                CancelTarget(slots[index].queuedTarget, targets);
+        for (const auto &target : targets) {
+            const auto *author = target.source.Get();
+            auto *body = author ? dynamic_cast<Rigidbody *>(author->rigidbody.GetComponent()) : nullptr;
+            if (body)
+                body->CompletePhysicsTarget(target.source, target.channels);
+        }
+        if (writer == &domain) {
+            tick.Cancel();
+            candidate.reset();
+            candidateCompletions.reset();
+            writerKind = WriterKind::Cancelled;
+        }
+        domain.status = JoltGpuTick::Status::Cancelled;
+    }
+
+    void QueueCleanup(Partition &domain)
+    {
+        // Only this domain's accepted joints are removed. Neighboring stable
+        // IDs/runtime survive the normal joint topology remap.
+        if (domain.row >= storage.GetWorldCount())
+            QueueLayout(domain, 0u);
+        QueueJointTopology(domain);
+        JoltGpuControlGroup cleanup;
+        cleanup.prepareModel = [this, &domain] {
+            const auto &old = storage.GetModel();
+            const auto range = old.worlds[domain.row].bodies;
+            JoltGpuModel model;
+            model.bodies = old.bodies;
+            model.joints = old.joints;
+            std::vector<uint32_t> capacities;
+            for (const auto &world : old.worlds)
+                capacities.push_back(world.bodies.y);
+            for (uint32_t slot = 0; slot < model.bodies.size(); ++slot) {
+                const bool selected = slot >= range.x && slot - range.x < range.y;
+                auto body = selected ? Tombstone() : old.bodies[slot];
+                body.meta.x = static_cast<uint32_t>(model.shapes.size());
+                if (!selected)
+                    for (uint32_t leaf = 0; leaf < body.meta.y; ++leaf)
+                        model.shapes.push_back(old.shapes[old.bodies[slot].meta.x + leaf]);
+                model.bodies[slot] = body;
+            }
+            JoltGpuBuildWorldRanges(model, capacities);
+            return mutations.PrepareReplacement(storage, std::move(model));
+        };
+        cleanup.prepareWork = [this, &domain] { return PrepareLocalReset(domain); };
+        cleanup.modelAccepted = [this, &domain]() noexcept { ReleaseRecords(domain); };
+        domain.pending.push_back(std::move(cleanup));
+    }
+
+    void ReleaseRecords(Partition &domain) noexcept
+    {
+        for (auto &index : domain.records) {
+            if (index == UINT32_MAX)
+                continue;
+            auto &slot = slots[index];
+            byId.erase(slot.bodyId);
+            slot.retiring = true;
+            slot.accepted.reset();
+            slot.authored.reset();
+            domain.freeLocals.push_back(slot.local);
+            freeRecords.push_back(index);
+            index = UINT32_MAX;
+        }
+        domain.liveCount = 0;
+    }
+
+    JoltGpuControlWork PrepareLocalReset(Partition &domain)
+    {
+        const auto range = storage.GetModel().worlds[domain.row].bodies;
+        struct Reset : std::enable_shared_from_this<Reset>
+        {
+            Impl &scene;
+            uint32_t first, end;
+            Reset(Impl &owner, uint32_t base, uint32_t count) : scene(owner), first(base), end(base + count)
+            {
+            }
+            JoltGpuControlWork Next()
+            {
+                if (first == end)
+                    return {};
+                auto host = scene.storage.GetHost();
+                auto uniform = rhi::ComputeBuffer::TryCreatePrivate(
+                    host, {sizeof(StageWork) / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+                if (!uniform)
+                    return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+                const auto count = std::min(uint32_t{2048}, end - first);
+                const StageWork range{{first, count, 0u, 0u}};
+                std::vector<uint8_t> bytes(sizeof(range));
+                std::memcpy(bytes.data(), &range, sizeof(range));
+                auto dispatch = scene.mutations.PrepareCapacityInitialization(
+                    {scene.storage.GetBodyCount(), scene.storage.Get(Resource::BodyStates),
+                     scene.storage.Get(Resource::BodyForces), scene.storage.Get(Resource::KinematicTargets)},
+                    first, count, uniform);
+                first += count;
+                auto packet = rhi::PrepareComputeBatch(host, {{uniform, 0u, std::move(bytes)}}, {std::move(dispatch)});
+                return {packet, [self = shared_from_this()] { return self->Next(); }};
+            }
+        };
+        return std::make_shared<Reset>(*this, range.x, range.y)->Next();
+    }
+
+    void Service()
+    {
+        if (writer &&
+            (tick.GetStatus() == JoltGpuTick::Status::Failed || tick.GetStatus() == JoltGpuTick::Status::Cancelled) &&
+            writerKind != WriterKind::Cancelled)
+            Cancel(*writer);
+        if (writer && writerKind == WriterKind::Cancelled) {
+            if (!tick.CanRetire())
+                return;
+            if (tick.GetStatus() == JoltGpuTick::Status::Cancelled || tick.GetStatus() == JoltGpuTick::Status::Failed)
+                tick.ReopenForPartitionCleanup();
+            writer = nullptr;
+        }
+        if (writer && tick.IsComplete()) {
+            if (writerKind == WriterKind::Cleanup) {
+                writer->cleanup = false;
+                writer->status = JoltGpuTick::Status::Cancelled;
+                writer = nullptr;
+            } else if (writerKind == WriterKind::Retirement) {
+                writer->retired = true;
+                writer->capacity = 0;
+                writer->records.clear();
+                writer->freeLocals.clear();
+                writer->published.reset();
+                writer = nullptr;
+            } else
+                PublishWriter();
+        }
+        if (writer)
+            return;
+        for (auto *domain : ordered) {
+            if (!domain->cleanup && (!domain->retiring || domain->retired))
+                continue;
+            const auto &worlds = storage.GetModel().worlds;
+            const bool noNumericalRange =
+                domain->row >= worlds.size() || (!worlds[domain->row].bodies.y && !worlds[domain->row].leaves.w);
+            if (noNumericalRange) {
+                ReleaseRecords(*domain);
+                domain->cleanup = false;
+                if (domain->retiring) {
+                    domain->retired = true;
+                    domain->capacity = 0;
+                    domain->records.clear();
+                    domain->freeLocals.clear();
+                    domain->published.reset();
+                }
+                continue;
+            }
+            if (domain->cleanup)
+                QueueCleanup(*domain);
+            else
+                QueueLayout(*domain, 0u);
+            JoltGpuTickControl control;
+            control.commandProgram = &commands;
+            control.groups = std::move(domain->pending);
+            writer = domain;
+            writerKind = domain->cleanup ? WriterKind::Cleanup : WriterKind::Retirement;
+            tick.SetAdmissionEnabled(true);
+            tick.BeginControl(domain->row, std::move(control));
+            break;
+        }
     }
 
     PhysicsECSStore &actors;
+    FrameWorkOwner &work;
     JoltGpuStorage storage;
     JoltGpuPrograms programs;
     JoltGpuBroadphase broadphase;
@@ -951,213 +1297,261 @@ class JoltGpuScene::Impl
     JoltGpuJoints &joints;
     std::map<uint64_t, JointRecord> authoredJoints;
     std::vector<PublishedJoint> acceptedJoints;
-    uint64_t nextJointId = 1;
+    uint64_t nextJointId = 1, layoutGeneration = 0;
     std::vector<Slot> slots;
-    std::vector<uint32_t> freeSlots;
+    std::vector<uint32_t> freeRecords;
     std::unordered_map<uint32_t, uint32_t> byId;
-    uint32_t nextBodyId = 0;
-    bool cancelled = false;
-    bool candidateControlOnly = false;
-    std::vector<JoltGpuControlGroup> pending;
-    std::shared_ptr<PhysicsTargetBatch> pendingSources;
-    std::vector<TargetCompletion> pendingCompletions;
-    std::shared_ptr<std::vector<TargetCompletion>> candidateCompletions;
-    std::shared_ptr<rhi::PreparedComputeBatch> initialization;
+    std::map<uint64_t, std::unique_ptr<Partition>> domains;
+    std::vector<Partition *> ordered;
+    Partition *writer = nullptr;
+    WriterKind writerKind = WriterKind::Control;
     std::shared_ptr<Publication> candidate;
-    std::shared_ptr<const Publication> published;
-    // Destroy first: accepted receipts drain while storage/programs and all
-    // callback owners still exist. Ordinary Stop uses Cancel/CanRetire first.
+    std::shared_ptr<std::vector<TargetCompletion>> candidateCompletions;
+    // Entire backend shutdown drains this one source; domain retirement never
+    // destroys it. RuntimeWorld owners stay alive until their CanRetire result.
     JoltGpuTick tick;
 };
 
-JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, uint32_t capacity,
-                           const ShaderTargetCode &stepTarget, const ShaderTargetCode &mutationTarget,
-                           const ShaderTargetCode &commandTarget, const ShaderTargetCode &broadphaseTarget,
-                           const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints)
-    : m_impl(std::make_unique<Impl>(host, work, capacity, stepTarget, mutationTarget, commandTarget, broadphaseTarget,
+JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
+                           const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
+                           const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
+                           JoltGpuJoints &joints)
+    : m_impl(std::make_unique<Impl>(host, work, stepTarget, mutationTarget, commandTarget, broadphaseTarget,
                                     constraintTarget, joints))
 {
 }
-
 JoltGpuScene::~JoltGpuScene() = default;
-
-JoltGpuScene::BodyAllocation JoltGpuScene::Reserve(PhysicsActorHandle actor, OwnerIdentity owner)
+bool JoltGpuScene::RegisterPartition(RuntimeWorld &world, uint32_t capacity)
 {
-    return m_impl->Reserve(actor, std::move(owner));
+    m_impl->Service();
+    const auto found = m_impl->domains.find(world.id);
+    if (found != m_impl->domains.end()) {
+        auto &domain = m_impl->Domain(world);
+        if (domain.retiring || domain.retired)
+            throw std::logic_error("A retired RuntimeWorld partition cannot reopen");
+        if (domain.cleanup || m_impl->writer == &domain)
+            return !domain.closed;
+        if (domain.closed) {
+            domain.closed = false;
+            domain.status = JoltGpuTick::Status::Idle;
+        }
+        m_impl->ReserveCapacity(world, capacity);
+        const auto &ranges = m_impl->storage.GetModel().worlds;
+        if (domain.pending.empty() && (domain.row >= ranges.size() || ranges[domain.row].bodies.y < domain.capacity))
+            m_impl->QueueLayout(domain, domain.capacity);
+        return true;
+    }
+    m_impl->RegisterPartition(world, capacity);
+    return true;
 }
-
+JoltGpuScene::BodyAllocation JoltGpuScene::Reserve(RuntimeWorld &world, uint32_t id, PhysicsActorHandle actor,
+                                                   OwnerIdentity owner)
+{
+    return m_impl->Reserve(world, id, actor, std::move(owner));
+}
+void JoltGpuScene::ReserveCapacity(RuntimeWorld &world, uint32_t count)
+{
+    m_impl->ReserveCapacity(world, count);
+}
 void JoltGpuScene::StageActor(uint32_t id, PreparedGpuActor actor)
 {
     m_impl->StageActor(id, std::move(actor));
 }
-
-void JoltGpuScene::ReserveCapacity(uint32_t capacity)
+void JoltGpuScene::SetResident(uint32_t id, bool value, bool preserve)
 {
-    m_impl->RequireUsable();
-    m_impl->ReserveCapacity(capacity);
+    m_impl->SetResident(id, value, preserve);
 }
-
-void JoltGpuScene::SetResident(uint32_t id, bool resident, bool preserveVelocity)
+PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand value, const PhysicsTargetAuthor *author)
 {
-    m_impl->SetResident(id, resident, preserveVelocity);
+    return m_impl->QueueCommand(id, value, author);
 }
-
-PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand command, const PhysicsTargetAuthor *author)
-{
-    return m_impl->QueueCommand(id, command, author);
-}
-
 void JoltGpuScene::StageRetire(uint32_t id)
 {
     m_impl->StageRetire(id);
 }
-
-uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
-                                   JointAuthor author)
+uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t a, uint32_t b, JointAuthor author)
 {
-    return m_impl->CreateJoint(owner, ownerBody, connectedBody, author);
+    return m_impl->CreateJoint(owner, a, b, author);
 }
-
 void JoltGpuScene::UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update)
 {
     m_impl->UpdateJoint(id, update);
 }
-
-void JoltGpuScene::UpdateJoints(std::vector<JointUpdate> updates)
+void JoltGpuScene::UpdateJoints(std::vector<JointUpdate> values)
 {
-    m_impl->UpdateJoints(std::move(updates));
+    m_impl->UpdateJoints(std::move(values));
 }
-
 void JoltGpuScene::DestroyJoint(uint64_t id)
 {
     m_impl->DestroyJoint(id);
 }
-
-void JoltGpuScene::DestroyJointsForBody(uint32_t bodyId)
+void JoltGpuScene::DestroyJointsForBody(uint32_t id)
 {
-    m_impl->DestroyJointsForBody(bodyId);
+    m_impl->DestroyJointsForBody(id);
 }
-
 const JoltGpuScene::PublishedJoint &JoltGpuScene::GetAuthoredJoint(uint64_t id) const
 {
     return m_impl->GetAuthoredJoint(id);
 }
-
 JoltGpuScene::BodyAllocation JoltGpuScene::FindBody(uint32_t id) const noexcept
 {
     const auto found = m_impl->byId.find(id);
-    return found == m_impl->byId.end() ? BodyAllocation{} : BodyAllocation{id, found->second};
+    if (found == m_impl->byId.end())
+        return {};
+    const auto &slot = m_impl->slots[found->second];
+    if (slot.retiring || slot.partition->closed)
+        return {};
+    const auto &worlds = m_impl->storage.GetModel().worlds;
+    const auto row = slot.partition->row;
+    const uint32_t packed =
+        row < worlds.size() && slot.local < worlds[row].bodies.y ? worlds[row].bodies.x + slot.local : UINT32_MAX;
+    return {id, packed};
 }
-
 PhysicsActorHandle JoltGpuScene::FindActor(uint32_t id) const noexcept
 {
-    const auto body = FindBody(id);
-    return body.bodyId == InvalidBodyId ? PhysicsActorHandle{} : m_impl->slots[body.slot].actor;
+    const auto found = m_impl->byId.find(id);
+    return found == m_impl->byId.end() || FindBody(id).bodyId == InvalidBodyId ? PhysicsActorHandle{}
+                                                                               : m_impl->slots[found->second].actor;
 }
-
-size_t JoltGpuScene::GetBodyCount() const noexcept
+size_t JoltGpuScene::GetBodyCount(const RuntimeWorld &world) const
 {
-    return m_impl->byId.size();
+    if (!m_impl->domains.count(world.id))
+        return 0;
+    const auto &domain = m_impl->Domain(world);
+    return domain.liveCount;
 }
-
-uint32_t JoltGpuScene::GetCapacity() const noexcept
+uint32_t JoltGpuScene::GetCapacity(const RuntimeWorld &world) const
 {
-    return static_cast<uint32_t>(m_impl->slots.size());
+    return m_impl->domains.count(world.id) ? m_impl->Domain(world).capacity : 0u;
 }
-bool JoltGpuScene::CanReserve() const noexcept
+bool JoltGpuScene::CanReserve(const RuntimeWorld &world) const
 {
-    return !m_impl->cancelled && !m_impl->freeSlots.empty();
+    if (!m_impl->domains.count(world.id))
+        return false;
+    const auto &domain = m_impl->Domain(world);
+    return !domain.closed && !domain.freeLocals.empty();
 }
-
-bool JoltGpuScene::HasPendingControl() const noexcept
+bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
 {
-    return m_impl->initialization || !m_impl->pending.empty() ||
-           (m_impl->tick.IsPending() && !m_impl->tick.AreControlInputsAccepted());
+    if (!m_impl->domains.count(world.id))
+        return false;
+    const auto &domain = m_impl->Domain(world);
+    return !domain.pending.empty() || (m_impl->writer == &domain && !m_impl->tick.AreControlInputsAccepted());
 }
-
-void JoltGpuScene::BeginTick(uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters &parameters)
+bool JoltGpuScene::TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
+                                const JoltGpuStepParameters &parameters, Consumer finalConsumer)
 {
-    BeginTick(epoch, step, dt, parameters, {});
+    return m_impl->TryBegin(m_impl->Domain(world), epoch, step, dt, &parameters, {}, std::move(finalConsumer));
 }
-
-void JoltGpuScene::BeginTick(uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters &parameters,
-                             Consumer finalConsumer)
+bool JoltGpuScene::TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer, Consumer finalConsumer)
 {
-    m_impl->BeginTick(epoch, step, dt, parameters, std::move(finalConsumer));
+    m_impl->Service();
+    auto &domain = m_impl->Domain(world);
+    const auto step =
+        domain.published && domain.published->simulationEpoch == epoch ? domain.published->fixedStepIndex : 0u;
+    return m_impl->TryBegin(domain, epoch, step, 0.0f, nullptr, std::move(consumer), std::move(finalConsumer));
 }
-
-bool JoltGpuScene::PublishCompletedTick()
+bool JoltGpuScene::TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &value)
 {
-    return m_impl->PublishCompleted(false);
+    m_impl->Service();
+    auto &domain = m_impl->Domain(world);
+    if (m_impl->writer || domain.closed || !domain.admission || domain.row >= m_impl->storage.GetWorldCount())
+        return false;
+    JoltGpuTickControl control;
+    JoltGpuControlGroup group;
+    group.prepareWork = [value = std::move(value)]() mutable { return std::move(value); };
+    control.groups.push_back(std::move(group));
+    m_impl->writer = &domain;
+    m_impl->writerKind = Impl::WriterKind::Work;
+    domain.status = JoltGpuTick::Status::Running;
+    m_impl->tick.SetAdmissionEnabled(true);
+    m_impl->tick.BeginControl(domain.row, std::move(control));
+    return true;
 }
-
-void JoltGpuScene::BeginControl(uint64_t epoch)
+bool JoltGpuScene::PublishCompletedTick(RuntimeWorld &world)
 {
-    BeginControl(epoch, {});
+    m_impl->Service();
+    auto &domain = m_impl->Domain(world);
+    if (domain.observedTick == domain.tickSerial)
+        return false;
+    domain.observedTick = domain.tickSerial;
+    return true;
 }
-
-void JoltGpuScene::BeginControl(uint64_t epoch, Consumer consumer)
+bool JoltGpuScene::PublishCompletedControl(RuntimeWorld &world)
 {
-    BeginControl(epoch, std::move(consumer), {});
+    m_impl->Service();
+    auto &domain = m_impl->Domain(world);
+    if (domain.observedControl == domain.controlSerial)
+        return false;
+    domain.observedControl = domain.controlSerial;
+    return true;
 }
-
-void JoltGpuScene::BeginControl(uint64_t epoch, Consumer consumer, Consumer finalConsumer)
+const std::shared_ptr<const JoltGpuScene::Publication> &JoltGpuScene::GetPublished(const RuntimeWorld &world) const
 {
-    m_impl->BeginControl(epoch, std::move(consumer), std::move(finalConsumer));
+    static const std::shared_ptr<const Publication> empty;
+    return m_impl->domains.count(world.id) ? m_impl->Domain(world).published : empty;
 }
-
-void JoltGpuScene::BeginWork(JoltGpuControlWork work)
+bool JoltGpuScene::IsWriterFor(const RuntimeWorld &world) const noexcept
 {
-    m_impl->BeginWork(std::move(work));
+    return m_impl->writer && m_impl->writer->world == &world;
 }
-
-bool JoltGpuScene::PublishCompletedControl()
+JoltGpuTick::Status JoltGpuScene::GetTickStatus(const RuntimeWorld &world)
 {
-    return m_impl->PublishCompleted(true);
+    m_impl->Service();
+    return m_impl->Domain(world).status;
 }
-
-const std::shared_ptr<const JoltGpuScene::Publication> &JoltGpuScene::GetPublished() const noexcept
-{
-    return m_impl->published;
-}
-
-JoltGpuTick::Status JoltGpuScene::GetTickStatus() const noexcept
-{
-    return m_impl->tick.GetStatus();
-}
-
 FrameWorkOwner::SourceId JoltGpuScene::GetSourceId() const noexcept
 {
     return m_impl->tick.GetSourceId();
 }
-
-bool JoltGpuScene::AreControlInputsAccepted() const noexcept
+bool JoltGpuScene::AreControlInputsAccepted(const RuntimeWorld &world) const
 {
-    return m_impl->tick.AreControlInputsAccepted();
+    return !IsWriterFor(world) || m_impl->tick.AreControlInputsAccepted();
 }
-FrameWorkWaitResult JoltGpuScene::WaitForProgress(uint64_t maxWaitNanoseconds)
+FrameWorkWaitResult JoltGpuScene::WaitForProgress(RuntimeWorld &world, uint64_t maxWait)
 {
-    return m_impl->tick.WaitForProgress(maxWaitNanoseconds);
+    m_impl->Service();
+    return IsWriterFor(world) ? m_impl->tick.WaitForProgress(maxWait) : FrameWorkWaitResult::Blocked;
 }
-
-void JoltGpuScene::SetAdmissionEnabled(bool enabled) noexcept
+FrameWorkWaitResult JoltGpuScene::WaitForSourceProgress(uint64_t maxWait)
 {
-    m_impl->tick.SetAdmissionEnabled(enabled);
+    return m_impl->tick.WaitForProgress(maxWait);
 }
-
-bool JoltGpuScene::IsAdmissionEnabled() const noexcept
+void JoltGpuScene::SetAdmissionEnabled(RuntimeWorld &world, bool enabled)
 {
-    return m_impl->tick.IsAdmissionEnabled();
+    auto &domain = m_impl->Domain(world);
+    domain.admission = enabled;
+    // Admission controls future logical work. A previously admitted shared
+    // writer must still retire when another world's synchronous read needs it.
+    if (m_impl->writer)
+        m_impl->tick.SetAdmissionEnabled(true);
 }
-
-void JoltGpuScene::Cancel() noexcept
+bool JoltGpuScene::IsAdmissionEnabled(const RuntimeWorld &world) const
 {
-    m_impl->Cancel();
+    return m_impl->Domain(world).admission;
 }
-
-bool JoltGpuScene::CanRetire() const noexcept
+void JoltGpuScene::Cancel(RuntimeWorld &world)
 {
-    return m_impl->tick.CanRetire();
+    if (!m_impl->domains.count(world.id))
+        return;
+    m_impl->Cancel(m_impl->Domain(world));
+    m_impl->Service();
 }
-
+void JoltGpuScene::RetirePartition(RuntimeWorld &world)
+{
+    if (!m_impl->domains.count(world.id))
+        return;
+    auto &domain = m_impl->Domain(world);
+    domain.retiring = true;
+    m_impl->Cancel(domain);
+    m_impl->Service();
+}
+bool JoltGpuScene::CanRetire(const RuntimeWorld &world)
+{
+    if (!m_impl->domains.count(world.id))
+        return true;
+    m_impl->Service();
+    const auto &domain = m_impl->Domain(world);
+    return !domain.cleanup && m_impl->writer != &domain && (!domain.retiring || domain.retired);
+}
 } // namespace infernux

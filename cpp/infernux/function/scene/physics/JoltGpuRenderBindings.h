@@ -44,7 +44,7 @@ class JoltGpuRenderBindings final
     /// Capture at the logical job's author boundary. Ordinary local channels
     /// come directly from CPU storage; physics frame-cache world channels are
     /// resolved through cached local getters without acquiring GPU samples.
-    [[nodiscard]] SnapshotPtr Capture() const;
+    [[nodiscard]] SnapshotPtr Capture(RuntimeWorld &world) const;
     [[nodiscard]] bool NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const;
 
     /// Resolves accepted actor identities and COMs against the captured author

@@ -139,6 +139,8 @@ class PhysicsECSStore
     // Register before publishing Scenes; retire only after their actors die.
     void RegisterRuntimeWorld(RuntimeWorld &world);
     void RetireRuntimeWorld(RuntimeWorld &world);
+    /// Process-wide public body identity; never reused by a later World or Play session.
+    [[nodiscard]] uint32_t AllocateBodyIdentity();
     void ValidateHierarchyWorld(const GameObject *root, const RuntimeWorld *destination) const;
     void PublishHierarchyOwnership(GameObject *root);
 
@@ -310,6 +312,7 @@ class PhysicsECSStore
     DomainAuthorQueues *FindQueues(const RuntimeWorld &world) noexcept;
     const DomainAuthorQueues *FindQueues(const RuntimeWorld &world) const noexcept;
     std::unordered_map<uint64_t, DomainAuthorQueues> m_worldQueues;
+    uint32_t m_nextBodyIdentity = 0;
     uint64_t m_collisionSceneRevision = 1;
 };
 

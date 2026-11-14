@@ -86,6 +86,13 @@ PhysicsECSStore &PhysicsECSStore::Instance()
     return *instance;
 }
 
+uint32_t PhysicsECSStore::AllocateBodyIdentity()
+{
+    if (m_nextBodyIdentity == UINT32_MAX)
+        throw std::overflow_error("GPU physics body identity space exhausted");
+    return m_nextBodyIdentity++;
+}
+
 void PhysicsECSStore::RegisterRuntimeWorld(RuntimeWorld &world)
 {
     auto [it, inserted] = m_worldQueues.try_emplace(world.id);

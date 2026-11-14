@@ -120,7 +120,7 @@ struct PortLayout
 {
     std::string_view name;
     uint64_t stride;
-    std::array<std::string_view, 12> fields;
+    std::array<std::string_view, 14> fields;
     uint32_t integers;
     bool readOnly;
 };
@@ -128,8 +128,8 @@ constexpr PortLayout Ports[] = {
     {"broadphase",
      sizeof(BroadphaseParams),
      {"counts", "workspace", "rankRows", "activeQueues", "round", "candidates", "merge", "mergeKey", "scan",
-      "scanParent", "activeState", "summary"},
-     0xfffu,
+      "scanParent", "activeState", "summary", "selection", "selectedCounts"},
+     0x3fffu,
      true},
     {"stage_work", sizeof(StageWork), {"range"}, 1u, true},
     {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1u, true},
@@ -323,6 +323,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         if (n)
             requireBytes(Bounds, uint64_t(n) * sizeof(Aabb));
         config.counts = {n, j, w, storage.GetBodyCount()};
+        config.selection = settings.selection;
+        config.selectedCounts = settings.selectedCounts;
         config.round = {BroadphaseNeighborLimit, 0, 0, 0};
         rounds = n > 1 ? (n - 2u) / BroadphaseNeighborLimit + 1u : 1u;
         uint64_t words = 0;
@@ -473,7 +475,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     {binding, uint64_t(first) * sizeof(WorldRange), uint64_t(count) * sizeof(WorldRange)});
             else if (argumentWrite)
                 proof.writes.push_back({binding, 0, uint64_t(count) * WordBytes});
-            else
+            else if (port == Bounds) {
+                const uint64_t bytes = uint64_t(config.selectedCounts.y) * sizeof(Aabb);
+                if (bytes)
+                    proof.reads.push_back({binding, uint64_t(config.selection.z) * sizeof(Aabb), bytes});
+            } else
                 proof.reads.push_back({binding, 0, buffer->GetByteSize()});
         }
         dispatch.proof = std::move(proof);
@@ -487,8 +493,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
               std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
         StageWork work{{first, count, 0, 0}};
-        if (entry == BuildWorldRanges)
-            work.range = {first, count, first, count};
         return EmitWork(entry, work, value, uploads, dispatches);
     }
 
@@ -654,7 +658,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     {
         activeFilling = fill;
         activeStage = ActiveStage::Seed;
-        activeBound = config.counts.x;
+        activeBound = config.selectedCounts.y;
         round = windowRounds = 0;
         config.activeQueues = {queues[0], queues[1], activeBound, 0};
         config.activeState = {activeMeta[0], activeMeta[1], 0, 0};

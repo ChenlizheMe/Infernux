@@ -51,8 +51,8 @@ class JoltGpuTick::Impl
         work.RemoveSource(sourceId);
     }
 
-    void Begin(float deltaTime, const JoltGpuStepParameters *settings, JoltGpuTickControl pendingControl,
-               std::optional<std::vector<JPH::GPU::BodyForces>> forces)
+    void Begin(uint32_t worldRow, float deltaTime, const JoltGpuStepParameters *settings,
+               JoltGpuTickControl pendingControl, std::optional<std::vector<JPH::GPU::BodyForces>> forces)
     {
         FrameWorkOwner::Scope scope(work);
         if (status != Status::Idle && status != Status::Complete)
@@ -63,6 +63,7 @@ class JoltGpuTick::Impl
                                                           [](const auto &group) { return !group.commands.empty(); }))
             throw std::invalid_argument("GPU tick commands require their command program");
         ValidateControlPacket(pendingControl.initialization);
+        selectedRow = worldRow;
         parameters = settings ? std::make_optional(*settings) : std::nullopt;
         reuseParameters = false;
         stageCursor = {};
@@ -83,8 +84,11 @@ class JoltGpuTick::Impl
         modelUpdate.reset();
         commandCursor.reset();
         controlAccepted = false;
-        finalPrepared = finalAccepted = !control.prepareFinalWork;
-        finalStates.reset();
+        finalPrepared = finalAccepted = false;
+        finalOutput = {};
+        snapshotRegion = 0;
+        snapshotOffset = 0;
+        snapshotHeaderAccepted = false;
         cursor = 0;
         inputAccepted = controlOnly;
         submissionBusy = false;
@@ -112,7 +116,7 @@ class JoltGpuTick::Impl
         cpuForces.reset();
         control = {};
         workContinuation = {};
-        finalStates.reset();
+        finalOutput = {};
         modelUpdate.reset();
         commandCursor.reset();
         submissionBusy = false;
@@ -153,7 +157,7 @@ class JoltGpuTick::Impl
     bool admissionEnabled = true;
     float fixedDeltaTime = 0;
     size_t cursor = 0;
-    std::shared_ptr<rhi::ComputeBuffer> completedStates;
+    JoltGpuTickOutput completedOutput;
 
   private:
     enum class PacketKind
@@ -408,15 +412,15 @@ class JoltGpuTick::Impl
         using JPH::GPU::Domain;
         switch (domain) {
         case Domain::Bodies:
-            return storage.GetBodyCount();
+            return tickParameters.selectedCounts.x;
         case Domain::Shapes:
-            return storage.GetShapeCount();
+            return tickParameters.selectedCounts.y;
         case Domain::Patches:
             return inputs.GetContacts() ? inputs.GetContacts()->patchCount : 0;
         case Domain::Contacts:
             return inputs.GetContacts() ? inputs.GetContacts()->patchCount * JPH::GPU::MaxContactPointsPerPair : 0;
         case Domain::Joints:
-            return storage.GetJointCount();
+            return tickParameters.selectedCounts.z;
         default:
             throw std::logic_error("Island-local GPU work requires its installed schedule");
         }
@@ -519,7 +523,11 @@ class JoltGpuTick::Impl
             }
         } else {
             const auto count = std::min(quantum, ItemCount(span.domain) - next.localFirst);
-            parameters.range = {next.localFirst, count, 0, 0};
+            const uint32_t base = span.domain == JPH::GPU::Domain::Bodies   ? tickParameters.selection.y
+                                  : span.domain == JPH::GPU::Domain::Shapes ? tickParameters.selection.z
+                                  : span.domain == JPH::GPU::Domain::Joints ? tickParameters.selection.w
+                                                                            : 0u;
+            parameters.range = {base + next.localFirst, count, 0, 0};
             next.localFirst += count;
         }
         Normalize(next);
@@ -528,7 +536,7 @@ class JoltGpuTick::Impl
 
     void CaptureStageSpans()
     {
-        stageCursor.phase = storage.GetBodyCount() ? Phase::PrepareKinematics : Phase::Done;
+        stageCursor.phase = tickParameters.selectedCounts.x ? Phase::PrepareKinematics : Phase::Done;
         Normalize(stageCursor);
     }
 
@@ -553,6 +561,11 @@ class JoltGpuTick::Impl
 
     void CaptureControlInputs()
     {
+        if (selectedRow >= storage.GetModel().worlds.size())
+            throw std::invalid_argument("GPU tick requires its accepted packed world row");
+        const auto &selected = storage.GetModel().worlds[selectedRow];
+        tickParameters.selection = {selectedRow, selected.bodies.x, selected.leaves.x, selected.leaves.z};
+        tickParameters.selectedCounts = {selected.bodies.y, selected.leaves.y, selected.leaves.w, 0u};
         if (!controlOnly) {
             // Model controls can repack leaves/patches. All sizes, parameter
             // reuse and stage domains come from that accepted model boundary.
@@ -561,10 +574,14 @@ class JoltGpuTick::Impl
             actual.counts.y = storage.GetWorldCount();
             actual.counts.z = storage.GetShapeCount();
             actual.solve.z = actual.solve.w = 0;
+            actual.selection = tickParameters.selection;
+            actual.selectedCounts = tickParameters.selectedCounts;
             tickParameters = actual;
+            parameters = JoltGpuStepParameters(actual);
             reuseParameters = acceptedParameters && std::memcmp(&*acceptedParameters, &actual, sizeof(actual)) == 0;
             inputs = reuseParameters ? parameterInput : JoltGpuStepInputs{};
             inputAccepted = (reuseParameters && !cpuForces) || !storage.GetBodyCount();
+            inputs.SetSelection(actual);
             CaptureStageSpans();
             for (const auto resource :
                  {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels, JPH::GPU::Resource::Worlds})
@@ -578,9 +595,7 @@ class JoltGpuTick::Impl
 
     void Complete()
     {
-        completedStates = finalPrepared && finalStates ? std::move(finalStates)
-                          : storage.GetBodyCount()     ? storage.Get(JPH::GPU::Resource::BodyStates)->Freeze()
-                                                       : nullptr;
+        completedOutput = std::move(finalOutput);
         status = Status::Complete;
         inputs = {};
         parameters.reset();
@@ -805,6 +820,82 @@ class JoltGpuTick::Impl
         return true;
     }
 
+    JoltGpuControlWork PrepareSnapshot()
+    {
+        using namespace JPH::GPU;
+        const uint64_t stateBytes = uint64_t(finalOutput.bodyCount) * sizeof(BodyState);
+        const uint64_t jointBytes = uint64_t(finalOutput.jointCount) * JointRecordWords * sizeof(QueryRecordWord);
+        const auto allocate = [&](std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes, bool body) {
+            if (!bytes)
+                return true;
+            if (!host.device.GetCapabilities().IsStorageBufferRangeValid(0, bytes))
+                throw std::length_error("GPU selected-world snapshot exceeds device storage range");
+            if (!buffer)
+                buffer = rhi::ComputeBuffer::TryCreatePrivate(
+                    host,
+                    {bytes / (body ? 16u : 4u), body ? rhi::ComputeScalarType::Float32 : rhi::ComputeScalarType::UInt32,
+                     static_cast<uint8_t>(body ? 4u : 1u)});
+            return bool(buffer);
+        };
+        if (!allocate(finalOutput.states, stateBytes, true) ||
+            !allocate(finalOutput.joints, sizeof(QueryRecordWord) + 2u * jointBytes, false))
+            return {nullptr, [this] { return PrepareSnapshot(); }};
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        if (!snapshotHeaderAccepted) {
+            const UInt4 header{finalOutput.jointCount, 1u + JointRecordWords * finalOutput.jointCount, 0u, 0u};
+            std::vector<uint8_t> bytes(sizeof(header));
+            std::memcpy(bytes.data(), &header, sizeof(header));
+            uploads.push_back({finalOutput.joints, 0u, std::move(bytes)});
+        }
+        std::vector<rhi::ComputeBufferCopy> copies;
+        // Reuse shared transfer admission, not a fixed private copy quantum.
+        // Available bytes grow with the owner's actual budget. A packet may
+        // cover all three source regions; the owner can accept more packets
+        // in this same opportunity while it has budget and queue capacity.
+        const auto available = work.ResourceRemaining(FrameWorkResource::Transfer);
+        const auto window = available ? available : work.ResourceState(FrameWorkResource::Transfer).limit;
+        uint64_t remaining = std::max(uint64_t{16}, window - std::min(window, uint64_t(uploads.size() * 16u)));
+        remaining -= remaining % 16u;
+        while (snapshotRegion < 3u && remaining) {
+            const uint64_t length = snapshotRegion == 0u ? stateBytes : jointBytes;
+            if (snapshotOffset == length) {
+                snapshotOffset = 0u;
+                ++snapshotRegion;
+                continue;
+            }
+            const bool bodies = snapshotRegion == 0u;
+            const auto &source = storage.Get(bodies ? Resource::BodyStates : Resource::Joints);
+            const auto &target = bodies ? finalOutput.states : finalOutput.joints;
+            const uint64_t sourceBase =
+                bodies ? uint64_t(finalOutput.bodyBase) * sizeof(BodyState)
+                       : (1ull + uint64_t(JointRecordWords) * finalOutput.jointBase +
+                          (snapshotRegion == 2u ? uint64_t(JointRecordWords) * storage.GetJointCount() : 0u)) *
+                             sizeof(QueryRecordWord);
+            const uint64_t targetBase =
+                bodies ? 0u : sizeof(QueryRecordWord) + (snapshotRegion == 2u ? jointBytes : 0u);
+            const uint64_t bytes = std::min(remaining, length - snapshotOffset);
+            // Borrow the mutable live source. Same queue ordering plus this
+            // tick's exclusive writer lease preserve the value, with no live
+            // Freeze and no full-allocation reader held by the publication.
+            copies.push_back({source, target, {sourceBase + snapshotOffset, targetBase + snapshotOffset, bytes}});
+            snapshotOffset += bytes;
+            remaining -= bytes;
+        }
+        if (uploads.empty() && copies.empty()) {
+            if (finalOutput.states)
+                finalOutput.states = finalOutput.states->Freeze();
+            finalOutput.joints = finalOutput.joints->Freeze();
+            auto prepare = std::move(control.prepareFinalWork);
+            control.prepareFinalWork = {};
+            return prepare ? prepare(finalOutput) : JoltGpuControlWork{};
+        }
+        auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), {}, {}, std::move(copies));
+        return {packet, [this] {
+                    snapshotHeaderAccepted = true;
+                    return PrepareSnapshot();
+                }};
+    }
+
     bool Prepare()
     {
         if (NeedsSmallerPrefix()) {
@@ -837,12 +928,15 @@ class JoltGpuTick::Impl
             }
             if (NumericalInputsAccepted()) {
                 if (!finalPrepared) {
-                    finalStates =
-                        storage.GetBodyCount() ? storage.Get(JPH::GPU::Resource::BodyStates)->Freeze() : nullptr;
-                    auto prepareFinalWork = std::move(control.prepareFinalWork);
-                    control.prepareFinalWork = {};
                     finalPrepared = true;
-                    SelectControlWork(prepareFinalWork(finalStates), PacketKind::FinalWork);
+                    finalOutput.worldRow = tickParameters.selection.x;
+                    finalOutput.bodyBase = tickParameters.selection.y;
+                    finalOutput.bodyCount = tickParameters.selectedCounts.x;
+                    finalOutput.leafBase = tickParameters.selection.z;
+                    finalOutput.leafCount = tickParameters.selectedCounts.y;
+                    finalOutput.jointBase = tickParameters.selection.w;
+                    finalOutput.jointCount = tickParameters.selectedCounts.z;
+                    SelectControlWork(PrepareSnapshot(), PacketKind::FinalWork);
                     if (!batch && !workContinuation) {
                         finalAccepted = true;
                         FinishCompleted();
@@ -872,6 +966,10 @@ class JoltGpuTick::Impl
                     return true;
                 }
                 if (!commandCursor && !group.commands.empty()) {
+                    if (group.materializeCommands) {
+                        auto materialize = std::move(group.materializeCommands);
+                        materialize(group.commands);
+                    }
                     commandCursor = control.commandProgram->Prepare(storage, std::move(group.commands));
                     group.commands.clear();
                 }
@@ -888,7 +986,7 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (!inputAccepted) {
-                batch = reuseParameters ? storage.PrepareForces(*cpuForces)
+                batch = reuseParameters ? storage.PrepareForces(*cpuForces, tickParameters)
                                         : storage.PrepareInputs(*parameters, cpuForces ? &*cpuForces : nullptr);
                 batchKind = PacketKind::Inputs;
                 return true;
@@ -1033,12 +1131,16 @@ class JoltGpuTick::Impl
     bool controlAccepted = false;
     bool controlOnly = false;
     bool finalPrepared = true, finalAccepted = true;
-    std::shared_ptr<rhi::ComputeBuffer> finalStates;
+    JoltGpuTickOutput finalOutput;
+    uint32_t snapshotRegion = 0;
+    uint64_t snapshotOffset = 0;
+    bool snapshotHeaderAccepted = false;
     std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces;
     JoltGpuStepInputs inputs;
     JoltGpuStepInputs parameterInput;
     std::optional<JPH::GPU::StepParams> acceptedParameters;
     JPH::GPU::StepParams tickParameters{};
+    uint32_t selectedRow = 0;
     bool reuseParameters = false;
     StageCursor stageCursor, batchStageEnd;
     std::map<JPH::GPU::Stage, UnitHistory> stageEstimates;
@@ -1065,23 +1167,29 @@ JoltGpuTick::JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuP
 {
 }
 JoltGpuTick::~JoltGpuTick() = default;
-void JoltGpuTick::Begin(float deltaTime, const JoltGpuStepParameters &parameters,
+void JoltGpuTick::Begin(uint32_t worldRow, float deltaTime, const JoltGpuStepParameters &parameters,
                         std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces)
 {
-    m_impl->Begin(deltaTime, &parameters, {}, std::move(cpuForces));
+    m_impl->Begin(worldRow, deltaTime, &parameters, {}, std::move(cpuForces));
 }
-void JoltGpuTick::Begin(float deltaTime, const JoltGpuStepParameters &parameters, JoltGpuTickControl control,
-                        std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces)
+void JoltGpuTick::Begin(uint32_t worldRow, float deltaTime, const JoltGpuStepParameters &parameters,
+                        JoltGpuTickControl control, std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces)
 {
-    m_impl->Begin(deltaTime, &parameters, std::move(control), std::move(cpuForces));
+    m_impl->Begin(worldRow, deltaTime, &parameters, std::move(control), std::move(cpuForces));
 }
-void JoltGpuTick::BeginControl(JoltGpuTickControl control)
+void JoltGpuTick::BeginControl(uint32_t worldRow, JoltGpuTickControl control)
 {
-    m_impl->Begin(0, nullptr, std::move(control), std::nullopt);
+    m_impl->Begin(worldRow, 0, nullptr, std::move(control), std::nullopt);
 }
 void JoltGpuTick::Cancel() noexcept
 {
     m_impl->Cancel();
+}
+void JoltGpuTick::ReopenForPartitionCleanup()
+{
+    if (!m_impl->CanRetire() || (m_impl->status != Status::Cancelled && m_impl->status != Status::Failed))
+        throw std::logic_error("GPU partition cleanup requires settled cancelled source receipts");
+    m_impl->status = Status::Idle;
 }
 void JoltGpuTick::SetAdmissionEnabled(bool enabled) noexcept
 {
@@ -1135,9 +1243,9 @@ size_t JoltGpuTick::GetAcceptedStageCount() const noexcept
 {
     return m_impl->cursor;
 }
-const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuTick::GetCompletedBodyStates() const noexcept
+const JoltGpuTickOutput &JoltGpuTick::GetCompletedOutput() const noexcept
 {
-    return m_impl->completedStates;
+    return m_impl->completedOutput;
 }
 
 } // namespace infernux

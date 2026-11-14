@@ -148,10 +148,10 @@ JoltGpuRenderPoses::JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTarge
                      (1u << Parameters) | (1u << Bindings) | (1u << NodeModelsRead) | (1u << Models) | (1u << Bounds));
 }
 
-JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::ComputeBuffer> &frozenBodyStates,
-                                                   const std::vector<PoseNode> &nodes,
+JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const JoltGpuTickOutput &output, const std::vector<PoseNode> &nodes,
                                                    const std::vector<PoseBinding> &bindings) const
 {
+    const auto &frozenBodyStates = output.states;
     if (bindings.empty())
         return {};
     if (nodes.empty() || nodes.size() > std::numeric_limits<uint32_t>::max() / 8 ||
@@ -160,7 +160,9 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::Co
     if (!frozenBodyStates || !frozenBodyStates->IsFrozen() || !m_host.SharesServicesWith(frozenBodyStates->GetHost()) ||
         frozenBodyStates->GetByteSize() % sizeof(BodyState))
         throw std::invalid_argument("GPU render poses require a frozen final state from the same compute owner");
-    const auto bodyCount = frozenBodyStates->GetByteSize() / sizeof(BodyState);
+    const auto bodyCount = output.bodyCount;
+    if (frozenBodyStates->GetByteSize() != uint64_t(bodyCount) * sizeof(BodyState))
+        throw std::invalid_argument("GPU render poses require the exact compact body output extent");
     const auto &caps = m_host.device.GetCapabilities();
     const auto checkedBytes = [&](uint64_t count, uint64_t stride) {
         if (count > std::numeric_limits<size_t>::max() / stride ||
@@ -183,7 +185,8 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::Co
     std::vector<uint32_t> children(nodes.size(), PoseNoParent), next(nodes.size(), PoseNoParent), order;
     order.reserve(nodes.size());
     for (const auto &node : nodes)
-        if (node.bodyParent.x >= bodyCount || (node.bodyParent.y != PoseNoParent && node.bodyParent.y >= nodes.size()))
+        if (node.bodyParent.x < output.bodyBase || node.bodyParent.x - output.bodyBase >= bodyCount ||
+            (node.bodyParent.y != PoseNoParent && node.bodyParent.y >= nodes.size()))
             throw std::invalid_argument("GPU render-pose node addresses an absent body or parent");
     for (uint32_t index = 0; index < nodes.size(); ++index)
         if (nodes[index].bodyParent.y == PoseNoParent)
@@ -224,6 +227,7 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::Co
     orderedNodes.reserve(nodes.size());
     for (const auto old : order) {
         auto node = nodes[old];
+        node.bodyParent.x -= output.bodyBase;
         if (node.bodyParent.y != PoseNoParent)
             node.bodyParent.y = remap[node.bodyParent.y];
         orderedNodes.push_back(node);
@@ -256,16 +260,16 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const std::shared_ptr<rhi::Co
     buffers[States] = frozenBodyStates;
     const auto previous = m_outputProducer.lock();
     const bool reusableOutputs = !previous || previous->GetSubmission().IsValid();
-    const auto output = [&](std::shared_ptr<rhi::ComputeBuffer> &cache, uint64_t records) {
+    const auto outputBuffer = [&](std::shared_ptr<rhi::ComputeBuffer> &cache, uint64_t records) {
         if (!reusableOutputs || !cache || cache->GetByteSize() != records * sizeof(Float4))
             cache = std::make_shared<rhi::ComputeBuffer>(
                 host, rhi::ComputeBufferDesc{records, rhi::ComputeScalarType::Float32, 4});
         return cache;
     };
-    buffers[NodeModels] = output(m_nodeModels, uint64_t(nodeCount) * 8);
+    buffers[NodeModels] = outputBuffer(m_nodeModels, uint64_t(nodeCount) * 8);
     buffers[NodeModelsRead] = buffers[NodeModels];
-    buffers[Models] = output(m_models, uint64_t(count) * 4);
-    buffers[Bounds] = output(m_bounds, uint64_t(count) * 2);
+    buffers[Models] = outputBuffer(m_models, uint64_t(count) * 4);
+    buffers[Bounds] = outputBuffer(m_bounds, uint64_t(count) * 2);
 
     const auto dispatch = [&](const Entry &entry, uint32_t workCount, uint32_t first, bool nodeLevel) {
         rhi::ComputeDispatchDesc result;

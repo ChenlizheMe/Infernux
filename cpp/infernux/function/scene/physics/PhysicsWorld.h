@@ -25,12 +25,16 @@
 #include <optional>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Forward declaration
 namespace infernux
 {
 class FrameWorkOwner;
+class RuntimeWorld;
+struct PhysicsDomain;
+class JoltGpuRenderPoses;
 class Infernux;
 class JoltGpuScene;
 class JoltGpuQueries;
@@ -138,12 +142,18 @@ struct PhysicsRigidbodyBoxState
 
 /// One publication and input order for a whole state request. With GPU export
 /// targets, states contains identity metadata only and boxes stays on-device.
+struct PhysicsRigidbodyBatchSource
+{
+    uint64_t worldId = 0, simulationEpoch = 0, fixedStepIndex = 0, numericalGeneration = 0;
+};
 struct PhysicsRigidbodyStateBatch
 {
     std::vector<Rigidbody *> bodies;
     std::vector<PhysicsBodyMotionState> states;
     std::vector<PhysicsRigidbodyBoxState> boxes;
     size_t boxCount = 0;
+    std::vector<PhysicsRigidbodyBatchSource> sources;
+    std::vector<uint32_t> sourceForBody;
 };
 
 enum class PhysicsShapeType : uint32_t
@@ -260,6 +270,9 @@ class PhysicsWorld
 {
   public:
     static PhysicsWorld &Instance();
+    void BeginRetireDomain(RuntimeWorld &world) noexcept;
+    [[nodiscard]] bool CanRetireDomain(const RuntimeWorld &world) const noexcept;
+    void RetireDomain(PhysicsDomain &domain) noexcept;
 
     /// Initialise Jolt (call once after engine starts)
     void Initialize();
@@ -325,20 +338,14 @@ class PhysicsWorld
     /// independent and follows the normal component interest mask.
     void SetContactEventStreamEnabled(bool enabled, bool includeTriggers = false);
 
-    [[nodiscard]] bool IsContactEventStreamEnabled() const noexcept
-    {
-        return m_contactEventStreamEnabled;
-    }
+    [[nodiscard]] bool IsContactEventStreamEnabled() const noexcept;
 
     /// Resolved events from the most recent completed fixed step. The buffer
     /// is replaced at the next step; callers must consume it before then.
     [[nodiscard]] const std::vector<ContactEvent> &GetContactEvents() const;
 
     void SetContactImpulseStreamEnabled(bool enabled);
-    [[nodiscard]] bool IsContactImpulseStreamEnabled() const noexcept
-    {
-        return m_contactImpulseStreamEnabled;
-    }
+    [[nodiscard]] bool IsContactImpulseStreamEnabled() const noexcept;
     [[nodiscard]] const std::vector<ContactImpulse> &GetContactImpulses() const;
 
     // ========================================================================
@@ -623,10 +630,7 @@ class PhysicsWorld
     /// changes whenever body membership, pose, layer/trigger state, or a
     /// collider shape changes. Query consumers can retain this token with
     /// their results instead of inferring validity from object counts.
-    [[nodiscard]] uint64_t GetQueryGeneration() const noexcept
-    {
-        return m_queryGeneration.load(std::memory_order_acquire);
-    }
+    [[nodiscard]] uint64_t GetQueryGeneration() const noexcept;
 
     /// Cast a ray against one authored Collider sub-shape. Unlike a world
     /// query, this intentionally ignores layer, trigger and pair filters.
@@ -747,48 +751,58 @@ class PhysicsWorld
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
     struct CompiledGpuPrograms;
-    struct GpuRenderState;
-    struct CachedMotionState
-    {
-        uint64_t generation = 0;
-        PhysicsBodyMotionState state;
-        PhysicsStateFields fields = PhysicsStateFields::None;
-    };
-    bool EnsureGpuReady();
-    void RefreshGpuSurfaces();
-    void RequireHealthyStep() const;
-    void FailStep() noexcept;
-    bool AdvanceFixedStep(bool synchronous);
-    bool AdvanceGpuJob(bool synchronous) const;
-    bool BeginGpuControl(bool numericalChange, const JoltGpuScene::Consumer &consumer = {}) const;
-    bool AdvanceGpuControl(bool synchronous) const;
-    void RetryCapacityBodyCreations();
-    void RequireGpu() const;
-    void FlushAuthoring() const;
-    void DrainGpuSource() const;
-    void ObserveGpuPublication(bool numericalChange) const;
-    [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(bool numericalChange) const;
-    void RunControl(const JoltGpuScene::Consumer &consumer) const;
-    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(const std::vector<JPH::GPU::QueryInput> &requests,
+    PhysicsDomain &CurrentDomain() const;
+    PhysicsDomain &DomainForBody(uint32_t bodyId) const;
+    PhysicsDomain &DomainForActor(const PhysicsActorData &actor) const;
+    PhysicsDomain &DomainForComponent(const Component &component) const;
+    bool HasDomainControl(PhysicsDomain &domain) const;
+    void CompleteDomainStep(PhysicsDomain &domain);
+    void RunPreparedWork(PhysicsDomain &domain, JoltGpuControlWork work) const;
+    bool EnsureGpuReady(PhysicsDomain &domain);
+    void RefreshGpuSurfaces(PhysicsDomain &domain);
+    void RequireHealthyStep(PhysicsDomain &domain) const;
+    void FailStep(PhysicsDomain &domain) noexcept;
+    bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
+    bool AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const;
+    bool BeginGpuControl(PhysicsDomain &domain, bool numericalChange,
+                         const JoltGpuScene::Consumer &consumer = {}) const;
+    bool AdvanceGpuControl(PhysicsDomain &domain, bool synchronous) const;
+    void RetryCapacityBodyCreations(PhysicsDomain &domain);
+    void RequireGpu(PhysicsDomain &domain) const;
+    void FlushAuthoring(PhysicsDomain &domain) const;
+    void DrainGpuSource(PhysicsDomain &domain) const;
+    void ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const;
+    [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const;
+    void RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer) const;
+    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(PhysicsDomain &domain,
+                                                               const std::vector<JPH::GPU::QueryInput> &requests,
                                                                uint64_t sweepColliderId = 0) const;
-    void ReadJointMotion(const std::vector<uint64_t> &ids, float *output) const;
-    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(const JPH::GPU::QueryInput &request,
+    void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output) const;
+    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(PhysicsDomain &domain,
+                                                                       const JPH::GPU::QueryInput &request,
                                                                        const JPH::GPU::QueryPrimitive &other) const;
-    [[nodiscard]] std::vector<Collider *> QueryColliders(const JPH::GPU::QueryInput &request) const;
+    [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &domain,
+                                                         const JPH::GPU::QueryInput &request) const;
     [[nodiscard]] RaycastHit DecodeQueryHit(const JoltGpuQueryResult &result, const JPH::GPU::QueryHit &record) const;
-    void RefreshGpuActor(uint32_t bodyId, const std::function<void(PreparedGpuActor &)> &edit = {});
-    [[nodiscard]] PhysicsBodyMotionState ReadMotionState(uint32_t bodyId, PhysicsStateFields fields) const;
-    void CheckContactSupport() const;
+    void RefreshGpuActor(PhysicsDomain &domain, uint32_t bodyId,
+                         const std::function<void(PreparedGpuActor &)> &edit = {});
+    [[nodiscard]] PhysicsBodyMotionState ReadMotionState(PhysicsDomain &domain, uint32_t bodyId,
+                                                         PhysicsStateFields fields) const;
+    void CheckContactSupport(PhysicsDomain &domain) const;
     [[nodiscard]] JoltGpuControlWork
-    PrepareStateBatch(const std::shared_ptr<const JoltGpuScene::Publication> &publication,
+    PrepareStateBatch(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
                       const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
                       bool queryTriggers, const std::vector<JoltGpuQueryExportBinding> &exports,
                       PhysicsRigidbodyStateBatch &batch, std::shared_ptr<JoltGpuQueryResult> &motion,
-                      std::shared_ptr<JoltGpuQueryResult> &shapes, std::exception_ptr &requestError) const;
+                      std::shared_ptr<JoltGpuQueryResult> &shapes, std::exception_ptr &requestError,
+                      bool deferExport = false) const;
     [[nodiscard]] std::shared_ptr<const PhysicsShapeGeometry>
-    ResolveShapeGeometry(const JoltGpuScene::PublishedLeaf &leaf, const JPH::GPU::QueryShapeState &record) const;
-    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> GatherBodyShapes(uint32_t bodyId, bool queryTriggers) const;
-    void MaterializeStateBatch(PhysicsRigidbodyStateBatch &batch, const std::shared_ptr<JoltGpuQueryResult> &motion,
+    ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf,
+                         const JPH::GPU::QueryShapeState &record) const;
+    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> GatherBodyShapes(PhysicsDomain &domain, uint32_t bodyId,
+                                                                       bool queryTriggers) const;
+    void MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
+                               const std::shared_ptr<JoltGpuQueryResult> &motion,
                                const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical) const;
 
     bool m_initialized = false;
@@ -800,36 +814,8 @@ class PhysicsWorld
     std::unique_ptr<JoltGpuJoints> m_gpuJoints;
     std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;
-    std::unique_ptr<GpuRenderState> m_gpuRenderState;
-    bool m_gpuCancelled = false;
-    std::vector<PhysicsActorHandle> m_recreateActors;
-    uint64_t m_surfaceRevision = 0;
-    bool m_stepPending = false;
-    bool m_stepCompleted = false;
-    enum class FixedGpuPhase
-    {
-        Idle,
-        RetireControl,
-        RetryCreation,
-        Solver,
-        Failed
-    };
-    FixedGpuPhase m_fixedGpuPhase = FixedGpuPhase::Idle;
-    bool m_waitingForSlot = false;
-    mutable bool m_controlPending = false;
-    mutable bool m_controlNumericalChange = false;
-    float m_admittedDeltaTime = 0;
-    std::optional<JoltGpuStepParameters> m_admittedParameters;
-    uint64_t m_stepEpoch = 0;
-    uint64_t m_stepIndex = 0;
-    mutable bool m_flushingAuthoring = false;
-    mutable bool m_synchronousRead = false;
-    mutable std::atomic<uint64_t> m_queryGeneration{1};
-    mutable std::shared_ptr<const void> m_lastPublication;
-    mutable std::unordered_map<uint32_t, CachedMotionState> m_requestedMotion;
-    mutable std::unordered_map<const JPH::Shape *, std::weak_ptr<const PhysicsShapeGeometry>> m_shapeGeometry;
-    bool m_contactEventStreamEnabled = false;
-    bool m_contactImpulseStreamEnabled = false;
+    std::unique_ptr<JoltGpuRenderPoses> m_gpuRenderProgram;
+    std::unordered_set<PhysicsDomain *> m_domains;
 };
 
 } // namespace infernux

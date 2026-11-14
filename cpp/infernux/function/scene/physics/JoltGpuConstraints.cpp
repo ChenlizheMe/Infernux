@@ -108,7 +108,7 @@ struct PortLayout
 {
     std::string_view name;
     uint64_t stride;
-    std::array<std::string_view, 12> fields;
+    std::array<std::string_view, 14> fields;
     uint32_t integers;
     bool readOnly;
 };
@@ -116,8 +116,8 @@ constexpr PortLayout Ports[] = {
     {"constraint_params",
      sizeof(ConstraintParams),
      {"counts", "limits", "layout", "references", "sources", "islands", "scan", "scanParent", "merge", "select",
-      "summary", "round"},
-     0xfffu,
+      "summary", "round", "selection", "selectedCounts"},
+     0x3fffu,
      true},
     {"stage_work", sizeof(StageWork), {"range"}, 1u, true},
     {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1u, true},
@@ -311,6 +311,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         if (frozen[Patches]->GetByteSize() < WordBytes)
             throw std::invalid_argument("GPU constraints require a candidate-bank header");
         config.counts = {b, j, p, w};
+        config.selection = parameters.selection;
+        config.selectedCounts = parameters.selectedCounts;
         config.limits.y = storage.GetShapeCount();
         config.limits.z = Checked(4ull * p);
         uint64_t words = 0;

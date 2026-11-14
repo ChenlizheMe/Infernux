@@ -2,6 +2,7 @@
 
 #include "../GameObject.h"
 #include "../MeshRenderer.h"
+#include "../RuntimeWorld.h"
 #include "../Scene.h"
 #include "../SceneManager.h"
 #include "../Transform.h"
@@ -249,8 +250,9 @@ JoltGpuRenderBindings::~JoltGpuRenderBindings()
     Clear();
 }
 
-JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture() const
+JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &world) const
 {
+    const WorldExecutionScope ownerScope(&world);
     auto snapshot = std::make_shared<Snapshot>();
     snapshot->continuity = m_impl->continuity;
     snapshot->lifetime = m_impl->lifetime;
@@ -336,7 +338,8 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture() const
         if (!renderer || !renderer->IsEnabled() || renderer->RequiresCpuPoseForGeometry())
             continue;
         auto *object = renderer->GetGameObject();
-        if (!object || !object->GetScene() || !active.IsActive(object))
+        if (!object || !object->GetScene() || object->GetScene()->GetRuntimeWorld() != &world ||
+            !active.IsActive(object))
             continue;
         const auto existing = m_impl->entries.find(renderer);
         const auto &source = renderer->GetPoseBuffer();
@@ -376,9 +379,11 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
     std::unordered_map<PhysicsActorHandle, std::shared_ptr<const JoltGpuScene::PublishedActor>, ActorHandleHash>
         actorByHandle;
     actorByHandle.reserve(publication.actors.size());
-    for (const auto &actor : publication.actors)
+    for (uint32_t local = 0; local < publication.bodyCount; ++local) {
+        const auto &actor = publication.actors[publication.bodyBase + local];
         if (actor)
             actorByHandle.emplace(actor->actor, actor);
+    }
     std::vector<std::shared_ptr<const JoltGpuScene::PublishedActor>> actors(captured.transforms.size());
     for (size_t i = 0; i < captured.transforms.size(); ++i)
         if (const auto found = actorByHandle.find(captured.transforms[i].actor); found != actorByHandle.end())

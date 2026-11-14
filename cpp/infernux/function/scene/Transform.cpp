@@ -4,6 +4,7 @@
 #include "GameObject.h"
 #include "RectTransformLayout.h"
 #include "Rigidbody.h"
+#include "RuntimeWorld.h"
 #include "Scene.h"
 #include "SceneManager.h"
 #include "TransformECSStore.h"
@@ -112,7 +113,11 @@ void Transform::EnsureCpuPhysicsPose() const
 bool Transform::HasSimulatedLocalPose() const
 {
     const auto *body = m_gameObject ? m_gameObject->GetComponent<Rigidbody>() : nullptr;
-    return body && body->IsEnabled() && body->GetBodyId() != UINT32_MAX && SceneManager::Instance().IsPlaying();
+    if (!body || !body->IsEnabled() || body->GetBodyId() == UINT32_MAX)
+        return false;
+    const auto &store = PhysicsECSStore::Instance();
+    const auto actor = store.GetRigidbody(body->GetECSHandle()).actorHandle;
+    return store.GetActor(actor).runtimeWorld->simulation.isPlaying;
 }
 
 void PhysicsWorld::EnsureCpuPhysicsPose(Transform &requested)
@@ -140,6 +145,7 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
     }
     if (!object || !physics.IsValid(actorHandle))
         return;
+    const WorldExecutionScope ownerScope(physics.GetActor(actorHandle).runtimeWorld);
     auto *body = physics.GetActor(actorHandle).rigidbody;
     if (!body || object->IsDestroying() || physics.GetActor(actorHandle).bodyId == UINT32_MAX ||
         (!release && (!body->IsEnabled() || physics.GetActor(actorHandle).sceneSuspended)))

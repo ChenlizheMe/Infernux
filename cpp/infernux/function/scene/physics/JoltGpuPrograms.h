@@ -23,6 +23,11 @@ struct JoltGpuModel
     std::vector<JPH::GPU::JointAuthor> joints;
 };
 
+/// The only body/leaf/joint WorldRange builder for accepted packed models.
+/// Bodies/shapes/joints are already in world order. Rebind global leaf owners
+/// and author world rows while validating complete capacity coverage.
+void JoltGpuBuildWorldRanges(JoltGpuModel &model, const std::vector<uint32_t> &capacities);
+
 struct JoltGpuBodyModelUpdate
 {
     uint32_t index;
@@ -76,13 +81,6 @@ struct JoltGpuBodyStatePorts
     std::shared_ptr<rhi::ComputeBuffer> states, forces, targets;
 };
 
-/// Candidate endpoints; author uploads and their installation remain one model transaction.
-struct JoltGpuBodyGrowthBuffers
-{
-    std::shared_ptr<rhi::ComputeBuffer> models, worlds;
-    JoltGpuBodyStatePorts bodies;
-};
-
 /// One validated step description, reusing the shared device record. Contact
 /// settings and iteration counts are prepared once; only gravity/dt change in
 /// place during normal stepping. Zero velocity/position iterations are legal.
@@ -122,7 +120,7 @@ class JoltGpuStorage
     /// Explicit CPU input path. A GPU controller can instead write the resident
     /// BodyForces port directly; the normal compute dependency orders its use.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
-    PrepareForces(const std::vector<JPH::GPU::BodyForces> &forces);
+    PrepareForces(const std::vector<JPH::GPU::BodyForces> &forces, const JPH::GPU::StepParams &selected);
     /// Fixed-capacity author-model transaction; existing GPU state is retained.
     /// Additional uploads/dispatches share its acceptance boundary, for example
     /// a new slot's initial state or an explicit device-side COM mutation.
@@ -138,11 +136,12 @@ class JoltGpuStorage
     [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
     PrepareModelReplacement(JoltGpuModel replacement, std::vector<rhi::ComputeBufferUpdate> additionalUpdates = {},
                             std::vector<rhi::ComputeDispatchDesc> mutations = {});
-    /// Install a prepared larger body domain. Numerical prefix copy and tail
-    /// initialization must already be complete; this packet uploads author
-    /// tables and commits every endpoint/count together at acceptance.
-    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate> PrepareBodyGrowth(uint32_t capacity,
-                                                                        JoltGpuBodyGrowthBuffers buffers);
+    /// Accept one completed general packed-layout transaction. New numeric
+    /// ports already contain their GPU-remapped complete values. Author/model
+    /// resources are prepared here and every endpoint commits at one acceptance.
+    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
+    PreparePackedReplacement(JoltGpuModel replacement, JoltGpuBodyStatePorts bodies,
+                             std::shared_ptr<rhi::ComputeBuffer> jointStream);
     /// Replace only joint topology and world joint ranges. The caller prepares
     /// the new stream's author upload and GPU runtime initialization/remap;
     /// this transaction never reads numerical joint state back to the host.
@@ -240,14 +239,23 @@ class JoltGpuModelUpdate final
     std::array<uint32_t, 3> m_replacementCounts{};
 };
 
-/// The five read-only input values of one logical tick. Capture each port
-/// immediately after its final producer is accepted, without waiting for GPU
-/// completion. Every stage prefix binds these leases, never the live endpoints.
+/// Immutable parameter/author values and a borrowed live force endpoint for
+/// one selected-world tick. The shared packed writer lease excludes later
+/// producers until this cursor releases it. Forces never acquire a content
+/// reader; same-queue accepted reads precede this tick's final force clear.
 class JoltGpuStepInputs
 {
   public:
     /// Empty models need no input leases. Writable solver ports are not inputs.
     void Capture(const JoltGpuStorage &storage, JPH::GPU::Resource resource);
+    void SetSelection(const JPH::GPU::StepParams &parameters) noexcept
+    {
+        m_parameters = parameters;
+    }
+    [[nodiscard]] const JPH::GPU::StepParams &GetParameters() const noexcept
+    {
+        return m_parameters;
+    }
     /// Original frozen author inputs, even while contact work overrides bindings.
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetCaptured(JPH::GPU::Resource resource) const;
     void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
@@ -271,6 +279,7 @@ class JoltGpuStepInputs
         JPH::GPU::StageWork parameters{};
         std::shared_ptr<rhi::ComputeBuffer> buffer;
     };
+    JPH::GPU::StepParams m_parameters{};
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;

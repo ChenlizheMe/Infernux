@@ -45,10 +45,21 @@ struct JoltGpuControlGroup
     std::function<std::unique_ptr<JoltGpuModelUpdate>()> prepareModel;
     std::function<void()> modelAccepted;
     std::vector<JPH::GPU::BodyCommand> commands;
+    std::function<void(std::vector<JPH::GPU::BodyCommand> &)> materializeCommands;
     /// Prepare once, after this group's model and commands are accepted. Its
     /// packet and completion-dependent successors share this source's admission
     /// and receipts. The group advances only after the chain's final acceptance.
     std::function<JoltGpuControlWork()> prepareWork;
+};
+
+/// Compact completed numerical output. Body slots stay global in the author
+/// directory; readers validate [bodyBase,bodyBase+bodyCount) then subtract base.
+/// Joint rows are local [0,jointCount), preserving stable author identity.
+/// worldRow is an address in this accepted layout, never a stable world ID.
+struct JoltGpuTickOutput
+{
+    uint32_t worldRow = 0, bodyBase = 0, bodyCount = 0, leafBase = 0, leafCount = 0, jointBase = 0, jointCount = 0;
+    std::shared_ptr<rhi::ComputeBuffer> states, joints;
 };
 
 /// Accepted through the tick's existing work source before solver inputs are
@@ -65,11 +76,11 @@ struct JoltGpuTickControl
     JoltGpuBodyCommands *commandProgram = nullptr;
     std::vector<JoltGpuControlGroup> groups;
     /// Prepare exactly once after every numerical writer is accepted, including
-    /// for a control-only/empty world. The frozen final state may be null for
-    /// an empty world. All packets in its chain use this source's admission and
+    /// for a control-only/empty world. The input is the compact selected-world
+    /// output; its states are null for a zero-body range. All packets use this source's admission and
     /// receipts; completion waits for the whole chain. Do not submit, wait or
     /// reenter the owner.
-    std::function<JoltGpuControlWork(const std::shared_ptr<rhi::ComputeBuffer> &)> prepareFinalWork;
+    std::function<JoltGpuControlWork(const JoltGpuTickOutput &)> prepareFinalWork;
 };
 
 /// One PhysicsWorld-owned bounded stage cursor using the engine's existing work source,
@@ -95,6 +106,10 @@ class JoltGpuTick final
     JoltGpuTick(const JoltGpuTick &) = delete;
     JoltGpuTick &operator=(const JoltGpuTick &) = delete;
 
+    /// Requires the shared packed backend's exclusive writer lease. worldRow
+    /// belongs to the accepted layout; controls may move its ranges before
+    /// capture, but may not renumber its reserved row. No other numerical
+    /// writer/controller/layout commit may enter until this cursor retires.
     /// Models/worlds and, when cpuForces is absent, the GPU force producer must
     /// already be accepted. Capture those values immediately here. CPU forces
     /// are moved into one parameter/force upload packet and captured only when
@@ -104,24 +119,27 @@ class JoltGpuTick final
     /// The owner keeps solver state and the force accumulator exclusive until
     /// completion. Later controller results wait for the next control boundary;
     /// they must not overwrite this accumulator while its tick is running.
-    void Begin(float fixedDeltaTime, const JoltGpuStepParameters &parameters,
+    void Begin(uint32_t worldRow, float fixedDeltaTime, const JoltGpuStepParameters &parameters,
                std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces = std::nullopt);
     /// Control packets share admission, preparation, prediction and receipts
     /// with solver work. Commands freeze the new model only after its producer
     /// is accepted. Optional CPU forces explicitly replace the accumulator
     /// after commands as the final force producer. No completion wait separates
     /// these phases; the existing compute dependencies order accepted packets.
-    void Begin(float fixedDeltaTime, const JoltGpuStepParameters &parameters, JoltGpuTickControl control,
-               std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces = std::nullopt);
+    void Begin(uint32_t worldRow, float fixedDeltaTime, const JoltGpuStepParameters &parameters,
+               JoltGpuTickControl control, std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces = std::nullopt);
     /// Admit creation/model/command boundaries through this same source without
     /// advancing simulation or uploading solver inputs. Completion publishes
     /// the resulting body states only after all control receipts retire.
-    void BeginControl(JoltGpuTickControl control);
+    void BeginControl(uint32_t worldRow, JoltGpuTickControl control);
 
     /// Nonblocking. Unaccepted packets are revoked; accepted receipts remain
     /// observable through the same source. A cancelled/failed partial storage
     /// must be retired or reinitialized by the outer owner, never resumed here.
     void Cancel() noexcept;
+    /// The outer owner has settled receipts and will admit only GPU cleanup
+    /// of the cancelled partition before exposing any new numerical tick.
+    void ReopenForPartitionCleanup();
 
     /// The owning world controls when this source may prepare, submit or wait.
     /// Closing admission retains its cursor and packets; already accepted
@@ -145,9 +163,10 @@ class JoltGpuTick final
     /// Number of accepted bounded stage dispatch units in this logical tick;
     /// each phase may span several item/island units. Acceptance never replays one.
     [[nodiscard]] size_t GetAcceptedStageCount() const noexcept;
-    /// Last fully completed tick, retained while a later tick runs. Null until
-    /// the first nonempty tick completes. No partial solver value is exposed.
-    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetCompletedBodyStates() const noexcept;
+    /// Last complete compact world output, retained while a later tick runs.
+    /// Its body state buffer is null until a nonempty range completes.
+    /// Consumers must retain the output lease and its exact author directory.
+    [[nodiscard]] const JoltGpuTickOutput &GetCompletedOutput() const noexcept;
 
   private:
     class Impl;

@@ -1,5 +1,6 @@
 #include "RuntimeWorld.h"
 #include "Scene.h"
+#include "physics/PhysicsDomain.h"
 #include "physics/PhysicsECSStore.h"
 #include <atomic>
 
@@ -33,6 +34,7 @@ RuntimeWorld::RuntimeWorld() : id(s_nextRuntimeWorldId.fetch_add(1, std::memory_
 {
     // Input must outlive every World, including the SceneManager default World.
     (void)InputManager::Instance();
+    physics = std::make_unique<PhysicsDomain>(*this);
     PhysicsECSStore::Instance().RegisterRuntimeWorld(*this);
 }
 RuntimeWorld::~RuntimeWorld()
@@ -40,6 +42,8 @@ RuntimeWorld::~RuntimeWorld()
     const WorldExecutionScope worldScope(this);
     scenes.Clear();
     PhysicsECSStore::Instance().RetireRuntimeWorld(*this);
+    PhysicsWorld::Instance().RetireDomain(*physics);
+    physics.reset();
     InputManager::Instance().RetireWorldInput(id);
 }
 

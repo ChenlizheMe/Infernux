@@ -1,5 +1,6 @@
 #include "../HingeJoint.h"
 #include "JoltGpuJoints.h"
+#include "PhysicsDomain.h"
 #include "PhysicsWorld.h"
 
 #include <algorithm>
@@ -66,6 +67,7 @@ uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint
                                              const glm::vec3 &localAnchor, bool useLimits, float minimumAngle,
                                              float maximumAngle, bool enableCollision)
 {
+    auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
     ValidateHingeLimits(minimumAngle, maximumAngle);
     (void)JointVector(ownerAxis);
@@ -79,7 +81,7 @@ uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint
     author.ownerAxis = JointVector(glm::normalize(ownerAxis));
     author.ownerLocalAnchor = JointVector(localAnchor);
     author.limits = {minimumAngle, maximumAngle, 0.0f, 0.0f};
-    RequireGpu();
+    RequireGpu(domain);
     return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, author);
 }
 
@@ -93,20 +95,22 @@ uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint
                                              const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
                                              bool enableCollision)
 {
+    auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
     JointAuthor author{};
     author.bodies.z = JPH::GPU::JointFixed;
     author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0);
     author.ownerAnchor = JointVector(localBakedAnchor);
     author.ownerLocalAnchor = JointVector(localAnchor);
-    RequireGpu();
+    RequireGpu(domain);
     return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, author);
 }
 
 void PhysicsWorld::SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled)
 {
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
     RequireOwnerThread();
-    RequireGpu();
+    RequireGpu(domain);
     m_gpuScene->UpdateJoint(
         constraintId, [=](JointAuthor &author) { SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enabled); });
 }
@@ -130,9 +134,10 @@ float PhysicsWorld::GetDistanceConstraintLength(uint64_t) const
 void PhysicsWorld::UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
                                                  bool enableCollision)
 {
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
     RequireOwnerThread();
     ValidateHingeLimits(minimum, maximum);
-    RequireGpu();
+    RequireGpu(domain);
     RequireHinge(m_gpuScene->GetAuthoredJoint(constraintId));
     m_gpuScene->UpdateJoint(constraintId, [=](JointAuthor &author) {
         SetJointFlag(author, JPH::GPU::JointLimitsEnabled, useLimits);
@@ -145,13 +150,14 @@ void PhysicsWorld::UpdateHingeConstraintMotor(uint64_t constraintId, bool enable
                                               float damping, float maxTorque, float jointDamping, float frictionTorque,
                                               float armature)
 {
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
     RequireOwnerThread();
     if (!std::isfinite(targetAngle))
         throw std::invalid_argument("Hinge motor target must be finite radians");
     for (const float value : {stiffness, damping, maxTorque, jointDamping, frictionTorque, armature})
         if (!std::isfinite(value) || value < 0.0f)
             throw std::invalid_argument("Hinge motor and passive coefficients must be finite and non-negative");
-    RequireGpu();
+    RequireGpu(domain);
     RequireHinge(m_gpuScene->GetAuthoredJoint(constraintId));
     m_gpuScene->UpdateJoint(constraintId, [=](JointAuthor &author) {
         SetJointFlag(author, JPH::GPU::JointMotorEnabled, enabled);
@@ -162,10 +168,11 @@ void PhysicsWorld::UpdateHingeConstraintMotor(uint64_t constraintId, bool enable
 
 void PhysicsWorld::UpdateHingeConstraintTarget(uint64_t constraintId, float targetAngle)
 {
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
     RequireOwnerThread();
     if (!std::isfinite(targetAngle))
         throw std::invalid_argument("Hinge motor target must be finite radians");
-    RequireGpu();
+    RequireGpu(domain);
     RequireHinge(m_gpuScene->GetAuthoredJoint(constraintId));
     m_gpuScene->UpdateJoint(constraintId,
                             [=](JointAuthor &author) { author.motor.x = ClampHingeTarget(author, targetAngle); });
@@ -176,7 +183,6 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
     RequireOwnerThread();
     if (!targets && !joints.empty())
         throw std::invalid_argument("Hinge targets require input storage");
-    RequireGpu();
     struct Target
     {
         HingeJoint *joint;
@@ -191,6 +197,7 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
         if (!joints[row] || !joints[row]->GetPhysicsConstraintId())
             throw std::logic_error("Hinge targets require bound joints");
         const auto id = joints[row]->GetPhysicsConstraintId();
+        RequireGpu(DomainForComponent(*joints[row]));
         const auto &identity = m_gpuScene->GetAuthoredJoint(id);
         RequireHinge(identity);
         if (!std::isfinite(targets[row]) || !std::isfinite(glm::degrees(targets[row])))
@@ -203,7 +210,17 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
         prepared.push_back({&joint, degrees});
         updates.push_back({id, author});
     }
-    m_gpuScene->UpdateJoints(std::move(updates));
+    std::vector<std::vector<JoltGpuScene::JointUpdate>> groups;
+    std::unordered_map<PhysicsDomain *, size_t> owners;
+    for (size_t row = 0; row < updates.size(); ++row) {
+        auto &domain = DomainForComponent(*joints[row]);
+        const auto [entry, inserted] = owners.emplace(&domain, groups.size());
+        if (inserted)
+            groups.emplace_back();
+        groups[entry->second].push_back(std::move(updates[row]));
+    }
+    for (auto &group : groups)
+        m_gpuScene->UpdateJoints(std::move(group));
     for (const auto &target : prepared)
         target.joint->m_motorTargetAngle = target.degrees;
 }
@@ -211,17 +228,40 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
 void PhysicsWorld::ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const
 {
     RequireOwnerThread();
-    std::vector<uint64_t> ids;
-    ids.reserve(joints.size());
-    for (const auto *joint : joints) {
+    if (!output && !joints.empty())
+        throw std::invalid_argument("Hinge motion requires output storage");
+    struct Group
+    {
+        PhysicsDomain *domain;
+        std::vector<uint64_t> ids;
+        std::vector<size_t> rows;
+    };
+    std::vector<Group> groups;
+    std::unordered_map<PhysicsDomain *, size_t> owners;
+    for (size_t row = 0; row < joints.size(); ++row) {
+        const auto *joint = joints[row];
         if (!joint || !joint->GetPhysicsConstraintId())
             throw std::logic_error("Hinge motion requires bound joints");
-        ids.push_back(joint->GetPhysicsConstraintId());
+        auto &domain = DomainForComponent(*joint);
+        const auto [entry, inserted] = owners.emplace(&domain, groups.size());
+        if (inserted)
+            groups.push_back({&domain, {}, {}});
+        groups[entry->second].ids.push_back(joint->GetPhysicsConstraintId());
+        groups[entry->second].rows.push_back(row);
     }
-    ReadJointMotion(ids, output);
+    std::vector<float> aggregate(joints.size() * 2);
+    for (auto &group : groups) {
+        std::vector<float> values(group.ids.size() * 2);
+        ReadJointMotion(*group.domain, group.ids, values.data());
+        for (size_t local = 0; local < group.rows.size(); ++local) {
+            aggregate[2 * group.rows[local]] = values[2 * local];
+            aggregate[2 * group.rows[local] + 1] = values[2 * local + 1];
+        }
+    }
+    std::copy(aggregate.begin(), aggregate.end(), output);
 }
 
-void PhysicsWorld::ReadJointMotion(const std::vector<uint64_t> &ids, float *output) const
+void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output) const
 {
     RequireOwnerThread();
     if (!output && !ids.empty())
@@ -230,7 +270,7 @@ void PhysicsWorld::ReadJointMotion(const std::vector<uint64_t> &ids, float *outp
         return;
     JoltGpuPreparedJointMotion prepared;
     std::exception_ptr requestError;
-    RunControl([&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+    RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         return PrepareJointReadWork(
             [&]() -> JoltGpuControlWork {
                 std::unordered_map<uint64_t, const JoltGpuScene::PublishedJoint *> identities;
@@ -291,8 +331,9 @@ float PhysicsWorld::GetHingeConstraintAngularVelocity(uint64_t constraintId) con
 
 glm::vec2 PhysicsWorld::GetHingeConstraintMotionState(uint64_t constraintId) const
 {
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
     float motion[2];
-    ReadJointMotion({constraintId}, motion);
+    ReadJointMotion(domain, {constraintId}, motion);
     return {motion[0], motion[1]};
 }
 

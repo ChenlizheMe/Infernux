@@ -480,7 +480,7 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
     const auto &source = *result->publication;
     ValidateFrozen(m_host, source.jointStream, StreamBytes(source.joints.size()),
                    "Jolt GPU joint motion stream differs from its retained catalog");
-    ValidateFrozen(m_host, source.bodyStates, uint64_t(source.actors.size()) * sizeof(BodyState),
+    ValidateFrozen(m_host, source.bodyStates, uint64_t(source.bodyCount) * sizeof(BodyState),
                    "Jolt GPU joint motion body states differ from their retained catalog");
     if (!source.worlds || !source.worlds->IsFrozen() || !m_host.SharesServicesWith(source.worlds->GetHost()) ||
         !source.worlds->GetByteSize() || source.worlds->GetByteSize() % sizeof(WorldRange))
@@ -492,11 +492,13 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         const auto &joint = source.joints[row];
         if (joint.row != row || joint.kind != JointHinge || joint.author.bodies.z != JointHinge || !joint.id ||
             !(joint.author.bodies.w & JointEnabled) || joint.author.identity.x != static_cast<uint32_t>(joint.id) ||
-            joint.author.identity.y != static_cast<uint32_t>(joint.id >> 32) || joint.author.identity.z >= worldCount ||
+            joint.author.identity.y != static_cast<uint32_t>(joint.id >> 32) ||
+            joint.author.identity.z != source.worldRow || joint.author.identity.z >= worldCount ||
             joint.author.identity.w)
             throw JoltGpuQueryRequestError("Jolt GPU joint motion identity differs from its retained catalog");
         const auto endpoint = [&](uint32_t slot, uint32_t id) {
-            return slot < source.actors.size() && source.actors[slot] && source.actors[slot]->slot == slot &&
+            return slot >= source.bodyBase && slot - source.bodyBase < source.bodyCount &&
+                   slot < source.actors.size() && source.actors[slot] && source.actors[slot]->slot == slot &&
                    source.actors[slot]->bodyId == id && slot < source.residentBodies.size() &&
                    source.residentBodies[slot];
         };
@@ -515,7 +517,7 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         buffers[port] = Allocate(host, data.size());
         updates.push_back({buffers[port], 0, std::move(data)});
     };
-    const JointParams parameters{{static_cast<uint32_t>(source.joints.size()), 0, result->count, 0}};
+    const JointParams parameters{{source.jointCount, 0, result->count, source.bodyBase}};
     upload(Parameters, Bytes(&parameters, 1));
     upload(Rows, Bytes(rows.data(), rows.size()));
     const uint64_t outputBytes = uint64_t(result->count) * sizeof(QueryRecordWord);

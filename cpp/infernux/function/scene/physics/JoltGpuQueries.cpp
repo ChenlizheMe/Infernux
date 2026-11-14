@@ -68,7 +68,7 @@ struct PortLayout
     uint32_t integerFields;
 };
 constexpr PortLayout Ports[] = {
-    {"query_params", sizeof(QueryParams), {"counts", "sizes"}, 3},
+    {"query_params", sizeof(QueryParams), {"counts", "sizes", "selection", "selectedCounts"}, 15},
     {"query_inputs", sizeof(QueryRecordWord), {"value"}, 1},
     {"query_body_ids", sizeof(QueryBodyIdentity), {"ids"}, 1},
     {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1},
@@ -81,7 +81,7 @@ constexpr PortLayout Ports[] = {
     {"query_spans", sizeof(QuerySpan), {"range"}, 1},
     {"query_summary", sizeof(QuerySummary), {"counts"}, 1},
     {"query_hits", sizeof(QueryRecordWord), {"value"}, 1},
-    {"query_export_params", sizeof(QueryExportParams), {"output", "sizes"}, 3},
+    {"query_export_params", sizeof(QueryExportParams), {"output", "sizes", "selection"}, 7},
     {"query_export_values", sizeof(uint32_t), {}, 0},
     {"particle_export_params", sizeof(ParticleExportParameters), {"counts", "revision"}, 3},
     {"particle_export_rows", sizeof(JoltGpuParticleExportRow), {"selection", "identity"}, 3},
@@ -211,7 +211,8 @@ bool Zero(const Float4 &value)
     return value.x == 0 && value.y == 0 && value.z == 0 && value.w == 0;
 }
 
-void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t bodyCount, bool hasPublication)
+void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t bodyBase, uint32_t bodyCount,
+                   bool hasPublication)
 {
     if (query.meta.x == QueryGatherShapes || query.meta.x == QueryGatherMotion) {
         const bool motion = query.meta.x == QueryGatherMotion;
@@ -222,14 +223,17 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
                 "Jolt GPU gather requires a retained publication and a valid reserved-field layout");
         if (motion) {
             if (query.meta.y != QueryClosest || query.meta.z || query.meta.w || query.filter.x || query.filter.y ||
-                query.filter.z || query.filter.w || query.source.y >= bodyCount || (query.source.z & ~0x3ffu) ||
+                query.filter.z || query.filter.w ||
+                (query.source.y < bodyBase || query.source.y - bodyBase >= bodyCount) || (query.source.z & ~0x3ffu) ||
                 query.geometry.w)
                 throw JoltGpuQueryRequestError(
                     "Jolt GPU motion gather requires one published body slot and requested field mask");
         } else {
             if (query.meta.y != QueryAll || (query.meta.z != QueryAllShapeTypes && query.meta.z > ShapeCapsule) ||
                 (query.meta.w & ~QueryTargetCollider) || query.filter.y > 1 || query.source.z ||
-                !Zero(query.geometry) || (query.source.y != InvalidQueryBodySlot && query.source.y >= bodyCount))
+                !Zero(query.geometry) ||
+                (query.source.y != InvalidQueryBodySlot &&
+                 (query.source.y < bodyBase || query.source.y - bodyBase >= bodyCount)))
                 throw JoltGpuQueryRequestError("Jolt GPU shape gather requires an admitted body selection and filter");
         }
         return;
@@ -242,7 +246,8 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
         (!sweep && (query.source.z || query.source.w)) || !Finite(query.positionMaximum) || !Finite(query.direction) ||
         !Finite(query.rotation) || !Finite(query.geometry) || query.direction.w != 0)
         throw JoltGpuQueryRequestError("Jolt GPU query contains an invalid operation, filter or finite input record");
-    if ((query.meta.w & QueryExcludeBody) ? query.source.x >= bodyCount : query.source.x != InvalidQueryBodySlot)
+    if ((query.meta.w & QueryExcludeBody) ? (query.source.x < bodyBase || query.source.x - bodyBase >= bodyCount)
+                                          : query.source.x != InvalidQueryBodySlot)
         throw JoltGpuQueryRequestError("Jolt GPU query excluded body differs from its retained publication");
     if (query.meta.x == QueryPenetration) {
         if (query.source.y >= primitiveCount || query.meta.w || query.positionMaximum.w != 0)
@@ -452,35 +457,37 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     if (requestWords > std::numeric_limits<uint32_t>::max())
         throw JoltGpuQueryRequestError("Jolt GPU query request words exceed device indexing");
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
-    uint32_t bodyCount = 0, leafCount = 0;
+    uint32_t bodyBase = 0, bodyCount = 0, leafBase = 0, leafCount = 0;
+    uint32_t totalBodies = 0, totalLeaves = 0;
     if (publication) {
+        bodyBase = publication->bodyBase;
+        bodyCount = publication->bodyCount;
+        leafBase = publication->leafBase;
+        leafCount = publication->leafCount;
         buffers[Models] = publication->bodyModels;
         buffers[Shapes] = publication->shapeModels;
         buffers[States] = publication->bodyStates;
-        if (publication->leaves.size() > std::numeric_limits<uint32_t>::max())
-            throw JoltGpuQueryRequestError("Jolt GPU query publication exceeds leaf indexing");
-        leafCount = static_cast<uint32_t>(publication->leaves.size());
-        const bool empty = !buffers[Models] && !buffers[States];
-        if (empty && (buffers[Shapes] || leafCount))
-            throw std::invalid_argument("Jolt GPU query publication has leaves without body models/states");
-        if (!empty) {
-            for (const auto port : {Models, States}) {
-                const auto &buffer = buffers[port];
-                if (!buffer || !buffer->IsFrozen() || !m_host.SharesServicesWith(buffer->GetHost()) ||
-                    !buffer->GetByteSize() || buffer->GetByteSize() % Ports[port].stride)
-                    throw std::invalid_argument("Jolt GPU query requires matching frozen publication records");
-            }
-            const auto count = buffers[Models]->GetByteSize() / sizeof(BodyModel);
-            if (count > std::numeric_limits<uint32_t>::max() || publication->actors.size() != count ||
-                buffers[States]->GetByteSize() / sizeof(BodyState) != count)
-                throw std::invalid_argument("Jolt GPU query body capacity differs from its publication");
-            bodyCount = static_cast<uint32_t>(count);
-            const auto &shapes = buffers[Shapes];
-            if (leafCount ? (!shapes || !shapes->IsFrozen() || !m_host.SharesServicesWith(shapes->GetHost()) ||
-                             shapes->GetByteSize() != CheckedBytes(leafCount, sizeof(ShapeModel)))
-                          : bool(shapes))
-                throw std::invalid_argument("Jolt GPU query leaf count differs from its frozen publication");
-        }
+        if (publication->actors.size() > UINT32_MAX || publication->leaves.size() > UINT32_MAX)
+            throw JoltGpuQueryRequestError("GPU query author directory exceeds global indexing");
+        totalBodies = static_cast<uint32_t>(publication->actors.size());
+        totalLeaves = static_cast<uint32_t>(publication->leaves.size());
+        if (bodyBase > totalBodies || bodyCount > totalBodies - bodyBase || leafBase > totalLeaves ||
+            leafCount > totalLeaves - leafBase)
+            throw std::invalid_argument("GPU query ranges differ from their exact author directory");
+        const auto frozen = [&](uint8_t port, uint64_t bytes) {
+            const auto &buffer = buffers[port];
+            if (!buffer || !buffer->IsFrozen() || !m_host.SharesServicesWith(buffer->GetHost()) ||
+                buffer->GetByteSize() != bytes)
+                throw std::invalid_argument("GPU query requires its exact frozen author/output generation");
+        };
+        if (totalBodies)
+            frozen(Models, CheckedBytes(totalBodies, sizeof(BodyModel)));
+        if (bodyCount)
+            frozen(States, CheckedBytes(bodyCount, sizeof(BodyState)));
+        else if (buffers[States])
+            throw std::invalid_argument("Empty domain output must not carry body numerical rows");
+        if (totalLeaves)
+            frozen(Shapes, CheckedBytes(totalLeaves, sizeof(ShapeModel)));
     }
     for (const auto &primitive : primitives) {
         if (primitive.meta.y || primitive.meta.z || primitive.meta.w || !Finite(primitive.position) ||
@@ -491,7 +498,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     const uint32_t format = queries.empty() ? QueryOutputHit : OutputFormat(queries.front());
     const uint32_t recordBytes = RecordBytes(format);
     for (const auto &query : queries) {
-        ValidateInput(query, primitives.size(), bodyCount, bool(publication));
+        ValidateInput(query, primitives.size(), bodyBase, bodyCount, bool(publication));
         if (OutputFormat(query) != format)
             throw JoltGpuQueryRequestError("Jolt GPU query batch must use one typed output family");
         if ((query.meta.x == QueryGatherMotion || query.meta.x == QueryGatherShapes) &&
@@ -546,42 +553,48 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         allocate(port, bytes.size() / Ports[port].stride);
         updates.push_back({buffers[port], 0, std::move(bytes)});
     };
-    if (!bodyCount) {
+    if (!totalBodies) {
         const BodyModel model{};
-        const BodyState state{};
         upload(Models, Bytes(&model, 1));
+    }
+    if (!bodyCount) {
+        const BodyState state{};
         upload(States, Bytes(&state, 1));
     }
-    if (!leafCount) {
+    if (!totalLeaves) {
         const ShapeModel shape{};
         upload(Shapes, Bytes(&shape, 1));
     }
     const bool hasSweep = std::any_of(queries.begin(), queries.end(),
                                       [](const auto &query) { return (query.meta.w & QuerySweepPolicy) != 0; });
-    const uint64_t identityCount = uint64_t(bodyCount) + (hasSweep ? leafCount : 0u);
+    const uint64_t identityCount = uint64_t(totalBodies) + (hasSweep ? totalLeaves : 0u);
     if (identityCount > std::numeric_limits<uint32_t>::max())
         throw JoltGpuQueryRequestError("Jolt GPU query identity words exceed device indexing");
     std::vector<QueryBodyIdentity> identities(static_cast<size_t>(std::max(uint64_t(1), identityCount)));
     identities.front().ids.x = InvalidQueryBodySlot;
-    for (uint32_t slot = 0; slot < bodyCount; ++slot) {
+    for (uint32_t slot = 0; slot < totalBodies; ++slot) {
         const auto actor = result->publication->actors[slot];
         const uint64_t rigidbodyId = actor ? actor->rigidbodyComponentId : 0;
         identities[slot].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, rigidbodyId ? 1u : 0u,
                                 static_cast<uint32_t>(rigidbodyId), static_cast<uint32_t>(rigidbodyId >> 32)};
     }
     if (hasSweep) {
-        for (uint32_t leaf = 0; leaf < leafCount; ++leaf) {
+        for (uint32_t leaf = 0; leaf < totalLeaves; ++leaf) {
             const auto &address = result->publication->leaves[leaf];
             const auto &actor = result->publication->actors[address.bodySlot];
             const auto id = actor->leaves[address.actorLeaf].surfaceGameObjectId;
-            identities[bodyCount + leaf].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
+            identities[totalBodies + leaf].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
         }
     }
     upload(BodyIdentities, Bytes(identities.data(), identities.size()));
-    const QueryCastParams castParameters{{castIterationQuantum, bodyCount, 0, 0}};
+    const QueryCastParams castParameters{{castIterationQuantum, totalBodies, 0, 0}};
     upload(CastParameters, Bytes(&castParameters, 1));
-    const QueryParams parameters{{result->queryCount, 0, bodyCount, leafCount},
-                                 {static_cast<uint32_t>(primitives.size()), stride, capacity, format}};
+    const QueryParams parameters{
+        {result->queryCount, bodyBase, bodyCount, leafCount},
+        {static_cast<uint32_t>(primitives.size()), stride, capacity, format},
+        {result->publication ? result->publication->worldRow : 0u, bodyBase, leafBase,
+         result->publication ? result->publication->jointBase : 0u},
+        {bodyCount, leafCount, result->publication ? result->publication->jointCount : 0u, 0u}};
     upload(Parameters, Bytes(&parameters, 1));
     // Requests and explicit primitives share one immutable word stream. This
     // removes an upload/binding without changing either public input layout.
@@ -681,7 +694,7 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
         std::shared_ptr<JoltGpuQueryResult> source;
         std::shared_ptr<rhi::ComputeBuffer> buffer;
         uint64_t offset, bytes;
-        uint32_t field, count;
+        uint32_t field, count, first, bodyIndex;
     };
     std::vector<Target> targets;
     for (const auto &binding : bindings) {
@@ -695,7 +708,11 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
             throw JoltGpuQueryRequestError("Jolt GPU export has no matching typed query source");
         if (binding.field == JoltGpuQueryExportField::ShapeHalfExtents && !source->shapeBoxesOnly)
             throw JoltGpuQueryRequestError("Jolt GPU box export requires an exclusively Box selection");
-        const uint32_t count = source->summaryValue.counts.x;
+        const uint32_t total = source->summaryValue.counts.x;
+        const uint32_t first = binding.recordFirst;
+        const uint32_t count = binding.recordCount == UINT32_MAX ? total - std::min(first, total) : binding.recordCount;
+        if (first > total || count > total - first)
+            throw JoltGpuQueryRequestError("GPU export selection exceeds its completed typed source");
         const auto &desc = binding.buffer->GetDesc();
         const auto scalar = binding.field == JoltGpuQueryExportField::ShapeBodyIndex ? rhi::ComputeScalarType::Int32
                                                                                      : rhi::ComputeScalarType::Float32;
@@ -725,7 +742,7 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
         const uint32_t groups = count / 64 + static_cast<uint32_t>(count % 64 != 0);
         if (groups > m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
             throw JoltGpuQueryRequestError("Jolt GPU export count exceeds the device dispatch range");
-        targets.push_back({source, binding.buffer, binding.byteOffset, bytes, field, count});
+        targets.push_back({source, binding.buffer, binding.byteOffset, bytes, field, count, first, binding.bodyIndex});
     }
     rhi::ComputeHost host = m_host;
     std::vector<rhi::ComputeBufferUpdate> updates;
@@ -737,7 +754,8 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
         const auto &source = target.source;
         const QueryExportParams parameters{
             {source->outputFormat, target.field, target.count, static_cast<uint32_t>(target.offset / sizeof(uint32_t))},
-            {source->queryCount, source->recordBytes / 16, Widths[target.field], 0}};
+            {source->queryCount, source->recordBytes / 16, Widths[target.field], 0},
+            {target.first, target.bodyIndex, target.bodyIndex != UINT32_MAX ? 1u : 0u, 0u}};
         auto uniform = rhi::ComputeBuffer::TryCreatePrivate(
             host, {sizeof(parameters) / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
         if (!uniform)
