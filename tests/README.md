@@ -19,6 +19,14 @@ builtin shader declarations. `tests/python` shares a native Editor/renderer;
 `tests/isolated` gives each lifetime or crash scenario its own native process.
 Both require the current native runtime. Missing native binaries are setup errors.
 
+The dock-close regression drives native pointer input against real docked panels
+and the dirty-document modal, checking consecutive frames and file persistence
+for Save, Discard, Cancel, and a clean close:
+
+```sh
+python -m pytest tests/isolated/test_unsaved_panel_close.py -q -ra
+```
+
 For installed-wheel validation, clear `PYTHONPATH` and
 `INFERNUX_NATIVE_MODULE_DIR` and pass `-o pythonpath=`. On headless Linux, use
 Xvfb and the Vulkan configuration from the desktop workflow.
