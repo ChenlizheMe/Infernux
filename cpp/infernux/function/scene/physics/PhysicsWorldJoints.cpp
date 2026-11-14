@@ -144,20 +144,60 @@ void PhysicsWorld::SetConstraintCollisionEnabled(uint64_t constraintId, bool ena
         constraintId, [=](JointAuthor &author) { SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enabled); });
 }
 
-uint64_t PhysicsWorld::CreateDistanceConstraint(PhysicsConstraintOwner &, uint32_t, uint32_t, const glm::vec3 &,
-                                                const glm::vec3 &, bool, float, float, float, float, bool)
+uint64_t PhysicsWorld::CreateDistanceConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                                const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
+                                                const glm::vec3 &connectedBakedAnchor,
+                                                const glm::vec3 &connectedLocalAnchor, bool autoDistance, float minimum,
+                                                float maximum, float stiffness, float damping, bool enableCollision)
 {
-    throw std::logic_error("GPU CreateDistanceConstraint has not been implemented");
+    auto &domain = DomainForBody(bodyIdA);
+    RequireOwnerThread();
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum < 0.0f || maximum < minimum ||
+        !std::isfinite(stiffness) || stiffness < 0.0f || !std::isfinite(damping) || damping < 0.0f)
+        throw std::invalid_argument(
+            "Distance limits and spring coefficients must be finite ordered non-negative values");
+    JointAuthor author{};
+    author.bodies.z = JPH::GPU::JointDistance;
+    author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0) |
+                      (autoDistance ? JPH::GPU::JointAutoDistance : 0);
+    author.ownerAnchor = JointVector(localBakedAnchor);
+    author.ownerLocalAnchor = JointVector(localAnchor);
+    author.connectedAnchor = JointVector(connectedBakedAnchor);
+    author.connectedLocalAnchor = JointVector(connectedLocalAnchor);
+    author.limits = {minimum, maximum, 0.0f, 0.0f};
+    author.linearSpring = {stiffness, damping, 0.0f, 0.0f};
+    RequireGpu(domain);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, author);
 }
 
-void PhysicsWorld::UpdateDistanceConstraintSettings(uint64_t, bool, float, float, float, float, bool)
+void PhysicsWorld::UpdateDistanceConstraintSettings(uint64_t constraintId, bool updateLimits, float minimum,
+                                                    float maximum, float stiffness, float damping, bool enableCollision)
 {
-    throw std::logic_error("GPU UpdateDistanceConstraintSettings has not been implemented");
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
+    RequireOwnerThread();
+    if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum < 0.0f || maximum < minimum ||
+        !std::isfinite(stiffness) || stiffness < 0.0f || !std::isfinite(damping) || damping < 0.0f)
+        throw std::invalid_argument(
+            "Distance limits and spring coefficients must be finite ordered non-negative values");
+    RequireGpu(domain);
+    const auto &joint = m_gpuScene->GetAuthoredJoint(constraintId);
+    if (joint.kind != JPH::GPU::JointDistance)
+        throw std::logic_error("Constraint is not a distance joint");
+    if (bool(joint.author.bodies.w & JPH::GPU::JointAutoDistance) == updateLimits)
+        throw std::logic_error("Changing Distance auto mode requires rebuilding its captured reference");
+    m_gpuScene->UpdateJoint(constraintId, [=](JointAuthor &author) {
+        SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enableCollision);
+        author.limits = {minimum, maximum, 0.0f, 0.0f};
+        author.linearSpring = {stiffness, damping, 0.0f, 0.0f};
+    });
 }
 
-float PhysicsWorld::GetDistanceConstraintLength(uint64_t) const
+float PhysicsWorld::GetDistanceConstraintLength(uint64_t constraintId) const
 {
-    throw std::logic_error("GPU GetDistanceConstraintLength has not been implemented");
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
+    float motion[2];
+    ReadJointMotion(domain, {constraintId}, motion, JPH::GPU::JointDistance);
+    return motion[0];
 }
 
 void PhysicsWorld::UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
@@ -295,8 +335,7 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
 {
     RequireOwnerThread();
     if (!output && !ids.empty())
-        throw std::invalid_argument(kind == JPH::GPU::JointHinge ? "Hinge motion requires output storage"
-                                                                 : "Slider motion requires output storage");
+        throw std::invalid_argument("Joint motion requires output storage");
     if (ids.empty())
         return;
     JoltGpuPreparedJointMotion prepared;
@@ -313,9 +352,8 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
                 for (const auto id : ids) {
                     const auto found = identities.find(id);
                     if (found == identities.end() || found->second->kind != kind)
-                        throw JoltGpuQueryRequestError(kind == JPH::GPU::JointHinge
-                                                           ? "Hinge motion requires an accepted hinge identity"
-                                                           : "Slider motion requires an accepted slider identity");
+                        throw JoltGpuQueryRequestError(
+                            "Joint motion requires an accepted identity of the requested kind");
                     rows.push_back(found->second->row);
                 }
                 prepared = m_gpuJoints->PrepareReadMotion(publication, rows);
@@ -326,8 +364,7 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
     if (requestError)
         std::rethrow_exception(requestError);
     if (!prepared.result)
-        throw std::runtime_error(kind == JPH::GPU::JointHinge ? "GPU hinge motion did not produce a result"
-                                                              : "GPU slider motion did not produce a result");
+        throw std::runtime_error("GPU joint motion did not produce a result");
     FrameWorkOwner::Scope materialize(*m_gpuWork);
     prepared.result->CopyMotion(output, ids.size() * 2);
 }

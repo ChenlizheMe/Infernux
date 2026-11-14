@@ -68,12 +68,12 @@ constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Remap) | Bit(Previous) | Bit(Stream) | Bit(States),
     Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows) | Bit(Motion), Bit(Parameters) | Bit(Stream) | Bit(Motion),
     Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows)};
-static_assert(sizeof(JointAuthor) == 12 * sizeof(QueryRecordWord));
-static_assert(sizeof(JointState) == 12 * sizeof(QueryRecordWord));
+static_assert(sizeof(JointAuthor) == JointAuthorWords * sizeof(QueryRecordWord));
+static_assert(sizeof(JointState) == JointStateWords * sizeof(QueryRecordWord));
 
 uint64_t StreamBytes(size_t count)
 {
-    if (count > (std::numeric_limits<uint32_t>::max() - 1u) / (2u * JointRecordWords))
+    if (count > (std::numeric_limits<uint32_t>::max() - 1u) / (JointAuthorWords + JointStateWords))
         throw JoltGpuQueryRequestError("Jolt GPU joint stream exceeds device word indexing");
     const uint64_t bytes = sizeof(UInt4) + uint64_t(count) * (sizeof(JointAuthor) + sizeof(JointState));
     if (bytes > std::numeric_limits<size_t>::max())
@@ -404,7 +404,15 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
             author.bodies.z == JointSlider && (((old.bodies.w ^ author.bodies.w) & JointLimitsEnabled) ||
                                                ((author.bodies.w & JointLimitsEnabled) &&
                                                 (old.limits.x != author.limits.x || old.limits.y != author.limits.y)));
-        if (author.bodies.z == JointSlider ? sliderLimitsChanged : limits(old) != limits(author))
+        const bool distanceSettingsChanged =
+            author.bodies.z == JointDistance &&
+            (((old.bodies.w ^ author.bodies.w) & JointAutoDistance) ||
+             (!(author.bodies.w & JointAutoDistance) &&
+              (old.limits.x != author.limits.x || old.limits.y != author.limits.y)) ||
+             old.linearSpring.x != author.linearSpring.x || old.linearSpring.y != author.linearSpring.y);
+        if (author.bodies.z == JointDistance ? distanceSettingsChanged
+            : author.bodies.z == JointSlider ? sliderLimitsChanged
+                                             : limits(old) != limits(author))
             flags |= JointResetWarmStart;
         if (old.passive.z != author.passive.z)
             flags |= JointResetRotor;
@@ -494,7 +502,8 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         if (row >= source.GetJoints().size())
             throw JoltGpuQueryRequestError("Jolt GPU joint motion row is absent from its retained catalog");
         const auto &joint = source.GetJoints()[row];
-        if (joint.row != row || (joint.kind != JointHinge && joint.kind != JointSlider) ||
+        if (joint.row != row ||
+            (joint.kind != JointHinge && joint.kind != JointSlider && joint.kind != JointDistance) ||
             joint.author.bodies.z != joint.kind || !joint.id || !(joint.author.bodies.w & JointEnabled) ||
             joint.author.identity.x != static_cast<uint32_t>(joint.id) ||
             joint.author.identity.y != static_cast<uint32_t>(joint.id >> 32) ||

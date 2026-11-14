@@ -3,6 +3,7 @@
 #include "ComponentFactory.h"
 #include "Rigidbody.h"
 #include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <cmath>
 #include <stdexcept>
@@ -46,9 +47,17 @@ SemanticTypeDescriptor DistanceJoint::DescribeSemanticType()
 
 uint64_t DistanceJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
-    return world.CreateDistanceConstraint(*this, bodyId, connectedBodyId, m_anchor, m_connectedAnchor, m_autoDistance,
-                                          m_minimumDistance, m_maximumDistance, m_stiffness, m_damping,
-                                          m_enableCollision);
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    const auto *transform = GetTransform();
+    const auto baked = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
+    glm::vec3 connectedBaked = m_connectedAnchor;
+    if (const auto *body = GetConnectedBody()) {
+        const auto *connected = body->GetTransform();
+        connectedBaked = glm::conjugate(connected->GetWorldRotation()) * connected->TransformVector(m_connectedAnchor);
+    }
+    return world.CreateDistanceConstraint(*this, bodyId, connectedBodyId, baked, m_anchor, connectedBaked,
+                                          m_connectedAnchor, m_autoDistance, m_minimumDistance, m_maximumDistance,
+                                          m_stiffness, m_damping, m_enableCollision);
 }
 
 void DistanceJoint::UpdateConstraintSettings()

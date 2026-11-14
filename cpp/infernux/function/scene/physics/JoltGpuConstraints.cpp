@@ -306,7 +306,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         RequireBytes(Bodies, uint64_t(b) * sizeof(BodyModel));
         RequireBytes(Shapes, uint64_t(std::max(1u, storage.GetShapeCount())) * sizeof(ShapeModel));
         RequireBytes(Worlds, uint64_t(w) * sizeof(WorldRange));
-        RequireBytes(Joints, (1ull + 2ull * JointRecordWords * j) * sizeof(QueryRecordWord));
+        RequireBytes(Joints, (1ull + uint64_t(JointAuthorWords + JointStateWords) * j) * sizeof(QueryRecordWord));
         RequireBytes(Contacts, uint64_t(std::max(1u, Checked(4ull * p))) * sizeof(Contact));
         if (frozen[Patches]->GetByteSize() < WordBytes)
             throw std::invalid_argument("GPU constraints require a candidate-bank header");

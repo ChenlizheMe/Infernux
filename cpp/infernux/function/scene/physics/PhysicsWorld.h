@@ -480,7 +480,8 @@ class PhysicsWorld
                                    bool enableCollision);
     void SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled);
     uint64_t CreateDistanceConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                      const glm::vec3 &localAnchor, const glm::vec3 &connectedLocalAnchor,
+                                      const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
+                                      const glm::vec3 &connectedBakedAnchor, const glm::vec3 &connectedLocalAnchor,
                                       bool autoDistance, float minimum, float maximum, float stiffness, float damping,
                                       bool enableCollision);
     void UpdateDistanceConstraintSettings(uint64_t constraintId, bool updateLimits, float minimum, float maximum,

@@ -94,7 +94,7 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
         if (!jointPrepared) {
             const uint64_t authorBytes = model.joints.size() * sizeof(JointAuthor);
             const UInt4 header{static_cast<uint32_t>(model.joints.size()),
-                               1u + JointRecordWords * static_cast<uint32_t>(model.joints.size()), 0u, 0u};
+                               1u + JointAuthorWords * static_cast<uint32_t>(model.joints.size()), 0u, 0u};
             std::vector<uint8_t> prefix(sizeof(header) + authorBytes);
             std::memcpy(prefix.data(), &header, sizeof(header));
             if (authorBytes)

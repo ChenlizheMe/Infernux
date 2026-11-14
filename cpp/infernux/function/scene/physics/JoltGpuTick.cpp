@@ -829,7 +829,8 @@ class JoltGpuTick::Impl
     {
         using namespace JPH::GPU;
         const uint64_t stateBytes = uint64_t(finalOutput.bodyCount) * sizeof(BodyState);
-        const uint64_t jointBytes = uint64_t(finalOutput.jointCount) * JointRecordWords * sizeof(QueryRecordWord);
+        const uint64_t authorBytes = uint64_t(finalOutput.jointCount) * sizeof(JointAuthor);
+        const uint64_t jointStateBytes = uint64_t(finalOutput.jointCount) * sizeof(JointState);
         const auto allocate = [&](std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes, bool body) {
             if (!bytes)
                 return true;
@@ -843,11 +844,11 @@ class JoltGpuTick::Impl
             return bool(buffer);
         };
         if (!allocate(finalOutput.states, stateBytes, true) ||
-            !allocate(finalOutput.joints, sizeof(QueryRecordWord) + 2u * jointBytes, false))
+            !allocate(finalOutput.joints, sizeof(QueryRecordWord) + authorBytes + jointStateBytes, false))
             return {nullptr, [this] { return PrepareSnapshot(); }};
         std::vector<rhi::ComputeBufferUpdate> uploads;
         if (!snapshotHeaderAccepted) {
-            const UInt4 header{finalOutput.jointCount, 1u + JointRecordWords * finalOutput.jointCount, 0u, 0u};
+            const UInt4 header{finalOutput.jointCount, 1u + JointAuthorWords * finalOutput.jointCount, 0u, 0u};
             std::vector<uint8_t> bytes(sizeof(header));
             std::memcpy(bytes.data(), &header, sizeof(header));
             uploads.push_back({finalOutput.joints, 0u, std::move(bytes)});
@@ -862,7 +863,9 @@ class JoltGpuTick::Impl
         uint64_t remaining = std::max(uint64_t{16}, window - std::min(window, uint64_t(uploads.size() * 16u)));
         remaining -= remaining % 16u;
         while (snapshotRegion < 3u && remaining) {
-            const uint64_t length = snapshotRegion == 0u ? stateBytes : jointBytes;
+            const uint64_t length = snapshotRegion == 0u   ? stateBytes
+                                    : snapshotRegion == 1u ? authorBytes
+                                                           : jointStateBytes;
             if (snapshotOffset == length) {
                 snapshotOffset = 0u;
                 ++snapshotRegion;
@@ -873,11 +876,12 @@ class JoltGpuTick::Impl
             const auto &target = bodies ? finalOutput.states : finalOutput.joints;
             const uint64_t sourceBase =
                 bodies ? uint64_t(finalOutput.bodyBase) * sizeof(BodyState)
-                       : (1ull + uint64_t(JointRecordWords) * finalOutput.jointBase +
-                          (snapshotRegion == 2u ? uint64_t(JointRecordWords) * storage.GetJointCount() : 0u)) *
-                             sizeof(QueryRecordWord);
+                       : sizeof(QueryRecordWord) + (snapshotRegion == 1u
+                                                        ? uint64_t(finalOutput.jointBase) * sizeof(JointAuthor)
+                                                        : uint64_t(storage.GetJointCount()) * sizeof(JointAuthor) +
+                                                              uint64_t(finalOutput.jointBase) * sizeof(JointState));
             const uint64_t targetBase =
-                bodies ? 0u : sizeof(QueryRecordWord) + (snapshotRegion == 2u ? jointBytes : 0u);
+                bodies ? 0u : sizeof(QueryRecordWord) + (snapshotRegion == 2u ? authorBytes : 0u);
             const uint64_t bytes = std::min(remaining, length - snapshotOffset);
             // Borrow the mutable live source. Same queue ordering plus this
             // tick's exclusive writer lease preserve the value, with no live

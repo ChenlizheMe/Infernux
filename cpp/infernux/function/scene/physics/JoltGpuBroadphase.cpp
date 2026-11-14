@@ -319,7 +319,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         requireBytes(Bodies, uint64_t(storage.GetBodyCount()) * sizeof(BodyModel));
         requireBytes(Shapes, uint64_t(std::max(1u, n)) * sizeof(ShapeModel));
         requireBytes(AuthorWorlds, uint64_t(w) * sizeof(WorldRange));
-        requireBytes(Joints, (1ull + 2ull * JointRecordWords * j) * sizeof(QueryRecordWord));
+        requireBytes(Joints, (1ull + uint64_t(JointAuthorWords + JointStateWords) * j) * sizeof(QueryRecordWord));
         if (n)
             requireBytes(Bounds, uint64_t(n) * sizeof(Aabb));
         config.counts = {n, j, w, storage.GetBodyCount()};
