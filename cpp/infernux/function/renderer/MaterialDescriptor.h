@@ -63,21 +63,6 @@ class MaterialUBO
     void Update(const InxMaterial &material);
     void Apply(const InxMaterial &material, const RendererParameterBlock &parameters);
 
-    /**
-     * @brief Update a specific property in the UBO
-     */
-    void SetFloat(const std::string &name, float value);
-    void SetVec2(const std::string &name, const glm::vec2 &value);
-    void SetVec3(const std::string &name, const glm::vec3 &value);
-    void SetVec4(const std::string &name, const glm::vec4 &value);
-    void SetInt(const std::string &name, int value);
-    void SetBool(const std::string &name, bool value);
-    void SetUInt(const std::string &name, uint32_t value);
-    void SetMat3(const std::string &name, const glm::mat3 &value);
-    void SetMat4(const std::string &name, const glm::mat4 &value);
-    void SetFloatArray(const std::string &name, const std::vector<float> &values);
-    void SetVec4Array(const std::string &name, const std::vector<glm::vec4> &values);
-
     /// Update the fixed bindless material-index ABI (set 0, binding 15).
     void UpdateTextureIndices(const std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> &indices);
     void UpdateTextureIndex(std::string_view name, uint32_t index);
@@ -122,7 +107,6 @@ class MaterialUBO
     MaterialUBOLayout m_layout;
     std::unordered_map<std::string, ShaderValueCopy> m_memberCopies;
     void WriteValue(const std::string &name, const void *value);
-    void WriteArray(const std::string &name, const void *values, size_t bytes);
     void WriteProperty(const std::string &name, MaterialPropertyType type, const MaterialPropertyValue &value);
 };
 

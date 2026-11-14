@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <tuple>
 
 namespace infernux
 {
@@ -35,13 +36,40 @@ struct DeviceShaderProgram::Impl
     }
 };
 
+namespace
+{
+auto ResourceBindingKey(const rhi::BindingLayoutEntry &value)
+{
+    return std::tie(value.binding, value.type, value.count, value.depthRead, value.readOnlyStorage, value.viewDimension,
+                    value.sampleType, value.multisampled, value.storageFormat, value.storageAccess, value.samplerType,
+                    value.minBufferBindingSize);
+}
+
+std::vector<ShaderStageSelection> SelectEntries(const ShaderTargetCode &program, const std::vector<uint32_t> &entries)
+{
+    std::vector<ShaderStageSelection> result;
+    result.reserve(entries.size());
+    for (const auto index : entries)
+        result.push_back({program, index});
+    return result;
+}
+} // namespace
+
 DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTargetCode &code,
                                          const std::vector<uint32_t> &entries,
                                          const std::vector<rhi::BindingLayoutHandle> &sharedLayouts)
+    : DeviceShaderProgram(device, SelectEntries(code, entries), sharedLayouts)
+{
+}
+
+DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const std::vector<ShaderStageSelection> &entries,
+                                         const std::vector<rhi::BindingLayoutHandle> &sharedLayouts)
     : m_impl(std::make_unique<Impl>(device))
 {
-    for (const auto index : entries) {
-        const auto &entry = code.entries.at(index);
+    const ShaderValueLayout *rootLayout = nullptr;
+    for (const auto &selection : entries) {
+        const auto &code = selection.program;
+        const auto &entry = code.entries.at(selection.entry);
         if (entry.sampleRateShading && !device.GetCapabilities().features.sampleRateShading)
             throw std::runtime_error("Device does not support per-sample fragment inputs: " + entry.name);
         const auto language =
@@ -51,28 +79,46 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTarget
             throw std::runtime_error("Device shader module creation failed: " + entry.name);
         const auto rootBytes = entry.rootConstants ? static_cast<uint32_t>(entry.rootConstants->byteSize) : 0;
         m_impl->entries.push_back({entry.name, entry.stage, module});
-        m_impl->rootConstantBytes = std::max(m_impl->rootConstantBytes, rootBytes);
-    }
-    std::vector<rhi::BindingLayoutDesc> descriptions;
-    for (auto resource : code.resources) {
-        auto &binding = resource.binding;
-        binding.visibility = rhi::ShaderStage::None;
-        for (const auto index : entries) {
-            const auto &entry = code.entries[index];
-            const std::array<uint32_t, 2> key{resource.set, binding.binding};
-            if (std::find(entry.bindings.begin(), entry.bindings.end(), key) != entry.bindings.end())
-                binding.visibility = binding.visibility | entry.stage;
+        if (entry.rootConstants) {
+            if (rootLayout && !(*rootLayout == *entry.rootConstants))
+                throw std::invalid_argument("Shader stages disagree on per-execution values: " + entry.name);
+            rootLayout = &*entry.rootConstants;
         }
-        if (binding.visibility == rhi::ShaderStage::None)
-            continue;
+        m_impl->rootConstantBytes = std::max(m_impl->rootConstantBytes, rootBytes);
+
+        for (const auto &resource : code.resources) {
+            const std::array<uint32_t, 2> key{resource.set, resource.binding.binding};
+            if (std::find(entry.bindings.begin(), entry.bindings.end(), key) == entry.bindings.end())
+                continue;
+            const auto existing =
+                std::find_if(m_impl->resources.begin(), m_impl->resources.end(), [&](const auto &value) {
+                    return value.set == resource.set && value.binding.binding == resource.binding.binding;
+                });
+            if (existing == m_impl->resources.end()) {
+                m_impl->resources.push_back(resource);
+                m_impl->resources.back().binding.visibility = entry.stage;
+                continue;
+            }
+            if (ResourceBindingKey(existing->binding) != ResourceBindingKey(resource.binding) ||
+                (resource.binding.type == rhi::BindingType::UniformBuffer && !(existing->value == resource.value)))
+                throw std::invalid_argument("Shader stages disagree on resource binding " +
+                                            std::to_string(resource.set) + "/" +
+                                            std::to_string(resource.binding.binding) + ": " + resource.name);
+            existing->binding.visibility = existing->binding.visibility | entry.stage;
+        }
+    }
+    std::sort(m_impl->resources.begin(), m_impl->resources.end(), [](const auto &first, const auto &second) {
+        return std::tie(first.set, first.binding.binding) < std::tie(second.set, second.binding.binding);
+    });
+    std::vector<rhi::BindingLayoutDesc> descriptions;
+    for (const auto &resource : m_impl->resources) {
         if (resource.set >= rhi::GraphicsPipelineDesc::MaxBindingLayouts)
             throw std::runtime_error("Shader exceeds the device program binding-set capacity: " + resource.name);
         descriptions.resize(std::max(descriptions.size(), static_cast<size_t>(resource.set) + 1));
         auto &set = descriptions[resource.set];
         if (set.entryCount == set.entries.size())
             throw std::runtime_error("Shader exceeds the device binding-set capacity: " + resource.name);
-        set.entries[set.entryCount++] = binding;
-        m_impl->resources.push_back(std::move(resource));
+        set.entries[set.entryCount++] = resource.binding;
     }
     for (size_t index = 0; index < descriptions.size(); ++index) {
         const bool shared = index < sharedLayouts.size() && sharedLayouts[index].IsValid();

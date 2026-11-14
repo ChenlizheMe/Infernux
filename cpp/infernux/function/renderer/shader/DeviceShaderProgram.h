@@ -13,6 +13,12 @@ class Device;
 namespace infernux
 {
 
+struct ShaderStageSelection
+{
+    const ShaderTargetCode &program;
+    uint32_t entry;
+};
+
 /// A concrete selection of entry points, with only their used bindings.
 /// Device publication owns modules and layouts; it never invokes a compiler
 /// or consults authoring source. Pipelines retain the backend objects.
@@ -20,6 +26,8 @@ namespace infernux
 class DeviceShaderProgram
 {
   public:
+    INFERNUX_RENDER_CORE_API DeviceShaderProgram(rhi::Device &device, const std::vector<ShaderStageSelection> &entries,
+                                                 const std::vector<rhi::BindingLayoutHandle> &sharedLayouts = {});
     INFERNUX_RENDER_CORE_API DeviceShaderProgram(rhi::Device &device, const ShaderTargetCode &code,
                                                  const std::vector<uint32_t> &entries,
                                                  const std::vector<rhi::BindingLayoutHandle> &sharedLayouts = {});

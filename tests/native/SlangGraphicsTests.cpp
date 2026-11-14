@@ -1,5 +1,5 @@
 #include <function/renderer/shader/DeviceShaderProgram.h>
-#include <function/renderer/shader/ShaderValueCopy.h>
+#include <function/renderer/shader/MaterialValueCopy.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
@@ -11,6 +11,7 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace infernux;
@@ -68,6 +69,7 @@ Varyings mesh_vertex(VertexInput input, uint instance : SV_VulkanInstanceID)
 {
     Varyings result;
     result.position = float4(input.position, 1.0);
+    if (scene.exposure < 0.0) result.position.x = -result.position.x;
     result.uv = input.uv;
     result.instance = instance;
     result.data[0].axes = input.axes;
@@ -150,7 +152,49 @@ void Run()
                                                        {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
     const auto &program = compiled.targets[0];
     DeviceShaderProgram computeProgram(device, program, {0});
-    DeviceShaderProgram graphicsProgram(device, program, {1, 2});
+    const auto separate = SlangCompiler::Get().Compile({"separate_fragment", "separate_fragment.frag.py", kProgram}, {},
+                                                       {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+    const std::vector<ShaderStageSelection> stages{{program, 1}, {separate.targets[0], 2}};
+    DeviceShaderProgram graphicsProgram(device, stages);
+
+    // The same binding number and byte size do not make two uniform types compatible.
+    std::string conflictingSource = kProgram;
+    conflictingSource.replace(conflictingSource.find("float exposure;"), std::strlen("float exposure;"),
+                              "uint exposure;");
+    const auto conflicting = SlangCompiler::Get().Compile(
+        {"conflicting_fragment", "conflicting_fragment.frag.py", conflictingSource}, {}, {ShaderCodeTarget::SpirV});
+    const std::vector<ShaderStageSelection> incompatible{{program, 1}, {conflicting.targets[0], 2}};
+    bool rejected = false;
+    try {
+        DeviceShaderProgram invalid(device, incompatible);
+    } catch (const std::invalid_argument &error) {
+        rejected = std::string(error.what()).find("Shader stages disagree on resource binding") != std::string::npos;
+    }
+    Require(rejected, "Conflicting stage uniforms reached pipeline creation");
+
+    std::string vertexRoot = std::string("struct Step { float4 value; };\n") +
+                             "[[vk::push_constant]] ConstantBuffer<Step> step;\n" + kProgram;
+    const std::string vertexPosition = "result.position = float4(input.position, 1.0);";
+    vertexRoot.replace(vertexRoot.find(vertexPosition), vertexPosition.size(),
+                       vertexPosition + " result.position.x += step.value.x;");
+    std::string fragmentRoot = std::string("struct Step { uint4 value; };\n") +
+                               "[[vk::push_constant]] ConstantBuffer<Step> step;\n" + kProgram;
+    const std::string fragmentIdentity = "scene.material.objectId + input.instance";
+    fragmentRoot.replace(fragmentRoot.find(fragmentIdentity), fragmentIdentity.size(),
+                         fragmentIdentity + " + step.value.x");
+    const auto rootedVertex = SlangCompiler::Get().Compile({"rooted_vertex", "rooted_vertex.slang", vertexRoot}, {},
+                                                           {ShaderCodeTarget::SpirV});
+    const auto rootedFragment = SlangCompiler::Get().Compile({"rooted_fragment", "rooted_fragment.slang", fragmentRoot},
+                                                             {}, {ShaderCodeTarget::SpirV});
+    const std::vector<ShaderStageSelection> rootConflict{{rootedVertex.targets[0], 1}, {rootedFragment.targets[0], 2}};
+    rejected = false;
+    try {
+        DeviceShaderProgram invalid(device, rootConflict);
+    } catch (const std::invalid_argument &error) {
+        rejected =
+            std::string(error.what()).find("Shader stages disagree on per-execution values") != std::string::npos;
+    }
+    Require(rejected, "Conflicting execution values reached pipeline creation");
     auto buffer = [&](uint64_t bytes, rhi::BufferUsageFlags usage, rhi::BufferMemory memory,
                       const void *initial = nullptr) {
         rhi::BufferDesc desc;
@@ -187,10 +231,18 @@ void Run()
     const std::array<float, 9> channelTransform{1.0f, 0.2f, 0.0f, 0.0f, 0.9f, 0.1f, 0.1f, 0.0f, 0.8f};
     const std::array<float, 2> weights{0.25f, 0.8f};
     const uint32_t objectId = 0x1020304;
-    ShaderValueCopy(fields[0]).Write(constants.data(), tint.data());
-    ShaderValueCopy(fields[1]).Write(constants.data(), &objectId);
-    ShaderValueCopy(fields[2]).Write(constants.data(), channelTransform.data());
-    ShaderValueCopy(fields[3]).Write(constants.data(), weights.data());
+    glm::mat3 logicalTransform;
+    for (glm::length_t row = 0; row < 3; ++row)
+        for (glm::length_t column = 0; column < 3; ++column)
+            logicalTransform[column][row] = channelTransform[row * 3 + column];
+    const auto write = [&](size_t field, MaterialPropertyType type, const MaterialPropertyValue &value) {
+        WriteMaterialValue(ShaderValueCopy(fields[field], ShaderMatrixOrder::ColumnMajor), constants.data(), type,
+                           value, fields[field].name);
+    };
+    write(0, MaterialPropertyType::Float4, glm::vec4(tint[0], tint[1], tint[2], tint[3]));
+    write(1, MaterialPropertyType::UInt, objectId);
+    write(2, MaterialPropertyType::Mat3, logicalTransform);
+    write(3, MaterialPropertyType::FloatArray, std::vector<float>(weights.begin(), weights.end()));
     const auto uniform =
         buffer(constants.size(), rhi::BufferUsageFlags::Uniform, rhi::BufferMemory::Upload, constants.data());
     const float exposure = 1.0f;

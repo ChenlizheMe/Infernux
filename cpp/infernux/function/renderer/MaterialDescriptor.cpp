@@ -1,7 +1,7 @@
 #include "MaterialDescriptor.h"
+#include "shader/MaterialValueCopy.h"
 #include <algorithm>
 #include <core/log/InxLog.h>
-#include <core/types/ColorSpace.h>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -194,46 +194,9 @@ void MaterialUBO::Apply(const InxMaterial &material, const RendererParameterBloc
 
 void MaterialUBO::WriteProperty(const std::string &name, MaterialPropertyType type, const MaterialPropertyValue &value)
 {
-    switch (type) {
-    case MaterialPropertyType::Float:
-        SetFloat(name, std::get<float>(value));
-        break;
-    case MaterialPropertyType::Float2:
-        SetVec2(name, std::get<glm::vec2>(value));
-        break;
-    case MaterialPropertyType::Float3:
-        SetVec3(name, std::get<glm::vec3>(value));
-        break;
-    case MaterialPropertyType::Float4:
-        SetVec4(name, std::get<glm::vec4>(value));
-        break;
-    case MaterialPropertyType::Color:
-        SetVec4(name, inx::color::SrgbToLinear(std::get<glm::vec4>(value)));
-        break;
-    case MaterialPropertyType::Int:
-        SetInt(name, std::get<int>(value));
-        break;
-    case MaterialPropertyType::Bool:
-        SetBool(name, std::get<bool>(value));
-        break;
-    case MaterialPropertyType::UInt:
-        SetUInt(name, std::get<uint32_t>(value));
-        break;
-    case MaterialPropertyType::Mat3:
-        SetMat3(name, std::get<glm::mat3>(value));
-        break;
-    case MaterialPropertyType::Mat4:
-        SetMat4(name, std::get<glm::mat4>(value));
-        break;
-    case MaterialPropertyType::Texture2D:
-        break;
-    case MaterialPropertyType::FloatArray:
-        SetFloatArray(name, std::get<std::vector<float>>(value));
-        break;
-    case MaterialPropertyType::Float4Array:
-        SetVec4Array(name, std::get<std::vector<glm::vec4>>(value));
-        break;
-    }
+    const auto copy = m_memberCopies.find(name);
+    if (copy != m_memberCopies.end())
+        WriteMaterialValue(copy->second, m_mappedData, type, value, name);
 }
 
 void MaterialUBO::UpdateTextureIndices(const std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> &indices)
@@ -255,76 +218,6 @@ void MaterialUBO::WriteValue(const std::string &name, const void *value)
     if (copy == m_memberCopies.end())
         return;
     copy->second.Write(m_mappedData, value);
-}
-
-void MaterialUBO::SetFloat(const std::string &name, float value)
-{
-    WriteValue(name, &value);
-}
-
-void MaterialUBO::SetVec2(const std::string &name, const glm::vec2 &value)
-{
-    WriteValue(name, &value);
-}
-
-void MaterialUBO::SetVec3(const std::string &name, const glm::vec3 &value)
-{
-    WriteValue(name, &value);
-}
-
-void MaterialUBO::SetVec4(const std::string &name, const glm::vec4 &value)
-{
-    WriteValue(name, &value);
-}
-
-void MaterialUBO::SetInt(const std::string &name, int value)
-{
-    WriteValue(name, &value);
-}
-
-void MaterialUBO::SetBool(const std::string &name, bool value)
-{
-    const uint32_t word = value ? 1u : 0u;
-    WriteValue(name, &word);
-}
-
-void MaterialUBO::SetUInt(const std::string &name, uint32_t value)
-{
-    WriteValue(name, &value);
-}
-
-void MaterialUBO::SetMat3(const std::string &name, const glm::mat3 &value)
-{
-    std::array<float, 9> columns;
-    for (glm::length_t column = 0; column < 3; ++column)
-        for (glm::length_t row = 0; row < 3; ++row)
-            columns[column * 3 + row] = value[column][row];
-    WriteValue(name, columns.data());
-}
-
-void MaterialUBO::SetMat4(const std::string &name, const glm::mat4 &value)
-{
-    WriteValue(name, &value);
-}
-
-void MaterialUBO::SetFloatArray(const std::string &name, const std::vector<float> &values)
-{
-    WriteArray(name, values.data(), values.size() * sizeof(float));
-}
-
-void MaterialUBO::SetVec4Array(const std::string &name, const std::vector<glm::vec4> &values)
-{
-    WriteArray(name, values.data(), values.size() * sizeof(glm::vec4));
-}
-
-void MaterialUBO::WriteArray(const std::string &name, const void *values, size_t bytes)
-{
-    const auto copy = m_memberCopies.find(name);
-    if (copy == m_memberCopies.end())
-        return;
-    if (copy->second.GetSourceBytes() != bytes)
-        throw std::invalid_argument("Material array size does not match the compiled parameter: " + name);
-    copy->second.Write(m_mappedData, values);
 }
 
 // ============================================================================
