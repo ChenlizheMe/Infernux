@@ -63,6 +63,10 @@ def _reset_editor_interaction_state():
 
     previous_core = EditorInteractionCore._instance
     from infernux.engine.play_mode import PlayModeManager
+    from infernux.core.material import Material
+    from infernux.renderstack.render_effect import RenderEffect
+
+    previous_save_suppression = Material._suppress_auto_save, RenderEffect._suppress_auto_save
 
     # PlayModeManager is a process singleton, but most tests construct a
     # short-lived manager for their own scenario.  Keeping that manager alive
@@ -89,6 +93,9 @@ def _reset_editor_interaction_state():
         # session fixture does not require a Python PlayModeManager; tests that
         # need one create it explicitly and own it for that test.
         PlayModeManager._instance = None
+        # A failed transition test can deliberately leave its manager in a
+        # recovery state. Its process-wide save policy belongs to that test.
+        Material._suppress_auto_save, RenderEffect._suppress_auto_save = previous_save_suppression
         EditorInteractionCore._instance = previous_core
         registry.clear()
         clipboard.clear(reason="test_teardown")
@@ -155,20 +162,23 @@ def editor_project(engine):
         yield root
 
 
-@pytest.fixture(autouse=True)
-def _install_runtime_scheduler_bridge(runtime_scheduler):
-    """Restore the authoritative bridge before every native integration test."""
+def install_runtime_scheduler_bridge(runtime_scheduler, *, reset_callbacks=True):
+    """Wire native callbacks to one actual owner, retaining peer work on a switch."""
+    from infernux.lib import _Infernux
+
     manager = SceneManager.instance()
-    manager.clear_runtime_lifecycle_callbacks()
+    if reset_callbacks:
+        manager.clear_runtime_lifecycle_callbacks()
     runtime_scheduler.end_native_frame()
-    manager.set_runtime_lifecycle_callbacks(
-        runtime_scheduler.begin_native_frame,
-        lambda delta: runtime_scheduler.execute_native_phase("fixed_update", delta),
-        lambda delta: runtime_scheduler.execute_native_phase("update", delta),
-        lambda delta: runtime_scheduler.execute_native_phase("late_update", delta),
-        runtime_scheduler.execute_native_editor_update,
-        runtime_scheduler.end_native_frame,
-    )
+    with _Infernux._RuntimeWorldScope(runtime_scheduler.world_id):
+        manager.set_runtime_lifecycle_callbacks(
+            runtime_scheduler.begin_native_frame,
+            lambda delta: runtime_scheduler.execute_native_phase("fixed_update", delta),
+            lambda delta: runtime_scheduler.execute_native_phase("update", delta),
+            lambda delta: runtime_scheduler.execute_native_phase("late_update", delta),
+            runtime_scheduler.execute_native_editor_update,
+            runtime_scheduler.end_native_frame,
+        )
     def consume_barrier(native_barrier):
         barrier = RuntimeFrameBarrier.from_native(native_barrier)
         if barrier == RuntimeFrameBarrier.RENDER_SUBMITTED:
@@ -189,6 +199,12 @@ def _install_runtime_scheduler_bridge(runtime_scheduler):
     manager.set_runtime_frame_barrier_callback(consume_barrier)
     manager.set_runtime_result_consumer_callback(runtime_scheduler.resume_native_result_boundary)
     runtime_scheduler.bind_native_bridge(manager)
+
+
+@pytest.fixture(autouse=True)
+def _install_runtime_scheduler_bridge(runtime_scheduler):
+    """Restore the authoritative bridge before every native integration test."""
+    install_runtime_scheduler_bridge(runtime_scheduler)
     yield runtime_scheduler
 
 

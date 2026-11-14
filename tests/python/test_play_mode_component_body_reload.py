@@ -37,6 +37,10 @@ from infernux.engine.project_context import (
 class _NativeDispatchProbe:
     def __init__(self) -> None:
         self.handle = object()
+        # This identity-only probe is deliberately not attached to a Scene.
+        # A native component reports that state through its owner property.
+        self.game_object = None
+        self.enabled = True
 
 
 class _ScriptObject:
@@ -93,8 +97,17 @@ class _ScriptScene:
 
 
 class _ScriptSceneManager:
+    # The live class/native mirror under test belongs to the real author realm;
+    # PLAYING/PAUSED here select reload policy, not a fabricated runtime graph.
+    _runtime_world_ids = ()
+
     def __init__(self, scene) -> None:
         self._scene = scene
+
+    @property
+    def _authoring_runtime_world_id(self):
+        from infernux.lib import SceneManager
+        return SceneManager.instance()._authoring_runtime_world_id
 
     def get_active_scene(self):
         return self._scene
@@ -108,6 +121,14 @@ class _ScriptAssetDatabase:
     def get_guid_from_path(self, path: str) -> str:
         assert path == self._path
         return self._guid
+
+
+def _author_reload_transaction(batch):
+    """Inspect the real staged transaction inside this author-only publication."""
+    from infernux.lib import SceneManager
+    (identity, transaction), = batch.transaction.transactions
+    assert identity == SceneManager.instance()._authoring_runtime_world_id
+    return transaction
 
 
 class _ScriptBatchAssetDatabase:
@@ -2001,7 +2022,7 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
     assert outcome.success is True
     assert outcome.reloaded_count == 1
     manager.finalize_script_reload_batch(retry)
-    assert retry.transaction.finalized is True
+    assert _author_reload_transaction(retry).finalized is True
     assert first_object.get_py_components()[0] is first
     assert second_object.get_py_components()[0] is second
     assert type(first) is old_type
@@ -2088,7 +2109,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
     assert outcome.success is True
     assert outcome.reloaded_count == 1
     manager.finalize_script_reload_batch(batch)
-    assert batch.transaction.finalized is True
+    assert _author_reload_transaction(batch).finalized is True
     assert scene_object.get_py_components()[0] is component
     assert type(component) is probe_type
     assert component.marker() == 2
@@ -2279,7 +2300,7 @@ def test_play_class_rename_restores_snapshot_from_published_type_without_reading
             runtime_component_type_records, cook_runtime_component_semantics,
         )
         records = runtime_component_type_records(
-            batch.transaction.requests[0].source,
+            _author_reload_transaction(batch).requests[0].source,
             script_guid=guid, runtime_path="Assets/SnapshotRenameProbe.pyc",
         )
         cook_runtime_component_semantics(records)
@@ -2317,7 +2338,8 @@ def test_play_class_rename_restores_snapshot_from_published_type_without_reading
         )
         assert restored.helper() == ("old" if rollback else "new")
     finally:
-        if not batch.transaction.finalized and not batch.transaction.rolled_back:
+        transaction = _author_reload_transaction(batch)
+        if not transaction.finalized and not transaction.rolled_back:
             manager.rollback_script_reload_batch(batch)
         if restored is not None:
             restored._call_on_destroy()
@@ -2374,7 +2396,7 @@ def test_script_delete_batch_is_transactional_in_edit_and_play(
         def find_by_id(self, object_id):
             return next((obj for obj in self.objects if obj.id == object_id), None)
 
-    class _SceneManager:
+    class _SceneManager(_ScriptSceneManager):
         def __init__(self, scene):
             self.scene = scene
 

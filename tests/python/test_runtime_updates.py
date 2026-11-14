@@ -1,12 +1,15 @@
 """Public updates use native phase boundaries and preload cleanup ownership."""
 
 import pytest
+import time
+from types import SimpleNamespace
 
 from infernux.components import InxComponent
 from infernux.lib import Physics, RenderPipelineCallback, SceneManager, Vector3
 from infernux.runtime_services import register_update
 from infernux.timing import Time
 from test_plugin_preload_failures import package_project
+from conftest import install_runtime_scheduler_bridge
 
 
 @pytest.fixture
@@ -39,18 +42,73 @@ def render_pipeline(engine):
 
 
 @pytest.fixture
-def live_clock(engine, scene):
+def clock_world(engine, scene, runtime_scheduler):
+    """Use a real native graph/owner while keeping this a native-phase test.
+
+    These tests intentionally use conftest's native Engine, not a Python Engine
+    or project scripting session. Reuse its real bridge for the actual owner.
+    """
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.engine.runtime_change_journal import RuntimeChangeJournal
+    from infernux.lib import _Infernux
+
     manager = SceneManager.instance()
-    manager.play()
-    try:
-        yield manager
-    finally:
+    current = []
+
+    def start():
+        assert not current and not manager._runtime_world_ids
+        identity = int(manager._begin_runtime_world())
+        scheduler = RuntimeExecutionScheduler(name="pytest-update-clock", native_bridge=True,
+            world_id=identity, change_journal=RuntimeChangeJournal())
+        current.append((identity, scheduler))
+        # Begin allocates a World; it does not clone the authored scene. This
+        # native phase unit starts with the same empty graph as the scene fixture.
+        with _Infernux._RuntimeWorldScope(identity):
+            runtime_scene = manager.create_scene("pytest_update_clock")
+            manager.set_active_scene(runtime_scene)
+            assert runtime_scene._runtime_world_id == identity
+        assert manager._publish_runtime_world(identity)
+        assert manager.get_active_scene() is runtime_scene
+        # This is a temporary callback switch, not host shutdown: the author
+        # scheduler and its editor registrations remain alive throughout Play.
+        install_runtime_scheduler_bridge(scheduler, reset_callbacks=False)
+        manager.play()
+        assert manager.is_playing()
+        return manager
+
+    def stop():
+        if not current:
+            return
+        identity, scheduler = current[0]
         manager.stop()
+        scheduler.end_native_frame()
+        scheduler.unbind_native_bridge()
+        scheduler.clear()
+        manager._begin_runtime_world_retirement(identity)
+        install_runtime_scheduler_bridge(runtime_scheduler, reset_callbacks=False)
+        assert manager._retire_runtime_world_scenes(identity)
+        deadline = time.monotonic() + 10
+        while not manager._finish_runtime_world_retirement(identity):
+            assert time.monotonic() < deadline, "native clock World retirement did not settle"
+            engine.tick(0.0)
+        current.clear()
+        assert not manager._runtime_world_ids
+
+    try:
+        yield SimpleNamespace(start=start, stop=stop)
+    finally:
+        stop()
         Time.time_scale = 1.0
+
+
+@pytest.fixture
+def live_clock(clock_world):
+    yield clock_world.start()
 
 
 @pytest.mark.parametrize("scale,fixed_steps", [(1.0, 2), (0.5, 1), (0.0, 0)])
 def test_native_phases_supply_scaled_and_independent_time(engine, scene, live_clock, updates, scale, fixed_steps):
+    scene = live_clock.get_active_scene()
     # Resolve Play's cold GPU control publication before measuring script phases.
     # A query is a synchronous consumer, not another simulation frame or step.
     clock = (Time.frame_count, Time.fixed_time, live_clock.fixed_step_index)
@@ -107,7 +165,7 @@ def test_registration_snapshot_and_immediate_close(engine, live_clock, updates):
     assert observed == ["new"]
 
 
-def test_editor_updates_do_not_run_in_play_and_game_updates_do_not_run_after_stop(engine, scene, runtime_scheduler, updates):
+def test_editor_updates_do_not_run_in_play_and_game_updates_do_not_run_after_stop(engine, scene, runtime_scheduler, updates, clock_world):
     observed = []
     editor = updates(lambda dt: observed.append(("editor", dt)), phase="editor_update")
     game = updates(lambda dt: observed.append(("game", dt)))
@@ -115,11 +173,17 @@ def test_editor_updates_do_not_run_in_play_and_game_updates_do_not_run_after_sto
     engine.tick(0.025)
     assert observed == [("editor", pytest.approx(0.025))]
     observed.clear()
-    manager.play()
+    # The Edit registration above verified game callbacks do not run in Edit.
+    # The actual Play owner has its own registration/work mirror.
+    game.close()
+    clock_world.start()
+    game = updates(lambda dt: observed.append(("game", dt)))
     engine.tick(0.01)
     assert [name for name, _ in observed] == ["game"]
     observed.clear()
-    manager.stop()
+    clock_world.stop()
+    assert all(name == "editor" for name, _ in observed)
+    observed.clear()  # Real zero-time retirement service may have delivered Edit callbacks.
     engine.tick(0.01)
     assert [name for name, _ in observed] == ["editor"]
     editor.close()

@@ -85,8 +85,16 @@ class _FailingRecoveryGameObject(_FakeScriptGameObject):
 
 
 class _FakeScriptSceneManager:
+    # These are source-graph transaction units, not managed Play sessions.
+    _runtime_world_ids = ()
+
     def __init__(self, scene):
         self.scene = scene
+
+    @property
+    def _authoring_runtime_world_id(self):
+        from infernux.lib import SceneManager
+        return SceneManager.instance()._authoring_runtime_world_id
 
     def get_active_scene(self):
         return self.scene
@@ -255,13 +263,25 @@ class TestPlayModeManager:
         assert scene_changed == [True]
         assert remembered_paths == []
 
-    def test_exit_play_mode_restores_document_state_from_current_snapshot(self, monkeypatch):
+    def test_exit_play_mode_restores_document_state_from_current_snapshot(self, monkeypatch, scene):
         from infernux.engine.deferred_task import DeferredTaskRunner
+        from infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.scene_manager import SceneFileManager
         from infernux.input import Input
+        from infernux.lib import SceneManager
+
+        native = SceneManager.instance()
 
         class _SceneManager:
             def __init__(self):
                 self.stop_calls = 0
+
+            @property
+            def _authoring_runtime_world_id(self):
+                return native._authoring_runtime_world_id
+
+            def get_scene_by_world_id(self, world_id):
+                return native.get_scene_by_world_id(world_id)
 
             def stop(self):
                 self.stop_calls += 1
@@ -285,18 +305,36 @@ class TestPlayModeManager:
         monkeypatch.setattr(Input, "set_game_focused", focus_calls.append)
         monkeypatch.setattr(Input, "set_cursor_locked", lock_calls.append)
 
+        monkeypatch.setattr(SceneFileManager, "_instance", None)
+        files = SceneFileManager()
+        document_id = files.register_loaded_scene(scene, "", dirty=True)
+        assert files.activate_loaded_scene(scene)
+        registry = DocumentRegistry.instance()
+        document = registry.require(document_id)
+        registry.mark_changed(document_id)
+        authored_state = document.revision, document.saved_revision, document.state
         manager = PlayModeManager()
+        manager._save_scene_state()
+        snapshot = manager._scene_backup
+        # Play can change the active document's UI state, but Stop must bind
+        # the retained authored Scene and restore its exact revision pair.
+        registry.mark_changed(document_id)
+        files._current_scene_path = "runtime.scene"
         manager._state = PlayModeState.PLAYING
-        manager._scene_backup = object()
         manager._get_scene_manager = lambda: scene_manager
-        rebuild_calls = []
-        manager._rebuild_active_scene = lambda snapshot, **kwargs: rebuild_calls.append((snapshot, kwargs)) or True
+        # No runtime loader exists in this Stop/document-restoration unit.
+        # Keep its cancellation boundary observable without inventing an Engine.
+        cancelled_loads = []
+        monkeypatch.setattr(manager, "_cancel_runtime_scene_loads", lambda: cancelled_loads.append(True))
+        manager._rebuild_active_scene = lambda *args, **kwargs: pytest.fail(
+            "Stop must reactivate the retained authored graph")
         notifications = []
         manager._notify_state_change = lambda old, new: notifications.append((old, new))
 
         assert manager.exit_play_mode() is True
         assert manager.state is PlayModeState.RESTORING
         assert scene_manager.stop_calls == 1
+        assert cancelled_loads == [True]
         assert focus_calls == [False]
         assert lock_calls == [False]
 
@@ -305,7 +343,13 @@ class TestPlayModeManager:
 
         assert manager.state is PlayModeState.EDIT
 
-        assert rebuild_calls == [(manager._scene_backup, {"for_play": False, "restore_scene_path": True})]
+        assert manager._scene_backup is snapshot
+        assert native.get_active_scene() is scene
+        assert files.document_id == document_id
+        assert files.document_id_for_scene(scene) == document_id
+        assert files.current_scene_path is None
+        assert (document.revision, document.saved_revision, document.state) == authored_state
+        assert files.is_dirty is True
         assert notifications == [(PlayModeState.PLAYING, PlayModeState.EDIT)]
 
     def test_deleted_script_becomes_missing_and_recovers_with_identity(self, tmp_path, monkeypatch):
@@ -567,6 +611,11 @@ class TestPlayModeManager:
                 self.is_active = False
 
         class _FakeScene:
+            @property
+            def _runtime_world_id(self):
+                from infernux.lib import SceneManager
+                return SceneManager.instance()._authoring_runtime_world_id
+
             def __init__(self):
                 self.world_id = 1
                 self.playing = None

@@ -687,10 +687,14 @@ class WorldScriptPublication:
 
     def commit(self):
         from infernux.lib import _Infernux
+        from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
         if self.rolled_back:
             raise RuntimeError('script publication has been rolled back')
         if self.committed:
             return self._result
+        # No owner's publication has started while a dispatch frame is pinned.
+        # A rejected admission leaves this same batch available for retry.
+        assert_runtime_dispatch_safe_point()
         try:
             for identity, transaction in self.transactions:
                 with _Infernux._RuntimeWorldScope(identity):
