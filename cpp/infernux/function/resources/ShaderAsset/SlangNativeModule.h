@@ -11,13 +11,7 @@ namespace infernux
 /// dependent; the algorithm and its resource bindings are shared.
 inline ShaderTargetCode CompileSlangNativeModule(ShaderSourceModule source, ShaderCodeTarget target)
 {
-    const std::string declaration = target == ShaderCodeTarget::SpirV
-                                        ? "#define INX_ROOT_CONSTANTS [[vk::push_constant]]\n"
-                                        : "#define INX_ROOT_CONSTANTS [[vk::binding(" +
-                                              std::to_string(rhi::RootConstantBinding) + ", " +
-                                              std::to_string(rhi::RootConstantGroup) + ")]]\n";
-    source.source.insert(0, declaration + "#line 1\n");
-    auto result = SlangCompiler::Get().Compile(source, {}, {target});
+    auto result = SlangCompiler::Get().CompileRootProgram(std::move(source), {}, {target});
     return std::move(result.targets.front());
 }
 

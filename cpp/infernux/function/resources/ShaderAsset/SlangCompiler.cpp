@@ -224,6 +224,27 @@ ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &
     return result;
 }
 
+ShaderCompilation SlangCompiler::CompileRootProgram(ShaderSourceModule source,
+                                                    const std::vector<ShaderSourceModule> &libraries,
+                                                    const std::vector<ShaderCodeTarget> &targets, bool precise,
+                                                    const std::vector<ShaderAuthorRange> &sourceRanges)
+{
+    ShaderCompilation result;
+    for (const auto target : targets) {
+        const std::string declaration = target == ShaderCodeTarget::SpirV
+                                            ? "#define INX_ROOT_CONSTANTS [[vk::push_constant]]\n"
+                                            : "#define INX_ROOT_CONSTANTS [[vk::binding(" +
+                                                  std::to_string(rhi::RootConstantBinding) + ", " +
+                                                  std::to_string(rhi::RootConstantGroup) + ")]]\n";
+        const ShaderSourceModule prepared{source.name, source.path, declaration + "#line 1\n" + source.source};
+        auto compiled = Compile(prepared, libraries, {target}, precise, sourceRanges);
+        result.targets.push_back(std::move(compiled.targets.front()));
+        result.diagnostics.insert(result.diagnostics.end(), std::make_move_iterator(compiled.diagnostics.begin()),
+                                  std::make_move_iterator(compiled.diagnostics.end()));
+    }
+    return result;
+}
+
 ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
                                          const std::vector<ShaderSourceModule> &libraries,
                                          const std::vector<ShaderCodeTarget> &targets, bool precise,

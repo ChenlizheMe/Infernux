@@ -3160,17 +3160,6 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
             throw std::runtime_error("Startup cancelled");
 
         RegisterAssetCallbacks();
-
-        // ── Load and register shaders via AssetRegistry ─────────────
-        phaseBegin = StartupClock::now();
-        InitializeBootstrapShaders();
-        if (!m_renderer->PumpStartupEvents())
-            throw std::runtime_error("Startup cancelled");
-
-        // Linked material and fullscreen programs prepare through their shared owners.
-        startupPhase("startup_shaders", phaseBegin);
-        if (!m_renderer->PumpStartupEvents())
-            throw std::runtime_error("Startup cancelled");
     }
 
     INXLOG_DEBUG("Prepare pipeline.");
@@ -3424,49 +3413,6 @@ void Infernux::RegisterShaderToRenderer(const ShaderAsset &asset)
         m_renderer->StoreShaderRenderMeta(asset.shaderId, rm.cullMode, rm.depthWrite, rm.depthTest, rm.blend, rm.queue,
                                           rm.passTag, rm.stencil, rm.alphaClip);
     }
-}
-
-void Infernux::InitializeBootstrapShaders()
-{
-    // Required presentation shaders are independent of project author assets.
-    // The initial scene's material programs resolve lazily from the catalog.
-    static constexpr std::string_view vertexSource = R"(
-struct CameraData {
-    column_major float4x4 model;
-    column_major float4x4 view;
-    column_major float4x4 projection;
-    column_major float4x4 previous_view_projection;
-    column_major float4x4 inverse_view_projection;
-    float4 projection_parameters;
-    float4 depth_parameters;
-};
-struct InstanceData { column_major float4x4 model; };
-[[vk::binding(5, 1)]] ConstantBuffer<CameraData> camera;
-[[vk::binding(1, 2)]] StructuredBuffer<InstanceData> instances;
-
-[shader("vertex")]
-float4 main(float3 position : POSITION, uint instance : SV_VulkanInstanceID) : SV_Position
-{
-    float4 clip = mul(camera.projection, mul(camera.view, mul(instances[instance].model, float4(position, 1.0))));
-    // This native camera buffer still stores the Vulkan viewport projection.
-    // Convert it to the compiler's canonical clip coordinates at this boundary.
-    clip.y = -clip.y;
-    return clip;
-}
-)";
-    static constexpr std::string_view fragmentSource = R"(
-[shader("fragment")]
-float4 main() : SV_Target0 { return float4(1.0); }
-)";
-    auto &compiler = SlangCompiler::Get();
-    const auto vertex =
-        compiler.Compile({"inx_bootstrap_vertex", "Infernux/BootstrapVertex.slang", std::string(vertexSource)}, {},
-                         {ShaderCodeTarget::SpirV});
-    const auto fragment =
-        compiler.Compile({"inx_bootstrap_fragment", "Infernux/BootstrapFragment.slang", std::string(fragmentSource)},
-                         {}, {ShaderCodeTarget::SpirV});
-    m_renderer->LoadShader("default", vertex.targets[0].entries[0].code, "vertex");
-    m_renderer->LoadShader("default", fragment.targets[0].entries[0].code, "fragment");
 }
 
 bool Infernux::EnsureShaderLoaded(const std::string &shaderId, const std::string &shaderType)

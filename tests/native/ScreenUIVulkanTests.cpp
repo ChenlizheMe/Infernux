@@ -798,7 +798,9 @@ int main(int argc, char **argv)
             assert(ownershipCache.PublishProgramArtifact(shared).accepted);
             assert(!ownershipCache.TakeUIProgramArtifact(shared.key));
             assert(ownershipCache.ShareProgramArtifact(shared.key.stages));
-            assert(ownershipCache.GetProgramCache().HasProgram(shared.key));
+            // Mesh owns a linked Forward program. Particle outputs compose
+            // their geometry and retain only the fragment artifact here.
+            assert(ownershipCache.GetProgramCache().HasProgram(shared.key) == (domain == ShaderProgramDomain::Mesh));
         }
         ownershipCache.GetProgramCache().Shutdown();
         ownershipCache.Clear();
