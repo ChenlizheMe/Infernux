@@ -26,7 +26,7 @@ using namespace infernux;
 namespace
 {
 
-using StepPermission = std::optional<std::pair<uint64_t, uint64_t>>;
+using StepPermission = std::optional<std::tuple<uint64_t, uint64_t, uint64_t>>;
 
 bool PythonTruth(py::handle value)
 {
@@ -47,8 +47,8 @@ class ComponentExecutionState
         Closed
     };
 
-    ComponentExecutionState(py::handle owner, SceneManager &manager, uint64_t epoch, bool playing)
-        : m_owner(owner), m_manager(manager), m_epoch(epoch), m_playing(playing)
+    ComponentExecutionState(py::handle owner, SceneManager &manager, uint64_t worldId, uint64_t epoch, bool playing)
+        : m_owner(owner), m_manager(manager), m_worldId(worldId), m_epoch(epoch), m_playing(playing)
     {
     }
 
@@ -56,6 +56,10 @@ class ComponentExecutionState
     {
         if (PythonTruth(scope.attr("_closed")))
             return Status::Closed;
+        auto *world = m_manager.FindRuntimeWorld(m_worldId);
+        if (!world)
+            return Status::Closed;
+        const WorldExecutionScope worldScope(world);
         const py::object owner = m_owner();
         if (owner.is_none() || PythonTruth(owner.attr("_is_destroyed")))
             return Status::Closed;
@@ -76,7 +80,7 @@ class ComponentExecutionState
             return Status::Paused;
         if (m_playing && m_manager.IsPaused()) {
             if (!m_manager.IsStepping() ||
-                permission != std::pair(m_manager.GetSimulationEpoch(), m_manager.GetStepPermissionIndex()))
+                permission != std::tuple(m_worldId, m_manager.GetSimulationEpoch(), m_manager.GetStepPermissionIndex()))
                 return Status::Paused;
             return PythonTruth(scope.attr("_paused")) ? Status::Paused : Status::Stepping;
         }
@@ -101,6 +105,7 @@ class ComponentExecutionState
   private:
     py::weakref m_owner;
     const SceneManager &m_manager;
+    uint64_t m_worldId;
     uint64_t m_epoch;
     bool m_playing;
 };
@@ -1003,7 +1008,7 @@ namespace infernux
 void RegisterBatchBindings(py::module_ &m)
 {
     py::class_<ComponentExecutionState>(m, "_ComponentExecutionState")
-        .def(py::init<py::handle, SceneManager &, uint64_t, bool>())
+        .def(py::init<py::handle, SceneManager &, uint64_t, uint64_t, bool>())
         .def("state", &ComponentExecutionState::State);
     py::class_<TransformExchange>(m, "_TransformExchange")
         .def(py::init<ObjectHandle, bool>())
@@ -1056,6 +1061,9 @@ void RegisterBatchBindings(py::module_ &m)
 
     // ── ComponentDataStore ──
     m.def("_cds_register_class", &CDS_RegisterClass, py::arg("name"));
+    m.def(
+        "_cds_retire_class", [](uint32_t classId) { ComponentDataStore::Instance().RetireClass(classId); },
+        py::arg("class_id"));
     m.def("_cds_register_field", &CDS_RegisterField, py::arg("class_id"), py::arg("name"), py::arg("type_code"));
 
     m.def("_cds_schema_begin", [] { return ComponentDataStore::Instance().BeginSchemaTransaction(); });

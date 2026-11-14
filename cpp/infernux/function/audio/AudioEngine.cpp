@@ -8,6 +8,8 @@
 
 #include <core/log/InxLog.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/Scene.h>
+#include <function/scene/SceneManager.h>
 #include <function/scene/Transform.h>
 
 #include <SDL3/SDL.h>
@@ -44,6 +46,32 @@ size_t AudioBusSlot(const std::string &busName)
     return static_cast<size_t>(AudioBusIndex(busName) + 1);
 }
 
+RuntimeWorld *AudioWorld(const Component *component)
+{
+    auto *owner = component ? component->GetGameObject() : nullptr;
+    auto *scene = owner ? owner->GetScene() : nullptr;
+    return scene ? scene->GetRuntimeWorld() : nullptr;
+}
+
+uint64_t AudioWorldId(const Component *component)
+{
+    const auto *world = AudioWorld(component);
+    return world ? world->id : 0; // Unowned asset preview belongs to the Host.
+}
+
+const RuntimeWorld &AudioOutputWorld()
+{
+    auto &manager = SceneManager::Instance();
+    const auto *primary = manager.GetPrimaryRuntimeWorld();
+    return primary ? *primary : manager.AuthoringWorld();
+}
+
+uint64_t AudioReadWorldId()
+{
+    const auto *context = WorldExecutionScope::Current();
+    return context ? context->id : AudioOutputWorld().id;
+}
+
 bool IsEligibleListener(const AudioListener *listener)
 {
     if (!listener || listener->IsDestroyed() || !listener->IsEnabled())
@@ -76,7 +104,9 @@ struct AudioEngine::AudioVoiceState
     std::atomic<bool> loop = false;
     std::atomic<bool> destroyed = false;
     std::atomic<bool> finished = false;
-    bool paused = true; // Owner-thread binding state; callback never writes it.
+    bool pauseRequested = true; // Source request, independent of its World's pause.
+    bool worldAudible = true;   // Host output selection, sampled on the owner thread.
+    bool paused = true;         // Effective binding state; callback never writes it.
     SDL_AudioStream *stream = nullptr;
     bool bound = false;
     bool virtualized = false;
@@ -388,12 +418,12 @@ std::shared_ptr<AudioEngine::AudioVoiceState> AudioEngine::GetVoiceState(SDL_Aud
     return it != m_voiceStates.end() ? it->second : nullptr;
 }
 
-AudioListener *AudioEngine::FindBestListenerLocked(AudioListener *exclude) const
+AudioListener *AudioEngine::FindBestListenerLocked(uint64_t worldId, AudioListener *exclude) const
 {
     AudioListener *best = nullptr;
     uint64_t bestId = (std::numeric_limits<uint64_t>::max)();
-    for (AudioListener *candidate : m_registeredListeners) {
-        if (candidate == exclude || !IsEligibleListener(candidate)) {
+    for (const auto &[candidate, ownerWorld] : m_registeredListeners) {
+        if (ownerWorld != worldId || candidate == exclude || !IsEligibleListener(candidate)) {
             continue;
         }
 
@@ -422,33 +452,22 @@ void AudioEngine::Update(float deltaTime)
     if (finishedPreview)
         StopPreview();
 
-    glm::vec3 listenerPos(0.0f);
-    glm::vec3 listenerRight(1.0f, 0.0f, 0.0f);
-    bool hasListener = false;
-
-    {
-        std::lock_guard<std::mutex> listenerLock(m_listenersMutex);
-        if (m_activeListener) {
-            auto *listenerGO = m_activeListener->GetGameObject();
-            if (listenerGO) {
-                auto *listenerTr = listenerGO->GetTransform();
-                if (listenerTr) {
-                    listenerPos = listenerTr->GetWorldPosition();
-                    listenerRight = listenerTr->GetRight();
-                    hasListener = true;
-                }
-            }
-        }
-    }
-
     std::lock_guard<std::mutex> lock(m_sourcesMutex);
     for (auto *source : m_registeredSources) {
-        if (!source) {
+        if (!source->HasActiveVoices())
             continue;
-        }
-
-        if (!source->HasActiveVoices()) {
-            continue;
+        glm::vec3 listenerPos(0.0f);
+        glm::vec3 listenerRight(1.0f, 0.0f, 0.0f);
+        bool hasListener = false;
+        {
+            std::lock_guard listenerLock(m_listenersMutex);
+            const auto listener = m_activeListeners.find(AudioWorldId(source));
+            if (listener != m_activeListeners.end()) {
+                const auto *transform = listener->second->GetGameObject()->GetTransform();
+                listenerPos = transform->GetWorldPosition();
+                listenerRight = transform->GetRight();
+                hasListener = true;
+            }
         }
 
         if (hasListener) {
@@ -588,24 +607,50 @@ void AudioEngine::UpdateVoiceMix(SDL_AudioStream *stream, float gain, float spat
 void AudioEngine::SetVoicePaused(SDL_AudioStream *stream, bool paused)
 {
     auto state = GetVoiceState(stream);
-    if (!state || state->paused == paused) {
+    if (!state)
         return;
-    }
+    state->pauseRequested = paused;
+    RefreshVoiceWorldState(*state);
+}
 
+void AudioEngine::RefreshVoiceWorldState(AudioVoiceState &state)
+{
+    const auto *world = AudioWorld(state.source);
+    const auto &output = AudioOutputWorld();
+    state.worldAudible = !world || world == &output;
+    SetVoicePlaybackPaused(
+        state, state.pauseRequested ||
+                   (world && (world->simulation.isPaused ||
+                              (!world->simulation.isPlaying && world != &SceneManager::Instance().AuthoringWorld()))));
+}
+
+void AudioEngine::RefreshWorldState(const RuntimeWorld &world)
+{
+    for (const auto &[stream, state] : m_voiceStates)
+        if (AudioWorld(state->source) == &world)
+            RefreshVoiceWorldState(*state);
+    RebalanceVoices();
+}
+
+void AudioEngine::SetVoicePlaybackPaused(AudioVoiceState &state, bool paused)
+{
+    if (state.paused == paused)
+        return;
+    const auto stream = state.stream;
     if (paused) {
-        if (state->virtualized)
-            CommitVirtualCursor(*state, GetOutputTime());
-        if (state->bound) {
+        if (state.virtualized)
+            CommitVirtualCursor(state, GetOutputTime());
+        if (state.bound) {
             // A manual pause preserves the queued tail, unlike virtualization.
             SDL_UnbindAudioStream(stream);
-            state->bound = false;
+            state.bound = false;
             --m_realVoiceCount;
         }
-        state->paused = true;
+        state.paused = true;
     } else {
-        state->virtualSince = GetOutputTime();
-        state->paused = false;
-        SetVoiceReal(*state, m_realVoiceCount < m_maxRealVoices && VoiceAudibility(*state) > 0.0f);
+        state.virtualSince = GetOutputTime();
+        state.paused = false;
+        SetVoiceReal(state, m_realVoiceCount < m_maxRealVoices && VoiceAudibility(state) > 0.0f);
     }
 }
 
@@ -672,6 +717,8 @@ void AudioEngine::CommitVirtualCursor(AudioVoiceState &state, double time)
 
 float AudioEngine::VoiceAudibility(const AudioVoiceState &state) const
 {
+    if (!state.worldAudible)
+        return 0.0f;
     const float blend = state.spatialBlend.load(std::memory_order_relaxed);
     return state.gain.load(std::memory_order_relaxed) *
            (1.0f - blend + blend * state.spatialGain.load(std::memory_order_relaxed)) *
@@ -711,6 +758,7 @@ void AudioEngine::RebalanceVoices()
     m_voiceCandidates.clear();
     for (const auto &[stream, owned] : m_voiceStates) {
         auto &state = *owned;
+        RefreshVoiceWorldState(state);
         state.selected = false;
         if (state.paused || VoiceFinished(state))
             continue;
@@ -833,77 +881,75 @@ void AudioEngine::UnregisterSource(AudioSource *source)
 
 void AudioEngine::RegisterListener(AudioListener *listener)
 {
-    if (!IsEligibleListener(listener)) {
+    if (!IsEligibleListener(listener))
         return;
+    const auto worldId = AudioWorldId(listener);
+    std::lock_guard lock(m_listenersMutex);
+    const auto previous = m_registeredListeners.find(listener);
+    if (previous != m_registeredListeners.end() && previous->second != worldId) {
+        const auto oldWorldId = previous->second;
+        m_registeredListeners.erase(previous);
+        const auto oldActive = m_activeListeners.find(oldWorldId);
+        if (oldActive != m_activeListeners.end() && oldActive->second == listener) {
+            if (auto *next = FindBestListenerLocked(oldWorldId))
+                oldActive->second = next;
+            else
+                m_activeListeners.erase(oldActive);
+        }
     }
-
-    std::lock_guard<std::mutex> lock(m_listenersMutex);
-    const bool inserted = m_registeredListeners.insert(listener).second;
-
-    if (m_activeListener == listener || !IsEligibleListener(m_activeListener)) {
-        m_activeListener = listener;
-        return;
-    }
-
-    if (!inserted) {
-        return;
-    }
-
-    const char *activeName =
-        m_activeListener->GetGameObject() ? m_activeListener->GetGameObject()->GetName().c_str() : "<unknown>";
-    const char *standbyName = listener->GetGameObject() ? listener->GetGameObject()->GetName().c_str() : "<unknown>";
-    INXLOG_INFO("AudioListener: only one listener can be active. Keeping '", activeName, "' active; listener '",
-                standbyName, "' is on standby.");
+    m_registeredListeners.insert_or_assign(listener, worldId);
+    auto &active = m_activeListeners[worldId];
+    if (!IsEligibleListener(active))
+        active = listener;
 }
 
 void AudioEngine::UnregisterListener(AudioListener *listener)
 {
-    if (!listener) {
+    std::lock_guard lock(m_listenersMutex);
+    const auto registration = m_registeredListeners.find(listener);
+    if (registration == m_registeredListeners.end())
         return;
-    }
-
-    AudioListener *promoted = nullptr;
-    bool lostActiveListener = false;
-    {
-        std::lock_guard<std::mutex> lock(m_listenersMutex);
-        m_registeredListeners.erase(listener);
-
-        if (m_activeListener == listener) {
-            lostActiveListener = true;
-            promoted = FindBestListenerLocked(listener);
-            m_activeListener = promoted;
-        }
-    }
-
-    if (promoted) {
-        const char *promotedName =
-            promoted->GetGameObject() ? promoted->GetGameObject()->GetName().c_str() : "<unknown>";
-        INXLOG_INFO("AudioListener: active listener changed. Promoting standby listener '", promotedName, "'.");
-    } else if (lostActiveListener) {
-        INXLOG_INFO("AudioListener: there is currently no active listener in the scene.");
+    const auto worldId = registration->second;
+    m_registeredListeners.erase(registration);
+    const auto active = m_activeListeners.find(worldId);
+    if (active != m_activeListeners.end() && active->second == listener) {
+        if (auto *next = FindBestListenerLocked(worldId))
+            active->second = next;
+        else
+            m_activeListeners.erase(active);
     }
 }
 
 void AudioEngine::SetActiveListener(AudioListener *listener)
 {
-    if (!listener) {
-        std::lock_guard<std::mutex> lock(m_listenersMutex);
-        m_activeListener = FindBestListenerLocked();
-        return;
+    if (listener) {
+        if (!IsEligibleListener(listener))
+            return;
+        RegisterListener(listener);
     }
+    const auto worldId = listener ? AudioWorldId(listener) : AudioReadWorldId();
+    std::lock_guard lock(m_listenersMutex);
+    if (listener) {
+        m_activeListeners.insert_or_assign(worldId, listener);
+    } else if (auto *next = FindBestListenerLocked(worldId)) {
+        m_activeListeners.insert_or_assign(worldId, next);
+    } else {
+        m_activeListeners.erase(worldId);
+    }
+}
 
-    if (!IsEligibleListener(listener))
-        return;
-
-    std::lock_guard<std::mutex> lock(m_listenersMutex);
-    m_registeredListeners.insert(listener);
-    m_activeListener = listener;
+AudioListener *AudioEngine::GetActiveListener() const
+{
+    const auto worldId = AudioReadWorldId();
+    std::lock_guard lock(m_listenersMutex);
+    const auto listener = m_activeListeners.find(worldId);
+    return listener != m_activeListeners.end() ? listener->second : nullptr;
 }
 
 uint64_t AudioEngine::GetActiveListenerGameObjectId() const
 {
-    std::lock_guard<std::mutex> lock(m_listenersMutex);
-    return m_activeListener ? m_activeListener->GetGameObjectId() : 0;
+    auto *listener = GetActiveListener();
+    return listener ? listener->GetGameObjectId() : 0;
 }
 
 void AudioEngine::SetMasterVolume(float volume)

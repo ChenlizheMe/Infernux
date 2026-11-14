@@ -334,6 +334,7 @@ _pump_inline_jobs = _native_module._pump_inline_jobs
 # works for the Python-side CDS bridge and batch API.
 for _internal_name in (
     "_cds_register_class",
+    "_cds_retire_class",
     "_cds_register_field",
     "_cds_schema_begin",
     "_cds_schema_prepare_class",

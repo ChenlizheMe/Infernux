@@ -66,9 +66,22 @@ class ComponentRegistryStateSnapshot:
 
 
 _registration_lock = threading.RLock()
-_type_registrations: dict[str, ComponentRegistration] = {}
-_script_registrations: dict[str, ComponentRegistration] = {}
+_author_type_registrations: dict[str, ComponentRegistration] = {}
+_author_script_registrations: dict[str, ComponentRegistration] = {}
 _registration_revision = 0
+
+
+def _type_table():
+    from infernux.engine.runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    return domain.type_registrations if domain is not None else _author_type_registrations
+
+
+def _script_table():
+    from infernux.engine.runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    return domain.script_registrations if domain is not None else _author_script_registrations
+
 _engine_catalog_loaded = False
 
 _ENGINE_COMPONENT_MODULES = (
@@ -176,17 +189,17 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
     type_key, registration = built
     global _registration_revision
     with _registration_lock:
-        before_types = tuple(_type_registrations.items())
-        before_scripts = tuple(_script_registrations.items())
+        before_types = tuple(_type_table().items())
+        before_scripts = tuple(_script_table().items())
         before_revision = _registration_revision
         if registration.project_script and registration.script_path:
             normalized = _normalized_path(registration.script_path)
-            for key, previous in tuple(_type_registrations.items()):
+            for key, previous in tuple(_type_table().items()):
                 if previous.project_script and _normalized_path(previous.script_path) == normalized:
-                    _type_registrations.pop(key, None)
-        _type_registrations[type_key] = registration
+                    _type_table().pop(key, None)
+        _type_table()[type_key] = registration
         if registration.project_script and registration.script_path:
-            _script_registrations[_normalized_path(registration.script_path)] = registration
+            _script_table()[_normalized_path(registration.script_path)] = registration
         _bump_revision()
     from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 
@@ -195,10 +208,10 @@ def register_component_type(component_type: Type['InxComponent'], *, script_path
         publication.commit()
     except Exception:
         with _registration_lock:
-            _type_registrations.clear()
-            _type_registrations.update(before_types)
-            _script_registrations.clear()
-            _script_registrations.update(before_scripts)
+            _type_table().clear()
+            _type_table().update(before_types)
+            _script_table().clear()
+            _script_table().update(before_scripts)
             _registration_revision = before_revision
         raise
 
@@ -209,11 +222,11 @@ def snapshot_component_script_registry(file_path: str) -> ComponentScriptRegistr
     with _registration_lock:
         type_entries = tuple(
             (key, registration)
-            for key, registration in _type_registrations.items()
+            for key, registration in _type_table().items()
             if registration.project_script
             and _normalized_path(registration.script_path) == normalized
         )
-        script_entry = _script_registrations.get(normalized)
+        script_entry = _script_table().get(normalized)
     return ComponentScriptRegistrySnapshot(type_entries, script_entry)
 
 
@@ -224,14 +237,14 @@ def restore_component_script_registry(
     """Restore one script registry snapshot after candidate execution."""
     normalized = _normalized_path(file_path)
     with _registration_lock:
-        for key, registration in tuple(_type_registrations.items()):
+        for key, registration in tuple(_type_table().items()):
             if registration.project_script and _normalized_path(registration.script_path) == normalized:
-                _type_registrations.pop(key, None)
-        _type_registrations.update(snapshot.type_registrations)
+                _type_table().pop(key, None)
+        _type_table().update(snapshot.type_registrations)
         if snapshot.script_registration is None:
-            _script_registrations.pop(normalized, None)
+            _script_table().pop(normalized, None)
         else:
-            _script_registrations[normalized] = snapshot.script_registration
+            _script_table()[normalized] = snapshot.script_registration
         _bump_revision()
 
 
@@ -239,8 +252,8 @@ def snapshot_component_registry_state() -> ComponentRegistryStateSnapshot:
     """Capture every component registration without executing user code."""
     with _registration_lock:
         return ComponentRegistryStateSnapshot(
-            tuple(_type_registrations.items()),
-            tuple(_script_registrations.items()),
+            tuple(_type_table().items()),
+            tuple(_script_table().items()),
             _registration_revision,
         )
 
@@ -251,10 +264,10 @@ def restore_component_registry_state(snapshot: ComponentRegistryStateSnapshot) -
         raise TypeError("snapshot must be a ComponentRegistryStateSnapshot")
     global _registration_revision
     with _registration_lock:
-        _type_registrations.clear()
-        _type_registrations.update(snapshot.type_registrations)
-        _script_registrations.clear()
-        _script_registrations.update(snapshot.script_registrations)
+        _type_table().clear()
+        _type_table().update(snapshot.type_registrations)
+        _script_table().clear()
+        _script_table().update(snapshot.script_registrations)
         _registration_revision = snapshot.registration_revision
 
 
@@ -309,29 +322,29 @@ def publish_component_script_types_batch(
         retired_types = tuple(
             dict.fromkeys(
                 registration.component_type
-                for registration in _type_registrations.values()
+                for registration in _type_table().values()
                 if registration.project_script
                 and registration.component_type is not None
                 and _normalized_path(registration.script_path) in paths
                 and registration.component_type not in publish_types
             )
         )
-        for key, registration in tuple(_type_registrations.items()):
+        for key, registration in tuple(_type_table().items()):
             if (
                 registration.project_script
                 and _normalized_path(registration.script_path) in paths
             ):
-                _type_registrations.pop(key, None)
+                _type_table().pop(key, None)
 
         for normalized, built in built_by_path:
             for key, registration in built:
-                _type_registrations[key] = registration
+                _type_table()[key] = registration
             if len(built) == 1:
-                _script_registrations[normalized] = built[0][1]
+                _script_table()[normalized] = built[0][1]
             else:
                 # Runtime identity lookup is carried by the type table for
                 # multi-type files; the Add Component catalog is one-file/one-entry.
-                _script_registrations.pop(normalized, None)
+                _script_table().pop(normalized, None)
         _bump_revision()
 
     from ._component_registration import mark_component_registration_published
@@ -384,10 +397,10 @@ def register_component_script(
     key = _normalized_path(path)
     with _registration_lock:
         if len(declarations) != 1:
-            if _script_registrations.pop(key, None) is not None:
+            if _script_table().pop(key, None) is not None:
                 _bump_revision()
             return False
-        previous = _script_registrations.get(key)
+        previous = _script_table().get(key)
         registration = ComponentRegistration(
             type_name=declarations[0],
             category="Scripts",
@@ -409,7 +422,7 @@ def register_component_script(
             satisfied_types=(previous.satisfied_types if previous is not None else ()),
         )
         if previous != registration:
-            _script_registrations[key] = registration
+            _script_table()[key] = registration
             _bump_revision()
     return True
 
@@ -423,7 +436,7 @@ def component_types_for_script_path(
         types = tuple(
             dict.fromkeys(
                 registration.component_type
-                for registration in _type_registrations.values()
+                for registration in _type_table().values()
                 if registration.project_script
                 and registration.component_type is not None
                 and _normalized_path(registration.script_path) == normalized
@@ -460,10 +473,10 @@ def unregister_component_script(
     retired_types = component_types_for_script_path(file_path)
     snapshot = snapshot_component_registry_state()
     with _registration_lock:
-        changed = _script_registrations.pop(key, None) is not None
-        for type_key, registration in tuple(_type_registrations.items()):
+        changed = _script_table().pop(key, None) is not None
+        for type_key, registration in tuple(_type_table().items()):
             if registration.project_script and _normalized_path(registration.script_path) == key:
-                _type_registrations.pop(type_key, None)
+                _type_table().pop(type_key, None)
                 changed = True
         if changed:
             _bump_revision()
@@ -492,12 +505,12 @@ def get_component_registrations(*, project_root: str = "") -> tuple[ComponentReg
     with _registration_lock:
         engine_entries = [
             entry
-            for entry in _type_registrations.values()
+            for entry in _type_table().values()
             if not entry.project_script and entry.menu_path
             and entry.user_addable and not entry.intrinsic
         ]
         project_entries = [
-            entry for entry in _script_registrations.values()
+            entry for entry in _script_table().values()
             if entry.user_addable and not entry.intrinsic
         ]
     if project_root:
@@ -525,11 +538,11 @@ def get_component_constraints(component_type: type) -> ComponentRegistration:
         raise TypeError("component type has no stable registry identity")
     type_key = str(identity())
     with _registration_lock:
-        registration = _type_registrations.get(type_key)
+        registration = _type_table().get(type_key)
     if registration is None or registration.component_type is not component_type:
         register_component_type(component_type)
         with _registration_lock:
-            registration = _type_registrations.get(type_key)
+            registration = _type_table().get(type_key)
     if registration is None:
         raise LookupError(f"component type '{component_type.__name__}' is not registered")
     return registration
@@ -626,7 +639,7 @@ def get_type(name: str) -> Optional[Type['InxComponent']]:
     with _registration_lock:
         matches = [
             entry.component_type
-            for entry in _type_registrations.values()
+            for entry in _type_table().values()
             if entry.type_name == name and entry.component_type is not None
         ]
     return matches[-1] if matches else None
@@ -643,7 +656,7 @@ def get_type_registration(name: str) -> Optional[ComponentRegistration]:
     with _registration_lock:
         matches = [
             entry
-            for entry in _type_registrations.values()
+            for entry in _type_table().values()
             if entry.type_name == name and entry.component_type is not None
         ]
     return matches[-1] if matches else None
@@ -658,7 +671,7 @@ def get_type_by_identity(
     with _registration_lock:
         component_types = [
             entry.component_type
-            for entry in _type_registrations.values()
+            for entry in _type_table().values()
             if entry.component_type is not None
         ]
     matches = []
@@ -696,7 +709,7 @@ def resolve_published_type(component_type: Type['InxComponent']) -> Type['InxCom
                 and is_project_component_script(path)):
             normalized = _normalized_path(path)
             with _registration_lock:
-                for registration in _type_registrations.values():
+                for registration in _type_table().values():
                     current = registration.component_type
                     if (registration.project_script and current is not None and current._asset_script_guid_
                             and _normalized_path(registration.script_path) == normalized
@@ -716,11 +729,11 @@ def resolve_published_type(component_type: Type['InxComponent']) -> Type['InxCom
                 )
             return current
     with _registration_lock:
-        registration = _type_registrations.get(component_type._get_type_guid())
+        registration = _type_table().get(component_type._get_type_guid())
         if registration is not None and registration.component_type is not None:
             return registration.component_type
         if not component_type._asset_script_guid_:
-            for registration in _type_registrations.values():
+            for registration in _type_table().values():
                 current = registration.component_type
                 if (registration.project_script and current is not None
                         and current.__module__ == component_type.__module__
@@ -737,7 +750,7 @@ def get_all_types() -> Dict[str, Type['InxComponent']]:
         Dictionary of class_name -> class_type
     """
     with _registration_lock:
-        registrations = tuple(_type_registrations.values())
+        registrations = tuple(_type_table().values())
     return {
         entry.type_name: entry.component_type
         for entry in registrations

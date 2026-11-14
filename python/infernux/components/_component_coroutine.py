@@ -115,6 +115,10 @@ class ComponentCoroutineMixin:
     def _clear_all_instances(cls) -> None:
         """Detach registry ownership; resident objects retain their field storage."""
         instances = tuple(instance for group in cls._active_instances.values() for instance in group)
+        from infernux.engine.runtime_worlds import component_world_id
+        from infernux.lib import SceneManager
+        identity = int(SceneManager.instance()._current_runtime_world_id)
         for instance in instances:
-            instance._remove_from_active_registry()
+            if component_world_id(instance) == identity:
+                instance._remove_from_active_registry()
 

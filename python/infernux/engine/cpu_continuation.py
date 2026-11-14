@@ -1503,7 +1503,7 @@ class CpuWorkOwner:
         from infernux.execution import step_execution, step_permission_current
         if not step_permission_current(request.step_permission):
             return False
-        with step_execution():
+        with step_execution(request.step_permission):
             return request.execution_scope is None or request.execution_scope.state in ('active', 'stepping')
 
     def _execution_active(self, request, opportunity):

@@ -11,15 +11,21 @@ _services: dict[str, Any] = {}
 UpdatePhase = Literal["update", "late_update", "fixed_update", "editor_update",
                       "physics_pre_step", "physics_post_step", "service_update", "render_submitted",
                       "render_presented"]
-_update_callbacks: dict[str, tuple[UpdateRegistration, ...]] = {
+_author_update_callbacks: dict[str, tuple[UpdateRegistration, ...]] = {
     phase: () for phase in get_args(UpdatePhase)
 }
+
+
+def _update_table():
+    from infernux.engine.runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    return domain.updates if domain is not None else _author_update_callbacks
 
 
 class UpdateRegistration:
     """One frame callback; disable it when idle and close it when its owner unloads."""
 
-    __slots__ = ("_callback", "_phase", "_unscaled", "_enabled", "_closed", "_scope")
+    __slots__ = ("_callback", "_phase", "_unscaled", "_enabled", "_closed", "_scope", "_updates", "_world_id")
 
     def __init__(self, callback: Callable[[float], None], phase: UpdatePhase, unscaled: bool) -> None:
         from infernux.engine.runtime_dispatch import (
@@ -31,6 +37,9 @@ class UpdateRegistration:
         self._callback = (callback if binding is None else
                           _apply_partial_arguments(binding.invoke_if_available, arguments))
         self._phase = phase
+        from infernux.lib import SceneManager
+        self._world_id = int(SceneManager.instance()._current_runtime_world_id)
+        self._updates = _update_table()
         self._unscaled = unscaled
         self._enabled = False
         self._closed = False
@@ -50,10 +59,9 @@ class UpdateRegistration:
         if enabled == self._enabled:
             return
         self._enabled = enabled
-        global _update_callbacks
-        previous = _update_callbacks[self._phase]
+        previous = self._updates[self._phase]
         current = previous + (self,) if enabled else tuple(item for item in previous if item is not self)
-        _update_callbacks = {**_update_callbacks, self._phase: current}
+        self._updates[self._phase] = current
         if bool(previous) != bool(current) and self._phase not in (
                 'service_update', 'render_submitted', 'render_presented'):
             from infernux.components._component_lifecycle import RuntimeExecutionScheduler
@@ -61,7 +69,7 @@ class UpdateRegistration:
             RuntimeExecutionScheduler.set_runtime_service_phase_active(
                 "public-updates:" + self._phase,
                 "update" if self._phase == "editor_update" else self._phase,
-                bool(current),
+                bool(current), world_id=self._world_id,
             )
 
     def close(self) -> None:
@@ -88,7 +96,7 @@ def register_update(
     Independent Fixed callbacks still follow physics steps and pause at timeScale=0.
     Preload code should use ``context.add_update()`` to own cleanup automatically.
     """
-    if phase not in _update_callbacks:
+    if phase not in _author_update_callbacks:
         raise ValueError(f"Unknown update phase: {phase}")
     if not callable(callback):
         raise TypeError("Update callback must be callable")
@@ -98,7 +106,14 @@ def register_update(
 
 
 def _update_snapshot() -> dict[str, tuple[UpdateRegistration, ...]]:
-    return _update_callbacks
+    result = dict(_update_table())
+    from infernux.application import Application
+    engine = Application._current_engine()
+    domains = tuple(engine._world_runtimes.values()) if engine is not None else ()
+    for phase in ('service_update', 'render_submitted', 'render_presented'):
+        result[phase] = _author_update_callbacks[phase] + tuple(
+            registration for domain in domains for registration in domain.updates[phase])
+    return result
 
 
 def _dispatch_updates(callbacks: tuple[UpdateRegistration, ...], delta: float, unscaled_delta: float,
@@ -121,7 +136,8 @@ def _invoke_updates(callbacks, delta, unscaled_delta, gameplay_phase):
         if scope is not None and scope.state == 'paused':
             continue
         try:
-            with component_execution(scope):
+            from infernux.lib import _Infernux
+            with _Infernux._RuntimeWorldScope(registration._world_id), component_execution(scope):
                 registration._callback(unscaled_delta if registration._unscaled else delta)
         except Exception as exc:
             from infernux.debug import Debug

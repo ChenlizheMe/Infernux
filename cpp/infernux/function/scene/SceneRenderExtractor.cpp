@@ -11,6 +11,7 @@
 #include <function/scene/LightingData.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <memory>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -92,12 +93,12 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     return 0;
 #else
     SceneManager &manager = SceneManager::Instance();
-    // A partial runtime F may already have advanced CPU skeleton state. Scene
-    // View deliberately stays live, using this extractor's independent state.
+    auto &authoring = manager.AuthoringWorld();
+    const WorldExecutionScope ownerScope(&authoring);
+    // Scene View reads the authoring World's registries and skeleton poses,
+    // independently of the runtime World that most recently executed.
     manager.PublishSkeletonPoses();
-    Scene *scene = manager.GetActiveScene();
-    return ExtractSourceFrame(world, manager.GetEditorCameraController().GetCamera(), scene ? scene->GetWorldId() : 0,
-                              0, 0, true);
+    return ExtractSourceFrame(world, manager.GetEditorCameraController().GetCamera(), authoring.id, 0, 0, true);
 #endif
 }
 
@@ -109,10 +110,15 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
         m_visibleCount = 0;
         return 0;
     }
+    auto *object = camera->GetGameObject();
+    auto *scene = object ? object->GetScene() : nullptr;
+    auto *owner = scene ? scene->GetRuntimeWorld() : nullptr;
+    if (!owner)
+        throw std::logic_error("Scene camera preview requires its camera's scene World");
+    const WorldExecutionScope ownerScope(owner);
     SceneManager &manager = SceneManager::Instance();
     manager.PublishSkeletonPoses();
-    Scene *scene = manager.GetActiveScene();
-    return ExtractSourceFrame(world, camera, scene ? scene->GetWorldId() : 0, 0, 0, false);
+    return ExtractSourceFrame(world, camera, owner->id, 0, 0, false);
 }
 
 size_t SceneRenderExtractor::ExtractRuntimeFrame(RenderWorldSnapshot &publication, RuntimeWorld &world)

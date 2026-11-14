@@ -13,6 +13,7 @@
 #include "SkinnedMeshRenderer.h"
 #include "Transform.h"
 #include "TransformECSStore.h"
+#include "physics/PhysicsDomain.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
@@ -76,16 +77,16 @@ SceneManager &SceneManager::Instance()
 RuntimeWorld &SceneManager::CurrentWorld() noexcept
 {
     auto *world = WorldExecutionScope::Current();
-    return world ? *world : m_defaultWorld;
+    return world ? *world : m_runtimeWorlds.empty() ? *m_authoringWorld : *m_runtimeWorlds.front();
 }
 
 const RuntimeWorld &SceneManager::CurrentWorld() const noexcept
 {
     auto *world = WorldExecutionScope::Current();
-    return world ? *world : m_defaultWorld;
+    return world ? *world : m_runtimeWorlds.empty() ? *m_authoringWorld : *m_runtimeWorlds.front();
 }
 
-SceneManager::SceneManager()
+SceneManager::SceneManager() : m_authoringWorld(std::make_unique<RuntimeWorld>())
 {
     TransformECSStore::Instance().SetInvalidationObserver([this](Transform *transform, const Transform *physicsSource,
                                                                  const Transform *authoredSource,
@@ -94,19 +95,22 @@ SceneManager::SceneManager()
         if (!gameObject)
             return;
         PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject, physicsSource, authoredSource, rotationAuthored);
-        if (const auto bone = m_skeletonBoneOwners.find(transform); bone != m_skeletonBoneOwners.end())
-            bone->second->MarkPoseDirty();
         Scene *scene = gameObject->GetScene();
-        const WorldExecutionScope worldScope(scene ? scene->GetRuntimeWorld() : nullptr);
+        if (!scene || !scene->GetRuntimeWorld())
+            return;
+        const WorldExecutionScope worldScope(scene->GetRuntimeWorld());
+        if (const auto bone = CurrentWorld().render.skeletonBoneOwners.find(transform);
+            bone != CurrentWorld().render.skeletonBoneOwners.end())
+            bone->second->MarkPoseDirty();
         // A moving camera, light, audio source, or UI element must not force
         // the renderer to rescan every geometry proxy. Invalidate the shared
         // RenderWorld only for objects that actually contribute geometry.
         // Transform invalidation walks descendants, so moving a plain parent
         // still reaches and invalidates every child MeshRenderer correctly.
         if (scene && IsRuntimeScene(scene) && gameObject->GetComponent<MeshRenderer>()) {
-            ++m_renderTransformRevision;
-            if (m_renderTransformRevision == 0)
-                m_renderTransformRevision = 1;
+            ++CurrentWorld().render.renderTransformRevision;
+            if (CurrentWorld().render.renderTransformRevision == 0)
+                CurrentWorld().render.renderTransformRevision = 1;
         }
     });
 
@@ -119,6 +123,262 @@ SceneManager::SceneManager()
 #endif
 }
 
+bool SceneManager::IsPreparingRuntimeWorld(const RuntimeWorld &world) const noexcept
+{
+    return std::any_of(m_preparingWorlds.begin(), m_preparingWorlds.end(),
+                       [&world](const auto &candidate) { return candidate.get() == &world; });
+}
+
+RuntimeWorld *SceneManager::GetPrimaryRuntimeWorld() const noexcept
+{
+    return m_runtimeWorlds.empty() ? nullptr : m_runtimeWorlds.front().get();
+}
+
+std::vector<uint64_t> SceneManager::GetRuntimeWorldIds() const
+{
+    std::vector<uint64_t> ids;
+    ids.reserve(m_runtimeWorlds.size());
+    for (const auto &world : m_runtimeWorlds)
+        ids.push_back(world->id);
+    return ids;
+}
+
+RuntimeWorld *SceneManager::FindRuntimeWorld(uint64_t id) const noexcept
+{
+    if (m_authoringWorld && m_authoringWorld->id == id)
+        return m_authoringWorld.get();
+    for (const auto *worlds : {&m_runtimeWorlds, &m_preparingWorlds, &m_retiringWorlds})
+        for (const auto &world : *worlds)
+            if (world->id == id)
+                return world.get();
+    return nullptr;
+}
+
+RuntimeWorld &SceneManager::BeginRuntimeWorld()
+{
+    Scene::RequireNoWorldRetirement();
+    auto world = std::make_unique<RuntimeWorld>();
+    auto &result = *world;
+    result.simulation.fixedTimeStep = m_authoringWorld->simulation.fixedTimeStep;
+    result.simulation.maxFixedDeltaTime = m_authoringWorld->simulation.maxFixedDeltaTime;
+    result.simulation.timeScale = m_authoringWorld->simulation.timeScale;
+    result.physics->gravity = m_authoringWorld->physics->gravity;
+    m_preparingWorlds.push_back(std::move(world));
+    return result;
+}
+
+void SceneManager::RemapPreparingWorldReferences(uint64_t id, const std::unordered_map<uint64_t, uint64_t> &components)
+{
+    auto *world = FindRuntimeWorld(id);
+    if (!world || !IsPreparingRuntimeWorld(*world))
+        throw std::invalid_argument("reference remap requires a preparing RuntimeWorld");
+    const WorldExecutionScope scope(world);
+    for (const auto &scene : world->scenes.loaded)
+        for (auto *object : scene->GetAllObjects()) {
+            object->GetTransform()->RemapComponentReferences(components);
+            for (const auto &component : object->GetAllComponents())
+                component->RemapComponentReferences(components);
+        }
+}
+
+bool SceneManager::PublishRuntimeWorld(uint64_t id)
+{
+    Scene::RequireNoWorldRetirement();
+    const auto it = std::find_if(m_preparingWorlds.begin(), m_preparingWorlds.end(),
+                                 [id](const auto &world) { return world->id == id; });
+    if (it == m_preparingWorlds.end())
+        throw std::invalid_argument("RuntimeWorld is not awaiting graph publication");
+    for (const auto &scene : (*it)->scenes.loaded)
+        if (scene->HasPendingPyComponents())
+            throw std::logic_error("RuntimeWorld Python graph must be attached before publication");
+    auto &world = **it;
+    m_runtimeWorlds.push_back(std::move(*it));
+    m_preparingWorlds.erase(it);
+    const WorldExecutionScope scope(&world);
+    const auto admittedState = GetSimulationState();
+    const auto current = [&] {
+        return GetSimulationState() == admittedState &&
+               std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                           [id](const auto &candidate) { return candidate->id == id; });
+    };
+    std::vector<std::pair<uint64_t, std::vector<ObjectHandle>>> published;
+    for (const auto &scene : world.scenes.loaded) {
+        auto &roots = published.emplace_back(scene->GetWorldId(), std::vector<ObjectHandle>{}).second;
+        for (const auto &root : scene->GetRootObjects())
+            roots.push_back(root->GetHandle());
+    }
+    for (const auto &[sceneId, roots] : published)
+        for (auto handle : roots) {
+            if (!current())
+                return false;
+            if (auto *scene = GetSceneByWorldId(sceneId))
+                scene->AwakeObject(scene->ResolveGameObject(handle));
+        }
+    return current();
+}
+
+void SceneManager::SetPrimaryRuntimeWorld(uint64_t id)
+{
+    Scene::RequireNoWorldRetirement();
+    const auto it = std::find_if(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                                 [id](const auto &world) { return world->id == id; });
+    if (it == m_runtimeWorlds.end())
+        throw std::invalid_argument("primary RuntimeWorld must be published");
+    std::rotate(m_runtimeWorlds.begin(), it, std::next(it));
+}
+
+void SceneManager::BeginRuntimeWorldRetirement(uint64_t id)
+{
+    Scene::RequireNoWorldRetirement();
+    if (std::any_of(m_retiringWorlds.begin(), m_retiringWorlds.end(),
+                    [id](const auto &world) { return world->id == id; }))
+        return;
+    const bool wasPlaying = std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                                        [](const auto &world) { return world->simulation.isPlaying; });
+    for (auto *worlds : {&m_runtimeWorlds, &m_preparingWorlds}) {
+        const auto it =
+            std::find_if(worlds->begin(), worlds->end(), [id](const auto &world) { return world->id == id; });
+        if (it == worlds->end())
+            continue;
+        const WorldExecutionScope scope(it->get());
+        auto &world = **it;
+        PhysicsWorld::Instance().BeginRetireDomain(world);
+        world.frame.pending.clear();
+        CloseRuntimeFrame(false);
+        world.simulation.isPlaying = false;
+        world.simulation.isPaused = false;
+        world.simulation.pausedStepPending = false;
+        ++world.simulation.simulationEpoch;
+        if (m_runtimeWorldBeginRetirementCallback)
+            m_runtimeWorldBeginRetirementCallback(id);
+        m_retiringWorlds.push_back(std::move(*it));
+        worlds->erase(it);
+        const bool playing = std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                                         [](const auto &candidate) { return candidate->simulation.isPlaying; });
+        if (playing != wasPlaying && m_onPlayStateChanged)
+            m_onPlayStateChanged(playing);
+        return;
+    }
+    throw std::invalid_argument("RuntimeWorld is not preparing or published");
+}
+
+bool SceneManager::RetireRuntimeWorldScenes(uint64_t id)
+{
+    Scene::RequireNoWorldRetirement();
+    const auto it = std::find_if(m_retiringWorlds.begin(), m_retiringWorlds.end(),
+                                 [id](const auto &world) { return world->id == id; });
+    if (it == m_retiringWorlds.end())
+        throw std::invalid_argument("RuntimeWorld has not begun retirement");
+    auto &world = **it;
+    if (world.retirementScenesComplete)
+        return true;
+    if (world.executionScopes || world.lifecycle.runtimeLifecycleFrameOpen)
+        return false;
+    {
+        const WorldExecutionScope scope(&world);
+        const InputReadScope hostInput({}, 0);
+        if (m_runtimeFrameRetirement)
+            m_runtimeFrameRetirement(world.id);
+        // Scene destruction is the existing synchronous lifecycle quantum. Recheck
+        // the shared Host allowance between Scenes, never halfway through a destructor.
+        const auto available = [this] {
+            return !m_runtimeFrameWork || !m_runtimeFrameWork->IsActive() || m_runtimeFrameWork->Remaining() > 0;
+        };
+        if (world.scenes.persistent) {
+            if (!available())
+                return false;
+            ClearRuntimePersistentScene();
+        }
+        while (!world.scenes.loaded.empty()) {
+            if (!available())
+                return false;
+            UnloadScene(world.scenes.loaded.back().get());
+        }
+        world.retirementScenesComplete = true;
+    }
+    return true;
+}
+
+void SceneManager::SetRuntimeWorldRetirementCallbacks(std::function<void(uint64_t)> begin,
+                                                      std::function<void(uint64_t)> finish)
+{
+    m_runtimeWorldBeginRetirementCallback = std::move(begin);
+    m_runtimeWorldRetirementCallback = std::move(finish);
+}
+
+bool SceneManager::FinishRuntimeWorldRetirement(uint64_t id)
+{
+    const auto it = std::find_if(m_retiringWorlds.begin(), m_retiringWorlds.end(),
+                                 [id](const auto &world) { return world->id == id; });
+    if (it == m_retiringWorlds.end())
+        throw std::invalid_argument("RuntimeWorld has not begun retirement");
+    const auto &world = **it;
+    if (world.executionScopes || world.lifecycle.runtimeLifecycleFrameOpen || !world.scenes.loaded.empty() ||
+        world.scenes.persistent)
+        throw std::logic_error("RuntimeWorld callbacks and scenes must retire before its domain");
+    if (!world.retirementScenesComplete)
+        throw std::logic_error("RuntimeWorld scene retirement has not completed");
+    if (!PhysicsWorld::Instance().CanRetireDomain(world))
+        return false;
+    {
+        const WorldExecutionScope scope(it->get());
+        if (m_runtimeWorldRetirementCallback)
+            m_runtimeWorldRetirementCallback(id);
+    }
+    m_retiringWorlds.erase(it);
+    return true;
+}
+
+bool SceneManager::CollectRetiredRuntimeWorlds()
+{
+    std::vector<uint64_t> ids;
+    for (const auto &world : m_retiringWorlds)
+        ids.push_back(world->id);
+    for (uint64_t id : ids) {
+        if (!RetireRuntimeWorldScenes(id))
+            continue;
+        if (m_runtimeFrameWork && m_runtimeFrameWork->IsActive() && m_runtimeFrameWork->Remaining() == 0)
+            break;
+        FinishRuntimeWorldRetirement(id);
+    }
+    return m_retiringWorlds.empty();
+}
+
+void SceneManager::EnsureAuthoringWorld()
+{
+    if (m_authoringWorld)
+        return;
+    m_authoringWorld = std::make_unique<RuntimeWorld>();
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    m_editorCameraObject = std::make_unique<GameObject>("Editor Camera");
+    m_editorCameraComponent = m_editorCameraObject->AddComponent<Camera>();
+    m_editorCamera.SetCamera(m_editorCameraComponent);
+    m_editorCamera.Reset();
+#endif
+}
+
+void SceneManager::CompleteShutdown()
+{
+    // PhysicsWorld::Shutdown has settled its shared service, not a domain wait loop.
+    if (!CollectRetiredRuntimeWorlds() ||
+        (m_authoringWorld && !PhysicsWorld::Instance().CanRetireDomain(*m_authoringWorld)))
+        throw std::logic_error("shared physics shutdown retained an unfinished RuntimeWorld");
+    if (m_authoringWorld && m_runtimeWorldRetirementCallback) {
+        const WorldExecutionScope scope(m_authoringWorld.get());
+        m_runtimeWorldRetirementCallback(m_authoringWorld->id);
+    }
+    ClearRuntimeLifecycleCallbacks();
+    m_authoringWorld.reset();
+    m_runtimeFramePublication = nullptr;
+    m_runtimeFrameRetirement = nullptr;
+    m_runtimeWorldBeginRetirementCallback = nullptr;
+    m_runtimeWorldRetirementCallback = nullptr;
+    m_runtimeFrameWork = nullptr;
+    m_onSceneLoaded = nullptr;
+    m_onSceneUnloaded = nullptr;
+    m_onPlayStateChanged = nullptr;
+}
+
 uint64_t SceneManager::GetGlobalTransformSerial() const
 {
     return TransformECSStore::Instance().GetGlobalTransformSerial();
@@ -127,9 +387,9 @@ uint64_t SceneManager::GetGlobalTransformSerial() const
 void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 {
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
-    ++m_renderTransformRevision;
-    if (m_renderTransformRevision == 0)
-        m_renderTransformRevision = 1;
+    ++CurrentWorld().render.renderTransformRevision;
+    if (CurrentWorld().render.renderTransformRevision == 0)
+        CurrentWorld().render.renderTransformRevision = 1;
 }
 
 void SceneManager::PublishPhysicsStateToRenderer()
@@ -217,7 +477,13 @@ float SceneManager::ConsumeFrameDeltaTime(float deltaTime) noexcept
     auto &world = CurrentWorld();
     if (!world.simulation.resetDeltaTimeOnNextFrame)
         return deltaTime;
+    // A transition inside this Host may spend time loading after the Host's
+    // delta was sampled. Discard that interval only for the affected World.
+    if (m_runtimeFrameWork && m_runtimeFrameWork->IsActive() &&
+        world.simulation.deltaResetHostOpportunity == m_runtimeFrameWork->Opportunity())
+        return 0.0f;
     world.simulation.resetDeltaTimeOnNextFrame = false;
+    world.simulation.deltaResetHostOpportunity = 0;
     return 0.0f;
 }
 
@@ -243,6 +509,9 @@ void SceneManager::ResetFrameTime()
 void SceneManager::ResetFrameDelta()
 {
     auto &world = CurrentWorld();
+    world.simulation.resetDeltaTimeOnNextFrame = true;
+    world.simulation.deltaResetHostOpportunity =
+        m_runtimeFrameWork && m_runtimeFrameWork->IsActive() ? m_runtimeFrameWork->Opportunity() : 0;
     world.simulation.frameTime.deltaTime = 0.0f;
     world.simulation.frameTime.unscaledDeltaTime = 0.0f;
     world.simulation.frameTime.smoothDeltaTime = 0.0f;
@@ -332,13 +601,25 @@ bool SceneManager::MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWor
 
 void SceneManager::Shutdown()
 {
-    const WorldExecutionScope worldScope(&m_defaultWorld);
+    const WorldExecutionScope worldScope(m_authoringWorld.get());
     auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
+    m_runtimeFrameWork = nullptr;
+    auto ids = GetRuntimeWorldIds();
+    for (const auto &candidate : m_preparingWorlds)
+        ids.push_back(candidate->id);
+    for (uint64_t id : ids)
+        BeginRuntimeWorldRetirement(id);
+    ids.clear();
+    for (const auto &candidate : m_retiringWorlds)
+        ids.push_back(candidate->id);
+    for (uint64_t id : ids) {
+        RetireRuntimeWorldScenes(id);
+    }
     world.frame.pending.clear();
     CloseRuntimeFrame(false);
     const InputReadScope hostInput({}, 0);
-    PhysicsWorld::Instance().CancelPendingStep();
+    PhysicsWorld::Instance().BeginRetireDomain(world);
 
     // No play-mode restore logic here — this is irreversible engine teardown.
     world.simulation.isPlaying = false;
@@ -358,12 +639,8 @@ void SceneManager::Shutdown()
 
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
-    InputManager::Instance().RetireWorldInput(world.id);
     if (m_runtimeFrameRetirement)
         m_runtimeFrameRetirement(world.id);
-    m_runtimeFramePublication = nullptr;
-    m_runtimeFrameRetirement = nullptr;
-    m_runtimeFrameWork = nullptr;
     std::vector<std::unique_ptr<Scene>> retiringPreviews;
     retiringPreviews.swap(m_previewScenes);
     retiringPreviews.clear();
@@ -380,9 +657,6 @@ void SceneManager::Shutdown()
 #endif
 
     // Drop callbacks so nothing external fires into a dead engine.
-    m_onSceneLoaded = nullptr;
-    m_onSceneUnloaded = nullptr;
-    m_onPlayStateChanged = nullptr;
 }
 
 void SceneManager::UnloadAllScenes()
@@ -508,12 +782,33 @@ void SceneManager::EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const
 
 void SceneManager::ClearRuntimeLifecycleCallbacks()
 {
-    auto &world = CurrentWorld();
-    if (world.lifecycle.runtimeLifecycleFrameOpen) {
+    const auto clear = [this](RuntimeWorld &world) {
+        const WorldExecutionScope scope(&world);
+        if (world.lifecycle.runtimeLifecycleFrameOpen) {
+            world.lifecycle.runtimeLifecycleFrameOpen = false;
+            if (auto callback = m_runtimeLifecycleEnd)
+                callback();
+        }
+        world.lifecycle.runtimeLifecycleWorkAvailable = false;
+        world.lifecycle.runtimeResultConsumersPresent = false;
         world.lifecycle.runtimeLifecycleFrameOpen = false;
-        if (auto callback = m_runtimeLifecycleEnd)
-            callback();
-    }
+        world.lifecycle.runtimeLifecyclePlanRevision = 0;
+        world.lifecycle.runtimeLifecycleFixedUpdateCount = 0;
+        world.lifecycle.runtimeLifecycleUpdateCount = 0;
+        world.lifecycle.runtimeLifecycleAnimationUpdateCount = 0;
+        world.lifecycle.runtimeLifecycleLateUpdateCount = 0;
+        for (const auto &scene : world.scenes.loaded) {
+            if (scene)
+                scene->SetRuntimeLifecycleSchedulerEnabled(false);
+        }
+        if (world.scenes.persistent)
+            world.scenes.persistent->SetRuntimeLifecycleSchedulerEnabled(false);
+    };
+    if (m_authoringWorld)
+        clear(*m_authoringWorld);
+    for (const auto *worlds : {&m_runtimeWorlds, &m_preparingWorlds, &m_retiringWorlds})
+        for (const auto &world : *worlds)
+            clear(*world);
     m_runtimeInput = nullptr;
     m_runtimeLifecycleBegin = nullptr;
     m_runtimeLifecycleFixedUpdate = nullptr;
@@ -524,20 +819,6 @@ void SceneManager::ClearRuntimeLifecycleCallbacks()
     m_runtimeFrameBarrier = nullptr;
     m_runtimeResultConsumer = nullptr;
     m_runtimeLifecycleSchedulerEnabled = false;
-    world.lifecycle.runtimeLifecycleWorkAvailable = false;
-    world.lifecycle.runtimeResultConsumersPresent = false;
-    world.lifecycle.runtimeLifecycleFrameOpen = false;
-    world.lifecycle.runtimeLifecyclePlanRevision = 0;
-    world.lifecycle.runtimeLifecycleFixedUpdateCount = 0;
-    world.lifecycle.runtimeLifecycleUpdateCount = 0;
-    world.lifecycle.runtimeLifecycleAnimationUpdateCount = 0;
-    world.lifecycle.runtimeLifecycleLateUpdateCount = 0;
-    for (const auto &scene : world.scenes.loaded) {
-        if (scene)
-            scene->SetRuntimeLifecycleSchedulerEnabled(false);
-    }
-    if (world.scenes.persistent)
-        world.scenes.persistent->SetRuntimeLifecycleSchedulerEnabled(false);
 }
 
 SceneManager::SimulationState SceneManager::GetSimulationState() const noexcept
@@ -678,11 +959,14 @@ void SceneManager::CloseRuntimeFrame(bool completed)
 
 void SceneManager::Update(float deltaTime)
 {
-    const WorldExecutionScope worldScope(&CurrentWorld());
-    auto &world = CurrentWorld();
+    UpdateHostFrame(deltaTime);
+    UpdateCurrentWorld(deltaTime);
+}
+
+void SceneManager::UpdateHostFrame(float deltaTime)
+{
     const InputReadScope hostInput({}, 0);
     m_lastFrameProfile = {};
-    const auto admittedState = GetSimulationState();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     auto t0 = ProfileClock::now();
@@ -691,7 +975,15 @@ void SceneManager::Update(float deltaTime)
 #else
     auto t0 = ProfileClock::now();
 #endif
+}
 
+void SceneManager::UpdateCurrentWorld(float deltaTime)
+{
+    const WorldExecutionScope worldScope(&CurrentWorld());
+    auto &world = CurrentWorld();
+    const InputReadScope hostInput({}, 0);
+    const auto admittedState = GetSimulationState();
+    auto t0 = ProfileClock::now();
     if (world.simulation.pausedStepPending && world.simulation.isPlaying && world.simulation.isPaused) {
         Step(world.simulation.pausedStepDeltaTime);
         return;
@@ -924,31 +1216,80 @@ void SceneManager::FinalizeRuntimeTransforms(bool completed)
     }
 }
 
-void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime)
+bool SceneManager::ServiceCurrentWorldFrame()
 {
-    const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
+    TransformECSStore::Instance().BeginFrameCache();
+    if (world.simulation.pausedStepPending && world.simulation.isPaused) {
+        const auto completed = world.simulation.runtimeFrameCount;
+        Step(world.simulation.pausedStepDeltaTime);
+        if (&world != GetPrimaryRuntimeWorld())
+            FinishStepPresentation(true);
+        return world.simulation.runtimeFrameCount != completed;
+    }
+    ContinueRuntimeUpdate();
+    ContinueRuntimeLateUpdate();
+    const bool published = EndRuntimeFrame(false);
+    if (&world != GetPrimaryRuntimeWorld())
+        FinishStepPresentation(true);
+    return published;
+}
+
+void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta)
+{
     BindRuntimeFrameWork(work);
     if (!work.IsAccepting())
         return;
     FrameWorkOwner::Scope accounting(work);
-    TransformECSStore::Instance().BeginFrameCache();
-    Update(hostDeltaTime);
-    bool first = true;
-    for (;;) {
-        if (first) {
-            LateUpdate(hostDeltaTime);
-            first = false;
-        } else {
-            ContinueRuntimeLateUpdate();
-        }
-        const bool published = EndRuntimeFrame(false);
-        if (!published || !world.simulation.isPlaying || world.simulation.isPaused || world.frame.pending.empty() ||
-            !CanContinueRuntimeFrame())
-            return;
+    CollectRetiredRuntimeWorlds();
+    if (!work.IsAccepting())
+        return;
+    UpdateHostFrame(hostDeltaTime);
+    const auto consumeDelta = [this, hostDeltaTime, explicitDelta] {
+        if (!explicitDelta)
+            return ConsumeFrameDeltaTime(hostDeltaTime);
+        auto &simulation = CurrentWorld().simulation;
+        simulation.resetDeltaTimeOnNextFrame = false;
+        simulation.deltaResetHostOpportunity = 0;
+        return hostDeltaTime;
+    };
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    const auto audioStart = ProfileClock::now();
+    AudioEngine::Instance().Update(hostDeltaTime);
+    m_lastFrameProfile.audioMs += ProfileMsSince(audioStart);
+#endif
+    if (m_runtimeWorlds.empty()) {
+        const WorldExecutionScope authorScope(m_authoringWorld.get());
         TransformECSStore::Instance().BeginFrameCache();
-        ContinueRuntimeUpdate();
+        UpdateCurrentWorld(consumeDelta());
+        EndRuntimeFrame(false);
+        return;
     }
+    // Every World observes this Host before any callbacks may exhaust its allowance.
+    auto ids = GetRuntimeWorldIds();
+    const auto first = std::find(ids.begin(), ids.end(), m_nextRuntimeWorldId);
+    if (first != ids.end())
+        std::rotate(ids.begin(), first, ids.end());
+    for (uint64_t id : ids) {
+        const WorldExecutionScope scope(FindRuntimeWorld(id));
+        RecordHostFrame(consumeDelta());
+    }
+    bool ready;
+    do {
+        ready = false;
+        for (uint64_t id : ids) {
+            auto *world = FindRuntimeWorld(id);
+            if (!world || !world->simulation.isPlaying)
+                continue;
+            const WorldExecutionScope scope(world);
+            if (!CanContinueRuntimeFrame())
+                return;
+            const auto next = std::next(std::find(ids.begin(), ids.end(), id));
+            m_nextRuntimeWorldId = next == ids.end() ? ids.front() : *next;
+            const bool published = ServiceCurrentWorldFrame();
+            ready |= published && !world->simulation.isPaused && !world->frame.pending.empty();
+        }
+    } while (ready && work.Remaining() > 0);
 }
 
 void SceneManager::CompleteRuntimeFrame()
@@ -1038,6 +1379,23 @@ bool SceneManager::EndRuntimeFrame(bool completeStep)
 
 void SceneManager::Play()
 {
+    if (m_runtimeWorlds.empty())
+        throw std::logic_error("Play requires a prepared runtime scene graph");
+    const auto *target = WorldExecutionScope::Current();
+    const auto ids =
+        target && target != m_authoringWorld.get() ? std::vector<uint64_t>{target->id} : GetRuntimeWorldIds();
+    for (uint64_t id : ids) {
+        auto *world = FindRuntimeWorld(id);
+        const WorldExecutionScope scope(world);
+        PlayCurrentWorld();
+    }
+    if (auto callback = m_onPlayStateChanged)
+        callback(std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                             [](const auto &world) { return world->simulation.isPlaying; }));
+}
+
+void SceneManager::PlayCurrentWorld()
+{
     const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
     if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
@@ -1049,7 +1407,6 @@ void SceneManager::Play()
         if (m_runtimeFrameRetirement)
             m_runtimeFrameRetirement(world.id);
         ClearRuntimePersistentScene();
-        world.simulation.resetDeltaTimeOnNextFrame = true;
         world.simulation.fixedTimeAccumulator = 0.0f;
         world.simulation.fixedTime = 0.0;
         world.simulation.fixedUnscaledTime = 0.0;
@@ -1072,14 +1429,12 @@ void SceneManager::Play()
         world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
     }
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
-    AudioEngine::Instance().ResumeAll();
+    AudioEngine::Instance().RefreshWorldState(world);
 #endif
 
     // Notify renderer to exit idle mode immediately.
-    if (auto callback = m_onPlayStateChanged)
-        callback(true);
 
-    world.simulation.resetDeltaTimeOnNextFrame = true;
+    ResetFrameDelta();
     if (world.simulation.startupPending)
         StartActiveSceneForPlay();
 }
@@ -1185,6 +1540,24 @@ void SceneManager::StartSceneForPlay(Scene *scene)
 
 void SceneManager::Stop()
 {
+    const bool wasPlaying = std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                                        [](const auto &world) { return world->simulation.isPlaying; });
+    const auto *target = WorldExecutionScope::Current();
+    const auto ids =
+        target && target != m_authoringWorld.get() ? std::vector<uint64_t>{target->id} : GetRuntimeWorldIds();
+    for (uint64_t id : ids) {
+        const WorldExecutionScope scope(FindRuntimeWorld(id));
+        StopCurrentWorld();
+    }
+    for (uint64_t id : ids)
+        BeginRuntimeWorldRetirement(id);
+    if (wasPlaying && m_onPlayStateChanged)
+        m_onPlayStateChanged(std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
+                                         [](const auto &world) { return world->simulation.isPlaying; }));
+}
+
+void SceneManager::StopCurrentWorld()
+{
     const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
@@ -1208,7 +1581,7 @@ void SceneManager::Stop()
     world.simulation.pausedStepPending = false;
     world.simulation.stepFrameOpen = false;
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
-    AudioEngine::Instance().ResumeAll();
+    AudioEngine::Instance().RefreshWorldState(world);
 #endif
     world.simulation.fixedTimeAccumulator = 0.0f;
     world.simulation.fixedTime = 0.0;
@@ -1217,22 +1590,28 @@ void SceneManager::Stop()
     world.simulation.runtimeFrameCount = 0;
 
     // Notify renderer that play stopped.
-    if (auto callback = m_onPlayStateChanged)
-        callback(false);
 
     // Runtime persistence ends exactly at the Play boundary. Python restores
     // the authored scene snapshot after this native graph has been destroyed.
     ClearRuntimePersistentScene();
     UpdateRuntimeScenePlayingState(false);
-    InputManager::Instance().RetireWorldInput(world.id);
-    if (m_runtimeFrameRetirement)
-        m_runtimeFrameRetirement(world.id);
 
     // Scene state restore is handled by Python PlayModeManager
     // (serialize on Play, deserialize on Stop)
 }
 
 void SceneManager::Pause()
+{
+    const auto *target = WorldExecutionScope::Current();
+    const auto ids =
+        target && target != m_authoringWorld.get() ? std::vector<uint64_t>{target->id} : GetRuntimeWorldIds();
+    for (uint64_t id : ids) {
+        const WorldExecutionScope scope(FindRuntimeWorld(id));
+        PauseCurrentWorld();
+    }
+}
+
+void SceneManager::PauseCurrentWorld()
 {
     const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
@@ -1243,7 +1622,7 @@ void SceneManager::Pause()
     // The open F and accepted physics/NN requests keep their own retained owners.
     world.frame.pending.clear();
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
-    AudioEngine::Instance().PauseAll();
+    AudioEngine::Instance().RefreshWorldState(world);
 #endif
 }
 
@@ -1547,7 +1926,6 @@ void SceneManager::PrepareActiveSceneReplacement()
     world.frame.stepInput.reset();
     world.frame.stepTarget = 0;
     ResetFrameDelta();
-    world.simulation.resetDeltaTimeOnNextFrame = true;
     if (world.simulation.isPlaying) {
         FlushPersistentPromotions();
         // Publish promoted bodies at this explicit Single-replacement boundary.
@@ -1941,15 +2319,17 @@ void SceneManager::ForceAllBodiesToCurrentTransform()
 
 void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
 {
+    if (sceneBeingRebuilt && !sceneBeingRebuilt->GetRuntimeWorld())
+        return;
     const WorldExecutionScope worldScope(sceneBeingRebuilt ? sceneBeingRebuilt->GetRuntimeWorld() : nullptr);
     // Renderer-facing registries: MeshRenderer/Light keep raw component
     // pointers, so we must drop them before the owning GameObjects die during
     // a Scene::DeserializeDocument() commit (see the Scene Rebuild Contract).
-    m_activeMeshRenderers.clear();
-    m_activeMeshRendererSet.clear();
-    m_pendingSkinPoseHistoryCommits.clear();
-    m_activeLights.clear();
-    ++m_meshRendererVersion;
+    CurrentWorld().render.activeMeshRenderers.clear();
+    CurrentWorld().render.activeMeshRendererSet.clear();
+    CurrentWorld().render.pendingSkinPoseHistoryCommits.clear();
+    CurrentWorld().render.activeLights.clear();
+    ++CurrentWorld().render.meshRendererVersion;
 
     // Physics queues belong to individual actors across all resident Worlds.
     // Collider/actor handles include their generation, and body destruction
@@ -1968,23 +2348,24 @@ void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
 
 void SceneManager::ReserveRendererCapacity(size_t count)
 {
-    m_activeMeshRenderers.reserve(m_activeMeshRenderers.size() + count);
-    m_activeMeshRendererSet.reserve(m_activeMeshRendererSet.size() + count);
+    CurrentWorld().render.activeMeshRenderers.reserve(CurrentWorld().render.activeMeshRenderers.size() + count);
+    CurrentWorld().render.activeMeshRendererSet.reserve(CurrentWorld().render.activeMeshRendererSet.size() + count);
 }
 
 void SceneManager::BeginRendererRegistryTransaction()
 {
-    ++m_rendererRegistryTransactionDepth;
+    ++CurrentWorld().render.rendererRegistryTransactionDepth;
 }
 
 void SceneManager::EndRendererRegistryTransaction()
 {
-    if (m_rendererRegistryTransactionDepth == 0)
+    if (CurrentWorld().render.rendererRegistryTransactionDepth == 0)
         throw std::logic_error("renderer registry transaction underflow");
-    --m_rendererRegistryTransactionDepth;
-    if (m_rendererRegistryTransactionDepth == 0 && m_rendererRegistryTransactionDirty) {
-        m_rendererRegistryTransactionDirty = false;
-        ++m_meshRendererVersion;
+    --CurrentWorld().render.rendererRegistryTransactionDepth;
+    if (CurrentWorld().render.rendererRegistryTransactionDepth == 0 &&
+        CurrentWorld().render.rendererRegistryTransactionDirty) {
+        CurrentWorld().render.rendererRegistryTransactionDirty = false;
+        ++CurrentWorld().render.meshRendererVersion;
     }
 }
 
@@ -2001,29 +2382,39 @@ void MarkRendererRegistryChanged(uint32_t transactionDepth, bool &transactionDir
 
 void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
 {
+    auto *ownerScene = renderer && renderer->GetGameObject() ? renderer->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
     if (!renderer)
         return;
-    if (m_activeMeshRendererSet.insert(renderer).second) {
-        m_activeMeshRenderers.push_back(renderer);
+    if (CurrentWorld().render.activeMeshRendererSet.insert(renderer).second) {
+        CurrentWorld().render.activeMeshRenderers.push_back(renderer);
         if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer))
             QueueSkinPoseHistoryCommit(skinned);
-        MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
-                                    m_meshRendererVersion);
+        MarkRendererRegistryChanged(CurrentWorld().render.rendererRegistryTransactionDepth,
+                                    CurrentWorld().render.rendererRegistryTransactionDirty,
+                                    CurrentWorld().render.meshRendererVersion);
     }
 }
 
 void SceneManager::UnregisterMeshRenderer(MeshRenderer *renderer)
 {
-    m_pendingSkinPoseHistoryCommits.erase(renderer);
-    if (!m_activeMeshRendererSet.erase(renderer))
+    auto *ownerScene = renderer && renderer->GetGameObject() ? renderer->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
         return;
-    MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
-                                m_meshRendererVersion);
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    CurrentWorld().render.pendingSkinPoseHistoryCommits.erase(renderer);
+    if (!CurrentWorld().render.activeMeshRendererSet.erase(renderer))
+        return;
+    MarkRendererRegistryChanged(CurrentWorld().render.rendererRegistryTransactionDepth,
+                                CurrentWorld().render.rendererRegistryTransactionDirty,
+                                CurrentWorld().render.meshRendererVersion);
     // Swap-and-pop for O(1) removal from vector
-    for (size_t i = 0; i < m_activeMeshRenderers.size(); ++i) {
-        if (m_activeMeshRenderers[i] == renderer) {
-            m_activeMeshRenderers[i] = m_activeMeshRenderers.back();
-            m_activeMeshRenderers.pop_back();
+    for (size_t i = 0; i < CurrentWorld().render.activeMeshRenderers.size(); ++i) {
+        if (CurrentWorld().render.activeMeshRenderers[i] == renderer) {
+            CurrentWorld().render.activeMeshRenderers[i] = CurrentWorld().render.activeMeshRenderers.back();
+            CurrentWorld().render.activeMeshRenderers.pop_back();
             return;
         }
     }
@@ -2031,38 +2422,62 @@ void SceneManager::UnregisterMeshRenderer(MeshRenderer *renderer)
 
 void SceneManager::NotifyMeshRendererChanged(MeshRenderer *renderer)
 {
+    auto *ownerScene = renderer && renderer->GetGameObject() ? renderer->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
     if (!renderer)
         return;
-    if (m_activeMeshRendererSet.find(renderer) != m_activeMeshRendererSet.end())
-        MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
-                                    m_meshRendererVersion);
+    if (CurrentWorld().render.activeMeshRendererSet.find(renderer) != CurrentWorld().render.activeMeshRendererSet.end())
+        MarkRendererRegistryChanged(CurrentWorld().render.rendererRegistryTransactionDepth,
+                                    CurrentWorld().render.rendererRegistryTransactionDirty,
+                                    CurrentWorld().render.meshRendererVersion);
 }
 
 void SceneManager::NotifyMeshRendererContentChanged(MeshRenderer *renderer)
 {
-    if (!renderer || m_activeMeshRendererSet.find(renderer) == m_activeMeshRendererSet.end())
+    auto *ownerScene = renderer && renderer->GetGameObject() ? renderer->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
         return;
-    ++m_renderContentRevision;
-    if (m_renderContentRevision == 0)
-        m_renderContentRevision = 1;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    if (!renderer ||
+        CurrentWorld().render.activeMeshRendererSet.find(renderer) == CurrentWorld().render.activeMeshRendererSet.end())
+        return;
+    ++CurrentWorld().render.renderContentRevision;
+    if (CurrentWorld().render.renderContentRevision == 0)
+        CurrentWorld().render.renderContentRevision = 1;
 }
 
 void SceneManager::QueueSkinPoseHistoryCommit(SkinnedMeshRenderer *renderer)
 {
-    if (renderer && m_activeMeshRendererSet.find(renderer) != m_activeMeshRendererSet.end())
-        m_pendingSkinPoseHistoryCommits.emplace(renderer, renderer);
+    auto *ownerScene = renderer && renderer->GetGameObject() ? renderer->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    if (renderer &&
+        CurrentWorld().render.activeMeshRendererSet.find(renderer) != CurrentWorld().render.activeMeshRendererSet.end())
+        CurrentWorld().render.pendingSkinPoseHistoryCommits.emplace(renderer, renderer);
 }
 
 void SceneManager::RegisterSkeletonBone(Transform *bone, SkeletonInstance *skeleton)
 {
-    m_skeletonBoneOwners[bone] = skeleton;
+    auto *ownerScene = bone && bone->GetGameObject() ? bone->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    CurrentWorld().render.skeletonBoneOwners[bone] = skeleton;
 }
 
 void SceneManager::ForgetSkeletonBone(Transform *bone)
 {
-    if (const auto found = m_skeletonBoneOwners.find(bone); found != m_skeletonBoneOwners.end()) {
+    auto *ownerScene = bone && bone->GetGameObject() ? bone->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    if (const auto found = CurrentWorld().render.skeletonBoneOwners.find(bone);
+        found != CurrentWorld().render.skeletonBoneOwners.end()) {
         auto *skeleton = found->second;
-        m_skeletonBoneOwners.erase(found);
+        CurrentWorld().render.skeletonBoneOwners.erase(found);
         skeleton->MarkPoseDirty();
     }
 }
@@ -2083,7 +2498,7 @@ void SceneManager::InvalidatePhysicsSkeletonPoses()
     };
     // A palette needs refresh when a bone has an independently moving physical
     // ancestor. A common rigid root cancels from root-space bone matrices.
-    for (const auto &[bone, skeleton] : m_skeletonBoneOwners) {
+    for (const auto &[bone, skeleton] : CurrentWorld().render.skeletonBoneOwners) {
         const auto body = physicalRoot(bone->GetGameObject());
         if (body != UINT32_MAX && body != physicalRoot(skeleton->GetGameObject()))
             skeleton->MarkPoseDirty();
@@ -2092,30 +2507,45 @@ void SceneManager::InvalidatePhysicsSkeletonPoses()
 
 void SceneManager::NotifySkeletonBoneChanged(Transform *bone)
 {
-    if (const auto found = m_skeletonBoneOwners.find(bone); found != m_skeletonBoneOwners.end())
+    auto *ownerScene = bone && bone->GetGameObject() ? bone->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    if (const auto found = CurrentWorld().render.skeletonBoneOwners.find(bone);
+        found != CurrentWorld().render.skeletonBoneOwners.end())
         found->second->MarkPoseDirty();
 }
 
 void SceneManager::ReleaseSkeletonBones(SkeletonInstance *skeleton, const std::vector<Transform *> &bones)
 {
+    auto *ownerScene = skeleton && skeleton->GetGameObject() ? skeleton->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
     for (auto *bone : bones)
-        if (const auto found = m_skeletonBoneOwners.find(bone);
-            found != m_skeletonBoneOwners.end() && found->second == skeleton)
-            m_skeletonBoneOwners.erase(found);
-    m_pendingSkeletonPoses.erase(std::remove(m_pendingSkeletonPoses.begin(), m_pendingSkeletonPoses.end(), skeleton),
-                                 m_pendingSkeletonPoses.end());
+        if (const auto found = CurrentWorld().render.skeletonBoneOwners.find(bone);
+            found != CurrentWorld().render.skeletonBoneOwners.end() && found->second == skeleton)
+            CurrentWorld().render.skeletonBoneOwners.erase(found);
+    CurrentWorld().render.pendingSkeletonPoses.erase(std::remove(CurrentWorld().render.pendingSkeletonPoses.begin(),
+                                                                 CurrentWorld().render.pendingSkeletonPoses.end(),
+                                                                 skeleton),
+                                                     CurrentWorld().render.pendingSkeletonPoses.end());
 }
 
 void SceneManager::QueueSkeletonPose(SkeletonInstance *skeleton)
 {
-    m_pendingSkeletonPoses.push_back(skeleton);
+    auto *ownerScene = skeleton && skeleton->GetGameObject() ? skeleton->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    CurrentWorld().render.pendingSkeletonPoses.push_back(skeleton);
 }
 
 void SceneManager::PublishSkeletonPoses()
 {
-    while (!m_pendingSkeletonPoses.empty()) {
-        auto *skeleton = m_pendingSkeletonPoses.back();
-        m_pendingSkeletonPoses.pop_back();
+    while (!CurrentWorld().render.pendingSkeletonPoses.empty()) {
+        auto *skeleton = CurrentWorld().render.pendingSkeletonPoses.back();
+        CurrentWorld().render.pendingSkeletonPoses.pop_back();
         skeleton->PublishRenderPoses();
     }
 }
@@ -2124,23 +2554,28 @@ void SceneManager::CommitSkinPoseHistories()
 {
     // Unregistration removes queued entries before component destruction.
     // Static scenes take the empty path without scanning all mesh renderers.
-    for (const auto &[identity, renderer] : m_pendingSkinPoseHistoryCommits)
+    for (const auto &[identity, renderer] : CurrentWorld().render.pendingSkinPoseHistoryCommits)
         renderer->CommitRuntimeSkinPoseHistory();
-    m_pendingSkinPoseHistoryCommits.clear();
+    CurrentWorld().render.pendingSkinPoseHistoryCommits.clear();
 }
 
 void SceneManager::NotifyMeshRendererGeometryChanged(MeshRenderer *renderer)
 {
-    if (!renderer || m_activeMeshRendererSet.find(renderer) == m_activeMeshRendererSet.end())
+    auto *ownerScene = renderer && renderer->GetGameObject() ? renderer->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
         return;
-    ++m_renderContentRevision;
-    if (m_renderContentRevision == 0)
-        m_renderContentRevision = 1;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    if (!renderer ||
+        CurrentWorld().render.activeMeshRendererSet.find(renderer) == CurrentWorld().render.activeMeshRendererSet.end())
+        return;
+    ++CurrentWorld().render.renderContentRevision;
+    if (CurrentWorld().render.renderContentRevision == 0)
+        CurrentWorld().render.renderContentRevision = 1;
     // Camera visibility caches use this revision for every bounds-affecting
     // change, including procedural geometry that moves in world space.
-    ++m_renderTransformRevision;
-    if (m_renderTransformRevision == 0)
-        m_renderTransformRevision = 1;
+    ++CurrentWorld().render.renderTransformRevision;
+    if (CurrentWorld().render.renderTransformRevision == 0)
+        CurrentWorld().render.renderTransformRevision = 1;
 }
 
 // ========================================================================
@@ -2149,21 +2584,29 @@ void SceneManager::NotifyMeshRendererGeometryChanged(MeshRenderer *renderer)
 
 void SceneManager::RegisterLight(Light *light)
 {
+    auto *ownerScene = light && light->GetGameObject() ? light->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
     if (!light)
         return;
-    for (auto *l : m_activeLights) {
+    for (auto *l : CurrentWorld().render.activeLights) {
         if (l == light)
             return;
     }
-    m_activeLights.push_back(light);
+    CurrentWorld().render.activeLights.push_back(light);
 }
 
 void SceneManager::UnregisterLight(Light *light)
 {
-    for (size_t i = 0; i < m_activeLights.size(); ++i) {
-        if (m_activeLights[i] == light) {
-            m_activeLights[i] = m_activeLights.back();
-            m_activeLights.pop_back();
+    auto *ownerScene = light && light->GetGameObject() ? light->GetGameObject()->GetScene() : nullptr;
+    if (!ownerScene || !ownerScene->GetRuntimeWorld())
+        return;
+    const WorldExecutionScope ownerScope(ownerScene->GetRuntimeWorld());
+    for (size_t i = 0; i < CurrentWorld().render.activeLights.size(); ++i) {
+        if (CurrentWorld().render.activeLights[i] == light) {
+            CurrentWorld().render.activeLights[i] = CurrentWorld().render.activeLights.back();
+            CurrentWorld().render.activeLights.pop_back();
             return;
         }
     }

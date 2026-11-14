@@ -648,6 +648,7 @@ void Infernux::AcquireRuntimeServices()
         throw std::logic_error("The asset registry is already owned outside this runtime");
     g_runtimeOwner = this;
     m_ownsRuntimeServices = true;
+    SceneManager::Instance().EnsureAuthoringWorld();
     SceneManager::Instance().StartRuntimeClock();
 }
 
@@ -941,7 +942,7 @@ void Infernux::Run()
         return;
     }
 
-    m_renderer->OverrideNextFrameDeltaTime(0.0f);
+    m_renderer->OverrideNextFrameDeltaTime(0.0f, false);
     bool acceptancePauseApplied = false;
     while (!m_exitRequested.load(std::memory_order_acquire) && m_renderer->GetUserEvent()) {
         if (acceptanceClock.enabled) {
@@ -994,10 +995,6 @@ void Infernux::TickFrame(float deltaTime)
     ActiveFrameScope tickScope(m_tickActive);
     FrameOpportunityScope workFrame(m_frameWork);
 
-    // Explicit stepping supplies simulation time, not elapsed loading time.
-    // A scene replacement inside this frame can still reset its own clock.
-    (void)SceneManager::Instance().ConsumeFrameDeltaTime(0.0f);
-
     if (m_runtimeMode == RuntimeMode::Graphical) {
         // Headless-style manual stepping must stay usable with a window open:
         // one Tick = one fully simulated AND rendered frame with an exact
@@ -1013,8 +1010,7 @@ void Infernux::TickFrame(float deltaTime)
 
     auto &sceneManager = SceneManager::Instance();
     BeginRuntimeFrame(deltaTime);
-    const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(deltaTime);
-    sceneManager.ServiceRuntimeFrames(m_frameWork, sceneDeltaTime);
+    sceneManager.ServiceRuntimeFrames(m_frameWork, deltaTime, true);
     sceneManager.FinishStepPresentation(true);
     FinishFrame({true});
 }
@@ -1262,6 +1258,9 @@ void Infernux::Cleanup()
     if (m_gpuServices)
         m_gpuServices->BeginShutdown();
     m_renderer.reset();
+    // The renderer retires its World-bound publications and callbacks during
+    // destruction. Keep those owners alive until its final consumer is gone.
+    SceneManager::Instance().CompleteShutdown();
 
     // AssetRegistry owns all loaded assets + builtins.
     AssetRegistry::Instance().Shutdown();

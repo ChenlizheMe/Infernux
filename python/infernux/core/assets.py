@@ -189,10 +189,8 @@ class AssetManager:
     _cache: Dict[str, weakref.ref] = {}
     _reference_revisions = weakref.WeakValueDictionary()
 
-    # DataAsset values resolved by gameplay live in a separate strong cache.
-    # The cache exists only between the Play enter/exit boundaries, so runtime
-    # mutation cannot leak into the authored asset object.
-    _play_data_asset_cache: Optional[Dict[str, Any]] = None
+    # Runtime DataAsset values live in their actual World's Python companion;
+    # this Host catalog keeps authored wrappers and immutable resource publications.
 
     # Strong-ref cache for textures: guid → Texture
     # Textures are expensive to reload from disk, so keep them alive.
@@ -287,7 +285,6 @@ class AssetManager:
         if engine is not None and cls._engine is not engine:
             return
         cls.flush()
-        cls._play_data_asset_cache = None
         with cls._pending_gpu_texture_reloads_lock:
             cls._pending_gpu_texture_reloads.clear()
         cls._scheduled_saves.clear()
@@ -619,18 +616,15 @@ class AssetManager:
         for revision in cls._reference_revisions.values():
             revision.current = False
         cls._reference_revisions.clear()
-        if cls._play_data_asset_cache is not None:
-            cls._play_data_asset_cache.clear()
+        runtime_cache = cls._runtime_data_asset_cache()
+        if runtime_cache is not None:
+            runtime_cache.clear()
 
     @classmethod
-    def _begin_play_data_asset_isolation(cls) -> None:
-        if cls._play_data_asset_cache is not None:
-            raise RuntimeError("DataAsset Play isolation is already active")
-        cls._play_data_asset_cache = {}
-
-    @classmethod
-    def _end_play_data_asset_isolation(cls) -> None:
-        cls._play_data_asset_cache = None
+    def _runtime_data_asset_cache(cls):
+        from infernux.engine.runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        return domain.data_assets if domain is not None else None
 
     # ======================================================================
     # Unified execution APIs (Inspector-facing)
@@ -2174,7 +2168,7 @@ class AssetManager:
 
     @classmethod
     def _get_cached(cls, guid: str) -> Optional[Any]:
-        play_cache = cls._play_data_asset_cache
+        play_cache = cls._runtime_data_asset_cache()
         if play_cache is not None:
             isolated = play_cache.get(guid)
             if isolated is not None:
@@ -2210,7 +2204,7 @@ class AssetManager:
 
     @classmethod
     def _put_cache(cls, guid: str, asset) -> None:
-        play_cache = cls._play_data_asset_cache
+        play_cache = cls._runtime_data_asset_cache()
         if play_cache is not None:
             from infernux.core.data_asset import DataAsset
 

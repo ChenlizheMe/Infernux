@@ -31,7 +31,14 @@ if TYPE_CHECKING:
     from .fields import FieldMetadata
 
 # Global registry: module:qualname → class. Populated by __init_subclass__.
-_SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
+_AUTHOR_SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
+
+
+def _serializable_types():
+    from infernux.engine.runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    return domain.serializable_types if domain is not None else _AUTHOR_SERIALIZABLE_REGISTRY
+
 
 # The importer owns this temporary write set, just like its private modules.
 # Ordinary consumers continue to read the single published registry.
@@ -50,7 +57,7 @@ def _candidate_serializable_scope(types: dict[str, type], module_name: str):
 
 
 def _require_serializable_type_owner(identity: str, module_names: set[str]) -> None:
-    previous = _SERIALIZABLE_REGISTRY.get(identity)
+    previous = _serializable_types().get(identity)
     if previous is not None and previous.__module__ not in module_names:
         raise ValueError(
             f"serialized type ID {identity!r} is owned by module {previous.__module__!r}"
@@ -68,23 +75,23 @@ def _publish_serializable_types(
     for identity in published:
         _require_serializable_type_owner(identity, module_names)
     before = {
-        identity: cls for identity, cls in _SERIALIZABLE_REGISTRY.items()
+        identity: cls for identity, cls in _serializable_types().items()
         if cls.__module__ in module_names
     }
     for identity in published:
-        before.setdefault(identity, _SERIALIZABLE_REGISTRY.get(identity))
+        before.setdefault(identity, _serializable_types().get(identity))
     for identity in before:
-        _SERIALIZABLE_REGISTRY.pop(identity, None)
-    _SERIALIZABLE_REGISTRY.update(published)
+        _serializable_types().pop(identity, None)
+    _serializable_types().update(published)
     return before
 
 
 def _restore_serializable_types(before: dict[str, type | None]) -> None:
     for identity, cls in before.items():
         if cls is None:
-            _SERIALIZABLE_REGISTRY.pop(identity, None)
+            _serializable_types().pop(identity, None)
         else:
-            _SERIALIZABLE_REGISTRY[identity] = cls
+            _serializable_types()[identity] = cls
 
 
 def get_serializable_type_id(value: type | "SerializableObject") -> str:
@@ -95,7 +102,8 @@ def get_serializable_type_id(value: type | "SerializableObject") -> str:
         if not isinstance(explicit_id, str):
             raise TypeError("__serialized_type_id__ must be a string")
         return explicit_id
-    return f"{value_type.__module__}:{value_type.__qualname__}"
+    from infernux.engine.runtime_worlds import source_module_name
+    return f"{source_module_name(value_type.__module__)}:{value_type.__qualname__}"
 
 
 def get_serializable_class(type_id: str) -> Optional[Type["SerializableObject"]]:
@@ -103,12 +111,25 @@ def get_serializable_class(type_id: str) -> Optional[Type["SerializableObject"]]
     candidate = _CANDIDATE_TYPES.get()
     if candidate is not None and type_id in candidate[0]:
         return candidate[0][type_id]
-    return _SERIALIZABLE_REGISTRY.get(type_id)
+    resolved = _serializable_types().get(type_id)
+    if resolved is not None:
+        return resolved
+    from infernux.engine.runtime_worlds import current_world_runtime, source_module_name
+    domain = current_world_runtime()
+    declared = _AUTHOR_SERIALIZABLE_REGISTRY.get(type_id)
+    if domain is not None and declared is not None:
+        import sys
+        module = sys.modules[declared.__module__]
+        source = getattr(module, '__file__', None)
+        if source:
+            domain.modules.load_file(source_module_name(declared.__module__), source)
+            return domain.serializable_types.get(type_id)
+    return None
 
 
 def get_registered_serializable_types() -> tuple[tuple[str, Type["SerializableObject"]], ...]:
     """Return the published type catalog in stable identity order."""
-    return tuple(sorted(_SERIALIZABLE_REGISTRY.items(), key=lambda item: item[0]))
+    return tuple(sorted(_serializable_types().items(), key=lambda item: item[0]))
 
 
 class SerializableObject:
@@ -151,7 +172,7 @@ class SerializableObject:
             # Trusted engine modules materialized during a candidate import
             # still own their ordinary declarations, not the project transaction.
             _require_serializable_type_owner(current_type_id, {cls.__module__})
-            _SERIALIZABLE_REGISTRY[current_type_id] = cls
+            _serializable_types()[current_type_id] = cls
 
     # ------------------------------------------------------------------
     # Construction

@@ -385,7 +385,8 @@ void SceneCommitToken::Finalize()
     state.componentRegistryNodes.clear();
 }
 
-std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(const nlohmann::json &document)
+std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(const nlohmann::json &document,
+                                                                             bool newInstanceIds)
 {
     const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
@@ -396,7 +397,7 @@ std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(con
         return nullptr;
 
     auto token = std::shared_ptr<SceneCommitToken>(new SceneCommitToken(*this));
-    if (DeserializeDocument(document, &token->m_impl->objectIdRemap, &token->m_impl->componentIdRemap))
+    if (DeserializeDocument(document, &token->m_impl->objectIdRemap, &token->m_impl->componentIdRemap, newInstanceIds))
         return token;
     if (!token->Rollback())
         INXLOG_ERROR("Scene candidate commit failed and retained world could not be restored");
@@ -957,6 +958,9 @@ void Scene::Start()
 void Scene::AwakeObject(GameObject *obj)
 {
     const WorldExecutionScope worldScope(m_runtimeWorld);
+    // World creation publishes lifecycle only after every Scene and reference exists.
+    if (m_runtimeWorld && SceneManager::Instance().IsPreparingRuntimeWorld(*m_runtimeWorld))
+        return;
     const auto admittedState = SceneManager::Instance().GetSimulationState();
     const auto publish = [&](const auto &self, GameObject *object) -> void {
         if (SceneManager::Instance().GetSimulationState() != admittedState)
@@ -1873,7 +1877,7 @@ std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
 }
 
 bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint64_t, uint64_t> *objectIdRemap,
-                                std::unordered_map<uint64_t, uint64_t> *componentIdRemap)
+                                std::unordered_map<uint64_t, uint64_t> *componentIdRemap, bool newInstanceIds)
 {
     const WorldExecutionScope worldScope(m_runtimeWorld);
     RequireWritableWorld();
@@ -2049,6 +2053,18 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         for (const auto &loadedScene : sceneManager.GetAllScenes())
             collectOccupiedObjectIds(loadedScene.get());
         collectOccupiedObjectIds(sceneManager.GetRuntimePersistentScene());
+
+        // Instantiation creates new runtime identities even when its source
+        // belongs to a different World. Document restoration preserves IDs.
+        if (newInstanceIds) {
+            for (const auto &collection : rootCollections) {
+                for (const auto &assignment : collection.objects)
+                    occupiedObjectIds.insert(assignment.documentId);
+                for (const auto &[component, id] : collection.components)
+                    occupiedComponentIds.insert(id);
+                occupiedComponentIds.insert(collection.pythonComponents.begin(), collection.pythonComponents.end());
+            }
+        }
 
         std::unordered_set<uint64_t> publishedObjectIds = occupiedObjectIds;
         std::unordered_map<uint64_t, uint64_t> committedObjectIdRemap;

@@ -926,9 +926,11 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // Deterministic stepping (Infernux::Tick in graphical mode) supplies the
     // exact simulation delta; the wall clock only reset m_lastFrameTime above
     // so a later free-running frame does not observe a stale timestamp.
+    const bool explicitDelta = m_nextFrameDeltaTimeOverride >= 0.0f && m_nextFrameDeltaIsExplicit;
     if (m_nextFrameDeltaTimeOverride >= 0.0f) {
         m_deltaTime = m_nextFrameDeltaTimeOverride;
         m_nextFrameDeltaTimeOverride = -1.0f;
+        m_nextFrameDeltaIsExplicit = false;
     }
     m_totalTime += m_deltaTime;
     m_smoothDeltaTime += (m_deltaTime - m_smoothDeltaTime) * 0.1f;
@@ -1169,8 +1171,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     auto _sceneUpdateStart = std::chrono::high_resolution_clock::now();
     auto _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     SceneManager &sceneManager = SceneManager::Instance();
-    const float sceneDeltaTime = sceneManager.ConsumeFrameDeltaTime(m_deltaTime);
-    sceneManager.ServiceRuntimeFrames(*m_frameWorkOwner, sceneDeltaTime);
+    sceneManager.ServiceRuntimeFrames(*m_frameWorkOwner, m_deltaTime, explicitDelta);
     if (finishStoppedFrame())
         return {};
     m_gui->CompleteInputFrame();
@@ -5206,9 +5207,6 @@ void InxRenderer::SetPlayModeRendering(bool play)
         m_view->SetPlayMode(play);
     if (changed) {
         InvalidateGpuViewStateForSceneBoundary();
-        // Play can start inside this frame's GUI callback. Its loading work
-        // must not become simulation time on the following frame.
-        OverrideNextFrameDeltaTime(0.0f);
     }
 }
 

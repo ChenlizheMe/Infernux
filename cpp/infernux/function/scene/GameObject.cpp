@@ -104,6 +104,10 @@ void GameObject::SetLayer(int layer)
 
 void GameObject::SetScene(Scene *scene)
 {
+    const auto *previousWorld = m_scene ? m_scene->GetRuntimeWorld() : nullptr;
+    const auto *nextWorld = scene ? scene->GetRuntimeWorld() : nullptr;
+    if (previousWorld && nextWorld && previousWorld != nextWorld)
+        throw std::invalid_argument("Clone objects into another RuntimeWorld instead of transferring live ownership");
     if (m_scene != scene)
         TransformECSStore::Instance().NotifyOwnerWorldChanged(m_transform.GetECSHandle());
     m_scene = scene;
@@ -1391,6 +1395,7 @@ GameObject *GameObject::FindDescendant(const std::string &name) const
 
 void GameObject::DispatchUpdates(float deltaTime, void (Component::*update)(float), bool editMode)
 {
+    const WorldExecutionScope ownerScope(m_scene ? m_scene->GetRuntimeWorld() : nullptr);
     auto &manager = SceneManager::Instance();
     const auto admittedState = manager.GetSimulationState();
     Scene *scene = m_scene;

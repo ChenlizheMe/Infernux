@@ -57,6 +57,7 @@ class ComponentDataStore
     // ── class / field registration ──
 
     uint32_t RegisterClass(const std::string &className);
+    void RetireClass(uint32_t classId);
     uint32_t RegisterField(uint32_t classId, const std::string &fieldName, DataType type);
     uint32_t GetClassId(const std::string &className) const;
     uint32_t GetFieldId(uint32_t classId, const std::string &fieldName) const;
@@ -286,6 +287,7 @@ class ComponentDataStore
     std::optional<SchemaTransaction> m_schemaTransaction;
     SchemaTransactionId m_nextSchemaTransactionId = 1;
     std::vector<uint32_t> m_freeClassIds;
+    uint64_t m_nextSlotGeneration = 1;
 
     ClassStorage &RequireClass(uint32_t classId);
     const ClassStorage &RequireClass(uint32_t classId) const;
@@ -293,7 +295,7 @@ class ComponentDataStore
     const FieldStorage &RequireField(uint32_t classId, uint32_t fieldId, DataType expectedType) const;
     static void RequireAlive(const ClassStorage &storage, SlotHandle handle);
     static void RequireAllAlive(const ClassStorage &storage, const SlotHandle *handles, size_t count);
-    static SlotHandle AllocateSlotInStorage(ClassStorage &storage);
+    SlotHandle AllocateSlotInStorage(ClassStorage &storage);
     static void ReleaseSlotInStorage(ClassStorage &storage, SlotHandle handle);
     static bool IsAliveInStorage(const ClassStorage &storage, SlotHandle handle) noexcept;
     static std::string LayoutIdentity(const std::string &className);

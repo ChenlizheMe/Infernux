@@ -6,7 +6,7 @@ Leaving activate() restores the caller context, not the task's lifetime.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter_ns
 import weakref
 
@@ -22,6 +22,7 @@ class ClockStamp:
     kind: str
     epoch: int
     tick: int
+    world_id: int | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,8 @@ class Clock:
         if engine is None:
             raise RuntimeError('an execution clock requires an active Engine')
         self._kind = kind
+        from infernux.lib import SceneManager
+        self._world_id = int(SceneManager.instance()._current_runtime_world_id) if kind == 'physics' else None
         self._engine = weakref.ref(engine)
 
     @property
@@ -64,7 +67,9 @@ class Clock:
         if self.kind == 'physics':
             from infernux.lib import SceneManager
             manager = SceneManager.instance()
-            return ClockStamp(self.kind, int(manager.simulation_epoch), int(manager.completed_fixed_step_index))
+            from infernux.lib import _Infernux
+            with _Infernux._RuntimeWorldScope(self._world_id):
+                return ClockStamp(self.kind, int(manager.simulation_epoch), int(manager.completed_fixed_step_index), world_id=self._world_id)
         if self.kind == 'presentation':
             sequence, host_frame, accepted_ns = engine.get_native_engine()._last_presentation
             return PresentationStamp(self.kind, id(engine), sequence, host_frame or None, accepted_ns or None)
@@ -75,6 +80,9 @@ class Clock:
 
 class ExecutionScope:
     def __init__(self):
+        # Explicit caller scopes own work, independently of a simulation World.
+        # Component scopes and the World domain scope bind this field below.
+        self._world_id = None
         self._closed = False
         self._paused = False
         self._component_state = None
@@ -87,17 +95,24 @@ class ExecutionScope:
             return self._component_state.state(self, _active_step.get())
         if self._closed:
             return 'closed'
-        return 'paused' if self._paused else 'active'
+        if self._paused:
+            return 'paused'
+        if self._world_id is not None:
+            from infernux.lib import SceneManager, _Infernux
+            with _Infernux._RuntimeWorldScope(self._world_id):
+                manager = SceneManager.instance()
+                if manager.is_playing() and manager.is_paused():
+                    permission = _active_step.get()
+                    return ('stepping' if permission is not None and permission[0] == self._world_id
+                            and step_permission_current(permission) else 'paused')
+        return 'active'
 
     @contextmanager
     def activate(self):
         if self.state == 'closed':
             raise RuntimeError('execution scope has closed')
-        token = _current_owner.set(self)
-        try:
+        with component_execution(self):
             yield self
-        finally:
-            _current_owner.reset(token)
 
     def pause(self):
         self._paused = True
@@ -129,9 +144,15 @@ class ExecutionScope:
 
 @contextmanager
 def component_execution(component):
+    from contextlib import nullcontext
+    from infernux.lib import _Infernux
+    from infernux.engine.runtime_worlds import component_world_id
+    identity = (component._world_id if isinstance(component, ExecutionScope)
+                else component_world_id(component) if component is not None else None)
     token = _current_owner.set(component)
     try:
-        yield
+        with _Infernux._RuntimeWorldScope(identity) if identity else nullcontext():
+            yield
     finally:
         _current_owner.reset(token)
 
@@ -139,14 +160,18 @@ def component_execution(component):
 def component_scope(component):
     from infernux.lib import SceneManager, _Infernux
     manager = SceneManager.instance()
-    playing = bool(manager.is_playing())
-    domain = (int(manager.simulation_epoch), playing)
+    from infernux.engine.runtime_worlds import component_world_id
+    identity = component_world_id(component) or int(manager._current_runtime_world_id)
+    with _Infernux._RuntimeWorldScope(identity):
+        playing = bool(manager.is_playing())
+        domain = (identity, int(manager.simulation_epoch), playing)
     stored = component.__dict__.get('_runtime_execution_scope')
     if stored is not None and stored[0] == domain:
         return stored[1]
     if stored is not None:
         stored[1].close()
     scope = ExecutionScope()
+    scope._world_id = identity
     scope._component_state = _Infernux._ComponentExecutionState(component, manager, *domain)
     component.__dict__['_runtime_execution_scope'] = domain, scope
     return scope
@@ -163,6 +188,10 @@ def capture_execution_scope(default_owner=None):
     if owner is not None and not explicit and phase is not None and phase != simulation_state():
         raise RuntimeError('the calling component phase has ended')
     scope = owner if owner is None or isinstance(owner, ExecutionScope) else component_scope(owner)
+    if scope is None:
+        from infernux.engine.runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        scope = domain.scope if domain is not None else None
     if scope is not None and scope.state == 'closed':
         raise RuntimeError('the calling execution owner has retired')
     return scope
@@ -178,22 +207,27 @@ def step_permission_current(permission):
         return False
     from infernux.lib import SceneManager
     manager = SceneManager.instance()
-    return manager.is_stepping() and permission == (
-        int(manager.simulation_epoch), int(manager._step_permission_index))
+    from infernux.lib import _Infernux
+    with _Infernux._RuntimeWorldScope(permission[0]):
+        return manager.is_stepping() and permission == (
+            int(manager._current_runtime_world_id), int(manager.simulation_epoch), int(manager._step_permission_index))
 
 
 @contextmanager
-def step_execution():
+def step_execution(permission=None):
     """Native simulation dispatch and required consumers enter the admitted step."""
     from infernux.lib import SceneManager
     manager = SceneManager.instance()
-    permission = ((int(manager.simulation_epoch), int(manager._step_permission_index))
-                  if manager.is_stepping() else None)
-    token = _active_step.set(permission)
-    try:
-        yield
-    finally:
-        _active_step.reset(token)
+    from contextlib import nullcontext
+    from infernux.lib import _Infernux
+    with (_Infernux._RuntimeWorldScope(permission[0]) if permission is not None else nullcontext()):
+        permission = ((int(manager._current_runtime_world_id), int(manager.simulation_epoch), int(manager._step_permission_index))
+                      if manager.is_stepping() else None)
+        token = _active_step.set(permission)
+        try:
+            yield
+        finally:
+            _active_step.reset(token)
 
 
 @contextmanager
@@ -246,6 +280,7 @@ class ResultConsumer:
         )
         self._apply = apply
         self._scope = capture_execution_scope()
+        self._world_id = int(manager._current_runtime_world_id)
         self._epoch = int(manager.simulation_epoch)
         self._playing = bool(manager.is_playing())
         index = int(manager.fixed_step_index)
@@ -290,6 +325,16 @@ class ResultConsumer:
     def _resolve(self, manager, *, require_body_ready=False, collect=False):
         if not self._attached:
             return None
+        if self._scope is not None and self._scope.state == 'closed':
+            self.cancel()
+            return None
+        from infernux.lib import _Infernux
+        with _Infernux._RuntimeWorldScope(self._world_id):
+            return self._resolve_current_world(manager, require_body_ready=require_body_ready, collect=collect)
+
+    def _resolve_current_world(self, manager, *, require_body_ready=False, collect=False):
+        if not self._attached:
+            return None
         frame = self.request._owner()._frame
         active = frame.active
         if active:
@@ -323,7 +368,7 @@ class ResultConsumer:
     def _step_allowed(self):
         if not step_permission_current(self.request.step_permission):
             return False
-        with step_execution():
+        with step_execution(self.request.step_permission):
             return self._scope is None or self._scope.state in ('active', 'stepping')
 
     def _suspended(self):
@@ -354,7 +399,7 @@ class ResultConsumer:
             self._hold_render_input()
             if self._suspended():
                 return True
-        permission = int(manager.simulation_epoch), int(manager.fixed_step_index)
+        permission = int(manager._current_runtime_world_id), int(manager.simulation_epoch), int(manager.fixed_step_index)
         stepping = manager.is_stepping() and (self.boundary == 'physics'
                     or self._step_allowed())
         if stepping:
@@ -386,7 +431,7 @@ class ResultConsumer:
                 self.status = 'applying'
                 frame = self.request._owner()._frame
                 host_frame = int(frame.opportunity) if frame.active else None
-                physics_step = (ClockStamp('physics', *permission) if self.boundary == 'physics' else None)
+                physics_step = (ClockStamp('physics', *permission[1:], world_id=permission[0]) if self.boundary == 'physics' else None)
                 if host_frame is not None:
                     frame.begin_scope()
                 started = perf_counter_ns()
@@ -427,7 +472,7 @@ def simulation_state():
     from infernux.lib import SceneManager
     manager = SceneManager.instance()
     return (int(manager.simulation_epoch), bool(manager.is_playing()), bool(manager.is_paused()),
-            int(manager._runtime_frame_generation))
+            int(manager._runtime_frame_generation), int(manager._current_runtime_world_id))
 
 
 @contextmanager

@@ -655,6 +655,7 @@ class RuntimeDispatchPublication:
 
     __slots__ = (
         "before",
+        "_world_domain",
         "after",
         "_defer_commit",
         "_published",
@@ -673,6 +674,8 @@ class RuntimeDispatchPublication:
         published: bool = True,
         scheduler_changes: tuple[object, ...] = (),
     ) -> None:
+        from .runtime_worlds import current_world_runtime
+        self._world_domain = current_world_runtime()
         self.before = before
         self.after = after
         self._defer_commit = bool(defer_commit)
@@ -681,6 +684,16 @@ class RuntimeDispatchPublication:
         self._scheduler_notified = False
         self._rolled_back = False
         self._committed = False
+
+    def _owner_epoch(self):
+        return self._world_domain.epoch if self._world_domain is not None else _current_epoch
+
+    def _publish_owner_epoch(self, epoch):
+        if self._world_domain is not None:
+            self._world_domain.epoch = epoch
+        else:
+            global _current_epoch
+            _current_epoch = epoch
 
     @property
     def committed(self) -> bool:
@@ -697,11 +710,11 @@ class RuntimeDispatchPublication:
             return
         if self._defer_commit:
             with _EPOCH_LOCK:
-                if _current_epoch is not self.before:
+                if self._owner_epoch() is not self.before:
                     raise RuntimeError(
                         "runtime dispatch publication lost its owner transaction ordering"
                     )
-                _set_current_epoch(self.after)
+                self._publish_owner_epoch(self.after)
                 self._published = True
         self._committed = True
         self._notify_scheduler_changes()
@@ -723,8 +736,8 @@ class RuntimeDispatchPublication:
         with _EPOCH_LOCK:
             # Publications are owner-serialized.  Do not overwrite a later
             # publication if a caller violates that contract.
-            if self._published and _current_epoch is self.after:
-                _set_current_epoch(self.before)
+            if self._published and self._owner_epoch() is self.after:
+                self._publish_owner_epoch(self.before)
         if self._scheduler_notified:
             # The scheduler invalidation is deliberately symmetric: a
             # committed rollback is another topology/body publication from
@@ -754,7 +767,9 @@ _owner_thread_id: Optional[int] = None
 def current_runtime_epoch() -> RuntimeRevisionEpoch:
     """Return the current immutable epoch reference."""
     with _EPOCH_LOCK:
-        return _current_epoch
+        from .runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        return domain.epoch if domain is not None else _current_epoch
 
 
 def bind_runtime_dispatch_owner() -> None:
@@ -891,8 +906,13 @@ def _make_method_descriptor(component_type: type, name: str, raw: Any, script_so
 
 
 def _set_current_epoch(epoch: RuntimeRevisionEpoch) -> None:
-    global _current_epoch
-    _current_epoch = epoch
+    from .runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    if domain is not None:
+        domain.epoch = epoch
+    else:
+        global _current_epoch
+        _current_epoch = epoch
 
 
 def _notify_coroutine_epoch(epoch: RuntimeRevisionEpoch) -> None:
@@ -948,7 +968,7 @@ def publish_runtime_dispatch_epoch(
     if changed_types:
         assert_runtime_dispatch_safe_point()
     with _EPOCH_LOCK:
-        before = _current_epoch
+        before = current_runtime_epoch()
         if not changed_types:
             return RuntimeDispatchPublication(before, before, published=True)
         next_id = before.epoch_id + 1

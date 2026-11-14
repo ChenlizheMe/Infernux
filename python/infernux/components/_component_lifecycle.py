@@ -62,7 +62,6 @@ class RuntimeExecutionScheduler:
 
     _live_schedulers = weakref.WeakSet()
     _primary_scheduler: Any = None
-    _runtime_service_phases: dict[str, set[str]] = {}
 
     def __init__(
         self,
@@ -70,12 +69,18 @@ class RuntimeExecutionScheduler:
         name: str = "runtime",
         change_journal: Any = None,
         native_bridge: bool = False,
+        world_id: int | None = None,
     ) -> None:
         if change_journal is None:
             from infernux.engine.runtime_change_journal import runtime_change_journal
 
             change_journal = runtime_change_journal()
         self.name = str(name)
+        if world_id is None:
+            from infernux.lib import SceneManager
+            world_id = int(SceneManager.instance()._current_runtime_world_id)
+        self.world_id = int(world_id)
+        self._runtime_service_phases = {}
         self._native_bridge = bool(native_bridge)
         self._native_scene_manager = None
         self._change_journal = change_journal
@@ -142,7 +147,9 @@ class RuntimeExecutionScheduler:
         self._native_work_dirty = False
         if has_work != self._native_work_available:
             self._native_work_available = has_work
-            self._native_scene_manager.set_runtime_lifecycle_work_available(has_work)
+            from infernux.lib import _Infernux
+            with _Infernux._RuntimeWorldScope(self.world_id):
+                self._native_scene_manager.set_runtime_lifecycle_work_available(has_work)
 
     def _sync_native_work_availability(self, *, force: bool = False) -> None:
         """Recompute the work mirror; force rebuilds it from live membership."""
@@ -157,51 +164,48 @@ class RuntimeExecutionScheduler:
         self._recompute_work_availability()
 
     @classmethod
-    def set_runtime_service_phase_active(
-        cls,
-        service: str,
-        phase: str,
-        active: bool,
-    ) -> None:
-        """Publish phase demand from one process-wide runtime service."""
+    def set_runtime_service_phase_active(cls, service, phase, active, *, world_id=None):
         if phase not in _RUNTIME_SCHEDULER_PHASES:
             raise ValueError(f"unknown runtime phase: {phase}")
+        if world_id is None:
+            from infernux.lib import SceneManager
+            world_id = int(SceneManager.instance()._current_runtime_world_id)
         name = str(service).strip()
         if not name:
             raise ValueError("runtime service name must not be empty")
-        services = cls._runtime_service_phases.setdefault(phase, set())
-        changed = False
-        if active and name not in services:
-            services.add(name)
-            changed = True
-        elif not active and name in services:
-            services.remove(name)
-            changed = True
-        if not changed:
-            return
         for scheduler in tuple(cls._live_schedulers):
-            scheduler._recompute_work_availability()
-            scheduler._publish_native_plan()
+            if scheduler.world_id != world_id:
+                continue
+            services = scheduler._runtime_service_phases.setdefault(phase, set())
+            before = bool(services)
+            if active:
+                services.add(name)
+            else:
+                services.discard(name)
+            if before != bool(services):
+                scheduler._recompute_work_availability()
+                scheduler._publish_native_plan()
 
-    @classmethod
-    def _runtime_service_count(cls, phase: str) -> int:
-        return len(cls._runtime_service_phases.get(phase, ()))
+    def _runtime_service_count(self, phase):
+        return len(self._runtime_service_phases.get(phase, ()))
 
     def _publish_native_plan(self) -> None:
         """Publish one structural plan summary; never crosses per component/frame."""
         if not self._native_bridge or self._native_scene_manager is None:
             return
-        self._native_scene_manager.set_runtime_lifecycle_plan(
-            max(0, int(self._plan_revision)),
-            len(self._phase_plan["fixed_update"])
-            + self._runtime_service_count("fixed_update"),
-            len(self._phase_plan["update"])
-            + self._runtime_service_count("update"),
-            len(self._phase_plan["animation_update"])
-            + self._runtime_service_count("animation_update"),
-            len(self._phase_plan["late_update"])
-            + self._runtime_service_count("late_update"),
-        )
+        from infernux.lib import _Infernux
+        with _Infernux._RuntimeWorldScope(self.world_id):
+            self._native_scene_manager.set_runtime_lifecycle_plan(
+                max(0, int(self._plan_revision)),
+                len(self._phase_plan["fixed_update"])
+                + self._runtime_service_count("fixed_update"),
+                len(self._phase_plan["update"])
+                + self._runtime_service_count("update"),
+                len(self._phase_plan["animation_update"])
+                + self._runtime_service_count("animation_update"),
+                len(self._phase_plan["late_update"])
+                + self._runtime_service_count("late_update"),
+            )
 
     def bind_native_bridge(self, scene_manager: Any) -> None:
         """Bind the one native SceneManager that owns runtime phase boundaries."""
@@ -418,6 +422,9 @@ class RuntimeExecutionScheduler:
         self._counters["plan_invalidations"] += 1
 
     def _on_component_structure(self, component: Any, *, present: bool) -> None:
+        from infernux.engine.runtime_worlds import component_world_id
+        if present and component_world_id(component) != self.world_id:
+            return
         self._registry_scan_pending = False
         self._dispatch_types_dirty = True
         if present:
@@ -512,7 +519,9 @@ class RuntimeExecutionScheduler:
             active = {}
             for values in tuple(getattr(InxComponent, "_active_instances", {}).values()):
                 for component in tuple(values):
-                    active[self._membership_token(component)] = component
+                    from infernux.engine.runtime_worlds import component_world_id
+                    if component_world_id(component) == self.world_id:
+                        active[self._membership_token(component)] = component
         except (ImportError, AttributeError, RuntimeError):
             active = {}
         if set(active) != set(self._components):

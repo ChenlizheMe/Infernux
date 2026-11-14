@@ -351,6 +351,29 @@ class _MissingScriptRecoveryTransaction:
         self._finalized = True
 
 
+class WorldScriptDeleteBatch:
+    def __init__(self, publication):
+        self.publication = publication
+
+    @property
+    def committed(self):
+        return self.publication.committed
+
+    @property
+    def rolled_back(self):
+        return self.publication.rolled_back
+
+    @property
+    def had_live_targets(self):
+        return self.publication.had_live_targets
+
+    def commit(self):
+        return self.publication.commit()
+
+    def rollback(self):
+        self.publication.rollback()
+
+
 class ScriptDeleteBatch:
     """Transactional conversion of live script components to MissingScript."""
 
@@ -461,14 +484,14 @@ class PlayModeManager(PlayModeSerializationMixin):
     Manages the runtime/editor play mode.
     
     Implements Unity-style scene isolation:
-    - On Play: Serialize entire scene state (C++ objects + Python components)
-    - During Play: All changes are runtime-only
-    - On Stop: Deserialize to restore original scene state
+    - On Play: Capture authored scenes and create a separate runtime world
+    - During Play: Runtime objects and project Python state remain isolated
+    - On Stop: Retire runtime worlds and reactivate the retained authored graph
     
     Handles:
     - State transitions (Edit ↔ Play ↔ Pause)
-    - Scene state save/restore via C++ serialization
-    - Python component recreation after restore
+    - Runtime scene cloning through the native document transaction
+    - Per-world Python component and module lifetimes
     - Timing for UI display
     - (Lifecycle is driven by C++)
     
@@ -508,6 +531,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         # Typed scene document captured before entering play mode.
         self._scene_backup: Optional[Any] = None
         self._scene_backups: tuple[_PlaySceneBackup, ...] = ()
+        self._runtime_world_session = None
         self._prefab_sources_during_play: dict[str, dict] = {}
         # Original scene file path (to restore correct scene on Stop)
         self._scene_path_backup: Optional[str] = None
@@ -719,7 +743,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 progress.update(value, message)
 
         def step_enter():
-            """Save scene, rebuild from snapshot, and activate play — all in one frame."""
+            """Capture authored scenes, publish a runtime clone, and activate Play."""
             from infernux.engine.interaction.previews import close_editor_previews
 
             close_editor_previews()
@@ -741,7 +765,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 self._step_sequence = 0
                 self._pending_step_requests = 0
                 self._step_completion = None
-                AssetManager._begin_play_data_asset_isolation()
+
 
                 # Clear-on-Play is a preparation event, before lifecycle logs.
                 notify_started = time.perf_counter()
@@ -754,15 +778,11 @@ class PlayModeManager(PlayModeSerializationMixin):
                     SpriteRenderer.init_all_in_scene(scene)
                 sprite_init_ms = (time.perf_counter() - sprite_init_started) * 1000.0
 
-                # Retain native objects on the success path, replacing only the
-                # scripting domain. The same full snapshot owns every failure.
+                # Keep the author graph intact. The document transaction creates
+                # fresh runtime objects and a separate project scripting domain.
                 rebuild_started = time.perf_counter()
                 report_progress(0.4, "Preparing script components")
-                prepared = (
-                    self._prepare_loaded_scenes_for_play()
-                    if self._scene_backups
-                    else self._prepare_active_scene_for_play(self._scene_backup)
-                )
+                prepared = self._prepare_loaded_scenes_for_play()
                 if not prepared:
                     raise RuntimeError("Play scripting-domain preparation was rejected")
                 rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
@@ -783,12 +803,14 @@ class PlayModeManager(PlayModeSerializationMixin):
                 report_progress(0.75, "Starting scene components")
                 scene_manager.play()
                 from infernux.components.component import InxComponent
+                from infernux.engine.runtime_worlds import component_world_id
                 report_progress(0.9, "Warming component resources")
                 run_component_warmups(
                     (
                         component
                         for values in InxComponent._active_instances.values()
                         for component in values
+                        if component_world_id(component) in scene_manager._runtime_world_ids
                     ),
                     scope="editor-play",
                     project_path=get_project_root(),
@@ -810,14 +832,11 @@ class PlayModeManager(PlayModeSerializationMixin):
                     Input.set_cursor_locked(False)
                     _NativeInputManager.instance().set_editor_cursor_capture_allowed(False)
                     self._cancel_runtime_scene_loads()
-                    AssetManager._end_play_data_asset_isolation()
-                    restored = (
-                        self._restore_loaded_scenes_after_play()
-                        if self._scene_backups
-                        else self._rebuild_active_scene(
-                            self._scene_backup, for_play=False, restore_scene_path=True
-                        )
-                    )
+                    if self._runtime_world_session is not None:
+                        self._runtime_world_session.close()
+                        self._runtime_world_session = None
+
+                    restored = self._restore_loaded_scenes_after_play()
                     self._invalidate_native_gpu_view_state()
                     if not restored:
                         raise RuntimeError("Authored scene restoration was rejected")
@@ -928,8 +947,8 @@ class PlayModeManager(PlayModeSerializationMixin):
         Input.set_cursor_locked(False)
         _NativeInputManager.instance().set_editor_cursor_capture_allowed(False)
 
-        # Stopping simulation does not publish an authored scene. Keep saves
-        # disabled until the retained snapshot has been restored successfully.
+        # Keep saves disabled until runtime retirement and author-view rebinding
+        # finish at the deferred editor boundary.
         self._state = PlayModeState.RESTORING
         self._pending_step_requests = 0
         self._step_completion = None
@@ -938,26 +957,22 @@ class PlayModeManager(PlayModeSerializationMixin):
         Material._suppress_auto_save = True
         RenderEffect._suppress_auto_save = True
 
-        # 3. Discard any pending runtime scene load queued by user scripts
-        #    during the last play frame — we're about to restore the backup.
+        # Discard runtime scene loads queued during the last play frame.
         self._cancel_runtime_scene_loads()
 
         # ── Deferred step (single frame to avoid flicker) ─────────
 
         def step_exit():
-            """Restore scene from backup and finalize — all in one frame."""
+            """Retire runtime clones and rebind the retained authored graph."""
             transition_started = time.perf_counter()
             from infernux.core.assets import AssetManager
-            AssetManager._end_play_data_asset_isolation()
-            # 1. Deserialize backup snapshot and recreate Python components
+            if self._runtime_world_session is not None:
+                self._runtime_world_session.close()
+                self._runtime_world_session = None
+
+            # Rebind the retained authoring graph after runtime retirement.
             rebuild_started = time.perf_counter()
-            restore_ok = (
-                self._restore_loaded_scenes_after_play()
-                if self._scene_backups
-                else self._rebuild_active_scene(
-                    self._scene_backup, for_play=False, restore_scene_path=True
-                )
-            )
+            restore_ok = self._restore_loaded_scenes_after_play()
             self._invalidate_native_gpu_view_state()
             rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
             if not restore_ok:
@@ -966,9 +981,8 @@ class PlayModeManager(PlayModeSerializationMixin):
                     "Resolve the error and use Stop to restore again."
                 )
 
-            # The rebuild above restores the authored document identity and
-            # its exact revision/saved-revision pair. A second dirty-baseline
-            # write here would duplicate ownership and discard revision data.
+            # Rebinding preserves the document identity and exact revision pair.
+            # A second dirty-baseline write would discard that revision data.
             notify_started = time.perf_counter()
             self._state = PlayModeState.EDIT
             self._notify_state_change(old_state, PlayModeState.EDIT)
@@ -1135,34 +1149,43 @@ class PlayModeManager(PlayModeSerializationMixin):
         return True
 
     def _prepare_loaded_scenes_for_play(self) -> bool:
+        from infernux.application import Application
+        from infernux.engine.runtime_worlds import RuntimeWorldSession
         self.clear_runtime_hidden_object_ids()
-        for backup in self._scene_backups:
-            if not self._prepare_scene_for_play(backup.scene, backup.snapshot):
-                raise RuntimeError(f"Play preparation rejected Scene '{backup.name}'")
+        self._runtime_world_session = RuntimeWorldSession(Application._current_engine(), self._scene_backups)
+        self._runtime_world_session.create()
         return True
 
     @staticmethod
     def _cancel_runtime_scene_loads() -> None:
         from infernux.scene import SceneManager as RuntimeSceneManager
+        from infernux.application import Application
+        from infernux.lib import _Infernux
+        engine = Application._current_engine()
+        for identity in tuple(engine._world_runtimes):
+            with _Infernux._RuntimeWorldScope(identity):
+                state = RuntimeSceneManager._load_state()
+                state._scene_load_generation += 1
+                transaction = state._active_scene_transaction
+                if transaction is not None and not transaction.is_complete:
+                    transaction.cancel()
+                RuntimeSceneManager._clear_runtime_load_state()
 
-        RuntimeSceneManager._scene_load_generation += 1
-        transaction = RuntimeSceneManager._active_scene_transaction
-        if transaction is not None and not transaction.is_complete:
-            transaction.cancel()
-        RuntimeSceneManager._clear_runtime_load_state()
-    
     # ========================================================================
     # Game Loop Integration
     # ========================================================================
     
     def prepare_frame(self) -> None:
-        """Commit queued scene work before native simulation admits this frame."""
+        """Advance each owner's queued scene transaction before frame admission."""
         if not self.is_playing:
             return
-        scene_manager_api = self._scene_manager_api
-        if (scene_manager_api._pending_scene_load is not None
-                or scene_manager_api._active_scene_transaction is not None):
-            scene_manager_api.process_pending_load()
+        from infernux.lib import _Infernux
+        manager = self._get_scene_manager()
+        for identity in manager._runtime_world_ids:
+            with _Infernux._RuntimeWorldScope(identity):
+                state = self._scene_manager_api._load_state()
+                if state._pending_scene_load is not None or state._active_scene_transaction is not None:
+                    self._scene_manager_api.process_pending_load()
 
     def _rebuild_active_scene(
         self,
@@ -1261,34 +1284,30 @@ class PlayModeManager(PlayModeSerializationMixin):
         return True
 
     def _restore_loaded_scenes_after_play(self) -> bool:
+        """Reactivate the authored graph retained throughout this Play session."""
         scene_manager = self._get_scene_manager()
         if scene_manager is None:
-            raise RuntimeError("Cannot restore Play Mode scenes without SceneManager")
+            raise RuntimeError("Cannot reactivate authored scenes without SceneManager")
 
-        authored_world_ids = {backup.world_id for backup in self._scene_backups}
-        for scene in reversed(self._loaded_scenes()):
-            world_id = int(getattr(scene, "world_id", 0) or 0)
-            if world_id not in authored_world_ids:
-                scene_manager.unload_scene(scene)
+        from infernux.lib import _Infernux
+        from infernux.renderstack.render_stack import RenderStack
+        from infernux.components.builtin.sprite_renderer import SpriteRenderer
 
-        restored_scenes: dict[int, Any] = {}
-        phase_totals: dict[str, float] = {}
-        for backup in self._scene_backups:
-            scene = scene_manager.get_scene_by_world_id(backup.world_id)
-            if scene is None:
-                scene = scene_manager.create_scene(backup.name)
-            if not self._rebuild_scene(
-                scene,
-                backup.snapshot,
-                for_play=False,
-            ):
-                return False
-            restored_scenes[backup.world_id] = scene
-            for phase, duration in self._last_rebuild_timings_ms.items():
-                phase_totals[phase] = phase_totals.get(phase, 0.0) + float(duration)
-        self._last_rebuild_timings_ms = phase_totals
-        self._restore_scene_documents_after_play(restored_scenes)
-        self._restore_reloaded_prefabs(restored_scenes.values())
+        with _Infernux._RuntimeWorldScope(scene_manager._authoring_runtime_world_id):
+            restored_scenes = {}
+            for backup in self._scene_backups:
+                scene = scene_manager.get_scene_by_world_id(backup.world_id)
+                if scene is not backup.scene:
+                    raise RuntimeError(f"Retained authored Scene '{backup.name}' is no longer resident")
+                restored_scenes[backup.world_id] = scene
+
+            self.clear_runtime_hidden_object_ids()
+            for scene in restored_scenes.values():
+                RenderStack.refresh_active_instance(scene)
+                SpriteRenderer.init_all_in_scene(scene)
+            self._last_rebuild_timings_ms = {}
+            self._restore_scene_documents_after_play(restored_scenes)
+            self._restore_reloaded_prefabs(restored_scenes.values())
         return True
 
     def _restore_reloaded_prefabs(self, scenes) -> None:
@@ -1427,7 +1446,22 @@ class PlayModeManager(PlayModeSerializationMixin):
             else execution_order
         )
 
-    def prepare_script_delete_batch(
+    def prepare_script_delete_batch(self, script_guid, file_path):
+        from infernux.lib import _Infernux
+        from infernux.engine.runtime_worlds import WorldScriptPublication
+        manager = self._get_scene_manager()
+        prepared = []
+        try:
+            for identity in (manager._authoring_runtime_world_id, *manager._runtime_world_ids):
+                with _Infernux._RuntimeWorldScope(identity):
+                    batch = self._prepare_script_delete_current_world(script_guid, file_path)
+                    prepared.append((identity, batch))
+        except BaseException:
+            WorldScriptPublication(prepared, deletion=True).rollback()
+            raise
+        return WorldScriptDeleteBatch(WorldScriptPublication(prepared, deletion=True))
+
+    def _prepare_script_delete_current_world(
         self,
         script_guid: str,
         file_path: str,
@@ -1492,16 +1526,35 @@ class PlayModeManager(PlayModeSerializationMixin):
         )
 
     def commit_script_delete_batch(self, batch: ScriptDeleteBatch) -> int:
-        if not isinstance(batch, ScriptDeleteBatch):
+        if not isinstance(batch, (ScriptDeleteBatch, WorldScriptDeleteBatch)):
             raise TypeError("batch must be a ScriptDeleteBatch")
         return batch.commit()
 
     def rollback_script_delete_batch(self, batch: ScriptDeleteBatch) -> None:
-        if not isinstance(batch, ScriptDeleteBatch):
+        if not isinstance(batch, (ScriptDeleteBatch, WorldScriptDeleteBatch)):
             raise TypeError("batch must be a ScriptDeleteBatch")
         batch.rollback()
 
-    def prepare_script_reload_batch(
+    def prepare_script_reload_batch(self, revisions, *, replacing_scene=None, rebuild_helpers=False):
+        from infernux.lib import _Infernux
+        from infernux.engine.runtime_worlds import WorldScriptPublication
+        manager = self._get_scene_manager()
+        identities = (manager._authoring_runtime_world_id, *manager._runtime_world_ids)
+        revisions = tuple(revisions)
+        prepared, members = [], []
+        try:
+            for identity in identities:
+                with _Infernux._RuntimeWorldScope(identity):
+                    batch = self._prepare_script_reload_current_world(
+                        revisions, replacing_scene=replacing_scene, rebuild_helpers=rebuild_helpers)
+                    prepared.append((identity, batch.transaction))
+                    members.extend(batch.members)
+        except BaseException:
+            WorldScriptPublication(prepared).rollback()
+            raise
+        return ScriptReloadBatch(WorldScriptPublication(prepared), tuple(members))
+
+    def _prepare_script_reload_current_world(
         self,
         revisions: Iterable[ScriptReloadBatchInput],
         *,

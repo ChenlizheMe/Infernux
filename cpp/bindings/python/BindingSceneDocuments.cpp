@@ -92,9 +92,9 @@ class ScenePlayModeSnapshot
         return CollectSceneResourceDependencies(m_document);
     }
 
-    [[nodiscard]] std::shared_ptr<SceneCommitToken> CommitRetainingWorld(Scene &scene) const
+    [[nodiscard]] std::shared_ptr<SceneCommitToken> CommitRetainingWorld(Scene &scene, bool newInstanceIds) const
     {
-        return scene.CommitDocumentRetainingCurrentWorld(m_document);
+        return scene.CommitDocumentRetainingCurrentWorld(m_document, newInstanceIds);
     }
 
   private:
@@ -208,12 +208,13 @@ void BindSceneDocuments(NativeClass<Scene> &cls)
             py::arg("document"), "Commit a candidate and retain the previous native world until finalized")
         .def(
             "_commit_play_mode_snapshot_retaining_world",
-            [](Scene &scene, const std::shared_ptr<ScenePlayModeSnapshot> &snapshot) {
+            [](Scene &scene, const std::shared_ptr<ScenePlayModeSnapshot> &snapshot, bool newInstanceIds) {
                 if (!snapshot)
                     return std::shared_ptr<SceneCommitToken>{};
-                return snapshot->CommitRetainingWorld(scene);
+                return snapshot->CommitRetainingWorld(scene, newInstanceIds);
             },
-            py::arg("snapshot"), "Commit an opaque Play Mode snapshot without crossing the Python JSON bridge")
+            py::arg("snapshot"), py::arg("new_instance_ids") = false,
+            "Commit an opaque Play Mode snapshot without crossing the Python JSON bridge")
         .def("save_to_file", &Scene::SaveToFile, py::arg("path"), "Save scene to a JSON file")
         .def("has_pending_py_components", &Scene::HasPendingPyComponents,
              "Check if there are pending Python components to restore")

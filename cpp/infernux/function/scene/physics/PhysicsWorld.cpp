@@ -2571,7 +2571,13 @@ bool PhysicsWorld::IsContactImpulseStreamEnabled() const noexcept
 }
 void PhysicsWorld::BeginRetireDomain(RuntimeWorld &world) noexcept
 {
+    const WorldExecutionScope ownerScope(&world);
     auto &domain = *world.physics;
+    // Components still run OnDisable/OnDestroy after the numerical owner closes.
+    // Retire their accepted body/target identities through the same cancellation
+    // boundary as Stop, while the shared directory can still resolve them.
+    CancelPendingStep();
+    domain.recreateActors.clear();
     domain.retiring = true;
     if (m_gpuScene)
         m_gpuScene->RetirePartition(world);

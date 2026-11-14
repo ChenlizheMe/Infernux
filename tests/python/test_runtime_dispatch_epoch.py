@@ -54,17 +54,27 @@ class _EpochProbe(ComponentLifecycleMixin):
         return "helper-old"
 
 
-def _publish(component_type, instance):
-    del instance
-    publication = publish_runtime_dispatch_epoch(
-        (component_type,),
-    )
-    publication.commit()
-    return publication
+@pytest.fixture
+def _publish():
+    """Publish bare mixin probes explicitly and unwind each owner transaction."""
+    publications = []
+
+    def publish(component_type, instance):
+        del instance
+        publication = publish_runtime_dispatch_epoch((component_type,))
+        publication.commit()
+        publications.append(publication)
+        return publication
+
+    try:
+        yield publish
+    finally:
+        for publication in reversed(publications):
+            publication.rollback()
 
 
 @pytest.mark.parametrize("scheduled", [False, True])
-def test_callback_diagnostic_resolves_only_after_that_phase_succeeds(monkeypatch, scheduled):
+def test_callback_diagnostic_resolves_only_after_that_phase_succeeds(monkeypatch, scheduled, _publish):
     from infernux.debug import Debug, DebugConsole
 
     monkeypatch.setattr(DebugConsole, "_instance", None)
@@ -83,7 +93,8 @@ def test_callback_diagnostic_resolves_only_after_that_phase_succeeds(monkeypatch
                 raise ValueError("fixed failed")
 
     probe = RecoveryProbe()
-    scheduler = RuntimeExecutionScheduler()
+    _publish(RecoveryProbe, probe)
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     scheduler.register_component(probe)
     frame = scheduler.begin_frame()
 
@@ -112,9 +123,10 @@ def test_callback_diagnostic_resolves_only_after_that_phase_succeeds(monkeypatch
         scheduler.unregister_component(probe)
 
 
-def test_one_frame_uses_one_epoch_for_fixed_update_update_and_late_update():
-    scheduler = RuntimeExecutionScheduler()
+def test_one_frame_uses_one_epoch_for_fixed_update_update_and_late_update(_publish):
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     probe = _EpochProbe()
+    _publish(_EpochProbe, probe)
     old_methods = (
         _EpochProbe.fixed_update,
         _EpochProbe.update,
@@ -174,7 +186,7 @@ def test_one_frame_uses_one_epoch_for_fixed_update_update_and_late_update():
         _publish(_EpochProbe, probe)
 
 
-def test_phase_override_add_and_remove_are_published_to_the_next_frame():
+def test_phase_override_add_and_remove_are_published_to_the_next_frame(_publish):
     class AddRemoveProbe(ComponentLifecycleMixin):
         def __init__(self):
             self._component_id = 2
@@ -187,8 +199,9 @@ def test_phase_override_add_and_remove_are_published_to_the_next_frame():
         def update(self, _delta_time):
             self.calls.append("update")
 
-    scheduler = RuntimeExecutionScheduler()
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     probe = AddRemoveProbe()
+    _publish(AddRemoveProbe, probe)
     scheduler.register_component(probe)
     assert scheduler.phase_plan("late_update") == ()
     assert scheduler.profiler_snapshot()["plan_builds"] == 1
@@ -232,7 +245,7 @@ def test_idle_ui_skips_gameplay_planning_but_can_start_coroutines(scene, monkeyp
     assert scheduler.phase_plan("update") == ()
 
 
-def test_phase_plan_is_not_rebuilt_for_update_or_helper_replacement():
+def test_phase_plan_is_not_rebuilt_for_update_or_helper_replacement(_publish):
     class PlanProbe(ComponentLifecycleMixin):
         def __init__(self):
             self._component_id = 3
@@ -247,8 +260,9 @@ def test_phase_plan_is_not_rebuilt_for_update_or_helper_replacement():
         def helper(self):
             return "old"
 
-    scheduler = RuntimeExecutionScheduler()
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     probe = PlanProbe()
+    _publish(PlanProbe, probe)
     scheduler.register_component(probe)
     plan = scheduler.phase_plan("update")
     assert plan == (probe,)
@@ -309,7 +323,7 @@ def test_direct_lifecycle_entry_requires_a_published_epoch_descriptor():
         publication.rollback()
 
 
-def test_scheduler_shares_one_cached_invoker_tuple_across_instances_and_frames():
+def test_scheduler_shares_one_cached_invoker_tuple_across_instances_and_frames(_publish):
     class SharedInvokerProbe(ComponentLifecycleMixin):
         def __init__(self):
             self._enabled = True
@@ -320,8 +334,9 @@ def test_scheduler_shares_one_cached_invoker_tuple_across_instances_and_frames()
             self.calls += 1
 
     first = SharedInvokerProbe()
+    _publish(SharedInvokerProbe, first)
     second = SharedInvokerProbe()
-    scheduler = RuntimeExecutionScheduler()
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     scheduler.register_component(first)
     scheduler.register_component(second)
 
@@ -349,8 +364,9 @@ def test_scheduler_shares_one_cached_invoker_tuple_across_instances_and_frames()
     assert independent.phase_invokers is independent.phase_invokers
 
 
-def test_helper_lookup_can_use_old_or_current_epoch():
+def test_helper_lookup_can_use_old_or_current_epoch(_publish):
     probe = _EpochProbe()
+    _publish(_EpochProbe, probe)
     old_helper = _EpochProbe.helper
     before = current_runtime_epoch()
     old = resolve_runtime_method(probe, "helper", epoch=before)
@@ -367,7 +383,7 @@ def test_helper_lookup_can_use_old_or_current_epoch():
         _publish(_EpochProbe, probe)
 
 
-def test_active_frame_rejects_transaction_before_class_mutation():
+def test_active_frame_rejects_transaction_before_class_mutation(_publish):
     class ActiveTarget(ComponentLifecycleMixin):
         def update(self, _delta_time):
             return self.helper()
@@ -385,7 +401,8 @@ def test_active_frame_rejects_transaction_before_class_mutation():
     ActiveCandidate.__name__ = ActiveTarget.__name__
     ActiveCandidate.__qualname__ = ActiveTarget.__qualname__
     probe = ActiveTarget()
-    scheduler = RuntimeExecutionScheduler()
+    _publish(ActiveTarget, probe)
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     scheduler.register_component(probe)
     frame = scheduler.begin_frame()
     before = current_runtime_epoch()
@@ -487,7 +504,7 @@ def test_runtime_epoch_publication_rejects_non_owner_thread():
     assert "owner thread" in str(failures[0])
 
 
-def test_stale_publication_token_cannot_rewind_a_newer_epoch():
+def test_stale_publication_token_cannot_rewind_a_newer_epoch(_publish):
     class StaleProbe(ComponentLifecycleMixin):
         def helper(self):
             return "stable"

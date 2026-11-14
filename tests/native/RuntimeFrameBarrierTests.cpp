@@ -139,7 +139,19 @@ int main()
     // record a renderer graph or generate its separate Host notifications.
     observed.clear();
     manager.SetRuntimeFramePublicationCallbacks([](infernux::RuntimeWorld &) { return true; }, {});
-    manager.Play();
+    const auto playRuntimeScene = [&manager] {
+        auto &world = manager.BeginRuntimeWorld();
+        {
+            const infernux::WorldExecutionScope scope(&world);
+            manager.CreateScene("RuntimeFrameBarrierTestsRuntime");
+            const bool published = manager.PublishRuntimeWorld(world.id);
+            assert(published);
+        }
+        manager.SetRuntimeLifecycleWorkAvailable(true);
+        manager.SetRuntimeLifecyclePlan(1, 1, 1, 0, 1);
+        manager.Play();
+    };
+    playRuntimeScene();
     assert(manager.GetRuntimeFrameCount() == 0);
     assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.0f);
     assert(manager.ConsumeFrameDeltaTime(0.25f) == 0.25f);
@@ -164,6 +176,8 @@ int main()
                         }));
     assert(endCount == 2);
     manager.Stop();
+    const bool retired1 = manager.CollectRetiredRuntimeWorlds();
+    assert(retired1);
     assert(manager.GetRuntimeFrameCount() == 0);
 
     // The production accumulator may run zero or multiple fixed steps in one
@@ -184,7 +198,7 @@ int main()
         manager.EndFrame();
     };
 
-    manager.Play();
+    playRuntimeScene();
     runFrame(0.01f);
     assert(fixedUpdateCount == 0);
     runFrame(0.01f);
@@ -193,10 +207,12 @@ int main()
     assert(fixedUpdateCount == 3);
     assert(manager.GetFixedTime() > 0.059 && manager.GetFixedTime() < 0.061);
     manager.Stop();
+    const bool retired2 = manager.CollectRetiredRuntimeWorlds();
+    assert(retired2);
 
     fixedUpdateCount = 0;
     manager.SetTimeScale(0.0f);
-    manager.Play();
+    playRuntimeScene();
     runFrame(1.0f);
     assert(fixedUpdateCount == 0);
     assert(manager.GetFixedTime() == 0.0);
@@ -215,6 +231,8 @@ int main()
     assert(manager.GetFixedTime() > 0.039 && manager.GetFixedTime() < 0.041);
     assert(manager.GetFixedUnscaledTime() > 0.019 && manager.GetFixedUnscaledTime() < 0.021);
     manager.Stop();
+    const bool retired3 = manager.CollectRetiredRuntimeWorlds();
+    assert(retired3);
     manager.SetTimeScale(1.0f);
     manager.SetMaxFixedDeltaTime(1.0f / 3.0f);
     manager.SetRuntimeFramePublicationCallbacks({}, {});

@@ -38,7 +38,13 @@ class _RuntimeContentImports:
 
     def find_spec(self, fullname, path=None, target=None):
         source = self.paths.get(fullname)
-        return spec_from_file_location(fullname, source) if source is not None else None
+        if source is None:
+            return None
+        spec = spec_from_file_location(fullname, source)
+        if spec is not None:
+            from .script_source import SourceFileLoader
+            spec.loader = SourceFileLoader(fullname, source)
+        return spec
 
 
 @dataclass
@@ -74,6 +80,8 @@ def set_project_root(path: Optional[str]) -> None:
     _context().asset_extension_resolver = None
     _context().guid_manifest = None
     _context().guid_manifest_loaded = False
+    from .script_source import track_preload_sources
+    track_preload_sources()
 
 
 def set_runtime_asset_resolver(

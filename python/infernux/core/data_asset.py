@@ -253,7 +253,7 @@ class DataAsset(SerializableObject):
         return value
 
     def _clone_for_play(self) -> "DataAsset":
-        value = type(self).from_document(self.serialize_document())
+        value = DataAsset.from_document(self.serialize_document())
         value._bind_asset(self.file_path, self.guid)
         value._play_isolated = True
         return value

@@ -56,7 +56,10 @@ class Engine(WorkRuntime):
         # Python retains arbitrary user callables and publishes a new immutable
         # snapshot only when component structure changes.
         from infernux.components._component_lifecycle import RuntimeExecutionScheduler
-        self._runtime_scheduler = RuntimeExecutionScheduler(
+        from infernux.lib import SceneManager
+        SceneManager.instance()._ensure_authoring_world()
+        self._world_runtimes = {}
+        self._authoring_scheduler = RuntimeExecutionScheduler(
             name=self._application_role,
             native_bridge=True,
         )
@@ -295,30 +298,32 @@ class Engine(WorkRuntime):
                 # Reload, queued scene work, and deserialization share the
                 # owner-thread safe point. Typed changes merge here and become
                 # visible when SceneManager begins the runtime frame.
-                with engine._runtime_scheduler.change_journal.transaction():
-                    if not _PLAYER_MODE:
-                        from infernux.core.assets import AssetManager
-                        from infernux.host import MainThreadCommandQueue
+                from infernux.lib import SceneManager, _Infernux
+                with _Infernux._RuntimeWorldScope(SceneManager.instance()._authoring_runtime_world_id):
+                    with engine._authoring_scheduler.change_journal.transaction():
+                        if not _PLAYER_MODE:
+                            from infernux.core.assets import AssetManager
+                            from infernux.host import MainThreadCommandQueue
 
-                        # Edit may have resumed after the last frame's model
-                        # publication. Apply it before queued authoring can
-                        # instantiate another root from that same revision.
-                        AssetManager.flush_model_instance_sync()
-                        # MCP authoring can retire script dispatch entries.
-                        # Drain before begin_native_frame, never from pre-GUI
-                        # while that frame still owns the old dispatch epoch.
-                        MainThreadCommandQueue.instance().drain()
-                        from infernux.engine.undo import UndoManager
+                            # Edit may have resumed after the last frame's model
+                            # publication. Apply it before queued authoring can
+                            # instantiate another root from that same revision.
+                            AssetManager.flush_model_instance_sync()
+                            # MCP authoring can retire script dispatch entries.
+                            # Drain before begin_native_frame, never from pre-GUI
+                            # while that frame still owns the old dispatch epoch.
+                            MainThreadCommandQueue.instance().drain()
+                            from infernux.engine.undo import UndoManager
 
-                        # History may restore a scene and publish script types.
-                        # UI callbacks only enqueue replay; never restore that
-                        # graph while a native frame owns the dispatch epoch.
-                        undo = UndoManager.instance()
-                        if undo is not None:
-                            undo.process_pending_replay()
-                    if engine._mode == RuntimeMode.Headless:
-                        engine._tick_headless_maintenance()
-                    engine.tick_play_mode(float(delta_time))
+                            # History may restore a scene and publish script types.
+                            # UI callbacks only enqueue replay; never restore that
+                            # graph while a native frame owns the dispatch epoch.
+                            undo = UndoManager.instance()
+                            if undo is not None:
+                                undo.process_pending_replay()
+                        if engine._mode == RuntimeMode.Headless:
+                            engine._tick_headless_maintenance()
+                engine.tick_play_mode(float(delta_time))
                 # The native frame owner drives registered sources after this
                 # authoring point, before runtime phase preparation below.
                 host = getattr(engine, "_infernux_compute_host", None)
@@ -343,10 +348,13 @@ class Engine(WorkRuntime):
                 from infernux.core.assets import AssetManager
 
                 AssetManager.flush_model_instance_sync()
-            scheduler = getattr(engine, "_runtime_scheduler", None)
-            prepare_frame = getattr(scheduler, "prepare_frame", None)
-            if callable(prepare_frame):
-                prepare_frame()
+            from infernux.lib import _Infernux, SceneManager
+            manager = SceneManager.instance()
+            identities = manager._runtime_world_ids or [manager._authoring_runtime_world_id]
+            for identity in identities:
+                with _Infernux._RuntimeWorldScope(identity):
+                    engine._runtime_scheduler.prepare_frame()
+            if identities:
                 # A paused Step is intentionally executed outside the
                 # authoring transaction above.  This is the single owner
                 # safe point where the runtime journal may be consumed.
@@ -361,19 +369,47 @@ class Engine(WorkRuntime):
 
         scene_manager = SceneManager.instance()
         self._runtime_scene_manager = scene_manager
+        def _begin_retire_world(identity):
+            engine = engine_ref()
+            if engine is None:
+                return
+            domain = engine._world_runtimes.get(int(identity))
+            if domain is not None:
+                domain.begin_retirement()
+            for consumer in tuple(engine._result_consumers):
+                if consumer._world_id == int(identity):
+                    consumer.cancel()
+
+        def _retire_world(identity):
+            engine = engine_ref()
+            if engine is None:
+                return
+            if int(identity) == int(scene_manager._authoring_runtime_world_id):
+                from infernux.core.assets import AssetManager
+                AssetManager.release_engine(engine)
+                from .script_source import clear_module_codes
+                clear_module_codes()
+                return
+            domain = engine._world_runtimes.get(int(identity))
+            if domain is not None:
+                domain.close()
+                del engine._world_runtimes[int(identity)]
+        scene_manager._set_runtime_world_retirement_callbacks(_begin_retire_world, _retire_world)
         self._last_native_transform_serial = int(
             scene_manager.get_global_transform_serial()
         )
-        scheduler = self._runtime_scheduler
         def _begin_native_frame():
-            scheduler.begin_native_frame()
             engine = engine_ref()
+            if engine is None:
+                return
+            engine._runtime_scheduler.begin_native_frame()
             if engine is None or not scene_manager._is_executing_step():
                 return
             from infernux.execution import step_execution, capture_step_permission
             with step_execution():
                 for consumer in tuple(engine._result_consumers):
-                    if (consumer.boundary != 'physics' and (consumer.required or consumer.request.done)
+                    if (consumer._world_id == int(scene_manager._current_runtime_world_id)
+                            and consumer.boundary != 'physics' and (consumer.required or consumer.request.done)
                             and consumer._current(scene_manager)
                             and consumer._scope is not None and consumer._scope.state == 'stepping'):
                         consumer.request._owner()._permit_step(consumer.request, capture_step_permission())
@@ -386,13 +422,28 @@ class Engine(WorkRuntime):
 
         scene_manager.set_runtime_input_callback(_dispatch_runtime_input)
 
+        def _execute_native_phase(phase, delta):
+            engine = engine_ref()
+            if engine is not None:
+                engine._runtime_scheduler.execute_native_phase(phase, delta)
+
+        def _execute_editor_phase(delta):
+            engine = engine_ref()
+            if engine is not None:
+                engine._runtime_scheduler.execute_native_editor_update(delta)
+
+        def _end_native_frame():
+            engine = engine_ref()
+            if engine is not None:
+                engine._runtime_scheduler.end_native_frame()
+
         scene_manager.set_runtime_lifecycle_callbacks(
             _begin_native_frame,
-            lambda delta: scheduler.execute_native_phase("fixed_update", delta),
-            lambda delta: scheduler.execute_native_phase("update", delta),
-            lambda delta: scheduler.execute_native_phase("late_update", delta),
-            scheduler.execute_native_editor_update,
-            scheduler.end_native_frame,
+            lambda delta: _execute_native_phase("fixed_update", delta),
+            lambda delta: _execute_native_phase("update", delta),
+            lambda delta: _execute_native_phase("late_update", delta),
+            _execute_editor_phase,
+            _end_native_frame,
         )
         def _consume_native_barrier(barrier):
             engine = engine_ref()
@@ -420,6 +471,8 @@ class Engine(WorkRuntime):
             while index < len(engine._result_consumers):
                 consumer = engine._result_consumers[index]
                 index += 1
+                if consumer._world_id != int(scene_manager._current_runtime_world_id):
+                    continue
                 if consumer.boundary == 'render_input' and boundary == 'render':
                     resolution = consumer._resolve(scene_manager)
                     if resolution is not None:
@@ -459,7 +512,7 @@ class Engine(WorkRuntime):
             return ready
         scene_manager.set_runtime_result_consumer_callback(_consume_results)
         scene_manager._set_result_consumers_present(bool(self._result_consumers))
-        scheduler.bind_native_bridge(scene_manager)
+        self._authoring_scheduler.bind_native_bridge(scene_manager)
 
     def _track_runtime_input_view(self, view):
         views = self.__dict__.setdefault("_runtime_input_views", [])
@@ -808,7 +861,9 @@ class Engine(WorkRuntime):
         pmm = self._play_mode_manager
         rm = self._resources_manager
         if rm and current_time >= self._next_reload_poll_time and not (pmm and pmm.is_restoring):
-            rm.process_pending_reloads()
+            from infernux.lib import SceneManager, _Infernux
+            with _Infernux._RuntimeWorldScope(SceneManager.instance()._authoring_runtime_world_id):
+                rm.process_pending_reloads()
             if pmm is not None and (pmm.is_paused or pmm.is_edit_mode):
                 from infernux.components.particle_system import ParticleSystem
 
@@ -974,6 +1029,12 @@ class Engine(WorkRuntime):
         """Get the standalone Player runtime session, if active."""
         return self._player_runtime
 
+    @property
+    def _runtime_scheduler(self):
+        from .runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        return domain.scheduler if domain is not None else self._authoring_scheduler
+
     def get_runtime_execution_scheduler(self):
         """Get the shared phase-plan service for diagnostics and profiling."""
         return self._runtime_scheduler
@@ -1075,13 +1136,10 @@ class Engine(WorkRuntime):
             AssetManager.flush_all_asset_writes()
             self._resources_manager.cleanup()
 
+        from infernux.lib import SceneManager
+        SceneManager.instance()._collect_retired_runtime_worlds()
         self._shutdown_plugins_for_exit()
 
-        if self._runtime_scene_manager is not None:
-            self._runtime_scene_manager.clear_runtime_lifecycle_callbacks()
-            self._runtime_scheduler.unbind_native_bridge()
-            self._runtime_scene_manager = None
-        self._runtime_scheduler.clear()
         self._graph_event_signals = None
 
         if not _PLAYER_MODE:
@@ -1132,16 +1190,8 @@ class Engine(WorkRuntime):
             finally:
                 self._headless_undo_manager = None
 
-        # Native AssetDatabase/AssetRegistry bindings become dangling as soon
-        # as C++ cleanup starts. Release Python caches while those objects are
-        # still alive so a later standalone builder cannot dereference stale
-        # pybind wrappers left by a temporary headless preflight.
-        try:
-            from infernux.core.assets import AssetManager
-
-            AssetManager.release_engine(self)
-        except Exception as exc:
-            Debug.log_suppressed("Engine.exit.AssetManager", exc)
+        # The final author-World retirement callback releases Python asset
+        # bindings after every Scene callback and before native loader teardown.
 
         # 2. C++ Cleanup — destroys renderer, Vulkan device, etc.
         if self._engine:
@@ -1149,8 +1199,12 @@ class Engine(WorkRuntime):
 
             _release_engine_resources()
             self._engine.cleanup()
-            if self._player_runtime is not None:
-                self._player_runtime.release_content()
+        if self._runtime_scene_manager is not None:
+            self._authoring_scheduler.unbind_native_bridge()
+            self._runtime_scene_manager = None
+        self._authoring_scheduler.clear()
+        if self._player_runtime is not None:
+            self._player_runtime.release_content()
         
         # Clear all references
         self._gui_objects.clear()
@@ -1184,26 +1238,16 @@ class Engine(WorkRuntime):
         except Exception as exc:
             Debug.log_suppressed("Engine._shutdown_play_mode.SceneManager.stop", exc)
 
-        # 2. Destroy all live Python components (on_destroy + GC helpers)
-        try:
-            from infernux.components.component import InxComponent
-            for comp_list in list(InxComponent._active_instances.values()):
-                for comp in list(comp_list):
-                    try:
-                        comp._call_on_destroy()
-                    except Exception as exc:
-                        Debug.log_suppressed(
-                            f"Engine._shutdown_play_mode.on_destroy[{type(comp).__name__}]",
-                            exc,
-                        )
-            InxComponent._clear_all_instances()
-        except Exception as exc:
-            Debug.log_suppressed("Engine._shutdown_play_mode.clear_all_instances", exc)
+        # Native scene retirement dispatches OnDisable/OnDestroy under each real
+        # owner. Its Python companion outlives pending shared-service receipts.
+        if pmm._runtime_world_session is not None:
+            pmm._runtime_world_session.close()
+            pmm._runtime_world_session = None
 
         # 3. Flip state to EDIT so nothing else treats us as playing
         pmm._state = PlayModeState.EDIT
         from infernux.core.assets import AssetManager
-        AssetManager._end_play_data_asset_isolation()
+
 
     def _confirm_dirty_panels_before_exit(self) -> bool:
         """Audit dirty state after native close confirmation without prompting."""

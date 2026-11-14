@@ -168,6 +168,8 @@ class CandidateImportTransaction:
         self._modules: dict[str, types.ModuleType] = {}
         self._reused_lkg: dict[str, types.ModuleType] = {}
         self._roots = get_project_script_roots()
+        from .runtime_worlds import current_world_runtime
+        self._world_domain = current_world_runtime()
         self._external_roots: dict[str, bool] = {}
         self._trusted_proxies: dict[str, types.ModuleType] = {}
         self._overlay_names: set[str] = set()
@@ -188,6 +190,7 @@ class CandidateImportTransaction:
         self._rolled_back = False
         self._finalized = False
         self._published_names: frozenset[str] = frozenset()
+        self._accepted_code_before = {}
 
     @property
     def finalized(self) -> bool:
@@ -235,6 +238,7 @@ class CandidateImportTransaction:
         return self._modules.get(name)
 
     def load(self, name: str) -> types.ModuleType:
+        name = self._qualified(name)
         if self._rolled_back:
             raise CandidateImportError("candidate import transaction has been rolled back")
         if self._finalized:
@@ -246,6 +250,10 @@ class CandidateImportTransaction:
                 return module
             if self._is_external_module(name):
                 return self._load_external(name)
+            if self._world_domain is not None:
+                canonical = self._world_domain.modules._canonical(name)
+                if self._world_domain.modules._path(canonical) is not None:
+                    return self._world_domain.modules.load(canonical)
             if self._has_lkg_descendant(name):
                 return self._create_namespace(name)
             raise CandidateImportError(f"project dependency '{name}' has no published module")
@@ -362,7 +370,7 @@ class CandidateImportTransaction:
             and module_path
             and any(is_path_within(module_path, root) for root in project_roots)
             and not is_preload_python_library(module_path)
-            and get_script_module_name(module_path) == name
+            and self._source_name(module_path) == name
         ):
             # A save/rename/delete on disk is not a runtime publication. Keep
             # using the current LKG until its owner replaces/retires sys.modules,
@@ -399,7 +407,7 @@ class CandidateImportTransaction:
                     for search_path in search_paths
                 ):
                     continue
-                expected = get_script_module_name(candidate_path)
+                expected = self._source_name(candidate_path)
                 if candidate_name != expected:
                     raise CandidateImportError(
                         f"registered project module '{candidate_name}' has a path/name mismatch"
@@ -415,7 +423,7 @@ class CandidateImportTransaction:
             # Preload owns this library's imports and teardown, independently
             # of the component transaction's isolated module names.
             return None
-        expected = get_script_module_name(module_path)
+        expected = self._source_name(module_path)
         if name != expected:
             raise CandidateImportError(
                 f"preloaded project module '{name}' has a path/name mismatch"
@@ -424,6 +432,33 @@ class CandidateImportTransaction:
             self._reused_lkg[name] = module
         return module
 
+    def _source_name(self, path):
+        name = get_script_module_name(path)
+        return self._world_domain.modules.prefix + '.' + name if name and self._world_domain is not None else name
+
+    def _qualified(self, name):
+        if self._world_domain is None:
+            return name
+        modules = self._world_domain.modules
+        if name == modules.prefix or name.startswith(modules.prefix + '.'):
+            return name
+        path = modules._path(name)
+        if path is None or (name == 'random' and not any(path.is_relative_to(root) for root in modules.roots)):
+            return name
+        return modules.prefix + '.' + name
+
+    def _sync_world_modules(self, names):
+        if self._world_domain is None:
+            return
+        modules = self._world_domain.modules
+        for name in names:
+            if name.startswith(modules.prefix + '.'):
+                canonical = modules._canonical(name)
+                if name in sys.modules:
+                    modules.modules[canonical] = sys.modules[name]
+                else:
+                    modules.modules.pop(canonical, None)
+
     def _is_external_module(self, name: str) -> bool:
         """Separate interpreter dependencies from transaction-owned code.
 
@@ -431,6 +466,9 @@ class CandidateImportTransaction:
         Project code must come from this transaction's source snapshots or
         its published revision, including code reached by dynamic imports.
         """
+        if self._world_domain is not None and (name == self._world_domain.modules.prefix
+                or name.startswith(self._world_domain.modules.prefix + '.')):
+            return False
         root = name.partition(".")[0]
         if root in self._external_roots:
             return self._external_roots[root]
@@ -455,6 +493,17 @@ class CandidateImportTransaction:
         return external
 
     def _load_external(self, name: str):
+        if self._world_domain is not None:
+            if name == 'sys':
+                proxy = self._trusted_proxies.get('sys')
+                if proxy is None:
+                    proxy = types.ModuleType('sys')
+                    proxy.__dict__.update(vars(sys))
+                    proxy.modules = ChainMap(self._modules, self._world_domain.modules.sys.modules)
+                    self._trusted_proxies['sys'] = proxy
+                return proxy
+            if name == 'random':
+                return self._world_domain.modules.load('random')
         module = sys.modules.get(name)
         if module is None:
             module = importlib.import_module(name)
@@ -492,7 +541,8 @@ class CandidateImportTransaction:
         # no annotation is evaluated, and slots classes keep their real module.
         private_sys = types.ModuleType("sys")
         private_sys.__dict__.update(vars(sys))
-        private_sys.modules = ChainMap({"dataclasses": proxy}, self._modules, sys.modules)
+        private_sys.modules = ChainMap({"dataclasses": proxy}, self._modules,
+            self._world_domain.modules.sys.modules if self._world_domain is not None else sys.modules)
         proxy.sys = private_sys
         for name, value in vars(module).items():
             if isinstance(value, types.FunctionType) and value.__globals__ is vars(module):
@@ -523,6 +573,8 @@ class CandidateImportTransaction:
         if spec.file_path.endswith((os.sep + "__init__.py", "/__init__.py", "\\__init__.py")):
             import_spec.submodule_search_locations = [os.path.dirname(spec.file_path)]
         module = importlib.util.module_from_spec(import_spec)
+        if self._world_domain is not None:
+            module.__infernux_source_name__ = self._world_domain.modules._canonical(spec.name)
         self._modules[spec.name] = module
         module.__builtins__ = self._builtins_for(module)
         try:
@@ -560,6 +612,9 @@ class CandidateImportTransaction:
                 spec.file_path, self._effect_features, self._effect_module_sources,
             ):
                 exec(code, module.__dict__)
+            from .script_source import prepare_module_code
+            module.__infernux_accepted_code__ = prepare_module_code(
+                spec.name, spec.file_path, source=spec.source, code=code)
             from infernux.components.script_loader import _remember_module_literals
             from infernux.engine.script_closure_reload import remember_closure_code
 
@@ -646,6 +701,7 @@ class CandidateImportTransaction:
             absolute = importlib.util.resolve_name(relative_name, package) if level else name
         except (ImportError, ValueError) as exc:
             raise CandidateImportError(f"invalid relative candidate import '{name}'") from exc
+        absolute = self._qualified(absolute)
         module = self.load(absolute)
         if fromlist:
             for item in fromlist:
@@ -662,6 +718,8 @@ class CandidateImportTransaction:
                     self._try_load_child(absolute, item)
             return self._modules.get(absolute, module)
         root_name = absolute.split(".", 1)[0]
+        if self._world_domain is not None and absolute.startswith(self._world_domain.modules.prefix + '.'):
+            root_name = self._world_domain.modules.prefix + '.' + self._world_domain.modules._canonical(absolute).split('.', 1)[0]
         if root_name == absolute:
             return module
         root = self.load(root_name)
@@ -703,6 +761,10 @@ class CandidateImportTransaction:
                     _carry_module_literal_state(previous, module)
                     self._published_aliases.append(previous)
                 sys.modules[name] = module
+                accepted = vars(module).get('__infernux_accepted_code__')
+                if accepted is not None and self._world_domain is None:
+                    from .script_source import publish_module_code
+                    self._accepted_code_before.setdefault(path_key(source), publish_module_code(source, accepted))
             # A private overlay is never published as a replacement package.
             # Once every child module is visible, update its live parent as the
             # final package-level side effect and retain an exact before-image.
@@ -727,6 +789,7 @@ class CandidateImportTransaction:
 
             self._effect_before = _snapshot_effect_features(self._effect_features, self._effect_sources)
             _publish_effect_features(self._effect_features.values(), source_keys=self._effect_sources)
+            self._sync_world_modules(published_names)
             self._forward_closures()
             for previous in self._published_aliases:
                 self._forward_module_functions(previous, self._modules[previous.__name__])
@@ -841,6 +904,10 @@ class CandidateImportTransaction:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = previous
+        self._sync_world_modules(self._before)
+        from .script_source import restore_module_codes
+        restore_module_codes(self._accepted_code_before)
+        self._accepted_code_before.clear()
         from infernux.components.serializable_object import _restore_serializable_types
 
         _restore_serializable_types(self._serializable_before)
@@ -879,6 +946,7 @@ class CandidateImportTransaction:
         self._published_names = frozenset((*self._modules, *self._reused_lkg))
         self._finalized = True
         self._before.clear()
+        self._accepted_code_before.clear()
         self._published_aliases.clear()
         self._forwarded_functions.clear()
         self._forwarded_namespaces.clear()

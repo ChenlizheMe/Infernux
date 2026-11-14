@@ -9,6 +9,7 @@
 #include <function/scene/TransformECSStore.h>
 
 #include <cassert>
+#include <optional>
 
 using namespace infernux;
 
@@ -160,6 +161,8 @@ int main()
 
     ProbeState stateA;
     ProbeState stateB;
+    auto &world = manager.BeginRuntimeWorld();
+    std::optional<WorldExecutionScope> scope(std::in_place, &world);
     Scene *sceneA = manager.CreateScene("AdditiveA");
     Scene *sceneB = manager.CreateScene("AdditiveB");
     manager.SetActiveScene(sceneA);
@@ -192,6 +195,9 @@ int main()
     cameraA->SetDepth(5.0f);
     cameraB->SetDepth(-2.0f);
 
+    const bool published = manager.PublishRuntimeWorld(world.id);
+    assert(published);
+    scope.reset();
     assert(manager.GetSceneCount() == 2);
     assert(manager.GetActiveLights().size() == 2);
     assert(manager.IsRuntimeScene(sceneA));
@@ -234,6 +240,8 @@ int main()
     assert(stateB.update == updatesB);
 
     manager.Stop();
+    const bool retired = manager.CollectRetiredRuntimeWorlds();
+    assert(retired);
     manager.UnloadAllScenes();
     assert(stateA.destroy == 1);
     assert(manager.GetActiveLights().empty());

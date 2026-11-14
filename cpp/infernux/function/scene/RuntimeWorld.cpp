@@ -47,8 +47,10 @@ RuntimeWorld::~RuntimeWorld()
     InputManager::Instance().RetireWorldInput(id);
 }
 
-WorldExecutionScope::WorldExecutionScope(RuntimeWorld *world) noexcept : m_previous(s_currentWorld)
+WorldExecutionScope::WorldExecutionScope(RuntimeWorld *world) noexcept : m_previous(s_currentWorld), m_world(world)
 {
+    if (world)
+        ++world->executionScopes;
     if (world && world != m_previous) {
         m_inputScope.emplace(world->frame.input, world->id);
         s_currentWorld = world;
@@ -58,6 +60,8 @@ WorldExecutionScope::WorldExecutionScope(RuntimeWorld *world) noexcept : m_previ
 WorldExecutionScope::~WorldExecutionScope()
 {
     s_currentWorld = m_previous;
+    if (m_world)
+        --m_world->executionScopes;
 }
 
 RuntimeWorld *WorldExecutionScope::Current() noexcept

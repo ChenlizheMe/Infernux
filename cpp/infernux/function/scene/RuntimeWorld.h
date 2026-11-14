@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <platform/input/InputManager.h>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -14,6 +15,11 @@ namespace infernux
 {
 
 class Scene;
+class MeshRenderer;
+class SkinnedMeshRenderer;
+class Transform;
+class SkeletonInstance;
+class Light;
 struct PhysicsDomain;
 
 /// Scene ownership and simulation state; device and submission services stay shared.
@@ -102,6 +108,7 @@ class RuntimeWorld final
         FrameTime frameTime;
         timing::FrameTimeSmoother frameTimeSmoother;
         bool resetDeltaTimeOnNextFrame = true;
+        uint64_t deltaResetHostOpportunity = 0;
         double fixedTime = 0.0;
         double fixedUnscaledTime = 0.0;
         uint64_t simulationEpoch = 0;
@@ -137,6 +144,27 @@ class RuntimeWorld final
         size_t runtimeLifecycleLateUpdateCount = 0;
     };
 
+    struct RenderMembership
+    {
+        uint64_t renderTransformRevision = 1;
+        uint64_t renderContentRevision = 1;
+
+        // MeshRenderer component registry — populated by MeshRenderer OnEnable/OnDisable.
+        // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.
+        std::vector<MeshRenderer *> activeMeshRenderers;
+        std::unordered_set<MeshRenderer *> activeMeshRendererSet; // O(1) duplicate check
+        std::unordered_map<MeshRenderer *, SkinnedMeshRenderer *> pendingSkinPoseHistoryCommits;
+        std::unordered_map<Transform *, SkeletonInstance *> skeletonBoneOwners;
+        std::vector<SkeletonInstance *> pendingSkeletonPoses;
+        uint64_t meshRendererVersion = 0;
+        uint32_t rendererRegistryTransactionDepth = 0;
+        bool rendererRegistryTransactionDirty = false;
+
+        // Light component registry — populated by Light OnEnable/OnDisable.
+        // Avoids per-frame GetAllObjects() + GetComponent<Light>() in CollectLights/ComputeShadowVP.
+        std::vector<Light *> activeLights;
+    };
+
     RuntimeWorld();
     ~RuntimeWorld();
     RuntimeWorld(const RuntimeWorld &) = delete;
@@ -145,10 +173,13 @@ class RuntimeWorld final
     RuntimeWorld &operator=(RuntimeWorld &&) = delete;
 
     const uint64_t id;
+    size_t executionScopes = 0;
+    bool retirementScenesComplete = false;
     std::unique_ptr<PhysicsDomain> physics;
     SimulationState simulation;
     LifecycleState lifecycle;
     FrameState frame;
+    RenderMembership render;
     SceneCollection scenes;
 };
 
@@ -165,6 +196,7 @@ class WorldExecutionScope final
 
   private:
     RuntimeWorld *m_previous;
+    RuntimeWorld *m_world;
     std::optional<InputReadScope> m_inputScope;
 };
 

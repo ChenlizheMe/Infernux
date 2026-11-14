@@ -110,6 +110,25 @@ class LoadSceneMode(Enum):
     ADDITIVE = "additive"
 
 
+class RuntimeSceneLoadState:
+    def __init__(self):
+        self._pending_scene_load = None  # resolved file path
+        self._pending_scene_load_mode = LoadSceneMode.SINGLE
+        self._active_scene_transaction = None
+        self._active_scene_load_path = None
+        self._active_scene_load_mode = LoadSceneMode.SINGLE
+        self._active_scene_target = None
+        self._active_scene_file_manager = None
+        self._active_scene_wait_for_ready = False
+        self._active_scene_hold_for_activation = False
+        self._scene_load_generation = 0
+        self._active_scene_load_generation = 0
+        self._runtime_scene_service = None
+
+
+_AUTHOR_SCENE_LOAD_STATE = RuntimeSceneLoadState()
+
+
 class SceneManager:
     """
     Unity-style scene management API, aligned with
@@ -146,19 +165,11 @@ class SceneManager:
             print(f"  {i}: {name}")
     """
 
-    # Pending scene load request — deferred until end-of-frame when in play mode
-    _pending_scene_load: Optional[str] = None  # resolved file path
-    _pending_scene_load_mode = LoadSceneMode.SINGLE
-    _active_scene_transaction = None
-    _active_scene_load_path: Optional[str] = None
-    _active_scene_load_mode = LoadSceneMode.SINGLE
-    _active_scene_target = None
-    _active_scene_file_manager = None
-    _active_scene_wait_for_ready = False
-    _active_scene_hold_for_activation = False
-    _scene_load_generation = 0
-    _active_scene_load_generation = 0
-    _runtime_scene_service = None
+    @staticmethod
+    def _load_state():
+        from infernux.engine.runtime_worlds import current_world_runtime
+        domain = current_world_runtime()
+        return domain.scene_loads if domain is not None else _AUTHOR_SCENE_LOAD_STATE
 
     @staticmethod
     def _coerce_load_mode(mode) -> LoadSceneMode:
@@ -174,12 +185,12 @@ class SceneManager:
         """Install the packaged Player scene owner."""
         if service is None:
             raise ValueError("runtime scene service is required")
-        SceneManager._runtime_scene_service = service
+        SceneManager._load_state()._runtime_scene_service = service
 
     @staticmethod
     def remove_runtime_service(service) -> None:
-        if SceneManager._runtime_scene_service is service:
-            SceneManager._runtime_scene_service = None
+        if SceneManager._load_state()._runtime_scene_service is service:
+            SceneManager._load_state()._runtime_scene_service = None
 
     # ------------------------------------------------------------------
     # Unity-aligned API
@@ -229,7 +240,7 @@ class SceneManager:
     @staticmethod
     def set_active_scene(scene) -> None:
         """Select the loaded Scene that receives newly authored objects."""
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             runtime_service.set_active_scene(scene)
             return
@@ -245,7 +256,7 @@ class SceneManager:
     @staticmethod
     def unload_scene(scene) -> None:
         """Unload one resident Scene without changing the others."""
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             runtime_service.unload_scene(scene)
             return
@@ -283,7 +294,7 @@ class SceneManager:
         scene_guids = list(
             normalize_build_settings(load_build_settings())["scene_guids"]
         )
-        if SceneManager._runtime_scene_service is not None:
+        if SceneManager._load_state()._runtime_scene_service is not None:
             return scene_guids
         from infernux.core.assets import AssetManager
 
@@ -295,12 +306,12 @@ class SceneManager:
 
     @staticmethod
     def _build_scene_display_path(identity: str) -> str:
-        if SceneManager._runtime_scene_service is None:
+        if SceneManager._load_state()._runtime_scene_service is None:
             return identity
         # A packaged Player has no authoring AssetDatabase.  Resolve the
         # display/source alias from its immutable runtime catalog so Unity-
         # style name and filename loads remain usable without scanning Assets.
-        runtime_catalog = getattr(SceneManager._runtime_scene_service, "_runtime_catalog", None)
+        runtime_catalog = getattr(SceneManager._load_state()._runtime_scene_service, "_runtime_catalog", None)
         source_path_for_guid = getattr(runtime_catalog, "source_path_for_guid", None)
         if callable(source_path_for_guid):
             source_path = str(source_path_for_guid(identity) or "")
@@ -364,7 +375,7 @@ class SceneManager:
     def _resolve_load_path(scene: Union[int, str]) -> Optional[str]:
         """Resolve and validate one public scene-load request."""
         scenes = SceneManager._load_build_list()
-        runtime = SceneManager._runtime_scene_service
+        runtime = SceneManager._load_state()._runtime_scene_service
         if isinstance(scene, str) and runtime is not None:
             scenes.extend(getattr(runtime, "additional_scene_guids", ()))
         if not scenes:
@@ -418,7 +429,7 @@ class SceneManager:
         if path is None:
             return False
 
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             if load_mode is LoadSceneMode.SINGLE:
                 return bool(runtime_service.request_load(path))
@@ -429,8 +440,8 @@ class SceneManager:
             generation = SceneManager._begin_scene_load_request()
             if generation is None:
                 return False
-            SceneManager._pending_scene_load = path
-            SceneManager._pending_scene_load_mode = load_mode
+            SceneManager._load_state()._pending_scene_load = path
+            SceneManager._load_state()._pending_scene_load_mode = load_mode
             return True
 
         # --- Not in play mode: load immediately (editor double-click, etc.) ---
@@ -457,7 +468,7 @@ class SceneManager:
         if path is None:
             return False
 
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             if load_mode is LoadSceneMode.SINGLE:
                 return bool(runtime_service.request_prepared_load(path))
@@ -490,7 +501,7 @@ class SceneManager:
         if path is None:
             return False
 
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             kwargs = {"hold_for_activation": True}
             if load_mode is LoadSceneMode.ADDITIVE:
@@ -513,12 +524,12 @@ class SceneManager:
     @staticmethod
     def is_scene_prepared() -> bool:
         """Return whether a held scene transaction is ready to publish."""
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             return bool(runtime_service.is_prepared)
-        transaction = SceneManager._active_scene_transaction
+        transaction = SceneManager._load_state()._active_scene_transaction
         return bool(
-            SceneManager._active_scene_hold_for_activation
+            SceneManager._load_state()._active_scene_hold_for_activation
             and transaction is not None
             and getattr(transaction, "status", "") == "ready_to_commit"
         )
@@ -526,12 +537,12 @@ class SceneManager:
     @staticmethod
     def activate_prepared_scene() -> bool:
         """Publish the scene previously prepared by :meth:`prepare_scene`."""
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             return bool(runtime_service.activate_prepared_load())
         if not SceneManager.is_scene_prepared():
             return False
-        SceneManager._active_scene_hold_for_activation = False
+        SceneManager._load_state()._active_scene_hold_for_activation = False
         return True
 
     @staticmethod
@@ -542,7 +553,7 @@ class SceneManager:
         Players intentionally do not construct that editor service, so the
         native scene manager is the authoritative fallback there.
         """
-        if SceneManager._runtime_scene_service is not None:
+        if SceneManager._load_state()._runtime_scene_service is not None:
             return bool(_NativeSceneManager.instance().is_playing())
         from infernux.engine.play_mode import PlayModeManager, PlayModeState
         pm = PlayModeManager.instance()
@@ -556,7 +567,7 @@ class SceneManager:
     ) -> bool:
         """Perform the actual scene file load (must be called outside C++ iteration)."""
         load_mode = SceneManager._coerce_load_mode(mode)
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             if load_mode is LoadSceneMode.SINGLE:
                 return bool(runtime_service.load_initial(path))
@@ -655,16 +666,16 @@ class SceneManager:
 
     @staticmethod
     def _clear_runtime_load_state() -> None:
-        SceneManager._pending_scene_load = None
-        SceneManager._pending_scene_load_mode = LoadSceneMode.SINGLE
-        SceneManager._active_scene_transaction = None
-        SceneManager._active_scene_load_path = None
-        SceneManager._active_scene_load_mode = LoadSceneMode.SINGLE
-        SceneManager._active_scene_target = None
-        SceneManager._active_scene_file_manager = None
-        SceneManager._active_scene_wait_for_ready = False
-        SceneManager._active_scene_hold_for_activation = False
-        SceneManager._active_scene_load_generation = 0
+        SceneManager._load_state()._pending_scene_load = None
+        SceneManager._load_state()._pending_scene_load_mode = LoadSceneMode.SINGLE
+        SceneManager._load_state()._active_scene_transaction = None
+        SceneManager._load_state()._active_scene_load_path = None
+        SceneManager._load_state()._active_scene_load_mode = LoadSceneMode.SINGLE
+        SceneManager._load_state()._active_scene_target = None
+        SceneManager._load_state()._active_scene_file_manager = None
+        SceneManager._load_state()._active_scene_wait_for_ready = False
+        SceneManager._load_state()._active_scene_hold_for_activation = False
+        SceneManager._load_state()._active_scene_load_generation = 0
 
     @staticmethod
     def _is_runtime_load_transaction_complete(transaction) -> bool:
@@ -681,7 +692,7 @@ class SceneManager:
     @staticmethod
     def _begin_scene_load_request() -> Optional[int]:
         """Supersede unfinished preparation and return the newest request token."""
-        transaction = SceneManager._active_scene_transaction
+        transaction = SceneManager._load_state()._active_scene_transaction
         if transaction is not None and not SceneManager._is_runtime_load_transaction_complete(
             transaction
         ):
@@ -696,17 +707,17 @@ class SceneManager:
                 Debug.log_error(f"SceneManager: failed to cancel stale scene load: {exc}")
                 return None
         SceneManager._clear_runtime_load_state()
-        SceneManager._scene_load_generation += 1
-        return SceneManager._scene_load_generation
+        SceneManager._load_state()._scene_load_generation += 1
+        return SceneManager._load_state()._scene_load_generation
 
     @staticmethod
     def _discard_active_additive_target() -> None:
-        if SceneManager._active_scene_load_mode is not LoadSceneMode.ADDITIVE:
+        if SceneManager._load_state()._active_scene_load_mode is not LoadSceneMode.ADDITIVE:
             return
-        target = SceneManager._active_scene_target
+        target = SceneManager._load_state()._active_scene_target
         if target is not None:
             _NativeSceneManager.instance().unload_scene(target)
-        SceneManager._active_scene_target = None
+        SceneManager._load_state()._active_scene_target = None
 
     @staticmethod
     def _start_runtime_load(
@@ -719,8 +730,8 @@ class SceneManager:
     ) -> bool:
         """Start background preparation now; live-scene mutation happens later."""
         if generation is None:
-            generation = SceneManager._scene_load_generation
-        if generation != SceneManager._scene_load_generation:
+            generation = SceneManager._load_state()._scene_load_generation
+        if generation != SceneManager._load_state()._scene_load_generation:
             return False
         load_mode = SceneManager._coerce_load_mode(mode)
         target = None
@@ -745,14 +756,14 @@ class SceneManager:
                 _NativeSceneManager.instance().unload_scene(target)
             Debug.log_error(f"SceneManager: failed to start scene load: {exc}")
             return False
-        SceneManager._active_scene_transaction = transaction
-        SceneManager._active_scene_load_path = path
-        SceneManager._active_scene_load_mode = load_mode
-        SceneManager._active_scene_target = target
-        SceneManager._active_scene_file_manager = sfm
-        SceneManager._active_scene_wait_for_ready = bool(wait_for_ready)
-        SceneManager._active_scene_hold_for_activation = bool(hold_for_activation)
-        SceneManager._active_scene_load_generation = generation
+        SceneManager._load_state()._active_scene_transaction = transaction
+        SceneManager._load_state()._active_scene_load_path = path
+        SceneManager._load_state()._active_scene_load_mode = load_mode
+        SceneManager._load_state()._active_scene_target = target
+        SceneManager._load_state()._active_scene_file_manager = sfm
+        SceneManager._load_state()._active_scene_wait_for_ready = bool(wait_for_ready)
+        SceneManager._load_state()._active_scene_hold_for_activation = bool(hold_for_activation)
+        SceneManager._load_state()._active_scene_load_generation = generation
         return True
 
     @staticmethod
@@ -762,31 +773,31 @@ class SceneManager:
         Called by ``PlayModeManager.tick()`` once per frame, after C++
         lifecycle calls (Update / LateUpdate / EndFrame) have finished.
         """
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             runtime_service.process_pending_load()
             return
 
-        transaction = SceneManager._active_scene_transaction
+        transaction = SceneManager._load_state()._active_scene_transaction
         if transaction is None:
-            path = SceneManager._pending_scene_load
+            path = SceneManager._load_state()._pending_scene_load
             if path is None:
                 return
-            load_mode = SceneManager._pending_scene_load_mode
-            SceneManager._pending_scene_load = None
-            SceneManager._pending_scene_load_mode = LoadSceneMode.SINGLE
+            load_mode = SceneManager._load_state()._pending_scene_load_mode
+            SceneManager._load_state()._pending_scene_load = None
+            SceneManager._load_state()._pending_scene_load_mode = LoadSceneMode.SINGLE
             SceneManager._start_runtime_load(
                 path,
                 wait_for_ready=False,
-                generation=SceneManager._scene_load_generation,
+                generation=SceneManager._load_state()._scene_load_generation,
                 mode=load_mode,
             )
             return
 
-        active_generation = SceneManager._active_scene_load_generation
+        active_generation = SceneManager._load_state()._active_scene_load_generation
         if (
             active_generation > 0
-            and active_generation != SceneManager._scene_load_generation
+            and active_generation != SceneManager._load_state()._scene_load_generation
         ):
             if not SceneManager._is_runtime_load_transaction_complete(transaction):
                 transaction.cancel()
@@ -795,7 +806,7 @@ class SceneManager:
             return
 
         if (
-            SceneManager._active_scene_hold_for_activation
+            SceneManager._load_state()._active_scene_hold_for_activation
             and getattr(transaction, "status", "") == "ready_to_commit"
         ):
             return
@@ -807,10 +818,10 @@ class SceneManager:
         if not transaction.poll():
             return
 
-        path = SceneManager._active_scene_load_path
-        sfm = SceneManager._active_scene_file_manager
-        load_mode = SceneManager._active_scene_load_mode
-        target = SceneManager._active_scene_target
+        path = SceneManager._load_state()._active_scene_load_path
+        sfm = SceneManager._load_state()._active_scene_file_manager
+        load_mode = SceneManager._load_state()._active_scene_load_mode
+        target = SceneManager._load_state()._active_scene_target
         succeeded = bool(transaction.succeeded)
         error = transaction.error
         if not succeeded:
@@ -836,12 +847,12 @@ class SceneManager:
     @staticmethod
     def is_scene_load_pending() -> bool:
         """Return whether a deferred runtime scene load is queued or executing."""
-        runtime_service = SceneManager._runtime_scene_service
+        runtime_service = SceneManager._load_state()._runtime_scene_service
         if runtime_service is not None:
             return bool(runtime_service.is_load_pending)
         return (
-            SceneManager._pending_scene_load is not None
-            or SceneManager._active_scene_transaction is not None
+            SceneManager._load_state()._pending_scene_load is not None
+            or SceneManager._load_state()._active_scene_transaction is not None
         )
 
     # ------------------------------------------------------------------

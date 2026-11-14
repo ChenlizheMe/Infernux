@@ -544,7 +544,9 @@ _DEFAULT_RUNTIME_CHANGE_JOURNAL = RuntimeChangeJournal()
 
 
 def runtime_change_journal() -> RuntimeChangeJournal:
-    return _DEFAULT_RUNTIME_CHANGE_JOURNAL
+    from .runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    return domain.journal if domain is not None else _DEFAULT_RUNTIME_CHANGE_JOURNAL
 
 
 __all__ = [

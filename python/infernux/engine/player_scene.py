@@ -43,6 +43,15 @@ class PlayerSceneService:
         self._transaction_generation = 0
         self._last_error = ""
 
+    def clone_for_runtime(self, scene_map):
+        """Create the mutable load owner for one cloned runtime graph."""
+        result = PlayerSceneService(asset_database=self._asset_database, native_engine=self._native_engine)
+        result.bind_runtime_catalog(self._runtime_catalog)
+        result._scene_paths = {int(scene_map[source].world_id): path
+                               for source, path in self._scene_paths.items() if source in scene_map}
+        result._active_scene_path = self._active_scene_path
+        return result
+
     @property
     def active_scene_path(self) -> Optional[str]:
         return self._active_scene_path

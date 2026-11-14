@@ -15,6 +15,7 @@
 #include <functional>
 #include <iostream>
 #include <new>
+#include <optional>
 #include <pybind11/embed.h>
 
 namespace py = pybind11;
@@ -317,6 +318,8 @@ class CollisionEnterOnlyProbe(InxComponent):
     // Python work availability controls only Python callbacks. Native
     // components remain on the native Scene traversal.
     auto &sceneManager = infernux::SceneManager::Instance();
+    auto &runtimeWorld = sceneManager.BeginRuntimeWorld();
+    std::optional<infernux::WorldExecutionScope> scope(std::in_place, &runtimeWorld);
     infernux::Scene *scene = sceneManager.CreateScene("RuntimeSchedulerOwner");
     infernux::GameObject *owner = scene->CreateGameObject("PythonOwner");
     bool missingSchedulerRejected = false;
@@ -333,6 +336,9 @@ class CollisionEnterOnlyProbe(InxComponent):
     int runtimeUpdates = 0;
     sceneManager.SetRuntimeLifecycleCallbacks([] {}, [](float) {}, [&runtimeUpdates](float) { ++runtimeUpdates; },
                                               [](float) {}, [](float) {}, [] {});
+    const bool published = sceneManager.PublishRuntimeWorld(runtimeWorld.id);
+    assert(published);
+    scope.reset();
     sceneManager.SetRuntimeLifecycleWorkAvailable(false);
     sceneManager.Play();
     sceneManager.Update(1.0f / 60.0f);
@@ -341,10 +347,18 @@ class CollisionEnterOnlyProbe(InxComponent):
     assert(runtimeUpdates == 0);
     assert(nativeUpdates == 1);
     sceneManager.Stop();
+    const bool retired1 = sceneManager.CollectRetiredRuntimeWorlds();
+    assert(retired1);
 
     // The native frame driver consumes the published phase plan. A scheduler
     // may remain installed while a structural rebuild produces an empty phase;
     // that phase must not cross into Python until a newer plan enables it.
+    auto &plannedWorld = sceneManager.BeginRuntimeWorld();
+    scope.emplace(&plannedWorld);
+    sceneManager.CreateScene("RuntimeSchedulerPlan");
+    const bool plannedPublished = sceneManager.PublishRuntimeWorld(plannedWorld.id);
+    assert(plannedPublished);
+    scope.reset();
     sceneManager.SetRuntimeLifecycleWorkAvailable(true);
     sceneManager.SetRuntimeLifecyclePlan(1, 0, 0, 0, 0);
     sceneManager.Play();
@@ -358,6 +372,8 @@ class CollisionEnterOnlyProbe(InxComponent):
     sceneManager.EndFrame();
     assert(runtimeUpdates == 1);
     sceneManager.Stop();
+    const bool retired2 = sceneManager.CollectRetiredRuntimeWorlds();
+    assert(retired2);
     sceneManager.ClearRuntimeLifecycleCallbacks();
     sceneManager.UnloadAllScenes();
     return 0;

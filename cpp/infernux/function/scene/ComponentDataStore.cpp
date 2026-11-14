@@ -174,6 +174,8 @@ ComponentDataStore::SlotHandle ComponentDataStore::AllocateSlotInStorage(ClassSt
 {
     if (storage.retired)
         throw std::logic_error("ComponentDataStore: cannot allocate from a retired class layout");
+    if (m_nextSlotGeneration > UINT32_MAX)
+        throw std::overflow_error("ComponentDataStore: slot generation space exhausted");
     uint32_t index = UINT32_MAX;
     if (storage.freeHead != UINT32_MAX) {
         index = storage.freeHead;
@@ -186,6 +188,7 @@ ComponentDataStore::SlotHandle ComponentDataStore::AllocateSlotInStorage(ClassSt
         index = static_cast<uint32_t>(storage.slotCount++);
     }
 
+    storage.generations[index] = static_cast<uint32_t>(m_nextSlotGeneration++);
     storage.alive[index] = 1;
     storage.nextFree[index] = UINT32_MAX;
     for (auto &field : storage.fields)
@@ -229,10 +232,29 @@ uint32_t ComponentDataStore::RegisterClass(const std::string &className)
     if (it != m_classNameToId.end())
         return it->second;
 
-    const uint32_t id = static_cast<uint32_t>(m_classes.size());
-    m_classes.emplace_back();
+    const uint32_t id = m_freeClassIds.empty() ? static_cast<uint32_t>(m_classes.size()) : m_freeClassIds.back();
+    if (m_freeClassIds.empty()) {
+        m_classes.emplace_back();
+    } else {
+        m_freeClassIds.pop_back();
+        m_classes[id] = ClassStorage{};
+    }
     m_classNameToId.emplace(className, id);
     return id;
+}
+
+void ComponentDataStore::RetireClass(uint32_t classId)
+{
+    RequireNoSchemaTransaction("retire a class");
+    auto &storage = RequireClass(classId);
+    storage.retired = true;
+    for (auto it = m_classNameToId.begin(); it != m_classNameToId.end();) {
+        if (it->second == classId)
+            it = m_classNameToId.erase(it);
+        else
+            ++it;
+    }
+    ReclaimRetiredClass(classId);
 }
 
 uint32_t ComponentDataStore::RegisterField(uint32_t classId, const std::string &fieldName, DataType type)

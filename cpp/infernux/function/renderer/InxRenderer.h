@@ -323,9 +323,10 @@ class InxRenderer
     /// @brief Force the next DrawFrame() to simulate with an exact delta time
     /// instead of the wall clock. Used by Infernux::Tick so graphical frames
     /// can be stepped deterministically with the same contract as headless.
-    void OverrideNextFrameDeltaTime(float seconds)
+    void OverrideNextFrameDeltaTime(float seconds, bool explicitSimulation = true)
     {
         m_nextFrameDeltaTimeOverride = seconds;
+        m_nextFrameDeltaIsExplicit = explicitSimulation;
     }
 
     /// @brief Drain GPU work before destructive scene/resource replacement.
@@ -780,6 +781,7 @@ class InxRenderer
     float m_deltaTime = 0.016f;
     /// Negative = no override. Consumed by the next DrawFrame().
     float m_nextFrameDeltaTimeOverride = -1.0f;
+    bool m_nextFrameDeltaIsExplicit = false;
     float m_totalTime = 0.0f;
     float m_smoothDeltaTime = 0.016f;
     uint64_t m_frameCount = 0;

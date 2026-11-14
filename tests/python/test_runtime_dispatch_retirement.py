@@ -123,7 +123,7 @@ def test_retirement_cannot_cross_an_active_frame_safe_point():
     owner = _RetirementProbe()
     owner.calls = []
     initial = _publish_initial(_RetirementProbe)
-    scheduler = RuntimeExecutionScheduler()
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     scheduler.register_component(owner)
     frame = scheduler.begin_frame()
     before = current_runtime_epoch()
@@ -255,7 +255,7 @@ def test_retired_type_phase_fallback_cannot_reenter_scheduler_plan():
 
     owner = _ScheduledRetirementProbe()
     initial = _publish_initial(_ScheduledRetirementProbe)
-    scheduler = RuntimeExecutionScheduler()
+    scheduler = RuntimeExecutionScheduler(world_id=0)
     scheduler.register_component(owner)
     try:
         assert has_runtime_phase(_ScheduledRetirementProbe, "update") is True

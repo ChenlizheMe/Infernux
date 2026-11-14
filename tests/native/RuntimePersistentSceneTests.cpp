@@ -6,6 +6,7 @@
 #include <function/scene/SceneManager.h>
 
 #include <cassert>
+#include <optional>
 
 using namespace infernux;
 
@@ -74,6 +75,8 @@ int main()
     manager.Stop();
     manager.UnloadAllScenes();
 
+    auto &world = manager.BeginRuntimeWorld();
+    std::optional<WorldExecutionScope> scope(std::in_place, &world);
     Scene *sceneA = manager.CreateScene("PersistentA");
     GameObject *root = sceneA->CreateGameObject("PersistentRoot");
     GameObject *child = sceneA->CreateGameObject("ChildRequest");
@@ -82,6 +85,9 @@ int main()
     Light *light = root->AddComponent<Light>();
     assert(probe && light);
 
+    const bool published = manager.PublishRuntimeWorld(world.id);
+    assert(published);
+    scope.reset();
     manager.Play();
     assert(LifecycleProbe::awakeCount == 1);
     assert(LifecycleProbe::enableCount == 1);
@@ -153,6 +159,8 @@ int main()
     assert(LifecycleProbe::updateCount == 2);
 
     manager.Stop();
+    const bool retired = manager.CollectRetiredRuntimeWorlds();
+    assert(retired);
     assert(manager.GetRuntimePersistentScene() == nullptr);
     assert(manager.FindRuntimeObjectByID(rootId) == nullptr);
     assert(LifecycleProbe::destroyCount == 1);

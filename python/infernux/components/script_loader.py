@@ -112,6 +112,12 @@ def _preserve_live_class_literal(target, name, value):
     return name in defaults and type(defaults[name]) is type(value) and defaults[name] == value
 
 
+def _runtime_module_name(file_path):
+    from infernux.engine.runtime_worlds import runtime_module_name
+    canonical = get_script_module_name(file_path) or _unique_module_name_for_path(file_path)
+    return runtime_module_name(file_path, canonical)
+
+
 def _new_candidate_import_transaction():
     """Load the Editor-only candidate importer only when hot reload uses it."""
 
@@ -1015,7 +1021,7 @@ def stage_component_body_reload_batch(
         file_path = resolve_script_path(request.file_path)
         if not file_path or not os.path.exists(file_path):
             raise ScriptLoadError(f"Script file not found: {request.file_path}")
-        module_name = get_script_module_name(file_path) or _unique_module_name_for_path(file_path)
+        module_name = _runtime_module_name(file_path)
         if module_name in seen_module_names:
             raise ScriptReloadRejected(
                 f"script module appears more than once in reload batch: {module_name}"
@@ -1426,7 +1432,19 @@ def retire_script_module(file_path: str) -> object | None:
     remain staged in ``sys.modules`` until their transaction has committed;
     callers invoke this only after the durable asset mutation succeeds.
     """
-    module_name = get_script_module_name(file_path)
+    from infernux.lib import SceneManager, _Infernux
+    manager = SceneManager.instance()
+    if int(manager._current_runtime_world_id) == int(manager._authoring_runtime_world_id):
+        from .registry import unregister_component_script
+        for identity in manager._runtime_world_ids:
+            with _Infernux._RuntimeWorldScope(identity):
+                unregister_component_script(file_path)
+                retire_script_module(file_path)
+    if int(manager._current_runtime_world_id) == int(manager._authoring_runtime_world_id):
+        from infernux.engine.script_source import retire_module_code
+        retire_module_code(file_path)
+    canonical = get_script_module_name(file_path)
+    module_name = _runtime_module_name(file_path) if canonical else None
     if not module_name:
         return None
     module = sys.modules.get(module_name)
@@ -1437,7 +1455,12 @@ def retire_script_module(file_path: str) -> object | None:
         # A move can keep the same canonical module name. The candidate at
         # the destination must survive; only the old module may be retired.
         return None
-    return sys.modules.pop(module_name, None)
+    retired = sys.modules.pop(module_name, None)
+    from infernux.engine.runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    if domain is not None:
+        domain.modules.modules.pop(domain.modules._canonical(module_name), None)
+    return retired
 
 
 _BODY_PATCH_GENERATED_KEYS = frozenset({
@@ -1868,26 +1891,16 @@ def _load_script_module(
             _stage_source_effect_features(file_path),
             _candidate_serializable_scope(serializable_types, module_name),
         ):
-            if code is not None:
-                exec(code, module.__dict__)
-            elif source_only or source is not None:
-                if not file_path.endswith(".py"):
-                    raise ScriptLoadError(
-                        f"Source-only script reload requires a .py file: {file_path}"
-                    )
-                # Play-mode candidates must reflect the bytes just saved to disk.
-                # SourceFileLoader.exec_module() may reuse a timestamp-based .pyc
-                # when a same-second edit also preserves the file size.
-                if source is None:
-                    with tokenize.open(file_path) as source_file:
-                        source = source_file.read()
-                code = compile(source, file_path, "exec", dont_inherit=True)
-                exec(code, module.__dict__)
-            elif type(spec.loader) is importlib.machinery.SourceFileLoader:
-                code = spec.loader.get_code(module_name)
-                exec(code, module.__dict__)
-            else:
-                spec.loader.exec_module(module)
+            from infernux.engine.script_source import prepare_module_code
+            if code is None and source is None:
+                if file_path.endswith('.pyc'):
+                    code = importlib.machinery.SourcelessFileLoader(module_name, file_path).get_code(module_name)
+                else:
+                    with open(file_path, 'rb') as stream:
+                        source = stream.read()
+            accepted_code = prepare_module_code(module_name, file_path, source=source, code=code)
+            code = accepted_code.code
+            exec(code, module.__dict__)
             # First loads and reload candidates share the same data identity
             # ownership boundary. Failed source prefixes cannot replace the
             # published data catalog. Ordinary component declarations retain
@@ -1909,6 +1922,9 @@ def _load_script_module(
         if sys.modules.get(module_name) is module:
             sys.modules.pop(module_name, None)
         raise
+    from infernux.engine.script_source import publish_module_code
+    module.__infernux_accepted_code__ = accepted_code
+    publish_module_code(file_path, accepted_code)
     _class_literal_defaults.update(_declared_class_literals((module,)))
     _remember_module_literals(module)
     if code is not None:
@@ -2034,7 +2050,16 @@ def load_all_components_from_file(
     if not file_path.endswith(('.py', '.pyc')):
         raise ScriptLoadError(f"Not a Python file: {file_path}")
     
-    module_name = get_script_module_name(file_path) or _unique_module_name_for_path(file_path)
+    module_name = _runtime_module_name(file_path)
+    from infernux.engine.runtime_worlds import current_world_runtime
+    domain = current_world_runtime()
+    if domain is not None:
+        module = domain.modules.load_file(domain.modules._canonical(module_name), file_path)
+        components = _component_classes_from_module(module, module.__name__)
+        if register:
+            from .registry import publish_component_script_types
+            publish_component_script_types(file_path, tuple(components))
+        return components
     previous_module = sys.modules.get(module_name, _MODULE_ABSENT)
     _clear_loaded_script_modules([module_name], preserve_classes=preserve_classes)
 

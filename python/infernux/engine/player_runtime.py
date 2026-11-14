@@ -50,6 +50,8 @@ class PlayerRuntimeSession(WorkRuntime):
             native_engine=native_engine,
         )
         self._scene_service_installed = False
+        self._runtime_world_session = None
+        self._runtime_world_id = None
         self._runtime_manifest: Optional[RuntimeProductManifest] = None
         self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
         self._content_workspace: Optional[tempfile.TemporaryDirectory] = None
@@ -339,36 +341,39 @@ class PlayerRuntimeSession(WorkRuntime):
             RenderStack.clear_active_instance()
         from infernux.scene import SceneManager as RuntimeSceneManager
 
-        # Install the packaged scene owner before native ``play()`` dispatches
-        # Awake/Start.  Startup scripts are allowed to prepare or load another
-        # BuildSettings scene immediately; those logical authoring paths only
-        # become loadable through the RuntimeAssetCatalog-backed service.
-        RuntimeSceneManager.install_runtime_service(self._scene_service)
-        self._scene_service_installed = True
+        from infernux.application import Application
+        from infernux.engine.runtime_worlds import RuntimeWorldSession, capture_runtime_sources, component_world_id
+        engine = Application._current_engine()
+        self._runtime_world_session = RuntimeWorldSession(engine, capture_runtime_sources(),
+                                                         scene_service=self._scene_service)
         try:
-            scene.set_playing(True)
-            self._refresh_loaded_scene(scene)
-            self._refresh_execution_membership()
-            SceneManager.instance().play()
-            # SceneManager.Play() publishes Start callbacks and may materialize
-            # runtime component mirrors. Reconcile once after that publication
-            # so the native lifecycle fast path cannot start with an empty
-            # phase plan (which would leave GPU compute components idle).
-            self._refresh_execution_membership()
-            from infernux.components.component import InxComponent
-            from infernux.engine.startup_warmup import run_component_warmups
-            from infernux.engine.project_context import get_project_root
-            run_component_warmups(
-                (
-                    component
-                    for values in InxComponent._active_instances.values()
-                    for component in values
-                ),
-                scope="player",
-                project_path=get_project_root(),
-            )
-        except Exception:
-            RuntimeSceneManager.remove_runtime_service(self._scene_service)
+            identity = self._runtime_world_session.create()
+            self._runtime_world_id = identity
+            domain = engine._world_runtimes[identity]
+            self._execution_scheduler = domain.scheduler
+            self._scene_service = domain.scene_loads._runtime_scene_service
+            self._scene_service_installed = True
+            with native_module._RuntimeWorldScope(identity):
+                scene = SceneManager.instance().get_active_scene()
+                self._refresh_loaded_scene(scene)
+                self._refresh_execution_membership()
+                SceneManager.instance().play()
+                self._refresh_execution_membership()
+                from infernux.components.component import InxComponent
+                from infernux.engine.startup_warmup import run_component_warmups
+                from infernux.engine.project_context import get_project_root
+                run_component_warmups(
+                    (component for values in InxComponent._active_instances.values() for component in values
+                     if component_world_id(component) == identity),
+                    scope="player", project_path=get_project_root())
+        except BaseException:
+            if self._runtime_world_id is not None:
+                from infernux.lib import _Infernux
+                with _Infernux._RuntimeWorldScope(self._runtime_world_id):
+                    SceneManager.instance().stop()
+            self._runtime_world_session.close()
+            self._runtime_world_session = None
+            self._runtime_world_id = None
             self._scene_service_installed = False
             raise
         self._state = "playing"
@@ -379,6 +384,13 @@ class PlayerRuntimeSession(WorkRuntime):
         return True
 
     def prepare_frame(self) -> None:
+        if not self.is_playing:
+            return
+        from infernux.lib import _Infernux
+        with _Infernux._RuntimeWorldScope(self._runtime_world_id):
+            self._prepare_runtime_world()
+
+    def _prepare_runtime_world(self) -> None:
         """Prepare one Player frame at the safe pre-scene boundary.
 
         Scene callbacks can queue a runtime load while the native scene is
@@ -409,14 +421,17 @@ class PlayerRuntimeSession(WorkRuntime):
             self.get_asset_database()._discard_runtime_asset_catalog()
             publication.status = "cancelled"
             self._pending_content = None
-        self._scene_service.cancel_pending_load()
         native = SceneManager.instance()
+        if self._runtime_world_id is None:
+            from infernux.lib import _Infernux
+            with _Infernux._RuntimeWorldScope(native._authoring_runtime_world_id):
+                self._scene_service.cancel_pending_load()
         native.stop()
-        # Native destruction owns OnDisable -> OnDestroy and Python bindings.
-        # Retiring only Python mirrors leaves native callbacks until GPU cleanup.
-        while native.scene_count:
-            native.unload_scene(native.get_scene_at(native.scene_count - 1))
-        self._execution_scheduler.clear()
+        if self._runtime_world_session is not None:
+            self._runtime_world_session.close()
+            self._runtime_world_session = None
+        # The Engine companion and shared service retain pending retired domains.
+        self._runtime_world_id = None
         from infernux.application import Application
 
         if Application._current_engine() is self:
@@ -425,14 +440,11 @@ class PlayerRuntimeSession(WorkRuntime):
             _release_engine_resources()
             self._frame_work.stop()
         self._graph_event_signals = None
-        if self._scene_service_installed:
-            try:
-                from infernux.scene import SceneManager as RuntimeSceneManager
+        self._scene_service_installed = False
+        self._state = "stopped"
 
-                RuntimeSceneManager.remove_runtime_service(self._scene_service)
-            except Exception as exc:
-                Debug.log_suppressed("PlayerRuntimeSession.remove_scene_service", exc)
-            self._scene_service_installed = False
+    def release_content(self) -> None:
+        """Release the extraction tree after the native asset worker drains."""
         from infernux.engine.project_context import (
             set_runtime_asset_extension_resolver,
             set_runtime_asset_query,
@@ -447,10 +459,6 @@ class PlayerRuntimeSession(WorkRuntime):
         set_runtime_asset_query(None)
         set_runtime_content_roots(())
         self._content_roots = ()
-        self._state = "stopped"
-
-    def release_content(self) -> None:
-        """Release the extraction tree after the native asset worker drains."""
         if self._content_workspace is not None:
             self._content_workspace.cleanup()
             self._content_workspace = None

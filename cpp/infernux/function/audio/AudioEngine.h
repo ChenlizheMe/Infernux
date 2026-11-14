@@ -23,6 +23,7 @@ namespace infernux
 class AudioClip;
 class AudioSource;
 class AudioListener;
+class RuntimeWorld;
 
 /**
  * @brief Core audio engine managing SDL3 audio device and stream mixing.
@@ -58,6 +59,8 @@ class AudioEngine
     /// @brief Per-frame update: recalculate 3D spatialization for all active sources
     /// @param deltaTime Time since last frame
     void Update(float deltaTime);
+    /// Apply this World's pause state without pausing the shared device.
+    void RefreshWorldState(const RuntimeWorld &world);
 
     // ========================================================================
     // Voice management (called by AudioSource)
@@ -125,11 +128,7 @@ class AudioEngine
     void SetActiveListener(AudioListener *listener);
 
     /// @brief Get the currently active listener
-    [[nodiscard]] AudioListener *GetActiveListener() const
-    {
-        std::lock_guard<std::mutex> lock(m_listenersMutex);
-        return m_activeListener;
-    }
+    [[nodiscard]] AudioListener *GetActiveListener() const;
 
     /// Stable world-wide listener identity used by diagnostics and tooling.
     [[nodiscard]] uint64_t GetActiveListenerGameObjectId() const;
@@ -252,7 +251,9 @@ class AudioEngine
     void RebalanceVoices();
     float VoiceAudibility(const AudioVoiceState &state) const;
     bool VoiceFinished(const AudioVoiceState &state) const;
-    AudioListener *FindBestListenerLocked(AudioListener *exclude = nullptr) const;
+    AudioListener *FindBestListenerLocked(uint64_t worldId, AudioListener *exclude = nullptr) const;
+    void RefreshVoiceWorldState(AudioVoiceState &state);
+    void SetVoicePlaybackPaused(AudioVoiceState &state, bool paused);
 
     bool m_initialized = false;
     bool m_globalPaused = false;
@@ -273,7 +274,7 @@ class AudioEngine
     SDL_AudioDeviceID m_deviceId = 0;
     SDL_AudioSpec m_deviceSpec = {};
 
-    AudioListener *m_activeListener = nullptr;
+    std::unordered_map<uint64_t, AudioListener *> m_activeListeners;
 
     /// Logical voices, owned by the engine thread. Device callbacks only read
     /// their stable userdata; mutations of scheduling state stay on the owner.
@@ -293,8 +294,9 @@ class AudioEngine
     std::unordered_set<AudioSource *> m_registeredSources;
     mutable std::mutex m_sourcesMutex;
 
-    /// Registered AudioListeners. Only one is active; the rest are standby listeners.
-    std::unordered_set<AudioListener *> m_registeredListeners;
+    /// Registration retains the source World through Scene=null teardown.
+    /// Each World selects one listener; the shared device hears the primary World.
+    std::unordered_map<AudioListener *, uint64_t> m_registeredListeners;
     mutable std::mutex m_listenersMutex;
 };
 

@@ -160,13 +160,41 @@ def _cancel_layout_epoch(class_id: int, reference) -> None:
     _drain_retired_layout(int(class_id))
 
 
+def retire_runtime_realm(realm: str, component_types) -> None:
+    """Retire one final World on the existing shared CDS and epoch/slot lifetime."""
+    prefix = realm + ':'
+    published = {key: info for key, info in _class_registry.items() if key.startswith(prefix)}
+    owns_type = lambda cls: cls.__module__ == realm or cls.__module__.startswith(realm + '.')
+    classes = {cls for cls in _class_info_cache if owns_type(cls)}
+    classes.update(cls for cls in component_types if owns_type(cls))
+    # Pin current layouts before the native retirement can reclaim an empty one.
+    # Historical layouts already use these same weak epoch/sentinel records.
+    for cls in classes:
+        current = published.get(_class_key(cls))
+        if current is not None:
+            _retain_layout_epoch(int(current[0]), cls)
+    class_ids = {int(info[0]) for info in published.values()}
+    lib = _get_lib()
+    for class_id in class_ids:
+        lib._cds_retire_class(class_id)
+    for key in published:
+        _class_registry.pop(key)
+    for cls in classes:
+        _class_info_cache.pop(cls, None)
+    _invalidate_class_info_cache()
+    for class_id in class_ids:
+        _drain_retired_layout(class_id)
+
+
 def _class_key(cls) -> str:
     layout = [
         (name, metadata.field_type.name)
         for name, metadata in sorted(_numeric_fields(cls).items())
     ]
     revision = hashlib.sha256(repr(layout).encode("utf-8")).hexdigest()[:16]
-    return f"{cls._get_type_guid()}@{revision}"
+    module_realm = cls.__module__.split('.', 1)[0]
+    realm = module_realm + ':' if module_realm.startswith('_infernux_runtime_') else ''
+    return f"{realm}{cls._get_type_guid()}@{revision}"
 
 
 def _numeric_fields(cls) -> dict[str, object]:

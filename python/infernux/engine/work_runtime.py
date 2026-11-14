@@ -118,4 +118,8 @@ class WorkRuntime:
         from infernux.lib import SceneManager
         manager = SceneManager.instance()
         self._result_consumers[:] = [consumer for consumer in self._result_consumers if consumer._current(manager)]
-        manager._set_result_consumers_present(bool(self._result_consumers))
+        from infernux.lib import _Infernux
+        owners = {consumer._world_id for consumer in self._result_consumers}
+        for identity in (manager._authoring_runtime_world_id, *manager._runtime_world_ids):
+            with _Infernux._RuntimeWorldScope(identity):
+                manager._set_result_consumers_present(identity in owners)

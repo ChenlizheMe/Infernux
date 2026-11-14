@@ -353,12 +353,14 @@ class Scene : public NativeLifetimeOwner
     /// @brief Rebuild the scene from an already parsed current-schema document.
     bool DeserializeDocument(const nlohmann::json &document,
                              std::unordered_map<uint64_t, uint64_t> *objectIdRemap = nullptr,
-                             std::unordered_map<uint64_t, uint64_t> *componentIdRemap = nullptr);
+                             std::unordered_map<uint64_t, uint64_t> *componentIdRemap = nullptr,
+                             bool newInstanceIds = false);
 
     /// Commit a validated candidate while retaining the current native world.
     /// The returned token must be finalized after cross-language publish or
     /// rolled back to restore the exact previous GameObject/Component instances.
-    [[nodiscard]] std::shared_ptr<SceneCommitToken> CommitDocumentRetainingCurrentWorld(const nlohmann::json &document);
+    [[nodiscard]] std::shared_ptr<SceneCommitToken> CommitDocumentRetainingCurrentWorld(const nlohmann::json &document,
+                                                                                        bool newInstanceIds = false);
 
     /// @brief Atomically save the scene to *path* through a same-directory temporary file.
     /// @return true on success; logs INXLOG_ERROR on failure.

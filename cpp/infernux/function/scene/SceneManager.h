@@ -72,6 +72,33 @@ class SceneManager
     [[nodiscard]] RuntimeWorld &CurrentWorld() noexcept;
     [[nodiscard]] const RuntimeWorld &CurrentWorld() const noexcept;
 
+    /// Authoring and runtime ownership stay distinct; Scene identities never move between them.
+    [[nodiscard]] RuntimeWorld &AuthoringWorld() noexcept
+    {
+        return *m_authoringWorld;
+    }
+    [[nodiscard]] const RuntimeWorld &AuthoringWorld() const noexcept
+    {
+        return *m_authoringWorld;
+    }
+    [[nodiscard]] RuntimeWorld *FindRuntimeWorld(uint64_t id) const noexcept;
+    [[nodiscard]] RuntimeWorld *GetPrimaryRuntimeWorld() const noexcept;
+    [[nodiscard]] std::vector<uint64_t> GetRuntimeWorldIds() const;
+    [[nodiscard]] bool IsPreparingRuntimeWorld(const RuntimeWorld &world) const noexcept;
+
+    /// Internal scene-transaction entry points, not the public multi-world API.
+    RuntimeWorld &BeginRuntimeWorld();
+    bool PublishRuntimeWorld(uint64_t id);
+    void RemapPreparingWorldReferences(uint64_t id, const std::unordered_map<uint64_t, uint64_t> &components);
+    void BeginRuntimeWorldRetirement(uint64_t id);
+    bool RetireRuntimeWorldScenes(uint64_t id);
+    bool FinishRuntimeWorldRetirement(uint64_t id);
+    bool CollectRetiredRuntimeWorlds();
+    void CompleteShutdown();
+    void EnsureAuthoringWorld();
+    void SetPrimaryRuntimeWorld(uint64_t id);
+    void SetRuntimeWorldRetirementCallbacks(std::function<void(uint64_t)> begin, std::function<void(uint64_t)> finish);
+
     // Prevent copying
     SceneManager(const SceneManager &) = delete;
     SceneManager &operator=(const SceneManager &) = delete;
@@ -159,7 +186,7 @@ class SceneManager
     void Update(float deltaTime);
 
     /// One Host admission, then all ready logical phases within the existing allowance.
-    void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime);
+    void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta = false);
     void BindRuntimeFrameWork(FrameWorkOwner &work) noexcept;
     void SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
                                              std::function<void(uint64_t)> retire);
@@ -282,14 +309,14 @@ class SceneManager
     /// publication.
     [[nodiscard]] uint64_t GetRenderTransformRevision() const noexcept
     {
-        return m_renderTransformRevision;
+        return CurrentWorld().render.renderTransformRevision;
     }
 
     /// Render-facing revision for dynamic draw-call payloads that do not
     /// affect transforms or visibility, such as a skinned bone palette.
     [[nodiscard]] uint64_t GetRenderContentRevision() const noexcept
     {
-        return m_renderContentRevision;
+        return CurrentWorld().render.renderContentRevision;
     }
 
     // ========================================================================
@@ -328,9 +355,9 @@ class SceneManager
 
     [[nodiscard]] bool IsRuntimeScene(const Scene *scene) const noexcept
     {
-        return scene && (scene == CurrentWorld().scenes.persistent.get() ||
-                         CurrentWorld().scenes.loadedSet.find(const_cast<Scene *>(scene)) !=
-                             CurrentWorld().scenes.loadedSet.end());
+        auto *world = scene ? scene->GetRuntimeWorld() : nullptr;
+        return world && (scene == world->scenes.persistent.get() ||
+                         world->scenes.loadedSet.find(const_cast<Scene *>(scene)) != world->scenes.loadedSet.end());
     }
 
     // ========================================================================
@@ -597,13 +624,13 @@ class SceneManager
     /// Read-only access to the active mesh renderers registry.
     [[nodiscard]] const std::vector<MeshRenderer *> &GetActiveMeshRenderers() const
     {
-        return m_activeMeshRenderers;
+        return CurrentWorld().render.activeMeshRenderers;
     }
 
     /// Monotonic counter bumped when a MeshRenderer is registered/unregistered.
     [[nodiscard]] uint64_t GetMeshRendererVersion() const
     {
-        return m_meshRendererVersion;
+        return CurrentWorld().render.meshRendererVersion;
     }
 
     /// Register a Light so lighting can iterate it directly.
@@ -615,7 +642,7 @@ class SceneManager
     /// Read-only access to the active lights registry.
     [[nodiscard]] const std::vector<Light *> &GetActiveLights() const
     {
-        return m_activeLights;
+        return CurrentWorld().render.activeLights;
     }
 
   private:
@@ -624,6 +651,12 @@ class SceneManager
     SceneManager();
     ~SceneManager() = default;
     void AdvanceFrameTime(float unscaledDeltaTime, float scaledDeltaTime);
+    void UpdateHostFrame(float deltaTime);
+    void UpdateCurrentWorld(float deltaTime);
+    bool ServiceCurrentWorldFrame();
+    void PauseCurrentWorld();
+    void PlayCurrentWorld();
+    void StopCurrentWorld();
     void ResetFrameTime();
     void ResetFrameDelta();
     void ContinueRuntimeUpdate();
@@ -665,7 +698,13 @@ class SceneManager
     void RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt = nullptr);
     void UpdateRuntimeScenePlayingState(bool playing);
 
-    RuntimeWorld m_defaultWorld;
+    std::unique_ptr<RuntimeWorld> m_authoringWorld;
+    std::vector<std::unique_ptr<RuntimeWorld>> m_runtimeWorlds;
+    std::vector<std::unique_ptr<RuntimeWorld>> m_preparingWorlds;
+    std::vector<std::unique_ptr<RuntimeWorld>> m_retiringWorlds;
+    std::function<void(uint64_t)> m_runtimeWorldBeginRetirementCallback;
+    std::function<void(uint64_t)> m_runtimeWorldRetirementCallback;
+    uint64_t m_nextRuntimeWorldId = 0;
     FrameWorkOwner *m_runtimeFrameWork = nullptr;
     std::function<void()> m_runtimeInput;
     std::function<bool(RuntimeWorld &)> m_runtimeFramePublication;
@@ -697,24 +736,6 @@ class SceneManager
     RuntimeFrameBarrierCallback m_runtimeFrameBarrier;
     RuntimeResultConsumerCallback m_runtimeResultConsumer;
     bool m_runtimeLifecycleSchedulerEnabled = false;
-    uint64_t m_renderTransformRevision = 1;
-    uint64_t m_renderContentRevision = 1;
-
-    // MeshRenderer component registry — populated by MeshRenderer OnEnable/OnDisable.
-    // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.
-    std::vector<MeshRenderer *> m_activeMeshRenderers;
-    std::unordered_set<MeshRenderer *> m_activeMeshRendererSet; // O(1) duplicate check
-    std::unordered_map<MeshRenderer *, SkinnedMeshRenderer *> m_pendingSkinPoseHistoryCommits;
-    std::unordered_map<Transform *, SkeletonInstance *> m_skeletonBoneOwners;
-    std::vector<SkeletonInstance *> m_pendingSkeletonPoses;
-    uint64_t m_meshRendererVersion = 0;
-    uint32_t m_rendererRegistryTransactionDepth = 0;
-    bool m_rendererRegistryTransactionDirty = false;
-
-    // Light component registry — populated by Light OnEnable/OnDisable.
-    // Avoids per-frame GetAllObjects() + GetComponent<Light>() in CollectLights/ComputeShadowVP.
-    std::vector<Light *> m_activeLights;
-
     FrameProfile m_lastFrameProfile;
 };
 

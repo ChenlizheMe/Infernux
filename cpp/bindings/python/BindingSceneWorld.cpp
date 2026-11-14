@@ -29,6 +29,31 @@ namespace infernux::scene_binding
 namespace
 {
 
+class PythonWorldScope final
+{
+  public:
+    explicit PythonWorldScope(uint64_t id) : m_id(id)
+    {
+    }
+    void Enter()
+    {
+        if (m_scope)
+            throw std::logic_error("RuntimeWorld scope is already active");
+        auto *world = SceneManager::Instance().FindRuntimeWorld(m_id);
+        if (!world)
+            throw std::logic_error("RuntimeWorld has retired");
+        m_scope = std::make_unique<WorldExecutionScope>(world);
+    }
+    void Exit()
+    {
+        m_scope.reset();
+    }
+
+  private:
+    uint64_t m_id;
+    std::unique_ptr<WorldExecutionScope> m_scope;
+};
+
 enum class ResultTargetStatus
 {
     Ready,
@@ -378,6 +403,11 @@ static void BindSceneState(NativeClass<Scene> &cls)
         .def_property_readonly("temporal_discontinuity_revision", &Scene::GetTemporalDiscontinuityRevision,
                                "Monotonic counter bumped only by explicit world-time jumps")
         .def_property_readonly("world_id", &Scene::GetWorldId, "Unique identity of this native Scene world")
+        .def_property_readonly("_runtime_world_id",
+                               [](const Scene &scene) {
+                                   auto *world = scene.GetRuntimeWorld();
+                                   return world ? world->id : 0;
+                               })
         // Camera management
         .def_property("main_camera", &Scene::GetMainCamera, &Scene::SetMainCamera, py::return_value_policy::reference,
                       "Get/set the explicitly preferred Camera component for this scene")
@@ -420,6 +450,10 @@ void BindSceneManager(py::module_ &m)
         .value("UPDATE_SCRIPT", SceneManager::RuntimeFrameBarrier::UpdateScript)
         .value("LATE_SCRIPT", SceneManager::RuntimeFrameBarrier::LateScript);
 
+    py::class_<PythonWorldScope>(m, "_RuntimeWorldScope")
+        .def(py::init<uint64_t>())
+        .def("__enter__", &PythonWorldScope::Enter)
+        .def("__exit__", [](PythonWorldScope &scope, py::object, py::object, py::object) { scope.Exit(); });
     py::class_<RuntimeWorld::FrameTime>(m, "_FrameTime")
         .def_readonly("time", &RuntimeWorld::FrameTime::time)
         .def_readonly("unscaled_time", &RuntimeWorld::FrameTime::unscaledTime)
@@ -434,6 +468,21 @@ void BindSceneManager(py::module_ &m)
         .def_property_readonly("_frame_time", &SceneManager::GetFrameTime, py::return_value_policy::reference_internal)
         .def("get_realtime_since_startup", &SceneManager::GetRealtimeSinceStartup,
              "Monotonic real seconds since the owning engine started")
+        .def_property_readonly("_current_runtime_world_id",
+                               [](const SceneManager &manager) { return manager.CurrentWorld().id; })
+        .def_property_readonly("_authoring_runtime_world_id",
+                               [](const SceneManager &manager) { return manager.AuthoringWorld().id; })
+        .def_property_readonly("_runtime_world_ids", &SceneManager::GetRuntimeWorldIds)
+        .def("_set_runtime_world_retirement_callbacks", &SceneManager::SetRuntimeWorldRetirementCallbacks)
+        .def("_ensure_authoring_world", &SceneManager::EnsureAuthoringWorld)
+        .def("_collect_retired_runtime_worlds", &SceneManager::CollectRetiredRuntimeWorlds)
+        .def("_begin_runtime_world", [](SceneManager &manager) { return manager.BeginRuntimeWorld().id; })
+        .def("_remap_preparing_world_references", &SceneManager::RemapPreparingWorldReferences)
+        .def("_publish_runtime_world", &SceneManager::PublishRuntimeWorld)
+        .def("_begin_runtime_world_retirement", &SceneManager::BeginRuntimeWorldRetirement)
+        .def("_retire_runtime_world_scenes", &SceneManager::RetireRuntimeWorldScenes)
+        .def("_finish_runtime_world_retirement", &SceneManager::FinishRuntimeWorldRetirement)
+        .def("_set_primary_runtime_world", &SceneManager::SetPrimaryRuntimeWorld)
         .def("create_scene", &SceneManager::CreateScene, py::return_value_policy::reference, py::arg("name"),
              "Create a new empty scene")
         .def("_create_preview_scene", &SceneManager::CreatePreviewScene, py::return_value_policy::reference,
