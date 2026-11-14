@@ -626,6 +626,7 @@ class JoltGpuTick::Impl
         batch = std::move(selected.packet);
         workContinuation = std::move(selected.continueWork);
         continuationKind = kind;
+        continuationResumeAfter = selected.resumeAfter;
         if (batch)
             batchKind = kind;
         else if (workContinuation) {
@@ -634,6 +635,11 @@ class JoltGpuTick::Impl
             busyProgress = work.ProgressSerial();
             busySubmissions = host.Queue().GetPendingSubmissionCount();
         }
+    }
+
+    bool ContinuationNeedsWait() const
+    {
+        return continuationResumeAfter == JoltGpuControlWork::ResumeAfter::Completion && !receipts.empty();
     }
 
     void ModelAccepted()
@@ -702,10 +708,9 @@ class JoltGpuTick::Impl
         facts.pending = status == Status::Running || !receipts.empty();
         if (status != Status::Running)
             return facts;
-        // A completion-dependent consumer stays on this source. Waiting for
-        // its preceding receipts neither reruns its factory nor admits another
-        // control group, solver stage or final render consumer.
-        if (!batch && workContinuation && !receipts.empty()) {
+        // Only explicitly acceptance-ready producer preparation may overlap its
+        // accepted GPU predecessor. Completion consumers retain the same gate.
+        if (!batch && workContinuation && ContinuationNeedsWait()) {
             facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
             facts.gpuBusy = true;
             return facts;
@@ -911,7 +916,7 @@ class JoltGpuTick::Impl
         }
         if (!batch) {
             if (workContinuation) {
-                if (!receipts.empty())
+                if (ContinuationNeedsWait())
                     return false;
                 const auto kind = continuationKind;
                 auto continuation = std::move(workContinuation);
@@ -1124,6 +1129,7 @@ class JoltGpuTick::Impl
     JoltGpuTickControl control;
     std::function<JoltGpuControlWork()> workContinuation;
     PacketKind continuationKind = PacketKind::Work;
+    JoltGpuControlWork::ResumeAfter continuationResumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
     std::unique_ptr<JoltGpuModelUpdate> modelUpdate;
     size_t groupCursor = 0;
     bool modelPrepared = false;

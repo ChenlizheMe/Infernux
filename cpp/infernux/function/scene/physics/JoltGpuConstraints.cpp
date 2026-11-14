@@ -506,7 +506,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             Reduce(config.layout.z, config.counts.x, 0u, config.round.x);
             Add(CommitRound, 1u);
             // This records the binding parity for subsequent operations only.
-            // The committed cursor/parity changes after the real receipt.
+            // Committed CC parity changes only after the completed summary.
             planBank ^= 1u;
         }
     }
@@ -675,11 +675,17 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
         if (boundary && phase == Phase::Assemble)
             reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
+        // Partial plans and the Initialize -> RoundWindow host transition read
+        // no GPU values. CC summaries and schedule installation still wait.
+        const auto resumeAfter = !boundary || submittedPhase == Phase::Initialize
+                                     ? JoltGpuControlWork::ResumeAfter::Acceptance
+                                     : JoltGpuControlWork::ResumeAfter::Completion;
         auto packet =
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
-        return {packet, [self = shared_from_this(), packet, next, boundary, submittedPhase]() -> JoltGpuControlWork {
-                    // The existing owner calls once after this exact packet's receipt.
-                    // No advancement or repeated Setup/Warm occurs on busy admission.
+        return {packet,
+                [self = shared_from_this(), packet, next, boundary, submittedPhase]() -> JoltGpuControlWork {
+                    // This cursor advances once after acceptance; numerical
+                    // readback transitions below additionally require completion.
                     self->cursor = next;
                     if (boundary) {
                         if (submittedPhase == Phase::Initialize)
@@ -692,7 +698,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                         }
                     }
                     return self->Next();
-                }};
+                },
+                resumeAfter};
     }
 
     std::shared_ptr<Impl> implementation;

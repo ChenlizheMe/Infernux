@@ -989,9 +989,14 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         if (dispatches.empty() && copies.empty() && uploads.empty())
             throw std::logic_error("Jolt GPU broadphase continuation produced an empty packet");
+        // Pure Next/copy-lifetime transitions need acceptance, not CPU fence
+        // observation. Metadata decode and final workset handoff still wait.
+        const auto resumeAfter = reads.empty() && boundary != Phase::Done ? JoltGpuControlWork::ResumeAfter::Acceptance
+                                                                          : JoltGpuControlWork::ResumeAfter::Completion;
         auto packet = rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches),
                                                std::move(reads), std::move(copies));
-        return {packet, [self = shared_from_this(), packet, boundary]() -> JoltGpuControlWork {
+        return {packet,
+                [self = shared_from_this(), packet, boundary]() -> JoltGpuControlWork {
                     if (boundary == Phase::FinalInitialize)
                         self->oldArena.reset();
                     if (boundary == Phase::CountBoundary || boundary == Phase::FillBoundary)
@@ -1007,7 +1012,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                         return {};
                     }
                     return self->Next();
-                }};
+                },
+                resumeAfter};
     }
 
     std::shared_ptr<Impl> implementation;

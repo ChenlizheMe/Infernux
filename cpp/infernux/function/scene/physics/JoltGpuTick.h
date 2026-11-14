@@ -15,22 +15,29 @@ class JoltGpuConstraints;
 
 /// One unaccepted packet and its optional successor.
 /// The existing tick source alone submits, accounts and observes every packet.
-/// A packet's continuation runs after its real receipt completes. A continuation
-/// without a packet retains host preparation under temporary capacity pressure;
+/// Continuations normally wait for their real receipt. A producer may explicitly
+/// permit pure host preparation after acceptance when GPU dependencies suffice.
+/// A continuation without a packet retains host preparation under capacity pressure;
 /// the owner retries only at a new opportunity or after resource progress.
 /// Neither form may submit, wait or reenter. Both absent means chain complete.
 struct JoltGpuControlWork
 {
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
     std::function<JoltGpuControlWork()> continueWork;
+    enum class ResumeAfter
+    {
+        Completion,
+        Acceptance
+    };
+    ResumeAfter resumeAfter = ResumeAfter::Completion;
 
     JoltGpuControlWork() = default;
     JoltGpuControlWork(std::shared_ptr<rhi::PreparedComputeBatch> value) : packet(std::move(value))
     {
     }
     JoltGpuControlWork(std::shared_ptr<rhi::PreparedComputeBatch> value,
-                       std::function<JoltGpuControlWork()> continuation)
-        : packet(std::move(value)), continueWork(std::move(continuation))
+                       std::function<JoltGpuControlWork()> continuation, ResumeAfter boundary = ResumeAfter::Completion)
+        : packet(std::move(value)), continueWork(std::move(continuation)), resumeAfter(boundary)
     {
     }
 };
