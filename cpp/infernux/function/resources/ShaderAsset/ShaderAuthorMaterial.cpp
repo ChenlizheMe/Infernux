@@ -110,7 +110,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     };
     if (particle) {
         addVariant(ShaderCompileTarget::Forward, nullptr, "fragment_main");
-        addVariant(ShaderCompileTarget::ForwardPlus, nullptr, "fragment_main");
+        addVariant(ShaderCompileTarget::ForwardPlus, nullptr, "fragment_forward_plus");
         addVariant(ShaderCompileTarget::Depth, nullptr, "fragment_depth");
         addVariant(ShaderCompileTarget::Picking, nullptr, "fragment_picking");
         addVariant(ShaderCompileTarget::Motion, nullptr, "fragment_motion");

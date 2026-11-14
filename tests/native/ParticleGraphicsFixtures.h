@@ -47,11 +47,20 @@ float4 evaluate(InxParticleInput input) {
     return )slang" + value + R"slang(;
 }
 [shader("fragment")] float4 fragment_main(InxParticleInput input) : SV_Target0 { return evaluate(input); }
+[shader("fragment")] float4 fragment_forward_plus(InxParticleInput input) : SV_Target0 { return evaluate(input); }
 [shader("fragment")] float4 fragment_soft_depth(InxParticleInput input) : SV_Target0 {
     return )slang" + softValue("true") +
                                R"slang(;
 }
 [shader("fragment")] float4 fragment_soft_color(InxParticleInput input) : SV_Target0 {
+    return )slang" + softValue("false") +
+                               R"slang(;
+}
+[shader("fragment")] float4 fragment_forward_plus_soft_depth(InxParticleInput input) : SV_Target0 {
+    return )slang" + softValue("true") +
+                               R"slang(;
+}
+[shader("fragment")] float4 fragment_forward_plus_soft_color(InxParticleInput input) : SV_Target0 {
     return )slang" + softValue("false") +
                                R"slang(;
 }

@@ -102,9 +102,14 @@ rhi::GraphicsPipelineHandle ParticleGpuGraphicsProgram::Get(const MaterialPassPi
                                                                       : "vertex_main";
     const std::vector<ShaderStageSelection> entries = {
         {*m_geometryTarget, EntryIndex(*m_geometryTarget, vertex)},
-        {*m_surfaceTarget, EntryIndex(*m_surfaceTarget, softDepthKind == 1   ? "fragment_soft_depth"
-                                                        : softDepthKind == 2 ? "fragment_soft_color"
-                                                                             : variant->fragmentEntryPoint)},
+        {*m_surfaceTarget,
+         EntryIndex(*m_surfaceTarget, softDepthKind == 1   ? (pass.target == ShaderCompileTarget::ForwardPlus
+                                                                  ? "fragment_forward_plus_soft_depth"
+                                                                  : "fragment_soft_depth")
+                                      : softDepthKind == 2 ? (pass.target == ShaderCompileTarget::ForwardPlus
+                                                                  ? "fragment_forward_plus_soft_color"
+                                                                  : "fragment_soft_color")
+                                                           : variant->fragmentEntryPoint)},
     };
     auto program = std::make_unique<DeviceShaderProgram>(
         m_device, entries, std::vector<rhi::BindingLayoutHandle>{m_materialLayout, perView.layout, geometryLayout});

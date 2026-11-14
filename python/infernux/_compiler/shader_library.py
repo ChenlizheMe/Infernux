@@ -48,7 +48,8 @@ def engine_imports(body, alias, *, graph, owner):
 
 def uses_surface_lighting(body, alias, functions):
     return any(function.lighting_specialization for function in functions.values()) or any(
-        isinstance(node, ast.Call) and qualified(node.func) == alias + ".lighting.shade"
+        isinstance(node, ast.Call) and qualified(node.func) in {
+            alias + ".lighting.shade", alias + ".lighting.particle_pbr", alias + ".lighting.six_way_smoke"}
         for declaration in body for node in ast.walk(declaration)
     )
 
@@ -166,7 +167,9 @@ class ShaderEmitter(SlangEmitter):
             for value, kind in zip(node.args, arguments):
                 if self.infer(value) != kind:
                     self.error(value, "shader." + operation + " requires " + kind, code="author.type")
-            return symbol + "(" + ", ".join(self.visit(value) for value in node.args) + ")"
+            specialization = "<" + self.lighting_mode + ">" if operation in {
+                "lighting.particle_pbr", "lighting.six_way_smoke"} else ""
+            return symbol + specialization + "(" + ", ".join(self.visit(value) for value in node.args) + ")"
         if operation == "SurfaceData" and operation != qualified(node.func):
             values = {keyword.arg: keyword.value for keyword in node.keywords}
             if node.args or values.keys() - SURFACE_FIELDS.keys() or len(values) != len(node.keywords):

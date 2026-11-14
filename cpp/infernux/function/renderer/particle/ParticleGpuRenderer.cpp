@@ -78,32 +78,38 @@ bool ParticleGpuRenderer::Create(rhi::Device &device, const GpuParticleRendererD
         const auto surface =
             std::find_if(desc.surface->compilation->targets.begin(), desc.surface->compilation->targets.end(),
                          [target](const auto &code) { return code.target == target; });
-        const std::array<std::string_view, 2> names{"fragment_soft_depth", "fragment_soft_color"};
+        const std::array<std::array<std::string_view, 2>, 2> names{{
+            {"fragment_soft_depth", "fragment_forward_plus_soft_depth"},
+            {"fragment_soft_color", "fragment_forward_plus_soft_color"},
+        }};
         for (size_t index = 0; index < names.size(); ++index) {
-            const auto entry = std::find_if(surface->entries.begin(), surface->entries.end(),
-                                            [&](const auto &value) { return value.name == names[index]; });
-            if (entry == surface->entries.end()) {
-                Destroy();
-                return false;
-            }
             auto softLayout = layout;
-            for (const auto &key : entry->bindings) {
-                const auto mapped = std::find_if(layout.entries.begin(), layout.entries.begin() + layout.entryCount,
-                                                 [&](const auto &value) { return value.binding == key[1]; });
-                if (key[0] != 2 || mapped != layout.entries.begin() + layout.entryCount)
-                    continue;
-                const auto resource =
-                    std::find_if(surface->resources.begin(), surface->resources.end(), [&](const auto &value) {
-                        return value.set == key[0] && value.binding.binding == key[1];
-                    });
-                if (resource == surface->resources.end() ||
-                    resource->binding.type != rhi::BindingType::SampledTexture || m_depthReads[index]) {
+            for (const auto name : names[index]) {
+                const auto entry = std::find_if(surface->entries.begin(), surface->entries.end(),
+                                                [&](const auto &value) { return value.name == name; });
+                if (entry == surface->entries.end()) {
                     Destroy();
                     return false;
                 }
-                softLayout.entries.at(softLayout.entryCount++) = resource->binding;
-                m_depthReads[index] = true;
-                m_depthBindings[index] = resource->binding.binding;
+                for (const auto &key : entry->bindings) {
+                    const auto mapped =
+                        std::find_if(softLayout.entries.begin(), softLayout.entries.begin() + softLayout.entryCount,
+                                     [&](const auto &value) { return value.binding == key[1]; });
+                    if (key[0] != 2 || mapped != softLayout.entries.begin() + softLayout.entryCount)
+                        continue;
+                    const auto resource =
+                        std::find_if(surface->resources.begin(), surface->resources.end(), [&](const auto &value) {
+                            return value.set == key[0] && value.binding.binding == key[1];
+                        });
+                    if (resource == surface->resources.end() ||
+                        resource->binding.type != rhi::BindingType::SampledTexture || m_depthReads[index]) {
+                        Destroy();
+                        return false;
+                    }
+                    softLayout.entries.at(softLayout.entryCount++) = resource->binding;
+                    m_depthReads[index] = true;
+                    m_depthBindings[index] = resource->binding.binding;
+                }
             }
             m_geometryLayouts[index + 1] = device.CreateBindingLayout(softLayout);
         }
@@ -283,8 +289,11 @@ bool ParticleGpuRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
     if (!m_surface.RefreshMaterialBuffer(false) || !m_surface.RefreshTextureBindings(false) ||
         (readsDepth && !sceneDepth.IsValid()))
         return false;
-    const auto pipeline =
-        m_program->Get(pass, m_surface.ResolveMaterialState(), perView, m_geometryLayouts[depthKind], depthKind);
+    auto materialPass = pass;
+    if (pass.target == ShaderCompileTarget::ForwardPlus && !m_semantics.receiveSceneLighting)
+        materialPass.target = ShaderCompileTarget::Forward;
+    const auto pipeline = m_program->Get(materialPass, m_surface.ResolveMaterialState(), perView,
+                                         m_geometryLayouts[depthKind], depthKind);
     const auto geometry =
         GeometryGroup(indices, perView.globals, readsDepth ? sceneDepth : rhi::TextureViewHandle{}, depthKind);
     const auto surface = m_surface.ResolveBindGroup();

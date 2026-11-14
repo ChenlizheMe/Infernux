@@ -70,6 +70,8 @@ class _Author(ParameterAuthor):
             self.error(main, "Surface returns shader.SurfaceData" if self.is_surface else
                        "Fragment main returns shader.vec4 or shader.FragmentOutput")
         self.aliases = (self.alias,)
+        if self.domain == "particle":
+            self.lighting_mode = "tiled_lighting"
         self.declare_locals(main.body)
         self.local_declarations()
         self.block(main.body)
@@ -83,10 +85,12 @@ class _Author(ParameterAuthor):
             evaluation_signature = signature or ("InxParticleInput inx_input" if self.domain == "particle" else "")
             coverage = ["    if (!(" + (argument or "inx_input") + ".alpha > 0.0)) discard;"] if self.domain == "particle" else []
             inline = ["[ForceInline]"] if self.domain == "particle" else []
-            return [self.source_directive(main), *inline, result + " inx_author_fragment(" + signature + ")",
+            specialization = "<let tiled_lighting : bool>" if self.domain == "particle" else ""
+            arguments_specialization = "<tiled_lighting>" if self.domain == "particle" else ""
+            return [self.source_directive(main), *inline, result + " inx_author_fragment" + specialization + "(" + signature + ")",
                     "{", *self.lines, "}", *marker, *inline,
-                    result + " " + entry + "(" + evaluation_signature + ")" + (semantic if marker else ""), "{", *coverage,
-                    "    " + result + " color = inx_author_fragment(" + argument + ");",
+                    result + " " + entry + specialization + "(" + evaluation_signature + ")" + (semantic if marker else ""), "{", *coverage,
+                    "    " + result + " color = inx_author_fragment" + arguments_specialization + "(" + argument + ");",
                     "    clip(" + alpha + " - " + threshold + ");", "    return color;", "}"]
         declaration = ("InxSurfaceData inx_author_surface(" + signature + ")" if self.is_surface else
                        result + " fragment_main(" + signature + ")" + semantic)
@@ -96,7 +100,7 @@ class _Author(ParameterAuthor):
 
 
 def _particle_passes(result):
-    call = "inx_evaluate_particle(input)"
+    call = "inx_evaluate_particle<false>(input)"
     depth = result == "InxFragmentOutput"
     color_depth = "float depth : SV_Depth;" if depth else ""
     picking_result = "InxParticlePickingOutput" if depth else "uint2"
@@ -108,21 +112,27 @@ def _particle_passes(result):
     motion_value = ("InxParticleMotionOutput output; output.motion = input.motion_vector; "
                     "output.depth = value.depth; return output;") if depth else "return input.motion_vector;"
     color = "value.color" if depth else "value"
-    return outputs + f"""
+    color_passes = []
+    for prefix, tiled in (("fragment", "false"), ("fragment_forward_plus", "true")):
+        color_call = f"inx_evaluate_particle<{tiled}>(input)"
+        entry = "fragment_main" if tiled == "false" else prefix
+        color_passes.append(f"""
 [shader("fragment")]
-{result} fragment_main(InxParticleInput input){"" if depth else " : SV_Target0"} {{ return {call}; }}
+{result} {entry}(InxParticleInput input){"" if depth else " : SV_Target0"} {{ return {color_call}; }}
 [shader("fragment")]
-{result} fragment_soft_depth(InxParticleInput input){"" if depth else " : SV_Target0"} {{
-    {result} value = {call};
+{result} {prefix}_soft_depth(InxParticleInput input){"" if depth else " : SV_Target0"} {{
+    {result} value = {color_call};
     {color} = inx_particle_apply_soft_coverage({color}, inx_particle_soft_coverage<true>(input));
     return value;
 }}
 [shader("fragment")]
-{result} fragment_soft_color(InxParticleInput input){"" if depth else " : SV_Target0"} {{
-    {result} value = {call};
+{result} {prefix}_soft_color(InxParticleInput input){"" if depth else " : SV_Target0"} {{
+    {result} value = {color_call};
     {color} = inx_particle_apply_soft_coverage({color}, inx_particle_soft_coverage<false>(input));
     return value;
 }}
+""")
+    return outputs + "".join(color_passes) + f"""
 [shader("fragment")]
 {picking_result} fragment_picking(InxParticleInput input){"" if depth else " : SV_Target0"} {{
     {result} value = {call}; {picking_value}

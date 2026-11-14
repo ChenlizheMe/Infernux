@@ -22,14 +22,12 @@ InxShadingContext particle_shading_context(InxParticleInput input)
 }
 
 [__NoSideEffect]
-public float3 inx_particle_pbr(InxSurfaceData surface, InxParticleInput input)
+public float3 inx_particle_pbr<let tiled_lighting : bool>(InxSurfaceData surface, InxParticleInput input)
 {
     if (inx_particle_draw().lighting_control.w < 0.5)
         return surface.albedo + surface.emission;
     InxShadingContext context = particle_shading_context(input);
-    if (inx_particle_draw().lighting_control.x > 0.5)
-        return inx_shade_pbr<true>(surface, context);
-    return inx_shade_pbr<false>(surface, context);
+    return inx_shade_pbr<tiled_lighting>(surface, context);
 }
 
 float3 six_way_transmission(float transmission, float range, float3 density_scale)
@@ -56,7 +54,7 @@ public struct SixWayResponse : IInxLightResponse
 };
 
 [__NoSideEffect]
-public float3 inx_particle_six_way_smoke(InxParticleInput input, float3 positive, float3 negative,
+public float3 inx_particle_six_way_smoke<let tiled_lighting : bool>(InxParticleInput input, float3 positive, float3 negative,
     float3 tint, float alpha, float absorption, float lighting_intensity, float ambient_intensity, float ambient_saturation)
 {
     if (inx_particle_draw().lighting_control.w < 0.5)
@@ -70,11 +68,7 @@ public float3 inx_particle_six_way_smoke(InxParticleInput input, float3 positive
     response.density_scale = 1.0 + log2(max(tint, 1e-5)) / log2(0.2);
     response.range = lerp(0.31830988618, 1.0, saturate(absorption)) * max(alpha, 0.0);
     InxShadingContext context = particle_shading_context(input);
-    float3 direct;
-    if (inx_particle_draw().lighting_control.x > 0.5)
-        direct = inx_direct_lighting<true, SixWayResponse>(context, response.back, response);
-    else
-        direct = inx_direct_lighting<false, SixWayResponse>(context, response.back, response);
+    float3 direct = inx_direct_lighting<tiled_lighting, SixWayResponse>(context, response.back, response);
     float3 ambient = float3(0.0);
     float ambient_weight = clamp(ambient_intensity, 0.0, 0.002);
     if (ambient_weight > 0.0001) {

@@ -2377,6 +2377,9 @@ void ParticleGpuSystemManager::RegisterMeshUploadWork(FrameWorkOwner &owner)
         return;
 
     FrameWorkSource source;
+    // These meshes are prerequisites of a requested graph publication, like
+    // on-demand texture assets; active simulation must not starve their upload.
+    source.interactive = true;
     source.observe = [&impl] { impl.PollMeshUploads(); };
     source.refresh = source.observe;
     source.describe = [&impl, &owner] {
