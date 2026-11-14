@@ -57,7 +57,7 @@ replaces hard-linked outputs safely, and preserves old files on decode failure.
 No compiled engine or Vulkan device is required:
 
 ```sh
-python -m pip install pytest PySide6 packaging PyYAML
+python -m pip install pytest PySide6 packaging PyYAML numpy
 python -m pytest tests/hub tests/contracts -q -ra
 ```
 
@@ -71,6 +71,22 @@ disposable projects; cleanup tests require Git and PowerShell 7.
 CTest runs native C++ tests. Hosted desktop CI also runs the software Vulkan gate
 and the native Python suite; software drivers are test dependencies, not shipped
 renderer fallbacks.
+
+Surface-discard failures retain floating-point `images.npz`, RGB PNG previews,
+and `evidence.json` (coverage metrics, frame/pass information and logs). Set
+`INFERNUX_SURFACE_DISCARD_EVIDENCE` to a persistent output directory before
+running `tests/python/test_surface_discard_coverage.py`; otherwise evidence is
+written under that test's `tmp_path`. Desktop CI uploads the persistent failure
+directory even when pytest fails. Captures are kept in memory before assertions
+and exported on failure, before asset cleanup; abrupt process termination cannot
+export these images. PNG previews are clamped to [0, 1], without tone mapping;
+numerical comparisons always use the original floating-point data.
+
+The runtime-neutral evidence contracts run without a native engine:
+
+```sh
+python -m pytest tests/contracts/test_surface_discard_diagnostics.py -q
+```
 
 ```sh
 python tests/gpu/run.py --list
