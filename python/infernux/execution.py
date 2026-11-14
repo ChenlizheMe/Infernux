@@ -145,13 +145,13 @@ class ExecutionScope:
 @contextmanager
 def component_execution(component):
     from contextlib import nullcontext
-    from infernux.lib import _Infernux
+    from infernux.components.value_ownership import value_world
     from infernux.engine.runtime_worlds import component_world_id
     identity = (component._world_id if isinstance(component, ExecutionScope)
                 else component_world_id(component) if component is not None else None)
     token = _current_owner.set(component)
     try:
-        with _Infernux._RuntimeWorldScope(identity) if identity else nullcontext():
+        with value_world(identity) if identity else nullcontext():
             yield
     finally:
         _current_owner.reset(token)

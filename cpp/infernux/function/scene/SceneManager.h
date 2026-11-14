@@ -73,6 +73,7 @@ class SceneManager
 
     [[nodiscard]] RuntimeWorld &CurrentWorld() noexcept;
     [[nodiscard]] const RuntimeWorld &CurrentWorld() const noexcept;
+    [[nodiscard]] uint64_t GetCurrentRuntimeWorldId() const noexcept;
 
     /// Authoring and runtime ownership stay distinct; Scene identities never move between them.
     [[nodiscard]] RuntimeWorld &AuthoringWorld() noexcept

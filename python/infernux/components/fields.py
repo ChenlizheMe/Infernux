@@ -325,9 +325,9 @@ class SerializedFieldDescriptor:
                 FieldType.ENUM,
             )
         )
-        # Scene references resolve in their receiver's real native World.
-        # Leave numeric/CDS and catalog asset reads on their existing fast path.
-        self._owner_scene_reference = (
+        # Only materialization/set/attach boundaries bind source values.
+        # Getters never inspect owner metadata or recursively walk values.
+        self._owner_value_boundary = (
             metadata.field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT)
             or (metadata.field_type == FieldType.LIST
                 and metadata.element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT))
@@ -371,6 +371,9 @@ class SerializedFieldDescriptor:
             if value is not _MISSING:
                 return value
         value = copy_serialized_field_default(self.metadata)
+        if self._owner_value_boundary:
+            from .value_ownership import bind_scene_value, receiver_owner
+            value = bind_scene_value(value, self.metadata, receiver_owner(instance))
         values[self.metadata.name] = value
         return value
     
@@ -403,13 +406,6 @@ class SerializedFieldDescriptor:
         # resolve() here can expose a retired native wrapper after scene reload.
         if self._direct_value:
             return value
-        if self._owner_scene_reference:
-            from infernux.engine.runtime_worlds import component_world_id
-            identity = component_world_id(instance)
-            if identity:
-                from infernux.lib import _Infernux
-                with _Infernux._RuntimeWorldScope(identity):
-                    return resolve_runtime_field_value(value, self.metadata)
         return resolve_runtime_field_value(value, self.metadata)
     
     def __set__(self, instance: 'InxComponent', value: Any):
@@ -418,6 +414,9 @@ class SerializedFieldDescriptor:
         # through the same serialized descriptor.
         if not self._direct_value:
             value = normalize_runtime_field_value(value, self.metadata)
+        if self._owner_value_boundary:
+            from .value_ownership import bind_scene_value, receiver_owner
+            value = bind_scene_value(value, self.metadata, receiver_owner(instance))
 
         # CDS fast path for numeric fields.
         if self._cds_class_id is not None:

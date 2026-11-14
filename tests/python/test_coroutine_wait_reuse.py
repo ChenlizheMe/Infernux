@@ -150,39 +150,94 @@ def test_components_share_and_repeat_wait_in_actual_native_frames(tmp_path, phas
 
 
 def _native_frame_probe(project, phase):
-    from infernux.components import InxComponent
+    from textwrap import dedent
+
+    from infernux.components.component_identity import bind_asset_script_guid
+    from infernux.components.script_loader import load_all_components_from_file
+    from infernux.core.assets import AssetManager
     from infernux.engine.engine import Engine
     from infernux.engine.preferences_store import PreferencesStore
     from infernux.lib import LogLevel, RuntimeMode, SceneManager
 
-    frame = 0
-    completed = {'first': [], 'second': []}
-    instruction = WaitForFrames(4) if phase == 'update' else WaitForEndOfFrame(4)
-
-    class Waiter(InxComponent):
-        def start(self):
-            self.start_coroutine(self.sequence())
-
-        def sequence(self):
-            for _ in range(3):
-                yield instruction
-                completed[self.game_object.name].append(frame)
-
-    (project / 'Assets').mkdir()
+    scripts = project / 'Assets' / 'Scripts'
+    scripts.mkdir(parents=True)
     (project / 'ProjectSettings').mkdir()
+    script = scripts / 'shared_waiter.py'
+    script.write_text(dedent('''\
+        from infernux.components import FieldType, InxComponent, serialized_field
+        from infernux.coroutine import WaitForFrames, WaitForEndOfFrame
+
+        _shared_frames = WaitForFrames(4)
+        _shared_late = WaitForEndOfFrame(4)
+
+        class Waiter(InxComponent):
+            host_index: int = 0
+            late: bool = False
+            completed: list[int] = serialized_field(
+                default=[], field_type=FieldType.LIST, element_type=FieldType.INT)
+
+            def wait_instruction(self):
+                return _shared_late if self.late else _shared_frames
+
+            def sequence(self):
+                instruction = self.wait_instruction()
+                for _ in range(3):
+                    yield instruction
+                    self.completed.append(self.host_index)
+        '''), encoding='utf-8')
     PreferencesStore()._path = str(project / 'preferences.json')
     engine = Engine(LogLevel.Warn, RuntimeMode.Headless)
     try:
         engine.init_headless(str(project))
+        imported = AssetManager.import_asset(str(script), database=engine.get_asset_database())
+        assert imported, imported.error
+        assert imported.guid
+        classes = tuple(load_all_components_from_file(str(script)))
+        assert len(classes) == 1
+        Waiter = classes[0]
+        bind_asset_script_guid(Waiter, imported.guid)
         manager = SceneManager.instance()
         scene = manager.create_scene('SharedWait')
         manager.set_active_scene(scene)
-        for name in completed:
-            scene.create_game_object(name).add_component(Waiter)
-        manager.play()
-        for frame in range(1, 13):
+        authored = {}
+        for name in ('first', 'second'):
+            waiter = Waiter()
+            waiter.late = phase == 'late'
+            scene.create_game_object(name).add_py_component(waiter)
+            authored[name] = waiter
+        play = engine.get_play_mode_manager()
+        assert play.enter_play_mode()
+        # Normal preparation/Start may consume host frames. Neither waiter has
+        # started a coroutine yet, so those frames are outside this measurement.
+        for _ in range(64):
+            if play.is_playing and manager.is_playing():
+                break
             engine.tick(1 / 60)
+        assert play.is_playing and manager.is_playing()
+        runtime_scene = manager.get_active_scene()
+        assert runtime_scene is not scene
+        waiters = {}
+        for name in authored:
+            components = tuple(runtime_scene.find(name).get_py_components())
+            assert len(components) == 1
+            waiter = components[0]
+            assert waiter is not authored[name]
+            assert type(waiter) is not Waiter
+            assert type(waiter)._asset_script_guid_ == imported.guid
+            assert waiter.completed == []
+            waiter.host_index = 0
+            waiters[name] = waiter
+        instruction = waiters['first'].wait_instruction()
+        assert waiters['second'].wait_instruction() is instruction
+        assert type(instruction) is (WaitForFrames if phase == 'update' else WaitForEndOfFrame)
+        handles = [waiter.start_coroutine(waiter.sequence()) for waiter in waiters.values()]
+        for frame in range(1, 13):
+            for waiter in waiters.values():
+                waiter.host_index = frame
+            engine.tick(1 / 60)
+        completed = {name: list(waiter.completed) for name, waiter in waiters.items()}
         assert completed == {'first': [4, 8, 12], 'second': [4, 8, 12]}, completed
+        assert all(handle.is_finished for handle in handles)
     finally:
         engine.exit()
 

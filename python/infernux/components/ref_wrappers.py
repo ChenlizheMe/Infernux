@@ -21,6 +21,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
+from .value_ownership import UNSET, reference_owner, object_owner, resolve_in_value_world
 
 # Re-export MaterialRef from core so existing callers still work.
 from infernux.core.asset_ref import MaterialRef  # noqa: F401
@@ -68,8 +69,9 @@ def _iter_reference_scenes():
     for index in range(int(manager.scene_count)):
         append(manager.get_scene_at(index))
     append(manager.get_runtime_persistent_scene())
-    for scene in manager._get_preview_scenes():
-        append(scene)
+    if int(manager._current_runtime_world_id) == int(manager._authoring_runtime_world_id):
+        for scene in manager._get_preview_scenes():
+            append(scene)
     return tuple(scenes)
 
 
@@ -112,9 +114,10 @@ class GameObjectRef:
             self.target.name
     """
 
-    __slots__ = ("_persistent_id", "_cached_obj", "_cached_handle")
+    __slots__ = ("_persistent_id", "_cached_obj", "_cached_handle", "_value_owner_world_id")
 
-    def __init__(self, game_object=None, *, persistent_id: int = 0):
+    def __init__(self, game_object=None, *, persistent_id: int = 0, _owner_world_id=UNSET):
+        self._value_owner_world_id = reference_owner(game_object, persistent_id, _owner_world_id)
         if game_object is not None:
             self._persistent_id: int = int(game_object.id)
             self._cached_obj = game_object
@@ -127,28 +130,9 @@ class GameObjectRef:
     # -- resolution --------------------------------------------------------
 
     def _resolve(self):
-        """Try to resolve the live object from active or persistent runtime scenes."""
-        if self._persistent_id == 0:
-            self._cached_obj = None
-            self._cached_handle = None
+        if self._persistent_id == 0 or self._value_owner_world_id is None:
             return None
-        try:
-            for scene in _iter_reference_scenes():
-                obj = scene.find_by_id(self._persistent_id)
-                if obj is not None:
-                    self._cached_obj = obj
-                    self._cached_handle = getattr(obj, "handle", None)
-                    return obj
-        except (ImportError, RuntimeError):
-            # pybind11 raises RuntimeError when the C++ object behind a
-            # GameObjectRef has been destroyed — that's the normal
-            # "reference is dead" path, no need to log.
-            pass
-        except Exception as exc:
-            _log.warning("GameObjectRef._resolve failed: %s", exc)
-        self._cached_obj = None
-        self._cached_handle = None
-        return None
+        return resolve_in_value_world(self._value_owner_world_id, self._resolve_in_owner)
 
     # -- public API --------------------------------------------------------
 
@@ -177,10 +161,10 @@ class GameObjectRef:
         return self._resolve()
 
     def __copy__(self):
-        return type(self)(persistent_id=self._persistent_id)
+        return type(self)(persistent_id=self._persistent_id, _owner_world_id=self._value_owner_world_id)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(persistent_id=self._persistent_id)
+        copied = type(self)(persistent_id=self._persistent_id, _owner_world_id=self._value_owner_world_id)
         memo[id(self)] = copied
         return copied
 
@@ -203,14 +187,15 @@ class GameObjectRef:
         if other is None:
             return self._persistent_id == 0
         if isinstance(other, GameObjectRef):
-            return self._persistent_id == other._persistent_id
+            return (self._persistent_id == other._persistent_id and
+                    (not self._persistent_id or self._value_owner_world_id == other._value_owner_world_id))
         # Compare to raw GameObject
         if hasattr(other, "id"):
-            return self._persistent_id == other.id
+            return self._persistent_id == other.id and self._value_owner_world_id == object_owner(other)
         return NotImplemented
 
     def __hash__(self):
-        return hash(self._persistent_id)
+        return hash((self._value_owner_world_id if self._persistent_id else None, self._persistent_id))
 
     def instantiate(self, *args, **kwargs):
         """Clone this referenced GameObject using Unity-style instantiate overloads."""
@@ -222,6 +207,16 @@ class GameObjectRef:
         if obj is not None:
             return f"GameObjectRef('{obj.name}', id={self._persistent_id})"
         return f"GameObjectRef(None, id={self._persistent_id})"
+
+    def _resolve_in_owner(self):
+        for scene in _iter_reference_scenes():
+            obj = scene.find_by_id(self._persistent_id)
+            if obj is not None:
+                self._cached_obj = obj
+                self._cached_handle = obj.handle
+                return obj
+        self._cached_obj = self._cached_handle = None
+        return None
 
 
 # ============================================================================
@@ -517,9 +512,11 @@ class ComponentRef:
     Serialization uses the current typed value-document schema.
     """
 
-    __slots__ = ("_go_id", "_component_type", "_component_id", "_cached", "_cached_handle")
+    __slots__ = ("_go_id", "_component_type", "_component_id", "_cached", "_cached_handle", "_value_owner_world_id")
 
-    def __init__(self, component=None, *, go_id: int = 0, component_type: str = "", component_id: int = 0):
+    def __init__(self, component=None, *, go_id: int = 0, component_type: str = "", component_id: int = 0, _owner_world_id=UNSET):
+        target = component.game_object if component is not None else None
+        self._value_owner_world_id = reference_owner(target, go_id, _owner_world_id)
         if component is not None:
             go_id = component.game_object.id
             component_type = getattr(component, "type_name", type(component).__name__)
@@ -533,32 +530,9 @@ class ComponentRef:
     # -- resolution --------------------------------------------------------
 
     def _resolve(self):
-        """Try to resolve the component from active or persistent runtime scenes."""
-        if self._go_id == 0:
-            self._cached = None
-            self._cached_handle = None
+        if self._go_id == 0 or self._value_owner_world_id is None:
             return None
-
-        try:
-            for scene in _iter_reference_scenes():
-                go = scene.find_by_id(self._go_id)
-                if go is None:
-                    continue
-
-                found = _resolve_component_on_game_object(go, self._component_type, self._component_id)
-                if found is not None:
-                    self._cached = found
-                    self._cached_handle = _get_component_handle(found)
-                    return found
-
-            self._cached = None
-            self._cached_handle = None
-            return None
-        except (ImportError, RuntimeError) as exc:
-            _log.warning("ComponentRef._resolve failed: %s", exc)
-            self._cached = None
-            self._cached_handle = None
-            return None
+        return resolve_in_value_world(self._value_owner_world_id, self._resolve_in_owner)
 
     def resolve(self):
         """Return the live component instance, or ``None`` if unavailable."""
@@ -571,10 +545,10 @@ class ComponentRef:
                     retiring = _retiring_worlds.get()
                     alive = bool(native) and (not retiring or native.handle.world_id not in retiring)
                 else:
-                    alive = any(
+                    alive = resolve_in_value_world(self._value_owner_world_id, lambda: any(
                         scene.resolve_component(self._cached_handle) is not None
                         for scene in _iter_reference_scenes()
-                    )
+                    ))
             except (ImportError, RuntimeError, AttributeError):
                 alive = False
             if not alive:
@@ -585,10 +559,10 @@ class ComponentRef:
         return self._resolve()
 
     def __copy__(self):
-        return type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id)
+        return type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id, _owner_world_id=self._value_owner_world_id)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id)
+        copied = type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id, _owner_world_id=self._value_owner_world_id)
         memo[id(self)] = copied
         return copied
 
@@ -642,11 +616,12 @@ class ComponentRef:
         return make_component_ref(self._go_id, type_name, identity)
 
     @classmethod
-    def _from_dict(cls, data: dict) -> "ComponentRef":
+    def _from_dict(cls, data: dict, *, _owner_world_id=UNSET) -> "ComponentRef":
         return cls(
             go_id=data["game_object_id"],
             component_type=data["component_type"],
             component_id=data.get("component_id", 0),
+            _owner_world_id=_owner_world_id,
         )
 
     # -- dunder helpers ----------------------------------------------------
@@ -673,13 +648,15 @@ class ComponentRef:
         if other is None:
             return self._go_id == 0
         if isinstance(other, ComponentRef):
-            return (self._go_id == other._go_id
+            return ((not self._go_id or self._value_owner_world_id == other._value_owner_world_id)
+                    and self._go_id == other._go_id
                     and self._component_id == other._component_id
                     and (self._component_id != 0 or self._component_type == other._component_type))
         return NotImplemented
 
     def __hash__(self):
-        return hash((self._go_id, "" if self._component_id else self._component_type, self._component_id))
+        return hash((self._value_owner_world_id if self._go_id else None, self._go_id,
+                     "" if self._component_id else self._component_type, self._component_id))
 
     def __repr__(self):
         comp = self.resolve()
@@ -687,3 +664,16 @@ class ComponentRef:
             type_name = getattr(comp, "type_name", type(comp).__name__)
             return f"ComponentRef({type_name}, go_id={self._go_id})"
         return f"ComponentRef(None, type={self._component_type}, go_id={self._go_id})"
+
+    def _resolve_in_owner(self):
+        for scene in _iter_reference_scenes():
+            game_object = scene.find_by_id(self._go_id)
+            if game_object is None:
+                continue
+            component = _resolve_component_on_game_object(game_object, self._component_type, self._component_id)
+            if component is not None:
+                self._cached = component
+                self._cached_handle = _get_component_handle(component)
+                return component
+        self._cached = self._cached_handle = None
+        return None

@@ -477,8 +477,7 @@ void BindSceneManager(py::module_ &m)
         .def_property_readonly("_frame_time", &SceneManager::GetFrameTime, py::return_value_policy::reference_internal)
         .def("get_realtime_since_startup", &SceneManager::GetRealtimeSinceStartup,
              "Monotonic real seconds since the owning engine started")
-        .def_property_readonly("_current_runtime_world_id",
-                               [](const SceneManager &manager) { return manager.CurrentWorld().id; })
+        .def_property_readonly("_current_runtime_world_id", &SceneManager::GetCurrentRuntimeWorldId)
         .def_property_readonly("_authoring_runtime_world_id",
                                [](const SceneManager &manager) { return manager.AuthoringWorld().id; })
         .def_property_readonly("_runtime_world_ids", &SceneManager::GetRuntimeWorldIds)

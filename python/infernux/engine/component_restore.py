@@ -3,6 +3,7 @@ Prepared Python component graph transactions for Scene and GameObject documents.
 """
 
 import os
+from infernux.components.value_ownership import scene_owner, typed_creation_owner, value_world
 import copy
 from dataclasses import dataclass
 from typing import Optional, Any
@@ -513,15 +514,16 @@ def preflight_scene_python_components(
         object_ids, native_types, raw_descriptors = records()
     else:
         object_ids, native_types, raw_descriptors = _collect_scene_document_python_descriptors(document)
-    return _prepare_python_component_records(
-        set(object_ids),
-        set(native_types),
-        list(raw_descriptors),
-        asset_database,
-        prefer_loaded_types=prefer_loaded_types,
-        reference_scene=reference_scene,
-        allow_missing_scripts=allow_missing_scripts,
-    )
+    with value_world(scene_owner(reference_scene) if reference_scene is not None else typed_creation_owner()):
+        return _prepare_python_component_records(
+            set(object_ids),
+            set(native_types),
+            list(raw_descriptors),
+            asset_database,
+            prefer_loaded_types=prefer_loaded_types,
+            reference_scene=reference_scene,
+            allow_missing_scripts=allow_missing_scripts,
+        )
 
 
 def preflight_game_object_python_components(
@@ -583,15 +585,16 @@ def preflight_game_object_python_components(
             visit(child, f"{path}.children[{index}]")
 
     visit(document, "root_object")
-    prepared = _prepare_python_component_records(
-        object_ids,
-        native_types,
-        descriptors,
-        asset_database,
-        prefer_loaded_types=prefer_loaded_types,
-        reference_scene=reference_scene,
-        only_component_ids=only_component_ids,
-    )
+    with value_world(scene_owner(reference_scene) if reference_scene is not None else typed_creation_owner()):
+        prepared = _prepare_python_component_records(
+            object_ids,
+            native_types,
+            descriptors,
+            asset_database,
+            prefer_loaded_types=prefer_loaded_types,
+            reference_scene=reference_scene,
+            only_component_ids=only_component_ids,
+        )
     if not preserve_document_ids:
         for component in prepared.components:
             component.game_object_id = None

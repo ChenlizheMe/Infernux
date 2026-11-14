@@ -16,6 +16,10 @@ from infernux.core.data_asset import (
     encode_data_asset_artifact,
     get_registered_data_asset_types,
 )
+from tests.python.test_player_resident_scene_api import (
+    _configure_player_contract,
+    player_runtime,
+)
 
 
 class DataAssetStats(SerializableObject):
@@ -86,6 +90,54 @@ def _install_database(engine, monkeypatch):
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_asset_database", database)
     return database
+
+
+def _activate_data_asset_player(player, scene, database, source):
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+
+    # This cache-domain test uses the real imported source document as its
+    # cataloged payload; binary cooking has its own contract test above.
+    relative = Path(source.file_path).relative_to(database.project_root).as_posix()
+    assert database.get_guid_from_path(source.file_path) == source.guid
+    artifact_id = f"data-asset:{source.guid}"
+    catalog = PlayerRuntimeAssetCatalog.from_documents(
+        database.project_root,
+        {"artifacts": [{
+            "runtime_artifact_id": artifact_id,
+            "runtime_path": relative,
+            "package": "Game_Data/Content.inxpkg",
+            "logical_type": "data_asset",
+            "asset_guid": source.guid,
+            "dependencies": [],
+        }]},
+        {"entries": [{
+            "guid": source.guid,
+            "runtime_path": relative,
+            "primary_runtime_artifact_id": artifact_id,
+            "runtime_artifact_ids": [artifact_id],
+            "dependencies": [],
+        }]},
+    )
+    scene.create_game_object("DataAssetIsolationWitness")
+    _configure_player_contract(player.session, catalog)
+    assert player.session.activate()
+    identity = player.session._runtime_world_id
+    return identity, player.host._world_runtimes[identity]
+
+
+def _stop_data_asset_player(player):
+    from infernux.application import Application
+    from infernux.lib import SceneManager
+
+    player.session.shutdown()
+    native = SceneManager.instance()
+    assert native._collect_retired_runtime_worlds()
+    assert not player.host._world_runtimes
+    assert native._current_runtime_world_id == native._authoring_runtime_world_id
+    player.session.release_content()
+    # End this borrowed Player companion's process role before checking the
+    # surviving author catalog. Its shared fixture restores the previous role.
+    Application._unbind_engine(player.host)
 
 
 def test_data_asset_document_round_trip_is_strict_and_polymorphic():
@@ -263,59 +315,94 @@ def test_data_asset_save_load_cache_reference_and_explicit_copy(engine, monkeypa
             database.delete_asset(str(target))
 
 
-def test_data_asset_play_cache_isolated_from_authored_identity(engine, monkeypatch):
-    _install_database(engine, monkeypatch)
+def test_data_asset_play_cache_isolated_from_authored_identity(engine, monkeypatch, scene, request):
+    from infernux.lib import _Infernux
+
+    database = _install_database(engine, monkeypatch)
+    target = Path(database.assets_root) / "PlayIsolatedCharacter.inxdata"
     authored = CharacterDataAsset(speed=5.0)
-    authored._bind_asset("Assets/Character.inxdata", "character-guid")
-    AssetManager._put_cache(authored.guid, authored)
-    reference = DataAssetRef(guid=authored.guid)
-    assert reference.resolve() is authored
-
-    AssetManager._begin_play_data_asset_isolation()
+    player = None
     try:
-        runtime = AssetManager._get_cached(authored.guid)
-        assert runtime is not authored
-        assert type(runtime) is CharacterDataAsset
-        assert runtime.guid == authored.guid
-        assert runtime.file_path == authored.file_path
-        assert reference.resolve() is runtime
+        authored.save_to(str(target))
+        reference = DataAssetRef(guid=authored.guid)
+        assert reference.resolve() is authored
+        # Save/import belongs to authoring, before the normal Player fixture
+        # binds its read-only process role. Do not create a second native host.
+        player = request.getfixturevalue("player_runtime")
+        identity, domain = _activate_data_asset_player(player, scene, database, authored)
+        with _Infernux._RuntimeWorldScope(identity):
+            runtime = AssetManager._get_cached(authored.guid)
+            assert runtime is not authored
+            assert type(runtime) is domain.serializable_types[CharacterDataAsset.__serialized_type_id__]
+            assert type(runtime) is not CharacterDataAsset
+            assert type(runtime.stats) is domain.serializable_types[DataAssetStats.__serialized_type_id__]
+            assert runtime.guid == authored.guid
+            assert runtime.file_path == authored.file_path
+            assert reference.resolve() is runtime
 
-        runtime.speed = 19.0
-        runtime.stats.health = 1
-        assert AssetManager._get_cached(authored.guid) is runtime
-        assert authored.speed == 5.0
-        assert authored.stats.health == 100
+            runtime.speed = 19.0
+            runtime.stats.health = 1
+            assert runtime.speed == 19.0
+            assert runtime.stats.health == 1
+            assert AssetManager._get_cached(authored.guid) is runtime
+            assert authored.speed == 5.0
+            assert authored.stats.health == 100
+            assert runtime._play_isolated
+            with pytest.raises(RuntimeError, match="read-only in Player"):
+                runtime.save()
+
+        _stop_data_asset_player(player)
+        assert not domain.data_assets
+        assert AssetManager._get_cached(authored.guid) is authored
+        assert reference.resolve() is authored
+        # The original Play-isolated write restriction survives Stop too;
+        # the held runtime clone must never overwrite its authored identity.
         with pytest.raises(RuntimeError, match="Play-isolated"):
             runtime.save()
     finally:
-        AssetManager._end_play_data_asset_isolation()
+        if player is not None:
+            _stop_data_asset_player(player)
+        AssetManager.flush()
+        if database.contains_path(str(target)):
+            database.delete_asset(str(target))
 
-    assert AssetManager._get_cached(authored.guid) is authored
-    assert reference.resolve() is authored
-    AssetManager.flush()
 
+def test_data_asset_first_loaded_during_play_is_discarded_on_stop(engine, monkeypatch, scene, request):
+    from infernux.lib import _Infernux
 
-def test_data_asset_first_loaded_during_play_is_discarded_on_stop(engine, monkeypatch):
     database = _install_database(engine, monkeypatch)
     target = Path(database.assets_root) / "PlayOnlyData.inxdata"
     source = CharacterDataAsset(speed=7.0)
+    player = None
     try:
         source.save_to(str(target))
         guid = source.guid
         AssetManager.invalidate(guid)
-
-        AssetManager._begin_play_data_asset_isolation()
-        runtime = AssetManager.load_by_guid(guid, asset_type=DataAsset)
-        assert runtime is not None
-        assert runtime.speed == 7.0
-        runtime.speed = 33.0
-        AssetManager._end_play_data_asset_isolation()
-
+        assert AssetManager._get_cached(guid) is None
+        player = request.getfixturevalue("player_runtime")
+        identity, domain = _activate_data_asset_player(player, scene, database, source)
+        with _Infernux._RuntimeWorldScope(identity):
+            assert guid not in domain.data_assets
+            runtime = AssetManager.load_by_guid(guid, asset_type=DataAsset)
+            assert runtime is not None
+            assert type(runtime) is domain.serializable_types[CharacterDataAsset.__serialized_type_id__]
+            assert type(runtime) is not CharacterDataAsset
+            assert type(runtime.stats) is domain.serializable_types[DataAssetStats.__serialized_type_id__]
+            assert runtime.speed == 7.0
+            runtime.speed = 33.0
+            assert runtime.speed == 33.0
+            assert domain.data_assets[guid] is runtime
+        _stop_data_asset_player(player)
+        assert not domain.data_assets
+        assert AssetManager._get_cached(guid) is None
         authored = AssetManager.load_by_guid(guid, asset_type=DataAsset)
         assert authored is not runtime
+        assert type(authored) is CharacterDataAsset
+        assert type(authored.stats) is DataAssetStats
         assert authored.speed == 7.0
     finally:
-        AssetManager._end_play_data_asset_isolation()
+        if player is not None:
+            _stop_data_asset_player(player)
         AssetManager.flush()
         if database.contains_path(str(target)):
             database.delete_asset(str(target))

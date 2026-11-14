@@ -6,6 +6,7 @@ import copy
 from enum import Enum
 import math
 from typing import Any, Callable
+from .value_ownership import UNSET, value_world
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,15 @@ class ValueCodecRegistry:
         codec = self._select_decoder(field_meta_or_type)
         codec.validate(value, field_meta_or_type, path, self)
 
-    def decode(self, value: Any, field_meta_or_type: Any, path: str = "value") -> Any:
+    def decode(self, value: Any, field_meta_or_type: Any, path: str = "value", *, _owner_world_id=UNSET) -> Any:
+        # Concrete scene refs and SO decoders establish their own provenance.
+        # A declared GameObject field may also hold a pure Prefab asset value.
+        if _owner_world_id is UNSET:
+            return self._decode(value, field_meta_or_type, path)
+        with value_world(_owner_world_id):
+            return self._decode(value, field_meta_or_type, path)
+
+    def _decode(self, value: Any, field_meta_or_type: Any, path: str = "value") -> Any:
         codec = self._select_decoder(field_meta_or_type)
         codec.validate(value, field_meta_or_type, path, self)
         return codec.decode(value, field_meta_or_type, path, self)
@@ -305,7 +314,7 @@ class ValueCodecRegistry:
                 field_meta_or_type, element_type or FieldType.UNKNOWN
             )
             return [
-                self.decode(item, element_field, f"{path}[{index}]")
+                self._decode(item, element_field, f"{path}[{index}]")
                 for index, item in enumerate(value)
             ]
 
@@ -324,12 +333,12 @@ class ValueCodecRegistry:
             return resolve_enum_name(field_meta_or_type.enum_type,value["name"],path)
 
         if isinstance(value, list):
-            return [self.decode(item, FieldType.UNKNOWN, f"{path}[{index}]") for index, item in enumerate(value)]
+            return [self._decode(item, FieldType.UNKNOWN, f"{path}[{index}]") for index, item in enumerate(value)]
         if isinstance(value, dict):
             decoded = deserialize_dict_ref(value)
             if decoded is value:
                 return {
-                    key: self.decode(item, FieldType.UNKNOWN, f"{path}.{key}")
+                    key: self._decode(item, FieldType.UNKNOWN, f"{path}.{key}")
                     for key, item in value.items()
                 }
             return decoded

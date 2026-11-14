@@ -523,12 +523,14 @@ class SceneDocumentTransaction:
                 assert self._document is not None
                 self._state = SceneDocumentTransactionState.PREFLIGHTING
                 phase_started = time.perf_counter()
-                self._prepared_graph = preflight_scene_python_components(
-                    self._document,
-                    asset_database=self._asset_database,
-                    prefer_loaded_types=self._prefer_loaded_types,
-                    allow_missing_scripts=self._allow_missing_scripts,
-                )
+                from infernux.components.value_ownership import value_world, scene_owner
+                with value_world(scene_owner(self._scene)):
+                    self._prepared_graph = preflight_scene_python_components(
+                        self._document,
+                        asset_database=self._asset_database,
+                        prefer_loaded_types=self._prefer_loaded_types,
+                        allow_missing_scripts=self._allow_missing_scripts,
+                    )
                 self._phase_timings_ms["python_preflight"] = (
                     time.perf_counter() - phase_started
                 ) * 1000.0

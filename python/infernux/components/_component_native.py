@@ -154,6 +154,20 @@ class ComponentNativeMixin:
         self._remove_from_active_registry()
 
         self._game_object = game_object
+        if game_object is not None:
+            # Formal attach boundary; only reference declarations are visited.
+            # Numeric lists are never read/walked here or by field getters.
+            from .fields import get_serialized_fields, get_raw_field_value, FieldType
+            from .value_ownership import object_owner, bind_scene_value
+            for name, metadata in get_serialized_fields(type(self)).items():
+                if (metadata.field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT)
+                        or (metadata.field_type == FieldType.LIST and metadata.element_type in
+                            (FieldType.GAME_OBJECT, FieldType.COMPONENT))):
+                    identity = object_owner(game_object)
+                    raw = get_raw_field_value(self, name)
+                    bound = bind_scene_value(raw, metadata, identity)
+                    if bound is not raw:
+                        setattr(self, name, bound)
         self.__dict__.pop("_game_object_bound_version", None)
         # Also store weak reference for safe access
         if game_object is not None:

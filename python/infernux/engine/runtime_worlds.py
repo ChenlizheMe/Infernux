@@ -450,8 +450,10 @@ class RuntimeWorldSession:
                 object_ids = set().union(*(set(record[0]) for record in self.records))
                 native_types = set().union(*(set(record[1]) for record in self.records))
                 descriptors = [item for record in self.records for item in record[2]]
-                prepared = _prepare_python_component_records(object_ids, native_types, descriptors,
-                    self.engine.get_asset_database(), allow_missing_scripts=False)
+                from infernux.components.value_ownership import value_world
+                with value_world(identity):
+                    prepared = _prepare_python_component_records(object_ids, native_types, descriptors,
+                        self.engine.get_asset_database(), allow_missing_scripts=False)
             yield
             scenes = []
             object_map, component_map = {}, {}

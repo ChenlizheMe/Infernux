@@ -26,6 +26,7 @@ import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, Type, TYPE_CHECKING
+from .value_ownership import typed_creation_owner, value_world, source_values, owned_operation
 
 if TYPE_CHECKING:
     from .fields import FieldMetadata
@@ -35,6 +36,8 @@ _AUTHOR_SERIALIZABLE_REGISTRY: Dict[str, Type["SerializableObject"]] = {}
 
 
 def _serializable_types():
+    if source_values():
+        return _AUTHOR_SERIALIZABLE_REGISTRY
     from infernux.engine.runtime_worlds import current_world_runtime
     domain = current_world_runtime()
     return domain.serializable_types if domain is not None else _AUTHOR_SERIALIZABLE_REGISTRY
@@ -187,7 +190,10 @@ class SerializableObject:
             if meta is not None:
                 from .fields import resolve_runtime_field_value
                 data = object.__getattribute__(self, "__dict__")
-                raw = data.get(name, meta.default)
+                if name not in data:
+                    from .fields import copy_serialized_field_default
+                    setattr(self, name, copy_serialized_field_default(meta))
+                raw = data[name]
                 return resolve_runtime_field_value(raw, meta)
         return object.__getattribute__(self, name)
 
@@ -199,9 +205,16 @@ class SerializableObject:
         if meta is not None:
             from .fields import normalize_runtime_field_value
             value = normalize_runtime_field_value(value, meta)
+            from .fields import FieldType
+            if (meta.field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT)
+                    or (meta.field_type == FieldType.LIST and meta.element_type in
+                        (FieldType.GAME_OBJECT, FieldType.COMPONENT))):
+                from .value_ownership import bind_scene_value
+                value = bind_scene_value(value, meta, self.__dict__.get("_value_owner_world_id"))
         object.__setattr__(self, name, value)
 
     def __init__(self, **kwargs):
+        object.__setattr__(self, "_value_owner_world_id", typed_creation_owner())
         from .fields import copy_serialized_field_default, get_serialized_fields
 
         fields = get_serialized_fields(self.__class__)
@@ -215,6 +228,7 @@ class SerializableObject:
     # Serialization helpers (used by InxComponent._serialize_value)
     # ------------------------------------------------------------------
 
+    @owned_operation
     def _serialize(self) -> dict:
         """Serialize this object to a JSON-friendly dict."""
         from .fields import get_serialized_fields
@@ -303,6 +317,11 @@ class SerializableObject:
 
     @classmethod
     def _deserialize(cls, data: dict) -> "SerializableObject":
+        with value_world(typed_creation_owner()):
+            return cls._deserialize_owned(data)
+
+    @classmethod
+    def _deserialize_owned(cls, data: dict) -> "SerializableObject":
         """Validate, decode, and construct one current-schema object."""
         actual_cls, fields, document = cls._prepare_document(data)
 
@@ -316,6 +335,7 @@ class SerializableObject:
             for name, meta in fields.items()
         }
         instance = actual_cls.__new__(actual_cls)
+        object.__setattr__(instance, "_value_owner_world_id", typed_creation_owner())
         for name, value in decoded.items():
             setattr(instance, name, value)
         return instance
@@ -348,13 +368,14 @@ class SerializableObject:
         cls = self.__class__
         result = cls.__new__(cls)
         memo[id(self)] = result
+        object.__setattr__(result, "_value_owner_world_id", self.__dict__.get("_value_owner_world_id"))
         fields = get_serialized_fields(cls)
         for name in fields:
             # Serialized asset/reference fields resolve through __getattribute__
             # for runtime use. Copies used by Undo and list editing must retain
             # their raw GUID/path wrapper instead of copying the resolved asset.
             value = get_raw_field_value(self, name)
-            setattr(result, name, copy.deepcopy(value, memo))
+            object.__setattr__(result, name, copy.deepcopy(value, memo))
         return result
 
 

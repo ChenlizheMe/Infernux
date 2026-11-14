@@ -10,6 +10,7 @@ from typing import Any
 import zlib
 
 from infernux.components.serializable_object import SerializableObject
+from infernux.components.value_ownership import value_world
 
 
 DATA_ASSET_EXTENSION = ".inxdata"
@@ -24,7 +25,8 @@ def encode_data_asset_artifact(document: dict[str, Any]) -> bytes:
     """Serialize one DataAsset document into the Player binary format."""
     # Cook normalizes the authored values to the fields declared by the current
     # runtime type before writing the binary artifact.
-    document = DataAsset.from_document(document).serialize_document()
+    with value_world(None):  # This function cooks authored source documents.
+        document = DataAsset.from_document(document).serialize_document()
     payload = json.dumps(
         document,
         ensure_ascii=False,

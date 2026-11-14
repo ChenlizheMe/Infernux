@@ -86,6 +86,14 @@ const RuntimeWorld &SceneManager::CurrentWorld() const noexcept
     return world ? *world : m_runtimeWorlds.empty() ? *m_authoringWorld : *m_runtimeWorlds.front();
 }
 
+uint64_t SceneManager::GetCurrentRuntimeWorldId() const noexcept
+{
+    const auto *world = WorldExecutionScope::Current();
+    if (!world)
+        world = m_runtimeWorlds.empty() ? m_authoringWorld.get() : m_runtimeWorlds.front().get();
+    return world ? world->id : 0;
+}
+
 SceneManager::SceneManager() : m_authoringWorld(std::make_unique<RuntimeWorld>())
 {
     m_authoringWorld->random = Random::ToolStorage();

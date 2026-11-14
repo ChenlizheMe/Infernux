@@ -75,10 +75,14 @@ def deserialize_dict_ref(value: dict) -> Any:
     document_type = value.get(TYPE_KEY)
     if document_type == GAME_OBJECT_REF:
         from .ref_wrappers import GameObjectRef
-        return GameObjectRef(persistent_id=value["object_id"])
+        from .value_ownership import typed_creation_owner
+        owner = typed_creation_owner() if value["object_id"] else None
+        return GameObjectRef(persistent_id=value["object_id"], _owner_world_id=owner)
     if document_type == COMPONENT_REF:
         from .ref_wrappers import ComponentRef
-        return ComponentRef._from_dict(value)
+        from .value_ownership import typed_creation_owner
+        owner = typed_creation_owner() if value["game_object_id"] else None
+        return ComponentRef._from_dict(value, _owner_world_id=owner)
     if document_type == ASSET_REF:
         asset_type = value["asset_type"]
         guid = value["guid"]

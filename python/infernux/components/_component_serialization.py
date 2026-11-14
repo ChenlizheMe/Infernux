@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from typing import Any
+from .value_ownership import owned_operation
 
 
 class ComponentSerializationMixin:
     """ComponentSerializationMixin method group for InxComponent."""
 
+    @owned_operation
     def _serialize_fields_document(self) -> dict[str, Any]:
         """Encode all serialized fields into the current typed document."""
         from .fields import (
@@ -41,6 +43,7 @@ class ComponentSerializationMixin:
 
         return json.dumps(self._serialize_fields_document())
 
+    @owned_operation
     def _deserialize_fields_document(
         self,
         data: dict[str, Any],
