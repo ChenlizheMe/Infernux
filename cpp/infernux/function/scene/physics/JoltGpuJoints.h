@@ -19,12 +19,13 @@ struct JoltGpuJointMotionResult
     std::shared_ptr<const JoltGpuScene::Publication> publication;
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
     uint32_t count = 0;
+    uint32_t kind = JPH::GPU::JointFixed;
     /// Consume one completed readback, validate every row, then write output.
     void CopyMotion(float *output, size_t valueCount);
 
   private:
     bool materialized = false;
-    std::vector<JPH::GPU::QueryRecordWord> values;
+    std::vector<JPH::GPU::JointReadback> values;
 };
 
 struct JoltGpuPreparedJointMotion
@@ -48,8 +49,8 @@ class JoltGpuJoints final
     [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate> PrepareUpdate(JoltGpuStorage &storage,
                                                                     std::vector<JoltGpuJointModelUpdate> changes) const;
     [[nodiscard]] JoltGpuPreparedJointMotion
-    PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                      const std::vector<uint32_t> &rows) const;
+    PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication, const std::vector<uint32_t> &rows,
+                      uint32_t kind) const;
     [[nodiscard]] JoltGpuControlWork PrepareStatus(std::shared_ptr<const JoltGpuScene::Publication> publication) const;
 
   private:

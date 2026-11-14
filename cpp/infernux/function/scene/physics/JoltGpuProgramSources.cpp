@@ -40,6 +40,7 @@ std::vector<ShaderSourceModule> GetJoltGpuProgramLibraries()
             {"jph_gpu_constraint_types", "Jolt/GPU/ConstraintTypes.h", jolt_gpu_sources::ConstraintTypes},
             {"jph_gpu_island_owner", "Jolt/GPU/Shaders/island_owner_schedule.slang", jolt_gpu_sources::IslandOwner},
             {"jph_gpu_rigid_joints", "Jolt/GPU/Shaders/rigid_joints.slang", jolt_gpu_sources::Joints},
+            {"jph_gpu_swing_twist", "Jolt/GPU/Shaders/rigid_swing_twist.slang", jolt_gpu_sources::SwingTwist},
             {"inx_particle_collision_export", "infernux/renderer/particle/collision_export.slang",
              jolt_gpu_sources::ParticleExport}};
 }

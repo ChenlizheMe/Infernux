@@ -488,11 +488,10 @@ class PhysicsWorld
                                           float stiffness, float damping, bool enableCollision);
     float GetDistanceConstraintLength(uint64_t constraintId) const;
     uint64_t CreateSwingTwistConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                        const glm::vec3 &localAnchor, const SwingTwistJointSettings &settings,
-                                        bool enableCollision);
+                                        const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
+                                        const SwingTwistJointSettings &settings, bool enableCollision);
     void UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
                                     bool enableCollision);
-    void SetSwingTwistConstraintType(uint64_t constraintId, JointSwingType type);
     glm::quat GetAngularConstraintOrientation(uint64_t constraintId) const;
     uint64_t CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                     const glm::vec3 &localAnchor, const SixDOFJointSettings &settings,

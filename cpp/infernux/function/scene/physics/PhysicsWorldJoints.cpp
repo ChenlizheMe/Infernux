@@ -1,4 +1,5 @@
 #include "../HingeJoint.h"
+#include "JointSettings.h"
 #include "JoltGpuJoints.h"
 #include "PhysicsDomain.h"
 #include "PhysicsWorld.h"
@@ -20,6 +21,35 @@ JPH::GPU::Float4 JointVector(const glm::vec3 &value)
     if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z))
         throw std::invalid_argument("Joint anchor and axis must be finite");
     return {value.x, value.y, value.z, 0.0f};
+}
+
+void ApplySwingSettings(JointAuthor &author, const SwingTwistJointSettings &s)
+{
+    const auto finite = [](const auto &v) {
+        for (int i = 0; i < v.length(); ++i)
+            if (!std::isfinite(v[i]))
+                return false;
+        return true;
+    };
+    if (!finite(s.twistAxis) || !finite(s.planeAxis) || glm::dot(s.twistAxis, s.twistAxis) < 1e-12f ||
+        glm::dot(s.planeAxis, s.planeAxis) < 1e-12f || !finite(s.targetOrientation) ||
+        glm::dot(s.targetOrientation, s.targetOrientation) < 1e-12f || !finite(s.targetAngularVelocity))
+        throw std::invalid_argument("SwingTwist requires finite nonzero frame and target quaternions");
+    glm::vec3 x = glm::normalize(s.twistAxis);
+    glm::vec3 z = s.planeAxis - x * glm::dot(x, s.planeAxis);
+    if (glm::dot(z, z) < 1e-8f * glm::dot(s.planeAxis, s.planeAxis))
+        throw std::invalid_argument("SwingTwist frame axes must be nonparallel");
+    z = glm::normalize(z);
+    const glm::quat frame = glm::normalize(glm::quat_cast(glm::mat3(x, glm::cross(z, x), z)));
+    const glm::vec4 target = glm::normalize(s.targetOrientation);
+    author.angularFrame = {frame.x, frame.y, frame.z, frame.w};
+    author.angularLimits = {glm::radians(s.minimumTwistAngle), glm::radians(s.maximumTwistAngle),
+                            glm::radians(s.planeHalfConeAngle), glm::radians(s.normalHalfConeAngle)};
+    author.angularModes = {uint32_t(s.swingType), uint32_t(s.swingMotorMode), uint32_t(s.twistMotorMode), 0};
+    author.angularSpring = {s.swingMotorStiffness, s.swingMotorDamping, s.twistMotorStiffness, s.twistMotorDamping};
+    author.angularTorque = {s.swingMotorMaxTorque, s.twistMotorMaxTorque, s.frictionTorque, 0.0f};
+    author.angularTarget = {target.x, target.y, target.z, target.w};
+    author.angularVelocity = JointVector(glm::radians(s.targetAngularVelocity));
 }
 
 void ValidateHingeLimits(float minimum, float maximum)
@@ -356,7 +386,7 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
                             "Joint motion requires an accepted identity of the requested kind");
                     rows.push_back(found->second->row);
                 }
-                prepared = m_gpuJoints->PrepareReadMotion(publication, rows);
+                prepared = m_gpuJoints->PrepareReadMotion(publication, rows, kind);
                 return std::move(prepared.work);
             },
             requestError);
@@ -366,7 +396,7 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
     if (!prepared.result)
         throw std::runtime_error("GPU joint motion did not produce a result");
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    prepared.result->CopyMotion(output, ids.size() * 2);
+    prepared.result->CopyMotion(output, ids.size() * (kind == JPH::GPU::JointSwingTwist ? 4 : 2));
 }
 
 void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
@@ -426,25 +456,54 @@ float PhysicsWorld::GetSliderConstraintPosition(uint64_t constraintId) const
     return motion[0];
 }
 
-uint64_t PhysicsWorld::CreateSwingTwistConstraint(PhysicsConstraintOwner &, uint32_t, uint32_t, const glm::vec3 &,
-                                                  const SwingTwistJointSettings &, bool)
+uint64_t PhysicsWorld::CreateSwingTwistConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                                  const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
+                                                  const SwingTwistJointSettings &settings, bool enableCollision)
 {
-    throw std::logic_error("GPU CreateSwingTwistConstraint has not been implemented");
+    auto &domain = DomainForBody(bodyIdA);
+    RequireOwnerThread();
+    JointAuthor author{};
+    author.bodies.z = JPH::GPU::JointSwingTwist;
+    author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0);
+    author.ownerAnchor = JointVector(localBakedAnchor);
+    author.ownerLocalAnchor = JointVector(localAnchor);
+    ApplySwingSettings(author, settings);
+    RequireGpu(domain);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, author);
 }
 
-void PhysicsWorld::SetSwingTwistConstraintType(uint64_t, JointSwingType)
+void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
+                                              bool enableCollision)
 {
-    throw std::logic_error("GPU SetSwingTwistConstraintType has not been implemented");
+    RequireOwnerThread();
+    const auto &joint = m_gpuScene->GetAuthoredJoint(constraintId);
+    RequireGpu(DomainForBody(joint.bodyIdA));
+    if (joint.kind != JPH::GPU::JointSwingTwist)
+        throw std::logic_error("Constraint is not SwingTwist");
+    auto updated = joint.author;
+    ApplySwingSettings(updated, settings);
+    const auto &before = joint.author.angularFrame;
+    const auto &after = updated.angularFrame;
+    if (before.x != after.x || before.y != after.y || before.z != after.z || before.w != after.w)
+        throw std::logic_error("SwingTwist frame changes require rebuilding the constraint");
+    SetJointFlag(updated, JPH::GPU::JointCollisionEnabled, enableCollision);
+    m_gpuScene->UpdateJoint(constraintId, [=](JointAuthor &author) {
+        author.angularLimits = updated.angularLimits;
+        author.angularModes = updated.angularModes;
+        author.angularSpring = updated.angularSpring;
+        author.angularTorque = updated.angularTorque;
+        author.angularTarget = updated.angularTarget;
+        author.angularVelocity = updated.angularVelocity;
+        SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enableCollision);
+    });
 }
 
-void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t, const SwingTwistJointSettings &, bool)
+glm::quat PhysicsWorld::GetAngularConstraintOrientation(uint64_t constraintId) const
 {
-    throw std::logic_error("GPU UpdateSwingTwistConstraint has not been implemented");
-}
-
-glm::quat PhysicsWorld::GetAngularConstraintOrientation(uint64_t) const
-{
-    throw std::logic_error("GPU GetAngularConstraintOrientation has not been implemented");
+    auto &domain = DomainForBody(m_gpuScene->GetAuthoredJoint(constraintId).bodyIdA);
+    float values[4];
+    ReadJointMotion(domain, {constraintId}, values, JPH::GPU::JointSwingTwist);
+    return {values[3], values[0], values[1], values[2]};
 }
 
 uint64_t PhysicsWorld::CreateSixDOFConstraint(PhysicsConstraintOwner &, uint32_t, uint32_t, const glm::vec3 &,

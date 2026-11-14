@@ -1,6 +1,8 @@
 #include "SwingTwistJoint.h"
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
+#include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <cmath>
 #include <stdexcept>
@@ -160,16 +162,11 @@ void SwingTwistJoint::SetPlaneAxis(glm::vec3 value)
 
 void SwingTwistJoint::SetSwingType(JointSwingType value)
 {
-    if ((int)value < 0 || (int)value > 1)
-        throw std::invalid_argument("SwingTwistJoint swing type must be Cone or Pyramid");
     if (value == m_settings.swingType && m_constraintId)
         return;
-    m_settings.swingType = value;
-    if (m_constraintId) {
-        PhysicsWorld::Instance().SetSwingTwistConstraintType(m_constraintId, value);
-        UpdateConstraintSettings(); // Re-clamp the authored target to the new shape.
-    } else
-        RebuildConstraint();
+    auto settings = m_settings;
+    settings.swingType = value;
+    ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetNormalHalfConeAngle(float value)
@@ -282,7 +279,11 @@ void SwingTwistJoint::SetTargetAngularVelocity(glm::vec3 value)
 
 uint64_t SwingTwistJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
-    return world.CreateSwingTwistConstraint(*this, bodyId, connectedBodyId, m_anchor, m_settings, m_enableCollision);
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    const auto *transform = GetTransform();
+    const auto baked = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
+    return world.CreateSwingTwistConstraint(*this, bodyId, connectedBodyId, baked, m_anchor, m_settings,
+                                            m_enableCollision);
 }
 
 void SwingTwistJoint::UpdateConstraintSettings()

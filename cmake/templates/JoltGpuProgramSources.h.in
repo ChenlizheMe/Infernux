@@ -11,6 +11,7 @@ inline constexpr char Constraints[] = R"INX_JPH_GPU(@JOLT_GPU_CONSTRAINT_SOURCE@
 inline constexpr char IslandOwner[] = R"INX_JPH_GPU(@JOLT_GPU_ISLAND_OWNER_SOURCE@)INX_JPH_GPU";
 inline constexpr char Math[] = R"INX_JPH_GPU(@JOLT_GPU_MATH_SOURCE@)INX_JPH_GPU";
 inline constexpr char Joints[] = R"INX_JPH_GPU(@JOLT_GPU_JOINTS_SOURCE@)INX_JPH_GPU";
+inline constexpr char SwingTwist[] = R"INX_JPH_GPU(@JOLT_GPU_SWING_TWIST_SOURCE@)INX_JPH_GPU";
 inline constexpr char JointCommands[] = R"INX_JPH_GPU(@JOLT_GPU_JOINT_COMMANDS_SOURCE@)INX_JPH_GPU";
 inline constexpr char Step[] = R"INX_JPH_GPU(@JOLT_GPU_STEP_SOURCE@)INX_JPH_GPU";
 inline constexpr char BodyMutations[] = R"INX_JPH_GPU(@JOLT_GPU_BODY_MUTATIONS_SOURCE@)INX_JPH_GPU";

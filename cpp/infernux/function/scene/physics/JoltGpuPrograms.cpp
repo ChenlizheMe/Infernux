@@ -275,7 +275,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             if (joint.identity.z != world || joint.identity.w || (!joint.identity.x && !joint.identity.y) ||
                 !inWorld(joint.bodies.y) ||
                 (joint.bodies.x != UINT32_MAX && (!inWorld(joint.bodies.x) || joint.bodies.x == joint.bodies.y)) ||
-                joint.bodies.z > JointDistance ||
+                joint.bodies.z > JointSwingTwist ||
                 (joint.bodies.w &
                  ~(JointEnabled | JointCollisionEnabled | JointLimitsEnabled | JointMotorEnabled | JointAutoDistance)))
                 throw std::invalid_argument("Jolt GPU joint identity, endpoints or world range is invalid");
@@ -288,6 +288,31 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
             if ((joint.bodies.z == JointHinge || joint.bodies.z == JointSlider) &&
                 std::abs(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z - 1.0f) > 1e-4f)
                 throw std::invalid_argument("Jolt GPU joint axis must be normalized");
+            const bool swingTwist = joint.bodies.z == JointSwingTwist;
+            const auto zero = [](const Float4 &v) { return v.x == 0 && v.y == 0 && v.z == 0 && v.w == 0; };
+            const auto normalized = [](const Float4 &v) {
+                return Finite4(v) && std::abs(v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w - 1.0f) <= 1e-4f;
+            };
+            const auto nonnegative = [](const Float4 &v) {
+                return Finite4(v) && v.x >= 0 && v.y >= 0 && v.z >= 0 && v.w >= 0;
+            };
+            if (swingTwist) {
+                const auto &v = joint.angularLimits;
+                if (!normalized(joint.angularFrame) || !normalized(joint.angularTarget) || !Finite4(v) ||
+                    v.x < -3.14159265358979323846f || v.y > 3.14159265358979323846f || v.x > v.y || v.z < 0 ||
+                    v.z > 3.14159265358979323846f || v.w < 0 || v.w > 3.14159265358979323846f ||
+                    joint.angularModes.x > 1 || joint.angularModes.y > 3 || joint.angularModes.z > 3 ||
+                    joint.angularModes.w || !nonnegative(joint.angularSpring) || !nonnegative(joint.angularTorque) ||
+                    joint.angularTorque.w || !Finite4(joint.angularVelocity) || joint.angularVelocity.w ||
+                    (joint.bodies.w & ~(JointEnabled | JointCollisionEnabled)) || !zero(joint.ownerAxis) ||
+                    !zero(joint.limits) || !zero(joint.motor) || !zero(joint.passive) || !zero(joint.connectedAnchor) ||
+                    !zero(joint.connectedLocalAnchor) || !zero(joint.linearSpring))
+                    throw std::invalid_argument("Jolt GPU SwingTwist settings differ from their typed contract");
+            } else if (!zero(joint.angularFrame) || !zero(joint.angularLimits) || joint.angularModes.x ||
+                       joint.angularModes.y || joint.angularModes.z || joint.angularModes.w ||
+                       !zero(joint.angularSpring) || !zero(joint.angularTorque) || !zero(joint.angularTarget) ||
+                       !zero(joint.angularVelocity))
+                throw std::invalid_argument("Jolt GPU scalar joint has an angular suffix");
             const bool distance = joint.bodies.z == JointDistance;
             if (!Finite4(joint.limits) || joint.limits.x > joint.limits.y ||
                 (distance ? joint.limits.x < 0.0f : (joint.limits.x > 0.0f || joint.limits.y < 0.0f)) ||
@@ -640,7 +665,9 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
     for (const auto &change : jointChanges) {
         const auto &old = m_model.joints[change.index];
         if (std::memcmp(&old.bodies, &change.author.bodies, 3 * sizeof(uint32_t)) ||
-            std::memcmp(&old.identity, &change.author.identity, sizeof(UInt4)))
+            std::memcmp(&old.identity, &change.author.identity, sizeof(UInt4)) ||
+            (old.bodies.z == JointSwingTwist &&
+             std::memcmp(&old.angularFrame, &change.author.angularFrame, sizeof(Float4))))
             throw std::invalid_argument("Jolt GPU joint endpoint or identity changes require topology replacement");
     }
     if (!bodyChanges.empty() || !shapeChanges.empty() || !jointChanges.empty())

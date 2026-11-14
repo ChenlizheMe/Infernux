@@ -56,7 +56,7 @@ constexpr PortLayout Ports[] = {
      false,
      true},
     {"joint_query_rows", sizeof(uint32_t), {}, true, true, true},
-    {"joint_motion", sizeof(QueryRecordWord), {"value"}, false, true, false},
+    {"joint_motion", sizeof(JointReadback), {"values", "status"}, false, false, false},
 };
 constexpr std::array<std::string_view, StageCount> Entries{"initialize_joints", "read_joint_motion",
                                                            "read_joint_status", "update_joint_state"};
@@ -131,7 +131,8 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
         const auto &field = value.fields[index];
         if (field.name != expected.fields[index] || field.offset != index * sizeof(UInt4) ||
             field.byteSize != sizeof(UInt4) || field.kind != ShaderValueKind::Vector ||
-            field.scalar != (expected.integer ? ShaderScalarKind::UInt32 : ShaderScalarKind::Float32) ||
+            field.scalar != ((expected.integer || (port == Motion && index == 1)) ? ShaderScalarKind::UInt32
+                                                                                  : ShaderScalarKind::Float32) ||
             field.rows != 1 || field.columns != 4)
             throw std::invalid_argument("Jolt GPU joint target field differs from its shared device record");
     }
@@ -144,15 +145,8 @@ void ValidateFrozen(const rhi::ComputeHost &host, const std::shared_ptr<rhi::Com
         throw JoltGpuQueryRequestError(message);
 }
 
-float DecodeFloat(uint32_t bits)
-{
-    float value;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-
 // The final publication gate scans finite packets through the same source as
-// the solve. Only the final 16-byte reduction reaches the host.
+// the solve. Only the final typed 32-byte reduction reaches the host.
 struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
 {
     static uint32_t OutputCount(uint32_t input)
@@ -167,7 +161,7 @@ struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
             input = OutputCount(input);
             words += input;
         } while (input > 1);
-        return words * sizeof(QueryRecordWord);
+        return words * sizeof(JointReadback);
     }
 
     JointStatusExecution(rhi::ComputeHost source, std::shared_ptr<rhi::ComputeKernel> program,
@@ -201,10 +195,10 @@ struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
                                                                  : rhi::ComputeBufferAccess::Read);
                 if (port == Motion) {
                     if (level)
-                        proof.reads.push_back({binding, uint64_t(inputFirst + first) * sizeof(QueryRecordWord),
-                                               uint64_t(size) * sizeof(QueryRecordWord)});
-                    proof.writes.push_back({binding, uint64_t(outputFirst + first / 64) * sizeof(QueryRecordWord),
-                                            uint64_t(dispatch.groupCountX) * sizeof(QueryRecordWord)});
+                        proof.reads.push_back({binding, uint64_t(inputFirst + first) * sizeof(JointReadback),
+                                               uint64_t(size) * sizeof(JointReadback)});
+                    proof.writes.push_back({binding, uint64_t(outputFirst + first / 64) * sizeof(JointReadback),
+                                            uint64_t(dispatch.groupCountX) * sizeof(JointReadback)});
                 } else
                     proof.reads.push_back({binding, 0, buffer->GetByteSize()});
             }
@@ -215,7 +209,7 @@ struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
         const bool final = end == inputCount && OutputCount(inputCount) == 1;
         std::vector<rhi::ComputeBufferRead> reads;
         if (final)
-            reads.push_back({motion, uint64_t(outputFirst) * sizeof(QueryRecordWord), sizeof(QueryRecordWord)});
+            reads.push_back({motion, uint64_t(outputFirst) * sizeof(JointReadback), sizeof(JointReadback)});
         auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches), std::move(reads));
         if (end == inputCount && !final) {
             inputFirst = outputFirst;
@@ -231,8 +225,11 @@ struct JointStatusExecution : std::enable_shared_from_this<JointStatusExecution>
                     const auto readback = packet->Readback(0);
                     if (!readback || !readback->IsComplete())
                         throw std::logic_error("Jolt GPU joint status requires its completed source receipt");
-                    UInt4 value{};
-                    readback->ReadInto(&value, sizeof(value));
+                    JointReadback record{};
+                    readback->ReadInto(&record, sizeof(record));
+                    if (record.values.x || record.values.y || record.values.z || record.values.w)
+                        throw std::runtime_error("Jolt GPU joint status returned malformed payload");
+                    const auto &value = record.status;
                     if (value.z || value.w || value.x > JointStatusNumericalFailure ||
                         (value.x == JointStatusSuccess ? value.y != InvalidQueryBodySlot : value.y >= self->count))
                         throw std::runtime_error("Jolt GPU joint publication returned a malformed numerical status");
@@ -392,30 +389,56 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
         const auto &old = accepted[change.index];
         const auto &author = change.author;
         uint32_t flags = 0;
-        if (old.motor.y != author.motor.y || old.motor.z != author.motor.z || old.motor.w != author.motor.w ||
-            old.passive.x != author.passive.x || old.passive.y != author.passive.y ||
-            ((old.bodies.w ^ author.bodies.w) & JointMotorEnabled))
-            flags |= JointResetWarmStart;
-        const auto limits = [](const JointAuthor &value) {
-            return value.bodies.w & JointLimitsEnabled ? std::array<float, 2>{value.limits.x, value.limits.y}
-                                                       : std::array<float, 2>{-glm::pi<float>(), glm::pi<float>()};
-        };
-        const bool sliderLimitsChanged =
-            author.bodies.z == JointSlider && (((old.bodies.w ^ author.bodies.w) & JointLimitsEnabled) ||
-                                               ((author.bodies.w & JointLimitsEnabled) &&
-                                                (old.limits.x != author.limits.x || old.limits.y != author.limits.y)));
-        const bool distanceSettingsChanged =
-            author.bodies.z == JointDistance &&
-            (((old.bodies.w ^ author.bodies.w) & JointAutoDistance) ||
-             (!(author.bodies.w & JointAutoDistance) &&
-              (old.limits.x != author.limits.x || old.limits.y != author.limits.y)) ||
-             old.linearSpring.x != author.linearSpring.x || old.linearSpring.y != author.linearSpring.y);
-        if (author.bodies.z == JointDistance ? distanceSettingsChanged
-            : author.bodies.z == JointSlider ? sliderLimitsChanged
-                                             : limits(old) != limits(author))
-            flags |= JointResetWarmStart;
-        if (old.passive.z != author.passive.z)
-            flags |= JointResetRotor;
+        if (author.bodies.z == JointSwingTwist) {
+            const auto changed = [](const Float4 &a, const Float4 &b) {
+                return a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w;
+            };
+            if (changed(old.angularFrame, author.angularFrame))
+                throw std::invalid_argument("SwingTwist frame changes require topology rebuild");
+            if (old.angularModes.x != author.angularModes.x || changed(old.angularLimits, author.angularLimits))
+                flags |= JointResetSwingLimits;
+            if (old.angularModes.y != author.angularModes.y)
+                flags |= JointResetSwingMotor | JointResetTwistMotor;
+            if (old.angularModes.z != author.angularModes.z)
+                flags |= JointResetTwistMotor;
+            if (old.angularSpring.x != author.angularSpring.x || old.angularSpring.y != author.angularSpring.y ||
+                old.angularTorque.x != author.angularTorque.x)
+                flags |= JointResetSwingMotor;
+            if (old.angularSpring.z != author.angularSpring.z || old.angularSpring.w != author.angularSpring.w ||
+                old.angularTorque.y != author.angularTorque.y)
+                flags |= JointResetTwistMotor;
+            if (old.angularTorque.z != author.angularTorque.z) {
+                if (author.angularModes.y == 0)
+                    flags |= JointResetSwingMotor;
+                if (author.angularModes.z == 0)
+                    flags |= JointResetTwistMotor;
+            }
+        } else {
+            if (old.motor.y != author.motor.y || old.motor.z != author.motor.z || old.motor.w != author.motor.w ||
+                old.passive.x != author.passive.x || old.passive.y != author.passive.y ||
+                ((old.bodies.w ^ author.bodies.w) & JointMotorEnabled))
+                flags |= JointResetWarmStart;
+            const auto limits = [](const JointAuthor &value) {
+                return value.bodies.w & JointLimitsEnabled ? std::array<float, 2>{value.limits.x, value.limits.y}
+                                                           : std::array<float, 2>{-glm::pi<float>(), glm::pi<float>()};
+            };
+            const bool sliderLimitsChanged = author.bodies.z == JointSlider &&
+                                             (((old.bodies.w ^ author.bodies.w) & JointLimitsEnabled) ||
+                                              ((author.bodies.w & JointLimitsEnabled) &&
+                                               (old.limits.x != author.limits.x || old.limits.y != author.limits.y)));
+            const bool distanceSettingsChanged =
+                author.bodies.z == JointDistance &&
+                (((old.bodies.w ^ author.bodies.w) & JointAutoDistance) ||
+                 (!(author.bodies.w & JointAutoDistance) &&
+                  (old.limits.x != author.limits.x || old.limits.y != author.limits.y)) ||
+                 old.linearSpring.x != author.linearSpring.x || old.linearSpring.y != author.linearSpring.y);
+            if (author.bodies.z == JointDistance ? distanceSettingsChanged
+                : author.bodies.z == JointSlider ? sliderLimitsChanged
+                                                 : limits(old) != limits(author))
+                flags |= JointResetWarmStart;
+            if (old.passive.z != author.passive.z)
+                flags |= JointResetRotor;
+        }
         if (flags) {
             rows.push_back(change.index);
             rows.push_back(flags);
@@ -479,7 +502,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
 
 JoltGpuPreparedJointMotion
 JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                                 const std::vector<uint32_t> &rows) const
+                                 const std::vector<uint32_t> &rows, uint32_t kind) const
 {
     if (!publication)
         throw JoltGpuQueryRequestError("Jolt GPU joint motion requires one retained publication");
@@ -487,6 +510,9 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
     auto result = std::make_shared<JoltGpuJointMotionResult>();
     result->publication = std::move(publication);
     result->count = static_cast<uint32_t>(rows.size());
+    if (kind < JointHinge || kind > JointSwingTwist)
+        throw JoltGpuQueryRequestError("Jolt GPU motion kind has no readable coordinate");
+    result->kind = kind;
     if (rows.empty())
         return {std::move(result), {}};
     const auto &source = *result->publication;
@@ -502,10 +528,8 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         if (row >= source.GetJoints().size())
             throw JoltGpuQueryRequestError("Jolt GPU joint motion row is absent from its retained catalog");
         const auto &joint = source.GetJoints()[row];
-        if (joint.row != row ||
-            (joint.kind != JointHinge && joint.kind != JointSlider && joint.kind != JointDistance) ||
-            joint.author.bodies.z != joint.kind || !joint.id || !(joint.author.bodies.w & JointEnabled) ||
-            joint.author.identity.x != static_cast<uint32_t>(joint.id) ||
+        if (joint.row != row || joint.kind != kind || joint.author.bodies.z != joint.kind || !joint.id ||
+            !(joint.author.bodies.w & JointEnabled) || joint.author.identity.x != static_cast<uint32_t>(joint.id) ||
             joint.author.identity.y != static_cast<uint32_t>(joint.id >> 32) ||
             joint.author.identity.z != source.worldRow || joint.author.identity.z >= worldCount ||
             joint.author.identity.w)
@@ -531,10 +555,10 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
         buffers[port] = Allocate(host, data.size());
         updates.push_back({buffers[port], 0, std::move(data)});
     };
-    const JointParams parameters{{source.jointCount, 0, result->count, source.bodyBase}};
+    const JointParams parameters{{source.jointCount, kind, result->count, source.bodyBase}};
     upload(Parameters, Bytes(&parameters, 1));
     upload(Rows, Bytes(rows.data(), rows.size()));
-    const uint64_t outputBytes = uint64_t(result->count) * sizeof(QueryRecordWord);
+    const uint64_t outputBytes = uint64_t(result->count) * sizeof(JointReadback);
     buffers[Motion] = Allocate(host, outputBytes);
     const auto &program = m_programs[ReadMotion];
     rhi::ComputeDispatchDesc dispatch;
@@ -576,8 +600,9 @@ JoltGpuControlWork JoltGpuJoints::PrepareStatus(std::shared_ptr<const JoltGpuSce
 
 void JoltGpuJointMotionResult::CopyMotion(float *output, size_t valueCount)
 {
-    if (valueCount != size_t(count) * 2 || (valueCount && !output))
-        throw JoltGpuQueryRequestError("Jolt GPU joint motion output must contain two floats per requested row");
+    const size_t width = kind == JointSwingTwist ? 4 : 2;
+    if (valueCount != size_t(count) * width || (valueCount && !output))
+        throw JoltGpuQueryRequestError("Jolt GPU joint motion output differs from its requested kind");
     if (!materialized) {
         if (count) {
             if (!packet)
@@ -586,20 +611,29 @@ void JoltGpuJointMotionResult::CopyMotion(float *output, size_t valueCount)
             if (!readback || !readback->IsComplete())
                 throw std::logic_error("Jolt GPU joint motion requires its completed source receipt");
             values.resize(count);
-            readback->ReadInto(values.data(), uint64_t(count) * sizeof(QueryRecordWord));
+            readback->ReadInto(values.data(), uint64_t(count) * sizeof(JointReadback));
         }
         materialized = true;
     }
     // A failed row must not leave a partly updated caller-owned ndarray. The
     // cached values also make a repeated consume independent of staging lifetime.
     for (const auto &record : values) {
-        if (record.value.z != JointStatusSuccess || record.value.w || !std::isfinite(DecodeFloat(record.value.x)) ||
-            !std::isfinite(DecodeFloat(record.value.y)))
+        const auto &v = record.values;
+        const auto &s = record.status;
+        const float norm = v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+        if (s.x != JointStatusSuccess || s.y || s.z || s.w || !std::isfinite(v.x) || !std::isfinite(v.y) ||
+            !std::isfinite(v.z) || !std::isfinite(v.w) ||
+            (kind == JointSwingTwist ? std::abs(norm - 1.0f) > 1e-4f : (v.z != 0.0f || v.w != 0.0f)))
             throw JoltGpuQueryRequestError("Jolt GPU joint motion contains an invalid or failed numerical row");
     }
     for (size_t row = 0; row < values.size(); ++row) {
-        output[row * 2] = DecodeFloat(values[row].value.x);
-        output[row * 2 + 1] = DecodeFloat(values[row].value.y);
+        const auto &v = values[row].values;
+        output[row * width] = v.x;
+        output[row * width + 1] = v.y;
+        if (width == 4) {
+            output[row * width + 2] = v.z;
+            output[row * width + 3] = v.w;
+        }
     }
 }
 
