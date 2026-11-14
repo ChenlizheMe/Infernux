@@ -327,11 +327,8 @@ class SerializedFieldDescriptor:
         )
         # Only materialization/set/attach boundaries bind source values.
         # Getters never inspect owner metadata or recursively walk values.
-        self._owner_value_boundary = (
-            metadata.field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT)
-            or (metadata.field_type == FieldType.LIST
-                and metadata.element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT))
-        )
+        from .value_ownership import is_owned_reference_field
+        self._owner_value_boundary = is_owned_reference_field(metadata)
         # CDS backing (set by _cds_bridge when the class is published; None =
         # Python storage).  Native accessors are cached on the descriptor so the
         # hot path never resolves the extension module or imports the bridge.
@@ -583,6 +580,15 @@ def _ensure_asset_ref(value, asset_type: str):
     from infernux.core.asset_reference_types import asset_type_registry
 
     descriptor = asset_type_registry.require(token)
+    if descriptor.type_id == 'DataAsset' or 'DataAsset' in descriptor.compatible_types:
+        from infernux.core.data_asset import DataAsset
+        from infernux.core.asset_ref import DataAssetRef
+        if isinstance(value, DataAsset):
+            return DataAssetRef(guid=value.guid, path_hint=value.file_path,
+                                _owner_world_id=value._value_owner_world_id)
+        if (isinstance(value, AssetRefBase) and not isinstance(value, DataAssetRef)
+                and get_asset_type_for_ref(value) == 'DataAsset'):
+            return DataAssetRef(guid=value.guid, path_hint=value._path_hint)
     if descriptor.compatible_types:
         if value is None:
             return None

@@ -98,6 +98,12 @@ def deserialize_dict_ref(value: dict) -> Any:
         if asset_type == "Shader":
             from infernux.core.asset_ref import ShaderRef
             return ShaderRef(guid=guid)
+        from infernux.core.asset_reference_types import asset_type_registry
+        if asset_type_registry.require(asset_type).type_id == "DataAsset":
+            from infernux.core.asset_ref import DataAssetRef
+            from .value_ownership import typed_creation_owner
+            owner = typed_creation_owner() if guid else None
+            return DataAssetRef(guid=guid, _owner_world_id=owner)
         from infernux.core.asset_ref import create_asset_ref
 
         return create_asset_ref(asset_type, guid=guid)
@@ -142,6 +148,9 @@ def make_null_ref(field_type, field_meta=None) -> Any:
         if descriptor.compatible_types:
             return None
         asset_type = descriptor.type_id
+        if asset_type == "DataAsset":
+            from infernux.core.asset_ref import DataAssetRef
+            return DataAssetRef(_owner_world_id=None)
         from infernux.core.asset_ref import create_asset_ref
 
         return create_asset_ref(asset_type)

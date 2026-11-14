@@ -206,11 +206,11 @@ class SerializableObject:
             from .fields import normalize_runtime_field_value
             value = normalize_runtime_field_value(value, meta)
             from .fields import FieldType
-            if (meta.field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT)
-                    or (meta.field_type == FieldType.LIST and meta.element_type in
-                        (FieldType.GAME_OBJECT, FieldType.COMPONENT))):
-                from .value_ownership import bind_scene_value
-                value = bind_scene_value(value, meta, self.__dict__.get("_value_owner_world_id"))
+            leaf_type = meta.element_type if meta.field_type == FieldType.LIST else meta.field_type
+            if leaf_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT, FieldType.ASSET):
+                from .value_ownership import bind_scene_value, is_owned_reference_field
+                if is_owned_reference_field(meta):
+                    value = bind_scene_value(value, meta, self.__dict__.get("_value_owner_world_id"))
         object.__setattr__(self, name, value)
 
     def __init__(self, **kwargs):

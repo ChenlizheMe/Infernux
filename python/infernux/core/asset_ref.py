@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Optional
+from infernux.components.value_ownership import UNSET, resolve_in_value_world
 
 
 def _get_asset_database():
@@ -231,15 +232,39 @@ class AudioClipRef(AssetRefBase):
 
 
 class DataAssetRef(AssetRefBase):
-    """GUID reference to one shared typed DataAsset."""
+    """GUID selector, or a domain-owned reference materialized by a field codec.
+
+    A public raw GUID selector keeps the existing current-domain behavior.
+    Private owner None is a source token; an integer owns a concrete domain.
+    GUID equality/hash remain catalog identity, independent of owner metadata.
+    """
+
+    def __init__(self, guid: str = "", path_hint: str = "", *, _owner_world_id=UNSET):
+        super().__init__(guid=guid, path_hint=path_hint)
+        self._value_owner_world_id = _owner_world_id
 
     def resolve(self):
-        # DataAsset identity is owned by AssetManager's current author/Play
-        # cache domain. A reference-local cache could retain an author object
-        # across Enter Play or a gameplay clone across Stop.
         if not self._guid:
             return None
-        return self._do_resolve()
+        owner = self._value_owner_world_id
+        if owner is UNSET:
+            return self._do_resolve()  # Public contextual selector contract.
+        if owner is None:
+            return None  # Source documents do not choose a live domain.
+        from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
+        assert_runtime_owner_thread()
+        # Use the real domain cache on every read; never retain a mutable value
+        # in this wrapper after the cache is flushed or its World is retired.
+        return resolve_in_value_world(owner, self._do_resolve)
+
+    def __copy__(self):
+        return type(self)(guid=self._guid, path_hint=self._path_hint,
+                          _owner_world_id=self._value_owner_world_id)
+
+    def __deepcopy__(self, memo):
+        result = self.__copy__()
+        memo[id(self)] = result
+        return result
 
     def _do_resolve(self):
         from infernux.core.assets import AssetManager

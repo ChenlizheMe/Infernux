@@ -110,20 +110,40 @@ def owned_operation(function):
     return invoke
 
 
+def is_owned_reference_field(metadata):
+    """Declaration-time/set/attach classification; never a field-read walk."""
+    from .fields import FieldType
+    field_type = metadata.element_type if metadata.field_type == FieldType.LIST else metadata.field_type
+    if field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
+        return True
+    if field_type == FieldType.ASSET and metadata.asset_type:
+        from infernux.core.asset_reference_types import asset_type_registry
+        descriptor = asset_type_registry.require(metadata.asset_type)
+        return descriptor.type_id == 'DataAsset' or 'DataAsset' in descriptor.compatible_types
+    return False
+
+
 def bind_scene_value(value, metadata, owner):
-    """Setter/attach only. Source tokens become new values, never mutate identity."""
+    """Setter/attach only. Bind source/selector refs by replacement, not mutation."""
+    from .fields import FieldType
+    leaf_type = metadata.element_type if metadata.field_type == FieldType.LIST else metadata.field_type
+    if owner is None and leaf_type != FieldType.ASSET:
+        return value
+    from .ref_wrappers import GameObjectRef, ComponentRef
+    from infernux.core.asset_ref import DataAssetRef
+    if metadata.field_type == FieldType.LIST:
+        return [_bind_scene_ref(item, owner, GameObjectRef, ComponentRef, DataAssetRef) for item in value]
+    return _bind_scene_ref(value, owner, GameObjectRef, ComponentRef, DataAssetRef)
+
+
+def _bind_scene_ref(value, owner, object_type, component_type, data_asset_type):
+    if isinstance(value, data_asset_type):
+        current = value._value_owner_world_id
+        if current is UNSET or (current is None and owner is not None):
+            return data_asset_type(guid=value.guid, path_hint=value._path_hint, _owner_world_id=owner)
+        return value
     if owner is None:
         return value
-    from .fields import FieldType
-    from .ref_wrappers import GameObjectRef, ComponentRef
-    if metadata.field_type == FieldType.LIST:
-        if metadata.element_type not in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
-            return value
-        return [_bind_scene_ref(item, owner, GameObjectRef, ComponentRef) for item in value]
-    return _bind_scene_ref(value, owner, GameObjectRef, ComponentRef)
-
-
-def _bind_scene_ref(value, owner, object_type, component_type):
     if isinstance(value, object_type) and value.persistent_id and value._value_owner_world_id is None:
         return object_type(persistent_id=value.persistent_id, _owner_world_id=owner)
     if isinstance(value, component_type) and value.go_id and value._value_owner_world_id is None:

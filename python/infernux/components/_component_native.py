@@ -157,12 +157,10 @@ class ComponentNativeMixin:
         if game_object is not None:
             # Formal attach boundary; only reference declarations are visited.
             # Numeric lists are never read/walked here or by field getters.
-            from .fields import get_serialized_fields, get_raw_field_value, FieldType
-            from .value_ownership import object_owner, bind_scene_value
+            from .fields import get_serialized_fields, get_raw_field_value
+            from .value_ownership import object_owner, bind_scene_value, is_owned_reference_field
             for name, metadata in get_serialized_fields(type(self)).items():
-                if (metadata.field_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT)
-                        or (metadata.field_type == FieldType.LIST and metadata.element_type in
-                            (FieldType.GAME_OBJECT, FieldType.COMPONENT))):
+                if is_owned_reference_field(metadata):
                     identity = object_owner(game_object)
                     raw = get_raw_field_value(self, name)
                     bound = bind_scene_value(raw, metadata, identity)

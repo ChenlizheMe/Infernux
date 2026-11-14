@@ -10,7 +10,7 @@ from typing import Any
 import zlib
 
 from infernux.components.serializable_object import SerializableObject
-from infernux.components.value_ownership import value_world
+from infernux.components.value_ownership import owned_operation, value_world
 
 
 DATA_ASSET_EXTENSION = ".inxdata"
@@ -122,6 +122,7 @@ class DataAsset(SerializableObject):
             )
         return value
 
+    @owned_operation
     def deserialize_document(self, document: dict[str, Any]) -> bool:
         """Apply an authored document without replacing this asset identity."""
         from infernux.components.fields import (
