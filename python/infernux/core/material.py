@@ -742,11 +742,14 @@ class Material(ResourceProxy):
         return self._native.has_property(name)
 
     def get_property(self, name: str | int):
-        """Get a property value by name (generic). Returns None if not found."""
+        """Read a logical value, with vectors as tuples and matrices as row lists.
+
+        The value can be passed directly to set_param. Missing names return None.
+        """
         return self._native.get_property(name)
 
     def get_all_properties(self) -> dict:
-        """Get all properties as a dictionary."""
+        """Read named logical values using the same shapes as get_property."""
         return self._native.get_all_properties()
 
     def save(self, file_path: str) -> bool:

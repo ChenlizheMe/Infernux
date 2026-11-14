@@ -4,6 +4,8 @@
 #include <function/resources/InxMaterial/MaterialProperty.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <type_traits>
+#include <utility>
 
 namespace infernux::binding
 {
@@ -73,13 +75,44 @@ inline MaterialPropertyValue MaterialPropertyFromPython(MaterialPropertyType typ
     throw py::type_error("Unknown material parameter type");
 }
 
-template <glm::length_t Size> pybind11::list MaterialMatrixColumnsToPython(const glm::mat<Size, Size, float> &matrix)
+// Host values use the same row/column coordinates on input and output.
+// Flat column storage belongs to serialized documents and GPU packing.
+template <glm::length_t Size> pybind11::list MaterialMatrixRowsToPython(const glm::mat<Size, Size, float> &matrix)
 {
     pybind11::list result;
-    for (glm::length_t column = 0; column < Size; ++column)
-        for (glm::length_t row = 0; row < Size; ++row)
-            result.append(matrix[column][row]);
+    for (glm::length_t row = 0; row < Size; ++row) {
+        pybind11::list values;
+        for (glm::length_t column = 0; column < Size; ++column)
+            values.append(matrix[column][row]);
+        result.append(std::move(values));
+    }
     return result;
+}
+
+inline pybind11::object MaterialPropertyToPython(const MaterialPropertyValue &value)
+{
+    namespace py = pybind11;
+    return std::visit(
+        [](const auto &item) -> py::object {
+            using Value = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<Value, glm::mat3> || std::is_same_v<Value, glm::mat4>) {
+                return MaterialMatrixRowsToPython(item);
+            } else if constexpr (std::is_same_v<Value, glm::vec2> || std::is_same_v<Value, glm::vec3> ||
+                                 std::is_same_v<Value, glm::vec4>) {
+                py::tuple components(Value::length());
+                for (glm::length_t index = 0; index < Value::length(); ++index)
+                    components[index] = py::float_(item[index]);
+                return components;
+            } else if constexpr (std::is_same_v<Value, std::vector<glm::vec4>>) {
+                py::list result;
+                for (const auto &vector : item)
+                    result.append(py::make_tuple(vector.x, vector.y, vector.z, vector.w));
+                return result;
+            } else {
+                return py::cast(item);
+            }
+        },
+        value);
 }
 
 template <typename Apply> void ApplyMaterialMatrixFromPython(pybind11::handle value, Apply apply)

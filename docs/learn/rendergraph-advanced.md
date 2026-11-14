@@ -298,7 +298,7 @@ view_projection = reflection_camera.projection_matrix @ reflection_camera.view_m
 mirror_renderer.set_parameter("reflectionVP", view_projection)
 ```
 
-Use `Material.set_matrix(name, matrix)` to edit the material itself, or `DrawParameterBlock.set_matrix(name, matrix)` for an explicit draw. Renderer overrides leave the shared material unchanged. These setters copy the values; later edits to the NumPy array do not update the material. Existing flat 16-number inputs and saved matrix documents remain column-major. Matrix transfer does not change camera clip-space conventions.
+Use `Material.set_matrix(name, matrix)` to edit the material itself, or `DrawParameterBlock.set_matrix(name, matrix)` for an explicit draw. Renderer overrides leave the shared material unchanged. Matrix inputs have shape `(3, 3)` or `(4, 4)` and use `[row, column]` coordinates. These setters copy the values; later edits to the source array do not update the material. `Material.get_matrix()` returns an array; the generic `get_property()`, `get_all_properties()` and renderer `get_parameter()` return nested row lists that can be passed directly to their corresponding setters. Flat column values belong to saved matrix documents and GPU packing. Matrix transfer does not change camera clip-space conventions.
 
 `graph.create_temporal_history(name, format=..., size=... / size_divisor=...)` creates a per-view, single-sample read/write pair. The first read after creation or invalidation is zero; write the output on every execution. The renderer owns ping-pong and resource retirement. History allocation does not enable camera jitter: TAA requests it separately with `graph.set_temporal_jitter()`. Do not write the previous-frame input or read and write the same image in one pass.
 

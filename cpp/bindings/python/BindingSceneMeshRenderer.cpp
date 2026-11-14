@@ -93,44 +93,7 @@ static void BindRendererParameters(NativeClass<MeshRenderer, Component> &cls)
                 const MaterialProperty *property = renderer.GetParameter(materialSlot, name, persistentOnly, owner);
                 if (!property)
                     return py::none();
-                switch (property->type) {
-                case MaterialPropertyType::Float:
-                    return py::float_(std::get<float>(property->value));
-                case MaterialPropertyType::Int:
-                    return py::int_(std::get<int>(property->value));
-                case MaterialPropertyType::Float2: {
-                    const auto value = std::get<glm::vec2>(property->value);
-                    return py::make_tuple(value.x, value.y);
-                }
-                case MaterialPropertyType::Float3: {
-                    const auto value = std::get<glm::vec3>(property->value);
-                    return py::make_tuple(value.x, value.y, value.z);
-                }
-                case MaterialPropertyType::Float4:
-                case MaterialPropertyType::Color: {
-                    const auto value = std::get<glm::vec4>(property->value);
-                    return py::make_tuple(value.x, value.y, value.z, value.w);
-                }
-                case MaterialPropertyType::Bool:
-                    return py::bool_(std::get<bool>(property->value));
-                case MaterialPropertyType::UInt:
-                    return py::int_(std::get<uint32_t>(property->value));
-                case MaterialPropertyType::Mat3:
-                    return binding::MaterialMatrixColumnsToPython(std::get<glm::mat3>(property->value));
-                case MaterialPropertyType::Mat4:
-                    return binding::MaterialMatrixColumnsToPython(std::get<glm::mat4>(property->value));
-                case MaterialPropertyType::Texture2D:
-                    return py::str(std::get<std::string>(property->value));
-                case MaterialPropertyType::FloatArray:
-                    return py::cast(std::get<std::vector<float>>(property->value));
-                case MaterialPropertyType::Float4Array: {
-                    py::list values;
-                    for (const auto &value : std::get<std::vector<glm::vec4>>(property->value))
-                        values.append(py::make_tuple(value.x, value.y, value.z, value.w));
-                    return values;
-                }
-                }
-                return py::none();
+                return binding::MaterialPropertyToPython(property->value);
             },
             py::arg("name"), py::arg("material_slot") = 0, py::arg("persistent_only") = false, py::arg("owner") = "")
         .def(

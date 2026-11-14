@@ -128,3 +128,27 @@ def test_unsigned_bool_and_matrix3_share_material_and_renderer_paths(scene, mate
     with pytest.raises(TypeError):
         material.set_param("enabled", 1)
     assert material.to_dict() == before
+
+
+@pytest.mark.parametrize("size", [3, 4])
+def test_generic_matrix_values_round_trip_through_material_and_renderer(scene, material, size):
+    values = np.arange(size * size, dtype=np.float64).reshape(size, size).T[:, ::-1]
+    material.set_matrix("basis", values)
+    single = material.get_property("basis")
+    bulk = material.get_all_properties()["basis"]
+    material.set_param("basis", single)
+    material.set_param("basis", bulk)
+    np.testing.assert_array_equal(single, values)
+    np.testing.assert_array_equal(bulk, values)
+    np.testing.assert_array_equal(material.get_matrix("basis"), values)
+
+    renderer = scene.create_game_object("Matrix round trip").add_component("MeshRenderer")
+    renderer.material = material
+    changed = values[::-1].copy()
+    renderer.set_parameter("basis", changed, persistent=True)
+    read = renderer.get_parameter("basis")
+    renderer.set_parameter("basis", read, persistent=True)
+    np.testing.assert_array_equal(read, changed)
+    np.testing.assert_array_equal(renderer.get_parameter("basis"), changed)
+    stored = renderer.serialize_document()["parameterOverrides"][0]["basis"]["value"]
+    np.testing.assert_array_equal(stored, changed.flatten(order="F"))

@@ -45,48 +45,6 @@ namespace infernux
 namespace
 {
 
-/// Shared conversion from one reflected material property to its Python value.
-///
-/// The single-property and bulk getters both use this so their two switches
-/// cannot drift apart. The returned shapes are a public binding contract:
-/// Matrices are flat column lists in GLM column-major order, Float4Array is a
-/// list of 4-tuples, and Color shares the Float4 branch.
-py::object PyValueFromMaterialProperty(const MaterialProperty &prop)
-{
-    switch (prop.type) {
-    case MaterialPropertyType::Float:
-        return py::cast(std::get<float>(prop.value));
-    case MaterialPropertyType::Float2:
-        return py::cast(std::get<glm::vec2>(prop.value));
-    case MaterialPropertyType::Float3:
-        return py::cast(std::get<glm::vec3>(prop.value));
-    case MaterialPropertyType::Float4:
-    case MaterialPropertyType::Color:
-        return py::cast(std::get<glm::vec4>(prop.value));
-    case MaterialPropertyType::Int:
-        return py::cast(std::get<int>(prop.value));
-    case MaterialPropertyType::Bool:
-        return py::bool_(std::get<bool>(prop.value));
-    case MaterialPropertyType::UInt:
-        return py::int_(std::get<uint32_t>(prop.value));
-    case MaterialPropertyType::Mat3:
-        return binding::MaterialMatrixColumnsToPython(std::get<glm::mat3>(prop.value));
-    case MaterialPropertyType::Mat4:
-        return binding::MaterialMatrixColumnsToPython(std::get<glm::mat4>(prop.value));
-    case MaterialPropertyType::Texture2D:
-        return py::cast(std::get<std::string>(prop.value));
-    case MaterialPropertyType::FloatArray:
-        return py::cast(std::get<std::vector<float>>(prop.value));
-    case MaterialPropertyType::Float4Array: {
-        py::list result;
-        for (const auto &value : std::get<std::vector<glm::vec4>>(prop.value))
-            result.append(py::make_tuple(value.x, value.y, value.z, value.w));
-        return result;
-    }
-    }
-    return py::none();
-}
-
 template <typename Value, typename... Options, typename Access>
 void BindMetadataReadMethods(py::class_<Value, Options...> &binding, Access access)
 {
@@ -952,7 +910,7 @@ void RegisterResourceBindings(py::module_ &m)
                 if (!prop) {
                     return py::none();
                 }
-                return PyValueFromMaterialProperty(*prop);
+                return binding::MaterialPropertyToPython(prop->value);
             },
             py::arg("name"), "Get a property value by name")
         .def(
@@ -960,7 +918,7 @@ void RegisterResourceBindings(py::module_ &m)
             [](const InxMaterial &mat) -> py::dict {
                 py::dict result;
                 for (const auto &[name, prop] : mat.GetAllProperties()) {
-                    result[py::str(name)] = PyValueFromMaterialProperty(prop);
+                    result[py::str(name)] = binding::MaterialPropertyToPython(prop.value);
                 }
                 return result;
             },
