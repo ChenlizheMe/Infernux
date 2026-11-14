@@ -31,10 +31,15 @@ class Random
     // Scrambling is lazy so worlds without string tweens allocate no tables.
     struct ScrambleState
     {
-        std::array<std::u16string, 4> text{u"ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz1234567890",
-                                           u"ABCDEFGHIJKLMNOPQRSTUVXYZ", u"abcdefghijklmnopqrstuvxyz", u"1234567890"};
-        bool initialized = false;
-        int last = 0;
+        ScrambleState()
+            : text{u"ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz1234567890", u"ABCDEFGHIJKLMNOPQRSTUVXYZ",
+                   u"abcdefghijklmnopqrstuvxyz", u"1234567890"},
+              initialized(false), last(0)
+        {
+        }
+        std::array<std::u16string, 4> text;
+        bool initialized;
+        int last;
     };
 
     struct Snapshot
