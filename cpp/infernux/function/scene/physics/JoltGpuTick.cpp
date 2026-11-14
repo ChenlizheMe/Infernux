@@ -28,12 +28,19 @@ class JoltGpuTick::Impl
 {
   public:
     Impl(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase,
-         JoltGpuConstraints &constraints)
+         JoltGpuConstraints &constraints, std::function<void()> onFailure)
         : work(work), storage(storage), programs(programs), broadphase(broadphase), constraints(constraints),
-          host(storage.GetHost())
+          host(storage.GetHost()), failureObserver(std::move(onFailure))
     {
         FrameWorkSource source;
-        source.observe = [this] { Poll(); };
+        source.observe = [this] {
+            try {
+                Poll();
+            } catch (...) {
+                Fail();
+                throw;
+            }
+        };
         source.refresh = source.observe;
         source.describe = [this] { return Describe(); };
         source.advance = [this](bool gpu, uint64_t token) { return Advance(gpu, token); };
@@ -88,7 +95,8 @@ class JoltGpuTick::Impl
         finalOutput = {};
         snapshotRegion = 0;
         snapshotOffset = 0;
-        snapshotHeaderAccepted = false;
+        snapshotMetadataOffset = 0;
+        snapshotMetadata.clear();
         cursor = 0;
         inputAccepted = controlOnly;
         submissionBusy = false;
@@ -97,11 +105,21 @@ class JoltGpuTick::Impl
             if (!control.initialization && control.groups.empty())
                 CaptureControlInputs();
         } catch (...) {
-            status = Status::Failed;
-            Cancel();
+            Fail();
             throw;
         }
         work.Wake(sourceId);
+    }
+
+    // The observer is owner bookkeeping only: it must not throw, submit, wait,
+    // or destroy this source. Accepted receipts remain owned until retirement.
+    void Fail() noexcept
+    {
+        const bool firstFailure = status != Status::Failed;
+        status = Status::Failed;
+        Cancel();
+        if (firstFailure && failureObserver)
+            failureObserver();
     }
 
     void Cancel() noexcept
@@ -140,8 +158,7 @@ class JoltGpuTick::Impl
                 return FrameWorkWaitResult::Progress;
             return completed ? FrameWorkWaitResult::Blocked : FrameWorkWaitResult::Waiting;
         } catch (...) {
-            status = Status::Failed;
-            Cancel();
+            Fail();
             throw;
         }
     }
@@ -152,6 +169,7 @@ class JoltGpuTick::Impl
     JoltGpuBroadphase &broadphase;
     JoltGpuConstraints &constraints;
     rhi::ComputeHost host;
+    std::function<void()> failureObserver;
     FrameWorkOwner::SourceId sourceId = 0;
     Status status = Status::Idle;
     bool admissionEnabled = true;
@@ -828,9 +846,15 @@ class JoltGpuTick::Impl
     JoltGpuControlWork PrepareSnapshot()
     {
         using namespace JPH::GPU;
+        const auto &liveLayout = *storage.GetJointLayout();
+        const auto slice = liveLayout.WorldSlice(finalOutput.jointBase, finalOutput.jointCount);
+        if (!finalOutput.jointLayout) {
+            finalOutput.jointLayout = liveLayout.LocalLayout(slice);
+            snapshotMetadata = finalOutput.jointLayout->MetadataBytes();
+        }
         const uint64_t stateBytes = uint64_t(finalOutput.bodyCount) * sizeof(BodyState);
-        const uint64_t authorBytes = uint64_t(finalOutput.jointCount) * sizeof(JointAuthor);
-        const uint64_t jointStateBytes = uint64_t(finalOutput.jointCount) * sizeof(JointState);
+        const uint64_t authorBytes = uint64_t(slice.authorWords) * 16u;
+        const uint64_t jointStateBytes = uint64_t(slice.stateWords) * 16u;
         const auto allocate = [&](std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes, bool body) {
             if (!bytes)
                 return true;
@@ -844,30 +868,27 @@ class JoltGpuTick::Impl
             return bool(buffer);
         };
         if (!allocate(finalOutput.states, stateBytes, true) ||
-            !allocate(finalOutput.joints, sizeof(QueryRecordWord) + authorBytes + jointStateBytes, false))
+            !allocate(finalOutput.joints, finalOutput.jointLayout->ByteSize(), false))
             return {nullptr, [this] { return PrepareSnapshot(); }};
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        if (!snapshotHeaderAccepted) {
-            const UInt4 header{finalOutput.jointCount, 1u + JointAuthorWords * finalOutput.jointCount, 0u, 0u};
-            std::vector<uint8_t> bytes(sizeof(header));
-            std::memcpy(bytes.data(), &header, sizeof(header));
-            uploads.push_back({finalOutput.joints, 0u, std::move(bytes)});
-        }
-        std::vector<rhi::ComputeBufferCopy> copies;
-        // Reuse shared transfer admission, not a fixed private copy quantum.
-        // Available bytes grow with the owner's actual budget. A packet may
-        // cover all three source regions; the owner can accept more packets
-        // in this same opportunity while it has budget and queue capacity.
         const auto available = work.ResourceRemaining(FrameWorkResource::Transfer);
         const auto window = available ? available : work.ResourceState(FrameWorkResource::Transfer).limit;
-        uint64_t remaining = std::max(uint64_t{16}, window - std::min(window, uint64_t(uploads.size() * 16u)));
-        remaining -= remaining % 16u;
+        uint64_t remaining = std::max(uint64_t{16}, window - window % 16u);
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        std::vector<rhi::ComputeBufferCopy> copies;
+        if (snapshotMetadataOffset < snapshotMetadata.size()) {
+            const auto bytes = std::min(remaining, uint64_t(snapshotMetadata.size()) - snapshotMetadataOffset);
+            const auto first = snapshotMetadata.begin() + static_cast<size_t>(snapshotMetadataOffset);
+            uploads.push_back({finalOutput.joints, snapshotMetadataOffset,
+                               std::vector<uint8_t>(first, first + static_cast<size_t>(bytes))});
+            snapshotMetadataOffset += bytes;
+            remaining -= bytes;
+        }
         while (snapshotRegion < 3u && remaining) {
             const uint64_t length = snapshotRegion == 0u   ? stateBytes
                                     : snapshotRegion == 1u ? authorBytes
                                                            : jointStateBytes;
             if (snapshotOffset == length) {
-                snapshotOffset = 0u;
+                snapshotOffset = 0;
                 ++snapshotRegion;
                 continue;
             }
@@ -876,21 +897,20 @@ class JoltGpuTick::Impl
             const auto &target = bodies ? finalOutput.states : finalOutput.joints;
             const uint64_t sourceBase =
                 bodies ? uint64_t(finalOutput.bodyBase) * sizeof(BodyState)
-                       : sizeof(QueryRecordWord) + (snapshotRegion == 1u
-                                                        ? uint64_t(finalOutput.jointBase) * sizeof(JointAuthor)
-                                                        : uint64_t(storage.GetJointCount()) * sizeof(JointAuthor) +
-                                                              uint64_t(finalOutput.jointBase) * sizeof(JointState));
-            const uint64_t targetBase =
-                bodies ? 0u : sizeof(QueryRecordWord) + (snapshotRegion == 2u ? authorBytes : 0u);
-            const uint64_t bytes = std::min(remaining, length - snapshotOffset);
-            // Borrow the mutable live source. Same queue ordering plus this
-            // tick's exclusive writer lease preserve the value, with no live
-            // Freeze and no full-allocation reader held by the publication.
+                       : uint64_t(snapshotRegion == 1u ? slice.authorFirst : slice.stateFirst) * 16u;
+            const uint64_t targetBase = bodies ? 0u
+                                        : snapshotRegion == 1u
+                                            ? 16u + uint64_t(finalOutput.jointCount) * sizeof(JointDirectory)
+                                            : finalOutput.jointLayout->AuthorEndBytes();
+            const auto bytes = std::min(remaining, length - snapshotOffset);
+            // Borrow the mutable live writer generation; only the compact
+            // destination gets a retained publication reader after receipts.
             copies.push_back({source, target, {sourceBase + snapshotOffset, targetBase + snapshotOffset, bytes}});
             snapshotOffset += bytes;
             remaining -= bytes;
         }
         if (uploads.empty() && copies.empty()) {
+            snapshotMetadata.clear();
             if (finalOutput.states)
                 finalOutput.states = finalOutput.states->Freeze();
             finalOutput.joints = finalOutput.joints->Freeze();
@@ -899,10 +919,7 @@ class JoltGpuTick::Impl
             return prepare ? prepare(finalOutput) : JoltGpuControlWork{};
         }
         auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), {}, {}, std::move(copies));
-        return {packet, [this] {
-                    snapshotHeaderAccepted = true;
-                    return PrepareSnapshot();
-                }};
+        return {packet, [this] { return PrepareSnapshot(); }};
     }
 
     bool Prepare()
@@ -1123,8 +1140,7 @@ class JoltGpuTick::Impl
             }
             return Prepare();
         } catch (...) {
-            status = Status::Failed;
-            Cancel();
+            Fail();
             throw;
         }
     }
@@ -1144,7 +1160,8 @@ class JoltGpuTick::Impl
     JoltGpuTickOutput finalOutput;
     uint32_t snapshotRegion = 0;
     uint64_t snapshotOffset = 0;
-    bool snapshotHeaderAccepted = false;
+    uint64_t snapshotMetadataOffset = 0;
+    std::vector<uint8_t> snapshotMetadata;
     std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces;
     JoltGpuStepInputs inputs;
     JoltGpuStepInputs parameterInput;
@@ -1172,8 +1189,9 @@ class JoltGpuTick::Impl
 };
 
 JoltGpuTick::JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs,
-                         JoltGpuBroadphase &broadphase, JoltGpuConstraints &constraints)
-    : m_impl(std::make_unique<Impl>(work, storage, programs, broadphase, constraints))
+                         JoltGpuBroadphase &broadphase, JoltGpuConstraints &constraints,
+                         std::function<void()> failureObserver)
+    : m_impl(std::make_unique<Impl>(work, storage, programs, broadphase, constraints, std::move(failureObserver)))
 {
 }
 JoltGpuTick::~JoltGpuTick() = default;

@@ -75,6 +75,7 @@ struct ComputeDispatchDesc
 
 struct ComputeBufferUpdate
 {
+    /// One packet may patch disjoint ranges of the same buffer before dispatch.
     std::shared_ptr<ComputeBuffer> buffer;
     uint64_t offset = 0;
     std::vector<uint8_t> data;

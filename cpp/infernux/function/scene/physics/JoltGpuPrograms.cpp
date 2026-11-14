@@ -205,7 +205,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
 {
     constexpr auto limit = std::numeric_limits<uint32_t>::max();
     if (model.bodies.size() > limit || model.worlds.size() > limit || model.shapes.size() > limit ||
-        model.joints.size() > (limit - 1u) / (JointAuthorWords + JointStateWords))
+        model.joints.size() > (limit - 1u) / JointDirectoryWords)
         throw std::invalid_argument("Jolt GPU model exceeds the device index range");
     ModelCounts counts{static_cast<uint32_t>(model.bodies.size()), static_cast<uint32_t>(model.worlds.size()),
                        static_cast<uint32_t>(model.shapes.size())};
@@ -273,6 +273,8 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                                                  [](const auto &value, uint32_t key) { return value.index < key; });
             const auto &joint =
                 change != jointChanges.end() && change->index == index ? change->author : model.joints[index];
+            if (!joint.HasMatchingKind())
+                throw std::invalid_argument("Joint kind differs from typed payload");
             const auto inWorld = [&](uint32_t slot) { return slot >= range.x && uint64_t(slot) < bodyEnd + range.y; };
             if (joint.identity.z != world || joint.identity.w || (!joint.identity.x && !joint.identity.y) ||
                 !inWorld(joint.bodies.y) ||
@@ -282,11 +284,11 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                  ~(JointEnabled | JointCollisionEnabled | JointLimitsEnabled | JointMotorEnabled | JointAutoDistance)))
                 throw std::invalid_argument("Jolt GPU joint identity, endpoints or world range is invalid");
             for (const auto &value :
-                 {joint.ownerAnchor, joint.ownerAxis, joint.ownerLocalAnchor, joint.rootCOM1, joint.rootCOM2,
-                  joint.scale1, joint.scale2, joint.connectedAnchor, joint.connectedLocalAnchor})
+                 {joint.ownerAnchor(), joint.ownerAxis(), joint.ownerLocalAnchor(), joint.rootCOM1(), joint.rootCOM2(),
+                  joint.scale1(), joint.scale2(), joint.connectedAnchor(), joint.connectedLocalAnchor()})
                 if (!Finite4(value) || value.w != 0)
                     throw std::invalid_argument("Jolt GPU joint anchor, axis, COM and scale must be finite");
-            const auto &axis = joint.ownerAxis;
+            const auto &axis = joint.ownerAxis();
             if ((joint.bodies.z == JointHinge || joint.bodies.z == JointSlider) &&
                 std::abs(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z - 1.0f) > 1e-4f)
                 throw std::invalid_argument("Jolt GPU joint axis must be normalized");
@@ -299,42 +301,46 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                 return Finite4(v) && v.x >= 0 && v.y >= 0 && v.z >= 0 && v.w >= 0;
             };
             if (swingTwist) {
-                const auto &v = joint.angularLimits;
-                if (!normalized(joint.angularFrame) || !normalized(joint.angularTarget) || !Finite4(v) ||
+                const auto &v = joint.angularLimits();
+                if (!normalized(joint.angularFrame()) || !normalized(joint.angularTarget()) || !Finite4(v) ||
                     v.x < -3.14159265358979323846f || v.y > 3.14159265358979323846f || v.x > v.y || v.z < 0 ||
                     v.z > 3.14159265358979323846f || v.w < 0 || v.w > 3.14159265358979323846f ||
-                    joint.angularModes.x > 1 || joint.angularModes.y > 3 || joint.angularModes.z > 3 ||
-                    joint.angularModes.w || !nonnegative(joint.angularSpring) || !nonnegative(joint.angularTorque) ||
-                    joint.angularTorque.w || !Finite4(joint.angularVelocity) || joint.angularVelocity.w ||
-                    (joint.bodies.w & ~(JointEnabled | JointCollisionEnabled)) || !zero(joint.ownerAxis) ||
-                    !zero(joint.limits) || !zero(joint.motor) || !zero(joint.passive) || !zero(joint.connectedAnchor) ||
-                    !zero(joint.connectedLocalAnchor) || !zero(joint.linearSpring))
+                    joint.angularModes().x > 1 || joint.angularModes().y > 3 || joint.angularModes().z > 3 ||
+                    joint.angularModes().w || !nonnegative(joint.angularSpring()) ||
+                    !nonnegative(joint.angularTorque()) || joint.angularTorque().w ||
+                    !Finite4(joint.angularVelocity()) || joint.angularVelocity().w ||
+                    (joint.bodies.w & ~(JointEnabled | JointCollisionEnabled)) || !zero(joint.ownerAxis()) ||
+                    !zero(joint.limits()) || !zero(joint.motor()) || !zero(joint.passive()) ||
+                    !zero(joint.connectedAnchor()) || !zero(joint.connectedLocalAnchor()) ||
+                    !zero(joint.linearSpring()))
                     throw std::invalid_argument("Jolt GPU SwingTwist settings differ from their typed contract");
-            } else if (!zero(joint.angularFrame) || !zero(joint.angularLimits) || joint.angularModes.x ||
-                       joint.angularModes.y || joint.angularModes.z || joint.angularModes.w ||
-                       !zero(joint.angularSpring) || !zero(joint.angularTorque) || !zero(joint.angularTarget) ||
-                       !zero(joint.angularVelocity))
+            } else if (!zero(joint.angularFrame()) || !zero(joint.angularLimits()) || joint.angularModes().x ||
+                       joint.angularModes().y || joint.angularModes().z || joint.angularModes().w ||
+                       !zero(joint.angularSpring()) || !zero(joint.angularTorque()) || !zero(joint.angularTarget()) ||
+                       !zero(joint.angularVelocity()))
                 throw std::invalid_argument("Jolt GPU scalar joint has an angular suffix");
             const bool distance = joint.bodies.z == JointDistance;
-            if (!Finite4(joint.limits) || joint.limits.x > joint.limits.y ||
-                (distance ? joint.limits.x < 0.0f : (joint.limits.x > 0.0f || joint.limits.y < 0.0f)) ||
+            if (!Finite4(joint.limits()) || joint.limits().x > joint.limits().y ||
+                (distance ? joint.limits().x < 0.0f : (joint.limits().x > 0.0f || joint.limits().y < 0.0f)) ||
                 (!distance && joint.bodies.z != JointSlider &&
-                 (joint.limits.x < -3.14159265358979323846f || joint.limits.y > 3.14159265358979323846f)) ||
-                joint.limits.z || joint.limits.w || !Finite4(joint.motor) || joint.motor.y < 0 || joint.motor.z < 0 ||
-                joint.motor.w < 0 || !Finite4(joint.passive) || joint.passive.x < 0 || joint.passive.y < 0 ||
-                joint.passive.z < 0 || joint.passive.w)
+                 (joint.limits().x < -3.14159265358979323846f || joint.limits().y > 3.14159265358979323846f)) ||
+                joint.limits().z || joint.limits().w || !Finite4(joint.motor()) || joint.motor().y < 0 ||
+                joint.motor().z < 0 || joint.motor().w < 0 || !Finite4(joint.passive()) || joint.passive().x < 0 ||
+                joint.passive().y < 0 || joint.passive().z < 0 || joint.passive().w)
                 throw std::invalid_argument("Jolt GPU joint limits, motor or passive settings are invalid");
-            if (!Finite4(joint.linearSpring) || joint.linearSpring.x < 0.0f || joint.linearSpring.y < 0.0f ||
-                joint.linearSpring.z || joint.linearSpring.w ||
-                (!distance && (joint.linearSpring.x || joint.linearSpring.y || (joint.bodies.w & JointAutoDistance))))
+            if (!Finite4(joint.linearSpring()) || joint.linearSpring().x < 0.0f || joint.linearSpring().y < 0.0f ||
+                joint.linearSpring().z || joint.linearSpring().w ||
+                (!distance &&
+                 (joint.linearSpring().x || joint.linearSpring().y || (joint.bodies.w & JointAutoDistance))))
                 throw std::invalid_argument("Jolt GPU distance spring settings are invalid for the joint kind");
-            if (distance && ((joint.bodies.w & (JointMotorEnabled | JointLimitsEnabled)) || joint.ownerAxis.x ||
-                             joint.ownerAxis.y || joint.ownerAxis.z || joint.motor.x || joint.motor.y ||
-                             joint.motor.z || joint.motor.w || joint.passive.x || joint.passive.y || joint.passive.z))
+            if (distance &&
+                ((joint.bodies.w & (JointMotorEnabled | JointLimitsEnabled)) || joint.ownerAxis().x ||
+                 joint.ownerAxis().y || joint.ownerAxis().z || joint.motor().x || joint.motor().y || joint.motor().z ||
+                 joint.motor().w || joint.passive().x || joint.passive().y || joint.passive().z))
                 throw std::invalid_argument("Jolt GPU Distance has no angular axis, motor or passive settings");
             if (joint.bodies.z == JointSlider &&
-                ((joint.bodies.w & JointMotorEnabled) || joint.motor.x || joint.motor.y || joint.motor.z ||
-                 joint.motor.w || joint.passive.x || joint.passive.y || joint.passive.z))
+                ((joint.bodies.w & JointMotorEnabled) || joint.motor().x || joint.motor().y || joint.motor().z ||
+                 joint.motor().w || joint.passive().x || joint.passive().y || joint.passive().z))
                 throw std::invalid_argument("Jolt GPU Slider has no motor or passive drive settings");
         }
         bodyEnd += range.y;
@@ -529,6 +535,7 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
 {
     const auto &model = m_model;
     const auto counts = ValidateModel(model);
+    m_jointLayout = std::make_shared<JoltGpuJointLayout>(model.joints);
     if (!model.joints.empty())
         throw std::invalid_argument("Jolt GPU initial joint topology requires an ordered GPU initialization");
     m_bodyCount = counts.bodies;
@@ -589,7 +596,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
         {Get(Resource::BodyStates), 0, Bytes(states.data(), states.size())},
         {Get(Resource::KinematicTargets), 0, Bytes(targets.data(), targets.size())},
     };
-    const UInt4 jointHeader{0, 1, 0, 0};
+    const UInt4 jointHeader{0, 1, 1, 0};
     updates.push_back({Get(Resource::Joints), 0, Bytes(&jointHeader, 1)});
     if (m_shapeCount)
         updates.push_back({Get(Resource::ShapeModels), 0, Bytes(m_model.shapes.data(), m_model.shapes.size())});
@@ -657,7 +664,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
              (shapeBuffer && update.buffer->GetWriterStateIdentity() == shapeBuffer->GetWriterStateIdentity()) ||
              (worldBuffer && update.buffer->GetWriterStateIdentity() == worldBuffer->GetWriterStateIdentity()) ||
              (jointBuffer && update.buffer->GetWriterStateIdentity() == jointBuffer->GetWriterStateIdentity() &&
-              update.offset < sizeof(UInt4) + m_model.joints.size() * sizeof(JointAuthor))))
+              update.offset < m_jointLayout->AuthorEndBytes())))
             throw std::invalid_argument("Jolt GPU model ports must be updated through their author-model delta");
     }
 
@@ -669,7 +676,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
         if (std::memcmp(&old.bodies, &change.author.bodies, 3 * sizeof(uint32_t)) ||
             std::memcmp(&old.identity, &change.author.identity, sizeof(UInt4)) ||
             (old.bodies.z == JointSwingTwist &&
-             std::memcmp(&old.angularFrame, &change.author.angularFrame, sizeof(Float4))))
+             std::memcmp(&old.angularFrame(), &change.author.angularFrame(), sizeof(Float4))))
             throw std::invalid_argument("Jolt GPU joint endpoint or identity changes require topology replacement");
     }
     if (!bodyChanges.empty() || !shapeChanges.empty() || !jointChanges.empty())
@@ -678,8 +685,14 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
     // explicit caller mutation updates them in this same RHI packet.
     AppendModelUpload(additionalUpdates, bodyBuffer, bodyChanges, m_model.bodies, &JoltGpuBodyModelUpdate::model);
     AppendModelUpload(additionalUpdates, shapeBuffer, shapeChanges, m_model.shapes, &JoltGpuShapeModelUpdate::model);
-    AppendModelUpload(additionalUpdates, jointBuffer, jointChanges, m_model.joints, &JoltGpuJointModelUpdate::author,
-                      sizeof(UInt4));
+    for (const auto &change : jointChanges) {
+        const auto &row = m_jointLayout->Row(change.index);
+        auto payload = JoltGpuJointLayout::AuthorBytes(change.author);
+        additionalUpdates.push_back({jointBuffer, uint64_t(row.layout.x) * 16u, std::move(payload)});
+        // Kind, endpoint and stable identity are immutable in an in-place delta.
+        additionalUpdates.push_back(
+            {jointBuffer, (1u + uint64_t(change.index) * JointDirectoryWords) * 16u, Bytes(&change.author.bodies, 1)});
+    }
     auto batch = rhi::PrepareComputeBatch(m_host, std::move(additionalUpdates), std::move(mutations));
     auto transaction = std::unique_ptr<JoltGpuModelUpdate>(new JoltGpuModelUpdate(
         *this, std::move(batch), std::move(bodyChanges), std::move(shapeChanges), std::move(jointChanges)));
@@ -762,7 +775,8 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PreparePackedReplacement(Jol
     require(Resource::BodyStates, bodies.states, bodyCapacity * sizeof(BodyState));
     require(Resource::BodyForces, bodies.forces, bodyCapacity * sizeof(BodyForces));
     require(Resource::KinematicTargets, bodies.targets, bodyCapacity * sizeof(KinematicTarget));
-    const uint64_t jointBytes = sizeof(UInt4) + replacement.joints.size() * (sizeof(JointAuthor) + sizeof(JointState));
+    const JoltGpuJointLayout jointLayout(replacement.joints);
+    const uint64_t jointBytes = jointLayout.ByteSize();
     if (!stream || stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
         stream->GetByteSize() != jointBytes || !stream->HasInitializedRange(0, jointBytes))
         throw std::invalid_argument("GPU packed layout requires completed remapped joint runtime");
@@ -815,8 +829,10 @@ JoltGpuStorage::PrepareJointReplacement(std::vector<JointAuthor> joints, std::sh
         capacities.push_back(world.bodies.y);
     JoltGpuBuildWorldRanges(replacement, capacities);
     const auto counts = ValidateModel(replacement);
-    const uint64_t authorEnd = sizeof(UInt4) + uint64_t(replacement.joints.size()) * sizeof(JointAuthor);
-    const uint64_t streamBytes = authorEnd + uint64_t(replacement.joints.size()) * sizeof(JointState);
+    const JoltGpuJointLayout jointLayout(replacement.joints);
+    const auto expectedPrefix = jointLayout.PrefixBytes(replacement.joints);
+    const uint64_t authorEnd = jointLayout.AuthorEndBytes();
+    const uint64_t streamBytes = jointLayout.ByteSize();
     if (!newStream || newStream->IsFrozen() || !m_host.SharesServicesWith(newStream->GetHost()) ||
         newStream->GetByteSize() != streamBytes || newStream->GetDesc().scalarType != rhi::ComputeScalarType::UInt32)
         throw std::invalid_argument("Jolt GPU replacement stream has invalid ownership, mutability, size or type");
@@ -825,8 +841,7 @@ JoltGpuStorage::PrepareJointReplacement(std::vector<JointAuthor> joints, std::sh
             throw std::invalid_argument("Jolt GPU joint topology replacement requires a new stream");
 
     bool authorUploaded = false;
-    const UInt4 expectedHeader{static_cast<uint32_t>(replacement.joints.size()),
-                               static_cast<uint32_t>(authorEnd / sizeof(UInt4)), 0, 0};
+    const UInt4 expectedHeader = jointLayout.Header();
     for (const auto &upload : uploads) {
         if (!upload.buffer)
             throw std::invalid_argument("Jolt GPU replacement upload requires a buffer");
@@ -837,8 +852,7 @@ JoltGpuStorage::PrepareJointReplacement(std::vector<JointAuthor> joints, std::sh
             continue;
         if (authorUploaded || upload.offset || upload.data.size() != authorEnd ||
             std::memcmp(upload.data.data(), &expectedHeader, sizeof(expectedHeader)) ||
-            (!replacement.joints.empty() &&
-             std::memcmp(upload.data.data() + sizeof(UInt4), replacement.joints.data(), authorEnd - sizeof(UInt4))))
+            std::memcmp(upload.data.data(), expectedPrefix.data(), expectedPrefix.size()))
             throw std::invalid_argument("Jolt GPU replacement must upload exactly its header and author prefix once");
         authorUploaded = true;
     }
@@ -893,6 +907,10 @@ JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<
     : m_storage(&storage), m_batch(std::move(batch)), m_bodyChanges(std::move(bodyChanges)),
       m_shapeChanges(std::move(shapeChanges)), m_jointChanges(std::move(jointChanges))
 {
+    if (m_jointChanges.empty())
+        m_jointLayout = storage.GetJointLayout();
+    else
+        m_jointLayout = storage.GetJointLayout()->WithAuthorUpdates(m_jointChanges);
 }
 
 JoltGpuModelUpdate::~JoltGpuModelUpdate()
@@ -907,6 +925,7 @@ JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<
     : m_storage(&storage), m_batch(std::move(batch)), m_replacement(std::move(replacement)),
       m_replacementBuffers(std::move(replacementBuffers)), m_replacementCounts(replacementCounts)
 {
+    m_jointLayout = std::make_shared<JoltGpuJointLayout>(m_replacement->joints);
 }
 
 void JoltGpuModelUpdate::Commit() noexcept
@@ -929,6 +948,7 @@ void JoltGpuModelUpdate::Commit() noexcept
         m_storage->m_model.shapes[change.index] = change.model;
     for (const auto &change : m_jointChanges)
         m_storage->m_model.joints[change.index] = change.author;
+    m_storage->m_jointLayout = std::move(m_jointLayout);
     m_storage->m_modelUpdatePending = false;
     m_storage = nullptr;
 }

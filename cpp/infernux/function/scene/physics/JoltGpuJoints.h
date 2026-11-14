@@ -42,7 +42,8 @@ class JoltGpuJoints final
     JoltGpuJoints(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] JoltGpuJointReplacement
     PrepareReplacement(const std::vector<JPH::GPU::JointAuthor> &authors, const std::vector<uint32_t> &previousRows,
-                       const std::shared_ptr<rhi::ComputeBuffer> &oldStream, uint32_t oldCount,
+                       const std::shared_ptr<rhi::ComputeBuffer> &oldStream,
+                       std::shared_ptr<const JoltGpuJointLayout> oldLayout,
                        const std::shared_ptr<rhi::ComputeBuffer> &bodyStates) const;
     /// Author settings and coefficient-dependent warm/rotor resets share one
     /// model acceptance boundary. Reference frames and unrelated runtime survive.

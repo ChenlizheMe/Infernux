@@ -13,13 +13,14 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
     using Resource = JPH::GPU::Resource;
     struct CopyRun
     {
-        uint32_t from, to, count;
+        uint64_t from, to, count;
     };
 
     Impl(JoltGpuStorage &owner, JoltGpuBodyMutations &mutationProgram, FrameWorkOwner &budget, JoltGpuModel target,
          std::vector<uint32_t> bodyRemap, std::vector<uint32_t> jointRemap)
         : storage(owner), mutations(mutationProgram), work(budget), model(std::move(target)),
-          previousJoints(std::move(jointRemap)), host(owner.GetHost())
+          previousJoints(std::move(jointRemap)), host(owner.GetHost()),
+          layout(std::make_shared<JoltGpuJointLayout>(model.joints)), oldLayout(owner.GetJointLayout())
     {
         if (bodyRemap.size() != model.bodies.size() || previousJoints.size() != model.joints.size())
             throw std::invalid_argument("Packed layout remaps must cover the complete target model");
@@ -41,11 +42,17 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
             const auto row = previousJoints[target];
             if (row == UINT32_MAX || row >= jointSeen.size() || jointSeen[row]++)
                 throw std::invalid_argument("Packed layout requires unique valid source joint rows");
-            if (!jointRuns.empty() && jointRuns.back().from + jointRuns.back().count == row &&
-                jointRuns.back().to + jointRuns.back().count == target)
-                ++jointRuns.back().count;
+            const auto &old = oldLayout->Row(row);
+            const auto &next = layout->Row(target);
+            if (old.bodies.z != next.bodies.z || old.identity.x != next.identity.x || old.identity.y != next.identity.y)
+                throw std::invalid_argument("Packed joint state remap changed stable identity or kind");
+            const uint64_t from = uint64_t(old.layout.y) * 16u, to = uint64_t(next.layout.y) * 16u;
+            const uint64_t bytes = uint64_t(JoltGpuJointLayout::StateWords(next.bodies.z)) * 16u;
+            if (!jointRuns.empty() && jointRuns.back().from + jointRuns.back().count == from &&
+                jointRuns.back().to + jointRuns.back().count == to)
+                jointRuns.back().count += bytes;
             else
-                jointRuns.push_back({row, target, 1u});
+                jointRuns.push_back({from, to, bytes});
         }
         // Cold transaction only. Retain exactly this old numerical generation
         // until all remap reads retire; ordinary ticks never take these readers.
@@ -74,8 +81,7 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
             if (!candidates[i])
                 return false;
         }
-        const uint64_t streamBytes = sizeof(JPH::GPU::UInt4) + model.joints.size() * (sizeof(JPH::GPU::JointAuthor) +
-                                                                                      sizeof(JPH::GPU::JointState));
+        const uint64_t streamBytes = layout->ByteSize();
         if (!host.device.GetCapabilities().IsStorageBufferRangeValid(0u, streamBytes))
             throw std::length_error("Packed layout joint stream exceeds device range");
         if (!jointStream)
@@ -92,13 +98,7 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
         if (!Capacity())
             return Retry();
         if (!jointPrepared) {
-            const uint64_t authorBytes = model.joints.size() * sizeof(JointAuthor);
-            const UInt4 header{static_cast<uint32_t>(model.joints.size()),
-                               1u + JointAuthorWords * static_cast<uint32_t>(model.joints.size()), 0u, 0u};
-            std::vector<uint8_t> prefix(sizeof(header) + authorBytes);
-            std::memcpy(prefix.data(), &header, sizeof(header));
-            if (authorBytes)
-                std::memcpy(prefix.data() + sizeof(header), model.joints.data(), authorBytes);
+            auto prefix = layout->PrefixBytes(model.joints);
             jointPrepared = true;
             return Follow(rhi::PrepareComputeBatch(host, {{jointStream, 0u, std::move(prefix)}}, {}));
         }
@@ -131,11 +131,8 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
                 continue;
             }
             const auto &run = currentRuns[copyRun];
-            const uint64_t stride = joint ? sizeof(JointState) : Strides[copyPort];
-            const uint64_t sourceBase =
-                joint ? sizeof(UInt4) + uint64_t(storage.GetJointCount()) * sizeof(JointAuthor) : 0u;
-            const uint64_t targetBase =
-                joint ? sizeof(UInt4) + uint64_t(model.joints.size()) * sizeof(JointAuthor) : 0u;
+            const uint64_t stride = joint ? 1u : Strides[copyPort];
+            const uint64_t sourceBase = 0u, targetBase = 0u;
             const uint64_t total = uint64_t(run.count) * stride;
             const uint64_t bytes = std::min(remaining, total - copyOffset);
             copies.push_back({joint ? oldJoints : source[copyPort],
@@ -195,6 +192,7 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
     rhi::ComputeHost host;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 3> source, candidates;
     std::shared_ptr<rhi::ComputeBuffer> oldJoints, jointStream;
+    std::shared_ptr<const JoltGpuJointLayout> layout, oldLayout;
     std::vector<CopyRun> runs, jointRuns;
     uint32_t initialized = 0;
     size_t copyPort = 0, copyRun = 0;

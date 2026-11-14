@@ -35,6 +35,7 @@ ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program)
 std::vector<ShaderSourceModule> GetJoltGpuProgramLibraries()
 {
     return {{"jph_gpu_rigid_math", "Jolt/GPU/Shaders/rigid_math.slang", jolt_gpu_sources::Math},
+            {"jph_gpu_joint_fields", "Jolt/GPU/JointPayloadFields.inl", jolt_gpu_sources::JointFields},
             {"jph_gpu_physics_types", "Jolt/GPU/PhysicsTypes.h", jolt_gpu_sources::Types},
             {"jph_gpu_broadphase_types", "Jolt/GPU/BroadphaseTypes.h", jolt_gpu_sources::BroadphaseTypes},
             {"jph_gpu_constraint_types", "Jolt/GPU/ConstraintTypes.h", jolt_gpu_sources::ConstraintTypes},

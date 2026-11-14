@@ -2,6 +2,7 @@
 
 #include <Jolt/GPU/ConstraintTypes.h>
 #include <Jolt/GPU/PhysicsStages.h>
+#include "JoltGpuJointLayout.h"
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
 
@@ -158,6 +159,10 @@ class JoltGpuStorage
     {
         return m_model;
     }
+    [[nodiscard]] const std::shared_ptr<const JoltGpuJointLayout> &GetJointLayout() const noexcept
+    {
+        return m_jointLayout;
+    }
     [[nodiscard]] uint32_t GetBodyCount() const noexcept
     {
         return m_bodyCount;
@@ -193,6 +198,7 @@ class JoltGpuStorage
     rhi::ComputeHost m_host;
     // Accepted author metadata; dynamic state remains exclusively on the GPU.
     JoltGpuModel m_model;
+    std::shared_ptr<const JoltGpuJointLayout> m_jointLayout;
     bool m_modelUpdatePending = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> m_buffers;
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
@@ -229,6 +235,7 @@ class JoltGpuModelUpdate final
     void Commit() noexcept;
 
     JoltGpuStorage *m_storage;
+    std::shared_ptr<const JoltGpuJointLayout> m_jointLayout;
     std::shared_ptr<rhi::PreparedComputeBatch> m_batch;
     std::vector<JoltGpuBodyModelUpdate> m_bodyChanges;
     std::vector<JoltGpuShapeModelUpdate> m_shapeChanges;

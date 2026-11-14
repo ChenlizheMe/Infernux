@@ -281,7 +281,7 @@ ComputeKernel::PreparedBatch ComputeKernel::PrepareBatch(ComputeHost &host, std:
 {
     host.RequireAlive();
     PreparedBatch result;
-    std::unordered_map<ComputeBufferAllocation *, bool> updatedBuffers;
+    std::unordered_map<ComputeBufferAllocation *, intervals::Set> updateRanges;
     result.updatedBuffers.reserve(updates.size());
     result.updates.reserve(updates.size());
     for (auto &update : updates) {
@@ -292,11 +292,20 @@ ComputeKernel::PreparedBatch ComputeKernel::PrepareBatch(ComputeHost &host, std:
         if (update.buffer->IsFrozen())
             throw std::invalid_argument("A frozen compute value cannot be updated");
         const auto allocation = update.buffer->GetAllocation();
-        if (!updatedBuffers.emplace(allocation.get(), true).second)
-            throw std::invalid_argument("A compute batch can update each buffer only once");
         update.buffer->ValidateRange(update.offset, update.data.size());
-        result.updatedBuffers.push_back(allocation);
+        auto [entry, first] = updateRanges.try_emplace(allocation.get());
+        if (first)
+            result.updatedBuffers.push_back(allocation);
+        entry->second.emplace_back(update.offset, update.offset + update.data.size());
         result.updates.push_back({allocation, update.buffer->m_state, update.offset, std::move(update.data)});
+    }
+    // Disjoint patches share one writer and one submission. They need no
+    // transfer-to-transfer barrier; overlapping updates have no batch meaning.
+    for (auto &[allocation, ranges] : updateRanges) {
+        std::sort(ranges.begin(), ranges.end());
+        for (size_t i = 1; i < ranges.size(); ++i)
+            if (ranges[i].first < ranges[i - 1].second)
+                throw std::invalid_argument("Compute batch update ranges must not overlap");
     }
 
     std::unordered_map<ComputeKernel *, bool> uniqueKernels;

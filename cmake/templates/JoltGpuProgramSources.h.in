@@ -3,6 +3,7 @@
 // Generated from authoritative fork and engine sources; edit those inputs.
 namespace infernux::jolt_gpu_sources
 {
+inline constexpr char JointFields[] = R"INX_JPH_GPU(@JOLT_GPU_JOINT_FIELDS_SOURCE@)INX_JPH_GPU";
 inline constexpr char Types[] = R"INX_JPH_GPU(@JOLT_GPU_TYPES_SOURCE@)INX_JPH_GPU";
 inline constexpr char BroadphaseTypes[] = R"INX_JPH_GPU(@JOLT_GPU_BROADPHASE_TYPES_SOURCE@)INX_JPH_GPU";
 inline constexpr char Broadphase[] = R"INX_JPH_GPU(@JOLT_GPU_BROADPHASE_SOURCE@)INX_JPH_GPU";

@@ -22,27 +22,56 @@
 #include <algorithm>
 #include <core/log/InxLog.h>
 #include <core/threading/FrameWorkOwner.h>
+#include <exception>
 #include <optional>
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include <function/audio/AudioEngine.h>
 #endif
 #include <platform/input/InputManager.h>
 
+namespace infernux
+{
 namespace
 {
 using ProfileClock = std::chrono::high_resolution_clock;
+
+// The host may leave before EndRuntimeFrame when preparation throws. Own the
+// same CPU author-cache/lifecycle closure at every real frame/retirement entry.
+// This does not publish a frame, advance physics, or replay a callback.
+struct RuntimeLifecycleScopeEnd
+{
+    infernux::RuntimeWorld &world;
+    std::function<void()> callback;
+    void Close()
+    {
+        if (infernux::TransformECSStore::Instance().IsFrameCacheActive())
+            infernux::TransformECSStore::Instance().EndFrameCache();
+        if (world.lifecycle.runtimeLifecycleFrameOpen) {
+            world.lifecycle.runtimeLifecycleFrameOpen = false;
+            if (callback)
+                callback();
+        }
+    }
+    ~RuntimeLifecycleScopeEnd() noexcept(false)
+    {
+        if (!std::uncaught_exceptions()) {
+            Close();
+            return;
+        }
+        try {
+            Close();
+        } catch (const std::exception &error) {
+            INXLOG_ERROR("Runtime frame closure failed while preserving original exception: ", error.what());
+        } catch (...) {
+            INXLOG_ERROR("Runtime frame closure failed while preserving original exception");
+        }
+    }
+};
 
 double ProfileMsSince(ProfileClock::time_point start)
 {
     return std::chrono::duration<double, std::milli>(ProfileClock::now() - start).count();
 }
-} // namespace
-
-namespace infernux
-{
-
-namespace
-{
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaTime)
 {
@@ -390,6 +419,11 @@ void SceneManager::BeginRuntimeWorldRetirement(uint64_t id)
             continue;
         const WorldExecutionScope scope(it->get());
         auto &world = **it;
+        // Close an abandoned native frame before retirement tests its open bit
+        // and before scene callbacks can destroy cached Transform owners.
+        {
+            RuntimeLifecycleScopeEnd lifecycleEnd{world, m_runtimeLifecycleEnd};
+        }
         world.handle->state = "retiring";
         world.handle->pendingPrimary = false;
         PhysicsWorld::Instance().BeginRetireDomain(world);
@@ -1477,6 +1511,7 @@ void SceneManager::FinalizeRuntimeTransforms(bool completed)
 bool SceneManager::ServiceCurrentWorldFrame()
 {
     auto &world = CurrentWorld();
+    RuntimeLifecycleScopeEnd lifecycleEnd{world, m_runtimeLifecycleEnd};
     TransformECSStore::Instance().BeginFrameCache();
     if (world.simulation.pausedStepPending && world.simulation.isPaused) {
         const auto completed = world.simulation.runtimeFrameCount;
@@ -1564,23 +1599,7 @@ bool SceneManager::EndRuntimeFrame(bool completeStep)
     const auto admittedState = GetSimulationState();
     // Publication and every required consumer run inside this Host's native
     // lifecycle scope. Even a pending publication closes that scope below.
-    struct LifecycleScopeEnd
-    {
-        RuntimeWorld &world;
-        std::function<void()> callback;
-        ~LifecycleScopeEnd()
-        {
-            // Exit or a scene replacement can return before normal publication.
-            // Commit only the CPU author cache; do not start another GPU consumer.
-            if (TransformECSStore::Instance().IsFrameCacheActive())
-                TransformECSStore::Instance().EndFrameCache();
-            if (world.lifecycle.runtimeLifecycleFrameOpen) {
-                world.lifecycle.runtimeLifecycleFrameOpen = false;
-                if (callback)
-                    callback();
-            }
-        }
-    } lifecycleEnd{world, m_runtimeLifecycleEnd};
+    RuntimeLifecycleScopeEnd lifecycleEnd{world, m_runtimeLifecycleEnd};
     if (m_runtimeFrameWork && !m_runtimeFrameWork->IsAccepting())
         return false;
     CompleteRuntimeFrame();
@@ -1807,6 +1826,9 @@ void SceneManager::StopCurrentWorld()
     const WorldExecutionScope worldScope(&CurrentWorld());
     auto &world = CurrentWorld();
     Scene::RequireNoWorldRetirement();
+    {
+        RuntimeLifecycleScopeEnd lifecycleEnd{world, m_runtimeLifecycleEnd};
+    }
     world.frame.pending.clear();
     CloseRuntimeFrame(false);
     const InputReadScope hostInput({}, 0);

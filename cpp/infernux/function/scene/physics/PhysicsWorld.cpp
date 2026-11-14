@@ -353,8 +353,8 @@ PhysicsDomain::RenderState::Keys CaptureRenderKeys()
 }
 JoltGpuTickOutput CompactOutput(const JoltGpuScene::Publication &p)
 {
-    return {p.worldRow,  p.bodyBase,   p.bodyCount,  p.leafBase,   p.leafCount,
-            p.jointBase, p.jointCount, p.bodyStates, p.jointStream};
+    return {p.worldRow,  p.bodyBase,   p.bodyCount,  p.leafBase,    p.leafCount,
+            p.jointBase, p.jointCount, p.bodyStates, p.jointStream, p.jointLayout};
 }
 } // namespace
 PhysicsWorld &PhysicsWorld::Instance()
@@ -435,7 +435,14 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
     if (!m_gpuScene) {
         m_gpuScene = std::make_unique<JoltGpuScene>(
             *m_gpuHost, *m_gpuWork, m_gpuPrograms->step, m_gpuPrograms->mutations, m_gpuPrograms->commands,
-            m_gpuPrograms->broadphase, m_gpuPrograms->constraints, *m_gpuJoints);
+            m_gpuPrograms->broadphase, m_gpuPrograms->constraints, *m_gpuJoints, [this](RuntimeWorld &world) noexcept {
+                // A shared source can fail outside Step and outside this World's
+                // execution scope. Mark only the actual retained writer.
+                FailStep(*world.physics);
+                world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Failed;
+                world.simulation.pausedStepPending = false;
+                world.simulation.isPaused = true;
+            });
     }
     if (!m_gpuScene->RegisterPartition(domain.owner, InitialBodyCapacity))
         return false;

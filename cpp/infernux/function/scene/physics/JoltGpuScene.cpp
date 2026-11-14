@@ -195,10 +195,14 @@ class JoltGpuScene::Impl
     Impl(rhi::ComputeHost &host, FrameWorkOwner &budget, const ShaderTargetCode &stepTarget,
          const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
          const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
-         JoltGpuJoints &jointProgram)
+         JoltGpuJoints &jointProgram, FailureObserver onFailure)
         : actors(PhysicsECSStore::Instance()), work(budget), storage(host, JoltGpuModel{}), programs(host, stepTarget),
           broadphase(host, broadphaseTarget), constraints(host, constraintTarget), mutations(host, mutationTarget),
-          commands(host, commandTarget), joints(jointProgram), tick(budget, storage, programs, broadphase, constraints)
+          commands(host, commandTarget), joints(jointProgram), failureObserver(std::move(onFailure)),
+          tick(budget, storage, programs, broadphase, constraints, [this] {
+              if (writer && failureObserver)
+                  failureObserver(*writer->world);
+          })
     {
     }
 
@@ -322,7 +326,7 @@ class JoltGpuScene::Impl
             }
             auto prepared =
                 joints.PrepareReplacement(authors, remap, storage.Get(Resource::Joints)->Freeze(),
-                                          storage.GetJointCount(), storage.Get(Resource::BodyStates)->Freeze());
+                                          storage.GetJointLayout(), storage.Get(Resource::BodyStates)->Freeze());
             return storage.PrepareJointReplacement(std::move(authors), std::move(prepared.stream),
                                                    std::move(prepared.updates), std::move(prepared.dispatches));
         };
@@ -347,10 +351,10 @@ class JoltGpuScene::Impl
         author.bodies.x = b;
         author.bodies.y = a;
         author.identity = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), slots[a].partition->row, 0};
-        author.rootCOM1 = b == InvalidQueryBodySlot ? Float4{} : slots[b].authored->rootCenterOfMass;
-        author.rootCOM2 = slots[a].authored->rootCenterOfMass;
-        author.scale1 = b == InvalidQueryBodySlot ? Float4{1, 1, 1, 0} : slots[b].authored->rootScale;
-        author.scale2 = slots[a].authored->rootScale;
+        author.rootCOM1() = b == InvalidQueryBodySlot ? Float4{} : slots[b].authored->rootCenterOfMass;
+        author.rootCOM2() = slots[a].authored->rootCenterOfMass;
+        author.scale1() = b == InvalidQueryBodySlot ? Float4{1, 1, 1, 0} : slots[b].authored->rootScale;
+        author.scale2() = slots[a].authored->rootScale;
         PublishedJoint value{id, 0, ownerBody, connectedBody, author.bodies.z, author};
         authoredJoints.emplace(id, JointRecord{value, &owner});
         QueueJointTopology(*slots[a].partition);
@@ -411,11 +415,11 @@ class JoltGpuScene::Impl
             if (joint.value.bodyIdA == bodyId || joint.value.bodyIdB == bodyId) {
                 auto author = joint.value.author;
                 if (joint.value.bodyIdA == bodyId) {
-                    author.rootCOM2 = actor.rootCenterOfMass;
-                    author.scale2 = actor.rootScale;
+                    author.rootCOM2() = actor.rootCenterOfMass;
+                    author.scale2() = actor.rootScale;
                 } else {
-                    author.rootCOM1 = actor.rootCenterOfMass;
-                    author.scale1 = actor.rootScale;
+                    author.rootCOM1() = actor.rootCenterOfMass;
+                    author.scale1() = actor.rootScale;
                 }
                 changes.push_back({id, author});
             }
@@ -1078,6 +1082,7 @@ class JoltGpuScene::Impl
             publication->jointCount = output.jointCount;
             publication->bodyStates = output.states;
             publication->jointStream = output.joints;
+            publication->jointLayout = output.jointLayout;
             return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer] {
                 return Then(consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
                     return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
@@ -1398,15 +1403,16 @@ class JoltGpuScene::Impl
     std::shared_ptr<std::vector<TargetCompletion>> candidateCompletions;
     // Entire backend shutdown drains this one source; domain retirement never
     // destroys it. RuntimeWorld owners stay alive until their CanRetire result.
+    FailureObserver failureObserver;
     JoltGpuTick tick;
 };
 
 JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
                            const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
                            const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
-                           JoltGpuJoints &joints)
+                           JoltGpuJoints &joints, FailureObserver failureObserver)
     : m_impl(std::make_unique<Impl>(host, work, stepTarget, mutationTarget, commandTarget, broadphaseTarget,
-                                    constraintTarget, joints))
+                                    constraintTarget, joints, std::move(failureObserver)))
 {
 }
 JoltGpuScene::~JoltGpuScene() = default;

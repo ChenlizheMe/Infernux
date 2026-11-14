@@ -68,19 +68,6 @@ constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Remap) | Bit(Previous) | Bit(Stream) | Bit(States),
     Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows) | Bit(Motion), Bit(Parameters) | Bit(Stream) | Bit(Motion),
     Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows)};
-static_assert(sizeof(JointAuthor) == JointAuthorWords * sizeof(QueryRecordWord));
-static_assert(sizeof(JointState) == JointStateWords * sizeof(QueryRecordWord));
-
-uint64_t StreamBytes(size_t count)
-{
-    if (count > (std::numeric_limits<uint32_t>::max() - 1u) / (JointAuthorWords + JointStateWords))
-        throw JoltGpuQueryRequestError("Jolt GPU joint stream exceeds device word indexing");
-    const uint64_t bytes = sizeof(UInt4) + uint64_t(count) * (sizeof(JointAuthor) + sizeof(JointState));
-    if (bytes > std::numeric_limits<size_t>::max())
-        throw JoltGpuQueryRequestError("Jolt GPU joint stream exceeds the host address range");
-    return bytes;
-}
-
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
     if (count > std::numeric_limits<size_t>::max() / sizeof(T))
@@ -298,17 +285,30 @@ JoltGpuJoints::JoltGpuJoints(rhi::ComputeHost &host, const ShaderTargetCode &tar
 JoltGpuJointReplacement JoltGpuJoints::PrepareReplacement(const std::vector<JointAuthor> &authors,
                                                           const std::vector<uint32_t> &previousRows,
                                                           const std::shared_ptr<rhi::ComputeBuffer> &oldStream,
-                                                          uint32_t oldCount,
+                                                          std::shared_ptr<const JoltGpuJointLayout> oldLayout,
                                                           const std::shared_ptr<rhi::ComputeBuffer> &bodyStates) const
 {
-    const auto streamBytes = StreamBytes(authors.size());
+    const auto layout = std::make_shared<JoltGpuJointLayout>(authors);
+    const auto streamBytes = layout->ByteSize();
+    const auto oldCount = oldLayout ? oldLayout->Rows().size() : 0u;
+    if (oldStream && !oldLayout)
+        throw JoltGpuQueryRequestError("Joint remap source requires its retained compact layout");
     if (previousRows.size() != authors.size())
         throw JoltGpuQueryRequestError("Jolt GPU replacement requires one previous-row mapping per joint");
-    for (const auto row : previousRows)
+    for (uint32_t target = 0; target < previousRows.size(); ++target) {
+        const auto row = previousRows[target];
         if (row != InvalidQueryBodySlot && row >= oldCount)
             throw JoltGpuQueryRequestError("Jolt GPU replacement references a previous row outside its stream");
+        if (row != InvalidQueryBodySlot) {
+            const auto &previous = oldLayout->Row(row);
+            const auto &next = authors[target];
+            if (previous.bodies.z != next.bodies.z || previous.identity.x != next.identity.x ||
+                previous.identity.y != next.identity.y)
+                throw JoltGpuQueryRequestError("Joint state remap requires unchanged stable identity and kind");
+        }
+    }
     if (oldStream)
-        ValidateFrozen(m_host, oldStream, StreamBytes(oldCount),
+        ValidateFrozen(m_host, oldStream, oldLayout->ByteSize(),
                        "Jolt GPU previous joint stream differs from its frozen topology");
     else if (oldCount)
         throw JoltGpuQueryRequestError("Jolt GPU replacement is missing its previous joint stream");
@@ -326,12 +326,8 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareReplacement(const std::vector<Join
     rhi::ComputeHost host = m_host;
     JoltGpuJointReplacement replacement;
     replacement.stream = Allocate(host, streamBytes);
-    const uint64_t authorEnd = sizeof(UInt4) + uint64_t(authors.size()) * sizeof(JointAuthor);
-    const UInt4 header{static_cast<uint32_t>(authors.size()), static_cast<uint32_t>(authorEnd / sizeof(UInt4)), 0, 0};
-    std::vector<uint8_t> prefix(static_cast<size_t>(authorEnd));
-    std::memcpy(prefix.data(), &header, sizeof(header));
-    if (!authors.empty())
-        std::memcpy(prefix.data() + sizeof(header), authors.data(), authors.size() * sizeof(JointAuthor));
+    const uint64_t authorEnd = layout->AuthorEndBytes();
+    auto prefix = layout->PrefixBytes(authors);
     replacement.updates.push_back({replacement.stream, 0, std::move(prefix)});
     if (authors.empty())
         return replacement;
@@ -344,11 +340,11 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareReplacement(const std::vector<Join
         buffers[port] = Allocate(host, data.size());
         replacement.updates.push_back({buffers[port], 0, std::move(data)});
     };
-    const JointParams parameters{{static_cast<uint32_t>(authors.size()), oldCount, 0, 0}};
+    const JointParams parameters{{static_cast<uint32_t>(authors.size()), static_cast<uint32_t>(oldCount), 0, 0}};
     upload(Parameters, Bytes(&parameters, 1));
     upload(Remap, Bytes(previousRows.data(), previousRows.size()));
     if (!oldStream) {
-        const UInt4 emptyHeader{0, 1, 0, 0};
+        const UInt4 emptyHeader{0, 1, 1, 0};
         upload(Previous, Bytes(&emptyHeader, 1));
     }
     const auto &program = m_programs[Initialize];
@@ -379,7 +375,6 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
     if (changes.size() > accepted.size())
         throw std::invalid_argument("Jolt GPU joint update count exceeds accepted topology");
     std::sort(changes.begin(), changes.end(), [](const auto &a, const auto &b) { return a.index < b.index; });
-    (void)StreamBytes(accepted.size());
     std::vector<uint32_t> rows;
     rows.reserve(changes.size() * 2);
     for (size_t index = 0; index < changes.size(); ++index) {
@@ -393,50 +388,51 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
             const auto changed = [](const Float4 &a, const Float4 &b) {
                 return a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w;
             };
-            if (changed(old.angularFrame, author.angularFrame))
+            if (changed(old.angularFrame(), author.angularFrame()))
                 throw std::invalid_argument("SwingTwist frame changes require topology rebuild");
-            if (old.angularModes.x != author.angularModes.x || changed(old.angularLimits, author.angularLimits))
+            if (old.angularModes().x != author.angularModes().x || changed(old.angularLimits(), author.angularLimits()))
                 flags |= JointResetSwingLimits;
-            if (old.angularModes.y != author.angularModes.y)
+            if (old.angularModes().y != author.angularModes().y)
                 flags |= JointResetSwingMotor | JointResetTwistMotor;
-            if (old.angularModes.z != author.angularModes.z)
+            if (old.angularModes().z != author.angularModes().z)
                 flags |= JointResetTwistMotor;
-            if (old.angularSpring.x != author.angularSpring.x || old.angularSpring.y != author.angularSpring.y ||
-                old.angularTorque.x != author.angularTorque.x)
+            if (old.angularSpring().x != author.angularSpring().x ||
+                old.angularSpring().y != author.angularSpring().y || old.angularTorque().x != author.angularTorque().x)
                 flags |= JointResetSwingMotor;
-            if (old.angularSpring.z != author.angularSpring.z || old.angularSpring.w != author.angularSpring.w ||
-                old.angularTorque.y != author.angularTorque.y)
+            if (old.angularSpring().z != author.angularSpring().z ||
+                old.angularSpring().w != author.angularSpring().w || old.angularTorque().y != author.angularTorque().y)
                 flags |= JointResetTwistMotor;
-            if (old.angularTorque.z != author.angularTorque.z) {
-                if (author.angularModes.y == 0)
+            if (old.angularTorque().z != author.angularTorque().z) {
+                if (author.angularModes().y == 0)
                     flags |= JointResetSwingMotor;
-                if (author.angularModes.z == 0)
+                if (author.angularModes().z == 0)
                     flags |= JointResetTwistMotor;
             }
         } else {
-            if (old.motor.y != author.motor.y || old.motor.z != author.motor.z || old.motor.w != author.motor.w ||
-                old.passive.x != author.passive.x || old.passive.y != author.passive.y ||
-                ((old.bodies.w ^ author.bodies.w) & JointMotorEnabled))
+            if (old.motor().y != author.motor().y || old.motor().z != author.motor().z ||
+                old.motor().w != author.motor().w || old.passive().x != author.passive().x ||
+                old.passive().y != author.passive().y || ((old.bodies.w ^ author.bodies.w) & JointMotorEnabled))
                 flags |= JointResetWarmStart;
             const auto limits = [](const JointAuthor &value) {
-                return value.bodies.w & JointLimitsEnabled ? std::array<float, 2>{value.limits.x, value.limits.y}
+                return value.bodies.w & JointLimitsEnabled ? std::array<float, 2>{value.limits().x, value.limits().y}
                                                            : std::array<float, 2>{-glm::pi<float>(), glm::pi<float>()};
             };
-            const bool sliderLimitsChanged = author.bodies.z == JointSlider &&
-                                             (((old.bodies.w ^ author.bodies.w) & JointLimitsEnabled) ||
-                                              ((author.bodies.w & JointLimitsEnabled) &&
-                                               (old.limits.x != author.limits.x || old.limits.y != author.limits.y)));
+            const bool sliderLimitsChanged =
+                author.bodies.z == JointSlider &&
+                (((old.bodies.w ^ author.bodies.w) & JointLimitsEnabled) ||
+                 ((author.bodies.w & JointLimitsEnabled) &&
+                  (old.limits().x != author.limits().x || old.limits().y != author.limits().y)));
             const bool distanceSettingsChanged =
                 author.bodies.z == JointDistance &&
                 (((old.bodies.w ^ author.bodies.w) & JointAutoDistance) ||
                  (!(author.bodies.w & JointAutoDistance) &&
-                  (old.limits.x != author.limits.x || old.limits.y != author.limits.y)) ||
-                 old.linearSpring.x != author.linearSpring.x || old.linearSpring.y != author.linearSpring.y);
+                  (old.limits().x != author.limits().x || old.limits().y != author.limits().y)) ||
+                 old.linearSpring().x != author.linearSpring().x || old.linearSpring().y != author.linearSpring().y);
             if (author.bodies.z == JointDistance ? distanceSettingsChanged
                 : author.bodies.z == JointSlider ? sliderLimitsChanged
                                                  : limits(old) != limits(author))
                 flags |= JointResetWarmStart;
-            if (old.passive.z != author.passive.z)
+            if (old.passive().z != author.passive().z)
                 flags |= JointResetRotor;
         }
         if (flags) {
@@ -451,7 +447,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
     const auto groups = Groups(m_host, requestCount);
     const auto &stream = storage.Get(Resource::Joints);
     if (!stream || stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
-        stream->GetByteSize() != StreamBytes(accepted.size()))
+        stream->GetByteSize() != storage.GetJointLayout()->ByteSize())
         throw std::invalid_argument("Jolt GPU joint updates require their accepted writable stream");
     const auto &states = storage.Get(Resource::BodyStates);
     if (!states || !m_host.SharesServicesWith(states->GetHost()) ||
@@ -475,7 +471,6 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
     dispatch.kernel = program.kernel;
     dispatch.groupCountX = groups;
     rhi::ComputeDispatchProof proof;
-    const uint64_t runtimeBase = sizeof(UInt4) + uint64_t(accepted.size()) * sizeof(JointAuthor);
     for (const auto port : program.ports) {
         const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
         dispatch.buffers.push_back(buffers[port]);
@@ -488,8 +483,12 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
         proof.reads.push_back({binding, 0, sizeof(UInt4)});
         for (size_t request = 0; request < rows.size(); request += 2) {
             const uint64_t row = rows[request];
-            proof.reads.push_back({binding, sizeof(UInt4) + row * sizeof(JointAuthor), sizeof(JointAuthor)});
-            const rhi::ComputeBindingRange runtime{binding, runtimeBase + row * sizeof(JointState), sizeof(JointState)};
+            const auto &entry = storage.GetJointLayout()->Row(static_cast<uint32_t>(row));
+            proof.reads.push_back({binding, (1u + row * JointDirectoryWords) * 16u, sizeof(JointDirectory)});
+            proof.reads.push_back({binding, uint64_t(entry.layout.x) * 16u,
+                                   uint64_t(JoltGpuJointLayout::AuthorWords(entry.bodies.z)) * 16u});
+            const rhi::ComputeBindingRange runtime{binding, uint64_t(entry.layout.y) * 16u,
+                                                   uint64_t(JoltGpuJointLayout::StateWords(entry.bodies.z)) * 16u};
             proof.reads.push_back(runtime);
             proof.writes.push_back(runtime);
         }
@@ -516,7 +515,7 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &stor
     const auto groups = Groups(m_host, requestCount);
     const auto &stream = storage.Get(Resource::Joints);
     if (!stream || stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
-        stream->GetByteSize() != StreamBytes(accepted.size()))
+        stream->GetByteSize() != storage.GetJointLayout()->ByteSize())
         throw std::invalid_argument("Jolt GPU joint updates require their accepted writable stream");
     const auto &states = storage.Get(Resource::BodyStates);
     if (!states || !m_host.SharesServicesWith(states->GetHost()) ||
@@ -540,7 +539,6 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &stor
     dispatch.kernel = program.kernel;
     dispatch.groupCountX = groups;
     rhi::ComputeDispatchProof proof;
-    const uint64_t runtimeBase = sizeof(UInt4) + uint64_t(accepted.size()) * sizeof(JointAuthor);
     for (const auto port : program.ports) {
         const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
         dispatch.buffers.push_back(buffers[port]);
@@ -553,8 +551,12 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &stor
         proof.reads.push_back({binding, 0, sizeof(UInt4)});
         for (size_t request = 0; request < rows.size(); request += 2) {
             const uint64_t row = rows[request];
-            proof.reads.push_back({binding, sizeof(UInt4) + row * sizeof(JointAuthor), sizeof(JointAuthor)});
-            const rhi::ComputeBindingRange runtime{binding, runtimeBase + row * sizeof(JointState), sizeof(JointState)};
+            const auto &entry = storage.GetJointLayout()->Row(static_cast<uint32_t>(row));
+            proof.reads.push_back({binding, (1u + row * JointDirectoryWords) * 16u, sizeof(JointDirectory)});
+            proof.reads.push_back({binding, uint64_t(entry.layout.x) * 16u,
+                                   uint64_t(JoltGpuJointLayout::AuthorWords(entry.bodies.z)) * 16u});
+            const rhi::ComputeBindingRange runtime{binding, uint64_t(entry.layout.y) * 16u,
+                                                   uint64_t(JoltGpuJointLayout::StateWords(entry.bodies.z)) * 16u};
             proof.reads.push_back(runtime);
             proof.writes.push_back(runtime);
         }
@@ -581,7 +583,9 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
     if (rows.empty())
         return {std::move(result), {}};
     const auto &source = *result->publication;
-    ValidateFrozen(m_host, source.jointStream, StreamBytes(source.GetJoints().size()),
+    if (!source.jointLayout || source.jointLayout->Rows().size() != source.GetJoints().size())
+        throw JoltGpuQueryRequestError("Joint query lost its retained compact layout");
+    ValidateFrozen(m_host, source.jointStream, source.jointLayout->ByteSize(),
                    "Jolt GPU joint motion stream differs from its retained catalog");
     ValidateFrozen(m_host, source.bodyStates, uint64_t(source.bodyCount) * sizeof(BodyState),
                    "Jolt GPU joint motion body states differ from their retained catalog");
@@ -653,7 +657,9 @@ JoltGpuControlWork JoltGpuJoints::PrepareStatus(std::shared_ptr<const JoltGpuSce
         throw std::runtime_error("Jolt GPU joint status requires its final publication identity");
     if (publication->GetJoints().empty())
         return {};
-    const auto streamBytes = StreamBytes(publication->GetJoints().size());
+    if (!publication->jointLayout)
+        throw JoltGpuQueryRequestError("Joint publication has no retained layout");
+    const auto streamBytes = publication->jointLayout->ByteSize();
     const auto &stream = publication->jointStream;
     if (!stream || !stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
         stream->GetByteSize() != streamBytes)

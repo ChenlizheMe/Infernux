@@ -131,6 +131,7 @@ class JoltGpuScene final
         /// Owns exact global body/leaf vectors for this accepted author layout.
         std::shared_ptr<const PublicationDirectory> directory;
         std::shared_ptr<rhi::ComputeBuffer> jointStream;
+        std::shared_ptr<const JoltGpuJointLayout> jointLayout;
 
         /// Joint rows are local to this publication's real accepted world row.
         [[nodiscard]] const std::vector<PublishedJoint> &GetJoints() const
@@ -145,11 +146,15 @@ class JoltGpuScene final
     /// Must not submit work, drive the owner or reenter this scene.
     using ConsumerFactory = std::function<Consumer()>;
 
+    /// Owner bookkeeping on the exact failed writer; must not throw, drive, wait, or
+    /// destroy this scene. Partition ownership retains the World until source retirement.
+    using FailureObserver = std::function<void(RuntimeWorld &)>;
+
     /// One shared numerical arena/source, never one scene per RuntimeWorld.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
                  const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
                  const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
-                 JoltGpuJoints &joints);
+                 JoltGpuJoints &joints, FailureObserver failureObserver = {});
     ~JoltGpuScene();
     JoltGpuScene(const JoltGpuScene &) = delete;
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;
