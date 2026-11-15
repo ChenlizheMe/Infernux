@@ -412,6 +412,9 @@ class ParticleGpuRuntime
     }
 
   private:
+    friend class ParticleGpuSystemManager;
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool RefreshCollisionGeometry(rhi::BufferHandle geometry,
+                                                                              rhi::BindGroupHandle &retired);
     struct ResidentState;
     struct DataInterfaceState;
     struct VectorFieldState;
@@ -451,6 +454,7 @@ class ParticleGpuRuntime
     rhi::BindGroupHandle m_group;
     rhi::BindingLayoutHandle m_collisionSceneLayout;
     rhi::BindGroupHandle m_collisionSceneGroup;
+    std::array<rhi::BufferHandle, 7> m_collisionSceneBuffers{};
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
     GpuParticleTransforms m_cachedTransforms{};
     bool m_hasCachedTransforms = false;

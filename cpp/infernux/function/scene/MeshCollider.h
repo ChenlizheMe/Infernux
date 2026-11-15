@@ -77,11 +77,13 @@ class MeshCollider : public Collider
 
   private:
     friend class PhysicsWorld;
+    friend class JoltGpuScene;
 
     void CaptureMeshGeometry() const;
     bool CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std::vector<uint32_t> &outIndices) const;
     void CompleteCooking(std::shared_ptr<const MeshCookingResult> result, uint64_t revision);
-    void PublishCookedGeometry();
+    [[nodiscard]] std::shared_ptr<const CookedGeometry> CaptureCookedGeometry() const;
+    void PublishCookedGeometry(std::shared_ptr<const CookedGeometry> geometry) noexcept;
     void RequestShapeUpdate();
     void InvalidatePendingCooking() const;
 

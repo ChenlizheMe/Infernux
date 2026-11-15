@@ -14,6 +14,7 @@ enum class JoltGpuProgram
     Joints,
     RenderPoses,
     Broadphase,
+    Narrowphase,
     Constraints,
     ContactReports
 };

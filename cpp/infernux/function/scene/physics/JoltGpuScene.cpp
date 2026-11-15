@@ -3,11 +3,14 @@
 #include "JoltGpuBodyMutations.h"
 #include "JoltGpuBroadphase.h"
 #include "JoltGpuConstraints.h"
+#include "JoltGpuGeometryStore.h"
 #include "JoltGpuJoints.h"
+#include "JoltGpuNarrowphase.h"
 #include "JoltGpuPackedLayout.h"
 #include <cstring>
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/MeshCollider.h>
 #include <function/scene/Rigidbody.h>
 #include <function/scene/RuntimeWorld.h>
 
@@ -206,6 +209,12 @@ class JoltGpuScene::Impl
         bool hasInitialLinearVelocity = false;
         bool hasInitialAngularVelocity = false;
         std::vector<PreparedGpuActor::ColliderCenter> colliderCenters;
+        struct MeshPublication
+        {
+            PhysicsECSStore::ColliderHandle collider;
+            std::shared_ptr<const CookedGeometry> geometry;
+        };
+        std::vector<MeshPublication> meshPublications;
         std::shared_ptr<PublishedActor> identity;
         bool creation = false;
         bool initializesRigidbody = false;
@@ -271,16 +280,18 @@ class JoltGpuScene::Impl
 
     Impl(rhi::ComputeHost &host, FrameWorkOwner &budget, const ShaderTargetCode &stepTarget,
          const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
-         const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
-         JoltGpuJoints &jointProgram, FailureObserver onFailure)
-        : actors(PhysicsECSStore::Instance()), work(budget), storage(host, JoltGpuModel{}), programs(host, stepTarget),
-          broadphase(host, broadphaseTarget), constraints(host, constraintTarget), mutations(host, mutationTarget),
+         const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &narrowphaseTarget,
+         const ShaderTargetCode &constraintTarget, JoltGpuJoints &jointProgram, FailureObserver onFailure)
+        : actors(PhysicsECSStore::Instance()), work(budget), geometry(std::make_shared<JoltGpuGeometryStore>(host)),
+          storage(host, JoltGpuModel{}), programs(host, stepTarget), broadphase(host, broadphaseTarget),
+          narrowphase(host, narrowphaseTarget), constraints(host, constraintTarget), mutations(host, mutationTarget),
           commands(host, commandTarget), joints(jointProgram), failureObserver(std::move(onFailure)),
-          tick(budget, storage, programs, broadphase, constraints, [this] {
+          tick(budget, storage, programs, broadphase, narrowphase, constraints, [this] {
               if (writer && failureObserver)
                   failureObserver(*writer->world);
           })
     {
+        storage.SetGeometryStore(geometry);
     }
 
     Partition &Domain(const RuntimeWorld &world) const
@@ -706,6 +717,12 @@ class JoltGpuScene::Impl
                 if (collider.actorHandle == change->identity->actor)
                     collider.publishedRigidCenter = center.center;
             }
+        for (const auto &publication : change->meshPublications)
+            if (actors.IsValid(publication.collider)) {
+                auto &collider = actors.GetCollider(publication.collider);
+                if (collider.actorHandle == change->identity->actor)
+                    static_cast<MeshCollider *>(collider.owner)->PublishCookedGeometry(publication.geometry);
+            }
         if (change->initializesRigidbody && actors.IsValid(change->initialRigidbody)) {
             auto &body = actors.GetRigidbody(change->initialRigidbody);
             if (body.actorHandle != change->identity->actor)
@@ -801,12 +818,17 @@ class JoltGpuScene::Impl
             publishedLeaf.subShapeBits = leaf.subShapeBits;
             publishedLeaf.memberIndex = leaf.memberIndex;
             publishedLeaf.shape = leaf.shape;
+            publishedLeaf.geometry = geometry->Intern(leaf.geometryRecord);
             publishedLeaf.sensor = (leaf.model.meta.w & ShapeSensor) != 0;
             identity->leaves.push_back(std::move(publishedLeaf));
         }
-        // No component pointer escapes this capture boundary.
-        actor.members.clear();
         auto change = std::make_shared<ActorChange>();
+        for (const auto *member : actor.members)
+            if (const auto *mesh = dynamic_cast<const MeshCollider *>(member))
+                change->meshPublications.push_back({mesh->GetECSHandle(), mesh->CaptureCookedGeometry()});
+        // No component pointer escapes this capture boundary. Each mesh payload
+        // belongs to this model prefix, independent of later author recooks.
+        actor.members.clear();
         change->slot = index;
         change->bodyId = id;
         change->model = actor.body;
@@ -818,6 +840,8 @@ class JoltGpuScene::Impl
         for (size_t ordinal = 0; ordinal < actor.geometry.leaves.size(); ++ordinal) {
             auto &leaf = actor.geometry.leaves[ordinal];
             leaf.model.meta.y = index;
+            const auto &cold = identity->leaves[ordinal].geometry;
+            leaf.model.geometryReference = cold ? cold->reference : UInt4{};
             const auto colliderId = identity->leaves[ordinal].colliderId;
             leaf.model.source.x = static_cast<uint32_t>(colliderId);
             leaf.model.source.y = static_cast<uint32_t>(colliderId >> 32);
@@ -1112,6 +1136,7 @@ class JoltGpuScene::Impl
         publication->simulationEpoch = epoch;
         publication->fixedStepIndex = step;
         publication->isFixedStep = !controlOnly;
+        publication->geometryStore = geometry;
         auto reports = prepareContacts ? prepareContacts(publication) : ContactObserver{};
         auto prefix = std::make_shared<std::vector<PrefixTarget>>();
         for (const auto index : domain.records)
@@ -1149,7 +1174,26 @@ class JoltGpuScene::Impl
             return {};
         };
         capture.prepareWork = [this, &domain, publication, pairCapture] {
-            return PrepareColliderPairs(domain, publication, pairCapture);
+            JoltGpuGeometryHandles records;
+            for (uint32_t slot = publication->bodyBase; slot < uint64_t(publication->bodyBase) + publication->bodyCount;
+                 ++slot)
+                if (const auto &actor = publication->directory->actors.at(slot))
+                    for (const auto &leaf : actor->leaves) {
+                        if (leaf.geometry)
+                            records.push_back(leaf.geometry);
+                        publication->hasGenericGeometry |=
+                            leaf.shape && (leaf.shape->GetSubType() == JPH::EShapeSubType::Cylinder ||
+                                           leaf.shape->GetSubType() == JPH::EShapeSubType::ConvexHull);
+                    }
+            return Then(geometry->PrepareCapture(std::move(records),
+                                                 [this, publication](auto lease) {
+                                                     publication->geometry = lease;
+                                                     storage.SetGeometry(std::move(lease),
+                                                                         publication->hasGenericGeometry);
+                                                 }),
+                        [this, &domain, publication, pairCapture] {
+                            return PrepareColliderPairs(domain, publication, pairCapture);
+                        });
         };
         domain.pending.push_back(std::move(capture));
         for (auto &group : domain.pending)
@@ -1192,6 +1236,9 @@ class JoltGpuScene::Impl
             publication->bodyStates = output.states;
             publication->jointStream = output.joints;
             publication->jointLayout = output.jointLayout;
+            publication->geometryStore = output.geometryStore;
+            publication->geometry = output.geometry;
+            publication->hasGenericGeometry = output.hasGenericGeometry;
             return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer, reportFinish] {
                 return Then(
                     reportFinish ? reportFinish(retained) : JoltGpuControlWork{}, [retained, consumer, finalConsumer] {
@@ -1492,9 +1539,11 @@ class JoltGpuScene::Impl
 
     PhysicsECSStore &actors;
     FrameWorkOwner &work;
+    std::shared_ptr<JoltGpuGeometryStore> geometry;
     JoltGpuStorage storage;
     JoltGpuPrograms programs;
     JoltGpuBroadphase broadphase;
+    JoltGpuNarrowphase narrowphase;
     JoltGpuConstraints constraints;
     JoltGpuBodyMutations mutations;
     JoltGpuBodyCommands commands;
@@ -1523,13 +1572,19 @@ class JoltGpuScene::Impl
 
 JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
                            const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
-                           const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
-                           JoltGpuJoints &joints, FailureObserver failureObserver)
+                           const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &narrowphaseTarget,
+                           const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints,
+                           FailureObserver failureObserver)
     : m_impl(std::make_unique<Impl>(host, work, stepTarget, mutationTarget, commandTarget, broadphaseTarget,
-                                    constraintTarget, joints, std::move(failureObserver)))
+                                    narrowphaseTarget, constraintTarget, joints, std::move(failureObserver)))
 {
 }
 JoltGpuScene::~JoltGpuScene() = default;
+
+const std::shared_ptr<JoltGpuGeometryStore> &JoltGpuScene::GetGeometryStore() const noexcept
+{
+    return m_impl->geometry;
+}
 bool JoltGpuScene::RegisterPartition(RuntimeWorld &world, uint32_t capacity)
 {
     m_impl->Service();

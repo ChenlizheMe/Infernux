@@ -39,6 +39,7 @@ enum Port : uint8_t
     ParticleIndices,
     ParticleStatus,
     CastParameters,
+    Geometry,
     PortCount
 };
 enum Stage : uint8_t
@@ -51,6 +52,9 @@ enum Stage : uint8_t
     ParticleCount,
     ParticleScatter,
     ResumeCasts,
+    InitJobs,
+    AdvanceJobs,
+    JobProgress,
     StageCount
 };
 struct ParticleExportParameters
@@ -64,7 +68,7 @@ struct PortLayout
 {
     std::string_view name;
     uint64_t stride;
-    std::array<std::string_view, 7> fields;
+    std::array<std::string_view, 8> fields;
     uint32_t integerFields;
 };
 constexpr PortLayout Ports[] = {
@@ -74,17 +78,20 @@ constexpr PortLayout Ports[] = {
     {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1},
     {"shape_models",
      sizeof(ShapeModel),
-     {"meta", "geometry", "localPositionCOM", "localRotation", "material", "surface", "source"},
-     97},
+     {"meta", "geometry", "localPositionCOM", "localRotation", "material", "surface", "source", "geometryReference"},
+     225},
     {"body_states", sizeof(BodyState), {"positionCOM", "rotation", "linearVelocity", "angularVelocity"}, 0},
     {"query_candidates", sizeof(QueryRecordWord), {"value"}, 1},
-    {"query_control", sizeof(QueryRecordWord), {"value"}, 1},
+    {"query_control", sizeof(UInt4), {}, 0},
     {"query_summary", sizeof(QuerySummary), {"counts"}, 1},
     {"query_hits", sizeof(QueryRecordWord), {"value"}, 1},
     {"query_export_params", sizeof(QueryExportParams), {"output", "sizes", "selection"}, 7},
     {"query_export_values", sizeof(uint32_t), {}, 0},
     {"particle_export_params", sizeof(ParticleExportParameters), {"counts", "revision"}, 3},
-    {"particle_export_rows", sizeof(JoltGpuParticleExportRow), {"selection", "identity"}, 3},
+    {"particle_export_rows",
+     sizeof(JoltGpuParticleExportRow),
+     {"selection", "identity", "localBoundsMin", "localBoundsMax"},
+     3},
     {"particle_export_previous", sizeof(QueryRecordWord), {"value"}, 1},
     {"particle_export_records", sizeof(QueryRecordWord), {"value"}, 1},
     {"particle_export_header", sizeof(QueryRecordWord), {"value"}, 1},
@@ -92,6 +99,7 @@ constexpr PortLayout Ports[] = {
     {"particle_export_indices", sizeof(uint32_t), {}, 0},
     {"particle_export_status", sizeof(uint32_t), {}, 0},
     {"query_cast_params", sizeof(QueryCastParams), {"controls"}, 1},
+    {"query_geometry", sizeof(UInt4), {}, 0},
 };
 constexpr std::array<std::string_view, StageCount> Entries{"query_evaluate",
                                                            "query_scan",
@@ -100,24 +108,31 @@ constexpr std::array<std::string_view, StageCount> Entries{"query_evaluate",
                                                            "particle_collision_project",
                                                            "particle_collision_count",
                                                            "particle_collision_scatter",
-                                                           "query_resume_casts"};
+                                                           "query_resume_casts",
+                                                           "query_init_jobs",
+                                                           "query_advance_jobs",
+                                                           "query_job_progress"};
 constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
 }
 constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
-        Bit(Control) | Bit(CastParameters),
+        Bit(Control) | Bit(CastParameters) | Bit(Geometry),
     Bit(Parameters) | Bit(Control) | Bit(Summary),
     Bit(Parameters) | Bit(Candidates) | Bit(Control) | Bit(Summary) | Bit(Hits),
     Bit(ExportParameters) | Bit(Hits) | Bit(Control) | Bit(Summary) | Bit(ExportValues),
-    Bit(ParticleParameters) | Bit(ParticleRows) | Bit(ParticlePrevious) | Bit(Hits) | Bit(ParticleRecords) |
-        Bit(ParticleStatus),
+    Bit(ParticleParameters) | Bit(ParticleRows) | Bit(ParticlePrevious) | Bit(Shapes) | Bit(Hits) |
+        Bit(ParticleRecords) | Bit(ParticleStatus),
     Bit(ParticleParameters) | Bit(ParticleRecords) | Bit(ParticleHeader) | Bit(ParticleOffsets) | Bit(ParticleStatus),
     Bit(ParticleParameters) | Bit(ParticleRecords) | Bit(ParticleHeader) | Bit(ParticleOffsets) | Bit(ParticleIndices) |
         Bit(ParticleStatus),
     Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
-        Bit(Control) | Bit(CastParameters)};
+        Bit(Control) | Bit(CastParameters),
+    Bit(Parameters) | Bit(Control),
+    Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
+        Bit(Control) | Bit(CastParameters) | Bit(Geometry),
+    Bit(Parameters) | Bit(Control) | Bit(Summary)};
 
 uint64_t CheckedBytes(uint64_t count, uint64_t stride)
 {
@@ -139,6 +154,14 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
     const auto &expected = Ports[port];
     const bool uniform =
         port == Parameters || port == ExportParameters || port == ParticleParameters || port == CastParameters;
+    if (port == Control || port == Geometry) {
+        if (resource.binding.type != rhi::BindingType::StorageBuffer ||
+            resource.binding.readOnlyStorage != (port == Geometry) || resource.elementStride != sizeof(UInt4) ||
+            resource.value.kind != ShaderValueKind::Vector || resource.value.scalar != ShaderScalarKind::UInt32 ||
+            resource.value.byteSize != sizeof(UInt4) || resource.value.rows != 1 || resource.value.columns != 4)
+            throw std::invalid_argument("Jolt GPU query uint4 stream differs from its shared layout");
+        return;
+    }
     if (port == ExportValues || port == ParticleOffsets || port == ParticleIndices || port == ParticleStatus) {
         if (resource.binding.type != rhi::BindingType::StorageBuffer || resource.binding.readOnlyStorage ||
             resource.elementStride != sizeof(uint32_t) || resource.value.kind != ShaderValueKind::Scalar ||
@@ -168,7 +191,8 @@ bool Finite(const Float4 &value)
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) && std::isfinite(value.w);
 }
 
-void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotation)
+void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotation, const UInt4 &reference,
+                      const std::shared_ptr<const JoltGpuGeometryLease> &lease)
 {
     if (!Finite(geometry) || !Finite(rotation))
         throw JoltGpuQueryRequestError("Jolt GPU query geometry and rotation must be finite");
@@ -176,7 +200,19 @@ void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotat
                           double(rotation.z) * rotation.z + double(rotation.w) * rotation.w;
     if (std::abs(length - 1.0) > 1.0e-3)
         throw JoltGpuQueryRequestError("Jolt GPU query rotation must be a unit quaternion");
-    if (type == ShapeSphere) {
+    if (type == ShapeConvexHull) {
+        if (geometry.x < 0 || geometry.y || geometry.z || geometry.w || !reference.x || reference.y < 5 || !lease ||
+            !lease->Contains(reference))
+            throw JoltGpuQueryRequestError("Jolt GPU Hull requires its exact retained geometry range");
+        return;
+    }
+    if (reference.x || reference.y || reference.z || reference.w)
+        throw JoltGpuQueryRequestError("Jolt GPU analytic primitive must not reference a geometry range");
+    if (type == ShapeCylinder) {
+        if (geometry.x <= 0 || geometry.y <= 0 || geometry.z < 0 || geometry.z > std::min(geometry.x, geometry.y) ||
+            geometry.w)
+            throw JoltGpuQueryRequestError("Jolt GPU Cylinder requires positive dimensions and a valid cooked radius");
+    } else if (type == ShapeSphere) {
         if (geometry.x != 0 || geometry.y != 0 || geometry.z != 0 || geometry.w <= 0)
             throw JoltGpuQueryRequestError("Jolt GPU query Sphere requires a positive radius");
     } else if (type == ShapeBox) {
@@ -211,8 +247,13 @@ bool Zero(const Float4 &value)
 }
 
 void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t bodyBase, uint32_t bodyCount,
-                   bool hasPublication)
+                   bool hasPublication, const std::shared_ptr<const JoltGpuGeometryLease> &lease)
 {
+    const bool hasReference = query.geometryReference.x || query.geometryReference.y || query.geometryReference.z ||
+                              query.geometryReference.w;
+    if (hasReference && query.meta.x != QueryShapeCast && query.meta.x != QueryPenetration &&
+        query.meta.x != QueryOverlap)
+        throw JoltGpuQueryRequestError("Jolt GPU query operation has no explicit geometry operand");
     const bool hasLifetime = query.lifetime.x || query.lifetime.y;
     if (query.lifetime.z || query.lifetime.w)
         throw JoltGpuQueryRequestError("GPU query source lifetime reserved words must be zero");
@@ -231,7 +272,7 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
                 throw JoltGpuQueryRequestError(
                     "Jolt GPU motion gather requires one published body slot and requested field mask");
         } else {
-            if (query.meta.y != QueryAll || (query.meta.z != QueryAllShapeTypes && query.meta.z > ShapeCapsule) ||
+            if (query.meta.y != QueryAll || (query.meta.z != QueryAllShapeTypes && query.meta.z > ShapeConvexHull) ||
                 (query.meta.w & ~QueryTargetCollider) || query.filter.y > 1 || query.source.z ||
                 !Zero(query.geometry) ||
                 (query.source.y != InvalidQueryBodySlot &&
@@ -257,7 +298,7 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
         if (query.source.y >= primitiveCount || query.meta.w || query.positionMaximum.w != 0)
             throw JoltGpuQueryRequestError(
                 "Jolt GPU pair query requires an explicit second primitive and no world policy");
-        ValidateGeometry(query.meta.z, query.geometry, query.rotation);
+        ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
     } else {
         if (!hasPublication || query.source.y)
             throw JoltGpuQueryRequestError("Jolt GPU world query requires one retained publication");
@@ -266,12 +307,12 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
                 (query.direction.x == 0 && query.direction.y == 0 && query.direction.z == 0))
                 throw JoltGpuQueryRequestError("Jolt GPU ray requires nonzero direction and positive maximum distance");
             if (cast)
-                ValidateGeometry(query.meta.z, query.geometry, query.rotation);
+                ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
         } else {
             if (query.positionMaximum.w != 0)
                 throw JoltGpuQueryRequestError("Jolt GPU non-ray query maximum must be zero");
             if (query.meta.x == QueryOverlap)
-                ValidateGeometry(query.meta.z, query.geometry, query.rotation);
+                ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
             if (query.meta.x == QueryBodyBounds &&
                 (query.direction.x < 0 || query.direction.y < 0 || query.direction.z < 0))
                 throw JoltGpuQueryRequestError("Jolt GPU bounds query requires nonnegative half extents");
@@ -290,6 +331,12 @@ rhi::ComputeBufferAccess Access(uint8_t stage, uint8_t port)
             return rhi::ComputeBufferAccess::Write;
         return rhi::ComputeBufferAccess::Read;
     }
+    if (stage == InitJobs && port == Control)
+        return rhi::ComputeBufferAccess::Write;
+    if (stage == AdvanceJobs && (port == Candidates || port == Control))
+        return rhi::ComputeBufferAccess::ReadWrite;
+    if (stage == JobProgress && port == Summary)
+        return rhi::ComputeBufferAccess::Write;
     if (stage == Evaluate && (port == Candidates || port == Control))
         return rhi::ComputeBufferAccess::Write;
     if (stage == ResumeCasts && (port == Candidates || port == Control))
@@ -366,6 +413,17 @@ struct QueryPolicyCopy : std::enable_shared_from_this<QueryPolicyCopy>
     }
 };
 
+JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
+{
+    if (!work.packet && !work.continueWork)
+        return next();
+    auto continuation = std::move(work.continueWork);
+    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
+        return Then(continuation ? continuation() : JoltGpuControlWork{}, std::move(next));
+    };
+    return work;
+}
+
 void RequireSuccess(uint32_t status)
 {
     if (status == QueryUnsupported)
@@ -440,6 +498,8 @@ struct JoltGpuQueries::Execution
     std::vector<rhi::ComputeDispatchDesc> resume;
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
     bool payloadInPacket;
+    bool jobs = false;
+    std::vector<rhi::ComputeDispatchDesc> finalize;
 };
 
 JoltGpuControlWork JoltGpuQueries::Continue(const std::shared_ptr<Execution> &execution)
@@ -449,7 +509,24 @@ JoltGpuControlWork JoltGpuQueries::Continue(const std::shared_ptr<Execution> &ex
         throw std::logic_error("Jolt GPU query continuation requires its completed receipt");
     QuerySummary summary{};
     result->summaryReadback->ReadInto(&summary, sizeof(summary));
-    ValidateSummary(summary, result->queryCount, result->hitCapacity, result->knownCount, !execution->resume.empty());
+    if (execution->jobs) {
+        ValidateSummary(summary, result->queryCount, result->hitCapacity, false, true);
+        if (summary.counts.x)
+            throw std::runtime_error("Jolt GPU private geometry progress must not publish compact counts");
+        if (summary.counts.y == QuerySuccess) {
+            execution->jobs = false;
+            execution->resume.clear();
+            execution->packet = rhi::PrepareComputeBatch(execution->host, {}, std::move(execution->finalize),
+                                                         {{result->summary, 0, sizeof(QuerySummary)}});
+            result->summaryReadback = execution->packet->Readback(0);
+            JoltGpuControlWork work{execution->packet, [execution]() { return Continue(execution); }};
+            work.geometry = result->geometry;
+            return work;
+        }
+    } else {
+        ValidateSummary(summary, result->queryCount, result->hitCapacity, result->knownCount,
+                        !execution->resume.empty());
+    }
     if (summary.counts.y == QueryPending) {
         // The device retains the current leaf, advancement and best hit. Only
         // metadata crosses the bus while another bounded slice is required.
@@ -457,7 +534,9 @@ JoltGpuControlWork JoltGpuQueries::Continue(const std::shared_ptr<Execution> &ex
                                                      {{result->summary, 0, sizeof(QuerySummary)}});
         execution->payloadInPacket = false;
         result->summaryReadback = execution->packet->Readback(0);
-        return {execution->packet, [execution]() { return Continue(execution); }};
+        JoltGpuControlWork work{execution->packet, [execution]() { return Continue(execution); }};
+        work.geometry = result->geometry;
+        return work;
     }
     result->summaryValue = summary;
     result->headerComplete = true;
@@ -478,14 +557,57 @@ JoltGpuControlWork JoltGpuQueries::Continue(const std::shared_ptr<Execution> &ex
     result->spanReadbackIndex = static_cast<uint32_t>(reads.size());
     reads.push_back({result->spans, 0, CheckedBytes(result->queryCount, sizeof(QuerySpan))});
     result->tailBatch = rhi::PrepareComputeBatch(execution->host, {}, {}, std::move(reads));
-    return result->tailBatch;
+    JoltGpuControlWork work{result->tailBatch};
+    work.geometry = result->geometry;
+    return work;
 }
 
 JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
                                              const std::vector<QueryInput> &queries,
                                              const std::vector<QueryPrimitive> &primitives,
                                              uint64_t numericalGeneration, JoltGpuQueryReadback readback,
-                                             uint32_t castIterationQuantum) const
+                                             uint32_t castIterationQuantum, JoltGpuQueryGeometry geometry) const
+{
+    auto result = std::make_shared<JoltGpuQueryResult>();
+    result->explicitShapes = std::move(geometry.shapes);
+    if (publication) {
+        if (geometry.store && geometry.store != publication->geometryStore)
+            throw JoltGpuQueryRequestError("Explicit and published geometry must share one compatible arena");
+        geometry.store = publication->geometryStore;
+    }
+    if (geometry.operands.empty() && publication && publication->geometry) {
+        result->geometry = publication->geometry;
+        return PrepareCaptured(std::move(publication), queries, primitives, numericalGeneration, readback,
+                               castIterationQuantum, result);
+    }
+    if (!geometry.store)
+        return PrepareCaptured(std::move(publication), queries, primitives, numericalGeneration, readback,
+                               castIterationQuantum, result);
+    if (publication && publication->geometry)
+        geometry.operands.insert(geometry.operands.end(), publication->geometry->records.begin(),
+                                 publication->geometry->records.end());
+    // The immutable handles pin both explicit operands before capture begins.
+    // Store work uses the same writer budget/receipts; no synchronous upload.
+    auto service = std::make_shared<JoltGpuQueries>(*this);
+    auto capture = geometry.store->PrepareCapture(
+        std::move(geometry.operands),
+        [result](std::shared_ptr<const JoltGpuGeometryLease> lease) { result->geometry = std::move(lease); });
+    auto next = [service, result, publication = std::move(publication), queries, primitives, numericalGeneration,
+                 readback, castIterationQuantum]() {
+        return service
+            ->PrepareCaptured(publication, queries, primitives, numericalGeneration, readback, castIterationQuantum,
+                              result)
+            .work;
+    };
+    return {result, Then(std::move(capture), std::move(next))};
+}
+
+JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltGpuScene::Publication> publication,
+                                                     const std::vector<QueryInput> &queries,
+                                                     const std::vector<QueryPrimitive> &primitives,
+                                                     uint64_t numericalGeneration, JoltGpuQueryReadback readback,
+                                                     uint32_t castIterationQuantum,
+                                                     const std::shared_ptr<JoltGpuQueryResult> &result) const
 {
     if (queries.size() > std::numeric_limits<uint32_t>::max() ||
         primitives.size() > std::numeric_limits<uint32_t>::max())
@@ -532,18 +654,34 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         if (primitive.meta.y || primitive.meta.z || primitive.meta.w || !Finite(primitive.position) ||
             primitive.position.w)
             throw std::invalid_argument("Jolt GPU explicit query primitive has invalid pose or padding");
-        ValidateGeometry(primitive.meta.x, primitive.geometry, primitive.rotation);
+        ValidateGeometry(primitive.meta.x, primitive.geometry, primitive.rotation, primitive.geometryReference,
+                         result->geometry);
     }
     const uint32_t format = queries.empty() ? QueryOutputHit : OutputFormat(queries.front());
     const uint32_t recordBytes = RecordBytes(format);
     for (const auto &query : queries) {
-        ValidateInput(query, primitives.size(), bodyBase, bodyCount, bool(publication));
+        ValidateInput(query, primitives.size(), bodyBase, bodyCount, bool(publication), result->geometry);
         if (OutputFormat(query) != format)
             throw JoltGpuQueryRequestError("Jolt GPU query batch must use one typed output family");
         if ((query.meta.x == QueryGatherMotion || query.meta.x == QueryGatherShapes) &&
             query.source.y != InvalidQueryBodySlot && !publication->directory->actors[query.source.y])
             throw JoltGpuQueryRequestError("Jolt GPU gather body slot has no retained actor identity");
     }
+    const bool geometric = std::any_of(queries.begin(), queries.end(), [](const auto &query) {
+        return query.meta.x == QueryRay || query.meta.x == QueryOverlap || query.meta.x == QueryClosestPoint ||
+               query.meta.x == QueryPenetration || query.meta.x == QueryShapeCast;
+    });
+    bool generic = geometric && std::any_of(primitives.begin(), primitives.end(), [](const auto &primitive) {
+                       return primitive.meta.x == ShapeCylinder || primitive.meta.x == ShapeConvexHull;
+                   });
+    generic |= geometric && std::any_of(queries.begin(), queries.end(), [](const auto &query) {
+                   return query.meta.z == ShapeCylinder || query.meta.z == ShapeConvexHull;
+               });
+    // Producer captures this bit in its existing accepted-directory loop.
+    generic |= geometric && publication && publication->hasGenericGeometry;
+    if (!queries.empty() && (!result->geometry || !result->geometry->buffer ||
+                             !m_host.SharesServicesWith(result->geometry->buffer->GetHost())))
+        throw JoltGpuQueryRequestError("GPU query requires its compatible initialized geometry lease");
     const bool hasCasts =
         std::any_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.x == QueryShapeCast; });
     if (!castIterationQuantum)
@@ -564,10 +702,23 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     static_assert(sizeof(QuerySpan) == sizeof(QueryRecordWord));
     static_assert(sizeof(QueryCastState) == 4 * sizeof(QueryRecordWord));
     static_assert(sizeof(QueryInput) >= sizeof(QuerySpan) + sizeof(QueryCastState));
-    const uint64_t controlBytes = CheckedBytes(queries.size(), sizeof(QuerySpan) + sizeof(QueryCastState));
-    const uint64_t controlWords = controlBytes / sizeof(QueryRecordWord);
+    const uint64_t prefixBytes = CheckedBytes(queries.size(), sizeof(QuerySpan) + sizeof(QueryCastState));
+    const uint64_t prefixWords = prefixBytes / sizeof(UInt4);
+    // Tail header4 + up to32 fixed2048-word workers coexist with all spans/CA states.
+    // Fewer workers change scheduling only, never request/candidate capacity.
+    const auto bindingLimit = m_host.device.GetCapabilities().portable.maxStorageBufferBinding;
+    const uint64_t maxControlWords = std::min<uint64_t>(UINT32_MAX, bindingLimit / sizeof(UInt4));
+    uint32_t workers = 0;
+    if (generic) {
+        if (prefixWords > maxControlWords || maxControlWords - prefixWords < 4u + 2048u)
+            throw JoltGpuQueryRequestError("Jolt GPU generic query control exceeds device indexing/binding range");
+        workers = static_cast<uint32_t>(
+            std::min<uint64_t>({32u, queries.size(), (maxControlWords - prefixWords - 4u) / 2048u}));
+    }
+    const uint64_t controlWords = prefixWords + (generic ? 4u + uint64_t(workers) * 2048u : 0u);
+    if (controlWords > UINT32_MAX)
+        throw JoltGpuQueryRequestError("Jolt GPU query control exceeds device indexing");
     const uint64_t spanBytes = CheckedBytes(queries.size(), sizeof(QuerySpan));
-    auto result = std::make_shared<JoltGpuQueryResult>();
     result->publication = std::move(publication);
     result->numericalGeneration = numericalGeneration;
     result->queryCount = static_cast<uint32_t>(queries.size());
@@ -581,7 +732,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         std::all_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.z == ShapeBox; });
     if (queries.empty()) {
         result->headerComplete = result->materialized = result->recordsMaterialized = true;
-        return {std::move(result), {}};
+        return {result, {}};
     }
     // Reject impossible dispatch dimensions before allocating request storage.
     const auto groups = [](uint32_t count) { return count / 64 + static_cast<uint32_t>(count % 64 != 0); };
@@ -590,6 +741,9 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     rhi::ComputeHost host = m_host;
     const auto allocate = [&](uint8_t port, uint64_t count) {
         const auto bytes = CheckedBytes(count, Ports[port].stride);
+        if (port != Parameters && port != CastParameters &&
+            !host.device.GetCapabilities().IsStorageBufferRangeValid(0, bytes))
+            throw JoltGpuQueryRequestError("Jolt GPU query storage exceeds the device binding range");
         buffers[port] =
             rhi::ComputeBuffer::TryCreatePrivate(host, {bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
         if (!buffers[port])
@@ -648,8 +802,8 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     }
     allocate(BodyIdentities, identityPrefix + pairCount64 * 2u);
     updates.push_back({buffers[BodyIdentities], 0, Bytes(identities.data(), identities.size())});
-    const QueryCastParams castParameters{
-        {castIterationQuantum, bodyCount, static_cast<uint32_t>(identityPrefix), pairCount}};
+    const QueryCastParams castParameters{{generic ? std::min(32u, castIterationQuantum) : castIterationQuantum,
+                                          bodyCount, static_cast<uint32_t>(identityPrefix), pairCount}};
     upload(CastParameters, Bytes(&castParameters, 1));
     const QueryParams parameters{
         {result->queryCount, bodyBase, bodyCount, leafCount},
@@ -668,13 +822,19 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     allocate(Candidates, uint64_t(capacity) * words);
     allocate(Control, controlWords);
     allocate(Summary, 1);
+    buffers[Geometry] = result->geometry->buffer;
     allocate(Hits, uint64_t(capacity) * words);
     const auto dispatch = [&](uint8_t stage) {
         const auto &program = m_programs[stage];
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = program.kernel;
-        dispatch.groupCountX =
-            stage == Scan ? 1 : groups(stage == Evaluate || stage == ResumeCasts ? result->queryCount : capacity);
+        dispatch.groupCountX = stage == Scan || stage == JobProgress ? 1
+                               : stage == InitJobs ? groups(static_cast<uint32_t>(controlWords - prefixWords))
+                               : stage == AdvanceJobs
+                                   ? groups(workers)
+                                   : groups(stage == Evaluate || stage == ResumeCasts ? result->queryCount : capacity);
+        if (dispatch.groupCountX > host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
+            throw JoltGpuQueryRequestError("Jolt GPU query phase exceeds the device dispatch range");
         rhi::ComputeDispatchProof proof;
         for (const auto port : program.ports) {
             const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
@@ -683,9 +843,25 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
             dispatch.bufferAccesses.push_back(access);
             // Scan and compact address only the span prefix. Evaluate writes
             // the complete control; resume retains both spans and CA state.
-            const uint64_t bytes =
-                port == Control && (stage == Scan || stage == Compact) ? spanBytes : buffers[port]->GetByteSize();
-            const rhi::ComputeBindingRange range{binding, 0, bytes};
+            if (port == Geometry) {
+                for (const auto &range : result->geometry->wordRanges)
+                    proof.reads.push_back(
+                        {binding, range.first * sizeof(UInt4), (range.second - range.first) * sizeof(UInt4)});
+                continue;
+            }
+            uint64_t offset = 0;
+            uint64_t bytes = buffers[port]->GetByteSize();
+            if (port == Control) {
+                if (stage == Scan || stage == Compact)
+                    bytes = spanBytes;
+                else if (stage == Evaluate || stage == ResumeCasts)
+                    bytes = prefixBytes;
+                else if (stage == InitJobs) {
+                    offset = prefixBytes;
+                    bytes -= prefixBytes;
+                }
+            }
+            const rhi::ComputeBindingRange range{binding, offset, bytes};
             if (static_cast<uint8_t>(access) & static_cast<uint8_t>(rhi::ComputeBufferAccess::Read))
                 proof.reads.push_back(range);
             if (static_cast<uint8_t>(access) & static_cast<uint8_t>(rhi::ComputeBufferAccess::Write))
@@ -694,12 +870,18 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         dispatch.proof = std::move(proof);
         return dispatch;
     };
-    std::vector<rhi::ComputeDispatchDesc> dispatches{dispatch(Evaluate), dispatch(Scan), dispatch(Compact)};
+    std::vector<rhi::ComputeDispatchDesc> dispatches =
+        generic ? std::vector<rhi::ComputeDispatchDesc>{dispatch(Evaluate), dispatch(InitJobs), dispatch(AdvanceJobs),
+                                                        dispatch(JobProgress)}
+                : std::vector<rhi::ComputeDispatchDesc>{dispatch(Evaluate), dispatch(Scan), dispatch(Compact)};
+    std::vector<rhi::ComputeDispatchDesc> finalize;
+    if (generic)
+        finalize = {dispatch(Scan), dispatch(Compact)};
     result->hits = buffers[Hits];
     result->spans = buffers[Control];
     result->summary = buffers[Summary];
     std::vector<rhi::ComputeBufferRead> reads{{result->summary, 0, sizeof(QuerySummary)}};
-    if (knownCount || readback == JoltGpuQueryReadback::Device) {
+    if (!generic && (knownCount || readback == JoltGpuQueryReadback::Device)) {
         if (readback == JoltGpuQueryReadback::Host) {
             result->hitReadbackIndex = static_cast<uint32_t>(reads.size());
             reads.push_back({result->hits, 0, CheckedBytes(result->queryCount, recordBytes)});
@@ -708,7 +890,9 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         reads.push_back({result->spans, 0, CheckedBytes(result->queryCount, sizeof(QuerySpan))});
     }
     std::vector<rhi::ComputeDispatchDesc> resume;
-    if (hasCasts)
+    if (generic)
+        resume = {dispatch(AdvanceJobs), dispatch(JobProgress)};
+    else if (hasCasts)
         resume = {dispatch(ResumeCasts), dispatch(Scan), dispatch(Compact)};
     auto copy = pairCount ? std::make_shared<QueryPolicyCopy>(host) : nullptr;
     if (copy) {
@@ -719,18 +903,22 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         copy->targetBase = static_cast<uint32_t>(identityPrefix);
     }
     auto ready = [host, result, updates = std::move(updates), dispatches = std::move(dispatches),
-                  reads = std::move(reads), resume = std::move(resume),
-                  payload = knownCount || readback == JoltGpuQueryReadback::Device]() mutable -> JoltGpuControlWork {
+                  reads = std::move(reads), resume = std::move(resume), finalize = std::move(finalize), generic,
+                  payload = !generic &&
+                            (knownCount || readback == JoltGpuQueryReadback::Device)]() mutable -> JoltGpuControlWork {
         auto batch = rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
         result->summaryReadback = batch->Readback(0);
-        auto execution = std::make_shared<Execution>(Execution{host, result, std::move(resume), batch, payload});
-        return {batch, [execution]() { return Continue(execution); }};
+        auto execution = std::make_shared<Execution>(
+            Execution{host, result, std::move(resume), batch, payload, generic, std::move(finalize)});
+        JoltGpuControlWork work{batch, [execution]() { return Continue(execution); }};
+        work.geometry = result->geometry;
+        return work;
     };
     if (copy) {
         copy->ready = std::move(ready);
-        return {std::move(result), copy->Next()};
+        return {result, copy->Next()};
     }
-    return {std::move(result), ready()};
+    return {result, ready()};
 }
 
 JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_ptr<JoltGpuQueryResult>> &results,
@@ -867,7 +1055,10 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
     }
     if (dispatches.empty())
         return {};
-    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches));
+    JoltGpuControlWork work{rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches))};
+    work.geometry =
+        sources[QueryOutputMotion] ? sources[QueryOutputMotion]->geometry : sources[QueryOutputShape]->geometry;
+    return work;
 }
 
 JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::shared_ptr<JoltGpuQueryResult> &shapes,
@@ -877,7 +1068,8 @@ JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::s
                                                                     uint64_t topologyRevision) const
 {
     m_host.RequireAlive();
-    if (!shapes || (shapes->queryCount && (!shapes->hits || !m_host.SharesServicesWith(shapes->hits->GetHost()))))
+    if (!shapes || !shapes->publication || !shapes->geometry || !shapes->geometry->buffer ||
+        (shapes->queryCount && (!shapes->hits || !m_host.SharesServicesWith(shapes->hits->GetHost()))))
         throw JoltGpuQueryRequestError("GPU particle export requires shape records from its compute owner");
     auto result = std::make_shared<JoltGpuParticleExportResult>();
     result->source = shapes;
@@ -891,7 +1083,8 @@ JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::s
         rows.size() > std::numeric_limits<uint32_t>::max() / 512u || staticCount > rows.size() || !topologyRevision)
         throw JoltGpuQueryRequestError("GPU particle export shape format, row domain or topology is invalid");
     const uint32_t count = static_cast<uint32_t>(rows.size());
-    if (count > std::numeric_limits<uint32_t>::max() / 21u)
+    if (count >
+        std::numeric_limits<uint32_t>::max() / (sizeof(particle::GpuParticleColliderRecord) / sizeof(QueryRecordWord)))
         throw JoltGpuQueryRequestError("GPU particle collider words exceed device indexing");
     uint32_t previousCount = 0;
     if (previousRecords) {
@@ -900,13 +1093,17 @@ JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::s
             previousRecords->GetByteSize() % sizeof(particle::GpuParticleColliderRecord))
             throw JoltGpuQueryRequestError("GPU particle history requires frozen records from the same compute owner");
         const auto capacity = previousRecords->GetByteSize() / sizeof(particle::GpuParticleColliderRecord);
-        if (capacity > std::numeric_limits<uint32_t>::max() / 21u ||
+        if (capacity > std::numeric_limits<uint32_t>::max() /
+                           (sizeof(particle::GpuParticleColliderRecord) / sizeof(QueryRecordWord)) ||
             !previousRecords->HasInitializedRange(0, previousRecords->GetByteSize()))
             throw JoltGpuQueryRequestError("GPU particle history exceeds its initialized record range");
         previousCount = static_cast<uint32_t>(capacity);
     }
     for (const auto &row : rows)
-        if (row.selection.x >= summary.counts.x || row.selection.z || row.selection.w ||
+        if (row.selection.x >= summary.counts.x || (!row.selection.z && !row.selection.w) ||
+            !Finite(row.localBoundsMin) || !Finite(row.localBoundsMax) || row.localBoundsMin.w ||
+            row.localBoundsMax.w || row.localBoundsMin.x > row.localBoundsMax.x ||
+            row.localBoundsMin.y > row.localBoundsMax.y || row.localBoundsMin.z > row.localBoundsMax.z ||
             (row.selection.y != InvalidQueryBodySlot && row.selection.y >= previousCount))
             throw JoltGpuQueryRequestError("GPU particle row or previous identity map exceeds its retained source");
     auto &payload = *result->payload;
@@ -939,6 +1136,7 @@ JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::s
     } else
         upload(ParticleRows, Bytes(rows.data(), rows.size()));
     buffers[Hits] = shapes->hits;
+    buffers[Shapes] = shapes->publication->shapeModels;
     buffers[ParticlePrevious] = std::move(previousRecords);
     if (!buffers[ParticlePrevious])
         upload(ParticlePrevious, std::vector<uint8_t>(sizeof(particle::GpuParticleColliderRecord)));
@@ -954,6 +1152,10 @@ JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::s
     payload.header = buffers[ParticleHeader];
     payload.gridOffsets = buffers[ParticleOffsets];
     result->status = buffers[ParticleStatus];
+    payload.worldId = shapes->publication->worldId;
+    payload.geometry = shapes->geometry->buffer;
+    payload.geometryLease = shapes->geometry;
+    payload.geometryWordRanges = shapes->geometry->wordRanges;
     const uint32_t groups = count / 64 + static_cast<uint32_t>(count % 64 != 0);
     if (groups > m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
         throw JoltGpuQueryRequestError("GPU particle collider count exceeds the device dispatch range");
@@ -995,8 +1197,11 @@ JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::s
                                                      {{result->status, 0, sizeof(UInt4)}});
             result->statusReadback = result->batch->Readback(0);
             result->statusComplete = false;
-            return result->batch;
+            JoltGpuControlWork tail{result->batch};
+            tail.geometry = result->source->geometry;
+            return tail;
         }};
+    work.geometry = shapes->geometry;
     return {std::move(result), std::move(work)};
 }
 

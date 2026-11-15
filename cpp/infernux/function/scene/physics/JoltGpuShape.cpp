@@ -5,6 +5,8 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/DecoratedShape.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
@@ -95,8 +97,24 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCou
             output.model.geometry = {0.0f, capsule->GetHalfHeightOfCylinder(), 0.0f, capsule->GetRadius()};
             break;
         }
+        case JPH::EShapeSubType::Cylinder: {
+            const auto *cylinder = static_cast<const JPH::CylinderShape *>(leaf.mShape.GetPtr());
+            output.model.meta.x = JPH::GPU::ShapeCylinder;
+            JPH::ConvexShape::SupportBuffer buffer;
+            const auto *core = cylinder->GetSupportFunction(JPH::ConvexShape::ESupportMode::ExcludeConvexRadius, buffer,
+                                                            JPH::Vec3::sReplicate(1.0f));
+            output.model.geometry = {cylinder->GetRadius(), cylinder->GetHalfHeight(), core->GetConvexRadius(), 0};
+            break;
+        }
+        case JPH::EShapeSubType::ConvexHull: {
+            const auto *hull = static_cast<const JPH::ConvexHullShape *>(leaf.mShape.GetPtr());
+            output.model.meta.x = JPH::GPU::ShapeConvexHull;
+            output.model.geometry = {hull->GetConvexRadius(), 0, 0, 0};
+            output.geometryRecord = EncodeJoltGpuGeometry(*hull);
+            break;
+        }
         default:
-            throw std::invalid_argument("Jolt GPU shape preparation supports only Sphere, Box and Capsule leaves");
+            throw std::invalid_argument("Jolt GPU shape preparation requires a supported final convex leaf");
         }
         prepared.leaves.push_back(std::move(output));
     }

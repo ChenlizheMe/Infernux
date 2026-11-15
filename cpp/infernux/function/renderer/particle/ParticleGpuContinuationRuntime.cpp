@@ -128,6 +128,11 @@ struct ParticleGpuContinuationRuntime::ProgramRevision
     rhi::ComputePipelineHandle dispatchPipeline;
 };
 
+void ParticleGpuContinuationRuntime::SetCollisionSceneGroup(rhi::BindGroupHandle group) noexcept
+{
+    if (m_revision)
+        m_revision->collisionSceneGroup = group;
+}
 ParticleGpuContinuationRuntime::ParticleGpuContinuationRuntime() = default;
 
 ParticleGpuContinuationRuntime::~ParticleGpuContinuationRuntime()

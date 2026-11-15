@@ -29,6 +29,7 @@ struct alignas(16) GpuParticleContactRecord
     std::array<float, 4> relativeVelocity{};
     std::array<float, 4> material{};
     std::array<uint32_t, 4> metadata{};
+    std::array<uint32_t, 4> lifetime{};
 };
 
 struct alignas(16) GpuParticleContactHashSlot
@@ -52,6 +53,7 @@ struct alignas(16) GpuParticleContactJoinState
     std::array<uint32_t, 4> identity{};
     std::array<uint32_t, 4> context{};
     std::array<uint32_t, 4> state{};
+    std::array<uint32_t, 4> lifetime{};
 };
 
 struct alignas(16) GpuParticleContactCounters
@@ -146,20 +148,22 @@ class ParticleGpuContactRuntime
     uint32_t m_resetSerial = 0;
 };
 
-static_assert(sizeof(GpuParticleContactRecord) == 96);
+static_assert(sizeof(GpuParticleContactRecord) == 112);
 static_assert(offsetof(GpuParticleContactRecord, identity) == 0);
 static_assert(offsetof(GpuParticleContactRecord, pointPenetration) == 16);
 static_assert(offsetof(GpuParticleContactRecord, normalSpeed) == 32);
 static_assert(offsetof(GpuParticleContactRecord, relativeVelocity) == 48);
 static_assert(offsetof(GpuParticleContactRecord, material) == 64);
 static_assert(offsetof(GpuParticleContactRecord, metadata) == 80);
+static_assert(offsetof(GpuParticleContactRecord, lifetime) == 96);
 static_assert(sizeof(GpuParticleContactHashSlot) == 32);
 static_assert(offsetof(GpuParticleContactHashSlot, value) == 16);
 static_assert(sizeof(GpuParticleContactWorkItem) == 32);
 static_assert(offsetof(GpuParticleContactWorkItem, dispatch) == 16);
-static_assert(sizeof(GpuParticleContactJoinState) == 48);
+static_assert(sizeof(GpuParticleContactJoinState) == 64);
 static_assert(offsetof(GpuParticleContactJoinState, context) == 16);
 static_assert(offsetof(GpuParticleContactJoinState, state) == 32);
+static_assert(offsetof(GpuParticleContactJoinState, lifetime) == 48);
 static_assert(sizeof(GpuParticleContactCounters) == 48);
 
 } // namespace infernux::particle

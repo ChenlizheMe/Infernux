@@ -246,6 +246,8 @@ class ParticleGpuContinuationRuntime
                                                                     rhi::BindGroupHandle graphSpawnGroup) const;
 
   private:
+    friend class ParticleGpuRuntime;
+    void SetCollisionSceneGroup(rhi::BindGroupHandle group) noexcept;
     struct ResidentStorage;
     struct ProgramRevision;
 

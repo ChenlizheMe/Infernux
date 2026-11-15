@@ -2831,6 +2831,7 @@ struct InxParticleContactRecord {{
     float4 relative_velocity;
     float4 material;
     uint4 metadata;
+    uint4 lifetime;
 }};
 struct InxParticleContactHashSlot {{
     InxAtomicKey key;
@@ -2844,14 +2845,17 @@ struct InxParticleContactJoinState {{
     uint4 identity;
     uint4 context;
     uint4 state;
+    uint4 lifetime;
 }};
 struct InxContactJoinStorage {{
     InxAtomicKey identity;
     InxAtomicStatus context;
     InxAtomicUint4 state;
+    InxAtomicUint4 lifetime;
     [ForceInline][__ref] InxParticleContactJoinState load() {{
         InxParticleContactJoinState value;
         value.identity = identity.load(); value.context = context.load(); value.state = state.load();
+        value.lifetime = lifetime.load();
         return value;
     }}
 }};
@@ -2899,14 +2903,7 @@ uint inx_contact_hash(uint4 key) {{
     return value;
 }}
 
-uint inx_contact_generation(uint4 key, uint entered_step) {{
-    uint generation = inx_contact_hash(
-        key ^ uint4(entered_step, entered_step * 0x9e3779b9u,
-                    entered_step * 0x85ebca6bu, entered_step * 0xc2b2ae35u));
-    return generation == 0u ? 1u : generation;
-}}
-
-uint inx_find_contact_record(uint page, uint4 key) {{
+uint inx_find_contact_record(uint page, uint4 key, uint4 lifetime) {{
     uint hash_capacity = inx_contact_hash_capacity();
     uint hash_mask = hash_capacity - 1u;
     uint hash_slot = inx_contact_hash(key) & hash_mask;
@@ -2915,15 +2912,17 @@ uint inx_find_contact_record(uint page, uint4 key) {{
         uint4 candidate = contact_hash_slots[physical_hash_slot].key.load();
         if (candidate.x == INX_CONTACT_INVALID_INDEX)
             return INX_CONTACT_INVALID_INDEX;
-        if (all((candidate == key)))
-            return contact_hash_slots[physical_hash_slot].value.x;
+        if (all((candidate == key))) {{
+            uint record = contact_hash_slots[physical_hash_slot].value.x;
+            if (all(contact_records[record].lifetime == lifetime)) return record;
+        }}
         hash_slot = (hash_slot + 1u) & hash_mask;
     }}
     return INX_CONTACT_INVALID_INDEX;
 }}
 
 void inx_store_contact(uint particle_index, uint contact_order,
-                       uint2 collider_id,
+                       uint2 collider_id, uint4 collider_lifetime,
                        float3 world_point, float3 world_normal,
                        float3 world_relative_velocity, float world_penetration,
                        bool is_trigger, float4 material, float simulation_scale) {{
@@ -2983,6 +2982,7 @@ void inx_store_contact(uint particle_index, uint contact_order,
     contact_records[record_index].material = material;
     contact_records[record_index].metadata =
         uint4(is_trigger ? 1u : 0u, pc.simulation_step, contact_slot, 0u);
+    contact_records[record_index].lifetime = collider_lifetime;
 
     uint index_base = current_page * pc.capacity * INX_CONTACTS_PER_PARTICLE
         + particle_index * INX_CONTACTS_PER_PARTICLE;
@@ -3045,6 +3045,7 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
         contact_continuation_join_states[particle_index].identity.store(uint4(INX_CONTACT_JOIN_EMPTY));
         contact_continuation_join_states[particle_index].context.store(uint4(0u));
         contact_continuation_join_states[particle_index].state.store(uint4(0u));
+        contact_continuation_join_states[particle_index].lifetime.store(uint4(0u));
     }
 
     uint hash_capacity = inx_contact_hash_capacity();
@@ -3108,11 +3109,11 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
         uint record_index = contact_particle_record_indices[index_base + contact_slot].load();
         if (record_index == INX_CONTACT_INVALID_INDEX) continue;
         uint4 key = contact_records[record_index].identity;
-        uint previous_record = inx_find_contact_record(previous_page, key);
+        uint previous_record = inx_find_contact_record(previous_page, key, contact_records[record_index].lifetime);
         contact_records[record_index].metadata.w =
             previous_record != INX_CONTACT_INVALID_INDEX
                 ? contact_records[previous_record].metadata.w
-                : inx_contact_generation(key, pc.simulation_step);
+                : pc.simulation_step; // Exact entered-step episode within the uint32 step domain.
         uint hash_slot = inx_contact_hash(key) & hash_mask;
         for (uint probe = 0u; probe < hash_capacity; ++probe) {
             uint physical_hash_slot = current_page * hash_capacity + hash_slot;
@@ -3120,7 +3121,10 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
             if (owner == INX_CONTACT_INVALID_INDEX || owner == key.x) {
                 if (owner == INX_CONTACT_INVALID_INDEX)
                     contact_hash_slots[physical_hash_slot].key.store_tail(key.yzw);
-                if (all((contact_hash_slots[physical_hash_slot].key.load() == key))) {
+                if (all((contact_hash_slots[physical_hash_slot].key.load() == key))
+                    && (owner == INX_CONTACT_INVALID_INDEX
+                        || all(contact_records[contact_hash_slots[physical_hash_slot].value.x].lifetime
+                               == contact_records[record_index].lifetime))) {
                     contact_hash_slots[physical_hash_slot].value = uint4(
                         record_index,
                         pc.simulation_step,
@@ -3151,7 +3155,7 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
             uint record_index = contact_particle_record_indices[index_base + contact_slot].load();
             if (record_index == INX_CONTACT_INVALID_INDEX) continue;
             uint4 key = contact_records[record_index].identity;
-            bool existed = inx_find_contact_record(previous_page, key)
+            bool existed = inx_find_contact_record(previous_page, key, contact_records[record_index].lifetime)
                 != INX_CONTACT_INVALID_INDEX;
             if ((lifecycle == 0u && existed) || (lifecycle == 1u && !existed))
                 continue;
@@ -3163,7 +3167,7 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
         uint record_index = contact_particle_record_indices[previous_base + contact_slot].load();
         if (record_index == INX_CONTACT_INVALID_INDEX) continue;
         uint4 key = contact_records[record_index].identity;
-        if (inx_find_contact_record(current_page, key) != INX_CONTACT_INVALID_INDEX)
+        if (inx_find_contact_record(current_page, key, contact_records[record_index].lifetime) != INX_CONTACT_INVALID_INDEX)
             continue;
         ++work_count;
     }
@@ -3191,7 +3195,7 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
             uint record_index = contact_particle_record_indices[index_base + contact_slot].load();
             if (record_index == INX_CONTACT_INVALID_INDEX) continue;
             uint4 key = contact_records[record_index].identity;
-            bool existed = inx_find_contact_record(previous_page, key)
+            bool existed = inx_find_contact_record(previous_page, key, contact_records[record_index].lifetime)
                 != INX_CONTACT_INVALID_INDEX;
             if ((lifecycle == 0u && existed) || (lifecycle == 1u && !existed))
                 continue;
@@ -3208,7 +3212,7 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
         uint record_index = contact_particle_record_indices[previous_base + contact_slot].load();
         if (record_index == INX_CONTACT_INVALID_INDEX) continue;
         uint4 key = contact_records[record_index].identity;
-        if (inx_find_contact_record(current_page, key) != INX_CONTACT_INVALID_INDEX)
+        if (inx_find_contact_record(current_page, key, contact_records[record_index].lifetime) != INX_CONTACT_INVALID_INDEX)
             continue;
         uint work_index = work_base + local_work++;
         contact_work_items[work_index].identity = key;
@@ -3245,6 +3249,7 @@ def _contact_dispatch_main(
         inx_continuation_context_generation = contact.metadata.w;
         inx_continuation_context_identity_low = contact.identity.z;
         inx_continuation_context_identity_high = contact.identity.w;
+        inx_continuation_context_lifetime = contact.lifetime;
         inx_continuation_context_record_index = record_index;
 """
         if has_continuation
@@ -3284,7 +3289,7 @@ void main(uint3 dispatch_id : SV_DispatchThreadID, uint3 group_thread_id : SV_Gr
         if (record_index >= inx_contact_record_capacity() * 2u) continue;
         InxParticleContactRecord contact = contact_records[record_index];
         if (!all((contact.identity == work.identity))) continue;
-        if (contact.metadata.w == 0u || contact.metadata.w != work.dispatch.w)
+        if (contact.metadata.w != work.dispatch.w)
             continue;
 
         uint inx_contact_lifecycle = work.dispatch.x;
@@ -3338,7 +3343,7 @@ void inx_store_continuation_context(uint continuation_record_index) {
         return;
     InxParticleContactRecord source =
         contact_records[inx_continuation_context_record_index];
-    uint base = continuation_record_index * 24u;
+    uint base = continuation_record_index * 28u;
     contact_continuation_snapshot_words[base + 0u].store(source.identity.x);
     contact_continuation_snapshot_words[base + 1u].store(source.identity.y);
     contact_continuation_snapshot_words[base + 2u].store(source.identity.z);
@@ -3363,6 +3368,10 @@ void inx_store_continuation_context(uint continuation_record_index) {
     contact_continuation_snapshot_words[base + 21u].store(source.metadata.y);
     contact_continuation_snapshot_words[base + 22u].store(source.metadata.z);
     contact_continuation_snapshot_words[base + 23u].store(source.metadata.w);
+    contact_continuation_snapshot_words[base + 24u].store(source.lifetime.x);
+    contact_continuation_snapshot_words[base + 25u].store(source.lifetime.y);
+    contact_continuation_snapshot_words[base + 26u].store(source.lifetime.z);
+    contact_continuation_snapshot_words[base + 27u].store(source.lifetime.w);
 }
 """
         if contact_context
@@ -3391,7 +3400,8 @@ bool inx_contact_join_key_matches(
         contact_continuation_join_states[slot_index].load();
     return slot.context.w == 1u
         && all((slot.identity == identity))
-        && all((slot.context.xyz == context));
+        && all((slot.context.xyz == context))
+        && all(slot.lifetime == inx_continuation_context_lifetime);
 }
 
 bool inx_contact_join_slot_stale(uint slot_index) {
@@ -3441,6 +3451,7 @@ bool inx_contact_join_find(
                 contact_continuation_join_states[candidate].identity.store_tail(identity.yzw);
                 contact_continuation_join_states[candidate].context.store_head(context);
                 contact_continuation_join_states[candidate].state.store(uint4(0u));
+                contact_continuation_join_states[candidate].lifetime.store(inx_continuation_context_lifetime);
                 DeviceMemoryBarrier();
                 contact_continuation_join_states[candidate].context.w.exchange(1u);
                 slot_index = candidate;
@@ -3598,6 +3609,7 @@ static uint inx_continuation_context_lifecycle = 0u;
 static uint inx_continuation_context_generation = 0u;
 static uint inx_continuation_context_identity_low = 0u;
 static uint inx_continuation_context_identity_high = 0u;
+static uint4 inx_continuation_context_lifetime = uint4(0u);
 static uint inx_continuation_context_record_index = INX_CONTINUATION_INVALID_INDEX;
 static uint inx_last_continuation_record_index = INX_CONTINUATION_INVALID_INDEX;
 
@@ -4256,7 +4268,7 @@ def _continuation_dispatch_slang(
         """
     if (continuation_record_words[record_base + 10u].load()
         == INX_CONTINUATION_CONTEXT_CONTACT) {
-        uint snapshot_base = inx_continuation_record_index * 24u;
+        uint snapshot_base = inx_continuation_record_index * 28u;
         if (contact_continuation_snapshot_words[snapshot_base + 0u].load()
                 != particle_index
             || contact_continuation_snapshot_words[snapshot_base + 1u].load()
@@ -4277,11 +4289,16 @@ def _continuation_dispatch_slang(
     contact_restore = (
         f"""
     if (inx_continuation_context_kind == INX_CONTINUATION_CONTEXT_CONTACT) {{
-        uint snapshot_base = inx_continuation_record_index * 24u;
+        uint snapshot_base = inx_continuation_record_index * 28u;
         inx_continuation_context_identity_low =
             contact_continuation_snapshot_words[snapshot_base + 2u].load();
         inx_continuation_context_identity_high =
             contact_continuation_snapshot_words[snapshot_base + 3u].load();
+        inx_continuation_context_lifetime = uint4(
+            contact_continuation_snapshot_words[snapshot_base + 24u].load(),
+            contact_continuation_snapshot_words[snapshot_base + 25u].load(),
+            contact_continuation_snapshot_words[snapshot_base + 26u].load(),
+            contact_continuation_snapshot_words[snapshot_base + 27u].load());
         state.{contact_field('builtin.collision_hit')} =
             inx_contact_lifecycle == 2u ? 0u : 1u;
         state.{contact_field('builtin.collision_point')} = float3(
@@ -4619,7 +4636,7 @@ def _shader_prelude(
     contact_slang = _contact_bindings_slang(7) if contact_enabled else ""
     contact_store_call = (
         """inx_store_contact(
-            particle_index, contact_hit_order, collider_id,
+            particle_index, contact_hit_order, collider_id, collider.lifetime,
             corrected_world_position,
             world_normal, relative_velocity, penetration, is_trigger,
             collider.material, simulation_scale);
@@ -4740,6 +4757,7 @@ struct InxParticleCollider {{
     float4 previous_world_aabb_max;
     uint4 metadata;
     uint4 identity;
+    uint4 lifetime;
 }};
 struct InxParticleCollisionBvhNode {{
     float4 bounds_min;
@@ -4759,7 +4777,7 @@ struct ParticleCollisionSceneHeader {{
 [[vk::binding(1, 6)]] StructuredBuffer<InxParticleCollider> particle_colliders;
 [[vk::binding(2, 6)]] StructuredBuffer<uint> particle_collision_grid_offsets;
 [[vk::binding(3, 6)]] StructuredBuffer<uint> particle_collision_grid_collider_indices;
-[[vk::binding(4, 6)]] StructuredBuffer<float4> particle_collision_mesh_vertices;
+[[vk::binding(4, 6)]] StructuredBuffer<uint4> particle_collision_mesh_vertices;
 [[vk::binding(5, 6)]] StructuredBuffer<uint> particle_collision_mesh_indices;
 [[vk::binding(6, 6)]] StructuredBuffer<InxParticleCollisionBvhNode> particle_collision_mesh_bvh;
 struct ParticleSimulationControl {{ 
@@ -5362,9 +5380,9 @@ bool inx_collision_mesh(InxParticleCollider collider, float3 previous_world_posi
             float3 outward = float3(0.0);
             for (uint triangle = 0u; triangle < collider.geometry.w; ++triangle) {{
                 uint first = collider.geometry.y + triangle * 3u;
-                float3 a = particle_collision_mesh_vertices[particle_collision_mesh_indices[first]].xyz;
-                float3 b = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 1u]].xyz;
-                float3 c = particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 2u]].xyz;
+                float3 a = asfloat(particle_collision_mesh_vertices[particle_collision_mesh_indices[first]]).xyz;
+                float3 b = asfloat(particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 1u]]).xyz;
+                float3 c = asfloat(particle_collision_mesh_vertices[particle_collision_mesh_indices[first + 2u]]).xyz;
                 float3 normal = inx_safe_normalize(cross(b - a, c - a));
                 float distance = dot(local_position - a, normal);
                 if (dot(local_previous - a, normal) > 0.0) {{ start_inside = false; break; }}
@@ -5409,9 +5427,9 @@ bool inx_collision_mesh(InxParticleCollider collider, float3 previous_world_posi
             uint ic = particle_collision_mesh_indices[first_index + 2u];
             if (ia >= inx_collision_scene[0].topology.x || ib >= inx_collision_scene[0].topology.x ||
                 ic >= inx_collision_scene[0].topology.x) continue;
-            float3 a = particle_collision_mesh_vertices[ia].xyz;
-            float3 b = particle_collision_mesh_vertices[ib].xyz;
-            float3 c = particle_collision_mesh_vertices[ic].xyz;
+            float3 a = asfloat(particle_collision_mesh_vertices[ia]).xyz;
+            float3 b = asfloat(particle_collision_mesh_vertices[ib]).xyz;
+            float3 c = asfloat(particle_collision_mesh_vertices[ic]).xyz;
             float candidate_time = 0.0;
             float3 candidate_normal = float3(0.0);
             if (inx_sweep_triangle(local_previous, local_position, local_radius, a, b, c,
@@ -5447,6 +5465,171 @@ bool inx_collision_mesh(InxParticleCollider collider, float3 previous_world_posi
     corrected_world_position = inx_particle_affine_point(collider.collider_to_world, local_position);
     world_normal = inx_collision_world_normal(collider, local_normal);
     return true;
+}}
+
+// The publication binds its immutable GeometryLease at the existing cold
+// vertex port. Hull geometry is a true record reference, not a copied atlas.
+uint inx_hull_index(uint base,uint loops,uint element)
+{{
+    return particle_collision_mesh_vertices[base+loops+element/4u][element%4u];
+}}
+float3 inx_hull_vertex(uint base,uint vertices,uint loops,uint element)
+{{
+    return asfloat(particle_collision_mesh_vertices[base+vertices+inx_hull_index(base,loops,element)]).xyz;
+}}
+bool inx_collision_convex(InxParticleCollider collider,float3 previousWorld,float3 world,float worldRadius,
+                          out float3 correctedWorld,out float3 worldNormal)
+{{
+    correctedWorld=float3(0); worldNormal=float3(0);
+    uint base=collider.geometry.x;
+    uint4 header=particle_collision_mesh_vertices[base],layout=particle_collision_mesh_vertices[base+1u];
+    uint loops=particle_collision_mesh_vertices[base+2u].x;
+    float3 p=inx_particle_affine_point(collider.world_to_collider,world);
+    float3 previous=inx_particle_affine_point(collider.previous_world_to_collider,previousWorld);
+    float particleRadius=inx_collision_local_radius(collider.world_to_collider,worldRadius);
+    bool startInside=true,endInside=true;float nearest=-3.402823466e38;
+    float3 nearestNormal=float3(0);
+    for(uint face=0;face<header.w;++face) {{
+        float4 plane=asfloat(particle_collision_mesh_vertices[base+layout.z+face]);
+        float inverseLength=rsqrt(dot(plane.xyz,plane.xyz));
+        float from=(dot(plane.xyz,previous)+plane.w)*inverseLength;
+        float distance=(dot(plane.xyz,p)+plane.w)*inverseLength;
+        startInside=startInside && from<=0;endInside=endInside && distance<=0;
+        if(distance>nearest) {{ nearest=distance;nearestNormal=plane.xyz*inverseLength; }}
+    }}
+    if(startInside) {{
+        if(!endInside) return false; // Same solid-convex escape policy as Mesh.
+        p+=(particleRadius-nearest)*nearestNormal;
+        correctedWorld=inx_particle_affine_point(collider.collider_to_world,p);
+        worldNormal=inx_collision_world_normal(collider,nearestNormal);return true;
+    }}
+    bool foundSweep=false,foundOverlap=false;float earliest=2.0;
+    float3 earliestNormal=float3(0),closestNormal=float3(0),closestSurface=float3(0);
+    float closestDistanceSquared=particleRadius*particleRadius;
+    // Full native face loops, no supporting-face decimation or triangle cap.
+    // Native convex topology is immutable CPU cook; every distance/sweep below
+    // is the existing actual GPU triangle operation in this particle dispatch.
+    for(uint face=0;face<header.w;++face) {{
+        uint4 directory=particle_collision_mesh_vertices[base+layout.w+face];
+        float3 a=inx_hull_vertex(base,layout.x,loops,directory.x);
+        for(uint corner=1u;corner+1u<directory.y;++corner) {{
+            float3 b=inx_hull_vertex(base,layout.x,loops,directory.x+corner);
+            float3 c=inx_hull_vertex(base,layout.x,loops,directory.x+corner+1u);
+            if(all(cross(b-a,c-a)==float3(0))) continue; // Zero-area fan pieces add no surface.
+            float time;float3 normal;
+            if(inx_sweep_triangle(previous,p,particleRadius,a,b,c,time,normal) && time<earliest) {{
+                earliest=time;earliestNormal=normal;foundSweep=true;
+            }}
+            float3 surface=inx_closest_point_triangle(p,a,b,c),delta=p-surface;
+            float distanceSquared=dot(delta,delta);
+            if(distanceSquared<closestDistanceSquared) {{
+                closestDistanceSquared=distanceSquared;closestSurface=surface;
+                closestNormal=distanceSquared>0?delta/sqrt(distanceSquared):inx_safe_normalize(cross(b-a,c-a));foundOverlap=true;
+            }}
+        }}
+    }}
+    float3 normal;
+    if(foundSweep) {{ p=lerp(previous,p,earliest);normal=earliestNormal; }}
+    else if(foundOverlap) {{ p=closestSurface+particleRadius*closestNormal;normal=closestNormal; }}
+    else return false;
+    correctedWorld=inx_particle_affine_point(collider.collider_to_world,p);
+    worldNormal=inx_collision_world_normal(collider,normal);return true;
+}}
+
+// Exact signed distance to disk(R) x interval[-H,H]. The convex radius is
+// internal to rigid-body support; the native full cylinder is sharp R/H.
+float inx_cylinder_distance(float3 point,float radius,float height,out float3 normal)
+{{
+    float radialScale=max(abs(point.x),abs(point.z));
+    float radial=radialScale>0?radialScale*length(point.xz/radialScale):0.0;
+    float2 q=float2(radial-radius,abs(point.y)-height),outside=max(q,float2(0));
+    float maximum=max(outside.x,outside.y);
+    float outerLength=maximum>0?maximum*length(outside/maximum):0.0;
+    float2 gradient=outerLength>0?outside/outerLength:(q.x>q.y?float2(1,0):float2(0,1));
+    // The exact axis has a nonunique side normal; +X is its coordinate cut.
+    float2 radialNormal=radial>0?point.xz/radial:float2(1,0);
+    normal=float3(gradient.x*radialNormal.x,gradient.y*(point.y>0?1.0:-1.0),gradient.x*radialNormal.y);
+    return outerLength+min(max(q.x,q.y),0.0);
+}}
+
+// No fixed time stepping: signed distance of a convex solid restricted to a
+// line is convex. Subgradients bracket its minimum; then values bracket entry.
+// Every finite binary32 interval in [0,1] becomes adjacent in at most150
+// midpoint refinements, including subnormals. The160 bound therefore covers
+// representable convergence; it is not an iteration-exhaustion miss rule.
+bool inx_sweep_cylinder(float3 start,float3 end,float radius,float height,float particleRadius,
+                        float tolerance,out float hitTime,out float3 hitNormal)
+{{
+    hitTime=0; hitNormal=float3(0);
+    float3 unused; float initial=inx_cylinder_distance(start,radius,height,unused)-particleRadius;
+    if(initial<=0) return false; // Existing initial-inside penetration policy.
+    float3 displacement=end-start;
+    if(all(displacement==float3(0))) return false;
+    float3 halfExtent=float3(radius+particleRadius,height+particleRadius,radius+particleRadius);
+    float lo=0,hi=1;
+    for(uint axis=0;axis<3u;++axis) {{
+        if(displacement[axis]==0) {{ if(abs(start[axis])>halfExtent[axis]) return false; }}
+        else {{
+            float a=(-halfExtent[axis]-start[axis])/displacement[axis],b=(halfExtent[axis]-start[axis])/displacement[axis];
+            lo=max(lo,min(a,b)); hi=min(hi,max(a,b));
+        }}
+    }}
+    if(lo>hi) return false;
+    float3 nLo,nHi;
+    float fLo=inx_cylinder_distance(start+lo*displacement,radius,height,nLo)-particleRadius;
+    float fHi=inx_cylinder_distance(start+hi*displacement,radius,height,nHi)-particleRadius;
+    float minLo=lo,minHi=hi;
+    float gLo=dot(nLo,displacement),gHi=dot(nHi,displacement);
+    if(gLo>=0 && fLo>0) return false; // Convex lower support proves no later entry.
+    if(fLo<=tolerance) {{ hitTime=lo; hitNormal=nLo; return true; }}
+    if(gHi>0) {{
+        for(uint refine=0;refine<160u;++refine) {{
+            float middle=minLo+(minHi-minLo)*.5;
+            if(middle==minLo || middle==minHi) break;
+            float3 n; inx_cylinder_distance(start+middle*displacement,radius,height,n);
+            if(dot(n,displacement)<0) minLo=middle; else minHi=middle;
+        }}
+    }} else minLo=minHi;
+    float3 nA,nB;
+    float fA=inx_cylinder_distance(start+minLo*displacement,radius,height,nA)-particleRadius;
+    float fB=inx_cylinder_distance(start+minHi*displacement,radius,height,nB)-particleRadius;
+    float minimum=fA<fB?minLo:minHi,minimumValue=min(fA,fB);
+    float3 minimumNormal=fA<fB?nA:nB;
+    if(minimumValue>tolerance) return false;
+    // A nonpenetrating tangent/near-tangent has a measured true surface
+    // residual <=the explicit world quality budget, not an arbitrary cap hit.
+    if(minimumValue>0) {{ hitTime=minimum; hitNormal=minimumNormal; return true; }}
+    hi=minimum;
+    for(uint refine=0;refine<160u;++refine) {{
+        float middle=lo+(hi-lo)*.5;
+        if(middle==lo || middle==hi) break;
+        float3 n; float value=inx_cylinder_distance(start+middle*displacement,radius,height,n)-particleRadius;
+        if(value>0) lo=middle; else hi=middle;
+    }}
+    hitTime=hi; inx_cylinder_distance(start+hi*displacement,radius,height,hitNormal); return true;
+}}
+
+bool inx_collision_cylinder(InxParticleCollider collider,float3 previousWorld,float3 world,float worldRadius,
+                            out float3 correctedWorld,out float3 worldNormal)
+{{
+    correctedWorld=float3(0); worldNormal=float3(0);
+    float3 p=inx_particle_affine_point(collider.world_to_collider,world);
+    float3 previous=inx_particle_affine_point(collider.previous_world_to_collider,previousWorld);
+    float radius=collider.shape.x,height=collider.shape.y;
+    float particleRadius=inx_collision_local_radius(collider.world_to_collider,worldRadius);
+    float3 localNormal,priorNormal;
+    float signedDistance=inx_cylinder_distance(p,radius,height,localNormal)-particleRadius;
+    float priorDistance=inx_cylinder_distance(previous,radius,height,priorNormal)-particleRadius;
+    float hitTime;
+    float tolerance=inx_collision_local_radius(collider.world_to_collider,1e-4);
+    if(priorDistance>0 && inx_sweep_cylinder(previous,p,radius,height,particleRadius,tolerance,hitTime,priorNormal)) {{
+        p=previous+hitTime*(p-previous); localNormal=priorNormal;
+        float residual=inx_cylinder_distance(p,radius,height,priorNormal)-particleRadius;
+        p-=residual*localNormal;
+    }} else if(signedDistance<=0) p-=signedDistance*localNormal;
+    else return false;
+    correctedWorld=inx_particle_affine_point(collider.collider_to_world,p);
+    worldNormal=inx_collision_world_normal(collider,localNormal); return true;
 }}
 
 float inx_rounded_box_distance(float3 point, float3 core, float radius) {{
@@ -5686,6 +5869,7 @@ bool inx_collide_scene(uint particle_index, inout float3 simulation_position, in
     bool primary_is_trigger = false;
     float4 primary_material = float4(0.0);
     uint2 primary_collider_id = uint2(0u);
+    uint2 primary_collider_lifetime = uint2(0u);
     float simulation_scale = max(length(transpose(transforms.simulation_to_world)[0].xyz),
                                  max(length(transpose(transforms.simulation_to_world)[1].xyz),
                                      length(transpose(transforms.simulation_to_world)[2].xyz)));
@@ -5738,9 +5922,13 @@ bool inx_collide_scene(uint particle_index, inout float3 simulation_position, in
                             break;
                         }}
                         uint2 existing_id = particle_colliders[existing_index].identity.xy;
+                        uint2 existing_lifetime = particle_colliders[existing_index].lifetime.xy;
                         bool lower_identity = collider.identity.y < existing_id.y ||
                             (collider.identity.y == existing_id.y &&
-                             collider.identity.x < existing_id.x);
+                             collider.identity.x < existing_id.x) ||
+                            (all(collider.identity.xy == existing_id) &&
+                             (collider.lifetime.y < existing_lifetime.y ||
+                              (collider.lifetime.y == existing_lifetime.y && collider.lifetime.x < existing_lifetime.x)));
                         if (insertion == candidate_count && lower_identity)
                             insertion = slot;
                     }}
@@ -5789,6 +5977,14 @@ bool inx_collide_scene(uint particle_index, inout float3 simulation_position, in
                                    ? inx_collision_mesh(collider, previous_world_position,
                                                         world_position, world_radius,
                                                         corrected_world_position, world_normal)
+                               : collider.metadata.x == 5u
+                                   ? inx_collision_cylinder(collider, previous_world_position,
+                                                            world_position, world_radius,
+                                                            corrected_world_position, world_normal)
+                               : collider.metadata.x == 6u
+                                   ? inx_collision_convex(collider, previous_world_position,
+                                                          world_position, world_radius,
+                                                          corrected_world_position, world_normal)
                                    : false;
         if (!hit) continue;
 
@@ -5809,7 +6005,10 @@ bool inx_collide_scene(uint particle_index, inout float3 simulation_position, in
         uint2 collider_id = collider.identity.xy;
         bool lower_identity = collider_id.y < primary_collider_id.y ||
             (collider_id.y == primary_collider_id.y &&
-             collider_id.x < primary_collider_id.x);
+             collider_id.x < primary_collider_id.x) ||
+            (all(collider_id == primary_collider_id) &&
+             (collider.lifetime.y < primary_collider_lifetime.y ||
+              (collider.lifetime.y == primary_collider_lifetime.y && collider.lifetime.x < primary_collider_lifetime.x)));
         if (!primary_contact_set || lower_identity) {{
             primary_contact_set = true;
             primary_world_normal = world_normal;
@@ -5819,6 +6018,7 @@ bool inx_collide_scene(uint particle_index, inout float3 simulation_position, in
             primary_is_trigger = is_trigger;
             primary_material = collider.material;
             primary_collider_id = collider_id;
+            primary_collider_lifetime = collider.lifetime.xy;
         }}
         {contact_store_call}
         if (is_trigger) continue;

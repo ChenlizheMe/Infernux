@@ -5,7 +5,6 @@
 
 // Jolt/Jolt.h MUST be the very first Jolt include in this TU
 #include <Jolt/Jolt.h>
-#include <Jolt/Geometry/ConvexHullBuilder.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
@@ -324,44 +323,18 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
         return cooked;
     };
     if (convex) {
-        constexpr int kMaxConvexVerts = 100;
         JPH::Array<JPH::Vec3> allPoints;
         allPoints.reserve(static_cast<int>(vertices.size()));
         for (const auto &vertex : vertices)
             allPoints.emplace_back(vertex.x, vertex.y, vertex.z);
 
-        JPH::ConvexHullBuilder builder(allPoints);
-        const char *buildError = nullptr;
-        const auto buildResult = builder.Initialize(kMaxConvexVerts, 1.0e-3f, buildError);
-        JPH::Array<JPH::Vec3> hullPoints;
-
-        if (buildResult == JPH::ConvexHullBuilder::EResult::Success ||
-            buildResult == JPH::ConvexHullBuilder::EResult::MaxVerticesReached) {
-            std::vector<bool> used(allPoints.size(), false);
-            for (const auto *face : builder.GetFaces()) {
-                const auto *edge = face->mFirstEdge;
-                do {
-                    used[static_cast<size_t>(edge->mStartIdx)] = true;
-                    edge = edge->mNextEdge;
-                } while (edge != face->mFirstEdge);
-            }
-            for (size_t index = 0; index < allPoints.size(); ++index) {
-                if (!used[index])
-                    continue;
-                hullPoints.push_back(allPoints[index]);
-            }
-        }
-
-        if (hullPoints.empty())
-            hullPoints = std::move(allPoints);
-        JPH::ConvexHullShapeSettings settings(hullPoints);
+        JPH::ConvexHullShapeSettings settings(allPoints);
         // Keep the rounded support and the actual hull within narrow-phase accuracy.
         settings.mMaxErrorConvexRadius = JPH::cDefaultCollisionTolerance;
         const auto result = settings.Create();
         if (result.HasError())
             return finish(result, "convex mesh cooking failed");
-        // Queries and gizmos describe the final cooked hull, including Jolt's
-        // second hull construction, rather than the simplification prototype.
+        // Queries and gizmos describe the same final native hull used by physics.
         const auto *hull = static_cast<const JPH::ConvexHullShape *>(result.Get().GetPtr());
         const glm::vec3 inverseScale(worldScale.x != 0.0f ? 1.0f / worldScale.x : 1.0f,
                                      worldScale.y != 0.0f ? 1.0f / worldScale.y : 1.0f,
@@ -665,12 +638,17 @@ JPH::RefConst<JPH::Shape> MeshCollider::CreateJoltShape() const
     return shape;
 }
 
-void MeshCollider::PublishCookedGeometry()
+std::shared_ptr<const CookedGeometry> MeshCollider::CaptureCookedGeometry() const
 {
-    const auto &geometry = m_cookingResult->geometry;
+    // Only contributing members of a completed actor candidate are captured.
+    return m_cookingResult->geometry;
+}
+
+void MeshCollider::PublishCookedGeometry(std::shared_ptr<const CookedGeometry> geometry) noexcept
+{
     if (m_publishedGeometry == geometry)
         return;
-    m_publishedGeometry = geometry;
+    m_publishedGeometry = std::move(geometry);
     ++m_collisionGeometryRevision;
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 }

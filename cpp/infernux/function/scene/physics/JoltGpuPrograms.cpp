@@ -1,4 +1,5 @@
 #include "JoltGpuPrograms.h"
+#include "JoltGpuGeometryStore.h"
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +22,7 @@ struct Port
     Resource resource;
     std::string_view name;
     uint64_t stride;
-    std::array<std::string_view, 7> fields;
+    std::array<std::string_view, 8> fields;
     uint32_t integerFields;
 };
 
@@ -39,8 +40,8 @@ constexpr Port Ports[] = {
     {Resource::ShapeModels,
      "shape_models",
      sizeof(ShapeModel),
-     {"meta", "geometry", "localPositionCOM", "localRotation", "material", "surface", "source"},
-     (1u << 0) | (1u << 5) | (1u << 6)},
+     {"meta", "geometry", "localPositionCOM", "localRotation", "material", "surface", "source", "geometryReference"},
+     (1u << 0) | (1u << 5) | (1u << 6) | (1u << 7)},
     {Resource::Worlds, "worlds", sizeof(WorldRange), {"bodies", "leaves"}, 3},
     {Resource::BodyForces, "body_forces", sizeof(BodyForces), {"force", "torque"}, 0},
     {Resource::BodyStates,
@@ -63,6 +64,7 @@ constexpr Port Ports[] = {
     {Resource::Joints, "joint_stream", sizeof(QueryRecordWord), {"value"}, 1},
     {Resource::StageWork, "stage_work", sizeof(StageWork), {"range"}, 1},
     {Resource::ConstraintSchedule, "constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1},
+    {Resource::ConvexGeometry, "convex_geometry", sizeof(UInt4), {}, 1},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
@@ -99,6 +101,8 @@ constexpr size_t PortIndex(Resource resource)
         return 11;
     case Resource::ConstraintSchedule:
         return 12;
+    case Resource::ConvexGeometry:
+        return 13;
     }
     return PortCount;
 }
@@ -162,7 +166,8 @@ constexpr bool IndexedDefinitions()
     return true;
 }
 
-static_assert(PortCount == StoragePortCount + 2, "Jolt GPU has eleven persistent ports, work uniform and schedule");
+static_assert(PortCount == StoragePortCount + 3,
+              "Jolt GPU has eleven mutable ports, work/schedule and shared cold geometry");
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -201,7 +206,8 @@ const Record &ModelRecord(const std::vector<Record> &records, const std::vector<
 
 ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBodyModelUpdate> &bodyChanges = {},
                           const std::vector<JoltGpuShapeModelUpdate> &shapeChanges = {},
-                          const std::vector<JoltGpuJointModelUpdate> &jointChanges = {})
+                          const std::vector<JoltGpuJointModelUpdate> &jointChanges = {},
+                          const JoltGpuGeometryStore *geometryStore = nullptr)
 {
     constexpr auto limit = std::numeric_limits<uint32_t>::max();
     if (model.bodies.size() > limit || model.worlds.size() > limit || model.shapes.size() > limit ||
@@ -244,6 +250,12 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                     shape.material.y < 0 || shape.material.y > 1 || shape.material.z != 0 || shape.material.w != 0)
                     throw std::invalid_argument("Jolt GPU leaf pose or material is invalid");
                 const auto geometry = shape.geometry;
+                const auto reference = shape.geometryReference;
+                const auto cold =
+                    shape.meta.x == ShapeConvexHull && geometryStore ? geometryStore->Find(reference) : nullptr;
+                if (reference.z || reference.w || (shape.meta.x != ShapeConvexHull && (reference.x || reference.y)) ||
+                    (shape.meta.x == ShapeConvexHull && !cold))
+                    throw std::invalid_argument("Jolt GPU leaf has no exact registered immutable geometry range");
                 switch (shape.meta.x) {
                 case ShapeSphere:
                     if (!std::isfinite(geometry.w) || geometry.w <= 0)
@@ -258,6 +270,16 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                     if (!Finite4(geometry) || geometry.x != 0 || geometry.z != 0 || geometry.y <= 0 || geometry.w <= 0)
                         throw std::invalid_argument("Jolt GPU capsule half cylinder and radius must be positive and "
                                                     "finite with zero unused dimensions");
+                    break;
+                case ShapeCylinder:
+                    if (!Finite4(geometry) || geometry.x <= 0 || geometry.y <= 0 || geometry.z < 0 || geometry.w ||
+                        geometry.z > std::min(geometry.x, geometry.y))
+                        throw std::invalid_argument("Jolt GPU cylinder final dimensions/convex radius are invalid");
+                    break;
+                case ShapeConvexHull:
+                    if (!Finite4(geometry) || geometry.x < 0 || geometry.y || geometry.z || geometry.w ||
+                        geometry.x != cold->record->convexRadius)
+                        throw std::invalid_argument("Jolt GPU hull convex radius or padding is invalid");
                     break;
                 default:
                     throw std::invalid_argument("Jolt GPU leaf has an unsupported primitive type");
@@ -403,6 +425,14 @@ void ValidateLayout(const Port &port, const ShaderResourceLayout &resource)
 {
     const bool uniform = port.resource == Resource::StepParams || port.resource == Resource::StageWork;
     const auto &value = resource.value;
+    if (port.resource == Resource::ConvexGeometry) {
+        if (resource.binding.type != rhi::BindingType::StorageBuffer || !resource.binding.readOnlyStorage ||
+            resource.elementStride != sizeof(UInt4) || value.kind != ShaderValueKind::Vector ||
+            value.scalar != ShaderScalarKind::UInt32 || value.rows != 1 || value.columns != 4 ||
+            value.byteSize != sizeof(UInt4) || !value.fields.empty())
+            throw std::invalid_argument("Convex geometry requires its typed read-only UInt4 word binding");
+        return;
+    }
     if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
         (uniform ? value.byteSize : resource.elementStride) != port.stride || value.kind != ShaderValueKind::Struct ||
         value.fields.size() != port.stride / 16)
@@ -591,8 +621,20 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
     }
 }
 
+void JoltGpuStorage::SetGeometryStore(std::shared_ptr<JoltGpuGeometryStore> store)
+{
+    if (!store || m_geometryStore)
+        throw std::logic_error("Jolt GPU geometry store must be installed exactly once");
+    m_geometryStore = std::move(store);
+}
+
 const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStorage::Get(Resource resource) const
 {
+    if (resource == Resource::ConvexGeometry) {
+        if (!m_geometry || !m_geometry->buffer)
+            throw std::logic_error("No accepted convex geometry input");
+        return m_geometry->buffer;
+    }
     const auto slot = PortIndex(resource);
     if (slot >= StoragePortCount)
         throw std::invalid_argument("Jolt GPU storage requires a persistent resource, not a per-work uniform");
@@ -706,7 +748,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PrepareModelUpdate(
             throw std::invalid_argument("Jolt GPU joint endpoint or identity changes require topology replacement");
     }
     if (!bodyChanges.empty() || !shapeChanges.empty() || !jointChanges.empty())
-        (void)ValidateModel(m_model, bodyChanges, shapeChanges, jointChanges);
+        (void)ValidateModel(m_model, bodyChanges, shapeChanges, jointChanges, m_geometryStore.get());
     // Existing runtime state, force and target ports are retained unless an
     // explicit caller mutation updates them in this same RHI packet.
     AppendModelUpload(additionalUpdates, bodyBuffer, bodyChanges, m_model.bodies, &JoltGpuBodyModelUpdate::model);
@@ -741,7 +783,7 @@ JoltGpuStorage::PrepareModelReplacement(JoltGpuModel replacement,
             replacement.worlds[index].leaves.z = m_model.worlds[index].leaves.z;
             replacement.worlds[index].leaves.w = m_model.worlds[index].leaves.w;
         }
-    const auto counts = ValidateModel(replacement);
+    const auto counts = ValidateModel(replacement, {}, {}, {}, m_geometryStore.get());
     if (counts.bodies != m_bodyCount || counts.worlds != m_worldCount)
         throw std::invalid_argument("Jolt GPU replacement must retain body capacity and world count");
     if (!m_bodyCount)
@@ -787,7 +829,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PreparePackedReplacement(Jol
 {
     if (m_modelUpdatePending)
         throw std::logic_error("GPU packed layout already has an unaccepted transaction");
-    const auto counts = ValidateModel(replacement);
+    const auto counts = ValidateModel(replacement, {}, {}, {}, m_geometryStore.get());
     if (bodies.count != counts.bodies)
         throw std::invalid_argument("GPU packed layout numerical body count differs from model");
     auto buffers = m_buffers;
@@ -854,7 +896,7 @@ JoltGpuStorage::PrepareJointReplacement(std::vector<JointAuthor> joints, std::sh
     for (const auto &world : replacement.worlds)
         capacities.push_back(world.bodies.y);
     JoltGpuBuildWorldRanges(replacement, capacities);
-    const auto counts = ValidateModel(replacement);
+    const auto counts = ValidateModel(replacement, {}, {}, {}, m_geometryStore.get());
     const JoltGpuJointLayout jointLayout(replacement.joints);
     const auto expectedPrefix = jointLayout.PrefixBytes(replacement.joints);
     const uint64_t authorEnd = jointLayout.AuthorEndBytes();
@@ -1009,6 +1051,13 @@ void JoltGpuModelUpdate::Cancel() noexcept
 
 void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource)
 {
+    if (resource == Resource::ConvexGeometry) {
+        m_geometry = storage.GetGeometry();
+        m_hasGenericGeometry = storage.HasGenericGeometry();
+        if (!m_geometry || !m_geometry->buffer)
+            throw std::logic_error("Convex geometry was not accepted before tick input capture");
+        return;
+    }
     const auto slot = InputIndex(resource);
     if (slot >= m_buffers.size())
         throw std::invalid_argument("Jolt GPU tick inputs accept only parameters, models, worlds and forces");
@@ -1020,6 +1069,11 @@ void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource
 
 const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStepInputs::GetCaptured(Resource resource) const
 {
+    if (resource == Resource::ConvexGeometry) {
+        if (!m_geometry)
+            throw std::logic_error("No captured convex geometry lease");
+        return m_geometry->buffer;
+    }
     const auto slot = InputIndex(resource);
     if (slot >= m_buffers.size())
         throw std::invalid_argument("Jolt GPU captured inputs accept only parameters, models, worlds and forces");
@@ -1143,7 +1197,8 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
         const auto input = InputIndex(resource);
         const auto &contacts = inputs.GetContacts();
         const auto &constraints = inputs.GetConstraints();
-        const auto &buffer = resource == Resource::StageWork ? workUniform
+        const auto &buffer = resource == Resource::ConvexGeometry ? inputs.GetCaptured(resource)
+                             : resource == Resource::StageWork    ? workUniform
                              : resource == Resource::ConstraintSchedule
                                  ? (constraints ? constraints->schedule : nullptr)
                              : contacts && resource == Resource::StepParams     ? contacts->parameters
@@ -1157,8 +1212,14 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
                                         std::string(Ports[binding.slot].name));
         dispatch.buffers.push_back(buffer);
         dispatch.bufferAccesses.push_back(binding.access);
-        if (binding.read)
-            proof.reads.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
+        if (binding.read) {
+            if (resource == Resource::ConvexGeometry) {
+                for (const auto &[first, end] : inputs.m_geometry->wordRanges)
+                    proof.reads.push_back(
+                        {static_cast<uint32_t>(index), first * sizeof(UInt4), (end - first) * sizeof(UInt4)});
+            } else
+                proof.reads.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
+        }
         if (binding.completeWrite) {
             const auto complete = [&](uint64_t first, uint64_t count, uint64_t stride) {
                 const uint64_t offset = first * stride, bytes = count * stride;

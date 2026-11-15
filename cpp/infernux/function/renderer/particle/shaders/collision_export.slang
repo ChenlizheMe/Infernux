@@ -9,6 +9,8 @@ struct ParticleExportRow
 {
     uint4 selection;
     uint4 identity;
+    float4 localBoundsMin;
+    float4 localBoundsMax;
 };
 ConstantBuffer<ParticleExportParameters> particle_export_params;
 StructuredBuffer<ParticleExportRow> particle_export_rows;
@@ -33,9 +35,12 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
         return;
     ParticleExportRow mapping = particle_export_rows[row];
     uint source = mapping.selection.x * 9u;
-    uint destination = row * 21u;
+    uint destination = row * 22u;
     uint4 meta = query_hits[source].value;
     uint4 surface = query_hits[source + 1u].value;
+    ShapeModel leaf = shape_models[meta.z];
+    if (any(leaf.source.xy != mapping.identity.xy) || any(leaf.source.zw != mapping.selection.zw) || leaf.meta.x != surface.y)
+        particle_export_failure();
     float4 geometry = asfloat(query_hits[source + 2u].value);
     float3 center = asfloat(query_hits[source + 3u].value).xyz;
     float4 q = asfloat(query_hits[source + 4u].value);
@@ -67,15 +72,30 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
         shape = float4(geometry.w, 2.0f * (geometry.y + geometry.w), 1.0f, 0.0f);
         type = 2u;
     }
+    else if (surface.y == ShapeCylinder)
+    {
+        extent = abs(y) * geometry.y + geometry.x * sqrt(max(float3(0), 1.0f - y * y));
+        shape = geometry;
+        type = 5u;
+    }
+    else if (surface.y == ShapeConvexHull)
+    {
+        float3 halfExtent = 0.5f * (mapping.localBoundsMax.xyz - mapping.localBoundsMin.xyz);
+        extent = abs(x) * halfExtent.x + abs(y) * halfExtent.y + abs(z) * halfExtent.z;
+        type = 6u;
+    }
     else
         particle_export_failure();
-    float4 low = float4(center - extent, 0.0f);
-    float4 high = float4(center + extent, 0.0f);
+    float3 boundsCenter = center;
+    if (surface.y == ShapeConvexHull)
+        boundsCenter += jph_rotate(q, 0.5f * (mapping.localBoundsMin.xyz + mapping.localBoundsMax.xyz));
+    float4 low = float4(boundsCenter - extent, 0.0f);
+    float4 high = float4(boundsCenter + extent, 0.0f);
     float4 previous0 = inverse0, previous1 = inverse1, previous2 = inverse2;
     float4 previousLow = low, previousHigh = high;
     if (mapping.selection.y != InvalidQueryBodySlot)
     {
-        uint previous = mapping.selection.y * 21u;
+        uint previous = mapping.selection.y * 22u;
         previous0 = asfloat(particle_export_previous[previous + 3u].value);
         previous1 = asfloat(particle_export_previous[previous + 4u].value);
         previous2 = asfloat(particle_export_previous[previous + 5u].value);
@@ -96,7 +116,7 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
     particle_export_records[destination + 7u].value = asuint(previous1);
     particle_export_records[destination + 8u].value = asuint(previous2);
     particle_export_records[destination + 9u].value = asuint(shape);
-    particle_export_records[destination + 10u].value = uint4(0u);
+    particle_export_records[destination + 10u].value = surface.y == ShapeConvexHull ? leaf.geometryReference : uint4(0u);
     particle_export_records[destination + 11u].value = query_hits[source + 6u].value;
     particle_export_records[destination + 12u].value = query_hits[source + 7u].value;
     particle_export_records[destination + 13u].value = query_hits[source + 5u].value;
@@ -107,6 +127,7 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
     particle_export_records[destination + 18u].value = asuint(previousHigh);
     particle_export_records[destination + 19u].value = uint4(type, surface.x, flags, 0u);
     particle_export_records[destination + 20u].value = mapping.identity;
+    particle_export_records[destination + 21u].value = uint4(mapping.selection.zw, 0u, 0u);
     bool moving = (meta.w & QueryShapeMoving) != 0u;
     if (meta.y != 1u || moving != (row >= particle_export_params.counts.y))
         particle_export_failure();
@@ -117,7 +138,7 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
 
 bool particle_collision_range(uint row, float4 grid, uint3 dimensions, out uint3 low, out uint3 high)
 {
-    uint base = row * 21u;
+    uint base = row * 22u;
     float3 a = min(asfloat(particle_export_records[base + 15u].value).xyz,
                    asfloat(particle_export_records[base + 17u].value).xyz);
     float3 b = max(asfloat(particle_export_records[base + 16u].value).xyz,
@@ -151,7 +172,7 @@ void particle_collision_count(uint3 tid : SV_DispatchThreadID)
         float3 low = float3(3.402823466e+38f), high = -low;
         for (uint row = 0u; row < rows; ++row)
         {
-            uint base = row * 21u;
+            uint base = row * 22u;
             low = min(low, min(asfloat(particle_export_records[base + 15u].value).xyz,
                                asfloat(particle_export_records[base + 17u].value).xyz));
             high = max(high, max(asfloat(particle_export_records[base + 16u].value).xyz,

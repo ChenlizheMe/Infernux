@@ -823,7 +823,8 @@ class PhysicsWorld
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(PhysicsDomain &domain,
                                                                        const JPH::GPU::QueryInput &request,
-                                                                       const JPH::GPU::QueryPrimitive &other) const;
+                                                                       const JPH::GPU::QueryPrimitive &other,
+                                                                       JoltGpuQueryGeometry geometry = {}) const;
     [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &domain,
                                                          const JPH::GPU::QueryInput &request) const;
     [[nodiscard]] RaycastHit DecodeQueryHit(const JoltGpuQueryResult &result, const JPH::GPU::QueryHit &record) const;

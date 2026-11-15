@@ -1042,6 +1042,7 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         "previous_world_aabb_max": 288,
         "metadata": 304,
         "identity": 320,
+        "lifetime": 336,
     }
     for target in compiled["targets"]:
         resources = {
@@ -1051,7 +1052,7 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         scene = resources[6, 0]
         assert scene["element_stride"] == 64
         colliders = resources[6, 1]
-        assert colliders["element_stride"] == 336
+        assert colliders["element_stride"] == 352
         assert {
             field["name"]: field["offset"] for field in colliders["value"]["fields"]
         } == collider_offsets

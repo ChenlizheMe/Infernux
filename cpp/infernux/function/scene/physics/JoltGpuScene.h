@@ -16,6 +16,9 @@
 namespace infernux
 {
 class JoltGpuJoints;
+class JoltGpuGeometryStore;
+struct JoltGpuGeometryHandle;
+struct JoltGpuGeometryLease;
 class RuntimeWorld;
 
 class JoltGpuQueryRequestError : public std::invalid_argument
@@ -55,6 +58,7 @@ class JoltGpuScene final
         uint32_t memberIndex = 0;
         /// Accepted terminal geometry in leaf COM space, at baked unit scale.
         JPH::RefConst<JPH::Shape> shape;
+        std::shared_ptr<const JoltGpuGeometryHandle> geometry;
         bool sensor = false;
     };
 
@@ -136,6 +140,9 @@ class JoltGpuScene final
         std::shared_ptr<rhi::ComputeBuffer> jointStream;
         std::shared_ptr<const JoltGpuJointLayout> jointLayout;
         std::shared_ptr<const JoltGpuColliderPairs> colliderPairs;
+        std::shared_ptr<JoltGpuGeometryStore> geometryStore;
+        std::shared_ptr<const JoltGpuGeometryLease> geometry;
+        bool hasGenericGeometry = false;
 
         /// Joint rows are local to this publication's real accepted world row.
         [[nodiscard]] const std::vector<PublishedJoint> &GetJoints() const
@@ -165,9 +172,10 @@ class JoltGpuScene final
     /// One shared numerical arena/source, never one scene per RuntimeWorld.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
                  const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
-                 const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &constraintTarget,
-                 JoltGpuJoints &joints, FailureObserver failureObserver = {});
+                 const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &narrowphaseTarget,
+                 const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints, FailureObserver failureObserver = {});
     ~JoltGpuScene();
+    [[nodiscard]] const std::shared_ptr<JoltGpuGeometryStore> &GetGeometryStore() const noexcept;
     JoltGpuScene(const JoltGpuScene &) = delete;
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;
 

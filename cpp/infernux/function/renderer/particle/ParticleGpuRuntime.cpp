@@ -211,6 +211,7 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_graphSpawnLayout, replacement.m_graphSpawnLayout);
     std::swap(m_collisionSceneLayout, replacement.m_collisionSceneLayout);
     std::swap(m_collisionSceneGroup, replacement.m_collisionSceneGroup);
+    std::swap(m_collisionSceneBuffers, replacement.m_collisionSceneBuffers);
     std::swap(m_pipelines, replacement.m_pipelines);
     std::swap(m_supportsFusedUpdateRendering, replacement.m_supportsFusedUpdateRendering);
     std::swap(m_continuation, replacement.m_continuation);
@@ -396,16 +397,15 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             return false;
         }
 
-        const std::array<rhi::BufferHandle, 7> collisionBuffers = {
-            desc.collisionSceneHeader,       desc.collisionSceneColliders,
-            desc.collisionSceneGridOffsets,  desc.collisionSceneGridColliderIndices,
-            desc.collisionSceneMeshVertices, desc.collisionSceneMeshIndices,
-            desc.collisionSceneMeshBvhNodes};
+        m_collisionSceneBuffers = {desc.collisionSceneHeader,       desc.collisionSceneColliders,
+                                   desc.collisionSceneGridOffsets,  desc.collisionSceneGridColliderIndices,
+                                   desc.collisionSceneMeshVertices, desc.collisionSceneMeshIndices,
+                                   desc.collisionSceneMeshBvhNodes};
         rhi::BindGroupDesc collisionGroupDesc;
         collisionGroupDesc.layout = m_collisionSceneLayout;
-        for (uint32_t binding = 0; binding < collisionBuffers.size(); ++binding)
+        for (uint32_t binding = 0; binding < m_collisionSceneBuffers.size(); ++binding)
             collisionGroupDesc.buffers[collisionGroupDesc.bufferCount++] = {binding, rhi::BindingType::StorageBuffer,
-                                                                            collisionBuffers[binding]};
+                                                                            m_collisionSceneBuffers[binding]};
         m_collisionSceneGroup = device.CreateBindGroup(collisionGroupDesc);
         if (!m_collisionSceneGroup.IsValid()) {
             Destroy();
@@ -753,6 +753,7 @@ void ParticleGpuRuntime::Destroy() noexcept
     m_graphSpawnLayout = {};
     m_collisionSceneLayout = {};
     m_collisionSceneGroup = {};
+    m_collisionSceneBuffers = {};
     m_pipelines.fill({});
     m_pendingUploads.clear();
     m_cachedTransforms = {};
@@ -1312,6 +1313,30 @@ bool ParticleGpuRuntime::RecordRendering(const rhi::ComputeCommandEncoder &encod
     return Record(encoder, GpuKernelStage::Rendering, constants, m_capacity, graphSpawnGroup,
                   constants.useAliveList ? AliveDispatchBuffer() : rhi::BufferHandle{},
                   static_cast<uint64_t>(constants.aliveReadSlot) * 4u * sizeof(uint32_t));
+}
+
+bool ParticleGpuRuntime::RefreshCollisionGeometry(rhi::BufferHandle geometry, rhi::BindGroupHandle &retired)
+{
+    retired = {};
+    if (!m_collisionEnabled || m_collisionSceneBuffers[4] == geometry)
+        return true;
+    if (!geometry.IsValid())
+        return false;
+    auto buffers = m_collisionSceneBuffers;
+    buffers[4] = geometry;
+    rhi::BindGroupDesc descriptor;
+    descriptor.layout = m_collisionSceneLayout;
+    for (uint32_t binding = 0; binding < buffers.size(); ++binding)
+        descriptor.buffers[descriptor.bufferCount++] = {binding, rhi::BindingType::StorageBuffer, buffers[binding]};
+    const auto group = m_device->CreateBindGroup(descriptor);
+    if (!group.IsValid())
+        return false;
+    retired = m_collisionSceneGroup;
+    m_collisionSceneGroup = group;
+    m_collisionSceneBuffers = buffers;
+    if (m_continuation)
+        m_continuation->SetCollisionSceneGroup(group);
+    return true;
 }
 
 bool ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,

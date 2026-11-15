@@ -12,6 +12,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace infernux::rhi
@@ -29,6 +30,8 @@ enum class GpuParticleColliderType : uint32_t
     Capsule = 2,
     Mesh = 3,
     Terrain = 4,
+    Cylinder = 5,
+    NativeHull = 6,
 };
 
 enum GpuParticleColliderFlags : uint32_t
@@ -69,6 +72,7 @@ struct alignas(16) GpuParticleColliderRecord
     std::array<float, 4> previousWorldAabbMax{};
     std::array<uint32_t, 4> metadata{};
     std::array<uint32_t, 4> identity{};
+    std::array<uint32_t, 4> lifetime{}; // Full Collider generation low/high, reserved zero.
 };
 
 struct alignas(16) GpuParticleCollisionSceneHeader
@@ -102,20 +106,22 @@ struct GpuParticleCollisionMeshGeometry
 /// ordinal can move during repacking; neither its index nor a hash is an identity.
 struct GpuParticleCollisionRowKey
 {
-    uint64_t colliderId = 0;
+    uint64_t colliderId = 0, colliderGeneration = 0;
     uint32_t subShapeId = 0;
     uint32_t subShapeBits = 0;
     std::uintptr_t geometryIdentity = 0;
 
     [[nodiscard]] bool operator==(const GpuParticleCollisionRowKey &other) const noexcept
     {
-        return std::tie(colliderId, subShapeId, subShapeBits, geometryIdentity) ==
-               std::tie(other.colliderId, other.subShapeId, other.subShapeBits, other.geometryIdentity);
+        return std::tie(colliderId, colliderGeneration, subShapeId, subShapeBits, geometryIdentity) ==
+               std::tie(other.colliderId, other.colliderGeneration, other.subShapeId, other.subShapeBits,
+                        other.geometryIdentity);
     }
     [[nodiscard]] bool operator<(const GpuParticleCollisionRowKey &other) const noexcept
     {
-        return std::tie(colliderId, subShapeId, subShapeBits, geometryIdentity) <
-               std::tie(other.colliderId, other.subShapeId, other.subShapeBits, other.geometryIdentity);
+        return std::tie(colliderId, colliderGeneration, subShapeId, subShapeBits, geometryIdentity) <
+               std::tie(other.colliderId, other.colliderGeneration, other.subShapeId, other.subShapeBits,
+                        other.geometryIdentity);
     }
 };
 
@@ -134,7 +140,12 @@ struct GpuParticleCollisionDevicePayload
     uint32_t gridRefCount = 0;
     uint64_t revision = 0;
     uint64_t topologyRevision = 0;
-    uint64_t simulationEpoch = 0;
+    uint64_t worldId = 0, simulationEpoch = 0;
+    // Same shared cold-word buffer and exact range owner as the publication.
+    // Raw particle readers retain this owner through their real submission.
+    std::shared_ptr<rhi::ComputeBuffer> geometry;
+    std::shared_ptr<const void> geometryLease;
+    std::vector<std::pair<uint64_t, uint64_t>> geometryWordRanges;
     std::vector<GpuParticleCollisionRowKey> rows;
 };
 
@@ -183,9 +194,12 @@ class ParticleGpuCollisionScene
     INFERNUX_PARTICLE_RUNTIME_API void NotifySubmission(bool submitted) noexcept;
     /// The manager retires this owner against the real particle submission's
     /// completion, since raw transfer reads are not ComputeBuffer readers.
-    [[nodiscard]] std::shared_ptr<const GpuParticleCollisionDevicePayload> RecordedDevicePayload() const noexcept
+    /// Capture also when no upload is pending: kernels still read cold geometry.
+    INFERNUX_PARTICLE_RUNTIME_API void CaptureDeviceConsumer();
+    [[nodiscard]] const std::vector<std::shared_ptr<const GpuParticleCollisionDevicePayload>> &
+    RecordedDeviceConsumers() const noexcept
     {
-        return m_recordedDevicePayload;
+        return m_recordedDeviceConsumers;
     }
 
     [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API bool IsValid() const noexcept;
@@ -229,10 +243,8 @@ class ParticleGpuCollisionScene
     {
         return m_gridColliderIndexBuffer;
     }
-    [[nodiscard]] rhi::BufferHandle MeshVertexBuffer() const noexcept
-    {
-        return m_meshVertexBuffer;
-    }
+    /// Binding4 raw words: old Mesh float4 vertices or native immutable Hull recipe.
+    [[nodiscard]] INFERNUX_PARTICLE_RUNTIME_API rhi::BufferHandle MeshVertexBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle MeshIndexBuffer() const noexcept
     {
         return m_meshIndexBuffer;
@@ -299,7 +311,7 @@ class ParticleGpuCollisionScene
     std::vector<GpuParticleCollisionBvhNode> m_stagedMeshBvhNodes;
     std::unordered_map<uint64_t, std::array<uint32_t, 4>> m_stagedGeometryByIdentity;
     std::shared_ptr<const GpuParticleCollisionDevicePayload> m_stagedDevicePayload;
-    std::shared_ptr<const GpuParticleCollisionDevicePayload> m_recordedDevicePayload;
+    std::vector<std::shared_ptr<const GpuParticleCollisionDevicePayload>> m_recordedDeviceConsumers;
     bool m_pendingStaticUpload = false;
     bool m_pendingDynamicUpload = false;
     bool m_pendingTopologyUpload = false;
@@ -310,7 +322,7 @@ static_assert(sizeof(GpuParticleAffineTransform) == 48);
 static_assert(offsetof(GpuParticleAffineTransform, row0) == 0);
 static_assert(offsetof(GpuParticleAffineTransform, row1) == 16);
 static_assert(offsetof(GpuParticleAffineTransform, row2) == 32);
-static_assert(sizeof(GpuParticleColliderRecord) == 336);
+static_assert(sizeof(GpuParticleColliderRecord) == 352);
 static_assert(offsetof(GpuParticleColliderRecord, colliderToWorld) == 0);
 static_assert(offsetof(GpuParticleColliderRecord, worldToCollider) == 48);
 static_assert(offsetof(GpuParticleColliderRecord, previousWorldToCollider) == 96);
@@ -326,6 +338,7 @@ static_assert(offsetof(GpuParticleColliderRecord, previousWorldAabbMin) == 272);
 static_assert(offsetof(GpuParticleColliderRecord, previousWorldAabbMax) == 288);
 static_assert(offsetof(GpuParticleColliderRecord, metadata) == 304);
 static_assert(offsetof(GpuParticleColliderRecord, identity) == 320);
+static_assert(offsetof(GpuParticleColliderRecord, lifetime) == 336);
 static_assert(sizeof(GpuParticleCollisionSceneHeader) == 64);
 static_assert(sizeof(GpuParticleCollisionBvhNode) == 48);
 

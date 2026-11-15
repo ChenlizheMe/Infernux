@@ -13,6 +13,9 @@ ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program)
         return {JPH::GPU::StepModuleName, JPH::GPU::StepSourcePath, jolt_gpu_sources::Step};
     case JoltGpuProgram::Broadphase:
         return {"jph_gpu_broadphase", "Jolt/GPU/Shaders/rigid_broadphase.slang", jolt_gpu_sources::Broadphase};
+    case JoltGpuProgram::Narrowphase:
+        return {"jph_gpu_narrowphase", "Jolt/GPU/Shaders/rigid_convex_narrowphase.slang",
+                jolt_gpu_sources::Narrowphase};
     case JoltGpuProgram::ContactReports:
         return {"jph_gpu_contact_reports", "Jolt/GPU/Shaders/rigid_contact_reports.slang",
                 jolt_gpu_sources::ContactReports};
@@ -37,19 +40,24 @@ ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program)
 
 std::vector<ShaderSourceModule> GetJoltGpuProgramLibraries()
 {
-    return {{"jph_gpu_rigid_math", "Jolt/GPU/Shaders/rigid_math.slang", jolt_gpu_sources::Math},
-            {"jph_gpu_joint_fields", "Jolt/GPU/JointPayloadFields.inl", jolt_gpu_sources::JointFields},
-            {"jph_gpu_physics_types", "Jolt/GPU/PhysicsTypes.h", jolt_gpu_sources::Types},
-            {"jph_gpu_contact_report_types", "Jolt/GPU/ContactReportTypes.h", jolt_gpu_sources::ContactReportTypes},
-            {"jph_gpu_broadphase_types", "Jolt/GPU/BroadphaseTypes.h", jolt_gpu_sources::BroadphaseTypes},
-            {"jph_gpu_constraint_types", "Jolt/GPU/ConstraintTypes.h", jolt_gpu_sources::ConstraintTypes},
-            {"jph_gpu_island_owner", "Jolt/GPU/Shaders/island_owner_schedule.slang", jolt_gpu_sources::IslandOwner},
-            {"jph_gpu_rigid_psd", "Jolt/GPU/Shaders/rigid_psd.slang", jolt_gpu_sources::Psd},
-            {"jph_gpu_rigid_joints", "Jolt/GPU/Shaders/rigid_joints.slang", jolt_gpu_sources::Joints},
-            {"jph_gpu_swing_twist", "Jolt/GPU/Shaders/rigid_swing_twist.slang", jolt_gpu_sources::SwingTwist},
-            {"jph_gpu_six_dof", "Jolt/GPU/Shaders/rigid_six_dof.slang", jolt_gpu_sources::SixDOF},
-            {"inx_particle_collision_export", "infernux/renderer/particle/collision_export.slang",
-             jolt_gpu_sources::ParticleExport}};
+    return {
+        {"jph_gpu_rigid_math", "Jolt/GPU/Shaders/rigid_math.slang", jolt_gpu_sources::Math},
+        {"jph_gpu_joint_fields", "Jolt/GPU/JointPayloadFields.inl", jolt_gpu_sources::JointFields},
+        {"jph_gpu_physics_types", "Jolt/GPU/PhysicsTypes.h", jolt_gpu_sources::Types},
+        {"jph_gpu_convex_types", "Jolt/GPU/ConvexGeometryTypes.h", jolt_gpu_sources::ConvexTypes},
+        {"jph_gpu_convex", "Jolt/GPU/Shaders/rigid_convex.slang", jolt_gpu_sources::Convex},
+        {"jph_gpu_convex_manifold", "Jolt/GPU/Shaders/rigid_convex_manifold.slang", jolt_gpu_sources::ConvexManifold},
+        {"jph_gpu_convex_queries", "Jolt/GPU/Shaders/rigid_convex_queries.slang", jolt_gpu_sources::ConvexQueries},
+        {"jph_gpu_contact_report_types", "Jolt/GPU/ContactReportTypes.h", jolt_gpu_sources::ContactReportTypes},
+        {"jph_gpu_broadphase_types", "Jolt/GPU/BroadphaseTypes.h", jolt_gpu_sources::BroadphaseTypes},
+        {"jph_gpu_constraint_types", "Jolt/GPU/ConstraintTypes.h", jolt_gpu_sources::ConstraintTypes},
+        {"jph_gpu_island_owner", "Jolt/GPU/Shaders/island_owner_schedule.slang", jolt_gpu_sources::IslandOwner},
+        {"jph_gpu_rigid_psd", "Jolt/GPU/Shaders/rigid_psd.slang", jolt_gpu_sources::Psd},
+        {"jph_gpu_rigid_joints", "Jolt/GPU/Shaders/rigid_joints.slang", jolt_gpu_sources::Joints},
+        {"jph_gpu_swing_twist", "Jolt/GPU/Shaders/rigid_swing_twist.slang", jolt_gpu_sources::SwingTwist},
+        {"jph_gpu_six_dof", "Jolt/GPU/Shaders/rigid_six_dof.slang", jolt_gpu_sources::SixDOF},
+        {"inx_particle_collision_export", "infernux/renderer/particle/collision_export.slang",
+         jolt_gpu_sources::ParticleExport}};
 }
 
 } // namespace infernux

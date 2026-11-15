@@ -1,6 +1,7 @@
 #include "JoltGpuTick.h"
 #include "JoltGpuBroadphase.h"
 #include "JoltGpuConstraints.h"
+#include "JoltGpuNarrowphase.h"
 
 #include <algorithm>
 #include <chrono>
@@ -28,9 +29,9 @@ class JoltGpuTick::Impl
 {
   public:
     Impl(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase,
-         JoltGpuConstraints &constraints, std::function<void()> onFailure)
-        : work(work), storage(storage), programs(programs), broadphase(broadphase), constraints(constraints),
-          host(storage.GetHost()), failureObserver(std::move(onFailure))
+         JoltGpuNarrowphase &narrowphase, JoltGpuConstraints &constraints, std::function<void()> onFailure)
+        : work(work), storage(storage), programs(programs), broadphase(broadphase), narrowphase(narrowphase),
+          constraints(constraints), host(storage.GetHost()), failureObserver(std::move(onFailure))
     {
         FrameWorkSource source;
         source.observe = [this] {
@@ -128,12 +129,14 @@ class JoltGpuTick::Impl
             status = Status::Cancelled;
         CancelPackets();
         inputs = {};
+        workGeometry.reset();
         parameterInput = {};
         acceptedParameters.reset();
         parameters.reset();
         cpuForces.reset();
         control = {};
         workContinuation = {};
+        workMinimum = {};
         finalOutput = {};
         modelUpdate.reset();
         commandCursor.reset();
@@ -167,6 +170,7 @@ class JoltGpuTick::Impl
     JoltGpuStorage &storage;
     JoltGpuPrograms &programs;
     JoltGpuBroadphase &broadphase;
+    JoltGpuNarrowphase &narrowphase;
     JoltGpuConstraints &constraints;
     rhi::ComputeHost host;
     std::function<void()> failureObserver;
@@ -202,6 +206,7 @@ class JoltGpuTick::Impl
         BuildBounds,
         Broadphase,
         CollidePairs,
+        CompleteConvexContacts,
         SetupContacts,
         SetupJoints,
         ReportContactsBeforeVelocity,
@@ -254,6 +259,7 @@ class JoltGpuTick::Impl
         uint64_t transferGrant;
         uint64_t transferBytes;
         uint64_t submitStarted;
+        std::shared_ptr<const JoltGpuGeometryLease> geometry;
     };
 
     static NumericalCostKey NumericalKey(const std::vector<JoltGpuStageWork> &ready)
@@ -363,8 +369,9 @@ class JoltGpuTick::Impl
 
     static bool ProducerPhase(Phase phase)
     {
-        return phase == Phase::Broadphase || phase == Phase::BuildConstraints ||
-               phase == Phase::ReportContactsBeforeVelocity || phase == Phase::ReportContactsAfterVelocity;
+        return phase == Phase::Broadphase || phase == Phase::CompleteConvexContacts ||
+               phase == Phase::BuildConstraints || phase == Phase::ReportContactsBeforeVelocity ||
+               phase == Phase::ReportContactsAfterVelocity;
     }
 
     StageSpan Span(Phase phase) const
@@ -401,6 +408,7 @@ class JoltGpuTick::Impl
         case Phase::FinishTick:
             return {Stage::FinishTick, Domain::Bodies};
         case Phase::Broadphase:
+        case Phase::CompleteConvexContacts:
         case Phase::BuildConstraints:
         case Phase::ReportContactsBeforeVelocity:
         case Phase::ReportContactsAfterVelocity:
@@ -476,6 +484,9 @@ class JoltGpuTick::Impl
             next.phase = Phase::CollidePairs;
             break;
         case Phase::CollidePairs:
+            next.phase = storage.HasGenericGeometry() ? Phase::CompleteConvexContacts : Phase::SetupContacts;
+            break;
+        case Phase::CompleteConvexContacts:
             next.phase = Phase::SetupContacts;
             break;
         case Phase::SetupContacts:
@@ -622,8 +633,8 @@ class JoltGpuTick::Impl
             inputs.SetSelection(actual);
             inputs.SetColliderPairs(control.colliderPairs ? control.colliderPairs->value : nullptr);
             CaptureStageSpans();
-            for (const auto resource :
-                 {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels, JPH::GPU::Resource::Worlds})
+            for (const auto resource : {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels,
+                                        JPH::GPU::Resource::Worlds, JPH::GPU::Resource::ConvexGeometry})
                 inputs.Capture(storage, resource);
             if (!cpuForces)
                 inputs.Capture(storage, JPH::GPU::Resource::BodyForces);
@@ -663,6 +674,8 @@ class JoltGpuTick::Impl
     {
         ValidateControlPacket(selected.packet);
         batch = std::move(selected.packet);
+        workGeometry = std::move(selected.geometry);
+        workMinimum = std::move(selected.prepareMinimum);
         workContinuation = std::move(selected.continueWork);
         continuationKind = kind;
         continuationResumeAfter = selected.resumeAfter;
@@ -716,10 +729,15 @@ class JoltGpuTick::Impl
 
     bool NeedsSmallerPrefix() const
     {
-        if (!batch || preservation || (batchKind != PacketKind::Commands && batchKind != PacketKind::Stages) ||
-            batchEnd - batchBegin <= 1 || batch->RequiresPreparation() || batch->HasPreservationWork())
+        const bool adjustable = batchKind == PacketKind::NumericalWork && bool(workMinimum);
+        const bool prefix =
+            (batchKind == PacketKind::Commands || batchKind == PacketKind::Stages) && batchEnd - batchBegin > 1;
+        if (!batch || preservation || (!adjustable && !prefix) || batch->RequiresPreparation() ||
+            batch->HasPreservationWork())
             return false;
-        return Prediction(SubmissionKey(*batch)) > work.ResourceState(FrameWorkResource::Gpu).limit ||
+        const auto remaining = work.ResourceRemaining(FrameWorkResource::Gpu);
+        const auto window = adjustable && remaining ? remaining : work.ResourceState(FrameWorkResource::Gpu).limit;
+        return Prediction(SubmissionKey(*batch)) > window ||
                batch->GetTransferBytes() > work.ResourceState(FrameWorkResource::Transfer).limit;
     }
 
@@ -945,6 +963,17 @@ class JoltGpuTick::Impl
     bool Prepare()
     {
         if (NeedsSmallerPrefix()) {
+            if (workMinimum) {
+                auto minimum = std::move(workMinimum);
+                const auto kind = batchKind;
+                batch->Cancel();
+                batch.reset();
+                workContinuation = {};
+                batchNumericalKey.clear();
+                submissionBusy = false;
+                SelectControlWork(minimum(), kind);
+                return true;
+            }
             const bool commands = batchKind == PacketKind::Commands;
             // Only the unaccepted prefix changes. The accepted stage/command
             // cursor and all outstanding receipts retain their original work.
@@ -982,6 +1011,9 @@ class JoltGpuTick::Impl
                     finalOutput.leafCount = tickParameters.selectedCounts.y;
                     finalOutput.jointBase = tickParameters.selection.w;
                     finalOutput.jointCount = tickParameters.selectedCounts.z;
+                    finalOutput.geometryStore = storage.GetGeometryStore();
+                    finalOutput.geometry = storage.GetGeometry();
+                    finalOutput.hasGenericGeometry = storage.HasGenericGeometry();
                     SelectControlWork(PrepareSnapshot(), PacketKind::FinalWork);
                     if (!batch && !workContinuation) {
                         finalAccepted = true;
@@ -1045,6 +1077,15 @@ class JoltGpuTick::Impl
                     PacketKind::NumericalWork);
                 return true;
             }
+            if (stageCursor.phase == Phase::CompleteConvexContacts) {
+                SelectControlWork(narrowphase.Prepare(storage, inputs, work,
+                                                      [this] {
+                                                          NextSpan(stageCursor);
+                                                          Normalize(stageCursor);
+                                                      }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
             if (stageCursor.phase == Phase::ReportContactsBeforeVelocity ||
                 stageCursor.phase == Phase::ReportContactsAfterVelocity) {
                 const auto phase = stageCursor.phase == Phase::ReportContactsBeforeVelocity
@@ -1088,11 +1129,13 @@ class JoltGpuTick::Impl
         receipts.emplace_back(
             Receipt{packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0, homogeneousStage,
                     work.Opportunity(), work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
-                    bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes, started});
+                    bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes, started,
+                    kind == PacketKind::Stages ? inputs.GetGeometry() : workGeometry});
         if (kind == PacketKind::Preservation) {
             preservation.reset();
         } else {
             batch.reset();
+            workMinimum = {};
             batchNumericalKey.clear();
             if (kind == PacketKind::Initialization) {
                 control.initialization.reset();
@@ -1181,7 +1224,8 @@ class JoltGpuTick::Impl
 
     std::optional<JoltGpuStepParameters> parameters;
     JoltGpuTickControl control;
-    std::function<JoltGpuControlWork()> workContinuation;
+    std::function<JoltGpuControlWork()> workContinuation, workMinimum;
+    std::shared_ptr<const JoltGpuGeometryLease> workGeometry;
     PacketKind continuationKind = PacketKind::Work;
     JoltGpuControlWork::ResumeAfter continuationResumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
     std::unique_ptr<JoltGpuModelUpdate> modelUpdate;
@@ -1223,9 +1267,10 @@ class JoltGpuTick::Impl
 };
 
 JoltGpuTick::JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs,
-                         JoltGpuBroadphase &broadphase, JoltGpuConstraints &constraints,
-                         std::function<void()> failureObserver)
-    : m_impl(std::make_unique<Impl>(work, storage, programs, broadphase, constraints, std::move(failureObserver)))
+                         JoltGpuBroadphase &broadphase, JoltGpuNarrowphase &narrowphase,
+                         JoltGpuConstraints &constraints, std::function<void()> failureObserver)
+    : m_impl(std::make_unique<Impl>(work, storage, programs, broadphase, narrowphase, constraints,
+                                    std::move(failureObserver)))
 {
 }
 JoltGpuTick::~JoltGpuTick() = default;

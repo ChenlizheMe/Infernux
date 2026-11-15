@@ -14,6 +14,8 @@
 
 namespace infernux
 {
+class JoltGpuGeometryStore;
+struct JoltGpuGeometryLease;
 // Native-only lifetime identity: (Collider A ID/generation, B ID/generation).
 // Canonical endpoint order is unsigned component ID, then generation.
 using PhysicsColliderPair = std::array<uint64_t, 4>;
@@ -206,6 +208,24 @@ class JoltGpuStorage
     {
         return m_maxBodiesPerWorld;
     }
+    void SetGeometryStore(std::shared_ptr<JoltGpuGeometryStore> store);
+    void SetGeometry(std::shared_ptr<const JoltGpuGeometryLease> geometry, bool hasGeneric) noexcept
+    {
+        m_geometry = std::move(geometry);
+        m_hasGenericGeometry = hasGeneric;
+    }
+    [[nodiscard]] bool HasGenericGeometry() const noexcept
+    {
+        return m_hasGenericGeometry;
+    }
+    [[nodiscard]] const std::shared_ptr<JoltGpuGeometryStore> &GetGeometryStore() const noexcept
+    {
+        return m_geometryStore;
+    }
+    [[nodiscard]] const std::shared_ptr<const JoltGpuGeometryLease> &GetGeometry() const noexcept
+    {
+        return m_geometry;
+    }
     [[nodiscard]] const rhi::ComputeHost &GetHost() const noexcept
     {
         return m_host;
@@ -217,6 +237,9 @@ class JoltGpuStorage
     rhi::ComputeHost m_host;
     // Accepted author metadata; dynamic state remains exclusively on the GPU.
     JoltGpuModel m_model;
+    std::shared_ptr<JoltGpuGeometryStore> m_geometryStore;
+    std::shared_ptr<const JoltGpuGeometryLease> m_geometry;
+    bool m_hasGenericGeometry = false;
     std::shared_ptr<const JoltGpuJointLayout> m_jointLayout;
     bool m_modelUpdatePending = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> m_buffers;
@@ -282,6 +305,14 @@ class JoltGpuStepInputs
     {
         return m_parameters;
     }
+    [[nodiscard]] const std::shared_ptr<const JoltGpuGeometryLease> &GetGeometry() const noexcept
+    {
+        return m_geometry;
+    }
+    [[nodiscard]] bool HasGenericGeometry() const noexcept
+    {
+        return m_hasGenericGeometry;
+    }
     /// Original frozen author inputs, even while contact work overrides bindings.
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetCaptured(JPH::GPU::Resource resource) const;
     void SetColliderPairs(std::shared_ptr<const JoltGpuColliderPairs> pairs)
@@ -314,6 +345,8 @@ class JoltGpuStepInputs
         std::shared_ptr<rhi::ComputeBuffer> buffer;
     };
     JPH::GPU::StepParams m_parameters{};
+    std::shared_ptr<const JoltGpuGeometryLease> m_geometry;
+    bool m_hasGenericGeometry = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
     std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;

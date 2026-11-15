@@ -11,6 +11,7 @@
 namespace infernux
 {
 class JoltGpuBroadphase;
+class JoltGpuNarrowphase;
 class JoltGpuConstraints;
 
 /// One unaccepted packet and its optional successor.
@@ -23,6 +24,9 @@ class JoltGpuConstraints;
 struct JoltGpuControlWork
 {
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
+    // Exact immutable ranges touched by this packet, retained by its real
+    // accepted receipt even if Cancel destroys the logical continuation.
+    std::shared_ptr<const JoltGpuGeometryLease> geometry;
     std::function<JoltGpuControlWork()> continueWork;
     enum class ResumeAfter
     {
@@ -30,6 +34,9 @@ struct JoltGpuControlWork
         Acceptance
     };
     ResumeAfter resumeAfter = ResumeAfter::Completion;
+    // Optional multi-unit packet contraction before acceptance. It must
+    // preserve the accepted producer cursor and return its minimum unit.
+    std::function<JoltGpuControlWork()> prepareMinimum;
 
     JoltGpuControlWork() = default;
     JoltGpuControlWork(std::shared_ptr<rhi::PreparedComputeBatch> value) : packet(std::move(value))
@@ -68,6 +75,9 @@ struct JoltGpuTickOutput
     uint32_t worldRow = 0, bodyBase = 0, bodyCount = 0, leafBase = 0, leafCount = 0, jointBase = 0, jointCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> states, joints;
     std::shared_ptr<const JoltGpuJointLayout> jointLayout;
+    std::shared_ptr<JoltGpuGeometryStore> geometryStore;
+    std::shared_ptr<const JoltGpuGeometryLease> geometry;
+    bool hasGenericGeometry = false;
 };
 
 /// Accepted through the tick's existing work source before solver inputs are
@@ -121,7 +131,8 @@ class JoltGpuTick final
     };
 
     JoltGpuTick(FrameWorkOwner &work, JoltGpuStorage &storage, JoltGpuPrograms &programs, JoltGpuBroadphase &broadphase,
-                JoltGpuConstraints &constraints, std::function<void()> failureObserver = {});
+                JoltGpuNarrowphase &narrowphase, JoltGpuConstraints &constraints,
+                std::function<void()> failureObserver = {});
     /// Explicit owner shutdown boundary: drains only this owner's accepted
     /// receipts before unregistering. Ordinary Stop first calls Cancel, retains
     /// this owner until CanRetire(), and only then destroys it without waiting.

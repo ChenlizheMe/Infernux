@@ -182,8 +182,14 @@ void QueryCapsuleInput(QueryInput &request, const glm::vec3 &a, const glm::vec3 
         : delta.y > 0 ? Float4{0, 0, 0, 1}
                       : Float4{1, 0, 0, 0};
 }
-std::optional<QueryPrimitive> CookColliderQueryPrimitive(const Collider &collider, const glm::vec3 &position,
-                                                         const glm::quat &rotation)
+struct CookedQueryOperand
+{
+    QueryPrimitive primitive;
+    std::shared_ptr<const JoltGpuGeometryRecord> geometry;
+    JPH::RefConst<JPH::Shape> shape;
+};
+std::optional<CookedQueryOperand> CookColliderQueryPrimitive(const Collider &collider, const glm::vec3 &position,
+                                                             const glm::quat &rotation)
 {
     (void)Vector(position);
     const auto q = Rotation(rotation);
@@ -204,7 +210,9 @@ std::optional<QueryPrimitive> CookColliderQueryPrimitive(const Collider &collide
     const auto center = position + world * (glm::vec3(prepared.centerOfMass.GetX(), prepared.centerOfMass.GetY(),
                                                       prepared.centerOfMass.GetZ()) +
                                             Vector(leaf.localPositionCOM));
-    return QueryPrimitive{{leaf.meta.x, 0, 0, 0}, leaf.geometry, Vector(center), Rotation(world * local)};
+    return CookedQueryOperand{
+        QueryPrimitive{{leaf.meta.x, 0, 0, 0}, leaf.geometry, Vector(center), Rotation(world * local), {}},
+        prepared.leaves.front().geometryRecord, shape};
 }
 struct AdmissionScope
 {
@@ -307,7 +315,7 @@ JoltGpuStepParameters StepParameters(float dt, const glm::vec3 &gravity)
 
 struct PhysicsWorld::CompiledGpuPrograms
 {
-    ShaderTargetCode step, mutations, commands, broadphase, constraints;
+    ShaderTargetCode step, mutations, commands, broadphase, narrowphase, constraints;
 };
 PhysicsDomain::PhysicsDomain(RuntimeWorld &world) : owner(world), gravity(EngineConfig::Get().physicsGravity)
 {
@@ -354,8 +362,8 @@ PhysicsDomain::RenderState::Keys CaptureRenderKeys()
 }
 JoltGpuTickOutput CompactOutput(const JoltGpuScene::Publication &p)
 {
-    return {p.worldRow,  p.bodyBase,   p.bodyCount,  p.leafBase,    p.leafCount,
-            p.jointBase, p.jointCount, p.bodyStates, p.jointStream, p.jointLayout};
+    return {p.worldRow,   p.bodyBase,    p.bodyCount,   p.leafBase,      p.leafCount, p.jointBase,         p.jointCount,
+            p.bodyStates, p.jointStream, p.jointLayout, p.geometryStore, p.geometry,  p.hasGenericGeometry};
 }
 } // namespace
 PhysicsWorld &PhysicsWorld::Instance()
@@ -423,6 +431,7 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         p->mutations = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyMutations);
         p->commands = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyCommands);
         p->broadphase = CompileProgram(*m_gpuHost, JoltGpuProgram::Broadphase);
+        p->narrowphase = CompileProgram(*m_gpuHost, JoltGpuProgram::Narrowphase);
         p->constraints = CompileProgram(*m_gpuHost, JoltGpuProgram::Constraints);
         const auto target = CompileProgram(*m_gpuHost, JoltGpuProgram::Queries);
         auto queries = std::make_unique<JoltGpuQueries>(*m_gpuHost, target);
@@ -439,7 +448,8 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
     if (!m_gpuScene) {
         m_gpuScene = std::make_unique<JoltGpuScene>(
             *m_gpuHost, *m_gpuWork, m_gpuPrograms->step, m_gpuPrograms->mutations, m_gpuPrograms->commands,
-            m_gpuPrograms->broadphase, m_gpuPrograms->constraints, *m_gpuJoints, [this](RuntimeWorld &world) noexcept {
+            m_gpuPrograms->broadphase, m_gpuPrograms->narrowphase, m_gpuPrograms->constraints, *m_gpuJoints,
+            [this](RuntimeWorld &world) noexcept {
                 // A shared source can fail outside Step and outside this World's
                 // execution scope. Mark only the actual retained writer.
                 FailStep(*world.physics);
@@ -1093,7 +1103,8 @@ std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunQuery(PhysicsDomain &domain
 }
 
 std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunGeometryQuery(PhysicsDomain &domain, const QueryInput &request,
-                                                                   const QueryPrimitive &other) const
+                                                                   const QueryPrimitive &other,
+                                                                   JoltGpuQueryGeometry geometry) const
 {
     RequireOwnerThread();
     RequireHealthyStep(domain);
@@ -1106,13 +1117,24 @@ std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunGeometryQuery(PhysicsDomain
     // flush or admit queued author input, and never start a new fixed step.
     const_cast<PhysicsWorld *>(this)->CompleteDomainStep(domain);
     JoltGpuPreparedQuery prepared;
+    std::exception_ptr requestError;
     {
         FrameWorkOwner::Scope preparation(*m_gpuWork);
-        prepared = m_gpuQueries->Prepare({}, {request}, {other}, 0);
-        while (!m_gpuScene->TryBeginWork(domain.owner, prepared.work))
+        auto work = PrepareQueryWork(
+            [&]() {
+                if (!geometry.store)
+                    geometry.store = m_gpuScene->GetGeometryStore();
+                prepared = m_gpuQueries->Prepare({}, {request}, {other}, 0, JoltGpuQueryReadback::Host, 32,
+                                                 std::move(geometry));
+                return std::move(prepared.work);
+            },
+            requestError);
+        while (!m_gpuScene->TryBeginWork(domain.owner, work))
             DrainGpuSource(domain);
     }
     (void)AdvanceGpuJob(domain, true);
+    if (requestError)
+        std::rethrow_exception(requestError);
     return std::move(prepared.result);
 }
 
@@ -2426,16 +2448,28 @@ std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const C
 {
     auto &domain = CurrentDomain();
     RequireOwnerThread();
-    const auto first = CookColliderQueryPrimitive(a, positionA, rotationA);
-    const auto second = CookColliderQueryPrimitive(b, positionB, rotationB);
+    auto first = CookColliderQueryPrimitive(a, positionA, rotationA);
+    auto second = CookColliderQueryPrimitive(b, positionB, rotationB);
     if (!first || !second)
         return std::nullopt;
+    RequireGpu(domain);
+    JoltGpuQueryGeometry geometry;
+    geometry.store = m_gpuScene->GetGeometryStore();
+    for (auto *operand : {&*first, &*second}) {
+        geometry.shapes.push_back(operand->shape);
+        if (operand->geometry) {
+            auto handle = geometry.store->Intern(operand->geometry);
+            operand->primitive.geometryReference = handle->reference;
+            geometry.operands.push_back(std::move(handle));
+        }
+    }
     auto request = Query(QueryPenetration, QueryClosest);
-    request.meta.z = first->meta.x;
-    request.positionMaximum = first->position;
-    request.rotation = first->rotation;
-    request.geometry = first->geometry;
-    auto result = RunGeometryQuery(domain, request, *second);
+    request.meta.z = first->primitive.meta.x;
+    request.positionMaximum = first->primitive.position;
+    request.rotation = first->primitive.rotation;
+    request.geometry = first->primitive.geometry;
+    request.geometryReference = first->primitive.geometryReference;
+    auto result = RunGeometryQuery(domain, request, second->primitive, std::move(geometry));
     FrameWorkOwner::Scope materialize(*m_gpuWork);
     const auto &records = result->ReadHits();
     if (records.empty() || !records.front().meta.y)
@@ -2587,11 +2621,11 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
         return false;
     }
     auto request = Query(QueryShapeCast, QueryClosest, layers, false);
-    request.meta.z = primitive->meta.x;
+    request.meta.z = primitive->primitive.meta.x;
     request.meta.w = QuerySweepPolicy;
-    request.geometry = primitive->geometry;
-    request.rotation = primitive->rotation;
-    QueryRayInput(request, Vector(primitive->position), displacement, static_cast<float>(distance));
+    request.geometry = primitive->primitive.geometry;
+    request.rotation = primitive->primitive.rotation;
+    QueryRayInput(request, Vector(primitive->primitive.position), displacement, static_cast<float>(distance));
     request.source.z = static_cast<uint32_t>(objectId);
     request.source.w = static_cast<uint32_t>(objectId >> 32);
     request.filter.z = static_cast<uint32_t>(colliderId);
@@ -2644,6 +2678,10 @@ std::shared_ptr<const PhysicsShapeGeometry> PhysicsWorld::ResolveShapeGeometry(P
     } else if (record.surface.y == ShapeCapsule) {
         geometry->type = PhysicsShapeType::Capsule;
         geometry->dimensions = {record.geometry.w, 2 * (record.geometry.y + record.geometry.w), 1, 0};
+    } else if (record.surface.y == ShapeCylinder || record.surface.y == ShapeConvexHull) {
+        // The existing immutable convex mesh view exposes the cooked native surface.
+        // Dynamic collision/query calculations remain exclusively on the GPU.
+        geometry->type = PhysicsShapeType::Mesh;
     } else {
         throw std::runtime_error("GPU shape state has no immutable geometry adapter");
     }
@@ -2756,9 +2794,14 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
                     requests.push_back(input);
                     for (const auto &leaf : actor->leaves) {
                         Row row;
-                        row.key = {leaf.colliderId, leaf.subShapeId, leaf.subShapeBits,
+                        row.key = {leaf.colliderId, leaf.colliderGeneration, leaf.subShapeId, leaf.subShapeBits,
                                    reinterpret_cast<uintptr_t>(leaf.shape.GetPtr())};
-                        row.mapping.selection = {sourceRow++, InvalidQueryBodySlot, 0, 0};
+                        row.mapping.selection = {sourceRow++, InvalidQueryBodySlot,
+                                                 static_cast<uint32_t>(leaf.colliderGeneration),
+                                                 static_cast<uint32_t>(leaf.colliderGeneration >> 32)};
+                        const auto bounds = leaf.shape->GetLocalBounds();
+                        row.mapping.localBoundsMin = {bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ(), 0};
+                        row.mapping.localBoundsMax = {bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ(), 0};
                         row.mapping.identity = {static_cast<uint32_t>(leaf.colliderId),
                                                 static_cast<uint32_t>(leaf.colliderId >> 32),
                                                 static_cast<uint32_t>(leaf.surfaceGameObjectId),
@@ -2769,7 +2812,8 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
                 // Preserve accepted leaf order within the two particle table ranges.
                 // This is identity mapping only; all numerical projection stays GPU-side.
                 const auto staticCount = static_cast<uint32_t>(rows[0].size());
-                const bool hasHistory = previous && previous->simulationEpoch == publication->simulationEpoch;
+                const bool hasHistory = previous && previous->worldId == publication->worldId &&
+                                        previous->simulationEpoch == publication->simulationEpoch;
                 std::map<RowKey, uint32_t> history;
                 if (hasHistory)
                     for (uint32_t index = 0; index < previous->rows.size(); ++index)

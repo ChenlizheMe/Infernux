@@ -433,7 +433,7 @@ void ParticleGpuCollisionScene::Destroy() noexcept
     m_stagedMeshBvhNodes.clear();
     m_stagedGeometryByIdentity.clear();
     m_stagedDevicePayload.reset();
-    m_recordedDevicePayload.reset();
+    m_recordedDeviceConsumers.clear();
     m_pendingStaticUpload = false;
     m_pendingDynamicUpload = false;
     m_pendingTopologyUpload = false;
@@ -455,9 +455,8 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
             !snapshot.meshGeometries.empty() || snapshot.replaceMeshTopology || value.revision != snapshot.revision ||
             value.topologyRevision != snapshot.topologyRevision || value.rowCount > m_capacity ||
             value.staticCount > value.rowCount || value.rows.size() != value.rowCount || !value.retained ||
-            uint64_t(value.gridRefCount) > uint64_t(value.rowCount) * MaxGridCellCount ||
-            !m_stagedMeshVertices.empty() || !m_stagedMeshIndices.empty() || !m_stagedMeshBvhNodes.empty()) {
-            SetError(error, "GPU particle device publication differs from its prepared primitive table");
+            uint64_t(value.gridRefCount) > uint64_t(value.rowCount) * MaxGridCellCount) {
+            SetError(error, "GPU particle device publication differs from its prepared table");
             return false;
         }
         const auto validate = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes) {
@@ -476,9 +475,22 @@ bool ParticleGpuCollisionScene::Publish(const GpuParticleCollisionSceneSnapshot 
             SetError(error, "GPU particle device publication requires completed frozen values on the shared host");
             return false;
         }
+        // The completed export follows Store capture plus exact cold reads.
+        // Future disjoint writers/holes do not require freezing this arena.
+        if (!value.worldId || !value.geometry || !value.geometryLease || value.geometryWordRanges.empty() ||
+            !value.records->GetHost().SharesServicesWith(value.geometry->GetHost())) {
+            SetError(error, "GPU particle publication requires its shared cold geometry owner");
+            return false;
+        }
+        for (const auto &[first, end] : value.geometryWordRanges)
+            if (first >= end || end > value.geometry->GetByteSize() / 16u ||
+                !value.geometry->HasInitializedRange(first * 16u, (end - first) * 16u)) {
+                SetError(error, "GPU particle cold range has no accepted initialized writer");
+                return false;
+            }
         std::set<GpuParticleCollisionRowKey> identities;
         for (const auto &row : value.rows)
-            if (!row.colliderId || !row.geometryIdentity || !identities.insert(row).second) {
+            if (!row.colliderId || !row.colliderGeneration || !row.geometryIdentity || !identities.insert(row).second) {
                 SetError(error, "GPU particle device publication has an invalid or duplicate leaf identity");
                 return false;
             }
@@ -634,7 +646,7 @@ bool ParticleGpuCollisionScene::RecordPendingUpload(const rhi::TransferCommandEn
         m_recordedRevision = m_pendingRevision;
         m_recordedTopologyRevision = m_pendingTopologyRevision;
         m_recordedGridReferenceCount = value.gridRefCount;
-        m_recordedDevicePayload = m_stagedDevicePayload;
+        CaptureDeviceConsumer();
         return true;
     }
 
@@ -663,8 +675,10 @@ bool ParticleGpuCollisionScene::RecordPendingUpload(const rhi::TransferCommandEn
 
 void ParticleGpuCollisionScene::NotifySubmission(bool submitted) noexcept
 {
-    if (m_recordedRevision == 0)
+    if (m_recordedRevision == 0) {
+        m_recordedDeviceConsumers.clear();
         return;
+    }
     if (submitted) {
         m_publishedRevision = m_recordedRevision;
         m_publishedTopologyRevision = m_recordedTopologyRevision;
@@ -687,7 +701,18 @@ void ParticleGpuCollisionScene::NotifySubmission(bool submitted) noexcept
     m_recordedTopologyRevision = 0;
     m_recordedGridReferenceCount = 0;
     m_recordedHeader = {};
-    m_recordedDevicePayload.reset();
+    m_recordedDeviceConsumers.clear();
+}
+
+void ParticleGpuCollisionScene::CaptureDeviceConsumer()
+{
+    if (m_stagedDevicePayload &&
+        (m_recordedDeviceConsumers.empty() || m_recordedDeviceConsumers.back() != m_stagedDevicePayload))
+        m_recordedDeviceConsumers.push_back(m_stagedDevicePayload);
+}
+rhi::BufferHandle ParticleGpuCollisionScene::MeshVertexBuffer() const noexcept
+{
+    return m_stagedDevicePayload ? m_stagedDevicePayload->geometry->GetBuffer() : m_meshVertexBuffer;
 }
 
 bool ParticleGpuCollisionScene::IsValid() const noexcept

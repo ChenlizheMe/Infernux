@@ -6,6 +6,7 @@
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <Jolt/Physics/Collision/Shape/SubShapeID.h>
 
+#include "JoltGpuGeometry.h"
 #include <cstdint>
 #include <vector>
 
@@ -22,6 +23,7 @@ struct PreparedGpuLeaf
     /// Immutable terminal geometry, already baked to unit leaf scale.
     /// Its COM-local vertices do not contain the body's or leaf's rigid pose.
     JPH::RefConst<JPH::Shape> shape;
+    std::shared_ptr<const JoltGpuGeometryRecord> geometryRecord;
 };
 
 /// Complete authored leaf stream. An empty body has no collidable dummy leaf.
@@ -34,7 +36,7 @@ struct PreparedGpuShape
 };
 
 /// Resolve decorators and compound child user data through the authored root.
-/// Sphere, Box and Capsule leaves use baked unit scale; unsupported geometry
+/// Sphere, Box, Capsule, Cylinder and ConvexHull leaves use baked unit scale; other geometry
 /// throws before any model is staged.
 /// memberCount is the actual contributing Collider count, not a leaf count.
 [[nodiscard]] PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCount);

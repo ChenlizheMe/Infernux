@@ -652,6 +652,19 @@ struct ParticleGpuSystemManager::Impl
 
     [[nodiscard]] bool RecordPendingUploads(VkCommandBuffer commandBuffer)
     {
+        if (requiresCollisionScene && collisionScene) {
+            const auto geometry = collisionScene->MeshVertexBuffer();
+            for (const auto &[id, emitter] : emitters) {
+                (void)id;
+                rhi::BindGroupHandle retired;
+                if (!emitter->runtime->RefreshCollisionGeometry(geometry, retired))
+                    return false;
+                if (retired.IsValid())
+                    deletionQueue->Retire([device = &context->GetRhiDevice(), retired] { device->Release(retired); });
+            }
+            // Also retain raw cold readers in a submission without a new table copy.
+            collisionScene->CaptureDeviceConsumer();
+        }
         const bool collisionPending = requiresCollisionScene && collisionScene && collisionScene->HasPendingUpload();
         const bool runtimePending = std::any_of(emitters.begin(), emitters.end(), [](const auto &entry) {
             return entry.second->runtime->HasPendingUploads();
@@ -2629,9 +2642,11 @@ void ParticleGpuSystemManager::NotifySubmission(bool submitted) noexcept
         // Export buffers are read by the raw particle transfer recording. Keep
         // their frozen owners until this actual submission completes, just as
         // diagnostic captures above retain their submission-owned resources.
-        if (submitted)
-            if (auto payload = m_impl->collisionScene->RecordedDevicePayload())
-                m_impl->deletionQueue->Retire([payload = std::move(payload)] {});
+        if (submitted) {
+            auto payloads = m_impl->collisionScene->RecordedDeviceConsumers();
+            if (!payloads.empty())
+                m_impl->deletionQueue->Retire([payloads = std::move(payloads)] {});
+        }
         m_impl->collisionScene->NotifySubmission(submitted);
     }
     for (const auto &[id, emitter] : m_impl->emitters) {
