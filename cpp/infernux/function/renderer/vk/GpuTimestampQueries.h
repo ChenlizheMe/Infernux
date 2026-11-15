@@ -8,7 +8,6 @@
 #include <array>
 #include <cstdint>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -18,7 +17,6 @@ namespace infernux::vk
 {
 
 class VkDeviceContext;
-class VkBufferHandle;
 
 class GpuTimestampQueries
 {
@@ -73,7 +71,6 @@ class GpuTimestampQueries
     struct FrameState
     {
         VkQueryPool pool = VK_NULL_HANDLE;
-        std::shared_ptr<VkBufferHandle> readback;
         std::vector<RegionRecord> regions;
         uint32_t queryCount = 0;
         uint32_t regionCount = 0;

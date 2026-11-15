@@ -1,7 +1,6 @@
 #include "GpuTimestampQueries.h"
 
 #include "VkDeviceContext.h"
-#include "VkHandle.h"
 
 #include <algorithm>
 #include <cstring>
@@ -53,8 +52,7 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
     const uint32_t regionCapacity = std::clamp(maxRegionsPerFrame, 1u, rhi::kGpuTimestampMaxRegions);
     m_maxQueriesPerFrame = regionCapacity * 2;
     m_frames.resize(framesInFlight);
-    if (m_resetOnHost)
-        m_queryScratch.resize(m_maxQueriesPerFrame);
+    m_queryScratch.resize(m_maxQueriesPerFrame);
 
     VkQueryPoolCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -66,19 +64,6 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
         if (vkCreateQueryPool(m_device, &createInfo, nullptr, &frame.pool) != VK_SUCCESS) {
             Destroy();
             return false;
-        }
-        // The same queue capability permits query reset and result copy.
-        // Copy to mapped memory on the queue so completion collection never
-        // needs a graphics/compute driver to read an active query pool.
-        if (!m_resetOnHost) {
-            frame.readback = std::make_shared<VkBufferHandle>();
-            if (!frame.readback->Create(context.GetVmaAllocator(), m_device, sizeof(QueryValue) * m_maxQueriesPerFrame,
-                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ||
-                !frame.readback->Map()) {
-                Destroy();
-                return false;
-            }
         }
     }
 
@@ -180,29 +165,11 @@ void GpuTimestampQueries::EndRegion(VkCommandBuffer commandBuffer, rhi::Timestam
     vkCmdWriteTimestamp(commandBuffer, stage, frame->pool, region.endQuery);
 }
 
-void GpuTimestampQueries::FinishFrame(VkCommandBuffer commandBuffer, uint32_t frameIndex) noexcept
+void GpuTimestampQueries::FinishFrame([[maybe_unused]] VkCommandBuffer commandBuffer, uint32_t frameIndex) noexcept
 {
     if (frameIndex < m_frames.size() && m_recordingFrame == frameIndex) {
         auto &frame = m_frames[frameIndex];
         frame.recorded = frame.queryCount > 0;
-        if (frame.recorded && frame.readback) {
-            const auto buffer = frame.readback->GetBuffer();
-            vkCmdCopyQueryPoolResults(commandBuffer, frame.pool, 0, frame.queryCount, buffer, 0, sizeof(QueryValue),
-                                      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT |
-                                          VK_QUERY_RESULT_WAIT_BIT);
-            VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-            hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            // The completed slot is read by the host, then overwritten by
-            // another query copy when this same queue reuses the slot.
-            hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-            hostRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            hostRead.buffer = buffer;
-            hostRead.size = sizeof(QueryValue) * frame.queryCount;
-            vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                 VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1,
-                                 &hostRead, 0, nullptr);
-        }
     }
     m_recordingFrame = std::numeric_limits<uint32_t>::max();
 #if INFERNUX_FRAME_PROFILE
@@ -229,19 +196,15 @@ std::optional<rhi::GpuTimestampFrame> GpuTimestampQueries::CollectCompletedFrame
         return std::nullopt;
     }
 
-    const char *values;
-    if (frame.readback) {
-        values = static_cast<const char *>(frame.readback->GetMappedPtr());
-    } else {
-        // Transfer-only command pools cannot record vkCmdCopyQueryPoolResults.
-        std::fill_n(m_queryScratch.begin(), frame.queryCount, QueryValue{});
-        const VkResult result = vkGetQueryPoolResults(
-            m_device, frame.pool, 0, frame.queryCount, sizeof(QueryValue) * frame.queryCount, m_queryScratch.data(),
-            sizeof(QueryValue), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
-        if (result != VK_SUCCESS)
-            return std::nullopt;
-        values = reinterpret_cast<const char *>(m_queryScratch.data());
-    }
+    // Every caller has observed this slot's terminal fence/ticket. Read its
+    // query pool before reuse; no device-side result copy or extra wait is needed.
+    std::fill_n(m_queryScratch.begin(), frame.queryCount, QueryValue{});
+    const VkResult result = vkGetQueryPoolResults(
+        m_device, frame.pool, 0, frame.queryCount, sizeof(QueryValue) * frame.queryCount, m_queryScratch.data(),
+        sizeof(QueryValue), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    if (result != VK_SUCCESS)
+        return std::nullopt;
+    const auto *values = reinterpret_cast<const char *>(m_queryScratch.data());
     frame.pending = false;
 
     rhi::GpuTimestampFrame completed;
