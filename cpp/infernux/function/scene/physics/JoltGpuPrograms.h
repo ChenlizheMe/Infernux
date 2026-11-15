@@ -389,6 +389,22 @@ class JoltGpuStepInputs
     mutable size_t m_nextWorkUniform = 0;
 };
 
+/// One ready body unit. The caller retains the member/cursor and clean layout lease.
+/// These input pointers are consumed synchronously and never escape preparation.
+struct JoltGpuBodyBatchMember
+{
+    const JoltGpuStepInputs *inputs;
+    JoltGpuStageWork work;
+};
+
+/// Source/Lane-owned reusable header, selection and tile allocations. Pure
+/// Compute FIFO protects accepted reads; reset on pressure/exclusive retirement,
+/// while accepted packet owners retain the allocations they actually reference.
+struct JoltGpuBodyBatchInputs
+{
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 3> buffers;
+};
+
 /// A consumer of the common compiler's typed target artifact. This class does
 /// not load sources, own a compiler/cache/device, or submit a second GPU queue.
 class JoltGpuPrograms
@@ -422,6 +438,15 @@ class JoltGpuPrograms
                                                                            const JoltGpuStepInputs &inputs,
                                                                            const std::vector<JoltGpuStageWork> &work);
 
+    /// One true body-tile dispatch, with the three immutable tables uploaded in
+    /// the same packet. Members must share one of the three body stages and
+    /// one accepted layout; total padded work is bounded by WorkItemLimit(Bodies).
+    /// nullptr means managed input allocation deferred: retain every cursor and
+    /// retry unchanged. This method neither submits nor accepts member work.
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareBodyBatch(const JoltGpuStorage &storage, const std::vector<JoltGpuBodyBatchMember> &members,
+                     JoltGpuBodyBatchInputs &inputs);
+
   private:
     friend class JoltGpuBroadphase;
     // Append only: same Tick producer, packet admission and real receipts.
@@ -448,12 +473,18 @@ class JoltGpuPrograms
     BuildDispatch(const Entry &entry, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                   const JoltGpuStageWork &work, const std::shared_ptr<rhi::ComputeBuffer> &workUniform,
                   const std::shared_ptr<const JoltGpuContactWorkset> &resident = {}) const;
+    struct BodyBatchEntry
+    {
+        std::shared_ptr<rhi::ComputeKernel> kernel;
+        std::vector<Binding> bindings;
+    };
     static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
     std::shared_ptr<JoltGpuSleep> m_sleep;
     std::shared_ptr<JoltGpuArticulations> m_articulations;
     std::shared_ptr<rhi::ComputeBuffer> m_emptyArticulationControl;
     std::array<Entry, StageCount> m_entries;
+    std::array<BodyBatchEntry, 3> m_bodyBatchEntries;
 };
 
 } // namespace infernux

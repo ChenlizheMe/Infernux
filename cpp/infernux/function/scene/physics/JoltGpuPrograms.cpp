@@ -146,6 +146,18 @@ constexpr Port Ports[] = {
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
 constexpr size_t StoragePortCount = 12;
 constexpr size_t WorkUniformCacheCapacity = 64;
+struct BodyBatchDefinition
+{
+    Stage stage;
+    const char *entry;
+};
+constexpr BodyBatchDefinition BodyBatchDefinitions[] = {
+    {Stage::PrepareKinematics, "body_batch_prepare_kinematics"},
+    {Stage::ApplyForces, "body_batch_apply_forces"},
+    {Stage::Integrate, "body_batch_integrate"},
+};
+constexpr std::array<std::string_view, 3> BodyBatchInputNames = {"body_batch_header", "body_batch_selections",
+                                                                 "body_batch_tiles"};
 constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 
 constexpr size_t PortIndex(Resource resource)
@@ -501,6 +513,22 @@ void ValidateForces(const std::vector<BodyForces> &forces, uint32_t bodyCount)
             throw std::invalid_argument("Jolt GPU force and torque must be finite");
 }
 
+void ValidateVectorLayout(const Port &port, const ShaderResourceLayout &resource, bool uniform)
+{
+    const auto &value = resource.value;
+    if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
+        (uniform ? value.byteSize : resource.elementStride) != port.stride || value.kind != ShaderValueKind::Struct ||
+        value.fields.size() != port.stride / 16)
+        throw std::invalid_argument("Jolt GPU target layout does not match its shared device records");
+    for (size_t index = 0; index < value.fields.size(); ++index) {
+        const auto &field = value.fields[index];
+        const auto scalar = (port.integerFields & (1u << index)) ? ShaderScalarKind::UInt32 : ShaderScalarKind::Float32;
+        if (field.name != port.fields[index] || field.offset != index * 16 || field.byteSize != 16 ||
+            field.kind != ShaderValueKind::Vector || field.scalar != scalar || field.rows != 1 || field.columns != 4)
+            throw std::invalid_argument("Jolt GPU target field differs from the shared device record");
+    }
+}
+
 void ValidateLayout(const Port &port, const ShaderResourceLayout &resource)
 {
     if (port.resource == Resource::SleepStates) {
@@ -520,16 +548,33 @@ void ValidateLayout(const Port &port, const ShaderResourceLayout &resource)
             throw std::invalid_argument("Convex geometry requires its typed read-only UInt4 word binding");
         return;
     }
-    if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
-        (uniform ? value.byteSize : resource.elementStride) != port.stride || value.kind != ShaderValueKind::Struct ||
-        value.fields.size() != port.stride / 16)
-        throw std::invalid_argument("Jolt GPU target layout does not match its shared device records");
-    for (size_t index = 0; index < value.fields.size(); ++index) {
-        const auto &field = value.fields[index];
-        const auto scalar = (port.integerFields & (1u << index)) ? ShaderScalarKind::UInt32 : ShaderScalarKind::Float32;
-        if (field.name != port.fields[index] || field.offset != index * 16 || field.byteSize != 16 ||
-            field.kind != ShaderValueKind::Vector || field.scalar != scalar || field.rows != 1 || field.columns != 4)
-            throw std::invalid_argument("Jolt GPU target field differs from the shared device record");
+    ValidateVectorLayout(port, resource, uniform);
+}
+
+void ValidateBodyBatchInput(size_t slot, const ShaderResourceLayout &resource)
+{
+    if (slot == 0) {
+        const Port header{Resource::StepParams, BodyBatchInputNames[0], sizeof(BodyBatchHeader), {"counts"}, 1};
+        ValidateVectorLayout(header, resource, true);
+        return;
+    }
+    if (resource.binding.type != rhi::BindingType::StorageBuffer || !resource.binding.readOnlyStorage)
+        throw std::invalid_argument("Body batch tables require read-only structured storage");
+    if (slot == 1) {
+        ValidateVectorLayout(Ports[PortIndex(Resource::StepParams)], resource, false);
+        return;
+    }
+    const auto &value = resource.value;
+    constexpr std::array<std::string_view, 3> fields{"selectionIndex", "bodyFirst", "bodyCount"};
+    if (resource.elementStride != sizeof(BodyBatchTile) || value.kind != ShaderValueKind::Struct ||
+        value.byteSize != sizeof(BodyBatchTile) || value.fields.size() != fields.size())
+        throw std::invalid_argument("Body batch tile differs from its shared three-scalar layout");
+    for (size_t i = 0; i < fields.size(); ++i) {
+        const auto &field = value.fields[i];
+        if (field.name != fields[i] || field.kind != ShaderValueKind::Scalar ||
+            field.scalar != ShaderScalarKind::UInt32 || field.offset != i * sizeof(uint32_t) ||
+            field.byteSize != sizeof(uint32_t) || field.rows != 1 || field.columns != 1)
+            throw std::invalid_argument("Body batch tile field differs from its shared scalar layout");
     }
 }
 
@@ -1294,6 +1339,72 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
         }
         m_entries[static_cast<size_t>(definition.stage)] = std::move(entry);
     }
+    for (size_t i = 0; i < std::size(BodyBatchDefinitions); ++i) {
+        const auto &definition = BodyBatchDefinitions[i];
+        const auto code = std::find_if(target.entries.begin(), target.entries.end(),
+                                       [&](const auto &entry) { return entry.name == definition.entry; });
+        if (code == target.entries.end() || code->stage != rhi::ShaderStage::Compute ||
+            code->workgroupSize != std::array<uint32_t, 3>{64, 1, 1} || code->rootConstants)
+            throw std::invalid_argument("Jolt GPU target is missing a matching body batch entry");
+        const auto &single = Stages[static_cast<size_t>(definition.stage)];
+        const uint32_t reads = single.reads & ~(Mask(Resource::StepParams) | Mask(Resource::StageWork) |
+                                                Mask(Resource::ArticulationControl));
+        const uint32_t expected = reads | single.writes | (7u << PortCount);
+        uint32_t actual = 0, storageBindings = 0, uniformBindings = 0;
+        BodyBatchEntry entry;
+        std::vector<rhi::ComputeBufferBinding> bindings;
+        for (const auto &resource : target.resources) {
+            const std::array<uint32_t, 2> key{resource.set, resource.binding.binding};
+            if (std::find(code->bindings.begin(), code->bindings.end(), key) == code->bindings.end())
+                continue;
+            if (resource.set != 0)
+                throw std::invalid_argument("Body batch contains a resource outside its one descriptor set");
+            const auto table = std::find(BodyBatchInputNames.begin(), BodyBatchInputNames.end(), resource.name);
+            size_t slot;
+            bool read = true, write = false;
+            if (table != BodyBatchInputNames.end()) {
+                slot = PortCount + size_t(table - BodyBatchInputNames.begin());
+                ValidateBodyBatchInput(slot - PortCount, resource);
+            } else {
+                const auto port = std::find_if(std::begin(Ports), std::end(Ports),
+                                               [&](const auto &value) { return value.name == resource.name; });
+                if (port == std::end(Ports))
+                    throw std::invalid_argument("Body batch contains an unknown resource");
+                slot = PortIndex(port->resource);
+                ValidateLayout(*port, resource);
+                read = (reads & Mask(port->resource)) != 0;
+                write = (single.writes & Mask(port->resource)) != 0;
+                if ((!read && !write) || (write && resource.binding.readOnlyStorage))
+                    throw std::invalid_argument("Body batch resource access differs from its body stage");
+            }
+            if (resource.binding.type == rhi::BindingType::UniformBuffer)
+                ++uniformBindings;
+            else
+                ++storageBindings;
+            const auto access = read && write ? rhi::ComputeBufferAccess::ReadWrite
+                                : write       ? rhi::ComputeBufferAccess::Write
+                                              : rhi::ComputeBufferAccess::Read;
+            entry.bindings.push_back({slot, access, read, false});
+            bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
+            actual |= 1u << slot;
+        }
+        if (actual != expected || storageBindings != 6 || uniformBindings != 1)
+            throw std::invalid_argument("Body batch resources differ from its exact six-storage recipe");
+        if (target.target == ShaderCodeTarget::SpirV) {
+            if (code->code.empty() || code->code.size() % sizeof(uint32_t))
+                throw std::invalid_argument("Body batch contains invalid SPIR-V bytes");
+            std::vector<uint32_t> words(code->code.size() / sizeof(uint32_t));
+            std::memcpy(words.data(), code->code.data(), code->code.size());
+            entry.kernel = std::make_shared<rhi::ComputeKernel>(
+                m_host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), code->name, std::move(bindings),
+                0);
+        } else {
+            entry.kernel = std::make_shared<rhi::ComputeKernel>(
+                m_host, rhi::ShaderModuleDesc::FromWgsl(code->code.data(), code->code.size()), code->name,
+                std::move(bindings), 0);
+        }
+        m_bodyBatchEntries[i] = std::move(entry);
+    }
 }
 
 rhi::ComputeDispatchDesc
@@ -1470,6 +1581,116 @@ void JoltGpuPrograms::AppendStages(const JoltGpuStorage &storage, const JoltGpuS
         }
         dispatches.push_back(BuildDispatch(entry, storage, inputs, unit, uniform->second));
     }
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch>
+JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vector<JoltGpuBodyBatchMember> &members,
+                                  JoltGpuBodyBatchInputs &inputs)
+{
+    if (!m_host.SharesServicesWith(storage.GetHost()) || members.empty())
+        throw std::invalid_argument("Body batch requires ready units on its shared storage owner");
+    const auto definition = std::find_if(std::begin(BodyBatchDefinitions), std::end(BodyBatchDefinitions),
+                                         [&](const auto &value) { return value.stage == members.front().work.stage; });
+    if (definition == std::end(BodyBatchDefinitions))
+        throw std::invalid_argument("Body batch requires kinematic setup, forces or integrate");
+    const auto &entry = m_bodyBatchEntries[size_t(definition - std::begin(BodyBatchDefinitions))];
+    const auto &single = Stages[static_cast<size_t>(definition->stage)];
+    const uint32_t maxTiles = WorkItemLimit(Domain::Bodies) / 64u;
+    if (members.size() > maxTiles)
+        throw std::invalid_argument("Body batch member padding exceeds its bounded body quantum");
+    std::vector<StepParams> selections;
+    std::vector<BodyBatchTile> tiles;
+    std::vector<std::pair<uint32_t, uint32_t>> intervals;
+    for (const auto &member : members) {
+        if (!member.inputs || member.work.stage != definition->stage ||
+            !ValidateWork(storage, *member.inputs, single, member.work.parameters))
+            throw std::invalid_argument("Body batch requires nonempty units of one ready body stage");
+        const auto &selected = member.inputs->GetParameters();
+        const auto range = member.work.parameters.range;
+        if (selected.counts.x != storage.GetBodyCount() || selected.counts.y != storage.GetWorldCount() ||
+            selected.counts.z != storage.GetShapeCount() || selected.selection.x >= storage.GetWorldCount())
+            throw std::invalid_argument("Body batch selection differs from its accepted shared extents");
+        const auto &world = storage.GetModel().worlds[selected.selection.x];
+        if (selected.selection.y != world.bodies.x || selected.selectedCounts.x != world.bodies.y ||
+            selected.selection.z != world.leaves.x || selected.selectedCounts.y != world.leaves.y ||
+            selected.selection.w != world.leaves.z || selected.selectedCounts.z || world.leaves.w)
+            throw std::invalid_argument("Body batch selection differs from its accepted no-joint WorldRange");
+        for (const auto resource : {Resource::BodyModels, Resource::Worlds}) {
+            const auto &captured = member.inputs->GetCaptured(resource);
+            if (!captured || captured->GetAllocation() != storage.Get(resource)->GetAllocation())
+                throw std::invalid_argument("Body batch captured author allocation is no longer current");
+        }
+        if (definition->stage == Stage::ApplyForces) {
+            const auto &forces = member.inputs->GetCaptured(Resource::BodyForces);
+            if (!forces || forces->GetAllocation() != storage.Get(Resource::BodyForces)->GetAllocation())
+                throw std::invalid_argument("Body batch force endpoint is no longer its captured live input");
+        }
+        const uint32_t count = Groups(range.y, 64);
+        if (tiles.size() > maxTiles || count > maxTiles - tiles.size())
+            throw std::invalid_argument("Body batch padded tiles exceed its bounded body quantum");
+        // Body helpers read gravityDt and selection/counts. The resident contact
+        // producer only overrides solve.zw, which this body closure never reads.
+        // Do not reconstruct its unused GPU-only header words on the CPU.
+        const auto selection = static_cast<uint32_t>(selections.size());
+        selections.push_back(selected);
+        intervals.emplace_back(range.x, range.y);
+        for (uint32_t offset = 0; offset < range.y;) {
+            const auto count = std::min(uint32_t{64}, range.y - offset);
+            tiles.push_back({selection, range.x + offset, count});
+            offset += count;
+        }
+    }
+    std::sort(intervals.begin(), intervals.end());
+    for (size_t i = 1; i < intervals.size(); ++i)
+        if (uint64_t(intervals[i - 1].first) + intervals[i - 1].second > intervals[i].first)
+            throw std::invalid_argument("Body batch units overlap writable body rows");
+    const auto &caps = m_host.device.GetCapabilities();
+    const std::array<uint64_t, 3> bytes{sizeof(BodyBatchHeader), selections.size() * sizeof(StepParams),
+                                        tiles.size() * sizeof(BodyBatchTile)};
+    if (tiles.size() > caps.limits.maxComputeWorkgroupCount[0] || caps.limits.maxComputeWorkgroupCount[1] < 1 ||
+        caps.limits.maxComputeWorkgroupCount[2] < 1 || !caps.IsStorageBufferRangeValid(0, bytes[1]) ||
+        !caps.IsStorageBufferRangeValid(0, bytes[2]))
+        throw std::invalid_argument("Body batch exceeds its actual device table or dispatch limit");
+    for (size_t i = 0; i < inputs.buffers.size(); ++i) {
+        auto &buffer = inputs.buffers[i];
+        if (buffer && (!m_host.SharesServicesWith(buffer->GetHost()) || buffer->IsFrozen()))
+            throw std::invalid_argument("Body batch tables require their source-owned mutable Compute inputs");
+        if (!buffer || buffer->GetByteSize() < bytes[i]) {
+            auto grown = rhi::ComputeBuffer::TryCreatePrivate(
+                m_host, {bytes[i] / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+            if (!grown)
+                return {}; // No member unit or upload was accepted.
+            buffer = std::move(grown);
+        }
+    }
+    const BodyBatchHeader header{{static_cast<uint32_t>(selections.size()), static_cast<uint32_t>(tiles.size()),
+                                  storage.GetBodyCount(), storage.GetWorldCount()}};
+    std::vector<rhi::ComputeBufferUpdate> uploads{{inputs.buffers[0], 0, Bytes(&header, 1)},
+                                                  {inputs.buffers[1], 0, Bytes(selections.data(), selections.size())},
+                                                  {inputs.buffers[2], 0, Bytes(tiles.data(), tiles.size())}};
+    rhi::ComputeDispatchDesc dispatch;
+    dispatch.kernel = entry.kernel;
+    dispatch.groupCountX = static_cast<uint32_t>(tiles.size());
+    dispatch.groupCountY = dispatch.groupCountZ = 1;
+    rhi::ComputeDispatchProof proof;
+    for (const auto &binding : entry.bindings) {
+        const auto index = static_cast<uint32_t>(dispatch.buffers.size());
+        const auto &buffer =
+            binding.slot >= PortCount ? inputs.buffers[binding.slot - PortCount] : storage.m_buffers[binding.slot];
+        dispatch.buffers.push_back(buffer);
+        dispatch.bufferAccesses.push_back(binding.access);
+        if (binding.slot >= PortCount) {
+            proof.reads.push_back({index, 0, bytes[binding.slot - PortCount]});
+        } else if (binding.read) {
+            for (const auto &[first, count] : intervals)
+                proof.reads.push_back({index, uint64_t(first) * Ports[binding.slot].stride,
+                                       uint64_t(count) * Ports[binding.slot].stride});
+        }
+    }
+    // These helpers retain prior state on legal early exits; never claim a
+    // complete body write. RHI preservation/proof admission remains unchanged.
+    dispatch.proof = std::move(proof);
+    return rhi::PrepareComputeBatch(m_host, std::move(uploads), {std::move(dispatch)});
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,

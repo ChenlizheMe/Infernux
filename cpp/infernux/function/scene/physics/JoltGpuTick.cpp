@@ -105,6 +105,8 @@ class JoltGpuTick::Impl
                                                           [](const auto &group) { return !group.commands.empty(); }))
             throw std::invalid_argument("GPU tick commands require their command program");
         ValidateControlPacket(pendingControl.initialization);
+        if (!settings && this == lane->members[0])
+            lane->bodyBatchInputs = {};
         selectedRow = worldRow;
         parameters = settings ? std::make_optional(*settings) : std::nullopt;
         reuseParameters = false;
@@ -359,6 +361,7 @@ class JoltGpuTick::Impl
     {
         std::array<Impl *, 3> members{};
         std::shared_ptr<SharedStage> prepared;
+        JoltGpuBodyBatchInputs bodyBatchInputs;
         size_t nextHost = 0, nextGpu = 0;
         uint64_t pollSerial = 0;
         Impl *focus = nullptr;
@@ -954,10 +957,13 @@ class JoltGpuTick::Impl
         }
     }
 
-    JoltGpuStageWork TakeUnit(StageCursor &next) const
+    JoltGpuStageWork TakeUnit(StageCursor &next,
+                              uint32_t bodyLimit = JPH::GPU::WorkItemLimit(JPH::GPU::Domain::Bodies)) const
     {
         const auto span = Span(next.phase);
-        const auto quantum = JPH::GPU::WorkItemLimit(span.domain);
+        const auto quantum = span.domain == JPH::GPU::Domain::Bodies
+                                 ? std::min(JPH::GPU::WorkItemLimit(span.domain), bodyLimit)
+                                 : JPH::GPU::WorkItemLimit(span.domain);
         JPH::GPU::StageWork parameters{};
         if (IslandDomain(span.domain)) {
             const auto maximum = IslandMaxItems(span.domain);
@@ -1289,26 +1295,6 @@ class JoltGpuTick::Impl
                     break;
             }
             count = ready.size();
-        }
-        try {
-            if (!commands && INXLOG_GET_LEVEL() == LOG_DEBUG) {
-                const auto *other = lane->members[0] == this ? lane->members[1] : lane->members[0];
-                const bool body = std::any_of(ready.begin(), ready.end(), [](const auto &unit) {
-                    return unit.stage == JPH::GPU::Stage::PrepareKinematics ||
-                           unit.stage == JPH::GPU::Stage::ApplyForces || unit.stage == JPH::GPU::Stage::Integrate;
-                });
-                if (other && other->status == Status::Running && body)
-                    INXLOG_DIAGNOSTIC(
-                        "P4_PAIR_FRONTIER row=", selectedRow, " phase=", uint32_t(stageCursor.phase),
-                        " peer_row=", other->selectedRow, " peer_phase=", uint32_t(other->stageCursor.phase),
-                        " peer_batch=", bool(other->batch), " peer_continuation=", bool(other->workContinuation),
-                        " peer_control=", other->controlAccepted, " peer_inputs=", other->inputAccepted,
-                        " same_substep=", stageCursor.substep == other->stageCursor.substep,
-                        " prefix_contains_integrate=", std::any_of(ready.begin(), ready.end(), [](const auto &unit) {
-                            return unit.stage == JPH::GPU::Stage::Integrate;
-                        }));
-            }
-        } catch (...) {
         }
         auto candidate = commands ? commandCursor->PrepareNext(host, static_cast<uint32_t>(count))
                                   : programs.PrepareStages(storage, inputs, ready);
@@ -1781,7 +1767,8 @@ class JoltGpuTick::Impl
                     INXLOG_DIAGNOSTIC("P4_SHARED_ACCEPT opportunity=", stage->opportunity, " owner_row=", selectedRow,
                                       " peer_row=", stage->peer->selectedRow,
                                       " stage=", static_cast<uint32_t>(stage->stage),
-                                      " ticket=", packet->GetSubmission().serial, " units=2");
+                                      " ticket=", packet->GetSubmission().serial,
+                                      " units=2 dispatches=", packet->GetExecutionSignature().front());
             } catch (...) {
                 // A diagnostic failure cannot revoke or fail an accepted numerical packet.
             }
@@ -1992,6 +1979,10 @@ FrameWorkFacts JoltGpuTick::Impl::Lane::Describe() const
 
 void JoltGpuTick::Impl::Lane::DropShared(Impl *member) noexcept
 {
+    // Pressure, numerical cancellation and budget decline may surrender this
+    // optional source owner. Accepted packets retain their actual allocations.
+    if (member != members[2])
+        bodyBatchInputs = {};
     if (!prepared || (prepared->owner != member && prepared->peer != member))
         return;
     const auto stage = std::move(prepared);
@@ -2036,8 +2027,8 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
         std::memcmp(&a->tickParameters.restitution, &b->tickParameters.restitution,
                     sizeof(a->tickParameters.restitution)))
         return false;
-    auto endA = a->stageCursor, endB = b->stageCursor;
-    const auto unitA = a->TakeUnit(endA), unitB = b->TakeUnit(endB);
+    auto fullEndA = a->stageCursor, fullEndB = b->stageCursor;
+    const auto fullA = a->TakeUnit(fullEndA), fullB = b->TakeUnit(fullEndB);
     const auto replaceable = [](const Impl *member, const JoltGpuStageWork &unit, const StageCursor &end) {
         if (!member->batch)
             return true;
@@ -2051,8 +2042,21 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
                preparedEnd.islandBatchFirst == end.islandBatchFirst &&
                preparedEnd.islandBatchLanes == end.islandBatchLanes;
     };
-    if (!replaceable(a, unitA, endA) || !replaceable(b, unitB, endB))
+    if (!replaceable(a, fullA, fullEndA) || !replaceable(b, fullB, fullEndB))
         return false;
+    // Verify a prepared singleton at its original exact frontier first, then
+    // bound the shared prefix through TakeUnit itself so both end cursors match.
+    // Share the original quantum, including padding; give a short peer's unused
+    // tiles back to the other member without admitting a rectangle of Worlds.
+    constexpr uint32_t tileWidth = 64;
+    const uint32_t maxTiles = JPH::GPU::WorkItemLimit(JPH::GPU::Domain::Bodies) / tileWidth;
+    const auto tilesFor = [](uint32_t count) { return count / tileWidth + uint32_t(count % tileWidth != 0); };
+    uint32_t tilesA = std::min(tilesFor(fullA.parameters.range.y), maxTiles / 2u);
+    const uint32_t tilesB = std::min(tilesFor(fullB.parameters.range.y), maxTiles - tilesA);
+    tilesA = std::min(tilesFor(fullA.parameters.range.y), maxTiles - tilesB);
+    auto endA = a->stageCursor, endB = b->stageCursor;
+    const auto unitA = a->TakeUnit(endA, tilesA * tileWidth);
+    const auto unitB = b->TakeUnit(endB, tilesB * tileWidth);
     auto stage = std::make_shared<SharedStage>();
     stage->owner = a;
     stage->peer = b;
@@ -2063,23 +2067,9 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     stage->peerCursorEnd = b->cursor + 1;
     a->sharedStages.reserve(a->sharedStages.size() + 1);
     b->sharedStages.reserve(b->sharedStages.size() + 1);
-    std::vector<rhi::ComputeBufferUpdate> uploads;
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
-    try {
-        a->programs.AppendStages(a->storage, a->inputs, {unitA}, uploads, dispatches);
-    } catch (...) {
-        a->Fail();
-        return true;
-    }
-    try {
-        b->programs.AppendStages(b->storage, b->inputs, {unitB}, uploads, dispatches);
-    } catch (...) {
-        b->Fail();
-        return true;
-    }
-    if (dispatches.size() != 2)
-        throw std::logic_error("GPU member packet requires both exact ready units");
-    auto packet = rhi::PrepareComputeBatch(a->host, std::move(uploads), std::move(dispatches));
+    auto packet = a->programs.PrepareBodyBatch(a->storage, {{&a->inputs, unitA}, {&b->inputs, unitB}}, bodyBatchInputs);
+    if (!packet)
+        return false; // Managed defer accepts/cancels neither member's existing singleton.
     stage->key = Impl::Key(*packet, Impl::NumericalKey({unitA, unitB}));
     auto numericalKey = Impl::NumericalKey({unitA, unitB});
     // Any old packets are exact, unaccepted singletons at these same
@@ -2176,6 +2166,11 @@ JoltGpuTick &JoltGpuTick::GetObservationMember()
         m_observationMember.reset(new JoltGpuTick(*this, {}, true));
     m_observationMember->ReleaseObservation();
     return *m_observationMember;
+}
+
+void JoltGpuTick::ReleaseBodyBatchInputs() noexcept
+{
+    m_impl->lane->bodyBatchInputs = {};
 }
 
 void JoltGpuTick::ReleaseObservation() noexcept

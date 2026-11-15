@@ -259,6 +259,7 @@ class JoltGpuTick final
     class Impl;
     explicit JoltGpuTick(JoltGpuTick &owner, std::function<void()> failureObserver, bool observation = false);
     JoltGpuTick &GetObservationMember();
+    void ReleaseBodyBatchInputs() noexcept;
     void ReleaseObservation() noexcept;
     void TracePublicationRead(const char *boundary, uint32_t row) const noexcept;
     std::unique_ptr<Impl> m_impl;

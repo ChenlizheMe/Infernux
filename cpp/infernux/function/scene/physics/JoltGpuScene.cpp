@@ -10,7 +10,6 @@
 #include "JoltGpuJoints.h"
 #include "JoltGpuNarrowphase.h"
 #include "JoltGpuPackedLayout.h"
-#include <core/log/InxLog.h>
 #include <cstring>
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
@@ -373,6 +372,9 @@ class JoltGpuScene::Impl
         });
         const auto fact = storage.GetHost().device.ObserveManagedDeviceLocalPressure();
         if (fact.serial != observedPressure) {
+            // Release optional tile tables at the actual pressure fact, even
+            // when there is no P3 cache that requires a representation sweep.
+            tick.ReleaseBodyBatchInputs();
             observedPressure = fact.serial;
             if (hasCache || pressurePending) {
                 if (!pressurePending)
@@ -1567,7 +1569,11 @@ class JoltGpuScene::Impl
                 if (peerWriter && failureObserver)
                     failureObserver(*peerWriter->world);
             });
-        const auto pendingBeforeAdmission = domain.pending.size();
+        // Existing admission has excluded both numerical writers here for an
+        // unclean/exclusive window. Surrender optional tables before factories
+        // can prepare the next author/model/layout allocations.
+        if (!clean)
+            tick.ReleaseBodyBatchInputs();
         auto finalConsumer = prepareFinalConsumer();
         auto control = PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer),
                                       std::move(finalConsumer), std::move(prepareContacts), clean);
@@ -1593,34 +1599,6 @@ class JoltGpuScene::Impl
         } catch (...) {
             Cancel(domain);
             throw;
-        }
-        try {
-            if (INXLOG_GET_LEVEL() == LOG_DEBUG) {
-                const Partition *debt = nullptr;
-                for (const auto *other : ordered)
-                    if (other && BlocksNumericalWindow(*other)) {
-                        debt = other;
-                        break;
-                    }
-                size_t inactiveAuthorPending = 0;
-                for (const auto *other : ordered)
-                    if (other && other->world == &SceneManager::Instance().AuthoringWorld() &&
-                        !other->world->simulation.isPlaying)
-                        inactiveAuthorPending = other->pending.size();
-                INXLOG_DIAGNOSTIC(
-                    "P4_MEMBER_ADMIT world=", domain.id, " row=", domain.row, " step=", step,
-                    " numerical=", bool(parameters), " clean=", clean, " pending_before=", pendingBeforeAdmission,
-                    " maintenance_now=", MaintenancePending(),
-                    " directory_current=", domain.published && domain.published->directory == publicationDirectory,
-                    " layout_current=", domain.published && domain.published->layoutGeneration == layoutGeneration,
-                    " trees=", domain.articulationCache ? domain.articulationCache->trees.size() : 0,
-                    " numeric_cache=", domain.articulationCache && bool(domain.articulationCache->numeric),
-                    " participant=", domain.world->physics && bool(domain.world->physics->admittedParticipants),
-                    " debt_world=", debt ? debt->id : 0, " debt_playing=", debt && debt->world->simulation.isPlaying,
-                    " debt_closed=", debt && debt->closed, " debt_pending=", debt ? debt->pending.size() : 0,
-                    " inactive_author_pending=", inactiveAuthorPending);
-            }
-        } catch (...) {
         }
         return true;
     }

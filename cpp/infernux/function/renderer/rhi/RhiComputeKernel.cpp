@@ -71,10 +71,9 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shaderDe
     m_bufferBindings.reserve(bufferBindings.size());
     m_bufferBindingTypes.reserve(bufferBindings.size());
     m_defaultBufferAccesses.reserve(bufferBindings.size());
+    // Reflected binding labels are independent of the descriptor-entry capacity.
     for (size_t index = 0; index < bufferBindings.size(); ++index) {
         const auto binding = bufferBindings[index];
-        if (binding.slot >= BindingLayoutDesc::MaxEntries)
-            throw std::invalid_argument("Compute kernel buffer binding exceeds the RHI binding range");
         for (size_t previous = 0; previous < index; ++previous)
             if (bufferBindings[previous].slot == binding.slot)
                 throw std::invalid_argument("Compute kernel buffer bindings must be unique");
