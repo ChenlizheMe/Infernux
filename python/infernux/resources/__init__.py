@@ -12,7 +12,9 @@ _MONO_FONT = "MapleMono-CN-Regular.ttf"
 
 # Default to package directory; overridden by activate_library() at launch.
 icon_path = os.path.join(_package_dir, "icons", "icon.png")
-engine_font_path = os.path.join(_package_dir, "fonts", _UI_FONT)
+# Runtime text keeps its bundled monospace face on every Player platform.
+engine_font_path = os.path.join(_package_dir, "fonts", _MONO_FONT)
+engine_ui_font_path = os.path.join(_package_dir, "fonts", _UI_FONT)
 engine_font_cjk_path = os.path.join(_package_dir, "fonts", _UI_CJK_FONT)
 engine_mono_font_path = os.path.join(_package_dir, "fonts", _MONO_FONT)
 engine_lib_path = os.path.join(_package_dir, "..", "lib")
@@ -32,7 +34,8 @@ def activate_library(project_path: str) -> None:
     g = globals()
     g["resources_path"] = root
     g["icon_path"] = os.path.join(root, "icons", "icon.png")
-    g["engine_font_path"] = os.path.join(root, "fonts", _UI_FONT)
+    g["engine_font_path"] = os.path.join(root, "fonts", _MONO_FONT)
+    g["engine_ui_font_path"] = os.path.join(root, "fonts", _UI_FONT)
     g["engine_font_cjk_path"] = os.path.join(root, "fonts", _UI_CJK_FONT)
     g["engine_mono_font_path"] = os.path.join(root, "fonts", _MONO_FONT)
     g["file_type_icons_dir"] = os.path.join(root, "icons")
@@ -42,6 +45,7 @@ def activate_library(project_path: str) -> None:
 __all__ = [
     "icon_path",
     "engine_font_path",
+    "engine_ui_font_path",
     "engine_font_cjk_path",
     "engine_mono_font_path",
     "engine_lib_path",

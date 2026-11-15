@@ -220,7 +220,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         # Match Unity's default UI text density more closely. Player bootstrap
         # uses the same base size; explicit project UIText sizes stay unchanged.
         self.engine.set_gui_fonts(
-            _resources.engine_font_path,
+            _resources.engine_ui_font_path,
             _resources.engine_font_cjk_path,
             _resources.engine_mono_font_path,
             16,

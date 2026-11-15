@@ -109,7 +109,7 @@ def test_grouped_serialized_columns_match_native_vector_columns(engine):
     from infernux.engine.ui.field_draw import draw_field_value
     from infernux.components.fields import FieldMetadata, FieldType
 
-    engine.set_gui_fonts(resources.engine_font_path, resources.engine_font_cjk_path,
+    engine.set_gui_fonts(resources.engine_ui_font_path, resources.engine_font_cjk_path,
                          resources.engine_mono_font_path, 13.0)
     observed, failures = [], []
 
