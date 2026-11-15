@@ -50,6 +50,10 @@ Scene tool selection uses `SCENE_TOOL_SELECTED_BG/HOVER/ACTIVE`; icon tint uses
 `SCENE_TOOL_ICON` and `SCENE_TOOL_ICON_SELECTED`. They derive from the semantic
 accent and text roles unless explicitly overridden, including for light themes.
 
+Component menu buttons use `INSPECTOR_HEADER_MENU_WIDTH` and
+`INSPECTOR_HEADER_MENU_INSET` for width and right padding. Their three dots are
+drawn at the button center, independently of font baselines or character widths.
+
 `package/` is the installed payload. This README, the workflow, token reference
 and packager stay outside it. Keep a stable package reference and theme ID when
 publishing updates. Use the normal `engine` version requirement for compatibility.

@@ -24,6 +24,8 @@
 
 场景工具栏的选中背景为 `SCENE_TOOL_SELECTED_BG/HOVER/ACTIVE`，普通与选中图标为 `SCENE_TOOL_ICON`、`SCENE_TOOL_ICON_SELECTED`；默认从强调色与文字色派生，浅色主题也能保持图标可读。
 
+组件标题的菜单按钮使用 `INSPECTOR_HEADER_MENU_WIDTH` 和 `INSPECTOR_HEADER_MENU_INSET` 控制宽度与右侧留白。三个点由原生绘图居中绘制，不依赖字体中的句点基线或字符宽度。
+
 仅 `package/` 进入安装包。README、CHANGELOG、CI、token 参考、theme_schema.py 和打包器留在仓库外层；不要往 package/ 放缓存、.runtime、预览工程或构建工具。editor/ 内容不进入 Player。
 
 引擎源码仓库的导出命令为 `python scripts/plugins/export_theme_template.py <output-folder>`。导出结果只依赖 Python 标准库，不要求安装引擎。

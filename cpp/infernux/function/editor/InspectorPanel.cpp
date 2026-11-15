@@ -1632,6 +1632,10 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     float headerMinY = headerMin.y;
     float headerMaxY = headerMax.y;
     float headerHeight = (std::max)(0.0f, headerMaxY - headerMinY);
+    const float optionsInset = EditorThemeRegistry::Float("INSPECTOR_HEADER_MENU_INSET") * dpi;
+    const float optionsWidth = std::min(EditorThemeRegistry::Float("INSPECTOR_HEADER_MENU_WIDTH") * dpi,
+                                        std::max(1.0f, headerMax.x - headerMin.x - optionsInset * 2.0f));
+    const float optionsLeft = headerMax.x - optionsInset - optionsWidth;
 
     // Overlay: icon + checkbox + label on the same row. The header rectangle
     // already contains ImGui's scrolling transform, so keep every overlay item
@@ -1664,6 +1668,13 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     }
 
     const float controlsX = overlayX + iconSize + headerItemSpacing;
+    const auto renderLabel = [&] {
+        const float right = contextPopupId.empty() ? headerMax.x : optionsLeft - headerItemSpacing;
+        auto *draw = ImGui::GetWindowDrawList();
+        draw->PushClipRect(headerMin, ImVec2(std::max(headerMin.x, right), headerMax.y), true);
+        ImGui::TextUnformatted(displayName.c_str());
+        draw->PopClipRect();
+    };
     bool enabledClicked = false;
     if (showEnabled) {
         const float checkboxRowHeight =
@@ -1679,21 +1690,32 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
         const ImVec2 cbMax = ImGui::GetItemRectMax();
         const float labelH = ImGui::GetTextLineHeight();
         ImGui::SetCursorScreenPos(ImVec2(cbMax.x + headerItemSpacing, (cbMin.y + cbMax.y) * 0.5f - labelH * 0.5f));
-        ImGui::TextUnformatted(displayName.c_str());
+        renderLabel();
     } else {
         ImGui::SetCursorScreenPos(ImVec2(controlsX, headerMin.y + (headerHeight - ImGui::GetTextLineHeight()) * 0.5f));
-        ImGui::TextUnformatted(displayName.c_str());
+        renderLabel();
     }
     if (ctx && captureSemantics)
         ctx->RecordSemanticItem("component_label", displayName, true, semanticBase + ".label");
 
     bool optionsClicked = false;
     if (!contextPopupId.empty()) {
-        const float optionsWidth = 24.0f * dpi;
-        ImGui::SameLine();
-        const float rightEdge = ImGui::GetWindowContentRegionMax().x;
-        ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(), rightEdge - optionsWidth));
-        if (ImGui::SmallButton("...##component_options")) {
+        ImGui::SetCursorScreenPos(ImVec2(optionsLeft, headerMin.y));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_HOVER"));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_ACTIVE"));
+        const bool clicked = ImGui::Button("##component_options", ImVec2(optionsWidth, headerHeight));
+        ImGui::PopStyleColor(3);
+        const ImVec2 buttonMin = ImGui::GetItemRectMin();
+        const ImVec2 buttonMax = ImGui::GetItemRectMax();
+        const ImVec2 center((buttonMin.x + buttonMax.x) * 0.5f, (buttonMin.y + buttonMax.y) * 0.5f);
+        const float spacing = std::min(4.0f * dpi, optionsWidth * 0.2f);
+        const float radius = std::min(dpi, spacing * 0.25f);
+        auto *draw = ImGui::GetWindowDrawList();
+        for (int dot = -1; dot <= 1; ++dot)
+            draw->AddCircleFilled(ImVec2(center.x + dot * spacing, center.y), radius,
+                                   ImGui::GetColorU32(ImGuiCol_Text), 12);
+        if (clicked) {
             optionsClicked = true;
             ImGui::OpenPopup(contextPopupId.c_str());
         }
