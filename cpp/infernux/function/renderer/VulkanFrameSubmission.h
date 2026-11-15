@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vk/VulkanSubmissionWaits.h"
+
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
 #include <vulkan/vulkan_core.h>
 
@@ -39,6 +41,10 @@ class VulkanFrameSubmission
     }
     void DiscardPublications() noexcept;
 
+    /// Attach an accepted producer to this exact work's actual batch. A recorder
+    /// may add it after admission; no wait is imposed on unrecorded operations.
+    void Require(uint32_t workItem, rhi::SubmissionTicket producer, rhi::PipelineStage stages);
+
     [[nodiscard]] uint32_t AddWork(rhi::DeviceId device, rhi::QueueRole queue, rhi::SubmissionDomain domain,
                                    rhi::RenderViewId view, rhi::PipelineStage waitStages,
                                    std::vector<uint32_t> dependencies, Recorder recorder,
@@ -61,6 +67,7 @@ class VulkanFrameSubmission
   private:
     rhi::SubmissionPlanComposer m_composer;
     std::unordered_map<uint32_t, Recorder> m_recorders;
+    std::unordered_map<uint32_t, SubmissionReads> m_workReads;
     std::vector<std::shared_ptr<void>> m_resourceOwners;
     std::vector<std::function<void(rhi::SubmissionTicket)>> m_publications;
     std::unordered_map<uint32_t, std::vector<std::function<void(rhi::SubmissionTicket)>>> m_workPublications;

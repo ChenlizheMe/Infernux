@@ -1,6 +1,7 @@
 #include "VulkanFrameSubmission.h"
 
 #include "vk/RenderGraph.h"
+#include "vk/RhiVulkanTypes.h"
 
 #include <core/error/InxError.h>
 #include <stdexcept>
@@ -12,6 +13,7 @@ void VulkanFrameSubmission::Reset(uint32_t firstWorkItemId)
 {
     m_composer.Reset(firstWorkItemId);
     m_recorders.clear();
+    m_workReads.clear();
     m_resourceOwners.clear();
     m_publications.clear();
     m_workPublications.clear();
@@ -79,6 +81,12 @@ void VulkanFrameSubmission::DiscardPublications() noexcept
     m_workPublications.clear();
 }
 
+void VulkanFrameSubmission::Require(uint32_t workItem, rhi::SubmissionTicket producer, rhi::PipelineStage stages)
+{
+    if (producer.IsValid())
+        m_workReads[workItem].Add(producer, rhi::ToVkPipelineStages(stages));
+}
+
 uint32_t VulkanFrameSubmission::AddWork(rhi::DeviceId device, rhi::QueueRole queue, rhi::SubmissionDomain domain,
                                         rhi::RenderViewId view, rhi::PipelineStage waitStages,
                                         std::vector<uint32_t> dependencies, Recorder recorder,
@@ -136,6 +144,12 @@ bool VulkanFrameSubmission::RecordBatch(const rhi::SubmissionPlan &plan, uint32_
         }
         if (!recorder->second(commandBuffer))
             return false;
+        if (const auto found = m_workReads.find(workItem); found != m_workReads.end()) {
+            auto *reads = SubmissionReadScope::Current(commandBuffer);
+            if (!reads)
+                throw std::logic_error("Work producer requires the active submission recording scope");
+            reads->Add(found->second, 0);
+        }
     }
     return true;
 }
