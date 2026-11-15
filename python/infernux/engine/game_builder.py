@@ -1964,8 +1964,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         Direct AssetIndex dependencies are still followed so a selected
         project product can retain read-only engine artifacts it explicitly
         references.  Engine shaders are also symbolic runtime entry points:
-        RenderGraph and FullscreenRenderer address hidden stages by ShaderInfo
-        name, so no serialized project GUID can express those edges.  Preserve
+        RenderGraph and FullscreenRenderer address hidden stages by registered
+        shader ID, so no serialized project GUID can express those edges. Preserve
         every read-only built-in shader identity in the Player catalog while
         keeping its bytes exclusively in Runtime.inxrt.  This is validation
         and identity propagation, not content pruning.
@@ -2240,10 +2240,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             else:
                 continue
 
-            # Project shaders remain GLSL runtime inputs. They are packed in
-            # Content.inxpkg rather than shipped as loose authoring files, so
-            # Player uses the exact same dynamic linker as the Editor and can
-            # form shader combinations that did not exist at build time.
+            # Static GPU author sources stay inside Content.inxpkg. Editor
+            # and Player prepare new combinations through the same resident
+            # Slang service and the packed dependency snapshots.
             artifact_suffix = ".inxasset" if logical_type == "data_asset" else suffix
             if suffix in RUNTIME_BINARY_DOCUMENT_SUFFIXES:
                 artifact_suffix = ".inxdoc"

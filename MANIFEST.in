@@ -5,5 +5,6 @@ include python/infernux_editor.py
 recursive-exclude python/infernux/_runtime_packs *
 recursive-exclude python/infernux/_runtime_modules *
 recursive-exclude python/infernux/resources/player_runtime *
+recursive-exclude python/infernux/resources/shaders *.glsl *.shadingmodel
 recursive-exclude python *.meta
 global-exclude __pycache__ *.pyc *.pyo *.bak *.pdb *.lib *.exp

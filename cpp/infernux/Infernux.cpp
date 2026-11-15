@@ -3437,8 +3437,9 @@ bool Infernux::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
 
 bool Infernux::IsShaderLoaded(const std::string &shaderId, const std::string &shaderType) const
 {
-    if (shaderType != "vertex" && shaderType != "fragment")
-        throw std::invalid_argument("Shader type must be vertex or fragment");
+    if (std::none_of(asset_formats::kShaderSourceKinds.begin(), asset_formats::kShaderSourceKinds.end(),
+                     [&](const auto &kind) { return kind.stage == shaderType; }))
+        throw std::invalid_argument("Shader type must name a registered GPU source stage");
     auto *database = GetAssetDatabase();
     std::string guid;
     bool assetSelector = false;

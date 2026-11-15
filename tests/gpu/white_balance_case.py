@@ -19,52 +19,50 @@ PHASES = [(False, 0., 0.), (True, 0., 0.)] + [
     )
 ] + [(False, 0., 0.)]
 
-INPUT_SHADER = '''#version 450
-ShaderInfo {
-    Name "White Balance Acceptance Input"
-    Hidden On
-    Capabilities [Fullscreen]
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    const vec4 colors[8] = vec4[8](
-        vec4(0,0,0,0), vec4(.18,.18,.18,.125), vec4(1,1,1,.5), vec4(4,2,1,.875),
-        vec4(1,0,0,1), vec4(0,1,0,.25), vec4(0,0,1,.75), vec4(.001,.1,.4,.625));
-    outColor = colors[min(int(inUV.x * 8.0), 7)];
-}
+INPUT_SHADER = '''import infernux.shader as shader
+class ColorPatches(shader.fullscreen):
+    shader_id = "tests/white_balance/input"
+    hidden = True
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        index = shader.min(int(uv.x * 8.0), 7)
+        if index == 0:
+            return shader.vec4(0.0, 0.0, 0.0, 0.0)
+        if index == 1:
+            return shader.vec4(0.18, 0.18, 0.18, 0.125)
+        if index == 2:
+            return shader.vec4(1.0, 1.0, 1.0, 0.5)
+        if index == 3:
+            return shader.vec4(4.0, 2.0, 1.0, 0.875)
+        if index == 4:
+            return shader.vec4(1.0, 0.0, 0.0, 1.0)
+        if index == 5:
+            return shader.vec4(0.0, 1.0, 0.0, 0.25)
+        if index == 6:
+            return shader.vec4(0.0, 0.0, 1.0, 0.75)
+        return shader.vec4(0.001, 0.1, 0.4, 0.625)
 '''
 
-LIBRARY_SHADER = '''#version 450
-ShaderInfo {
-    Name "White Balance Acceptance Library"
-    Hidden On
-    Imports ["Lib Color"]
-    Capabilities [Fullscreen]
-    Resources { Texture2D source_tex }
-    PushConstants pc { Float temperature Float tint Float _pad0 Float _pad1 }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    vec4 source = texture(source_tex, inUV);
-    outColor = vec4(whiteBalance(source.rgb, pc.temperature, pc.tint), source.a);
-}
+LIBRARY_SHADER = '''import infernux.shader as shader
+from infernux.shader.lib.color import white_balance
+class LibraryWhiteBalance(shader.fullscreen):
+    shader_id = "tests/white_balance/library"
+    hidden = True
+    source_tex = shader.input("color", shader.Color2D, domain="scene_linear_hdr")
+    temperature = shader.parameter.float()
+    tint = shader.parameter.float()
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        source = shader.sample(self.source_tex, uv)
+        return shader.vec4(white_balance(source.rgb, self.temperature, self.tint), source.a)
 '''
 
-MONITOR_SHADER = '''#version 450
-ShaderInfo {
-    Name "White Balance Acceptance Monitor"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources { Texture2D source_tex }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    vec4 value = texture(source_tex, inUV);
-    outColor = vec4(value.rgb / 32.0, value.a);
-}
+MONITOR_SHADER = '''import infernux.shader as shader
+class Monitor(shader.fullscreen):
+    shader_id = "tests/white_balance/monitor"
+    hidden = True
+    source_tex = shader.input("color", shader.Color2D, domain="scene_linear_hdr")
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        source = shader.sample(self.source_tex, uv)
+        return shader.vec4(source.rgb / 32.0, source.a)
 '''
 
 
@@ -116,18 +114,18 @@ class WhiteBalancePipeline(RenderPipeline):
         graph.set_msaa_samples(1)
         source = graph.create_texture('input', format=Format.RGBA16_SFLOAT, samples=1)
         depth = graph.create_texture('depth', format=Format.D32_SFLOAT, camera_target=True)
-        graph.add_pass('Color patches').write_color(source).write_depth(depth).set_clear(depth=0.0).fullscreen_quad('White Balance Acceptance Input')
+        graph.add_pass('Color patches').write_color(source).write_depth(depth).set_clear(depth=0.0).fullscreen_quad('tests/white_balance/input')
         bus = ResourceBus({'color': source}, graph=graph)
         if self.use_effect:
             if self.library:
                 self.effect.apply_single_source_effect(graph, bus, output_name='_library_white_balance',
-                    pass_name='Library White Balance', shader_name='White Balance Acceptance Library',
+                    pass_name='Library White Balance', shader_name='tests/white_balance/library',
                     format=Format.RGBA16_SFLOAT,
                     params={'temperature':self.effect.temperature, 'tint':self.effect.tint})
             else:
                 self.effect.setup_passes(graph, bus)
         target = graph.create_texture('color', camera_target=True)
-        graph.add_pass('Commit').write_color(target).set_texture('source_tex', bus.get('color')).fullscreen_quad('White Balance Acceptance Monitor')
+        graph.add_pass('Commit').write_color(target).set_texture('source_tex', bus.get('color')).fullscreen_quad('tests/white_balance/monitor')
         graph.screen_ui_section(resources={'color'})
         graph.set_output(target)
 

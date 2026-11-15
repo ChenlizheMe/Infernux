@@ -165,13 +165,11 @@ struct alignas(16) SimpleLightingUBO
 /**
  * @brief Shader-compatible Lighting UBO structure.
  *
- * This structure EXACTLY matches the layout in lit.frag shader.
+ * This structure matches InxLightingData in SlangLightingModule.h.
  * Use this for GPU upload to ensure byte-perfect alignment.
  *
- * The matching GLSL declaration is generated from
- * resources/shaders/_templates/lighting_ubo.glsl. Compile-time
- * member and
- * record assertions below guard the shared std140 contract.
+ * Compile-time member and record assertions below guard the shared
+ * uniform-buffer layout used by the native lighting module.
  */
 struct alignas(16) ShaderLightingUBO
 {

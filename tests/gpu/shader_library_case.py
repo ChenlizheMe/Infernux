@@ -30,36 +30,33 @@ ROTATIONS = [
 ]
 CROSSES = [((.5,.5),(.25,.25),.05), ((.37,.61),(.31,.19),.037),
            ((.15,.8),(.27,.15),.063), ((.5,.5),(.13,.36),.025)]
-SHADER = '''#version 450
-ShaderInfo {
-    Name "Shader Library Geometry"
-    ShadingModel Unlit
-    Cull Off
-    Imports ["Lib Common", "Lib Vertex Utils", "Lib Shapes", "Lib Camera"]
-    Properties {
-        Float mode = 0.0
-        Float3 value = [1,0,0]
-        Float3 axis = [0,0,1]
-        Float angle = 0.0
-        Float2 center = [0.5,0.5]
-        Float2 extent = [0.25,0.25]
-        Float thickness = 0.05
-    }
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    if (material.mode > 2.5) {
-        s.albedo = vec3(getCameraNear(), getCameraFar() / 1000.0, linearEyeDepth(gl_FragCoord.z) / 6.0);
-    } else if (material.mode < 1.5) {
-        vec3 value = material.mode < 0.5
-            ? rotateAboutAxis(material.value, material.axis, material.angle)
-            : rotateAroundAxis(material.value, material.axis, material.angle);
-        s.albedo = vec3(0.5) + value * 0.125;
-    } else {
-        vec2 uv = getUV();
-        s.albedo = vec3(crossSDF(uv, material.center, material.extent, material.thickness), uv);
-    }
-}
+SHADER = '''import infernux.shader as shader
+from infernux.shader.lib.geometry import rotate_axis
+from infernux.shader.lib.shapes import cross_mask
+from infernux.shader.lib.camera import linear_eye_depth
+
+
+class LibraryGeometry(shader.surface):
+    shader_id = "tests/library/geometry"
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "none"
+    mode = shader.material.float()
+    value = shader.material.vec3(default=(1.0, 0.0, 0.0))
+    axis = shader.material.vec3(default=(0.0, 0.0, 1.0))
+    angle = shader.material.float()
+    center = shader.material.vec2(default=(0.5, 0.5))
+    extent = shader.material.vec2(default=(0.25, 0.25))
+    thickness = shader.material.float(default=0.05)
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        if self.mode > 1.5:
+            view = shader.view()
+            rgb = shader.vec3(view.near_clip, view.far_clip / 1000.0, linear_eye_depth(ctx.position.z, shader.camera()) / 6.0)
+        elif self.mode < 0.5:
+            rgb = shader.vec3(0.5) + rotate_axis(self.value, self.axis, self.angle) * 0.125
+        else:
+            rgb = shader.vec3(cross_mask(ctx.uv0, self.center, self.extent, self.thickness), ctx.uv0)
+        return shader.SurfaceData(albedo=rgb)
 '''
 
 
@@ -81,7 +78,7 @@ def linear_from_display(values):
 
 
 class LibraryPipeline(RenderPipeline):
-    name = 'Shader Library Geometry'
+    name = 'tests/library/geometry'
 
     def define_topology(self, graph):
         graph.set_msaa_samples(1)
@@ -106,7 +103,7 @@ class ShaderLibraryCase:
         for obj, _ in self.previous_roots:
             obj.active = False
         imported = {}
-        for name, text in [('Library.frag', SHADER), ('Quad.obj', quad())]:
+        for name, text in [('library.frag.py', SHADER), ('Quad.obj', quad())]:
             path = self.directory / name
             path.write_text(text, encoding='utf-8')
             result = AssetManager.import_asset(str(path), database=self.database)
@@ -126,10 +123,10 @@ class ShaderLibraryCase:
         renderer = owner.add_component('MeshRenderer')
         renderer.set_mesh_asset_guid(imported['Quad.obj'])
         self.material = Material.create_unlit()
-        self.material.frag_shader_name = 'Shader Library Geometry'
+        self.material.frag_shader_name = 'tests/library/geometry'
         renderer.set_material(0, self.material.native)
         self.pipeline = LibraryPipeline()
-        self.phases = len(ROTATIONS)*2 if kind == 'rotation' else 3 if kind == 'depth' else len(CROSSES)
+        self.phases = len(ROTATIONS) if kind == 'rotation' else 3 if kind == 'depth' else len(CROSSES)
         if kind == 'depth':
             self.camera.projection_mode = CameraProjection.Perspective
             self.objects[-1].transform.local_scale = Vector3(10,10,10)
@@ -140,16 +137,16 @@ class ShaderLibraryCase:
         self.phase = phase
         if self.kind == 'rotation':
             value, axis, angle = ROTATIONS[phase % len(ROTATIONS)]
-            self.material.set_float('mode', phase // len(ROTATIONS))
+            self.material.set_float('mode', 0.0)
             self.material.set_vector3('value', *value)
             self.material.set_vector3('axis', *axis)
             self.material.set_float('angle', angle)
         elif self.kind == 'depth':
             self.camera.set_clip_planes(.5 if phase == 1 else .25, 150 if phase == 1 else 75)
-            self.material.set_float('mode', 3.)
+            self.material.set_float('mode', 2.)
         else:
             center, extent, thickness = CROSSES[phase]
-            self.material.set_float('mode', 2.)
+            self.material.set_float('mode', 1.)
             self.material.set_vector2('center', *center)
             self.material.set_vector2('extent', *extent)
             self.material.set_float('thickness', thickness)

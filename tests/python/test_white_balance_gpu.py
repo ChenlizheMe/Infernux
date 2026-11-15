@@ -1,13 +1,13 @@
 """WhiteBalanceEffect must preserve neutral HDR color and use the library math."""
 import json
-from pathlib import Path
 import struct
 
 import numpy as np
 import pytest
 
 from infernux.core.assets import AssetManager
-from infernux.lib import ConsolePanel, SceneManager, Vector3
+from infernux.lib import ConsolePanel, Vector3
+from tests.gpu.library_compile import compile_library_compute
 from tests.gpu.white_balance_case import (
     COLORS, INPUT_SHADER, LIBRARY_SHADER, MONITOR_SHADER, PHASES,
     WhiteBalancePipeline, check_pixels, expected_linear,
@@ -19,22 +19,19 @@ PARAMETERS = sorted({(temperature, tint) for _, temperature, tint in PHASES})
 
 @pytest.fixture(scope='module')
 def white_balance_arithmetic(engine, tmp_path_factory):
-    from infernux.lib import _Infernux as native
-    source = (Path(__file__).parents[2] / 'python/infernux/resources/shaders/lib/color.glsl').read_text(encoding='utf-8')
-    functions = source[source.index('vec3 _whiteBalanceWhiteLMS'):source.index('// Channel Mixer')]
-    shader = '''#version 450
-layout(local_size_x = 1) in;
-layout(set = 0, binding = 0, std430) buffer Values { vec4 values[]; };
-layout(push_constant) uniform Params { float temperature; float tint; } pc;
-''' + functions + '''
-void main() {
-    uint i = gl_GlobalInvocationID.x;
-    values[i].rgb = whiteBalance(values[i].rgb, pc.temperature, pc.tint);
+    entry = compile_library_compute("color", """
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> values;
+struct Parameters { float temperature; float tint; };
+INX_ROOT_CONSTANTS ConstantBuffer<Parameters> pc;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float4 value = values[id.x];
+    values[id.x] = float4(LIBRARY::white_balance(value.rgb, pc.temperature, pc.tint), value.a);
 }
-'''
-    spirv = native._compile_compute_glsl_batch({'white_balance':shader}, 'white-balance-arithmetic')['white_balance']
+""", "white-balance-arithmetic")
     host = engine._acquire_compute_host()
-    kernel = host.create_kernel(spirv, 1, 8)
+    kernel = host._create_kernel_from_compiler(bytes(entry["code"]), [(0, "storage")], 8, entry["name"])
     buffer = host.create_buffer(16, 'float32', 4)
     inputs = np.tile(COLORS.astype(np.float16).astype(np.float32), (2, 1))
     inputs[8:, :3] *= .5
@@ -79,10 +76,9 @@ def test_white_balance_fullscreen_parameter_domain(engine, scene, tmp_path, monk
     assets = []
     pipeline = WhiteBalancePipeline(library=library)
     console = ConsolePanel()
-    manager = SceneManager.instance()
     try:
         for name, source in [('Input', INPUT_SHADER), ('Library', LIBRARY_SHADER), ('Monitor', MONITOR_SHADER)]:
-            path = tmp_path / (name + '.frag')
+            path = tmp_path / (name.lower() + '.frag.py')
             path.write_text(source, encoding='utf-8')
             result = AssetManager.import_asset(str(path), database=database)
             assert result.succeeded, result.error
@@ -93,8 +89,6 @@ def test_white_balance_fullscreen_parameter_domain(engine, scene, tmp_path, monk
         engine.resize_game_render_target(64, 32)
         engine.set_game_camera_enabled(True)
         engine.set_render_pipeline(pipeline)
-        manager.play()
-        manager.pause()
         phase = frame = changed = 0
         ticket = None
         samples, failures = [], []
@@ -136,6 +130,5 @@ def test_white_balance_fullscreen_parameter_domain(engine, scene, tmp_path, monk
         engine.set_post_draw_callback(None)
         engine.set_render_pipeline(None)
         pipeline.dispose()
-        manager.stop()
         for path in assets:
             assert database.delete_asset(str(path))

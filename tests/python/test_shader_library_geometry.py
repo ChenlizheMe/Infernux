@@ -1,78 +1,53 @@
-"""Public GLSL helpers through real authored-material import and Scene draws."""
+"""Public typed GPU helpers through real authored-material import and Scene draws."""
 
 import json
-from pathlib import Path
-import struct
 
 import numpy as np
 import pytest
 
 from infernux.core.assets import AssetManager
-from infernux.lib import ConsolePanel, SceneManager
+from infernux.lib import ConsolePanel
+from tests.gpu.library_compile import compile_library_compute
 from tests.gpu.shader_library_case import ROTATIONS, ShaderLibraryCase, quaternion_reference
 
 
 @pytest.fixture(scope="module")
 def rotation_arithmetic(engine, tmp_path_factory):
-    from infernux.lib import _Infernux as native
-
-    root = Path(__file__).parents[2] / "python/infernux/resources/shaders/lib"
-    functions = []
-    for name, signature in [("common.glsl", "vec3 rotateAboutAxis("), ("vertex_utils.glsl", "vec3 rotateAroundAxis(")]:
-        source = (root / name).read_text(encoding="utf-8")
-        start = source.index(signature)
-        opening = source.index("{", start)
-        depth, end = 1, opening + 1
-        while depth:
-            depth += (source[end] == "{") - (source[end] == "}")
-            end += 1
-        functions.append(source[start:end])
-    source = (
-        """#version 450
-layout(local_size_x = 1) in;
-layout(set = 0, binding = 0, std430) buffer Values { vec4 values[]; };
-layout(push_constant) uniform Params { int mode; } pc;
-"""
-        + "\n".join(functions)
-        + """
-void main() {
-    uint i = gl_GlobalInvocationID.x * 3;
-    vec3 value = values[i].xyz;
-    vec4 axisAngle = values[i+1];
-    values[i+2] = vec4(pc.mode == 0 ? rotateAboutAxis(value, axisAngle.xyz, axisAngle.w)
-                                  : rotateAroundAxis(value, axisAngle.xyz, axisAngle.w), 0);
+    entry = compile_library_compute("geometry", """
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> values;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x * 3;
+    values[i + 2] = float4(LIBRARY::rotate_axis(values[i].xyz, values[i + 1].xyz, values[i + 1].w), 0.0);
 }
-"""
-    )
-    spirv = native._compile_compute_glsl_batch({"rotation": source}, "library-rotation")["rotation"]
+""", "library-rotation")
     host = engine._acquire_compute_host()
-    kernel = host.create_kernel(spirv, 1, 4)
+    kernel = host._create_kernel_from_compiler(bytes(entry["code"]), [(0, "storage")], 0, entry["name"])
     inputs = np.zeros((len(ROTATIONS) * 3, 4), dtype=np.float32)
     for index, (value, axis, angle) in enumerate(ROTATIONS):
         inputs[index * 3, :3] = value
         inputs[index * 3 + 1] = (*axis, angle)
     buffer = host.create_buffer(len(inputs), "float32", 4)
-    results = []
     try:
-        for mode in (0, 1):
-            buffer.set_bytes(inputs.tobytes())
-            kernel.dispatch([buffer], struct.pack("i", mode), len(ROTATIONS))
-            kernel.wait()
-            values = np.frombuffer(buffer.get_bytes(inputs.nbytes), dtype=np.float32).reshape(-1, 4)
-            results.append(values[2::3, :3].copy())
+        buffer.set_bytes(inputs.tobytes())
+        kernel.dispatch([buffer], b"", len(ROTATIONS))
+        kernel.wait()
+        values = np.frombuffer(buffer.get_bytes(inputs.nbytes), dtype=np.float32).reshape(-1, 4)
+        results = values[2::3, :3].copy()
     finally:
         kernel.wait()
         del buffer, kernel
         host._release_lease()
     (tmp_path_factory.mktemp("rotation-arithmetic") / "results.json").write_text(
-        json.dumps([values.tolist() for values in results]), encoding="utf-8"
+        json.dumps(results.tolist()), encoding="utf-8"
     )
     return results
 
 
-@pytest.mark.parametrize("index,mode", [(2, 0), (5, 1)])
-def test_rotation_direction_and_axis_scale(rotation_arithmetic, mode, index):
-    actual = rotation_arithmetic[mode][index]
+@pytest.mark.parametrize("index", range(len(ROTATIONS)))
+def test_rotation_direction_and_axis_scale(rotation_arithmetic, index):
+    actual = rotation_arithmetic[index]
     expected = quaternion_reference(*ROTATIONS[index])
     np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=0.0)
     np.testing.assert_allclose(np.linalg.norm(actual), np.linalg.norm(ROTATIONS[index][0]), atol=2e-5, rtol=0.0)
@@ -83,7 +58,7 @@ def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", engine.get_asset_database())
     case = None
-    manager, console = SceneManager.instance(), ConsolePanel()
+    console = ConsolePanel()
     previous_rendering = engine.is_play_mode_rendering()
     try:
         case = ShaderLibraryCase(engine, scene, tmp_path, kind)
@@ -91,8 +66,6 @@ def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch
         engine.resize_game_render_target(128, 128)
         engine.set_game_camera_enabled(True)
         engine.set_render_pipeline(case.pipeline)
-        manager.play()
-        manager.pause()
         engine.set_play_mode_rendering(True)
         phase = frame = changed = 0
         ticket = None
@@ -133,7 +106,6 @@ def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch
     finally:
         engine.set_post_draw_callback(None)
         engine.set_render_pipeline(None)
-        manager.stop()
         engine.set_play_mode_rendering(previous_rendering)
         if case:
             case.close()
@@ -146,11 +118,16 @@ def test_standalone_material_draws_use_resident_program_until_explicit_reload(en
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", engine.get_asset_database())
     case = ShaderLibraryCase(engine, scene, tmp_path, "cross")
-    source = tmp_path / "Library.frag"
-    parked = tmp_path / "Library.offline"
-    red = ('#version 450\nShaderInfo { Name "Resident Standalone Material" Capabilities [Standalone] Cull Off '
-           'Outputs { Float4 outColor } }\nvoid main(){outColor=vec4(1,0,0,1);}\n')
-    manager, console = SceneManager.instance(), ConsolePanel()
+    source = tmp_path / "library.frag.py"
+    parked = tmp_path / "library.offline"
+    red = '''import infernux.shader as shader
+class Resident(shader.frag):
+    shader_id = "tests/library/resident"
+    cull_mode = "none"
+    def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        return shader.vec4(1.0, 0.0, 0.0, 1.0)
+'''
+    console = ConsolePanel()
     previous_rendering = engine.is_play_mode_rendering()
     phase = frame = changed = 0
     ticket = None
@@ -173,7 +150,7 @@ def test_standalone_material_draws_use_resident_program_until_explicit_reload(en
                     source.rename(parked)
                 elif phase == 1:
                     parked.rename(source)
-                    source.write_text(red.replace("vec4(1,0,0,1)", "vec4(0,1,0,1)"), encoding="utf-8")
+                    source.write_text(red.replace("vec4(1.0, 0.0, 0.0, 1.0)", "vec4(0.0, 1.0, 0.0, 1.0)"), encoding="utf-8")
                     assert Shader.reload(str(source))
                 else:
                     engine.exit()
@@ -186,13 +163,11 @@ def test_standalone_material_draws_use_resident_program_until_explicit_reload(en
     try:
         source.write_text(red, encoding="utf-8")
         assert AssetManager.reimport_asset(str(source))
-        case.material.frag_shader_name = "Resident Standalone Material"
+        case.material.frag_shader_name = "tests/library/resident"
         scene.main_camera = case.camera
         engine.resize_game_render_target(128, 128)
         engine.set_game_camera_enabled(True)
         engine.set_render_pipeline(case.pipeline)
-        manager.play()
-        manager.pause()
         engine.set_play_mode_rendering(True)
         engine.set_post_draw_callback(after_draw)
         engine.run()
@@ -203,7 +178,6 @@ def test_standalone_material_draws_use_resident_program_until_explicit_reload(en
     finally:
         engine.set_post_draw_callback(None)
         engine.set_render_pipeline(None)
-        manager.stop()
         engine.set_play_mode_rendering(previous_rendering)
         if parked.exists():
             parked.rename(source)

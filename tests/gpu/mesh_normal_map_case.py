@@ -17,19 +17,17 @@ TANGENT = np.array((.8,.48,.36), dtype=np.float64)
 BITANGENT = np.array((-.6,.64,.48), dtype=np.float64)
 NORMAL = np.array((0.,.6,-.8), dtype=np.float64)
 POSITIONS = np.array([TANGENT*u + BITANGENT*v for u,v in ((-.5,-.5),(.5,-.5),(.5,.5),(-.5,.5))])
-SHADER = '''#version 450
-ShaderInfo {
-    Name "Instance Normal Map"
-    ShadingModel PBR
-    Cull Off
-    Properties { Texture2D normal_map = normal Float normal_scale = 1.0 }
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    s.albedo = vec3(0.65,0.4,0.2);
-    s.smoothness = 0.3;
-    s.normalWS = sampleNormal(normal_map, getUV(0), 0, material.normal_scale);
-}
+SHADER = '''import infernux.shader as shader
+from infernux.shader.lib.surface import sample_normal
+
+class InstanceNormalMap(shader.surface):
+    shader_id = "tests/mesh/normal_map"
+    cull_mode = "none"
+    normal_map = shader.material.texture_2d(default="normal")
+    normal_scale = shader.material.float(default=1.0)
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(0.65, 0.4, 0.2), smoothness=0.3,
+                                  normal_ws=sample_normal(self.normal_map, ctx.uv0, 0, self.normal_scale, ctx))
 '''
 
 
@@ -77,7 +75,7 @@ class MeshNormalMapCase:
             return result.guid
         self.mesh = asset('Geometry.obj', source_obj(mirror_uv))
         self.mirror_uv = mirror_uv
-        asset('NormalMap.frag', SHADER)
+        asset('normal_map.frag.py', SHADER)
         y, x = np.indices((32,32))
         texture = np.empty((32,32,4), dtype=np.uint8)
         texture[...,0] = np.where(x < 16, 175, 90)
@@ -103,7 +101,7 @@ class MeshNormalMapCase:
         self.owner = owner('Normal Mapped Mesh')
         self.renderer = self.owner.add_component('MeshRenderer')
         self.material = Material.create_lit()
-        self.material.frag_shader_name = 'Instance Normal Map'
+        self.material.frag_shader_name = 'tests/mesh/normal_map'
         self.material.set_texture('normal_map', normal_guid)
         self.renderer.set_material(0, self.material.native)
         self.pipeline = {'forward':DefaultForwardPipeline, 'forward_plus':DefaultForwardPlusPipeline,

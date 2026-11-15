@@ -1,4 +1,4 @@
-"""Type stubs for ShaderInfo resource operations."""
+"""Type stubs for GPU source publication and schema operations."""
 
 class Shader:
     """Query published shaders and check/reimport static GPU author assets."""
@@ -23,5 +23,5 @@ class Shader:
 
     @classmethod
     def reload(cls, shader_id: str, shader_type: str | None = ...) -> bool:
-        """Reimport by ShaderInfo Name or asset path; failures raise an exception."""
+        """Reimport by GPU asset GUID, registered ID or path; failures raise."""
         ...

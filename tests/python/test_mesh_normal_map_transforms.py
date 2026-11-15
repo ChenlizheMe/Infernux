@@ -1,13 +1,12 @@
 """Full material lighting after ordinary mesh instance and UV transformations."""
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from infernux.core.assets import AssetManager
-from infernux.lib import ConsolePanel, SceneManager
+from infernux.lib import ConsolePanel
 from tests.gpu.mesh_normal_map_case import MeshNormalMapCase, NORMAL, TANGENT, reference_basis
 
 
@@ -25,36 +24,27 @@ ARITHMETIC_SCALES = [
 def mesh_basis_arithmetic(engine, tmp_path_factory):
     from infernux.lib import _Infernux as native
 
-    root = Path(__file__).parents[2] / "python/infernux/resources/shaders/_templates"
-    sources = {}
-    for name in ("vertex_main", "shadow_vertex_main"):
-        template = (root / (name + ".glsl")).read_text(encoding="utf-8")
-        start = template.rindex("mat3 modelMatrix =")
-        end = template.index(";", template.index("worldTangent =", start)) + 1
-        sources[name] = (
-            """#version 450
-layout(local_size_x = 1) in;
-layout(set = 0, binding = 0, std430) buffer Values { vec4 values[]; };
-struct VertexInput { vec3 normal; vec4 tangent; };
-void main() {
-    uint i = gl_GlobalInvocationID.x * 6;
-    VertexInput v;
-    v.normal = values[i].xyz;
-    v.tangent = values[i+1];
-    vec3 scale = values[i+2].xyz;
-    mat4 instModel = mat4(scale.x,0,0,0, 0,scale.y,0,0, 0,0,scale.z,0, 0,0,0,1);
-    vec3 worldNormal;
-    vec4 worldTangent;
-"""
-            + template[start:end]
-            + """
-    values[i+3] = vec4(worldNormal,0);
-    values[i+4] = worldTangent;
-    values[i+5] = vec4(cross(worldNormal,worldTangent.xyz)*worldTangent.w,0);
+    source = """import inx_geometry;
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> values;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x * 6;
+    InxVertexInput input = {};
+    input.normal = values[i].xyz;
+    input.tangent = values[i + 1];
+    float3 scale = values[i + 2].xyz;
+    float4x4 model = float4x4(scale.x,0,0,0, 0,scale.y,0,0, 0,0,scale.z,0, 0,0,0,1);
+    float4x4 identity = float4x4(1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1);
+    InxInstanceData instance = {};
+    InxMeshInput vertex = inx_transform_vertex(input, model, identity, identity, instance);
+    values[i + 3] = float4(vertex.normal_ws, 0.0);
+    values[i + 4] = vertex.tangent_ws;
+    values[i + 5] = float4(cross(vertex.normal_ws, vertex.tangent_ws.xyz) * vertex.tangent_ws.w, 0.0);
 }
 """
-        )
-    binaries = native._compile_compute_glsl_batch(sources, "mesh-basis-arithmetic")
+    program = native._compile_shader_program(source, "<mesh-basis>", "mesh_basis", targets=["spirv", "wgsl"])
+    entry = program["targets"][0]["entries"][0]
     inputs = np.zeros((len(ARITHMETIC_SCALES) * 2, 6, 4), dtype=np.float32)
     for index, scale in enumerate(ARITHMETIC_SCALES):
         for mirror in (False, True):
@@ -63,34 +53,30 @@ void main() {
             row[1] = (*TANGENT, -1.0 if mirror else 1.0)
             row[2, :3] = scale
     host = engine._acquire_compute_host()
-    results = {}
+    kernel = host._create_kernel_from_compiler(bytes(entry["code"]), [(0, "storage")], 0, entry["name"])
+    buffer = host.create_buffer(inputs.size // 4, "float32", 4)
     try:
-        for name, spirv in binaries.items():
-            kernel = host.create_kernel(spirv, 1, 0)
-            buffer = host.create_buffer(inputs.size // 4, "float32", 4)
-            try:
-                buffer.set_bytes(inputs.tobytes())
-                kernel.dispatch([buffer], b"", len(inputs))
-                kernel.wait()
-                output = np.frombuffer(buffer.get_bytes(inputs.nbytes), dtype=np.float32).reshape(inputs.shape)
-                results[name] = output[:, 3:].copy()
-            finally:
-                kernel.wait()
-                del buffer, kernel
+        buffer.set_bytes(inputs.tobytes())
+        kernel.dispatch([buffer], b"", len(inputs))
+        kernel.wait()
+        output = np.frombuffer(buffer.get_bytes(inputs.nbytes), dtype=np.float32).reshape(inputs.shape)
+        results = output[:, 3:].copy()
     finally:
+        kernel.wait()
+        del buffer, kernel
         host._release_lease()
     (tmp_path_factory.mktemp("mesh-basis-arithmetic") / "results.json").write_text(
-        json.dumps({name: value.tolist() for name, value in results.items()}), encoding="utf-8"
+        json.dumps(results.tolist()), encoding="utf-8"
     )
     return results
 
 
-@pytest.mark.parametrize("index,mirror_uv,template", [(2, False, "vertex_main"), (5, True, "shadow_vertex_main")])
-def test_mesh_basis_matches_geometry_derivatives(mesh_basis_arithmetic, template, mirror_uv, index):
+@pytest.mark.parametrize("index,mirror_uv", [(index, mirror) for index in range(len(ARITHMETIC_SCALES)) for mirror in (False, True)])
+def test_mesh_basis_matches_geometry_derivatives(mesh_basis_arithmetic, mirror_uv, index):
     normal, tangent = reference_basis(ARITHMETIC_SCALES[index], mirror_uv)
     bitangent = np.cross(normal, tangent[:3]) * tangent[3]
     expected = np.array([(*normal, 0), tangent, (*bitangent, 0)])
-    actual = mesh_basis_arithmetic[template][index * 2 + mirror_uv]
+    actual = mesh_basis_arithmetic[index * 2 + mirror_uv]
     np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=0.0)
     np.testing.assert_allclose(np.linalg.norm(actual[:, :3], axis=1), 1.0, atol=2e-5, rtol=0.0)
     assert abs(np.dot(actual[0, :3], actual[1, :3])) < 2e-5
@@ -105,7 +91,7 @@ def test_uv0_normal_mapping_matches_cpu_baked_geometry(
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", engine.get_asset_database())
     case = None
-    manager, console = SceneManager.instance(), ConsolePanel()
+    console = ConsolePanel()
     previous_rendering = engine.is_play_mode_rendering()
     try:
         case = MeshNormalMapCase(engine, scene, tmp_path, pipeline, samples, mirror_uv)
@@ -113,8 +99,6 @@ def test_uv0_normal_mapping_matches_cpu_baked_geometry(
         engine.resize_game_render_target(320, 240)
         engine.set_game_camera_enabled(True)
         engine.set_render_pipeline(case.pipeline)
-        manager.play()
-        manager.pause()
         engine.set_play_mode_rendering(True)
         phase = frame = 0
         mesh_ready_execution = None
@@ -165,7 +149,6 @@ def test_uv0_normal_mapping_matches_cpu_baked_geometry(
     finally:
         engine.set_post_draw_callback(None)
         engine.set_render_pipeline(None)
-        manager.stop()
         engine.set_play_mode_rendering(previous_rendering)
         if case:
             case.close()
