@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "infernux-automation"
+version = "0.1.0"
+description = "Lightweight transport client for the Infernux Automation Host"
+requires-python = ">=3.10"
+license = "MIT"
+readme = "infernux_automation/README.md"
+dependencies = []
+
+[tool.setuptools]
+packages = ["infernux_automation"]
