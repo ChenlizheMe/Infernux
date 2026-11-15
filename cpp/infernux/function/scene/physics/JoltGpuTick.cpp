@@ -2,6 +2,8 @@
 #include "JoltGpuBroadphase.h"
 #include "JoltGpuConstraints.h"
 #include "JoltGpuNarrowphase.h"
+#include "JoltGpuSleep.h"
+#include <core/config/EngineConfig.h>
 
 #include <algorithm>
 #include <chrono>
@@ -84,8 +86,15 @@ class JoltGpuTick::Impl
         fixedDeltaTime = deltaTime;
         controlOnly = settings == nullptr;
         cpuForces = std::move(forces);
+        forceWakePending = false;
+        constraintTopology.reset();
+        prescribedBounds.reset();
         inputs = {};
         control = std::move(pendingControl);
+        // All normal and native callers use the current public configuration,
+        // including a standalone Tick that has no Scene control factories.
+        control.sleepParameters.timing = {0.0f, EngineConfig::Get().physicsTimeBeforeSleep,
+                                          EngineConfig::Get().physicsPointVelocitySleepThreshold, 0.0f};
         workContinuation = {};
         groupCursor = 0;
         modelPrepared = false;
@@ -133,6 +142,8 @@ class JoltGpuTick::Impl
         parameterInput = {};
         acceptedParameters.reset();
         parameters.reset();
+        constraintTopology.reset();
+        prescribedBounds.reset();
         cpuForces.reset();
         control = {};
         workContinuation = {};
@@ -201,12 +212,17 @@ class JoltGpuTick::Impl
     };
     enum class Phase
     {
+        InitializeSleep,
+        CapturePrescribedBounds,
         PrepareKinematics,
         ApplyForces,
+        WakePrescribedBounds,
         BuildBounds,
         Broadphase,
         CollidePairs,
         CompleteConvexContacts,
+        BuildTopology,
+        WakeComponents,
         SetupContacts,
         SetupJoints,
         ReportContactsBeforeVelocity,
@@ -219,6 +235,8 @@ class JoltGpuTick::Impl
         SolveJointPosition,
         SolvePosition,
         FinishJoints,
+        UpdateSleep,
+        WakeFinalPrescribedBounds,
         FinishTick,
         Done
     };
@@ -370,8 +388,11 @@ class JoltGpuTick::Impl
     static bool ProducerPhase(Phase phase)
     {
         return phase == Phase::Broadphase || phase == Phase::CompleteConvexContacts ||
-               phase == Phase::BuildConstraints || phase == Phase::ReportContactsBeforeVelocity ||
-               phase == Phase::ReportContactsAfterVelocity;
+               phase == Phase::InitializeSleep || phase == Phase::CapturePrescribedBounds ||
+               phase == Phase::WakePrescribedBounds || phase == Phase::BuildTopology ||
+               phase == Phase::WakeComponents || phase == Phase::UpdateSleep ||
+               phase == Phase::WakeFinalPrescribedBounds || phase == Phase::BuildConstraints ||
+               phase == Phase::ReportContactsBeforeVelocity || phase == Phase::ReportContactsAfterVelocity;
     }
 
     StageSpan Span(Phase phase) const
@@ -408,7 +429,14 @@ class JoltGpuTick::Impl
         case Phase::FinishTick:
             return {Stage::FinishTick, Domain::Bodies};
         case Phase::Broadphase:
+        case Phase::InitializeSleep:
+        case Phase::CapturePrescribedBounds:
+        case Phase::WakePrescribedBounds:
         case Phase::CompleteConvexContacts:
+        case Phase::BuildTopology:
+        case Phase::WakeComponents:
+        case Phase::UpdateSleep:
+        case Phase::WakeFinalPrescribedBounds:
         case Phase::BuildConstraints:
         case Phase::ReportContactsBeforeVelocity:
         case Phase::ReportContactsAfterVelocity:
@@ -471,10 +499,19 @@ class JoltGpuTick::Impl
         next.islandBatchFirst = 0;
         next.localFirst = 0;
         switch (next.phase) {
+        case Phase::InitializeSleep:
+            next.phase = Phase::CapturePrescribedBounds;
+            break;
+        case Phase::CapturePrescribedBounds:
+            next.phase = Phase::PrepareKinematics;
+            break;
         case Phase::PrepareKinematics:
             next.phase = Phase::ApplyForces;
             break;
         case Phase::ApplyForces:
+            next.phase = Phase::WakePrescribedBounds;
+            break;
+        case Phase::WakePrescribedBounds:
             next.phase = Phase::BuildBounds;
             break;
         case Phase::BuildBounds:
@@ -484,9 +521,15 @@ class JoltGpuTick::Impl
             next.phase = Phase::CollidePairs;
             break;
         case Phase::CollidePairs:
-            next.phase = storage.HasGenericGeometry() ? Phase::CompleteConvexContacts : Phase::SetupContacts;
+            next.phase = storage.HasGenericGeometry() ? Phase::CompleteConvexContacts : Phase::BuildTopology;
             break;
         case Phase::CompleteConvexContacts:
+            next.phase = Phase::BuildTopology;
+            break;
+        case Phase::BuildTopology:
+            next.phase = Phase::WakeComponents;
+            break;
+        case Phase::WakeComponents:
             next.phase = Phase::SetupContacts;
             break;
         case Phase::SetupContacts:
@@ -529,6 +572,12 @@ class JoltGpuTick::Impl
             next.phase = ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
             break;
         case Phase::FinishJoints:
+            next.phase = Phase::UpdateSleep;
+            break;
+        case Phase::UpdateSleep:
+            next.phase = Phase::WakeFinalPrescribedBounds;
+            break;
+        case Phase::WakeFinalPrescribedBounds:
             next.phase = ++next.substep < tickParameters.solve.y ? Phase::ApplyForces : Phase::FinishTick;
             break;
         case Phase::FinishTick:
@@ -585,7 +634,7 @@ class JoltGpuTick::Impl
 
     void CaptureStageSpans()
     {
-        stageCursor.phase = tickParameters.selectedCounts.x ? Phase::PrepareKinematics : Phase::Done;
+        stageCursor.phase = tickParameters.selectedCounts.x ? Phase::InitializeSleep : Phase::Done;
         Normalize(stageCursor);
     }
 
@@ -645,6 +694,8 @@ class JoltGpuTick::Impl
 
     void Complete()
     {
+        constraintTopology.reset();
+        prescribedBounds.reset();
         completedOutput = std::move(finalOutput);
         status = Status::Complete;
         inputs = {};
@@ -1077,6 +1128,96 @@ class JoltGpuTick::Impl
                     PacketKind::NumericalWork);
                 return true;
             }
+            if (forceWakePending) {
+                forceWakePending = false;
+                SelectControlWork(programs.GetSleep().PrepareForceWake(storage, tickParameters, [] {}),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::CapturePrescribedBounds) {
+                std::vector<uint32_t> sources;
+                if (control.prepareSleepSources)
+                    sources = control.prepareSleepSources();
+                else {
+                    // Native standalone owners without a Scene intent directory
+                    // conservatively nominate author static/kinematic rows.
+                    // Actual GPU motion remains the sole wake predicate.
+                    const auto &models = storage.GetModel().bodies;
+                    for (uint32_t local = 0; local < tickParameters.selectedCounts.x; ++local) {
+                        const auto body = tickParameters.selection.y + local;
+                        const auto motion = models[body].meta.z & ~JPH::GPU::MotionNotResident;
+                        if (motion == JPH::GPU::MotionStatic || motion == JPH::GPU::MotionKinematic)
+                            sources.push_back(body);
+                    }
+                }
+                SelectControlWork(programs.GetSleep().PreparePrescribedCapture(storage, tickParameters,
+                                                                               std::move(sources),
+                                                                               [this](auto bounds) {
+                                                                                   prescribedBounds = std::move(bounds);
+                                                                                   NextSpan(stageCursor);
+                                                                                   Normalize(stageCursor);
+                                                                               }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::InitializeSleep) {
+                SelectControlWork(programs.GetSleep().PrepareInitialize(storage, tickParameters,
+                                                                        [this] {
+                                                                            NextSpan(stageCursor);
+                                                                            Normalize(stageCursor);
+                                                                        }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::WakePrescribedBounds ||
+                stageCursor.phase == Phase::WakeFinalPrescribedBounds) {
+                // The final-pose pass runs AFTER this substep's sleep vote and
+                // commit. A previously asleep destination did not accumulate
+                // quiet time here; waking it now preserves one real following
+                // forces/contact opportunity even when TimeBeforeSleep is 0.
+                SelectControlWork(programs.GetSleep().PreparePrescribedWake(storage, tickParameters, prescribedBounds,
+                                                                            [this] {
+                                                                                NextSpan(stageCursor);
+                                                                                Normalize(stageCursor);
+                                                                            }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::BuildTopology) {
+                inputs.ClearConstraints();
+                constraintTopology.reset();
+                SelectControlWork(constraints.PrepareTopology(storage, inputs, tickParameters,
+                                                              [this](auto topology) {
+                                                                  constraintTopology = std::move(topology);
+                                                                  NextSpan(stageCursor);
+                                                                  Normalize(stageCursor);
+                                                              }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::WakeComponents) {
+                if (!constraintTopology)
+                    throw std::logic_error("GPU sleep wake lost its accepted topology");
+                SelectControlWork(programs.GetSleep().PrepareWake(storage, inputs, *constraintTopology,
+                                                                  [this] {
+                                                                      NextSpan(stageCursor);
+                                                                      Normalize(stageCursor);
+                                                                  }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::UpdateSleep) {
+                auto settings = control.sleepParameters;
+                settings.timing.x = tickParameters.gravityDt.w;
+                SelectControlWork(programs.GetSleep().PrepareHistory(storage, inputs, settings,
+                                                                     stageCursor.substep + 1u == tickParameters.solve.y,
+                                                                     [this] {
+                                                                         NextSpan(stageCursor);
+                                                                         Normalize(stageCursor);
+                                                                     }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
             if (stageCursor.phase == Phase::CompleteConvexContacts) {
                 SelectControlWork(narrowphase.Prepare(storage, inputs, work,
                                                       [this] {
@@ -1101,10 +1242,10 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::BuildConstraints) {
-                inputs.ClearConstraints();
-                SelectControlWork(constraints.Prepare(storage, inputs, tickParameters,
-                                                      [this](auto plan) { AcceptConstraintWorkset(std::move(plan)); }),
-                                  PacketKind::NumericalWork);
+                SelectControlWork(
+                    constraints.PrepareNumericalPlan(storage, inputs, constraintTopology,
+                                                     [this](auto plan) { AcceptConstraintWorkset(std::move(plan)); }),
+                    PacketKind::NumericalWork);
                 return true;
             }
             return PreparePrefix();
@@ -1150,6 +1291,7 @@ class JoltGpuTick::Impl
                 }
                 if (cpuForces)
                     inputs.Capture(storage, JPH::GPU::Resource::BodyForces);
+                forceWakePending = cpuForces.has_value();
                 cpuForces.reset();
                 inputAccepted = true;
             } else if (kind == PacketKind::Stages) {
@@ -1251,6 +1393,9 @@ class JoltGpuTick::Impl
     std::map<JPH::GPU::Stage, UnitHistory> stageEstimates;
     UnitHistory mixedEstimates;
     bool inputAccepted = false;
+    bool forceWakePending = false;
+    std::shared_ptr<JoltGpuConstraintTopology> constraintTopology;
+    std::shared_ptr<const JoltGpuPrescribedSleepBounds> prescribedBounds;
     std::shared_ptr<rhi::PreparedComputeBatch> batch, preservation;
     PacketKind batchKind = PacketKind::Inputs;
     std::optional<JPH::GPU::Stage> batchHomogeneousStage;

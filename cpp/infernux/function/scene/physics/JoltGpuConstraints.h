@@ -6,23 +6,22 @@ namespace infernux
 {
 struct JoltGpuConstraintWorkset;
 
-/// Builds one substep's structural schedule after SetupContacts/SetupJoints.
+/// Builds one substep topology, then resumes that SAME validated CC execution
+/// after wake and numerical Setup to publish the active solver schedule.
 /// No submission, polling loop, private ComputeHost or CPU graph reconstruction.
 class JoltGpuConstraints final
 {
   public:
     JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTargetCode &target);
 
-    /// Inputs must identify the accepted substep, with contacts installed and
-    /// all setup writers already accepted on this same dependency-ordered source.
-    /// Their receipts need not be CPU-observed before Prepare; queue dependencies
-    /// complete those producers before this chain reads their frozen leases.
-    /// The same tick retains numerical endpoints exclusively through completion.
-    /// A null packet with continuation is managed capacity deferral; the owner
-    /// retries at a new host opportunity or actual resource progress.
     [[nodiscard]] JoltGpuControlWork
-    Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, const JPH::GPU::StepParams &parameters,
-            std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed);
+    PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                    const JPH::GPU::StepParams &parameters,
+                    std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completed);
+    [[nodiscard]] JoltGpuControlWork
+    PrepareNumericalPlan(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                         std::shared_ptr<JoltGpuConstraintTopology> topology,
+                         std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed);
 
   private:
     class Impl;

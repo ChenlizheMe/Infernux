@@ -1,4 +1,5 @@
 #include "JoltGpuBodyMutations.h"
+#include "JoltGpuSleepLayout.h"
 
 #include <algorithm>
 #include <array>
@@ -21,6 +22,7 @@ enum Port : uint8_t
     States,
     Forces,
     Targets,
+    Sleeps,
     Work,
     PortCount
 };
@@ -35,6 +37,7 @@ constexpr PortLayout Ports[] = {{"mutation_params", sizeof(BodyMutationParams)},
                                 {"body_states", sizeof(BodyState)},
                                 {"body_forces", sizeof(BodyForces)},
                                 {"kinematic_targets", sizeof(KinematicTarget)},
+                                {"body_sleep", sizeof(BodySleepRecord)},
                                 {"stage_work", sizeof(StageWork)}};
 
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
@@ -103,10 +106,13 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
                     (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
                 resource.value.kind != ShaderValueKind::Struct ||
                 (uniform ? resource.value.byteSize : resource.elementStride) != port->stride ||
-                ((index == States || index == Forces || index == Targets) && resource.binding.readOnlyStorage))
+                ((index == States || index == Forces || index == Targets || index == Sleeps) &&
+                 resource.binding.readOnlyStorage))
                 throw std::invalid_argument("Jolt GPU mutation target differs from its shared records");
             if (index == Targets)
                 ValidateTargetLayout(resource.value);
+            if (index == Sleeps)
+                ValidateJoltGpuSleepLayout(resource.value);
             if (index == Work) {
                 const auto &fields = resource.value.fields;
                 if (fields.size() != 1 || fields[0].name != "range" || fields[0].offset != 0 ||
@@ -136,10 +142,11 @@ JoltGpuBodyMutations::JoltGpuBodyMutations(rhi::ComputeHost &host, const ShaderT
         return entry;
     };
     m_initialize = build("initialize_bodies", (1u << Parameters) | (1u << Initializations) | (1u << States) |
-                                                  (1u << Forces) | (1u << Targets));
-    m_centerOfMass =
-        build("update_centers_of_mass", (1u << Parameters) | (1u << CentersOfMass) | (1u << States) | (1u << Targets));
-    m_capacity = build("initialize_capacity", (1u << Work) | (1u << States) | (1u << Forces) | (1u << Targets));
+                                                  (1u << Forces) | (1u << Targets) | (1u << Sleeps));
+    m_centerOfMass = build("update_centers_of_mass", (1u << Parameters) | (1u << CentersOfMass) | (1u << States) |
+                                                         (1u << Targets) | (1u << Sleeps));
+    m_capacity =
+        build("initialize_capacity", (1u << Work) | (1u << States) | (1u << Forces) | (1u << Targets) | (1u << Sleeps));
 }
 
 rhi::ComputeDispatchDesc
@@ -155,8 +162,9 @@ JoltGpuBodyMutations::PrepareCapacityInitialization(const JoltGpuBodyStatePorts 
     buffers[States] = ports.states;
     buffers[Forces] = ports.forces;
     buffers[Targets] = ports.targets;
+    buffers[Sleeps] = ports.sleeps;
     buffers[Work] = workUniform;
-    for (const auto port : {States, Forces, Targets}) {
+    for (const auto port : {States, Forces, Targets, Sleeps}) {
         const auto &buffer = buffers[port];
         if (!buffer || buffer->IsFrozen() || !m_host.SharesServicesWith(buffer->GetHost()) ||
             buffer->GetByteSize() != uint64_t(ports.count) * Ports[port].stride)
@@ -277,6 +285,7 @@ JoltGpuBodyMutations::PreparePacket(JoltGpuStorage &storage, const std::vector<B
     buffers[States] = storage.Get(Resource::BodyStates);
     buffers[Forces] = storage.Get(Resource::BodyForces);
     buffers[Targets] = storage.Get(Resource::KinematicTargets);
+    buffers[Sleeps] = storage.Get(Resource::SleepStates);
 
     std::vector<rhi::ComputeDispatchDesc> dispatches;
     const auto dispatch = [&](const Entry &entry, uint32_t count, bool rebase, uint32_t firstSlot) {
@@ -290,6 +299,21 @@ JoltGpuBodyMutations::PreparePacket(JoltGpuStorage &storage, const std::vector<B
             if (port < States) {
                 desc.bufferAccesses.push_back(rhi::ComputeBufferAccess::Read);
                 proof.reads.push_back({slot, 0, buffers[port]->GetByteSize()});
+            } else if (port == Sleeps) {
+                desc.bufferAccesses.push_back(rhi::ComputeBufferAccess::ReadWrite);
+                if (rebase) {
+                    for (const auto &change : rebases)
+                        proof.reads.push_back(
+                            {slot, uint64_t(change.bodyIndex.x) * sizeof(BodySleepRecord), sizeof(BodySleepRecord)});
+                } else {
+                    proof.reads.push_back({slot, uint64_t(firstSlot) * sizeof(BodySleepRecord),
+                                           uint64_t(count) * sizeof(BodySleepRecord)});
+                    for (uint32_t item = 0; item < count; ++item)
+                        proof.writes.push_back(
+                            {slot,
+                             uint64_t(firstSlot + item) * sizeof(BodySleepRecord) + offsetof(BodySleepRecord, runtime),
+                             sizeof(BodySleepRuntime)});
+                }
             } else if (rebase && (port == States || port == Targets)) {
                 desc.bufferAccesses.push_back(rhi::ComputeBufferAccess::ReadWrite);
                 const auto stride = Ports[port].stride;

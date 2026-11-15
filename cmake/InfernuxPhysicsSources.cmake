@@ -5,6 +5,9 @@ function(infernux_embed_physics_sources target)
     set(_particle_export "${_engine_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
     set(_physics_sources
         "${_physics_root}/PhysicsTypes.h"
+        "${_physics_root}/SleepTypes.h"
+        "${_physics_root}/Shaders/rigid_sleep_math.slang"
+        "${_physics_root}/Shaders/rigid_sleep.slang"
         "${_physics_root}/ConvexGeometryTypes.h"
         "${_physics_root}/Shaders/rigid_convex.slang"
         "${_physics_root}/Shaders/rigid_convex_narrowphase.slang"
@@ -34,6 +37,9 @@ function(infernux_embed_physics_sources target)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_physics_sources})
 
     file(READ "${_physics_root}/PhysicsTypes.h" JOLT_GPU_TYPES_SOURCE)
+    file(READ "${_physics_root}/SleepTypes.h" JOLT_GPU_SLEEP_TYPES_SOURCE)
+    file(READ "${_physics_root}/Shaders/rigid_sleep_math.slang" JOLT_GPU_SLEEP_MATH_SOURCE)
+    file(READ "${_physics_root}/Shaders/rigid_sleep.slang" JOLT_GPU_SLEEP_SOURCE)
     file(READ "${_physics_root}/ConvexGeometryTypes.h" JOLT_GPU_CONVEX_TYPES_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_convex_narrowphase.slang" JOLT_GPU_NARROWPHASE_SOURCE)
     file(READ "${_physics_root}/Shaders/rigid_convex.slang" JOLT_GPU_CONVEX_SOURCE)
@@ -62,7 +68,7 @@ function(infernux_embed_physics_sources target)
 
     # Keep individual literals below MSVC's limit without changing the source
     # text or introducing runtime file access. Adjacent literals concatenate.
-    foreach(_source IN ITEMS JOLT_GPU_NARROWPHASE_SOURCE JOLT_GPU_CONVEX_TYPES_SOURCE JOLT_GPU_CONVEX_SOURCE JOLT_GPU_CONVEX_MANIFOLD_SOURCE JOLT_GPU_CONVEX_QUERIES_SOURCE JOLT_GPU_CONTACT_REPORT_TYPES_SOURCE JOLT_GPU_CONTACT_REPORT_SOURCE JOLT_GPU_TYPES_SOURCE JOLT_GPU_JOINT_FIELDS_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_PSD_SOURCE JOLT_GPU_STEP_SOURCE
+    foreach(_source IN ITEMS JOLT_GPU_SLEEP_SOURCE JOLT_GPU_SLEEP_TYPES_SOURCE JOLT_GPU_SLEEP_MATH_SOURCE JOLT_GPU_NARROWPHASE_SOURCE JOLT_GPU_CONVEX_TYPES_SOURCE JOLT_GPU_CONVEX_SOURCE JOLT_GPU_CONVEX_MANIFOLD_SOURCE JOLT_GPU_CONVEX_QUERIES_SOURCE JOLT_GPU_CONTACT_REPORT_TYPES_SOURCE JOLT_GPU_CONTACT_REPORT_SOURCE JOLT_GPU_TYPES_SOURCE JOLT_GPU_JOINT_FIELDS_SOURCE JOLT_GPU_MATH_SOURCE JOLT_GPU_PSD_SOURCE JOLT_GPU_STEP_SOURCE
             JOLT_GPU_BROADPHASE_TYPES_SOURCE JOLT_GPU_BROADPHASE_SOURCE
             JOLT_GPU_CONSTRAINT_TYPES_SOURCE JOLT_GPU_CONSTRAINT_SOURCE JOLT_GPU_ISLAND_OWNER_SOURCE
             JOLT_GPU_BODY_MUTATIONS_SOURCE JOLT_GPU_BODY_COMMANDS_SOURCE

@@ -11,6 +11,7 @@
 #include "PhysicsMass.h"
 #include "PhysicsShapeAuthoring.h"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -68,6 +69,14 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
                                   : JPH::GPU::MotionStatic;
     // Scene assigns the actual global range at the ordered model boundary.
     prepared.body.meta = {0, static_cast<uint32_t>(prepared.geometry.leaves.size()), motion, worldIndex};
+    const auto rootBounds = shape->GetLocalBounds();
+    const auto rootExtent = rootBounds.GetExtent(), rootBoundsCenter = rootBounds.GetCenter();
+    prepared.sleep.rootHalfExtent = {rootExtent.GetX(), rootExtent.GetY(), rootExtent.GetZ(), 0};
+    prepared.sleep.rootBoundsCenter = {rootBoundsCenter.GetX(), rootBoundsCenter.GetY(), rootBoundsCenter.GetZ(), 0};
+    const bool sensor = !prepared.geometry.leaves.empty() &&
+                        std::all_of(prepared.geometry.leaves.begin(), prepared.geometry.leaves.end(),
+                                    [](const auto &leaf) { return (leaf.model.meta.w & JPH::GPU::ShapeSensor) != 0u; });
+    prepared.sleep.policy = {1u | (sensor ? 2u : 0u), 0u, 0u, 0u};
     prepared.body.inertiaRotation = {0.0f, 0.0f, 0.0f, 1.0f};
     if (rigidbody) {
         const auto &properties = rigidbody->GetAuthoredMassProperties();

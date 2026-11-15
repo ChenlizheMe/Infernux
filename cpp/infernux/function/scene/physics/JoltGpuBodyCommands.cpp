@@ -1,4 +1,5 @@
 #include "JoltGpuBodyCommands.h"
+#include "JoltGpuSleepLayout.h"
 
 #include <algorithm>
 #include <array>
@@ -23,6 +24,7 @@ enum Port : uint8_t
     States,
     Forces,
     Targets,
+    Sleeps,
     PortCount
 };
 struct PortLayout
@@ -36,7 +38,8 @@ constexpr PortLayout Ports[] = {{"command_params", sizeof(BodyCommandParams)},
                                 {"body_models", sizeof(BodyModel)},
                                 {"body_states", sizeof(BodyState)},
                                 {"body_forces", sizeof(BodyForces)},
-                                {"kinematic_targets", sizeof(KinematicTarget)}};
+                                {"kinematic_targets", sizeof(KinematicTarget)},
+                                {"body_sleep", sizeof(BodySleepRecord)}};
 
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
@@ -79,9 +82,14 @@ void ValidateTargetLayout(const ShaderValueLayout &value)
 void Validate(const BodyCommand &command, uint32_t bodyCount)
 {
     const auto kind = command.meta.y;
-    if (command.meta.x >= bodyCount || kind > CommandMotionBoundary || command.meta.w)
+    if (command.meta.x >= bodyCount || kind > CommandWake || command.meta.w)
         throw std::invalid_argument("Jolt GPU command has an invalid body slot, kind or padding");
     const auto mode = command.meta.z;
+    if (kind == CommandSleep || kind == CommandWake) {
+        if (mode)
+            throw std::invalid_argument("Jolt GPU sleep/wake command has nonzero control flags");
+        return;
+    }
     if (kind <= CommandSetPose) {
         if ((mode & ~CommandPreserveKinematicMove) != 0 || !FiniteVector(command.rootCOM))
             throw std::invalid_argument("Jolt GPU pose command has invalid control flags or root COM");
@@ -139,7 +147,7 @@ JoltGpuBodyCommands::JoltGpuBodyCommands(rhi::ComputeHost &host, const ShaderTar
             throw std::invalid_argument("Jolt GPU command target has an unknown resource");
         const auto index = static_cast<uint8_t>(port - std::begin(Ports));
         const bool uniform = index == Parameters;
-        const bool writer = index == States || index == Forces || index == Targets;
+        const bool writer = index == States || index == Forces || index == Targets || index == Sleeps;
         if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
             resource.value.kind != ShaderValueKind::Struct ||
             (uniform ? resource.value.byteSize : resource.elementStride) != port->stride ||
@@ -147,6 +155,8 @@ JoltGpuBodyCommands::JoltGpuBodyCommands(rhi::ComputeHost &host, const ShaderTar
             throw std::invalid_argument("Jolt GPU command target differs from its shared records");
         if (index == Targets)
             ValidateTargetLayout(resource.value);
+        if (index == Sleeps)
+            ValidateJoltGpuSleepLayout(resource.value);
         bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
         m_ports.push_back(index);
         actual |= 1u << index;
@@ -236,7 +246,7 @@ JoltGpuCommandCursor::JoltGpuCommandCursor(const rhi::ComputeHost &host, std::sh
     : m_host(host), m_kernel(std::move(kernel)), m_ports(std::move(ports)),
       m_models(storage.GetBodyCount() ? storage.Get(Resource::BodyModels)->Freeze() : nullptr),
       m_states(storage.Get(Resource::BodyStates)), m_forces(storage.Get(Resource::BodyForces)),
-      m_targets(storage.Get(Resource::KinematicTargets))
+      m_targets(storage.Get(Resource::KinematicTargets)), m_sleeps(storage.Get(Resource::SleepStates))
 {
 }
 
@@ -292,6 +302,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi
     buffers[States] = m_states;
     buffers[Forces] = m_forces;
     buffers[Targets] = m_targets;
+    buffers[Sleeps] = m_sleeps;
     std::vector<rhi::ComputeDispatchDesc> dispatches;
     dispatches.reserve(end - m_next);
     for (size_t index = m_next; index < end; ++index) {
@@ -305,7 +316,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi
         for (const auto port : m_ports) {
             const uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffers[port]);
-            const bool writer = port == States || port == Forces || port == Targets;
+            const bool writer = port == States || port == Forces || port == Targets || port == Sleeps;
             dispatch.bufferAccesses.push_back(writer ? rhi::ComputeBufferAccess::ReadWrite
                                                      : rhi::ComputeBufferAccess::Read);
             uint64_t offset = 0, byteSize = buffers[port]->GetByteSize();
@@ -320,7 +331,13 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi
                 byteSize = uint64_t(slice.spanCount) * Ports[port].stride;
             }
             proof.reads.push_back({binding, offset, byteSize});
-            if (writer)
+            if (port == Sleeps) {
+                for (uint32_t body = 0; body < slice.spanCount; ++body)
+                    proof.writes.push_back({binding,
+                                            uint64_t(slice.firstBody + body) * sizeof(BodySleepRecord) +
+                                                offsetof(BodySleepRecord, runtime),
+                                            sizeof(BodySleepRuntime)});
+            } else if (writer)
                 proof.writes.push_back({binding, offset, byteSize});
         }
         dispatch.proof = std::move(proof);

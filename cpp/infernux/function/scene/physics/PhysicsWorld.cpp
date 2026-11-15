@@ -2420,25 +2420,60 @@ void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t id, const glm::vec3 &posi
     command.meta.z = CommandTemporaryStatic;
     m_gpuScene->QueueCommand(id, command);
 }
-bool PhysicsWorld::IsBodySleeping(uint32_t) const
+bool PhysicsWorld::IsBodySleeping(uint32_t id) const
 {
-    Unsupported("sleep state");
+    auto &domain = DomainForBody(id);
+    bool sleeping = false;
+    RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        const auto allocation = m_gpuScene->FindBody(id);
+        if (allocation.bodyId == UINT32_MAX || allocation.slot < publication->bodyBase ||
+            allocation.slot - publication->bodyBase >= publication->bodyCount ||
+            allocation.slot >= publication->directory->actors.size() ||
+            !publication->directory->actors[allocation.slot] ||
+            publication->directory->actors[allocation.slot]->bodyId != id)
+            throw std::logic_error("Sleep state requires this publication's live body identity");
+        return m_gpuScene->PrepareSleepQuery(publication, {allocation.slot - publication->bodyBase}, [&](auto values) {
+            if (values.size() != 1u || values[0].x > 1u || values[0].z != 1u || values[0].w)
+                throw std::runtime_error("GPU sleep publication failed its initialized activity contract");
+            sleeping = values[0].x == 0u;
+        });
+    });
+    return sleeping;
 }
-void PhysicsWorld::ActivateBody(uint32_t)
+void PhysicsWorld::ActivateBody(uint32_t id)
 {
-    Unsupported("body sleep/wake control");
+    auto &domain = DomainForBody(id);
+    RequireGpu(domain);
+    BodyCommand command{};
+    command.meta.y = CommandWake;
+    m_gpuScene->QueueCommand(id, command);
 }
-void PhysicsWorld::DeactivateBody(uint32_t)
+void PhysicsWorld::DeactivateBody(uint32_t id)
 {
-    Unsupported("body sleep/wake control");
+    auto &domain = DomainForBody(id);
+    RequireGpu(domain);
+    BodyCommand command{};
+    command.meta.y = CommandSleep;
+    m_gpuScene->QueueCommand(id, command);
 }
-void PhysicsWorld::ActivateBodiesInAABB(const glm::vec3 &, const glm::vec3 &)
+void PhysicsWorld::ActivateBodiesInAABB(const glm::vec3 &low, const glm::vec3 &high)
 {
-    Unsupported("bounds sleep/wake control");
+    RequireOwnerThread();
+    auto &domain = CurrentDomain();
+    RequireGpu(domain);
+    for (uint32_t axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(low[axis]) || !std::isfinite(high[axis]) || low[axis] > high[axis])
+            throw std::invalid_argument("Wake bounds require finite ordered world coordinates");
+    m_gpuScene->QueueBoundsWake(domain.owner, {low.x, low.y, low.z, 0}, {high.x, high.y, high.z, 0});
 }
-void PhysicsWorld::WakeBodiesTouchingStatic(uint32_t)
+void PhysicsWorld::WakeBodiesTouchingStatic(uint32_t id)
 {
-    Unsupported("static-neighbour sleep/wake control");
+    auto &domain = DomainForBody(id);
+    RequireGpu(domain);
+    const auto model = m_gpuScene->GetAcceptedBodyModel(id);
+    if ((model.meta.z & ~MotionNotResident) != MotionStatic)
+        throw std::invalid_argument("Static-neighbour wake requires a static source body");
+    m_gpuScene->QueueStaticWake(id);
 }
 
 std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const Collider &a, const glm::vec3 &positionA,

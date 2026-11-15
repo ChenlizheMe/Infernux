@@ -90,6 +90,13 @@ enum class JoltGpuContactReportStage
 
 struct JoltGpuTickControl
 {
+    // Captured existing settings; elapsed physical dt is filled by Tick for
+    // each actual substep. Never Host time or number of admitted packets.
+    JPH::GPU::BodySleepParameters sleepParameters{};
+    // Accepted author addresses only, not a Host mirror of motion/activity.
+    // Runs after control groups. Scene retains stable owner IDs and resolves
+    // packed slots here; shader decides whether each source actually moved.
+    std::function<std::vector<uint32_t>()> prepareSleepSources;
     JoltGpuTickControl() = default;
     JoltGpuTickControl(JoltGpuTickControl &&) = default;
     JoltGpuTickControl &operator=(JoltGpuTickControl &&) = default;
@@ -146,6 +153,11 @@ class JoltGpuTick final
     /// writer/controller/layout commit may enter until this cursor retires.
     /// Models/worlds and, when cpuForces is absent, the GPU force producer must
     /// already be accepted. Capture those values immediately here. CPU forces
+    /// are followed by their genuine-input wake producer. A direct GPU force
+    /// controller must have accepted its consumer-owned wake successor before
+    /// Begin/control groups, so a later explicit Sleep retains FIFO precedence.
+    /// No-input Begin never rescans a historical accumulator as a new write.
+    /// CPU forces
     /// are moved into one parameter/force upload packet and captured only when
     /// it is accepted. dt is the logical fixed step; each substep uses dt/N.
     /// Kinematic preparation precedes all substeps and FinishTick follows them

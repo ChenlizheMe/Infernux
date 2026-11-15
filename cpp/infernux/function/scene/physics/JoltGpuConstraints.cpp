@@ -1,5 +1,6 @@
 #include "JoltGpuConstraints.h"
 #include <Jolt/GPU/ConstraintTypes.h>
+#include "JoltGpuSleepLayout.h"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +33,7 @@ enum Port : uint8_t
     LabelsOld,
     LabelsNext,
     Schedule,
+    Sleeps,
     PortCount
 };
 enum Entry : uint8_t
@@ -59,6 +61,8 @@ enum Entry : uint8_t
     WriteSources,
     WriteIslands,
     Finalize,
+    WriteBodyRoots,
+    FinalizeTopology,
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{
@@ -73,7 +77,8 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{
     "constraint_merge_items",      "constraint_clear_root_flags",
     "constraint_mark_roots",       "constraint_build_root_rows",
     "constraint_write_sources",    "constraint_write_islands",
-    "constraint_finalize"};
+    "constraint_finalize",         "constraint_write_body_roots",
+    "constraint_finalize_topology"};
 constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
@@ -82,8 +87,9 @@ constexpr uint32_t P = Bit(Params), K = Bit(Work), S = Bit(Schedule), B = Bit(Bo
                    O = Bit(LabelsOld), N = Bit(LabelsNext);
 constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | S,
-                                                      P | K | S | B | W | Bit(Joints),
-                                                      P | K | S | B | W | Bit(Shapes) | Bit(Patches) | Bit(Contacts),
+                                                      P | K | S | B | W | Bit(Joints) | Bit(Sleeps),
+                                                      P | K | S | B | W | Bit(Shapes) | Bit(Patches) | Bit(Contacts) |
+                                                          Bit(Sleeps),
                                                       P | K | B | W | O | N,
                                                       P | K | S | B | W | O | N,
                                                       P | K | S | B | W | O | N,
@@ -102,6 +108,8 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | K | S | O | N,
                                                       P | K | S,
                                                       P | K | S | B,
+                                                      P | S,
+                                                      P | K | S | O,
                                                       P | S};
 
 struct PortLayout
@@ -132,7 +140,8 @@ constexpr PortLayout Ports[] = {
     {"contacts", sizeof(Contact), {"meta", "normalDepth", "localAnchorA", "localAnchorB", "impulse"}, 1u, true},
     {"labels_old", sizeof(uint32_t), {}, 0u, false},
     {"labels_next", sizeof(uint32_t), {}, 0u, false},
-    {"constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1u, false}};
+    {"constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1u, false},
+    {"body_sleep", sizeof(BodySleepRecord), {"author", "runtime"}, 0u, true}};
 static_assert(std::size(Ports) == PortCount);
 constexpr uint32_t MaxDispatchesPerPacket = 16u;
 constexpr uint64_t WordBytes = sizeof(ConstraintScheduleWord);
@@ -153,7 +162,7 @@ bool Collective(Entry e)
 }
 bool Summary(Entry e)
 {
-    return e == Seed || e == CommitRound || e == AcceptComponents || e == Finalize;
+    return e == Seed || e == CommitRound || e == AcceptComponents || e == Finalize || e == FinalizeTopology;
 }
 template <class T> std::vector<uint8_t> Bytes(const T &v)
 {
@@ -167,6 +176,13 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
     const auto &expected = Ports[port];
     const bool uniform = port == Params || port == Work;
     const auto &value = resource.value;
+    if (port == Sleeps) {
+        if (resource.binding.type != rhi::BindingType::StorageBuffer || !resource.binding.readOnlyStorage ||
+            resource.elementStride != sizeof(BodySleepRecord))
+            throw std::invalid_argument("GPU constraint sleep input differs from its shared record");
+        ValidateJoltGpuSleepLayout(value);
+        return;
+    }
     if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
         (uniform ? value.byteSize : resource.elementStride) != expected.stride ||
         (!uniform && resource.binding.readOnlyStorage != expected.readOnly))
@@ -258,6 +274,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Initialize,
         RoundWindow,
         Assemble,
+        TopologyReady,
         Done
     };
     struct Operation
@@ -278,10 +295,13 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
 
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
               const StepParams &parameters,
-              std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> callback)
-        : implementation(std::move(owner)), contactLease(inputs.GetContacts()), completed(std::move(callback))
+              std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> callback, bool onlyTopology = false,
+              std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> topologyCallback = {})
+        : implementation(std::move(owner)), contactLease(inputs.GetContacts()), completed(std::move(callback)),
+          completedTopology(std::move(topologyCallback)), topologyOnly(onlyTopology)
     {
-        if (!implementation->host.SharesServicesWith(storage.GetHost()) || !completed || !contactLease)
+        if (!implementation->host.SharesServicesWith(storage.GetHost()) || (!completed && !completedTopology) ||
+            !contactLease)
             throw std::invalid_argument("GPU constraints require the accepted tick host/contact workset");
         const uint32_t b = storage.GetBodyCount(), j = storage.GetJointCount(), p = contactLease->patchCount,
                        w = storage.GetWorldCount();
@@ -301,6 +321,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         frozen[Joints] = storage.Get(Resource::Joints)->Freeze();
         frozen[Patches] = contactLease->patches ? contactLease->patches->Freeze() : nullptr;
         frozen[Contacts] = contactLease->contacts ? contactLease->contacts->Freeze() : nullptr;
+        // Topology mode does not read runtime activity. Borrow this live source
+        // endpoint so waking after CC cannot COW a stale captured reader.
+        frozen[Sleeps] = storage.Get(Resource::SleepStates);
         for (auto port : {Bodies, Shapes, Worlds, Joints, Patches, Contacts})
             ValidateInput(frozen[port]);
         RequireBytes(Bodies, uint64_t(b) * sizeof(BodyModel));
@@ -308,6 +331,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         RequireBytes(Worlds, uint64_t(w) * sizeof(WorldRange));
         RequireBytes(Joints, storage.GetJointLayout()->ByteSize());
         RequireBytes(Contacts, uint64_t(std::max(1u, Checked(4ull * p))) * sizeof(Contact));
+        if (!frozen[Sleeps] || !implementation->host.SharesServicesWith(frozen[Sleeps]->GetHost()))
+            throw std::invalid_argument("GPU constraints require the selected sleep source");
+        RequireBytes(Sleeps, uint64_t(b) * sizeof(BodySleepRecord));
         if (frozen[Patches]->GetByteSize() < WordBytes)
             throw std::invalid_argument("GPU constraints require a candidate-bank header");
         config.counts = {b, j, p, w};
@@ -315,6 +341,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         config.selectedCounts = parameters.selectedCounts;
         config.limits.y = storage.GetShapeCount();
         config.limits.z = Checked(4ull * p);
+        config.select.z = topologyOnly ? 0u : 1u;
         uint64_t words = 0;
         const auto reserve = [&](uint64_t n) {
             const auto base = Checked(words);
@@ -334,6 +361,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         config.islands = {reserve(2ull * b), reserve(b), reserve(b), reserve(b)};
         config.summary = {reserve(1u), reserve(1u), reserve(1u), reserve(1u)};
         config.round.x = reserve(1u);
+        config.limits.w = reserve(b);
         // One reusable hierarchy. Persistent summaries above never alias it.
         uint32_t count = std::max(b, allRefs);
         do {
@@ -381,8 +409,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     bool Capacity()
     {
         return Endpoint(schedule, uint64_t(config.limits.x) * WordBytes) &&
-               Endpoint(labels[0], uint64_t(config.counts.x) * 4u) &&
-               Endpoint(labels[1], uint64_t(config.counts.x) * 4u);
+               Endpoint(labels[0], (uint64_t(config.counts.x) + 1u) * 4u) &&
+               Endpoint(labels[1], (uint64_t(config.counts.x) + 1u) * 4u);
     }
 
     static uint32_t FinalBank(std::array<uint32_t, 2> banks, uint32_t count)
@@ -513,6 +541,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     void BuildAssembly()
     {
         ResetPlan(Phase::Assemble);
+        if (resumingNumerical) {
+            Add(BuildJointRefs, config.counts.y);
+            Add(BuildPatchRefs, config.counts.z);
+        }
         Add(ValidateLabels, config.counts.x);
         Reduce(config.layout.z, config.counts.x, 0u, config.summary.w);
         Kind(ValidateEdges, ConstraintJoint);
@@ -520,6 +552,11 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         const uint32_t refs = Checked(uint64_t(config.counts.y) + config.counts.z);
         Reduce(config.layout.w, refs, 0u, config.summary.z);
         Add(AcceptComponents, 1u);
+        Add(WriteBodyRoots, config.counts.x);
+        if (topologyOnly) {
+            Add(FinalizeTopology, 1u);
+            return;
+        }
         Sort(ConstraintJoint, jointSort, config.counts.y);
         Sort(ConstraintPatch, patchSort, config.counts.z);
         Add(ClearRootFlags, config.counts.x);
@@ -588,7 +625,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 const uint64_t stride = port == Schedule ? WordBytes : 4u;
                 proof.writes.push_back({binding, uint64_t(first) * stride, uint64_t(count) * stride});
             } else
-                proof.reads.push_back({binding, 0u, buffer->GetByteSize()});
+                proof.reads.push_back(
+                    {binding, 0u,
+                     port == LabelsOld || port == LabelsNext ? uint64_t(config.counts.x) * 4u : buffer->GetByteSize()});
         }
         dispatch.proof = std::move(proof);
         dispatches.push_back(std::move(dispatch));
@@ -624,6 +663,25 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             throw std::logic_error("GPU schedule install needs its completed source receipt");
         read->ReadInto(result.data(), sizeof(result));
         const auto &counts = result[0], &items = result[1];
+        if (topologyOnly) {
+            if (counts.w != ConstraintNotReady || counts.x || counts.y || counts.z || items.x || items.y || items.z ||
+                items.w)
+                throw std::runtime_error("GPU sleep topology failed its independent CC acceptance");
+            auto value = std::make_shared<JoltGpuConstraintTopology>();
+            value->bodyRootFirst = config.limits.w;
+            value->bodySlots = config.counts.x;
+            value->schedule = schedule;
+            value->rootVotes = labels[oldBank ^ 1u];
+            value->execution = shared_from_this();
+            // The real topology reads have completed. Setup must write/read
+            // its actual new generations, never these older frozen runtimes.
+            frozen[Joints].reset();
+            frozen[Contacts].reset();
+            phase = Phase::TopologyReady;
+            auto callback = std::move(completedTopology);
+            callback(std::move(value));
+            return;
+        }
         if (counts.w || counts.x > config.counts.x || counts.y > counts.x || counts.z > counts.x ||
             items.x > config.counts.y || items.y > config.counts.z || items.z > items.x || items.w > items.y ||
             (counts.y == 0u) != (items.x == 0u) || (counts.z == 0u) != (items.y == 0u) || counts.y > items.x ||
@@ -639,13 +697,19 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->maxJointItems = items.z;
         value->maxPatchItems = items.w;
         value->schedule = schedule->Freeze();
+        value->bodyRootFirst = config.limits.w;
+        value->bodySlots = config.counts.x;
+        value->rootVotes = labels[oldBank ^ 1u];
+        frozen[Joints].reset();
+        frozen[Contacts].reset();
+        frozen[Sleeps].reset();
         phase = Phase::Done;
         auto callback = std::move(completed);
         callback(std::move(value));
     }
     JoltGpuControlWork Next()
     {
-        if (phase == Phase::Done)
+        if (phase == Phase::Done || phase == Phase::TopologyReady)
             return {};
         if (!Capacity())
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
@@ -708,6 +772,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     std::shared_ptr<rhi::ComputeBuffer> schedule, pendingParams, pendingWork;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 2> labels;
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed;
+    std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completedTopology;
+    bool topologyOnly = false, resumingNumerical = false;
     ConstraintParams config{};
     std::array<uint32_t, 2> jointSort{}, patchSort{};
     std::vector<ScanLevel> hierarchy;
@@ -722,10 +788,40 @@ JoltGpuConstraints::JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTarge
 {
 }
 JoltGpuControlWork
-JoltGpuConstraints::Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                            const JPH::GPU::StepParams &parameters,
-                            std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed)
+JoltGpuConstraints::PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                                    const JPH::GPU::StepParams &parameters,
+                                    std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completed)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, parameters, std::move(completed))->Next();
+    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, parameters,
+                                             std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)>{},
+                                             true, std::move(completed))
+        ->Next();
+}
+JoltGpuControlWork
+JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                                         std::shared_ptr<JoltGpuConstraintTopology> topology,
+                                         std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed)
+{
+    if (!topology || !topology->execution || !completed)
+        throw std::invalid_argument("GPU numerical plan requires its one accepted topology continuation");
+    auto execution = std::static_pointer_cast<Impl::Execution>(topology->execution);
+    if (execution->implementation != m_impl || execution->phase != Impl::Execution::Phase::TopologyReady ||
+        execution->contactLease != inputs.GetContacts() || storage.GetBodyCount() != topology->bodySlots)
+        throw std::logic_error("GPU numerical plan crosses its source/topology generation");
+    // Setup has completed its real accepted writes. Do not reuse the older
+    // topology-phase frozen JointStream/Contact generations across COW.
+    execution->frozen[Joints] = storage.Get(JPH::GPU::Resource::Joints)->Freeze();
+    execution->frozen[Contacts] = inputs.GetContacts()->contacts->Freeze();
+    execution->frozen[Sleeps] = storage.Get(JPH::GPU::Resource::SleepStates)->Freeze();
+    execution->ValidateInput(execution->frozen[Joints]);
+    execution->ValidateInput(execution->frozen[Contacts]);
+    execution->ValidateInput(execution->frozen[Sleeps]);
+    execution->config.select.z = 1u;
+    execution->topologyOnly = false;
+    execution->resumingNumerical = true;
+    execution->completed = std::move(completed);
+    topology->execution.reset();
+    execution->BuildAssembly();
+    return execution->Next();
 }
 } // namespace infernux

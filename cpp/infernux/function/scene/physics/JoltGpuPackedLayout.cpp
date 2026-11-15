@@ -111,9 +111,10 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
             const StageWork range{{initialized, count, 0u, 0u}};
             std::vector<uint8_t> bytes(sizeof(range));
             std::memcpy(bytes.data(), &range, sizeof(range));
-            auto dispatch = mutations.PrepareCapacityInitialization(
-                {static_cast<uint32_t>(model.bodies.size()), candidates[0], candidates[1], candidates[2]}, initialized,
-                count, uniform);
+            auto dispatch =
+                mutations.PrepareCapacityInitialization({static_cast<uint32_t>(model.bodies.size()), candidates[0],
+                                                         candidates[1], candidates[2], candidates[3]},
+                                                        initialized, count, uniform);
             auto packet = rhi::PrepareComputeBatch(host, {{uniform, 0u, std::move(bytes)}}, {std::move(dispatch)});
             initialized += count;
             return Follow(packet);
@@ -176,21 +177,23 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
         committed = true;
         return storage.PreparePackedReplacement(std::move(model),
                                                 {static_cast<uint32_t>(initialized), std::move(candidates[0]),
-                                                 std::move(candidates[1]), std::move(candidates[2])},
+                                                 std::move(candidates[1]), std::move(candidates[2]),
+                                                 std::move(candidates[3])},
                                                 std::move(jointStream));
     }
 
-    static constexpr std::array<Resource, 3> Resources{Resource::BodyStates, Resource::BodyForces,
-                                                       Resource::KinematicTargets};
-    static constexpr std::array<uint64_t, 3> Strides{sizeof(JPH::GPU::BodyState), sizeof(JPH::GPU::BodyForces),
-                                                     sizeof(JPH::GPU::KinematicTarget)};
+    static constexpr std::array<Resource, 4> Resources{Resource::BodyStates, Resource::BodyForces,
+                                                       Resource::KinematicTargets, Resource::SleepStates};
+    static constexpr std::array<uint64_t, 4> Strides{sizeof(JPH::GPU::BodyState), sizeof(JPH::GPU::BodyForces),
+                                                     sizeof(JPH::GPU::KinematicTarget),
+                                                     sizeof(JPH::GPU::BodySleepRecord)};
     JoltGpuStorage &storage;
     JoltGpuBodyMutations &mutations;
     FrameWorkOwner &work;
     JoltGpuModel model;
     std::vector<uint32_t> previousJoints;
     rhi::ComputeHost host;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, 3> source, candidates;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 4> source, candidates;
     std::shared_ptr<rhi::ComputeBuffer> oldJoints, jointStream;
     std::shared_ptr<const JoltGpuJointLayout> layout, oldLayout;
     std::vector<CopyRun> runs, jointRuns;

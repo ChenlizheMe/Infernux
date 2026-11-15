@@ -2,6 +2,7 @@
 
 #include <Jolt/GPU/ConstraintTypes.h>
 #include <Jolt/GPU/PhysicsStages.h>
+#include <Jolt/GPU/SleepTypes.h>
 #include "JoltGpuJointLayout.h"
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
@@ -15,6 +16,7 @@
 namespace infernux
 {
 class JoltGpuGeometryStore;
+class JoltGpuSleep;
 struct JoltGpuGeometryLease;
 // Native-only lifetime identity: (Collider A ID/generation, B ID/generation).
 // Canonical endpoint order is unsigned component ID, then generation.
@@ -92,6 +94,18 @@ struct JoltGpuConstraintWorkset
     uint32_t islandCount = 0, jointIslandCount = 0, contactIslandCount = 0;
     uint32_t activeJoints = 0, activePatches = 0, maxJointItems = 0, maxPatchItems = 0;
     std::shared_ptr<rhi::ComputeBuffer> schedule;
+    uint32_t bodyRootFirst = 0, bodySlots = 0;
+    std::shared_ptr<rhi::ComputeBuffer> rootVotes;
+};
+
+// One validated topology, before awake-domain numerical setup/finalization.
+// Schedule is a source-exclusive live producer, not an installable frozen plan.
+// The opaque execution is the SAME CC producer resumed after setup.
+struct JoltGpuConstraintTopology
+{
+    uint32_t bodyRootFirst = 0, bodySlots = 0;
+    std::shared_ptr<rhi::ComputeBuffer> schedule, rootVotes;
+    std::shared_ptr<void> execution;
 };
 
 class JoltGpuModelUpdate;
@@ -100,7 +114,7 @@ class JoltGpuModelUpdate;
 struct JoltGpuBodyStatePorts
 {
     uint32_t count = 0;
-    std::shared_ptr<rhi::ComputeBuffer> states, forces, targets;
+    std::shared_ptr<rhi::ComputeBuffer> states, forces, targets, sleeps;
 };
 
 /// One validated step description, reusing the shared device record. Contact
@@ -140,7 +154,11 @@ class JoltGpuStorage
     PrepareInputs(const JoltGpuStepParameters &parameters,
                   const std::vector<JPH::GPU::BodyForces> *cpuForces = nullptr);
     /// Explicit CPU input path. A GPU controller can instead write the resident
-    /// BodyForces port directly; the normal compute dependency orders its use.
+    /// BodyForces port directly. Its consumer owner must place
+    /// GetSleep().PrepareForceWake immediately after that genuinely accepted
+    /// writer, BEFORE any later author groups/Sleep command, using the existing
+    /// control-work source. A no-upload Begin is not a new force producer;
+    /// historical nonzero accumulators never imply a new wake event.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareForces(const std::vector<JPH::GPU::BodyForces> &forces, const JPH::GPU::StepParams &selected);
     /// Fixed-capacity author-model transaction; existing GPU state is retained.
@@ -242,7 +260,7 @@ class JoltGpuStorage
     bool m_hasGenericGeometry = false;
     std::shared_ptr<const JoltGpuJointLayout> m_jointLayout;
     bool m_modelUpdatePending = false;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> m_buffers;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> m_buffers;
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
 };
 
@@ -272,7 +290,7 @@ class JoltGpuModelUpdate final
                        std::vector<JoltGpuShapeModelUpdate> shapeChanges,
                        std::vector<JoltGpuJointModelUpdate> jointChanges);
     JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
-                       JoltGpuModel replacement, std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> replacementBuffers,
+                       JoltGpuModel replacement, std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> replacementBuffers,
                        std::array<uint32_t, 3> replacementCounts);
     void Commit() noexcept;
 
@@ -283,7 +301,7 @@ class JoltGpuModelUpdate final
     std::vector<JoltGpuShapeModelUpdate> m_shapeChanges;
     std::vector<JoltGpuJointModelUpdate> m_jointChanges;
     std::optional<JoltGpuModel> m_replacement;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> m_replacementBuffers;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> m_replacementBuffers;
     // Shapes, maximum bodies/world, maximum leaves/world.
     std::array<uint32_t, 3> m_replacementCounts{};
 };
@@ -363,6 +381,10 @@ class JoltGpuPrograms
 {
   public:
     JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target);
+    [[nodiscard]] JoltGpuSleep &GetSleep() const noexcept
+    {
+        return *m_sleep;
+    }
 
     /// Prepare one dependency-ordered ready prefix, including repeated solver
     /// iterations. The caller owns its stage cursor and selects a bounded prefix.
@@ -393,6 +415,7 @@ class JoltGpuPrograms
                                                          const std::shared_ptr<rhi::ComputeBuffer> &workUniform) const;
     static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
+    std::shared_ptr<JoltGpuSleep> m_sleep;
     std::array<Entry, StageCount> m_entries;
 };
 

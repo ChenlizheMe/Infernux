@@ -1,4 +1,5 @@
 #include "JoltGpuScene.h"
+#include "JoltGpuSleep.h"
 
 #include "JoltGpuBodyMutations.h"
 #include "JoltGpuBroadphase.h"
@@ -53,6 +54,10 @@ JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWor
 {
     if (!work.packet && !work.continueWork)
         return next();
+    if (work.prepareMinimum) {
+        auto minimum = std::move(work.prepareMinimum);
+        work.prepareMinimum = [minimum = std::move(minimum), next] { return Then(minimum(), next); };
+    }
     auto continuation = std::move(work.continueWork);
     work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
         return continuation ? Then(continuation(), std::move(next)) : next();
@@ -203,6 +208,7 @@ class JoltGpuScene::Impl
         uint32_t slot;
         uint32_t bodyId;
         BodyModel model;
+        BodySleepAuthor sleep;
         std::vector<ShapeModel> leaves;
         BodyState initialState;
         PhysicsECSStore::RigidbodyHandle initialRigidbody;
@@ -224,7 +230,55 @@ class JoltGpuScene::Impl
     {
         PublishedJoint value;
         PhysicsConstraintOwner *owner = nullptr;
+        // Last authored drive intent, not a mirror of device dynamic state.
+        std::optional<PoseDriveIntent> poseDrive;
     };
+
+    StepParams SleepSelection(const Partition &domain) const
+    {
+        const auto &range = storage.GetModel().worlds.at(domain.row);
+        StepParams result{};
+        result.selection = {domain.row, range.bodies.x, range.leaves.x, range.leaves.z};
+        result.selectedCounts = {range.bodies.y, range.leaves.y, range.leaves.w, 0u};
+        return result;
+    }
+    using OldBounds = std::shared_ptr<std::shared_ptr<rhi::ComputeBuffer>>;
+    OldBounds QueueOldBounds(Partition &domain, uint32_t record, uint32_t id)
+    {
+        auto old = std::make_shared<std::shared_ptr<rhi::ComputeBuffer>>();
+        JoltGpuControlGroup capture;
+        capture.prepareWork = [this, &domain, record, id, old] {
+            RequireOwnership(record, id);
+            return programs.GetSleep().PrepareOldBounds(storage, SleepSelection(domain), Packed(record),
+                                                        [old](auto value) { *old = std::move(value); });
+        };
+        domain.pending.push_back(std::move(capture));
+        return old;
+    }
+    void QueueBoundsAfter(Partition &domain, OldBounds old, uint32_t record, uint32_t id, bool newBody,
+                          bool requirePoseChange = false)
+    {
+        JoltGpuControlGroup wake;
+        wake.prepareWork = [this, &domain, old, record, id, newBody, requirePoseChange] {
+            uint32_t source = UINT32_MAX;
+            if (newBody) {
+                RequireOwnership(record, id);
+                source = Packed(record);
+            }
+            return programs.GetSleep().PrepareBoundsWake(
+                storage, SleepSelection(domain), old ? *old : nullptr, source, [] {}, requirePoseChange);
+        };
+        domain.pending.push_back(std::move(wake));
+    }
+    void AddJointWake(JoltGpuControlGroup &group, const PublishedJoint &joint)
+    {
+        for (auto id : {joint.bodyIdA, joint.bodyIdB})
+            if (id != InvalidBodyId) {
+                BodyCommand wake{};
+                wake.meta = {id, CommandWake, 0u, 0u};
+                group.commands.push_back(wake);
+            }
+    }
 
     static uint8_t PositionChannel() noexcept
     {
@@ -446,6 +500,9 @@ class JoltGpuScene::Impl
         PublishedJoint value{id, 0, ownerBody, connectedBody, author.bodies.z, author};
         authoredJoints.emplace(id, JointRecord{value, &owner});
         QueueJointTopology(*slots[a].partition);
+        JoltGpuControlGroup wake;
+        AddJointWake(wake, value);
+        slots[a].partition->pending.push_back(std::move(wake));
         return id;
     }
 
@@ -478,6 +535,21 @@ class JoltGpuScene::Impl
             values->push_back({value, update.runtimeIntent});
         }
         JoltGpuControlGroup group;
+        for (const auto &captured : *values) {
+            const auto &old = GetAuthoredJoint(captured.value.id).author;
+            const auto &author = captured.value.author;
+            const bool samePayload = std::visit(
+                [&](const auto &payload) {
+                    const auto *previous = std::get_if<std::decay_t<decltype(payload)>>(&old.payload);
+                    return previous && std::memcmp(previous, &payload, sizeof(payload)) == 0;
+                },
+                author.payload);
+            if (captured.runtimeIntent || !samePayload || std::memcmp(&old.bodies, &author.bodies, sizeof(UInt4)) ||
+                std::memcmp(&old.identity, &author.identity, sizeof(UInt4)))
+                AddJointWake(group, captured.value);
+            if (captured.runtimeIntent & JointResetPoseDrive)
+                authoredJoints.at(captured.value.id).poseDrive.reset();
+        }
         group.prepareModel = [this, values] {
             std::vector<JoltGpuJointModelUpdate> changes;
             changes.reserve(values->size());
@@ -527,8 +599,11 @@ class JoltGpuScene::Impl
             return;
         auto *owner = found->second.owner;
         auto &domain = BodyDomain(found->second.value.bodyIdA);
+        JoltGpuControlGroup wake;
+        AddJointWake(wake, found->second.value);
         authoredJoints.erase(found);
         QueueJointTopology(domain);
+        domain.pending.push_back(std::move(wake));
         owner->OnPhysicsConstraintDestroyed();
     }
 
@@ -536,8 +611,10 @@ class JoltGpuScene::Impl
     {
         auto &domain = BodyDomain(bodyId);
         std::vector<PhysicsConstraintOwner *> owners;
+        JoltGpuControlGroup wake;
         for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
             if (it->second.value.bodyIdA == bodyId || it->second.value.bodyIdB == bodyId) {
+                AddJointWake(wake, it->second.value);
                 owners.push_back(it->second.owner);
                 it = authoredJoints.erase(it);
             } else {
@@ -546,6 +623,8 @@ class JoltGpuScene::Impl
         }
         if (!owners.empty())
             QueueJointTopology(domain);
+        if (!wake.commands.empty())
+            domain.pending.push_back(std::move(wake));
         for (auto *owner : owners)
             owner->OnPhysicsConstraintDestroyed();
     }
@@ -851,6 +930,7 @@ class JoltGpuScene::Impl
             change->leaves.push_back(std::move(leaf.model));
         }
         change->initialState = actor.initialState;
+        change->sleep = actor.sleep;
         change->initialRigidbody = actor.initialRigidbody;
         change->hasInitialLinearVelocity = actor.hasInitialLinearVelocity;
         change->hasInitialAngularVelocity = actor.hasInitialAngularVelocity;
@@ -896,6 +976,10 @@ class JoltGpuScene::Impl
                  different(acceptedBody.invInertiaDiagonal, change->model.invInertiaDiagonal) ||
                  different(acceptedBody.inertiaRotation, change->model.inertiaRotation));
             auto warm = mobilityChanged ? joints.PrepareMobilityReset(storage, packed) : JoltGpuJointReplacement{};
+            std::vector<uint8_t> sleepAuthor(sizeof(change->sleep));
+            std::memcpy(sleepAuthor.data(), &change->sleep, sizeof(change->sleep));
+            warm.updates.push_back({storage.Get(Resource::SleepStates), uint64_t(packed) * sizeof(BodySleepRecord),
+                                    std::move(sleepAuthor)});
             if (acceptedBody.meta.y == change->leaves.size()) {
                 auto body = change->model;
                 body.meta.x = acceptedBody.meta.x;
@@ -937,7 +1021,14 @@ class JoltGpuScene::Impl
                 group.commands.push_back(angular);
             }
         }
+        auto oldBounds = firstOwnership ? OldBounds{} : QueueOldBounds(domain, index, id);
+        if (motion != MotionStatic && !firstOwnership) {
+            BodyCommand wake{};
+            wake.meta = {id, CommandWake, 0u, 0u};
+            group.commands.push_back(wake);
+        }
         pending.push_back(std::move(group));
+        QueueBoundsAfter(domain, std::move(oldBounds), index, id, true);
         if (motionChanged || (motion != MotionStatic && (firstOwnership || (change->initializesRigidbody &&
                                                                             (change->hasInitialLinearVelocity ||
                                                                              change->hasInitialAngularVelocity)))))
@@ -966,6 +1057,11 @@ class JoltGpuScene::Impl
             return storage.PrepareModelUpdate({{packed, model}}, {});
         };
         group.modelAccepted = [this]() noexcept { publicationDirectory.reset(); };
+        if (resident && !preserveVelocity) {
+            BodyCommand wake{};
+            wake.meta = {id, CommandWake, 0u, 0u};
+            group.commands.push_back(wake);
+        }
         if (!resident) {
             pendingCompletions.reserve(pendingCompletions.size() + 2);
             BodyCommand boundary{};
@@ -973,7 +1069,9 @@ class JoltGpuScene::Impl
                              preserveVelocity ? MotionBoundarySuspendPreserve : MotionBoundarySuspendReset, 0};
             group.commands.push_back(boundary);
         }
+        auto oldBounds = QueueOldBounds(domain, index, id);
         pending.push_back(std::move(group));
+        QueueBoundsAfter(domain, std::move(oldBounds), index, id, resident);
         if (!resident)
             CancelTarget(slot.queuedTarget, pendingCompletions);
         slot.desiredResident = resident;
@@ -1011,6 +1109,7 @@ class JoltGpuScene::Impl
         }
         pendingCompletions.reserve(pendingCompletions.size() + 2);
         const auto source = author ? AppendSource(domain, *author) : PhysicsTargetSource{};
+        const auto oldBounds = kind <= CommandSetPose ? QueueOldBounds(domain, index, id) : OldBounds{};
         if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted &&
             !pending.back().prepareWork) {
             pending.back().commands.push_back(command);
@@ -1019,6 +1118,8 @@ class JoltGpuScene::Impl
             group.commands.push_back(command);
             pending.push_back(std::move(group));
         }
+        if (oldBounds)
+            QueueBoundsAfter(domain, oldBounds, index, id, true, true);
         auto &target = slot.queuedTarget;
         if (acceptsMove) {
             if (!target.pending) {
@@ -1037,7 +1138,7 @@ class JoltGpuScene::Impl
             target.pending = true;
             target.temporaryStatic = motion == MotionStatic;
         } else if ((kind <= CommandSetPose && !(command.meta.z & CommandPreserveKinematicMove)) ||
-                   kind == CommandResetMotion || kind == CommandMotionBoundary ||
+                   kind == CommandResetMotion || kind == CommandSleep || kind == CommandMotionBoundary ||
                    ((kind == CommandSetLinearVelocity || kind == CommandSetAngularVelocity) &&
                     motion != MotionStatic)) {
             CancelTarget(target, pendingCompletions);
@@ -1078,7 +1179,9 @@ class JoltGpuScene::Impl
             publicationDirectory.reset();
         };
         pendingCompletions.reserve(pendingCompletions.size() + 2);
+        auto oldBounds = QueueOldBounds(domain, index, id);
         pending.push_back(std::move(group));
+        QueueBoundsAfter(domain, std::move(oldBounds), index, id, false);
         CancelTarget(slots[index].queuedTarget, pendingCompletions);
         slots[index].retiring = true;
         --domain.liveCount;
@@ -1216,6 +1319,26 @@ class JoltGpuScene::Impl
                     }
                 };
         JoltGpuTickControl control;
+        std::vector<std::pair<uint32_t, uint32_t>> prescribedSources;
+        for (const auto record : domain.records) {
+            if (record == UINT32_MAX)
+                continue;
+            const auto &slot = slots[record];
+            if (slot.retiring || !slot.authored || !slot.desiredResident)
+                continue;
+            if (slot.authored->acceptedMotionType == MotionKinematic ||
+                (slot.authored->acceptedMotionType == MotionStatic && slot.queuedTarget.temporaryStatic))
+                prescribedSources.emplace_back(record, slot.bodyId);
+        }
+        control.prepareSleepSources = [this, prescribedSources = std::move(prescribedSources)] {
+            std::vector<uint32_t> sources;
+            sources.reserve(prescribedSources.size());
+            for (const auto &[record, id] : prescribedSources) {
+                RequireOwnership(record, id);
+                sources.push_back(Packed(record));
+            }
+            return sources;
+        };
         control.colliderPairs = pairCapture;
         control.commandProgram = &commands;
         control.prepareContactReport = std::move(reports.phase);
@@ -1239,14 +1362,24 @@ class JoltGpuScene::Impl
             publication->geometryStore = output.geometryStore;
             publication->geometry = output.geometry;
             publication->hasGenericGeometry = output.hasGenericGeometry;
-            return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer, reportFinish] {
-                return Then(
-                    reportFinish ? reportFinish(retained) : JoltGpuControlWork{}, [retained, consumer, finalConsumer] {
-                        return Then(consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
-                            return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
+            JPH::GPU::StepParams selected{};
+            selected.selection = {output.worldRow, output.bodyBase, output.leafBase, output.jointBase};
+            selected.selectedCounts = {output.bodyCount, output.leafCount, output.jointCount, 0u};
+            return Then(
+                programs.GetSleep().PrepareSnapshot(
+                    storage, selected,
+                    [publication](auto snapshot) { publication->sleepStatus = std::move(snapshot); }),
+                [this, retained, consumer, finalConsumer, reportFinish] {
+                    return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer, reportFinish] {
+                        return Then(reportFinish ? reportFinish(retained) : JoltGpuControlWork{}, [retained, consumer,
+                                                                                                   finalConsumer] {
+                            return Then(consumer ? consumer(retained) : JoltGpuControlWork{},
+                                        [retained, finalConsumer] {
+                                            return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
+                                        });
                         });
                     });
-            });
+                });
         };
         candidate = std::move(publication);
         candidateCompletions = std::move(completions);
@@ -1462,7 +1595,8 @@ class JoltGpuScene::Impl
                 std::memcpy(bytes.data(), &range, sizeof(range));
                 auto dispatch = scene.mutations.PrepareCapacityInitialization(
                     {scene.storage.GetBodyCount(), scene.storage.Get(Resource::BodyStates),
-                     scene.storage.Get(Resource::BodyForces), scene.storage.Get(Resource::KinematicTargets)},
+                     scene.storage.Get(Resource::BodyForces), scene.storage.Get(Resource::KinematicTargets),
+                     scene.storage.Get(Resource::SleepStates)},
                     first, count, uniform);
                 first += count;
                 auto packet = rhi::PrepareComputeBatch(host, {{uniform, 0u, std::move(bytes)}}, {std::move(dispatch)});
@@ -1637,6 +1771,23 @@ void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveInte
     auto &domain = m_impl->Domain(world);
     if (domain.closed || domain.retiring)
         throw std::logic_error("Cannot submit ragdoll drive to a closed World");
+    JoltGpuControlGroup wake;
+    for (const auto &intent : intents) {
+        auto &record = m_impl->authoredJoints.at(intent.id);
+        if (record.value.kind != intent.kind || record.value.author.identity.z != domain.row)
+            throw std::invalid_argument("Ragdoll drive author crosses joint kind or World identity");
+        const auto sameRotation = [](const Float4 &a, const Float4 &b) {
+            return (a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w) ||
+                   (a.x == -b.x && a.y == -b.y && a.z == -b.z && a.w == -b.w);
+        };
+        const bool changed = record.poseDrive
+                                 ? record.poseDrive->clear != intent.clear ||
+                                       (!intent.clear && !sameRotation(record.poseDrive->relative, intent.relative))
+                                 : !intent.clear;
+        if (changed)
+            m_impl->AddJointWake(wake, record.value);
+        record.poseDrive = intent;
+    }
     auto captured = std::make_shared<const std::vector<PoseDriveIntent>>(std::move(intents));
     JoltGpuControlGroup group;
     group.prepareWork = [impl = m_impl.get(), &domain, captured] {
@@ -1655,6 +1806,10 @@ void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveInte
         return impl->joints.PreparePoseDrive(impl->storage, std::move(requests));
     };
     domain.pending.push_back(std::move(group));
+    // Identical static targets do not restart quiet history every render frame.
+    // Changed intents wake after the actual pose-drive writer in this FIFO.
+    if (!wake.commands.empty())
+        domain.pending.push_back(std::move(wake));
 }
 
 void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs)
@@ -1672,6 +1827,25 @@ void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const P
 void JoltGpuScene::StageRetire(uint32_t id)
 {
     m_impl->StageRetire(id);
+}
+void JoltGpuScene::QueueBoundsWake(RuntimeWorld &world, Float4 low, Float4 high)
+{
+    auto &domain = m_impl->Domain(world);
+    if (domain.closed || domain.retiring)
+        throw std::logic_error("Cannot wake a closed World");
+    JoltGpuControlGroup group;
+    group.prepareWork = [impl = m_impl.get(), &domain, low, high] {
+        return impl->programs.GetSleep().PrepareAuthoredBoundsWake(impl->storage, impl->SleepSelection(domain), low,
+                                                                   high, [] {});
+    };
+    domain.pending.push_back(std::move(group));
+}
+void JoltGpuScene::QueueStaticWake(uint32_t id)
+{
+    auto &domain = m_impl->BodyDomain(id);
+    const auto record = m_impl->RequireSlot(id);
+    auto old = m_impl->QueueOldBounds(domain, record, id);
+    m_impl->QueueBoundsAfter(domain, std::move(old), record, id, true);
 }
 uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t a, uint32_t b, JointAuthor author)
 {
@@ -1819,6 +1993,15 @@ const std::shared_ptr<const JoltGpuScene::Publication> &JoltGpuScene::GetPublish
 bool JoltGpuScene::IsWriterFor(const RuntimeWorld &world) const noexcept
 {
     return m_impl->writer && m_impl->writer->world == &world;
+}
+JoltGpuControlWork JoltGpuScene::PrepareSleepQuery(const std::shared_ptr<const Publication> &publication,
+                                                   std::vector<uint32_t> relativeBodies,
+                                                   std::function<void(std::vector<JPH::GPU::UInt4>)> completed)
+{
+    if (!publication || !publication->sleepStatus)
+        throw std::invalid_argument("Sleep query requires a completed nonempty publication");
+    return m_impl->programs.GetSleep().PrepareQuery(publication->sleepStatus, publication->bodyCount,
+                                                    std::move(relativeBodies), std::move(completed));
 }
 JoltGpuTick::Status JoltGpuScene::GetTickStatus(const RuntimeWorld &world)
 {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Jolt/GPU/SleepTypes.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include "JoltGpuShape.h"
 #include "PhysicsECSStore.h"
@@ -18,6 +19,7 @@ struct PhysicsActorData;
 struct PreparedGpuActor
 {
     JPH::GPU::BodyModel body;
+    JPH::GPU::BodySleepAuthor sleep;
     PreparedGpuShape geometry;
     JPH::GPU::BodyState initialState;
     JPH::GPU::Float4 rootScale{1, 1, 1, 0};

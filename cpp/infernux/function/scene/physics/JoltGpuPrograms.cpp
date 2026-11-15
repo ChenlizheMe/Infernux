@@ -1,5 +1,9 @@
 #include "JoltGpuPrograms.h"
+#include <Jolt/Jolt.h>
+#include <Jolt/Geometry/AABox.h>
 #include "JoltGpuGeometryStore.h"
+#include "JoltGpuSleep.h"
+#include "JoltGpuSleepLayout.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,6 +20,75 @@ namespace infernux
 namespace
 {
 using namespace JPH::GPU;
+
+// The low-level native Model path has no Collider/root Shape owner. Its author
+// geometry is exactly the supplied cooked leaf stream. Build that stream's
+// root-local bounds here, without reading/integrating any device motion.
+// The Scene path later supplies the original final native root bounds instead.
+std::vector<BodySleepRecord> InitialSleepAuthors(const JoltGpuModel &model,
+                                                 const std::shared_ptr<const JoltGpuGeometryLease> &geometry)
+{
+    std::vector<BodySleepRecord> result(model.bodies.size());
+    for (size_t body = 0; body < model.bodies.size(); ++body) {
+        const auto &owner = model.bodies[body];
+        JPH::AABox bounds;
+        bool sensor = owner.meta.y != 0u;
+        for (uint32_t index = 0; index < owner.meta.y; ++index) {
+            const auto &leaf = model.shapes.at(owner.meta.x + index);
+            const auto &g = leaf.geometry;
+            const JPH::Quat rotation(leaf.localRotation.x, leaf.localRotation.y, leaf.localRotation.z,
+                                     leaf.localRotation.w);
+            JPH::Vec3 center(leaf.localPositionCOM.x, leaf.localPositionCOM.y, leaf.localPositionCOM.z), extent;
+            sensor &= (leaf.meta.w & ShapeSensor) != 0u;
+            if (leaf.meta.x == ShapeSphere)
+                extent = JPH::Vec3::sReplicate(g.w);
+            else if (leaf.meta.x == ShapeCapsule || leaf.meta.x == ShapeCylinder) {
+                const auto axis = rotation * JPH::Vec3::sAxisY();
+                const auto absolute = axis.Abs();
+                if (leaf.meta.x == ShapeCapsule)
+                    extent = absolute * g.y + JPH::Vec3::sReplicate(g.w);
+                else
+                    extent = absolute * g.y +
+                             JPH::Vec3::sMax(JPH::Vec3::sZero(), JPH::Vec3::sReplicate(1) - axis * axis).Sqrt() * g.x;
+            } else {
+                JPH::AABox local;
+                if (leaf.meta.x == ShapeBox)
+                    local = JPH::AABox(-JPH::Vec3(g.x, g.y, g.z), JPH::Vec3(g.x, g.y, g.z));
+                else if (leaf.meta.x == ShapeConvexHull) {
+                    std::shared_ptr<const JoltGpuGeometryHandle> record;
+                    if (geometry)
+                        for (const auto &candidate : geometry->records)
+                            if (std::memcmp(&candidate->reference, &leaf.geometryReference, sizeof(UInt4)) == 0) {
+                                record = candidate;
+                                break;
+                            }
+                    if (!record || !record->record || !record->record->shape)
+                        throw std::invalid_argument(
+                            "Native Hull model initialization requires its accepted retained geometry record");
+                    local = record->record->shape->GetLocalBounds();
+                } else
+                    throw std::invalid_argument("Native sleep author bounds require a supported cooked leaf type");
+                const auto transformed = local.Transformed(JPH::Mat44::sRotationTranslation(rotation, center));
+                center = transformed.GetCenter();
+                extent = transformed.GetExtent();
+            }
+            bounds.Encapsulate(center - extent);
+            bounds.Encapsulate(center + extent);
+        }
+        if (!owner.meta.y)
+            bounds = JPH::AABox(JPH::Vec3::sZero(), JPH::Vec3::sZero());
+        const auto extent = bounds.GetExtent(), center = bounds.GetCenter();
+        auto &author = result[body].author;
+        if (!bounds.IsValid() || !std::isfinite(extent.GetX()) || !std::isfinite(extent.GetY()) ||
+            !std::isfinite(extent.GetZ()) || !std::isfinite(center.GetX()) || !std::isfinite(center.GetY()) ||
+            !std::isfinite(center.GetZ()))
+            throw std::invalid_argument("Native cooked model sleep bounds are not finite");
+        author.rootHalfExtent = {extent.GetX(), extent.GetY(), extent.GetZ(), 0};
+        author.rootBoundsCenter = {center.GetX(), center.GetY(), center.GetZ(), 0};
+        author.policy = {1u | (sensor ? 2u : 0u), 0u, 0u, 0u};
+    }
+    return result;
+}
 
 struct Port
 {
@@ -62,13 +135,14 @@ constexpr Port Ports[] = {
      1u << 3},
     {Resource::ContactPatches, "contact_patches", sizeof(ContactPatch), {"leaves"}, 1},
     {Resource::Joints, "joint_stream", sizeof(QueryRecordWord), {"value"}, 1},
+    {Resource::SleepStates, "body_sleep", sizeof(BodySleepRecord), {"author", "runtime"}, 1},
     {Resource::StageWork, "stage_work", sizeof(StageWork), {"range"}, 1},
     {Resource::ConstraintSchedule, "constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1},
     {Resource::ConvexGeometry, "convex_geometry", sizeof(UInt4), {}, 1},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
-constexpr size_t StoragePortCount = 11;
+constexpr size_t StoragePortCount = 12;
 constexpr size_t WorkUniformCacheCapacity = 64;
 constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 
@@ -98,11 +172,13 @@ constexpr size_t PortIndex(Resource resource)
     case Resource::Joints:
         return 10;
     case Resource::StageWork:
-        return 11;
-    case Resource::ConstraintSchedule:
         return 12;
-    case Resource::ConvexGeometry:
+    case Resource::ConstraintSchedule:
         return 13;
+    case Resource::ConvexGeometry:
+        return 14;
+    case Resource::SleepStates:
+        return 11;
     }
     return PortCount;
 }
@@ -167,7 +243,7 @@ constexpr bool IndexedDefinitions()
 }
 
 static_assert(PortCount == StoragePortCount + 3,
-              "Jolt GPU has eleven mutable ports, work/schedule and shared cold geometry");
+              "Jolt GPU has twelve persistent ports, work/schedule and shared cold geometry");
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -423,6 +499,13 @@ void ValidateForces(const std::vector<BodyForces> &forces, uint32_t bodyCount)
 
 void ValidateLayout(const Port &port, const ShaderResourceLayout &resource)
 {
+    if (port.resource == Resource::SleepStates) {
+        if (resource.binding.type != rhi::BindingType::StorageBuffer ||
+            resource.elementStride != sizeof(BodySleepRecord))
+            throw std::invalid_argument("GPU sleep history must be its shared structured storage record");
+        ValidateJoltGpuSleepLayout(resource.value);
+        return;
+    }
     const bool uniform = port.resource == Resource::StepParams || port.resource == Resource::StageWork;
     const auto &value = resource.value;
     if (port.resource == Resource::ConvexGeometry) {
@@ -612,7 +695,8 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
                               sizeof(Contact),
                               uint64_t(m_bodyCount) * sizeof(KinematicTarget),
                               sizeof(ContactPatch),
-                              sizeof(QueryRecordWord)};
+                              sizeof(QueryRecordWord),
+                              uint64_t(m_bodyCount) * sizeof(BodySleepRecord)};
     for (size_t port = 0; port < m_buffers.size(); ++port) {
         // Preserve the scalar type for homogeneous float ports so numerical
         // consumers need no hidden host cast. Mixed records remain raw words;
@@ -657,12 +741,14 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization
     if (m_bodyCount == 0)
         return {};
     const std::vector<KinematicTarget> targets(m_bodyCount);
+    const auto sleeps = InitialSleepAuthors(m_model, m_geometry);
     std::vector<rhi::ComputeBufferUpdate> updates{
         {Get(Resource::BodyModels), 0, Bytes(m_model.bodies.data(), m_model.bodies.size())},
         {Get(Resource::Worlds), 0, Bytes(m_model.worlds.data(), m_model.worlds.size())},
         {Get(Resource::BodyForces), 0, Bytes(forces.data(), forces.size())},
         {Get(Resource::BodyStates), 0, Bytes(states.data(), states.size())},
         {Get(Resource::KinematicTargets), 0, Bytes(targets.data(), targets.size())},
+        {Get(Resource::SleepStates), 0, Bytes(sleeps.data(), sleeps.size())},
     };
     const UInt4 jointHeader{0, 1, 1, 0};
     updates.push_back({Get(Resource::Joints), 0, Bytes(&jointHeader, 1)});
@@ -843,6 +929,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PreparePackedReplacement(Jol
     require(Resource::BodyStates, bodies.states, bodyCapacity * sizeof(BodyState));
     require(Resource::BodyForces, bodies.forces, bodyCapacity * sizeof(BodyForces));
     require(Resource::KinematicTargets, bodies.targets, bodyCapacity * sizeof(KinematicTarget));
+    require(Resource::SleepStates, bodies.sleeps, bodyCapacity * sizeof(BodySleepRecord));
     const JoltGpuJointLayout jointLayout(replacement.joints);
     const uint64_t jointBytes = jointLayout.ByteSize();
     if (!stream || stream->IsFrozen() || !m_host.SharesServicesWith(stream->GetHost()) ||
@@ -988,7 +1075,7 @@ JoltGpuModelUpdate::~JoltGpuModelUpdate()
 
 JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<rhi::PreparedComputeBatch> batch,
                                        JoltGpuModel replacement,
-                                       std::array<std::shared_ptr<rhi::ComputeBuffer>, 11> replacementBuffers,
+                                       std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> replacementBuffers,
                                        std::array<uint32_t, 3> replacementCounts)
     : m_storage(&storage), m_batch(std::move(batch)), m_replacement(std::move(replacement)),
       m_replacementBuffers(std::move(replacementBuffers)), m_replacementCounts(replacementCounts)
@@ -1121,6 +1208,7 @@ void JoltGpuStepInputs::ClearConstraints() noexcept
 
 JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
 {
+    m_sleep = std::make_shared<JoltGpuSleep>(host, target);
     for (const auto &definition : Stages) {
         const auto code = std::find_if(target.entries.begin(), target.entries.end(),
                                        [&](const auto &entry) { return entry.name == definition.entry; });
