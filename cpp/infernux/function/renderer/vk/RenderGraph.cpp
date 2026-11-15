@@ -19,6 +19,7 @@
 #include <array>
 #include <chrono>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace infernux
@@ -901,14 +902,17 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_renderViewId(std::exchange(other.m_renderViewId, rhi::InvalidRenderViewId)),
       m_rhiDevice(std::exchange(other.m_rhiDevice, nullptr)),
       m_deletionQueue(std::exchange(other.m_deletionQueue, nullptr)), m_queueTopology(other.m_queueTopology),
-      m_passes(std::move(other.m_passes)), m_resources(std::move(other.m_resources)),
-      m_resourceVersions(std::move(other.m_resourceVersions)), m_executionOrder(std::move(other.m_executionOrder)),
-      m_submissionPlan(std::move(other.m_submissionPlan)), m_importedBuffers(std::move(other.m_importedBuffers)),
+      m_passes(std::move(other.m_passes)), m_explicitPassDependencies(std::move(other.m_explicitPassDependencies)),
+      m_resources(std::move(other.m_resources)), m_resourceVersions(std::move(other.m_resourceVersions)),
+      m_executionOrder(std::move(other.m_executionOrder)), m_submissionPlan(std::move(other.m_submissionPlan)),
+      m_importedBuffers(std::move(other.m_importedBuffers)),
       m_queueOwnershipTransfers(std::move(other.m_queueOwnershipTransfers)),
       m_queueOwnershipTransferInfos(std::move(other.m_queueOwnershipTransferInfos)),
       m_batchOutgoingOwnershipTransfers(std::move(other.m_batchOutgoingOwnershipTransfers)),
       m_externalOutgoingOwnershipTransfers(std::exchange(other.m_externalOutgoingOwnershipTransfers, {})),
       m_backbuffer(other.m_backbuffer), m_output(other.m_output), m_compiled(std::exchange(other.m_compiled, false)),
+      m_recordingSubmissionBatches(std::exchange(other.m_recordingSubmissionBatches, false)),
+      m_immediateRecordingQueue(std::exchange(other.m_immediateRecordingQueue, rhi::QueueRole::Graphics)),
       m_structuralCompileCache(std::move(other.m_structuralCompileCache)),
       m_structuralCacheHits(other.m_structuralCacheHits), m_structuralCacheMisses(other.m_structuralCacheMisses),
       m_resourceStates(std::move(other.m_resourceStates)),
@@ -919,7 +923,9 @@ RenderGraph::RenderGraph(RenderGraph &&other) noexcept
       m_bufferBarrier2Scratch(std::move(other.m_bufferBarrier2Scratch)),
       m_cmdPipelineBarrier2(std::exchange(other.m_cmdPipelineBarrier2, nullptr)),
       m_cmdBeginRendering(std::exchange(other.m_cmdBeginRendering, nullptr)),
-      m_cmdEndRendering(std::exchange(other.m_cmdEndRendering, nullptr))
+      m_cmdEndRendering(std::exchange(other.m_cmdEndRendering, nullptr)),
+      m_computeRegionDeclarations(std::move(other.m_computeRegionDeclarations)),
+      m_computeRegions(std::move(other.m_computeRegions))
 {
     other.m_backbuffer = {};
     other.m_output = {};
@@ -938,6 +944,7 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_deletionQueue = std::exchange(other.m_deletionQueue, nullptr);
         m_queueTopology = other.m_queueTopology;
         m_passes = std::move(other.m_passes);
+        m_explicitPassDependencies = std::move(other.m_explicitPassDependencies);
         m_resources = std::move(other.m_resources);
         m_resourceVersions = std::move(other.m_resourceVersions);
         m_executionOrder = std::move(other.m_executionOrder);
@@ -950,6 +957,8 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_backbuffer = other.m_backbuffer;
         m_output = other.m_output;
         m_compiled = std::exchange(other.m_compiled, false);
+        m_recordingSubmissionBatches = std::exchange(other.m_recordingSubmissionBatches, false);
+        m_immediateRecordingQueue = std::exchange(other.m_immediateRecordingQueue, rhi::QueueRole::Graphics);
         m_resourceStates = std::move(other.m_resourceStates);
         m_initialResourceStates = std::move(other.m_initialResourceStates);
         m_reusableImages = std::exchange(other.m_reusableImages, {});
@@ -963,6 +972,8 @@ RenderGraph &RenderGraph::operator=(RenderGraph &&other) noexcept
         m_structuralCompileCache = std::move(other.m_structuralCompileCache);
         m_structuralCacheHits = other.m_structuralCacheHits;
         m_structuralCacheMisses = other.m_structuralCacheMisses;
+        m_computeRegionDeclarations = std::move(other.m_computeRegionDeclarations);
+        m_computeRegions = std::move(other.m_computeRegions);
 
         other.m_backbuffer = {};
         other.m_output = {};
@@ -988,10 +999,10 @@ void RenderGraph::Initialize(VkDeviceContext *context, GpuRetirementQueue *delet
         if (!m_cmdPipelineBarrier2)
             throw std::runtime_error("RenderGraph could not resolve vkCmdPipelineBarrier2");
     }
-    if (context && m_rhiDevice) {
+    if (context && m_rhiDevice && m_rhiDevice->GetVulkanFeatures().dynamicRendering.IsEnabled()) {
         const rhi::DynamicRenderingCommands commands = rhi::ResolveDynamicRenderingCommands(context->GetDevice());
-        if (!m_rhiDevice->GetVulkanFeatures().dynamicRendering.IsEnabled() || !commands.IsValid())
-            throw std::runtime_error("RenderGraph requires Vulkan Dynamic Rendering");
+        if (!commands.IsValid())
+            throw std::runtime_error("RenderGraph could not resolve Vulkan Dynamic Rendering commands");
         m_cmdBeginRendering = commands.begin;
         m_cmdEndRendering = commands.end;
     }
@@ -1062,6 +1073,8 @@ void RenderGraph::Reset()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
+    m_computeRegionDeclarations.clear();
+    m_computeRegions.clear();
     m_importedBuffers.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
@@ -1091,6 +1104,8 @@ void RenderGraph::Destroy()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
+    m_computeRegionDeclarations.clear();
+    m_computeRegions.clear();
     m_importedBuffers.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
@@ -1151,6 +1166,17 @@ PassHandle RenderGraph::AddComputePass(const std::string &name, PassSetupCallbac
     return handle;
 }
 
+PassHandle RenderGraph::AddComputeWorkPass(const std::string &name, ComputeWorkSetupCallback setup)
+{
+    rhi::ComputePassExecuteCallback callback;
+    const auto handle = AddComputePass(name, [&](PassBuilder &builder) {
+        callback = setup(builder);
+        return PassExecuteCallback{};
+    });
+    m_passes[handle.id].executeCallback = std::move(callback);
+    return handle;
+}
+
 void RenderGraph::SetSubmissionBoundaryBefore(PassHandle pass)
 {
     if (!Owns(pass) || pass.id >= m_passes.size()) {
@@ -1158,6 +1184,187 @@ void RenderGraph::SetSubmissionBoundaryBefore(PassHandle pass)
         return;
     }
     m_passes[pass.id].forceSubmissionBoundary = true;
+}
+
+ComputeRegionHandle RenderGraph::DeclareComputeRegion(const std::string &name, const std::vector<PassHandle> &passes,
+                                                      const std::vector<ResourceHandle> &loopCarriedResources)
+{
+    if (passes.empty())
+        throw std::invalid_argument("Compute region needs at least one pass: " + name);
+    rhi::ComputeRegionDeclaration declaration;
+    declaration.diagnosticName = name;
+    for (const auto pass : passes) {
+        if (!Owns(pass) || pass.id >= m_passes.size())
+            throw std::invalid_argument("Compute region contains a foreign pass: " + name);
+        declaration.workItems.push_back(pass.id);
+    }
+    for (const auto resource : loopCarriedResources) {
+        if (!Owns(resource) || resource.id >= m_resources.size())
+            throw std::invalid_argument("Compute region contains a foreign resource: " + name);
+        declaration.loopCarriedResources.push_back(resource.id);
+    }
+    std::sort(declaration.loopCarriedResources.begin(), declaration.loopCarriedResources.end());
+    declaration.loopCarriedResources.erase(
+        std::unique(declaration.loopCarriedResources.begin(), declaration.loopCarriedResources.end()),
+        declaration.loopCarriedResources.end());
+    const uint32_t id = static_cast<uint32_t>(m_computeRegionDeclarations.size());
+    m_computeRegionDeclarations.push_back(std::move(declaration));
+    m_computeRegions.clear();
+    m_compiled = false;
+    return {m_identity.Current(), id};
+}
+
+const rhi::CompiledComputeRegion &RenderGraph::GetCompiledComputeRegion(ComputeRegionHandle region) const
+{
+    if (region.scope != m_identity.Current() || region.id >= m_computeRegions.size())
+        throw std::invalid_argument("Compute region is not prepared by this graph");
+    return m_computeRegions[region.id];
+}
+
+rhi::ComputeQueue::Recorder
+RenderGraph::PrepareComputeRegionRecorder(ComputeRegionHandle region, std::vector<rhi::SubmissionTicket> dependencies,
+                                          rhi::ComputePassContext::DispatchObserver observer)
+{
+    if (!m_compiled || !m_rhiDevice)
+        throw std::logic_error("RHI compute recording needs a compiled graph and its device");
+    const auto &compiled = GetCompiledComputeRegion(region);
+    const auto compute = m_queueTopology[static_cast<size_t>(rhi::QueueRole::Compute)];
+    const auto graphics = m_queueTopology[static_cast<size_t>(rhi::QueueRole::Graphics)];
+    if (!compute.IsValid() || !graphics.IsValid())
+        throw std::logic_error("RHI compute region needs the actual compute and graphics queue bindings");
+    struct PreparedBuffer
+    {
+        uint32_t id;
+        rhi::BufferHandle handle;
+        bool shared;
+    };
+    std::vector<PreparedBuffer> buffers;
+    buffers.reserve(compiled.resources.size());
+    for (const auto id : compiled.resources) {
+        const auto &resource = m_resources[id];
+        if (resource.type != ResourceType::Buffer || !resource.isExternal || !resource.rhiBuffer.IsValid())
+            throw std::invalid_argument("RHI compute region requires external buffers: " + resource.name);
+        const bool shared = resource.concurrentQueueSharing;
+        const auto owner = m_resourceStates[id].queueFamily;
+        if ((shared && (!m_rhiDevice->IsBufferConcurrentFor(resource.rhiBuffer, compute.family) ||
+                        !m_rhiDevice->IsBufferConcurrentFor(resource.rhiBuffer, graphics.family))) ||
+            (!shared &&
+             (compute.family != graphics.family || (owner != VK_QUEUE_FAMILY_IGNORED && owner != compute.family))))
+            throw std::invalid_argument("RHI compute region requires external buffers shared by the actual queues: " +
+                                        resource.name);
+        buffers.push_back({id, resource.rhiBuffer, shared});
+    }
+
+    struct PreparedPass
+    {
+        uint32_t id;
+        std::vector<ResourceAccess> buffers;
+        rhi::ComputePassExecuteCallback callback;
+    };
+    std::vector<PreparedPass> passes;
+    passes.reserve(compiled.workItems.size());
+    for (const auto id : compiled.workItems) {
+        const auto &pass = m_passes[id];
+        if (pass.skipCallbackWhenRendererListsEmpty || !pass.rendererListInputs.empty())
+            throw std::invalid_argument("RHI buffer compute regions cannot depend on renderer lists: " + pass.name);
+        const auto *callback = std::get_if<rhi::ComputePassExecuteCallback>(&pass.executeCallback);
+        if (!callback || !*callback)
+            throw std::invalid_argument("RHI compute region needs a typed compute callback: " + pass.name);
+        PreparedPass prepared{id, {}, *callback};
+        const auto add = [&](const ResourceAccess &access) {
+            if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None ||
+                access.access == rhi::Access::None)
+                return;
+            const auto found = std::find_if(prepared.buffers.begin(), prepared.buffers.end(),
+                                            [&](const auto &value) { return value.handle.id == access.handle.id; });
+            if (found == prepared.buffers.end()) {
+                prepared.buffers.push_back(access);
+            } else {
+                found->access = found->access | access.access;
+                found->stages = found->stages | access.stages;
+                found->usage = found->usage | access.usage;
+            }
+        };
+        for (const auto &access : pass.reads)
+            add(access);
+        for (const auto &access : pass.writes)
+            add(access);
+        passes.push_back(std::move(prepared));
+    }
+    return [this, passes = std::move(passes), buffers = std::move(buffers), dependencies = std::move(dependencies),
+            observer = std::move(observer), compute](rhi::ComputeRecordingContext &recording) {
+        for (const auto ticket : dependencies)
+            recording.Require(ticket);
+        for (const auto &buffer : buffers) {
+            // A semaphore wait orders producers; it does not acquire an
+            // exclusive buffer from another queue family. This adapter uses
+            // the current cursor, after any one-time prefix acquisition.
+            const auto owner = m_resourceStates[buffer.id].queueFamily;
+            if (!buffer.shared && owner != VK_QUEUE_FAMILY_IGNORED && owner != compute.family)
+                throw std::logic_error("RHI compute region has not acquired its buffer: " +
+                                       m_resources[buffer.id].name);
+            const auto upload = m_rhiDevice->GetUploadSubmission(buffer.handle);
+            if (upload.IsValid())
+                recording.Require(upload);
+        }
+        for (const auto &pass : passes) {
+            rhi::PipelineStage sourceStages = rhi::PipelineStage::None;
+            rhi::PipelineStage destinationStages = rhi::PipelineStage::None;
+            rhi::Access sourceAccess = rhi::Access::None;
+            rhi::Access destinationAccess = rhi::Access::None;
+            for (const auto &access : pass.buffers) {
+                const auto &previous = m_resourceStates[access.handle.id];
+                const bool write = (access.usage & ResourceUsage::Write) != ResourceUsage::None;
+                const bool laneChange =
+                    previous.nativeQueueLane != UINT32_MAX && previous.nativeQueueLane != compute.lane;
+                const bool visible = !write && !laneChange &&
+                                     (previous.visibleReadAccess & access.access) == access.access &&
+                                     (previous.visibleReadStages & access.stages) == access.stages;
+                const bool previousWrite =
+                    rhi::HasAny(previous.accessMask, rhi::Access::ShaderWrite | rhi::Access::TransferWrite |
+                                                         rhi::Access::MemoryWrite | rhi::Access::HostWrite);
+                if ((!previousWrite && !write && !laneChange) || visible)
+                    continue;
+                sourceStages = sourceStages | (laneChange ? rhi::PipelineStage::Top : previous.stages);
+                sourceAccess = sourceAccess | (laneChange ? rhi::Access::None : previous.accessMask);
+                destinationStages = destinationStages | access.stages;
+                destinationAccess = destinationAccess | access.access;
+            }
+            if (destinationStages != rhi::PipelineStage::None)
+                recording.PipelineBarrier(sourceStages == rhi::PipelineStage::None ? rhi::PipelineStage::Top
+                                                                                   : sourceStages,
+                                          sourceAccess, destinationStages, destinationAccess);
+            rhi::ComputePassContext context(
+                recording.Compute(), recording.Transfer(),
+                [this, id = pass.id, &observer](auto x, auto y, auto z, auto count, bool indirect) {
+#if INFERNUX_FRAME_PROFILE
+                    RecordParticleDispatch(id, x, y, z, count, indirect);
+#endif
+                    if (observer)
+                        observer(x, y, z, count, indirect);
+                });
+            pass.callback(context);
+            for (const auto &access : pass.buffers) {
+                auto &state = m_resourceStates[access.handle.id];
+                const bool write = (access.usage & ResourceUsage::Write) != ResourceUsage::None;
+                if (write || state.nativeQueueLane != compute.lane) {
+                    state.accessMask = access.access;
+                    state.stages = access.stages;
+                } else {
+                    state.accessMask = state.accessMask | access.access;
+                    state.stages = state.stages | access.stages;
+                }
+                state.layout = access.layout;
+                state.visibleReadAccess = write ? rhi::Access::None : access.access;
+                state.visibleReadStages = write ? rhi::PipelineStage::None : access.stages;
+                state.writerPassId = pass.id;
+                state.queue = rhi::QueueRole::Compute;
+                state.queueFamily = compute.family;
+                state.nativeQueueLane = compute.lane;
+            }
+        }
+        return true;
+    };
 }
 
 void RenderGraph::AddPassDependency(PassHandle later, PassHandle earlier)
@@ -1717,14 +1924,16 @@ ResourceHandle RenderGraph::AdvanceResourceVersion(ResourceHandle handle)
 
 bool RenderGraph::CompileExecutionOrder()
 {
+    m_compiled = false;
     if (m_passes.empty())
         return true;
     CullPasses();
-    return TopologicalSort();
+    return TopologicalSort() && CompileComputeRegions();
 }
 
 bool RenderGraph::Compile()
 {
+    m_compiled = false;
     if (m_passes.empty()) {
         INXLOG_WARN("RenderGraph::Compile - No passes to compile");
         return true;
@@ -1764,6 +1973,8 @@ bool RenderGraph::Compile()
         // Step 3: Compute resource lifetimes in the final execution order.
         ComputeResourceLifetimes();
         StoreStructuralCompilation(structuralSignature);
+    } else if (!CompileComputeRegions()) {
+        return false;
     }
 
     // Step 4: Compile backend-neutral queue batches and dependency waits.
@@ -1786,6 +1997,8 @@ bool RenderGraph::Compile()
     // Step 8: Compile the release/acquire pairs required when an exclusive
     // resource crosses native Vulkan queue families.
     if (!CompileQueueOwnershipTransfers())
+        return false;
+    if (!ValidateComputeRegionOwnership())
         return false;
 
     m_compiled = true;
@@ -1881,7 +2094,7 @@ void RenderGraph::PublishPersistentImageInitializations(const PersistentImageIni
         generation->graphLayoutsInitialized = true;
 }
 
-void RenderGraph::BeginExecution()
+void RenderGraph::BeginExecution(rhi::QueueRole recordingQueue)
 {
     if (!m_compiled) {
         INXLOG_ERROR("RenderGraph::BeginExecution - Graph not compiled");
@@ -1892,7 +2105,9 @@ void RenderGraph::BeginExecution()
     ++s_executeProfile.executeCalls;
 #endif
 
-    m_recordingSubmissionBatches = true;
+    m_recordingSubmissionBatches = recordingQueue == rhi::QueueRole::Count;
+    if (!m_recordingSubmissionBatches)
+        m_immediateRecordingQueue = recordingQueue;
 
     // Resource state is shared by the ordered batch recording session. The
     // Vulkan executor records batches in plan order, so every later command
@@ -1902,16 +2117,61 @@ void RenderGraph::BeginExecution()
     PrepareExecutionResourceStates();
 }
 
-bool RenderGraph::RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer)
+namespace
+{
+// A borrowed recording call may use a different actual native lane. Restore
+// only the surrounding recording mode, never the already recorded resource state.
+class RecordingQueueScope
+{
+  public:
+    RecordingQueueScope(bool &batchMode, rhi::QueueRole &queue, rhi::QueueRole actual)
+        : m_batchMode(batchMode), m_queue(queue), m_oldBatchMode(batchMode), m_oldQueue(queue)
+    {
+        if (actual != rhi::QueueRole::Count) {
+            batchMode = false;
+            queue = actual;
+        }
+    }
+    ~RecordingQueueScope()
+    {
+        m_batchMode = m_oldBatchMode;
+        m_queue = m_oldQueue;
+    }
+
+  private:
+    bool &m_batchMode;
+    rhi::QueueRole &m_queue;
+    bool m_oldBatchMode;
+    rhi::QueueRole m_oldQueue;
+};
+} // namespace
+
+bool RenderGraph::RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer, rhi::QueueRole actualQueue)
 {
     if (!m_compiled || batchIndex >= m_submissionPlan.batches.size() || commandBuffer == VK_NULL_HANDLE) {
         INXLOG_ERROR("RenderGraph::RecordSubmissionBatch - invalid execution request");
         return false;
     }
-    RecordPasses(commandBuffer, m_submissionPlan.batches[batchIndex].workItems,
-                 m_submissionPlan.batches[batchIndex].queue);
-    InsertQueueOwnershipReleases(commandBuffer, batchIndex);
+    const RecordingQueueScope recording(m_recordingSubmissionBatches, m_immediateRecordingQueue, actualQueue);
+    const auto queue =
+        m_recordingSubmissionBatches ? m_submissionPlan.batches[batchIndex].queue : m_immediateRecordingQueue;
+    RecordPasses(commandBuffer, m_submissionPlan.batches[batchIndex].workItems, queue);
+    if (m_recordingSubmissionBatches)
+        InsertQueueOwnershipReleases(commandBuffer, batchIndex);
     return true;
+}
+
+void RenderGraph::RecordComputeRegion(VkCommandBuffer commandBuffer, ComputeRegionHandle handle,
+                                      rhi::QueueRole actualQueue)
+{
+    const auto &region = GetCompiledComputeRegion(handle);
+    if (!m_compiled || commandBuffer == VK_NULL_HANDLE)
+        throw std::logic_error("Compute region recording requires a compiled graph and command buffer");
+    const RecordingQueueScope recording(m_recordingSubmissionBatches, m_immediateRecordingQueue, actualQueue);
+    const auto queue = m_recordingSubmissionBatches ? region.queue : m_immediateRecordingQueue;
+    if (queue != rhi::QueueRole::Graphics && queue != rhi::QueueRole::Compute)
+        throw std::logic_error("Compute regions record on the current Graphics or Compute queue");
+    RecordPasses(commandBuffer, region.workItems, queue);
 }
 
 bool RenderGraph::HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept
@@ -2117,7 +2377,7 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
         }
 
         // Execute pass callback
-        bool executeCallback = static_cast<bool>(pass.executeCallback);
+        bool executeCallback = std::visit([](const auto &callback) { return bool(callback); }, pass.executeCallback);
         if (executeCallback && pass.skipCallbackWhenRendererListsEmpty) {
             executeCallback =
                 std::any_of(pass.rendererListInputs.begin(), pass.rendererListInputs.end(), [&](ResourceHandle handle) {
@@ -2134,7 +2394,16 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
             stageStart = Clock::now();
 #endif
             try {
-                pass.executeCallback(context);
+                if (const auto *native = std::get_if<PassExecuteCallback>(&pass.executeCallback)) {
+                    (*native)(context);
+                } else {
+                    rhi::ComputePassContext compute(context.GetComputeCommandEncoder(),
+                                                    context.GetTransferCommandEncoder(),
+                                                    [&context](auto x, auto y, auto z, auto count, bool indirect) {
+                                                        context.RecordComputeDispatch(x, y, z, count, indirect);
+                                                    });
+                    std::get<rhi::ComputePassExecuteCallback>(pass.executeCallback)(compute);
+                }
             } catch (...) {
                 if (isGraphicsPass)
                     m_cmdEndRendering(commandBuffer);

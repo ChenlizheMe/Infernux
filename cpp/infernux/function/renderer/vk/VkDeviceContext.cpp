@@ -832,6 +832,9 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     capabilityRequest.submit2 = capabilitySnapshot.supported.submit2.supported;
     // Enable optional arithmetic once on the engine-owned device. Compute
     // providers consume the published enabled state, not a second device probe.
+    // HLSL-style vertex/instance IDs can consume BaseVertex/BaseInstance.
+    // Core promotion does not enable shaderDrawParameters on a logical device.
+    capabilityRequest.shaderDrawParameters = capabilitySnapshot.supported.shaderDrawParameters.supported;
     capabilityRequest.shaderInt16 = capabilitySnapshot.supported.shaderInt16.supported;
     capabilityRequest.shaderInt64 = capabilitySnapshot.supported.shaderInt64.supported;
     capabilityRequest.shaderFloat64 = capabilitySnapshot.supported.shaderFloat64.supported;

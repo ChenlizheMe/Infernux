@@ -16,6 +16,7 @@
 #include <queue>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace infernux
@@ -401,12 +402,115 @@ bool RenderGraph::TopologicalSort()
     return true;
 }
 
+bool RenderGraph::CompileComputeRegions()
+{
+    m_computeRegions.clear();
+    if (m_computeRegionDeclarations.empty())
+        return true;
+
+    std::vector<uint32_t> positions(m_passes.size(), UINT32_MAX);
+    for (uint32_t index = 0; index < m_executionOrder.size(); ++index)
+        positions[m_executionOrder[index]] = index;
+    std::vector<bool> claimed(m_passes.size(), false);
+    const auto normalize = [](std::vector<uint32_t> &ids) {
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    };
+
+    for (const auto &declaration : m_computeRegionDeclarations) {
+        const auto reject = [&](const std::string &message) {
+            INXLOG_ERROR("Compute region '", declaration.diagnosticName, "': ", message);
+            return false;
+        };
+        rhi::CompiledComputeRegion region;
+        region.diagnosticName = declaration.diagnosticName;
+        region.workItems = declaration.workItems;
+        region.loopCarriedResources = declaration.loopCarriedResources;
+        std::sort(region.workItems.begin(), region.workItems.end(),
+                  [&](uint32_t a, uint32_t b) { return positions[a] < positions[b]; });
+        if (std::adjacent_find(region.workItems.begin(), region.workItems.end()) != region.workItems.end())
+            return reject("a pass occurs more than once");
+        for (const auto id : region.workItems)
+            if (positions[id] == UINT32_MAX)
+                return reject("declared pass was culled: " + m_passes[id].name);
+        if (positions[region.workItems.back()] - positions[region.workItems.front()] + 1 != region.workItems.size())
+            return reject("passes must form one contiguous interval in the compiled execution order");
+
+        const auto &first = m_passes[region.workItems.front()];
+        region.device = first.device;
+        region.queue = first.queue;
+        region.domain = first.submissionDomain;
+        region.view = first.view;
+        if (region.queue != rhi::QueueRole::Graphics && region.queue != rhi::QueueRole::Compute)
+            return reject("compute work requires a Graphics or Compute queue");
+        std::vector<uint32_t> writes;
+        for (const auto id : region.workItems) {
+            const auto &pass = m_passes[id];
+            if (claimed[id])
+                return reject("regions cannot overlap: " + pass.name);
+            claimed[id] = true;
+            if (pass.type != PassType::Compute || pass.device != region.device || pass.queue != region.queue ||
+                pass.submissionDomain != region.domain || pass.view != region.view)
+                return reject("passes must be compute work on one device, queue, domain and view: " + pass.name);
+            const auto collect = [&](const ResourceAccess &access) {
+                if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None ||
+                    access.access == rhi::Access::None)
+                    return true;
+                const auto &resource = m_resources[access.handle.id];
+                if (resource.type != ResourceType::Buffer || !resource.isExternal)
+                    return reject("repeatable work requires borrowed buffers: " + resource.name);
+                region.resources.push_back(access.handle.id);
+                if ((access.usage & ResourceUsage::Write) != ResourceUsage::None)
+                    writes.push_back(access.handle.id);
+                return true;
+            };
+            for (const auto &read : pass.reads)
+                if (!collect(read))
+                    return false;
+            for (const auto &write : pass.writes)
+                if (!collect(write))
+                    return false;
+        }
+        normalize(region.resources);
+        normalize(writes);
+        for (const auto id : region.loopCarriedResources)
+            if (!std::binary_search(region.resources.begin(), region.resources.end(), id))
+                return reject("carried buffer is not used by this region: " + m_resources[id].name);
+        for (const auto id : writes)
+            if (!std::binary_search(region.loopCarriedResources.begin(), region.loopCarriedResources.end(), id))
+                return reject("written buffer must be explicitly loop-carried: " + m_resources[id].name);
+        m_computeRegions.push_back(std::move(region));
+    }
+    return true;
+}
+
+bool RenderGraph::ValidateComputeRegionOwnership() const
+{
+    for (const auto &region : m_computeRegions)
+        for (const auto &transfer : m_queueOwnershipTransfers)
+            if (std::find(region.workItems.begin(), region.workItems.end(), transfer.info.sourcePass) !=
+                region.workItems.end()) {
+                INXLOG_ERROR("Compute region '", region.diagnosticName,
+                             "' cannot release a queue family inside repeatable work: ",
+                             m_resources[transfer.info.resourceId].name);
+                return false;
+            }
+    return true;
+}
+
 bool RenderGraph::CompileSubmissionPlan()
 {
     for (auto &resource : m_resources)
         resource.bufferAccessStages = rhi::PipelineStage::None;
     std::vector<rhi::SubmissionWorkItem> workItems;
     workItems.reserve(m_executionOrder.size());
+    std::unordered_set<uint32_t> regionBoundaries;
+    for (const auto &region : m_computeRegions) {
+        regionBoundaries.insert(region.workItems.front());
+        const auto next = std::find(m_executionOrder.begin(), m_executionOrder.end(), region.workItems.back()) + 1;
+        if (next != m_executionOrder.end())
+            regionBoundaries.insert(*next);
+    }
     for (const uint32_t passIndex : m_executionOrder) {
         if (passIndex >= m_passes.size() || m_passes[passIndex].culled)
             continue;
@@ -442,7 +546,8 @@ bool RenderGraph::CompileSubmissionPlan()
             }
         }
         workItems.push_back({pass.id, pass.device, pass.queue, pass.submissionDomain, pass.view, waitStages,
-                             pass.dependsOn, pass.forceSubmissionBoundary, pass.name});
+                             pass.dependsOn, pass.forceSubmissionBoundary || regionBoundaries.count(pass.id) != 0,
+                             pass.name});
     }
 
     std::string error;
@@ -450,6 +555,13 @@ bool RenderGraph::CompileSubmissionPlan()
         INXLOG_ERROR("RenderGraph::CompileSubmissionPlan - ", error);
         return false;
     }
+    for (auto &region : m_computeRegions)
+        for (const auto &batch : m_submissionPlan.batches) {
+            if (batch.workItems.front() == region.workItems.front())
+                region.firstBatch = batch.index;
+            if (batch.workItems.back() == region.workItems.back())
+                region.endBatch = batch.index + 1;
+        }
     return true;
 }
 

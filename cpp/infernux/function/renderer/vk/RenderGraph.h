@@ -52,9 +52,11 @@
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderGraphIdentity.h>
 #include <function/renderer/RendererList.h>
+#include <function/renderer/rhi/ComputePassContext.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
 #include <function/renderer/rhi/RenderViewContext.h>
+#include <function/renderer/rhi/RhiComputeQueue.h>
 #include <function/renderer/rhi/RhiDescriptors.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/rhi/RhiSubmission.h>
@@ -63,6 +65,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 #include <vk_mem_alloc.h>
 
@@ -152,6 +155,12 @@ struct TextureDesc
 
 using PassHandle = GraphPassHandle;
 using PassHandleHash = GraphPassHandleHash;
+
+struct ComputeRegionHandle
+{
+    RenderGraphScopeId scope;
+    uint32_t id = UINT32_MAX;
+};
 
 /**
  * @brief Pass type enumeration
@@ -579,7 +588,7 @@ struct RenderPassData
     std::vector<ResourceHandle> rendererListInputs;
 
     // Execute callback
-    std::function<void(RenderContext &)> executeCallback;
+    std::variant<std::function<void(RenderContext &)>, rhi::ComputePassExecuteCallback> executeCallback;
 
     // Dependency tracking
     std::vector<uint32_t> dependsOn;
@@ -671,6 +680,7 @@ using PassExecuteCallback = std::function<void(RenderContext &)>;
  * @brief Setup callback type for passes
  */
 using PassSetupCallback = std::function<PassExecuteCallback(PassBuilder &)>;
+using ComputeWorkSetupCallback = std::function<rhi::ComputePassExecuteCallback(PassBuilder &)>;
 
 /**
  * @brief Main render graph class
@@ -807,9 +817,36 @@ class RenderGraph
     /// Add a compute pass. It records commands outside a Vulkan render pass.
     INFERNUX_VULKAN_BACKEND_API PassHandle AddComputePass(const std::string &name, PassSetupCallback setup);
 
+    /// A typed buffer-compute callback can be recorded by Graphics or the shared
+    /// RHI compute queue. It has no native command-buffer or graphics methods.
+    INFERNUX_VULKAN_BACKEND_API PassHandle AddComputeWorkPass(const std::string &name, ComputeWorkSetupCallback setup);
+
+    /// Cold-prepare a recorder for the existing ComputeQueue. The caller retains
+    /// this graph/job, unchanged imports and callback bindings through its real
+    /// receipt, and supplies every non-upload
+    /// producer ticket. Queue admission does not run this recorder when denied.
+    /// All referenced buffers must support the actual Graphics/Compute family
+    /// relationship; this first adapter does not transfer exclusive ownership.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ComputeQueue::Recorder
+    PrepareComputeRegionRecorder(ComputeRegionHandle region, std::vector<rhi::SubmissionTicket> dependencies,
+                                 rhi::ComputePassContext::DispatchObserver observer = {});
+
     /// Start a new native submission before this pass even when its queue and
     /// domain match the previous pass. Used for explicit async phase joins.
     INFERNUX_VULKAN_BACKEND_API void SetSubmissionBoundaryBefore(PassHandle pass);
+
+    /// Declare repeatable work during preparation, before Compile(). Every
+    /// written buffer must be carried explicitly: a storage write need not
+    /// overwrite all elements. Actual resources remain borrowed by this graph.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API ComputeRegionHandle
+    DeclareComputeRegion(const std::string &name, const std::vector<PassHandle> &passes,
+                         const std::vector<ResourceHandle> &loopCarriedResources);
+
+    /// Region facts are available after CompileExecutionOrder(); native batch
+    /// boundaries are filled by Compile(). Handles follow graph moves and are
+    /// invalidated by Reset()/Destroy(), like pass and resource handles.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API const rhi::CompiledComputeRegion &
+    GetCompiledComputeRegion(ComputeRegionHandle region) const;
 
     /// Require `later` to run after `earlier` even when they do not share a
     /// resource version. Do not use this to force a global sim-before-export
@@ -986,9 +1023,16 @@ class RenderGraph
     /// repeatedly into a single submission.
     void ContinueExecution(VkCommandBuffer commandBuffer, rhi::QueueRole recordingQueue = rhi::QueueRole::Graphics);
 
-    /// Reset tracked resource state once before recording the compiled
-    /// submission batches. A backend executor calls this once per graph frame.
-    INFERNUX_VULKAN_BACKEND_API void BeginExecution();
+    /// Start one logical execution. Count selects the compiled queue batches;
+    /// an explicit queue records its prefix, regions and suffix on that native
+    /// queue. Resource states are seeded once, never at each region iteration.
+    INFERNUX_VULKAN_BACKEND_API void BeginExecution(rhi::QueueRole recordingQueue = rhi::QueueRole::Count);
+
+    /// Record a prepared region, retaining the preceding pass/resource states
+    /// and the current execution's real recording queue. Prefix/suffix, Host
+    /// receipts, completion dependencies and publication remain caller-owned.
+    INFERNUX_VULKAN_BACKEND_API void RecordComputeRegion(VkCommandBuffer commandBuffer, ComputeRegionHandle region,
+                                                         rhi::QueueRole actualQueue = rhi::QueueRole::Count);
 
     /// Initialize resident sampled color and attachment layouts before graph work.
     /// The frame shares this list across views and publishes it after submission.
@@ -1006,8 +1050,9 @@ class RenderGraph
 
     /// Record one compiler-produced submission batch into a command buffer.
     /// Batches must be recorded in SubmissionPlan order.
-    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool RecordSubmissionBatch(uint32_t batchIndex,
-                                                                         VkCommandBuffer commandBuffer);
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
+    RecordSubmissionBatch(uint32_t batchIndex, VkCommandBuffer commandBuffer,
+                          rhi::QueueRole actualQueue = rhi::QueueRole::Count);
 
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool
     HasExternalQueueOwnershipReleases(rhi::QueueRole sourceQueue) const noexcept;
@@ -1193,6 +1238,9 @@ class RenderGraph
     /// Compile the topological pass order into device/queue/view batches.
     [[nodiscard]] bool CompileSubmissionPlan();
 
+    [[nodiscard]] bool CompileComputeRegions();
+    [[nodiscard]] bool ValidateComputeRegionOwnership() const;
+
     /// Compile exclusive-sharing ownership transfers between native queue
     /// families. Timeline waits alone do not transfer Vulkan ownership.
     [[nodiscard]] bool CompileQueueOwnershipTransfers();
@@ -1358,6 +1406,9 @@ class RenderGraph
     PFN_vkCmdPipelineBarrier2 m_cmdPipelineBarrier2 = nullptr;
     PFN_vkCmdBeginRendering m_cmdBeginRendering = nullptr;
     PFN_vkCmdEndRendering m_cmdEndRendering = nullptr;
+
+    std::vector<rhi::ComputeRegionDeclaration> m_computeRegionDeclarations;
+    std::vector<rhi::CompiledComputeRegion> m_computeRegions;
 
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot s_executeProfile; // The windows msvc will parse later. But linux gcc will not.

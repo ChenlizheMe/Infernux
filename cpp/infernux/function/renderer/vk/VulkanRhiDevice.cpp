@@ -302,6 +302,7 @@ VulkanCapabilityProbeData VulkanCapabilitySnapshot::QueryProbe(VkPhysicalDevice 
     if (IsCoreVersionAtLeast(probe.apiVersion, 1, 1)) {
         VkPhysicalDeviceFeatures2 features2{};
         features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        probe.shaderDrawParametersFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES;
         probe.vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
         probe.vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
         probe.descriptorIndexingFeaturesEXT.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT;
@@ -309,6 +310,7 @@ VulkanCapabilityProbeData VulkanCapabilitySnapshot::QueryProbe(VkPhysicalDevice 
         probe.dynamicRenderingFeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
         probe.synchronization2FeaturesKHR.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR;
         void *tail = nullptr;
+        AppendFeature(tail, features2, probe.shaderDrawParametersFeatures);
         if (IsCoreVersionAtLeast(probe.apiVersion, 1, 2))
             AppendFeature(tail, features2, probe.vulkan12Features);
         if (IsCoreVersionAtLeast(probe.apiVersion, 1, 3))
@@ -350,6 +352,9 @@ VulkanCapabilitySnapshot VulkanCapabilitySnapshot::FromProbe(const VulkanCapabil
     result.timelineSemaphoreExtension = probe.timelineSemaphoreExtension;
     result.dynamicRenderingExtension = probe.dynamicRenderingExtension;
     result.synchronization2Extension = probe.synchronization2Extension;
+    result.supported.shaderDrawParameters = {IsCoreVersionAtLeast(probe.apiVersion, 1, 1) &&
+                                                 probe.shaderDrawParametersFeatures.shaderDrawParameters == VK_TRUE,
+                                             false};
     result.supported.shaderInt16 = {probe.coreFeatures.shaderInt16 == VK_TRUE, false};
     result.supported.shaderInt64 = {probe.coreFeatures.shaderInt64 == VK_TRUE, false};
     result.supported.shaderFloat64 = {probe.coreFeatures.shaderFloat64 == VK_TRUE, false};
@@ -451,6 +456,8 @@ void VulkanDeviceFeatureChain::ResetChain() noexcept
 {
     m_features2 = {};
     m_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    m_shaderDrawParameters = {};
+    m_shaderDrawParameters.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES;
     m_vulkan12 = {};
     m_vulkan12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     m_vulkan13 = {};
@@ -488,6 +495,7 @@ void VulkanDeviceFeatureChain::ResetChain() noexcept
     m_enabled.shaderInt64.enabled = false;
     m_enabled.shaderFloat64.enabled = false;
     m_enabled.hostQueryReset.enabled = false;
+    m_enabled.shaderDrawParameters.enabled = false;
 }
 
 void VulkanDeviceFeatureChain::Link(void *feature) noexcept
@@ -670,31 +678,35 @@ bool VulkanDeviceFeatureChain::Enable(const vk::DeviceCapabilityRequest &request
         m_vulkan12.hostQueryReset = VK_TRUE;
         m_enabled.hostQueryReset.enabled = true;
     }
-    struct NumericRequest
+    struct ShaderFeatureRequest
     {
         bool requested;
         vk::DeviceCapability capability;
         vk::DeviceCapabilityStatus *status;
         VkBool32 *feature;
     };
-    const NumericRequest numericRequests[] = {
+    const ShaderFeatureRequest shaderRequests[] = {
         {request.shaderInt16, vk::DeviceCapability::ShaderInt16, &m_enabled.shaderInt16,
          &m_features2.features.shaderInt16},
         {request.shaderInt64, vk::DeviceCapability::ShaderInt64, &m_enabled.shaderInt64,
          &m_features2.features.shaderInt64},
         {request.shaderFloat64, vk::DeviceCapability::ShaderFloat64, &m_enabled.shaderFloat64,
          &m_features2.features.shaderFloat64},
+        {request.shaderDrawParameters, vk::DeviceCapability::ShaderDrawParameters, &m_enabled.shaderDrawParameters,
+         &m_shaderDrawParameters.shaderDrawParameters},
     };
-    for (const auto &numeric : numericRequests) {
-        if (!numeric.requested)
+    for (const auto &feature : shaderRequests) {
+        if (!feature.requested)
             continue;
-        if (!numeric.status->supported) {
-            m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, numeric.capability};
+        if (!feature.status->supported) {
+            m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, feature.capability};
             return reject();
         }
-        *numeric.feature = VK_TRUE;
-        numeric.status->enabled = true;
+        *feature.feature = VK_TRUE;
+        feature.status->enabled = true;
     }
+    if (request.shaderDrawParameters)
+        Link(&m_shaderDrawParameters);
     return true;
 }
 
@@ -916,16 +928,15 @@ rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, const VkBuffe
 {
     if (buffer == VK_NULL_HANDLE || info.sType != VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO || info.size == 0)
         return {};
-    return Register<rhi::BufferHandle>(m_buffers, m_freeBuffer,
-                                       BufferPayload{buffer,
-                                                     {},
-                                                     nullptr,
-                                                     info.size,
-                                                     false,
-                                                     memory,
-                                                     info.sharingMode == VK_SHARING_MODE_CONCURRENT,
-                                                     rhi::FromVkBufferUsage(info.usage),
-                                                     true});
+    const bool concurrent = info.sharingMode == VK_SHARING_MODE_CONCURRENT;
+    if (concurrent && (info.queueFamilyIndexCount < 2 || !info.pQueueFamilyIndices))
+        return {};
+    BufferPayload payload{buffer, {}, nullptr, info.size, false, memory, concurrent, rhi::FromVkBufferUsage(info.usage),
+                          true};
+    if (concurrent)
+        payload.concurrentFamilies = std::make_shared<const std::vector<uint32_t>>(
+            info.pQueueFamilyIndices, info.pQueueFamilyIndices + info.queueFamilyIndexCount);
+    return Register<rhi::BufferHandle>(m_buffers, m_freeBuffer, std::move(payload));
 }
 
 rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(rhi::BufferHandle source)
@@ -1431,6 +1442,11 @@ std::optional<rhi::BufferHandle> VulkanRhiDevice::CreateBufferInternal(const rhi
     bufferInfo.sharingMode = requestedFamilyCount > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE;
     bufferInfo.queueFamilyIndexCount = requestedFamilyCount > 1 ? requestedFamilyCount : 0;
     bufferInfo.pQueueFamilyIndices = requestedFamilyCount > 1 ? requestedFamilies.data() : nullptr;
+    // Capture before native allocation: metadata allocation failure must not leak a new VkBuffer.
+    std::shared_ptr<const std::vector<uint32_t>> concurrentFamilies;
+    if (requestedFamilyCount > 1)
+        concurrentFamilies = std::make_shared<const std::vector<uint32_t>>(
+            requestedFamilies.begin(), requestedFamilies.begin() + requestedFamilyCount);
 
     VmaAllocationCreateInfo allocationInfo{};
     switch (desc.memory) {
@@ -1480,10 +1496,11 @@ std::optional<rhi::BufferHandle> VulkanRhiDevice::CreateBufferInternal(const rhi
         vmaFlushAllocation(m_allocator, allocation, 0, desc.initialDataBytes);
     }
 
-    return Register<rhi::BufferHandle>(m_buffers, m_freeBuffer,
-                                       BufferPayload{buffer, allocation, resultInfo.pMappedData, desc.byteSize, true,
-                                                     desc.memory, requestedFamilyCount > 1, desc.usage, true,
-                                                     submissionOwned});
+    BufferPayload payload{buffer, allocation,     resultInfo.pMappedData,   desc.byteSize,
+                          true,   desc.memory,    requestedFamilyCount > 1, desc.usage,
+                          true,   submissionOwned};
+    payload.concurrentFamilies = std::move(concurrentFamilies);
+    return Register<rhi::BufferHandle>(m_buffers, m_freeBuffer, std::move(payload));
 }
 
 bool VulkanRhiDevice::ReadBuffer(rhi::BufferHandle handle, uint64_t offset, void *data, uint64_t byteSize)
@@ -2342,6 +2359,16 @@ VkImage VulkanRhiDevice::Resolve(rhi::TextureHandle handle) const noexcept
 {
     const auto *payload = Resolve(m_textures, handle);
     return payload ? payload->image : VK_NULL_HANDLE;
+}
+
+bool VulkanRhiDevice::IsBufferConcurrentFor(rhi::BufferHandle handle, uint32_t family) const noexcept
+{
+    const auto *payload = Resolve(m_buffers, handle);
+    if (!payload || !payload->concurrentQueueSharing || !payload->concurrentFamilies ||
+        family == VK_QUEUE_FAMILY_IGNORED)
+        return false;
+    const auto &families = *payload->concurrentFamilies;
+    return std::find(families.begin(), families.end(), family) != families.end();
 }
 
 bool VulkanRhiDevice::UsesConcurrentQueueSharing(rhi::TextureHandle handle) const noexcept

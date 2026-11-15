@@ -22,6 +22,7 @@ enum class DeviceCapability : uint8_t
     ShaderInt64,
     ShaderFloat64,
     HostQueryReset,
+    ShaderDrawParameters,
 };
 
 enum class DeviceCapabilityDiagnosticCode : uint8_t
@@ -113,6 +114,7 @@ struct VulkanFeatureState final
     DeviceCapabilityStatus shaderInt64;
     DeviceCapabilityStatus shaderFloat64;
     DeviceCapabilityStatus hostQueryReset;
+    DeviceCapabilityStatus shaderDrawParameters;
 
     [[nodiscard]] constexpr DeviceCapabilityStatus Get(DeviceCapability capability) const noexcept
     {
@@ -135,6 +137,8 @@ struct VulkanFeatureState final
             return shaderFloat64;
         case DeviceCapability::HostQueryReset:
             return hostQueryReset;
+        case DeviceCapability::ShaderDrawParameters:
+            return shaderDrawParameters;
         }
         return {};
     }
@@ -151,6 +155,7 @@ struct DeviceCapabilityRequest final
     bool shaderInt64 = false;
     bool shaderFloat64 = false;
     bool hostQueryReset = false;
+    bool shaderDrawParameters = false;
 };
 
 struct DeviceCapabilityCheck final
@@ -199,13 +204,14 @@ struct DeviceCapabilityCheck final
         if (!state.bindless.IsEnabled())
             return {DeviceCapabilityDiagnosticCode::NotEnabled, DeviceCapability::DescriptorIndexing};
     }
-    const DeviceCapability requested[] = {DeviceCapability::DynamicRendering, DeviceCapability::TimelineSemaphore,
-                                          DeviceCapability::Synchronization2, DeviceCapability::Submit2,
-                                          DeviceCapability::ShaderInt16,      DeviceCapability::ShaderInt64,
-                                          DeviceCapability::ShaderFloat64,    DeviceCapability::HostQueryReset};
+    const DeviceCapability requested[] = {DeviceCapability::DynamicRendering,    DeviceCapability::TimelineSemaphore,
+                                          DeviceCapability::Synchronization2,    DeviceCapability::Submit2,
+                                          DeviceCapability::ShaderInt16,         DeviceCapability::ShaderInt64,
+                                          DeviceCapability::ShaderFloat64,       DeviceCapability::HostQueryReset,
+                                          DeviceCapability::ShaderDrawParameters};
     const bool enabled[] = {request.dynamicRendering, request.timelineSemaphore, request.synchronization2,
                             request.submit2,          request.shaderInt16,       request.shaderInt64,
-                            request.shaderFloat64,    request.hostQueryReset};
+                            request.shaderFloat64,    request.hostQueryReset,    request.shaderDrawParameters};
     for (size_t i = 0; i < std::size(requested); ++i) {
         if (enabled[i]) {
             const auto result = CheckDeviceCapability(state, requested[i]);

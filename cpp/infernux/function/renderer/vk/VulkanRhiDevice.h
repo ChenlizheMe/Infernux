@@ -102,6 +102,7 @@ struct VulkanCapabilityProbeData final
 {
     uint32_t apiVersion = VK_API_VERSION_1_0;
     VkPhysicalDeviceFeatures coreFeatures{};
+    VkPhysicalDeviceShaderDrawParametersFeatures shaderDrawParametersFeatures{};
     VkPhysicalDeviceVulkan12Features vulkan12Features{};
     VkPhysicalDeviceVulkan13Features vulkan13Features{};
     VkPhysicalDeviceDescriptorIndexingFeaturesEXT descriptorIndexingFeaturesEXT{};
@@ -199,6 +200,7 @@ class VulkanDeviceFeatureChain final
     vk::VulkanFeatureState m_enabled{};
     vk::DeviceCapabilityCheck m_failure{};
     VkPhysicalDeviceFeatures2 m_features2{};
+    VkPhysicalDeviceShaderDrawParametersFeatures m_shaderDrawParameters{};
     VkPhysicalDeviceVulkan12Features m_vulkan12{};
     VkPhysicalDeviceVulkan13Features m_vulkan13{};
     VkPhysicalDeviceDescriptorIndexingFeaturesEXT m_descriptorIndexingEXT{};
@@ -428,6 +430,10 @@ class VulkanRhiDevice final : public rhi::Device
 
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkBuffer Resolve(rhi::BufferHandle handle) const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool UsesConcurrentQueueSharing(rhi::BufferHandle handle) const noexcept;
+    /// True only for a concurrent buffer with known creation membership.
+    /// A raw concurrent bool has no family proof; exclusive owners are checked separately.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool IsBufferConcurrentFor(rhi::BufferHandle handle,
+                                                                         uint32_t family) const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkImage Resolve(rhi::TextureHandle handle) const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool UsesConcurrentQueueSharing(rhi::TextureHandle handle) const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkImageView Resolve(rhi::TextureViewHandle handle) const noexcept;
@@ -469,6 +475,9 @@ class VulkanRhiDevice final : public rhi::Device
         bool hasCreationInfo = false;
         bool submissionOwned = false;
         rhi::SubmissionTicket uploadSubmission{};
+        // Allocated once from real concurrent creation info; aliases share it.
+        // Null means exclusive or unknown raw metadata, never a guessed family set.
+        std::shared_ptr<const std::vector<uint32_t>> concurrentFamilies;
     };
 
     struct TexturePayload

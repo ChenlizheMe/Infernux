@@ -52,6 +52,33 @@ struct SubmissionBatch
     std::string diagnosticName;
 };
 
+/// One region of the existing graph that a logical operation may record again.
+/// IDs are local graph work/resource IDs; iteration progress belongs to the
+/// requesting Host operation, never to a second device executor.
+struct ComputeRegionDeclaration
+{
+    std::string diagnosticName;
+    std::vector<uint32_t> workItems;
+    std::vector<uint32_t> loopCarriedResources;
+};
+
+/// The compiler proves contiguous, same-lane compute work on borrowed buffers.
+/// Batch boundaries separate one-time prefix/suffix work from repeatable work.
+/// endBatch is exclusive. Queue-family releases remain outside the region.
+struct CompiledComputeRegion
+{
+    std::string diagnosticName;
+    std::vector<uint32_t> workItems;
+    std::vector<uint32_t> resources;
+    std::vector<uint32_t> loopCarriedResources;
+    DeviceId device = InvalidDeviceId;
+    QueueRole queue = QueueRole::Compute;
+    SubmissionDomain domain = SubmissionDomain::Frame;
+    RenderViewId view = InvalidRenderViewId;
+    uint32_t firstBatch = InvalidSubmissionBatchIndex;
+    uint32_t endBatch = InvalidSubmissionBatchIndex;
+};
+
 struct SubmissionPlan
 {
     std::vector<SubmissionBatch> batches;

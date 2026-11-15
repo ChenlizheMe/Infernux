@@ -1,16 +1,17 @@
 #include <SDL3/SDL.h>
 #include <function/renderer/CommandBuffer.h>
 #include <function/renderer/MaterialDescriptor.h>
+#include <function/renderer/VulkanFrameSubmission.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanComputeQueue.h>
-#include <function/renderer/VulkanFrameSubmission.h>
 #include <function/renderer/vk/VulkanQueueManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/renderer/vk/VulkanSubmissionExecutor.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/SlangNativeModule.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -44,25 +45,26 @@ static std::vector<uint32_t> ReadSpirv(const char *path)
     return code;
 }
 
-static std::vector<char> SpirvBytes(const std::vector<uint32_t> &words)
+static const ShaderEntryPointCode &Entry(const ShaderTargetCode &target, rhi::ShaderStage stage)
 {
-    std::vector<char> bytes(words.size() * sizeof(uint32_t));
-    std::memcpy(bytes.data(), words.data(), bytes.size());
-    return bytes;
+    const auto entry = std::find_if(target.entries.begin(), target.entries.end(),
+                                    [stage](const auto &value) { return value.stage == stage; });
+    assert(entry != target.entries.end());
+    return *entry;
 }
 
 static VkPipeline CreateFullscreenPipeline(VkDevice device, VkShaderModule vertex, VkShaderModule fragment,
-                                           VkPipelineLayout layout)
+                                           VkPipelineLayout layout, const char *vertexEntry, const char *fragmentEntry)
 {
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = vertex;
-    stages[0].pName = "main";
+    stages[0].pName = vertexEntry;
     stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[1].module = fragment;
-    stages[1].pName = "main";
+    stages[1].pName = fragmentEntry;
     VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -110,11 +112,14 @@ static VkPipeline CreateFullscreenPipeline(VkDevice device, VkShaderModule verte
 
 static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::VulkanQueueManager &queues,
                                          vk::VulkanSubmissionExecutor &executor, VkFence fence,
-                                         const std::vector<uint32_t> &computeCode,
-                                         const std::vector<uint32_t> &vertexCode,
-                                         const std::vector<uint32_t> &fragmentCode)
+                                         const ShaderTargetCode &computeCode, const ShaderTargetCode &graphicsCode)
 {
     auto &device = context.GetRhiDevice();
+    const auto &computeEntry = Entry(computeCode, rhi::ShaderStage::Compute);
+    const auto &vertexEntry = Entry(graphicsCode, rhi::ShaderStage::Vertex);
+    const auto &fragmentEntry = Entry(graphicsCode, rhi::ShaderStage::Fragment);
+    const ShaderProgramMetadata metadata{ShaderProgramDomain::Fullscreen, vertexEntry.name, fragmentEntry.name,
+                                         graphicsCode, graphicsCode};
 
     // Use the public inx.buffer backing object. The second vec4 is authored on
     // the host, copied into device-local storage by the engine compute queue,
@@ -174,14 +179,14 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     groupDesc.buffers[0] = {0, rhi::BindingType::StorageBuffer, parameters->GetBuffer(), 0, parameters->GetByteSize()};
     groupDesc.bufferCount = 1;
     const auto group = device.CreateBindGroup(groupDesc);
-    const auto computeShader =
-        device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(computeCode.data(), computeCode.size()));
+    const auto computeShader = device.CreateShaderModule(
+        {rhi::ShaderSourceLanguage::SpirV, computeEntry.code.data(), computeEntry.code.size()});
     auto program = std::make_shared<ShaderProgram>();
     ShaderProgramVariantKey programKey;
     programKey.program.stages = {"Tests/RendererParameterBuffer.vert", "Tests/RendererParameterBuffer.frag"};
     programKey.program.revision = 1;
     programKey.target = ShaderCompileTarget::Forward;
-    assert(program->Create(context.GetDevice(), SpirvBytes(vertexCode), SpirvBytes(fragmentCode), programKey));
+    assert(program->Create(context.GetDevice(), vertexEntry.code, fragmentEntry.code, programKey, metadata));
     const auto storageBinding = std::find_if(
         program->GetDescriptorBindings().begin(), program->GetDescriptorBindings().end(),
         [](const MergedDescriptorBinding &binding) {
@@ -191,11 +196,13 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     assert(storageBinding->readOnly);
     rhi::ComputePipelineDesc computeDesc;
     computeDesc.computeShader = computeShader;
+    computeDesc.entryPoint = computeEntry.name.c_str();
     computeDesc.bindingLayouts[0] = computeLayout;
     computeDesc.bindingLayoutCount = 1;
     const auto computePipeline = device.CreateComputePipeline(computeDesc);
-    const VkPipeline nativeGraphicsPipeline = CreateFullscreenPipeline(
-        context.GetDevice(), program->GetVertexModule(), program->GetFragmentModule(), program->GetPipelineLayout());
+    const VkPipeline nativeGraphicsPipeline =
+        CreateFullscreenPipeline(context.GetDevice(), program->GetVertexModule(), program->GetFragmentModule(),
+                                 program->GetPipelineLayout(), vertexEntry.name.c_str(), fragmentEntry.name.c_str());
     const auto graphicsPipeline = device.RegisterGraphicsPipeline(nativeGraphicsPipeline, program->GetPipelineLayout());
     assert(computeLayout.IsValid() && group.IsValid() && computeShader.IsValid() && computePipeline.IsValid() &&
            graphicsPipeline.IsValid());
@@ -232,7 +239,10 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     auto semanticProgram = std::make_shared<ShaderProgram>();
     auto semanticKey = programKey;
     semanticKey.target = ShaderCompileTarget::GBuffer;
-    assert(semanticProgram->Create(context.GetDevice(), SpirvBytes(vertexCode), SpirvBytes(fragmentCode), semanticKey));
+    auto semanticMetadata = metadata;
+    semanticMetadata.materialLayoutOwner = program;
+    assert(semanticProgram->Create(context.GetDevice(), vertexEntry.code, fragmentEntry.code, semanticKey,
+                                   semanticMetadata));
     material->SetPassShaderProgram(ShaderCompileTarget::GBuffer, semanticProgram);
     MaterialDescriptorSet *forwardBase = descriptors.GetOrCreateDescriptorSet(*material, *program);
     auto emptyPublication = std::make_shared<RendererParameterBlock>();
@@ -253,8 +263,7 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
     vk::ResourceHandle residentParameters;
     vk::ResourceHandle color;
     graph.AddComputePass("Write inx.buffer", [&](vk::PassBuilder &builder) {
-        residentParameters =
-            builder.ImportBuffer("parameters", parameters->GetBuffer(), parameters->GetByteSize());
+        residentParameters = builder.ImportBuffer("parameters", parameters->GetBuffer(), parameters->GetByteSize());
         graph.SetResourceInitialState(residentParameters, rhi::TextureLayout::Undefined,
                                       rhi::Access::ShaderRead | rhi::Access::ShaderWrite,
                                       rhi::PipelineStage::ComputeShader, rhi::QueueRole::Compute);
@@ -443,14 +452,13 @@ static void CheckReplay(vk::VkDeviceContext &context, vk::VulkanQueueManager &qu
     {
         vk::RenderGraph graph;
         graph.Initialize(&context, nullptr, &queues);
-        auto image =
-            kind == ResourceKind::Buffer
-                ? graph.RegisterTransientBuffer("ReplayBuffer", desc.byteSize,
-                                                rhi::BufferUsageFlags::TransferSource |
-                                                    rhi::BufferUsageFlags::TransferDestination)
-                : graph.RegisterTransientTexture("ReplayImage", 8, 4,
-                                                 kind == ResourceKind::Depth ? VK_FORMAT_D32_SFLOAT
-                                                                             : VK_FORMAT_R8G8B8A8_UNORM);
+        auto image = kind == ResourceKind::Buffer
+                         ? graph.RegisterTransientBuffer("ReplayBuffer", desc.byteSize,
+                                                         rhi::BufferUsageFlags::TransferSource |
+                                                             rhi::BufferUsageFlags::TransferDestination)
+                         : graph.RegisterTransientTexture("ReplayImage", 8, 4,
+                                                          kind == ResourceKind::Depth ? VK_FORMAT_D32_SFLOAT
+                                                                                      : VK_FORMAT_R8G8B8A8_UNORM);
         uint32_t frame = 0;
         rhi::BindGroupHandle group;
         graph.AddTransferPass("Produce", [&](vk::PassBuilder &builder) {
@@ -666,11 +674,29 @@ static void CheckReplay(vk::VkDeviceContext &context, vk::VulkanQueueManager &qu
 
 int main(int argc, char **argv)
 {
-    assert(argc == 5);
+    assert(argc == 2);
     const auto code = ReadSpirv(argv[1]);
-    const auto rendererParameterCompute = ReadSpirv(argv[2]);
-    const auto rendererParameterVertex = ReadSpirv(argv[3]);
-    const auto rendererParameterFragment = ReadSpirv(argv[4]);
+    const auto rendererParameterCompute =
+        CompileSlangNativeModule({"renderer_parameter_write", "RendererParameterBuffer.compute.slang", R"(
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> parameters;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void write_parameters() { parameters[0] = parameters[1]; }
+)"},
+                                 ShaderCodeTarget::SpirV);
+    const auto rendererParameterGraphics =
+        CompileSlangNativeModule({"renderer_parameter_draw", "RendererParameterBuffer.graphics.slang", R"(
+[[vk::binding(0, 0)]] StructuredBuffer<float4> parameters;
+[shader("vertex")]
+float4 parameter_triangle(uint vertex : SV_VertexID) : SV_Position
+{
+    const float2 positions[3] = {float2(-1, -1), float2(3, -1), float2(-1, 3)};
+    return float4(positions[vertex], 0, 1);
+}
+[shader("fragment")]
+float4 parameter_color() : SV_Target0 { return parameters[0]; }
+)"},
+                                 ShaderCodeTarget::SpirV);
     assert(SDL_Init(SDL_INIT_VIDEO));
     auto *window = SDL_CreateWindow("RenderGraph queue replay", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
     assert(window);
@@ -704,8 +730,7 @@ int main(int argc, char **argv)
     VkFenceCreateInfo info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VkFence fence{};
     assert(vkCreateFence(context.GetDevice(), &info, nullptr, &fence) == VK_SUCCESS);
-    CheckRendererParameterBuffer(context, queues, executor, fence, rendererParameterCompute, rendererParameterVertex,
-                                 rendererParameterFragment);
+    CheckRendererParameterBuffer(context, queues, executor, fence, rendererParameterCompute, rendererParameterGraphics);
     for (auto kind : {ResourceKind::Color, ResourceKind::Buffer}) {
         for (auto producer : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
             for (auto consumer : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer})

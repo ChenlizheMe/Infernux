@@ -226,7 +226,8 @@ bool VerifyRhiBufferUpload(TestResources &resources)
 {
     const std::array<uint32_t, 8> source = {3, 5, 8, 13, 21, 34, 55, 89};
     auto ticket = resources.resources.BeginBufferUpload(
-        {source.data(), sizeof(source), infernux::rhi::BufferUsageFlags::Storage});
+        {source.data(), sizeof(source), infernux::rhi::BufferUsageFlags::Storage,
+         infernux::rhi::QueueAccessFlags::Graphics | infernux::rhi::QueueAccessFlags::Compute});
     resources.resources.DrainBufferUploads();
     if (!Require(ticket && resources.resources.TryPublishBufferUpload(ticket),
                  "DeviceLocal RHI buffer upload did not publish"))
@@ -237,6 +238,18 @@ bool VerifyRhiBufferUpload(TestResources &resources)
                  "Published RHI buffer resource is invalid"))
         return false;
     const auto handle = resident->GetBuffer();
+    auto &device = resources.context.GetRhiDevice();
+    const auto &queues = resources.context.GetQueueIndices();
+    if (queues.graphicsFamily != queues.computeFamily) {
+        const auto alias = device.RegisterBuffer(handle);
+        const bool shared = device.IsBufferConcurrentFor(handle, *queues.graphicsFamily) &&
+                            device.IsBufferConcurrentFor(handle, *queues.computeFamily) &&
+                            device.IsBufferConcurrentFor(alias, *queues.graphicsFamily) &&
+                            device.IsBufferConcurrentFor(alias, *queues.computeFamily);
+        device.Release(alias);
+        if (!Require(shared, "Uploaded buffer or its alias lost actual Graphics/Compute sharing membership"))
+            return false;
+    }
     std::weak_ptr<infernux::rhi::BufferResource> weakResident = resident;
     if (!Require(resources.context.GetRhiDevice().Resolve(handle) == ticket->GetBuffer()->GetBuffer(),
                  "Published RHI buffer does not resolve to the uploaded Vulkan allocation"))

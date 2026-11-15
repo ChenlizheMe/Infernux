@@ -146,7 +146,6 @@ class BufferUploadTicket final
     bool m_complete = false;
     bool m_published = false;
     bool m_async = false;
-    bool m_concurrentQueueSharing = false;
     GpuWorkReceipt m_work;
 };
 

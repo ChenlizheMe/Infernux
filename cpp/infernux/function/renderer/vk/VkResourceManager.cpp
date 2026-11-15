@@ -404,7 +404,6 @@ VkResourceManager::CreateBufferUpload(VkDeviceSize size, rhi::BufferUsageFlags u
     if (rhi::HasQueueAccess(queueAccess, rhi::QueueAccessFlags::Transfer))
         appendFamily(m_transferQueueFamily);
     ticket->m_destinationUsage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | finalUsage;
-    ticket->m_concurrentQueueSharing = queueFamilies.size() > 1;
     return ticket;
 }
 
@@ -598,8 +597,19 @@ VkResourceManager::GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicke
     if (!resource) {
         if (!m_rhiDevice)
             throw std::logic_error("GPU buffer upload has no RHI device");
-        const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size,
-                                                        ticket->m_concurrentQueueSharing);
+        // Preserve the exact destination creation facts retained by this upload,
+        // including its uploader/consumer families. A concurrent boolean alone
+        // cannot prove eligibility on a later compute consumer's actual family.
+        VkBufferCreateInfo description{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        description.size = ticket->m_size;
+        description.usage = ticket->m_destinationUsage;
+        if (ticket->m_queueFamilies.size() > 1) {
+            description.sharingMode = VK_SHARING_MODE_CONCURRENT;
+            description.queueFamilyIndexCount = static_cast<uint32_t>(ticket->m_queueFamilies.size());
+            description.pQueueFamilyIndices = ticket->m_queueFamilies.data();
+        }
+        const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), description,
+                                                        rhi::BufferMemory::DeviceLocal);
         if (!handle.IsValid())
             throw std::runtime_error("failed to register uploaded GPU buffer with the RHI device");
         m_rhiDevice->SetUploadSubmission(handle, ticket->m_destination->GetUploadSubmission());

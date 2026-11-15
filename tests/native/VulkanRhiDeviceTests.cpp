@@ -294,6 +294,31 @@ int main(int argc, char **argv)
     assert(fullNumericChain.GetFeatures2().features.shaderFloat64 == VK_TRUE);
     assert(vk::CheckDeviceCapabilities(fullNumericChain.GetEnabledState(), numericRequest).IsSupported());
 
+    vk::VulkanCapabilityProbeData drawProbe;
+    drawProbe.apiVersion = VK_API_VERSION_1_2;
+    drawProbe.shaderDrawParametersFeatures.shaderDrawParameters = VK_TRUE;
+    const auto drawSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(drawProbe);
+    assert(drawSnapshot.supported.shaderDrawParameters.supported);
+    assert(!drawSnapshot.supported.shaderDrawParameters.enabled);
+    vk::VulkanDeviceFeatureChain drawChain(drawSnapshot);
+    vk::DeviceCapabilityRequest drawRequest;
+    drawRequest.shaderDrawParameters = true;
+    assert(drawChain.Enable(drawRequest));
+    assert(vk::CheckDeviceCapabilities(drawChain.GetEnabledState(), drawRequest).IsSupported());
+    const auto *drawFeature =
+        static_cast<const VkPhysicalDeviceShaderDrawParametersFeatures *>(drawChain.GetFeatures2().pNext);
+    assert(drawFeature && drawFeature->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_DRAW_PARAMETERS_FEATURES &&
+           drawFeature->shaderDrawParameters == VK_TRUE && drawFeature->pNext == nullptr);
+    assert(drawChain.Enable({}));
+    assert(!drawChain.GetEnabledState().shaderDrawParameters.enabled);
+    assert(drawChain.GetFeatures2().pNext == nullptr);
+    drawProbe.shaderDrawParametersFeatures.shaderDrawParameters = VK_FALSE;
+    vk::VulkanDeviceFeatureChain unsupportedDraw(vk::VulkanCapabilitySnapshot::FromProbe(drawProbe));
+    assert(!unsupportedDraw.Enable(drawRequest));
+    assert(unsupportedDraw.GetFailure().capability == vk::DeviceCapability::ShaderDrawParameters);
+    assert(!unsupportedDraw.GetEnabledState().shaderDrawParameters.enabled);
+    assert(unsupportedDraw.GetFeatures2().pNext == nullptr);
+
     vk::VulkanFeatureState noBindlessCapabilities{};
     assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, false));
     assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, true));
