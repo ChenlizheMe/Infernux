@@ -105,7 +105,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends libegl1 libopengl0 libgl1
       - name: Install portable test dependencies
-        run: python -m pip install pytest PySide6 packaging PyYAML setuptools wheel
+        run: python -m pip install pytest PySide6 packaging PyYAML setuptools wheel numpy
       - name: Audit project synchronization contract
         run: |
           python scripts/maintenance/audit_project_sync.py tests/fixtures/multiplatform_player --tracked
@@ -277,6 +277,7 @@ jobs:
           # its full runtime behind a single worker, while avoiding GPU
           # context pressure from unbounded parallelism.
           $parallelXml = "out\test-results\pytest-windows-parallel.xml"
+          $env:INFERNUX_SURFACE_DISCARD_EVIDENCE = "$PWD/out/test-results/surface-discard-windows"
           python -m pytest -n 2 --dist loadfile --max-worker-restart=0 -o pythonpath= `
             tests\python tests\isolated `
             --ignore=tests\python\test_shader_declaration_discovery.py `
@@ -343,6 +344,7 @@ jobs:
             out/test-results/*.xml
             out/test-results/physics-profile-windows.log
             out/test-results/gpu-windows/
+            out/test-results/surface-discard-windows/
             out/test-results/hub-startup-windows/
           if-no-files-found: warn
 
@@ -422,6 +424,8 @@ jobs:
 
       - name: Run native Python tests
         id: native-python
+        env:
+          INFERNUX_SURFACE_DISCARD_EVIDENCE: out/test-results/surface-discard-linux
         run: |
           conda activate infernux
           unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
@@ -463,6 +467,7 @@ jobs:
             out/test-results/*.xml
             out/test-results/physics-profile-linux.log
             out/test-results/gpu-linux/
+            out/test-results/surface-discard-linux/
             out/test-results/hub-startup-linux/
           if-no-files-found: warn
 
