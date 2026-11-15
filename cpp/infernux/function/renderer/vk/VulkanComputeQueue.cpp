@@ -139,14 +139,16 @@ void VulkanComputeQueue::Complete(uint32_t index)
     m_completed = (std::max)(m_completed, slot.ticket.serial);
     slot.ticket = {};
     slot.epoch = rhi::InvalidSubmissionSerial;
-    // Publish completion before releasing owners whose older tickets may be queried.
-    if (slot.resources.receipt) {
-        if (timing) {
-            if (const auto *sample = timing->Find("compute_submission"))
+    if (timing) {
+        if (const auto *sample = timing->Find("compute_submission")) {
+            RecordGpuProfiledSubmission(sample->milliseconds);
+            if (slot.resources.receipt)
                 slot.resources.receipt->deviceNanoseconds = sample->milliseconds * 1.0e6;
         }
-        slot.resources.receipt->complete = true;
     }
+    // Publish completion before releasing owners whose older tickets may be queried.
+    if (slot.resources.receipt)
+        slot.resources.receipt->complete = true;
     slot.resources = {};
 }
 

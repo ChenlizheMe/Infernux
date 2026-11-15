@@ -109,6 +109,8 @@ class Statistics:
     gpu_profile_available: bool
     gpu_profile_serial: int
     gpu_time_ms: float | None
+    gpu_profiled_submission_count: int
+    gpu_elapsed_total_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -2507,6 +2509,11 @@ def statistics(*, reset: bool = False) -> Statistics:
     engine has no device transfers, submissions or waits to report here.
     Native rendering or physics may already use the queue before Python creates
     a Buffer; acquiring its existing host lease makes those counters visible too.
+    gpu_elapsed_total_ms sums measured submission spans observed complete since
+    reset, including barriers and waits inside each span. A zero
+    gpu_profiled_submission_count means no measured samples, not zero GPU cost.
+    Completed samples and accepted submission_count can straddle a reset or an
+    in-flight boundary, so they need not describe the same submissions.
     """
     from infernux.application import Application
     engine = Application._current_engine()
@@ -2535,6 +2542,8 @@ def statistics(*, reset: bool = False) -> Statistics:
             gpu_profile_available=False,
             gpu_profile_serial=0,
             gpu_time_ms=None,
+            gpu_profiled_submission_count=0,
+            gpu_elapsed_total_ms=0.0,
         )
         return values
     assert_runtime_owner_thread()
@@ -2558,6 +2567,8 @@ def statistics(*, reset: bool = False) -> Statistics:
         gpu_profile_available=bool(raw["gpu_profile_available"]),
         gpu_profile_serial=int(raw["gpu_profile_serial"]),
         gpu_time_ms=None if raw["gpu_time_ms"] is None else float(raw["gpu_time_ms"]),
+        gpu_profiled_submission_count=int(raw["gpu_profiled_submission_count"]),
+        gpu_elapsed_total_ms=float(raw["gpu_elapsed_total_ms"]),
     )
     if reset:
         host.reset_statistics()

@@ -1,4 +1,5 @@
 #include "JoltGpuTick.h"
+#include "JoltGpuArticulations.h"
 #include "JoltGpuBroadphase.h"
 #include "JoltGpuConstraints.h"
 #include "JoltGpuNarrowphase.h"
@@ -39,6 +40,8 @@ class JoltGpuTick::Impl
         source.observe = [this] {
             try {
                 Poll();
+                if (pressureObserve)
+                    pressureObserved = pressureObserve();
             } catch (...) {
                 Fail();
                 throw;
@@ -65,7 +68,7 @@ class JoltGpuTick::Impl
                JoltGpuTickControl pendingControl, std::optional<std::vector<JPH::GPU::BodyForces>> forces)
     {
         FrameWorkOwner::Scope scope(work);
-        if (status != Status::Idle && status != Status::Complete)
+        if (pressureActive || (status != Status::Idle && status != Status::Complete))
             throw std::logic_error("GPU tick Begin requires an idle or fully completed owner");
         if (settings && (!std::isfinite(deltaTime) || deltaTime <= 0))
             throw std::invalid_argument("GPU fixed delta time must be finite and positive");
@@ -77,6 +80,7 @@ class JoltGpuTick::Impl
         parameters = settings ? std::make_optional(*settings) : std::nullopt;
         reuseParameters = false;
         stageCursor = {};
+        reducedGuardWindow = false;
         if (parameters) {
             auto gravityDt = parameters->Get().gravityDt;
             gravityDt.w = deltaTime / static_cast<float>(parameters->Get().solve.y);
@@ -107,6 +111,7 @@ class JoltGpuTick::Impl
         snapshotOffset = 0;
         snapshotMetadataOffset = 0;
         snapshotMetadata.clear();
+        snapshotComplete = false;
         cursor = 0;
         inputAccepted = controlOnly;
         submissionBusy = false;
@@ -137,6 +142,15 @@ class JoltGpuTick::Impl
         if (status == Status::Running)
             status = Status::Cancelled;
         CancelPackets();
+        if (suspendedWork) {
+            if (suspendedWork->batch)
+                suspendedWork->batch->Cancel();
+            if (suspendedWork->preservation)
+                suspendedWork->preservation->Cancel();
+            suspendedWork.reset();
+        }
+        pressureActive = false;
+        reducedGuardWindow = false;
         broadphase.ResetCapacityHint();
         inputs = {};
         workGeometry.reset();
@@ -157,7 +171,7 @@ class JoltGpuTick::Impl
 
     bool CanRetire() const noexcept
     {
-        return status != Status::Running && receipts.empty();
+        return status != Status::Running && !pressureActive && receipts.empty();
     }
 
     FrameWorkWaitResult WaitForProgress(uint64_t maxWaitNanoseconds)
@@ -204,13 +218,15 @@ class JoltGpuTick::Impl
         FinalWork,
         Inputs,
         Stages,
-        Preservation
+        Preservation,
+        Pressure
     };
     enum class Phase
     {
         InitializeSleep,
         CapturePrescribedBounds,
         PrepareKinematics,
+        CaptureArticulationRotors,
         ApplyForces,
         ParticipantPredict,
         ParticipantPrepare,
@@ -227,11 +243,13 @@ class JoltGpuTick::Impl
         SetupJoints,
         ReportContactsBeforeVelocity,
         BuildConstraints,
+        ClassifyArticulations,
         WarmJoints,
         SolveJointVelocity,
         SolveVelocity,
         ReportContactsAfterVelocity,
         Integrate,
+        CommitArticulationPose,
         SolveJointPosition,
         SolvePosition,
         FinishJoints,
@@ -386,6 +404,169 @@ class JoltGpuTick::Impl
         batchNumericalKey.clear();
     }
 
+    struct PressureSavedWork
+    {
+        std::shared_ptr<rhi::PreparedComputeBatch> batch, preservation;
+        std::function<JoltGpuControlWork()> continuation, minimum;
+        std::shared_ptr<const JoltGpuGeometryLease> geometry;
+        PacketKind kind = PacketKind::Inputs, continuationKind = PacketKind::Work;
+        JoltGpuControlWork::ResumeAfter resumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
+        NumericalCostKey numericalKey;
+        std::optional<JPH::GPU::Stage> homogeneousStage;
+        size_t begin = 0, end = 0;
+        StageCursor stageEnd;
+        bool busy = false;
+        uint64_t opportunity = 0, progress = 0, submissions = 0;
+    };
+
+    void SwapPressureWork(PressureSavedWork &saved) noexcept
+    {
+        using std::swap;
+        swap(batch, saved.batch);
+        swap(preservation, saved.preservation);
+        swap(workContinuation, saved.continuation);
+        swap(workMinimum, saved.minimum);
+        swap(workGeometry, saved.geometry);
+        swap(batchKind, saved.kind);
+        swap(continuationKind, saved.continuationKind);
+        swap(continuationResumeAfter, saved.resumeAfter);
+        swap(batchNumericalKey, saved.numericalKey);
+        swap(batchHomogeneousStage, saved.homogeneousStage);
+        swap(batchBegin, saved.begin);
+        swap(batchEnd, saved.end);
+        swap(batchStageEnd, saved.stageEnd);
+        swap(submissionBusy, saved.busy);
+        swap(busyOpportunity, saved.opportunity);
+        swap(busyProgress, saved.progress);
+        swap(busySubmissions, saved.submissions);
+    }
+
+    bool GuardConsumersFinished() const noexcept
+    {
+        return stageCursor.phase == Phase::ParticipantAccept || stageCursor.phase == Phase::UpdateSleep ||
+               stageCursor.phase == Phase::WakeFinalPrescribedBounds ||
+               stageCursor.phase == Phase::CaptureArticulationRotors || stageCursor.phase == Phase::FinishTick ||
+               stageCursor.phase == Phase::Done;
+    }
+
+    bool PressureSafe() const noexcept
+    {
+        if (!pressurePrepare || (status != Status::Running && status != Status::Idle && status != Status::Complete))
+            return false;
+        if (status == Status::Running && control.articulations && control.articulations->preparing)
+            return false; // Complete or decline this private cold proposal first.
+        // Admitted is also read by native position guards after reduced pose.
+        // Keep the whole original law through the final guarded joint work.
+        // Normalize can skip an empty FinishJoints without accepting a native
+        // stage packet (for example a zero-joint World). Use the actual cursor
+        // as well as the latch so that such Worlds cannot strand peer caches.
+        return !reducedGuardWindow || GuardConsumersFinished();
+    }
+
+    bool PressureRequested() const
+    {
+        return !pressureActive && pressurePending && pressurePending() && PressureSafe();
+    }
+
+    bool StartPressure()
+    {
+        if (!receipts.empty())
+            return false;
+        const bool capturedWitness =
+            status == Status::Running && controlAccepted && !controlOnly &&
+            (stageCursor.phase == Phase::SetupJoints || stageCursor.phase == Phase::ReportContactsBeforeVelocity ||
+             stageCursor.phase == Phase::BuildConstraints || stageCursor.phase == Phase::ClassifyArticulations);
+
+        if (batch && batchKind == PacketKind::Model) {
+            // The transaction has not been accepted. Drop its frozen old
+            // runtime and private remap target, then prepare it from converted
+            // histories through the original author factory exactly once.
+            CancelPackets();
+            modelUpdate.reset();
+            modelPrepared = false;
+            workContinuation = control.groups[groupCursor].reprepareModel;
+            continuationKind = PacketKind::Work;
+            continuationResumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
+            workMinimum = {};
+            submissionBusy = false;
+        } else if (status == Status::Running && !controlAccepted && !modelPrepared && !batch && !workContinuation &&
+                   groupCursor < control.groups.size() && control.groups[groupCursor].reprepareModel) {
+            // The layout preparation group can be complete while its commit
+            // group has not prepared a packet yet. Retirement invalidates that
+            // private joint history too; rebuild before calling Commit.
+            workContinuation = control.groups[groupCursor].reprepareModel;
+            continuationKind = PacketKind::Work;
+            continuationResumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
+            submissionBusy = false;
+        } else if (status == Status::Running && controlAccepted && !controlOnly &&
+                   stageCursor.phase == Phase::CaptureArticulationRotors) {
+            // Only scratch/capture work has run; no Setup or force is replayed.
+            // Its accepted predecessors have settled. Re-enter this phase with
+            // the declined descriptor, which advances directly to ApplyForces.
+            CancelPackets();
+            workContinuation = {};
+            workMinimum = {};
+            workGeometry.reset();
+            submissionBusy = false;
+        } else if (batch && batchKind == PacketKind::Stages) {
+            // Native stageCursor advances only on acceptance. Rebuilding this
+            // unaccepted prefix replaces all old control bindings safely.
+            CancelPackets();
+            batchNumericalKey.clear();
+            submissionBusy = false;
+        }
+
+        if (status == Status::Running && finalPrepared && !snapshotComplete &&
+            (continuationKind == PacketKind::FinalWork || (batch && batchKind == PacketKind::FinalWork))) {
+            CancelPackets();
+            finalOutput.states.reset();
+            finalOutput.joints.reset();
+            finalOutput.jointLayout.reset();
+            snapshotRegion = 0;
+            snapshotOffset = snapshotMetadataOffset = 0;
+            snapshotMetadata.clear();
+            workContinuation = [this] { return PrepareSnapshot(); };
+            continuationKind = PacketKind::FinalWork;
+            continuationResumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
+            workMinimum = {};
+            submissionBusy = false;
+        }
+
+        suspendedWork = std::make_unique<PressureSavedWork>();
+        SwapPressureWork(*suspendedWork);
+        pressureActive = true;
+        pressureChanged = false;
+        SelectControlWork(pressurePrepare(capturedWitness ? selectedRow : UINT32_MAX,
+                                          [this](uint32_t world, auto empty) {
+                                              pressureChanged = true;
+                                              if (status == Status::Running && world == selectedRow) {
+                                                  inputs.SetArticulations(empty);
+                                                  if (control.articulations)
+                                                      control.articulations->value = std::move(empty);
+                                              }
+                                          }),
+                          PacketKind::Pressure);
+        return true;
+    }
+
+    void FinishPressure()
+    {
+        // All conversion summaries and actual receipts have completed. Existing
+        // unpublished layout destinations must copy the converted joint history.
+        if (pressureChanged)
+            for (auto &group : control.groups)
+                if (group.retireJointRuntime)
+                    group.retireJointRuntime();
+        SwapPressureWork(*suspendedWork);
+        suspendedWork.reset();
+        pressureActive = false;
+        // The retirement itself changed capacity; retry the saved work now.
+        if (pressureChanged) {
+            submissionBusy = false;
+            work.ReportProgress();
+        }
+    }
+
     static bool ProducerPhase(Phase phase)
     {
         return phase == Phase::ParticipantPredict || phase == Phase::ParticipantPrepare ||
@@ -394,7 +575,9 @@ class JoltGpuTick::Impl
                phase == Phase::CapturePrescribedBounds || phase == Phase::WakePrescribedBounds ||
                phase == Phase::BuildTopology || phase == Phase::WakeComponents || phase == Phase::UpdateSleep ||
                phase == Phase::WakeFinalPrescribedBounds || phase == Phase::BuildConstraints ||
-               phase == Phase::ReportContactsBeforeVelocity || phase == Phase::ReportContactsAfterVelocity;
+               phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
+               phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
+               phase == Phase::ReportContactsAfterVelocity;
     }
 
     StageSpan Span(Phase phase) const
@@ -430,6 +613,9 @@ class JoltGpuTick::Impl
             return {Stage::FinishJoints, Domain::Joints};
         case Phase::FinishTick:
             return {Stage::FinishTick, Domain::Bodies};
+        case Phase::CommitArticulationPose:
+        case Phase::CaptureArticulationRotors:
+        case Phase::ClassifyArticulations:
         case Phase::Broadphase:
         case Phase::InitializeSleep:
         case Phase::CapturePrescribedBounds:
@@ -510,6 +696,9 @@ class JoltGpuTick::Impl
             next.phase = Phase::PrepareKinematics;
             break;
         case Phase::PrepareKinematics:
+            next.phase = Phase::CaptureArticulationRotors;
+            break;
+        case Phase::CaptureArticulationRotors:
             next.phase = Phase::ApplyForces;
             break;
         case Phase::ApplyForces:
@@ -575,6 +764,9 @@ class JoltGpuTick::Impl
             next.phase = Phase::Integrate;
             break;
         case Phase::BuildConstraints:
+            next.phase = Phase::ClassifyArticulations;
+            break;
+        case Phase::ClassifyArticulations:
             next.iteration = 0;
             next.phase = velocity                       ? Phase::WarmJoints
                          : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
@@ -593,6 +785,9 @@ class JoltGpuTick::Impl
                                                         : Phase::Integrate;
             break;
         case Phase::Integrate:
+            next.phase = Phase::CommitArticulationPose;
+            break;
+        case Phase::CommitArticulationPose:
             next.iteration = 0;
             next.phase = position ? Phase::SolveJointPosition : Phase::FinishJoints;
             break;
@@ -609,7 +804,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::WakeFinalPrescribedBounds;
             break;
         case Phase::WakeFinalPrescribedBounds:
-            next.phase = ++next.substep < tickParameters.solve.y ? Phase::ApplyForces : Phase::FinishTick;
+            next.phase = ++next.substep < tickParameters.solve.y ? Phase::CaptureArticulationRotors : Phase::FinishTick;
             break;
         case Phase::FinishTick:
             next.phase = Phase::Done;
@@ -735,6 +930,7 @@ class JoltGpuTick::Impl
             inputs = reuseParameters ? parameterInput : JoltGpuStepInputs{};
             inputAccepted = (reuseParameters && !cpuForces) || !storage.GetBodyCount();
             inputs.SetSelection(actual);
+            inputs.SetArticulations(control.articulations ? control.articulations->value : nullptr);
             inputs.SetColliderPairs(control.colliderPairs ? control.colliderPairs->value : nullptr);
             CaptureStageSpans();
             for (const auto resource : {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels,
@@ -767,8 +963,8 @@ class JoltGpuTick::Impl
 
     void FinishCompleted()
     {
-        if (status == Status::Running && NumericalInputsAccepted() && finalAccepted && !workContinuation &&
-            receipts.empty())
+        if (!pressureActive && status == Status::Running && NumericalInputsAccepted() && finalAccepted &&
+            !workContinuation && receipts.empty())
             Complete();
     }
 
@@ -837,7 +1033,8 @@ class JoltGpuTick::Impl
 
     bool NeedsSmallerPrefix() const
     {
-        const bool adjustable = batchKind == PacketKind::NumericalWork && bool(workMinimum);
+        const bool adjustable =
+            (batchKind == PacketKind::NumericalWork || batchKind == PacketKind::Pressure) && bool(workMinimum);
         const bool prefix =
             (batchKind == PacketKind::Commands || batchKind == PacketKind::Stages) && batchEnd - batchBegin > 1;
         if (!batch || preservation || (!adjustable && !prefix) || batch->RequiresPreparation() ||
@@ -866,22 +1063,38 @@ class JoltGpuTick::Impl
     FrameWorkFacts Describe() const
     {
         FrameWorkFacts facts;
-        if (!admissionEnabled) {
+        facts.observe = pressureObserved;
+        if (PressureRequested()) {
+            facts.pending = true;
+            if (receipts.empty())
+                facts.host.ready = true;
+            else
+                facts.gpuBusy = true;
+            return facts;
+        }
+        if (!admissionEnabled && !pressureActive) {
             facts.pending = facts.gpuBusy = !receipts.empty();
             return facts;
         }
-        facts.pending = status == Status::Running || !receipts.empty();
-        if (status != Status::Running)
+        facts.pending = status == Status::Running || pressureActive || !receipts.empty();
+        if (status != Status::Running && !pressureActive)
             return facts;
+        if (pressureActive && !batch && !workContinuation) {
+            if (receipts.empty())
+                facts.host.ready = true;
+            else
+                facts.gpuBusy = true;
+            return facts;
+        }
         // Only explicitly acceptance-ready producer preparation may overlap its
         // accepted GPU predecessor. Completion consumers retain the same gate.
         if (!batch && workContinuation && ContinuationNeedsWait()) {
             facts.gpuBusy = true;
             return facts;
         }
-        if (!batch && workContinuation && submissionBusy)
+        if (!batch && submissionBusy)
             return facts;
-        if (NumericalInputsAccepted() && finalAccepted) {
+        if (!pressureActive && NumericalInputsAccepted() && finalAccepted) {
             facts.gpuBusy = !receipts.empty();
             return facts;
         }
@@ -1056,6 +1269,7 @@ class JoltGpuTick::Impl
             if (finalOutput.states)
                 finalOutput.states = finalOutput.states->Freeze();
             finalOutput.joints = finalOutput.joints->Freeze();
+            snapshotComplete = true;
             auto prepare = std::move(control.prepareFinalWork);
             control.prepareFinalWork = {};
             return prepare ? prepare(finalOutput) : JoltGpuControlWork{};
@@ -1066,6 +1280,19 @@ class JoltGpuTick::Impl
 
     bool Prepare()
     {
+        // This is the actual accepted cursor, never speculative NextSpan state.
+        // Empty joint domains can reach it through producer Normalize, so clear
+        // the latch here as well as after accepted native stage packets.
+        if (GuardConsumersFinished())
+            reducedGuardWindow = false;
+        if (PressureRequested())
+            return StartPressure();
+        if (pressureActive && !batch && !workContinuation) {
+            if (!receipts.empty())
+                return false;
+            FinishPressure();
+            return true;
+        }
         if (NeedsSmallerPrefix()) {
             if (workMinimum) {
                 auto minimum = std::move(workMinimum);
@@ -1097,7 +1324,10 @@ class JoltGpuTick::Impl
                 workContinuation = {};
                 SelectControlWork(continuation(), kind);
                 if (!batch && !workContinuation) {
-                    if (kind == PacketKind::FinalWork)
+                    if (kind == PacketKind::Pressure) {
+                        if (receipts.empty())
+                            FinishPressure();
+                    } else if (kind == PacketKind::FinalWork)
                         finalAccepted = true;
                     else if (kind != PacketKind::NumericalWork)
                         FinishControlGroup();
@@ -1105,6 +1335,8 @@ class JoltGpuTick::Impl
                 }
                 return true;
             }
+            if (pressureActive)
+                return false;
             if (NumericalInputsAccepted()) {
                 if (!finalPrepared) {
                     finalPrepared = true;
@@ -1136,6 +1368,13 @@ class JoltGpuTick::Impl
                 auto &group = control.groups[groupCursor];
                 if (!modelPrepared) {
                     modelUpdate = group.prepareModel ? group.prepareModel() : nullptr;
+                    if (!modelUpdate && group.modelDeferred && group.modelDeferred()) {
+                        submissionBusy = true;
+                        busyOpportunity = work.Opportunity();
+                        busyProgress = work.ProgressSerial();
+                        busySubmissions = host.Queue().GetPendingSubmissionCount();
+                        return false;
+                    }
                     modelPrepared = true;
                     if (modelUpdate)
                         ValidateControlPacket(modelUpdate->GetBatch());
@@ -1225,6 +1464,29 @@ class JoltGpuTick::Impl
                                                                                    NextSpan(stageCursor);
                                                                                    Normalize(stageCursor);
                                                                                }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::CommitArticulationPose) {
+                SelectControlWork(programs.GetArticulations().PreparePose(storage, inputs,
+                                                                          [this] {
+                                                                              NextSpan(stageCursor);
+                                                                              Normalize(stageCursor);
+                                                                          }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::CaptureArticulationRotors ||
+                stageCursor.phase == Phase::ClassifyArticulations) {
+                const auto done = [this] {
+                    NextSpan(stageCursor);
+                    Normalize(stageCursor);
+                };
+                if (stageCursor.phase == Phase::ClassifyArticulations)
+                    reducedGuardWindow = true;
+                SelectControlWork(stageCursor.phase == Phase::CaptureArticulationRotors
+                                      ? programs.GetArticulations().PrepareRotors(storage, inputs, done)
+                                      : programs.GetArticulations().PrepareClassification(storage, inputs, done),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -1365,10 +1627,12 @@ class JoltGpuTick::Impl
             } else if (kind == PacketKind::Stages) {
                 cursor = batchEnd;
                 stageCursor = batchStageEnd;
+                if (GuardConsumersFinished())
+                    reducedGuardWindow = false;
             } else if (kind == PacketKind::FinalWork && !workContinuation) {
                 finalAccepted = true;
             }
-            if (!controlAccepted)
+            if (kind != PacketKind::Pressure && !controlAccepted)
                 FinishControlGroup();
         }
     }
@@ -1410,7 +1674,7 @@ class JoltGpuTick::Impl
 
     bool Advance(bool gpu)
     {
-        if (!admissionEnabled || status != Status::Running)
+        if ((!admissionEnabled || status != Status::Running) && !pressureActive && !PressureRequested())
             return false;
         try {
             if (gpu)
@@ -1440,6 +1704,7 @@ class JoltGpuTick::Impl
     uint64_t snapshotOffset = 0;
     uint64_t snapshotMetadataOffset = 0;
     std::vector<uint8_t> snapshotMetadata;
+    bool snapshotComplete = false;
     std::optional<std::vector<JPH::GPU::BodyForces>> cpuForces;
     JoltGpuStepInputs inputs;
     JoltGpuStepInputs parameterInput;
@@ -1451,6 +1716,11 @@ class JoltGpuTick::Impl
     std::map<JPH::GPU::Stage, UnitHistory> stageEstimates;
     UnitHistory mixedEstimates;
     bool inputAccepted = false;
+    bool reducedGuardWindow = false;
+    bool pressureActive = false, pressureObserved = false, pressureChanged = false;
+    std::function<bool()> pressureObserve, pressurePending;
+    std::function<JoltGpuControlWork(uint32_t, JoltGpuTick::PressureCompletion)> pressurePrepare;
+    std::unique_ptr<PressureSavedWork> suspendedWork;
     bool forceWakePending = false;
     std::shared_ptr<JoltGpuConstraintTopology> constraintTopology;
     std::shared_ptr<const JoltGpuPrescribedSleepBounds> prescribedBounds;
@@ -1510,6 +1780,18 @@ void JoltGpuTick::SetAdmissionEnabled(bool enabled) noexcept
         m_impl->broadphase.ResetCapacityHint();
     if (enabled)
         m_impl->work.Wake(m_impl->sourceId);
+}
+void JoltGpuTick::SetPressureOwner(std::function<bool()> observe, std::function<bool()> pending,
+                                   std::function<JoltGpuControlWork(uint32_t, PressureCompletion)> prepare)
+{
+    m_impl->pressureObserve = std::move(observe);
+    m_impl->pressurePending = std::move(pending);
+    m_impl->pressurePrepare = std::move(prepare);
+    m_impl->work.Wake(m_impl->sourceId);
+}
+bool JoltGpuTick::IsPressureActive() const noexcept
+{
+    return m_impl->pressureActive;
 }
 bool JoltGpuTick::IsAdmissionEnabled() const noexcept
 {

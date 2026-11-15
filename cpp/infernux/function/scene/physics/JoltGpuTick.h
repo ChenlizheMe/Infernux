@@ -13,6 +13,8 @@ namespace infernux
 class JoltGpuBroadphase;
 class JoltGpuNarrowphase;
 class JoltGpuConstraints;
+struct JoltGpuArticulationCapture;
+struct JoltGpuArticulationState;
 
 /// One unaccepted packet and its optional successor.
 /// The existing tick source alone submits, accounts and observes every packet.
@@ -57,6 +59,12 @@ struct JoltGpuControlWork
 struct JoltGpuControlGroup
 {
     std::function<std::unique_ptr<JoltGpuModelUpdate>()> prepareModel;
+    // Explicit null-capacity result, distinct from a metadata-only acceptance.
+    std::function<bool()> modelDeferred;
+    // Only a revoked, unaccepted model transaction may run this cold rebuild.
+    std::function<JoltGpuControlWork()> reprepareModel;
+    // This cold layout's private joint copies must observe converted histories.
+    std::function<void()> retireJointRuntime;
     std::function<void()> modelAccepted;
     std::vector<JPH::GPU::BodyCommand> commands;
     std::function<void(std::vector<JPH::GPU::BodyCommand> &)> materializeCommands;
@@ -122,6 +130,7 @@ struct JoltGpuTickControl
     JoltGpuBodyCommands *commandProgram = nullptr;
     std::vector<JoltGpuControlGroup> groups;
     std::shared_ptr<JoltGpuColliderPairCapture> colliderPairs;
+    std::shared_ptr<JoltGpuArticulationCapture> articulations;
     /// Opt-in producer only, using this tick's existing source and receipts.
     /// Call done exactly once after all phase writers are accepted/completed
     /// as required by their normal queue dependencies. Never submit or wait.
@@ -201,6 +210,12 @@ class JoltGpuTick final
     /// The outer owner has settled receipts and will admit only GPU cleanup
     /// of the cancelled partition before exposing any new numerical tick.
     void ReopenForPartitionCleanup();
+    using PressureCompletion = std::function<void(uint32_t, std::shared_ptr<JoltGpuArticulationState>)>;
+    /// Scene owner hooks; all retirement packets remain in this existing source.
+    /// observe reports real retirement debt or caches requiring serial observation.
+    void SetPressureOwner(std::function<bool()> observe, std::function<bool()> pending,
+                          std::function<JoltGpuControlWork(uint32_t, PressureCompletion)> prepare);
+    [[nodiscard]] bool IsPressureActive() const noexcept;
 
     /// The owning world controls when this source may prepare, submit or wait.
     /// Closing admission retains its cursor and packets; already accepted

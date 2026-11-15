@@ -16,7 +16,9 @@ enum class JoltGpuProgram
     Broadphase,
     Narrowphase,
     Constraints,
-    ContactReports
+    ContactReports,
+    ArticulationCapture,
+    ArticulationDynamics
 };
 
 /// Builtin native programs, embedded from the pinned Jolt fork at build time.

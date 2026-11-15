@@ -318,13 +318,17 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         frozen[Bodies] = inputs.GetCaptured(Resource::BodyModels);
         frozen[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         frozen[Worlds] = contactLease->worlds;
-        frozen[Joints] = storage.Get(Resource::Joints)->Freeze();
+        // Joint directory/activity flags stay fixed under this arena writer.
+        // Warm/rotor retirement changes neither field read by the schedule.
+        frozen[Joints] = storage.Get(Resource::Joints);
         frozen[Patches] = contactLease->patches ? contactLease->patches->Freeze() : nullptr;
         frozen[Contacts] = contactLease->contacts ? contactLease->contacts->Freeze() : nullptr;
         // Topology mode does not read runtime activity. Borrow this live source
         // endpoint so waking after CC cannot COW a stale captured reader.
         frozen[Sleeps] = storage.Get(Resource::SleepStates);
-        for (auto port : {Bodies, Shapes, Worlds, Joints, Patches, Contacts})
+        if (!frozen[Joints] || !implementation->host.SharesServicesWith(frozen[Joints]->GetHost()))
+            throw std::invalid_argument("GPU constraints require their exclusive writer joint stream");
+        for (auto port : {Bodies, Shapes, Worlds, Patches, Contacts})
             ValidateInput(frozen[port]);
         RequireBytes(Bodies, uint64_t(b) * sizeof(BodyModel));
         RequireBytes(Shapes, uint64_t(std::max(1u, storage.GetShapeCount())) * sizeof(ShapeModel));
@@ -810,12 +814,13 @@ JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const Jo
     if (execution->implementation != m_impl || execution->phase != Impl::Execution::Phase::TopologyReady ||
         execution->contactLease != inputs.GetContacts() || storage.GetBodyCount() != topology->bodySlots)
         throw std::logic_error("GPU numerical plan crosses its source/topology generation");
-    // Setup has completed its real accepted writes. Do not reuse the older
-    // topology-phase frozen JointStream/Contact generations across COW.
-    execution->frozen[Joints] = storage.Get(JPH::GPU::Resource::Joints)->Freeze();
+    // Setup has completed its real accepted writes. Observe this writer's live
+    // directory/activity flags; history retirement does not change those flags.
+    execution->frozen[Joints] = storage.Get(JPH::GPU::Resource::Joints);
     execution->frozen[Contacts] = inputs.GetContacts()->contacts->Freeze();
     execution->frozen[Sleeps] = storage.Get(JPH::GPU::Resource::SleepStates)->Freeze();
-    execution->ValidateInput(execution->frozen[Joints]);
+    if (!execution->frozen[Joints] || !storage.GetHost().SharesServicesWith(execution->frozen[Joints]->GetHost()))
+        throw std::invalid_argument("GPU constraints require their exclusive writer joint stream");
     execution->ValidateInput(execution->frozen[Contacts]);
     execution->ValidateInput(execution->frozen[Sleeps]);
     execution->config.select.z = 1u;

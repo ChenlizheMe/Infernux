@@ -335,8 +335,13 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         settingsPorts[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         settingsPorts[AuthorWorlds] = inputs.GetCaptured(Resource::Worlds);
         settingsPorts[Bounds] = storage.Get(Resource::Bounds) ? storage.Get(Resource::Bounds)->Freeze() : nullptr;
-        settingsPorts[Joints] = storage.Get(Resource::Joints)->Freeze();
-        for (auto port : {Bodies, Shapes, AuthorWorlds, Joints})
+        // The exclusive arena writer keeps this topology fixed. Broadphase
+        // reads only joint directory/author metadata, so representation-history
+        // retirement may update runtime words without retaining a COW reader.
+        settingsPorts[Joints] = storage.Get(Resource::Joints);
+        if (!settingsPorts[Joints] || !implementation->host.SharesServicesWith(settingsPorts[Joints]->GetHost()))
+            throw std::invalid_argument("GPU broadphase requires its exclusive writer joint stream");
+        for (auto port : {Bodies, Shapes, AuthorWorlds})
             ValidateInput(settingsPorts[port]);
         if (n)
             ValidateInput(settingsPorts[Bounds]);

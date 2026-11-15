@@ -18,6 +18,10 @@ class JoltGpuPackedLayout final
                         std::vector<uint32_t> previousJointRows);
     [[nodiscard]] JoltGpuControlWork Prepare();
     [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate> Commit();
+    /// After this owner's accepted source reads settle, replay only the joint
+    /// runtime copies whose warm/rotor representation changed. No author remap,
+    /// body copy, initialization or force input is repeated.
+    void InvalidateJointRuntimeCopies() noexcept;
 
   private:
     class Impl;

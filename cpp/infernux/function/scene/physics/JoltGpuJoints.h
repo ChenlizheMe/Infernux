@@ -40,6 +40,9 @@ class JoltGpuJoints final
 {
   public:
     JoltGpuJoints(rhi::ComputeHost &host, const ShaderTargetCode &target);
+    /// An empty stream means managed capacity deferred this unaccepted
+    /// transaction. Validation errors still throw. No private source survives
+    /// a deferred result, so the same author transaction may be prepared again.
     [[nodiscard]] JoltGpuJointReplacement
     PrepareReplacement(const std::vector<JPH::GPU::JointAuthor> &authors, const std::vector<uint32_t> &previousRows,
                        const std::shared_ptr<rhi::ComputeBuffer> &oldStream,
@@ -47,10 +50,11 @@ class JoltGpuJoints final
                        const std::shared_ptr<rhi::ComputeBuffer> &bodyStates) const;
     /// Author settings and coefficient-dependent warm/rotor resets share one
     /// model acceptance boundary. Reference frames and unrelated runtime survive.
-    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate> PrepareUpdate(JoltGpuStorage &storage,
-                                                                    std::vector<JoltGpuJointModelUpdate> changes) const;
+    [[nodiscard]] std::unique_ptr<JoltGpuModelUpdate>
+    PrepareUpdate(JoltGpuStorage &storage, std::vector<JoltGpuJointModelUpdate> changes, bool &deferred) const;
     /// Existing state update entry; does not upload/reinitialize joint authors.
-    [[nodiscard]] JoltGpuJointReplacement PrepareMobilityReset(JoltGpuStorage &storage, uint32_t bodySlot) const;
+    [[nodiscard]] JoltGpuJointReplacement PrepareMobilityReset(JoltGpuStorage &storage, uint32_t bodySlot,
+                                                               bool &deferred) const;
     [[nodiscard]] JoltGpuPreparedJointMotion
     PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication, const std::vector<uint32_t> &rows,
                       uint32_t kind) const;

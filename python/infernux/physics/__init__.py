@@ -126,8 +126,8 @@ class Physics(metaclass=_PhysicsMeta):
 
         Call from the engine thread at the intended fixed-step phase. This
         reads physical poses, not display interpolation, and does not step or
-        synchronize authored transforms. A body without a resident Collider
-        raises instead of returning synthetic state. Arrays are snapshots;
+        synchronize authored transforms. The Rigidbody must be initialized in
+        its physics world; Collider components are optional. Arrays are snapshots;
         modifying them does not modify the physics world.
         """
         native_bodies = [body._require_cpp_component() for body in rigidbodies]
@@ -179,7 +179,7 @@ class Physics(metaclass=_PhysicsMeta):
 
     @staticmethod
     def get_rigidbody_states_and_box_states(rigidbodies, state_out, box_out, *, query_triggers: bool = False):
-        """Upload solver state and BoxCollider descriptors in one GPU submission.
+        """Gather solver state and BoxCollider descriptors in one GPU submission.
 
         This is the combined hot-path contract for GPU physics consumers.  The
         two output dictionaries use the same fields as

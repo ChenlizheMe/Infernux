@@ -12,6 +12,9 @@ struct JoltGpuContactReportResult
         uint32_t substep = 0, capacity = 0;
         bool seeded = false, finished = false;
         std::shared_ptr<rhi::ComputeBuffer> interest, indices, words;
+        // Admitted by BeforeVelocity and reused by AfterVelocity, so reporting
+        // cannot require a new DeviceLocal parameter after reduced commit.
+        std::shared_ptr<rhi::ComputeBuffer> parameters;
         std::vector<JPH::GPU::ContactReportPatch> records;
     };
     std::shared_ptr<const JoltGpuScene::Publication> publication;

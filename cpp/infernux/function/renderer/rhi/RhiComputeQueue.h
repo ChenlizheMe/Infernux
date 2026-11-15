@@ -26,6 +26,9 @@ struct ComputeQueueStatistics
     uint64_t waitCount = 0;
     double cpuSubmitMilliseconds = 0.0;
     double waitMilliseconds = 0.0;
+    // Measured submission spans observed complete since the last statistics reset.
+    uint64_t gpuProfiledSubmissionCount = 0;
+    double gpuElapsedTotalMilliseconds = 0.0;
 };
 
 /// Owner-thread facts shared by a submission and its completion observers.
@@ -141,6 +144,11 @@ class ComputeQueue
     {
         ++m_statistics.submissionCount;
         m_statistics.cpuSubmitMilliseconds += milliseconds;
+    }
+    void RecordGpuProfiledSubmission(double milliseconds) noexcept
+    {
+        ++m_statistics.gpuProfiledSubmissionCount;
+        m_statistics.gpuElapsedTotalMilliseconds += milliseconds;
     }
     void RecordWait(double milliseconds) noexcept
     {

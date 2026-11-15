@@ -315,7 +315,8 @@ JoltGpuStepParameters StepParameters(float dt, const glm::vec3 &gravity)
 
 struct PhysicsWorld::CompiledGpuPrograms
 {
-    ShaderTargetCode step, mutations, commands, broadphase, narrowphase, constraints;
+    ShaderTargetCode step, mutations, commands, broadphase, narrowphase, constraints, articulationCapture,
+        articulationDynamics;
 };
 PhysicsDomain::PhysicsDomain(RuntimeWorld &world) : owner(world), gravity(EngineConfig::Get().physicsGravity)
 {
@@ -428,6 +429,8 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
     if (!m_gpuPrograms) {
         auto p = std::make_unique<CompiledGpuPrograms>();
         p->step = CompileProgram(*m_gpuHost, JoltGpuProgram::Step);
+        p->articulationCapture = CompileProgram(*m_gpuHost, JoltGpuProgram::ArticulationCapture);
+        p->articulationDynamics = CompileProgram(*m_gpuHost, JoltGpuProgram::ArticulationDynamics);
         p->mutations = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyMutations);
         p->commands = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyCommands);
         p->broadphase = CompileProgram(*m_gpuHost, JoltGpuProgram::Broadphase);
@@ -456,7 +459,8 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
                 world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Failed;
                 world.simulation.pausedStepPending = false;
                 world.simulation.isPaused = true;
-            });
+            },
+            &m_gpuPrograms->articulationCapture, &m_gpuPrograms->articulationDynamics);
     }
     if (!m_gpuScene->RegisterPartition(domain.owner, InitialBodyCapacity))
         return false;

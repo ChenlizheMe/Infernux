@@ -790,6 +790,7 @@ void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::
     m_stagingPool.clear();
     m_stagingStats = {};
     m_deviceLocalAllocationPressure = 0;
+    m_managedDeviceLocalPressure = {};
     if (m_lifetime) {
         std::unique_lock lock(m_lifetime->gate);
         m_lifetime->alive.store(false, std::memory_order_release);
@@ -1361,6 +1362,8 @@ bool VulkanRhiDevice::ReclaimStaging(const VkPhysicalDeviceMemoryProperties &mem
         // The renderer can retire unused assets at its frame boundary. The
         // next allocation still checks the actual heap after retirement.
         m_deviceLocalAllocationPressure = (std::max)(m_deviceLocalAllocationPressure, unmetLocal);
+        ++m_managedDeviceLocalPressure.serial;
+        m_managedDeviceLocalPressure.unmetBytes = unmetLocal;
         return false;
     }
 

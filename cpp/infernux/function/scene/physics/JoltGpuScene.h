@@ -177,7 +177,8 @@ class JoltGpuScene final
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
                  const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
                  const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &narrowphaseTarget,
-                 const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints, FailureObserver failureObserver = {});
+                 const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints, FailureObserver failureObserver = {},
+                 const ShaderTargetCode *captureTarget = nullptr, const ShaderTargetCode *dynamicsTarget = nullptr);
     ~JoltGpuScene();
     [[nodiscard]] const std::shared_ptr<JoltGpuGeometryStore> &GetGeometryStore() const noexcept;
     JoltGpuScene(const JoltGpuScene &) = delete;

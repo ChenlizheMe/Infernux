@@ -329,7 +329,13 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareReplacement(const std::vector<Join
     }
     rhi::ComputeHost host = m_host;
     JoltGpuJointReplacement replacement;
-    replacement.stream = Allocate(host, streamBytes);
+    const auto tryAllocate = [&](uint64_t bytes) {
+        return rhi::ComputeBuffer::TryCreatePrivate(host,
+                                                    {bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+    };
+    replacement.stream = tryAllocate(streamBytes);
+    if (!replacement.stream)
+        return {};
     const uint64_t authorEnd = layout->AuthorEndBytes();
     auto prefix = layout->PrefixBytes(authors);
     replacement.updates.push_back({replacement.stream, 0, std::move(prefix)});
@@ -341,15 +347,19 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareReplacement(const std::vector<Join
     buffers[Previous] = oldStream;
     buffers[States] = bodyStates;
     const auto upload = [&](Port port, std::vector<uint8_t> data) {
-        buffers[port] = Allocate(host, data.size());
+        buffers[port] = tryAllocate(data.size());
+        if (!buffers[port])
+            return false;
         replacement.updates.push_back({buffers[port], 0, std::move(data)});
+        return true;
     };
     const JointParams parameters{{static_cast<uint32_t>(authors.size()), static_cast<uint32_t>(oldCount), 0, 0}};
-    upload(Parameters, Bytes(&parameters, 1));
-    upload(Remap, Bytes(previousRows.data(), previousRows.size()));
+    if (!upload(Parameters, Bytes(&parameters, 1)) || !upload(Remap, Bytes(previousRows.data(), previousRows.size())))
+        return {};
     if (!oldStream) {
         const UInt4 emptyHeader{0, 1, 1, 0};
-        upload(Previous, Bytes(&emptyHeader, 1));
+        if (!upload(Previous, Bytes(&emptyHeader, 1)))
+            return {};
     }
     const auto &program = m_programs[Initialize];
     rhi::ComputeDispatchDesc dispatch;
@@ -371,8 +381,10 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareReplacement(const std::vector<Join
 }
 
 std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage &storage,
-                                                                 std::vector<JoltGpuJointModelUpdate> changes) const
+                                                                 std::vector<JoltGpuJointModelUpdate> changes,
+                                                                 bool &deferred) const
 {
+    deferred = false;
     if (!m_host.SharesServicesWith(storage.GetHost()))
         throw std::invalid_argument("Jolt GPU joint updates belong to a different compute owner");
     const auto &accepted = storage.GetModel().joints;
@@ -499,12 +511,18 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
     buffers[States] = states->Freeze();
     std::vector<rhi::ComputeBufferUpdate> uploads;
     const auto upload = [&](Port port, std::vector<uint8_t> data) {
-        buffers[port] = Allocate(host, data.size());
+        buffers[port] = rhi::ComputeBuffer::TryCreatePrivate(
+            host, {data.size() / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+        if (!buffers[port])
+            return false;
         uploads.push_back({buffers[port], 0, std::move(data)});
+        return true;
     };
     const JointParams parameters{{static_cast<uint32_t>(accepted.size()), 0, static_cast<uint32_t>(requestCount), 0}};
-    upload(Parameters, Bytes(&parameters, 1));
-    upload(Rows, Bytes(rows.data(), rows.size()));
+    if (!upload(Parameters, Bytes(&parameters, 1)) || !upload(Rows, Bytes(rows.data(), rows.size()))) {
+        deferred = true;
+        return {};
+    }
     const auto &program = m_programs[UpdateState];
     rhi::ComputeDispatchDesc dispatch;
     dispatch.kernel = program.kernel;
@@ -537,8 +555,10 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
     dispatches.push_back(std::move(dispatch));
     return storage.PrepareModelUpdate({}, {}, std::move(uploads), std::move(dispatches), std::move(changes));
 }
-JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &storage, uint32_t bodySlot) const
+JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &storage, uint32_t bodySlot,
+                                                            bool &deferred) const
 {
+    deferred = false;
     if (!m_host.SharesServicesWith(storage.GetHost()))
         throw std::invalid_argument("Mobility reset belongs to a different compute owner");
     const auto &accepted = storage.GetModel().joints;
@@ -567,12 +587,18 @@ JoltGpuJointReplacement JoltGpuJoints::PrepareMobilityReset(JoltGpuStorage &stor
     buffers[States] = states->Freeze();
     std::vector<rhi::ComputeBufferUpdate> uploads;
     const auto upload = [&](Port port, std::vector<uint8_t> data) {
-        buffers[port] = Allocate(host, data.size());
+        buffers[port] = rhi::ComputeBuffer::TryCreatePrivate(
+            host, {data.size() / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+        if (!buffers[port])
+            return false;
         uploads.push_back({buffers[port], 0, std::move(data)});
+        return true;
     };
     const JointParams parameters{{static_cast<uint32_t>(accepted.size()), 0, static_cast<uint32_t>(requestCount), 0}};
-    upload(Parameters, Bytes(&parameters, 1));
-    upload(Rows, Bytes(rows.data(), rows.size()));
+    if (!upload(Parameters, Bytes(&parameters, 1)) || !upload(Rows, Bytes(rows.data(), rows.size()))) {
+        deferred = true;
+        return {};
+    }
     const auto &program = m_programs[UpdateState];
     rhi::ComputeDispatchDesc dispatch;
     dispatch.kernel = program.kernel;

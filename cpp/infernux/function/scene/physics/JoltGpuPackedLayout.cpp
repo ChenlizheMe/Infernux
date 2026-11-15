@@ -61,7 +61,10 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
             source[i] = port ? port->Freeze() : nullptr;
         }
         const auto &stream = storage.Get(Resource::Joints);
-        oldJoints = stream ? stream->Freeze() : nullptr;
+        // The sole writer retains this topology until Commit. Representation
+        // retirement may change its runtime; InvalidateJointRuntimeCopies then
+        // replays those copies before this private transaction can commit.
+        oldJoints = stream;
     }
 
     bool Capacity()
@@ -95,6 +98,14 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
     JoltGpuControlWork Next()
     {
         using namespace JPH::GPU;
+        if (replayJoints) {
+            copyPort = std::min(copyPort, candidates.size());
+            if (copyPort == candidates.size()) {
+                copyRun = 0;
+                copyOffset = 0;
+            }
+            replayJoints = false;
+        }
         if (!Capacity())
             return Retry();
         if (!jointPrepared) {
@@ -150,7 +161,8 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
         if (!copies.empty())
             return Follow(rhi::PrepareComputeBatch(host, {}, {}, {}, std::move(copies)));
         source = {};
-        oldJoints.reset();
+        // Keep the borrowed endpoint until Commit: a pressure barrier may
+        // invalidate a completed private joint copy before model acceptance.
         ready = true;
         return {};
     }
@@ -200,7 +212,7 @@ class JoltGpuPackedLayout::Impl : public std::enable_shared_from_this<Impl>
     uint32_t initialized = 0;
     size_t copyPort = 0, copyRun = 0;
     uint64_t copyOffset = 0;
-    bool started = false, ready = false, jointPrepared = false, committed = false;
+    bool started = false, ready = false, jointPrepared = false, committed = false, replayJoints = false;
 };
 
 JoltGpuPackedLayout::JoltGpuPackedLayout(JoltGpuStorage &storage, JoltGpuBodyMutations &mutations, FrameWorkOwner &work,
@@ -217,5 +229,12 @@ JoltGpuControlWork JoltGpuPackedLayout::Prepare()
 std::unique_ptr<JoltGpuModelUpdate> JoltGpuPackedLayout::Commit()
 {
     return m_impl->Commit();
+}
+void JoltGpuPackedLayout::InvalidateJointRuntimeCopies() noexcept
+{
+    if (!m_impl->committed) {
+        m_impl->replayJoints = true;
+        m_impl->ready = false;
+    }
 }
 } // namespace infernux

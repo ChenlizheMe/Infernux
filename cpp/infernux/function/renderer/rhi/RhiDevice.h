@@ -19,7 +19,7 @@ namespace infernux::rhi
 /// RHI ABI version. The major component changes whenever a plugin must be
 /// rebuilt; the minor component is for additive contracts understood by the
 /// existing device vtable.
-inline constexpr uint32_t kRhiApiVersionMajor = 5;
+inline constexpr uint32_t kRhiApiVersionMajor = 6;
 inline constexpr uint32_t kRhiApiVersionMinor = 0;
 inline constexpr uint32_t kRhiApiVersion = (kRhiApiVersionMajor << 16u) | kRhiApiVersionMinor;
 
@@ -112,6 +112,15 @@ struct DeviceLifetime final
     // probes, but is not used as a release-vs-teardown synchronization point.
     mutable std::shared_mutex gate;
     std::atomic<bool> alive{true};
+};
+
+/// Historical managed occupancy pressure, observed on the device owner thread.
+/// Readers keep their own serial; observation never consumes another owner's fact.
+/// The next allocation still checks actual capacity, not this historical deficit.
+struct ManagedDeviceLocalPressure
+{
+    uint64_t serial = 0;
+    uint64_t unmetBytes = 0;
 };
 
 /// Backend-neutral resource creation surface. Runtime systems retain only
@@ -222,6 +231,14 @@ class Device
     virtual void Release(BindGroupHandle handle) noexcept = 0;
     virtual void Release(GraphicsPipelineHandle handle) noexcept = 0;
     virtual void Release(ComputePipelineHandle handle) noexcept = 0;
+
+    // Append new virtual contracts so existing version/capability probe slots
+    // stay in their original order. ABI 6 requires the current native modules
+    // to be rebuilt together; it does not support mixed-version execution.
+    [[nodiscard]] virtual ManagedDeviceLocalPressure ObserveManagedDeviceLocalPressure() const noexcept
+    {
+        return {};
+    }
 };
 
 /// Validate the seam before renderer-specific resources are created. The

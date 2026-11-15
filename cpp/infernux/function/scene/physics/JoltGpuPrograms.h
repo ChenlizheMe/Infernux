@@ -17,6 +17,8 @@ namespace infernux
 {
 class JoltGpuGeometryStore;
 class JoltGpuSleep;
+class JoltGpuArticulations;
+struct JoltGpuArticulationState;
 struct JoltGpuGeometryLease;
 // Native-only lifetime identity: (Collider A ID/generation, B ID/generation).
 // Canonical endpoint order is unsigned component ID, then generation.
@@ -95,6 +97,7 @@ struct JoltGpuConstraintWorkset
     uint32_t activeJoints = 0, activePatches = 0, maxJointItems = 0, maxPatchItems = 0;
     std::shared_ptr<rhi::ComputeBuffer> schedule;
     uint32_t bodyRootFirst = 0, bodySlots = 0;
+    uint32_t jointRefFirst = 0, jointRefCount = 0, patchRefFirst = 0, patchRefCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> rootVotes;
 };
 
@@ -341,6 +344,14 @@ class JoltGpuStepInputs
     {
         return m_colliderPairs;
     }
+    void SetArticulations(std::shared_ptr<JoltGpuArticulationState> value) noexcept
+    {
+        m_articulations = std::move(value);
+    }
+    [[nodiscard]] const std::shared_ptr<JoltGpuArticulationState> &GetArticulations() const noexcept
+    {
+        return m_articulations;
+    }
     void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
     void ClearContacts() noexcept;
     [[nodiscard]] const std::shared_ptr<const JoltGpuContactWorkset> &GetContacts() const noexcept
@@ -369,6 +380,7 @@ class JoltGpuStepInputs
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
     std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
+    std::shared_ptr<JoltGpuArticulationState> m_articulations;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
     mutable std::vector<WorkUniform> m_workUniforms;
@@ -380,10 +392,16 @@ class JoltGpuStepInputs
 class JoltGpuPrograms
 {
   public:
-    JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target);
+    JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target,
+                    const ShaderTargetCode *captureTarget = nullptr, const ShaderTargetCode *dynamicsTarget = nullptr);
     [[nodiscard]] JoltGpuSleep &GetSleep() const noexcept
     {
         return *m_sleep;
+    }
+
+    [[nodiscard]] JoltGpuArticulations &GetArticulations() const noexcept
+    {
+        return *m_articulations;
     }
 
     /// Prepare one dependency-ordered ready prefix, including repeated solver
@@ -425,6 +443,8 @@ class JoltGpuPrograms
     static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
     std::shared_ptr<JoltGpuSleep> m_sleep;
+    std::shared_ptr<JoltGpuArticulations> m_articulations;
+    std::shared_ptr<rhi::ComputeBuffer> m_emptyArticulationControl;
     std::array<Entry, StageCount> m_entries;
 };
 

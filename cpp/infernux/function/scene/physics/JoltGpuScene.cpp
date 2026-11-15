@@ -1,4 +1,5 @@
 #include "JoltGpuScene.h"
+#include "JoltGpuArticulations.h"
 #include "JoltGpuSleep.h"
 
 #include "JoltGpuBodyMutations.h"
@@ -104,6 +105,7 @@ class JoltGpuScene::Impl
         std::shared_ptr<const PhysicsColliderPairs> acceptedPairs = std::make_shared<const PhysicsColliderPairs>();
         std::shared_ptr<const PhysicsColliderPairs> queuedPairs;
         std::shared_ptr<const JoltGpuColliderPairs> pairCache;
+        std::shared_ptr<JoltGpuArticulationState> articulationCache;
         JoltGpuTick::Status status = JoltGpuTick::Status::Idle;
         uint64_t tickSerial = 0, controlSerial = 0, observedTick = 0, observedControl = 0;
         bool admission = true, closed = false, cleanup = false, retiring = false, retired = false;
@@ -335,17 +337,69 @@ class JoltGpuScene::Impl
     Impl(rhi::ComputeHost &host, FrameWorkOwner &budget, const ShaderTargetCode &stepTarget,
          const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
          const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &narrowphaseTarget,
-         const ShaderTargetCode &constraintTarget, JoltGpuJoints &jointProgram, FailureObserver onFailure)
+         const ShaderTargetCode &constraintTarget, JoltGpuJoints &jointProgram, FailureObserver onFailure,
+         const ShaderTargetCode *captureTarget, const ShaderTargetCode *dynamicsTarget)
         : actors(PhysicsECSStore::Instance()), work(budget), geometry(std::make_shared<JoltGpuGeometryStore>(host)),
-          storage(host, JoltGpuModel{}), programs(host, stepTarget), broadphase(host, broadphaseTarget),
-          narrowphase(host, narrowphaseTarget), constraints(host, constraintTarget), mutations(host, mutationTarget),
-          commands(host, commandTarget), joints(jointProgram), failureObserver(std::move(onFailure)),
+          storage(host, JoltGpuModel{}), programs(host, stepTarget, captureTarget, dynamicsTarget),
+          broadphase(host, broadphaseTarget), narrowphase(host, narrowphaseTarget), constraints(host, constraintTarget),
+          mutations(host, mutationTarget), commands(host, commandTarget), joints(jointProgram),
+          failureObserver(std::move(onFailure)),
           tick(budget, storage, programs, broadphase, narrowphase, constraints, [this] {
-              if (writer && failureObserver)
-                  failureObserver(*writer->world);
+              const auto *owner = writer ? writer : pressureDomain;
+              if (owner && failureObserver)
+                  failureObserver(*owner->world);
           })
     {
         storage.SetGeometryStore(geometry);
+        tick.SetPressureOwner([this] { return ObservePressure(); }, [this] { return pressurePending; },
+                              [this](uint32_t witnessWorld, auto completed) {
+                                  return PreparePressureRetirement(witnessWorld, std::move(completed));
+                              });
+    }
+
+    bool ObservePressure()
+    {
+        const bool hasCache = std::any_of(ordered.begin(), ordered.end(), [](const auto *domain) {
+            const auto state = domain ? domain->articulationCache : nullptr;
+            return state && !state->resourceDeclined && (!state->trees.empty() || state->numeric);
+        });
+        const auto fact = storage.GetHost().device.ObserveManagedDeviceLocalPressure();
+        if (fact.serial != observedPressure) {
+            observedPressure = fact.serial;
+            if (hasCache || pressurePending) {
+                if (!pressurePending)
+                    pressureCursor = 0;
+                pressurePending = true;
+            }
+        }
+        return pressurePending || hasCache;
+    }
+
+    JoltGpuControlWork PreparePressureRetirement(uint32_t witnessWorld, JoltGpuTick::PressureCompletion completed)
+    {
+        while (pressureCursor < ordered.size()) {
+            auto *domain = ordered[pressureCursor];
+            const auto state = domain ? domain->articulationCache : nullptr;
+            if (!state || state->resourceDeclined || (state->trees.empty() && !state->numeric)) {
+                ++pressureCursor;
+                continue;
+            }
+            // Advance this cursor only at completed conversion. Cancellation
+            // retains the same origin so a later sweep can resume idempotently.
+            pressureDomain = domain;
+            return Then(programs.GetArticulations().PreparePressureDeclined(storage, state, domain->row == witnessWorld,
+                                                                            [this, domain, completed](auto empty) {
+                                                                                domain->articulationCache = empty;
+                                                                                completed(domain->row,
+                                                                                          std::move(empty));
+                                                                                ++pressureCursor;
+                                                                                pressureDomain = nullptr;
+                                                                            }),
+                        [this, witnessWorld, completed] { return PreparePressureRetirement(witnessWorld, completed); });
+        }
+        pressurePending = false;
+        pressureDomain = nullptr;
+        return {};
     }
 
     Partition &Domain(const RuntimeWorld &world) const
@@ -439,8 +493,12 @@ class JoltGpuScene::Impl
             if (slots[byId.at(record.value.bodyIdA)].partition == &domain)
                 own->push_back(record.value);
         auto catalog = std::make_shared<std::vector<PublishedJoint>>();
+        auto deferred = std::make_shared<bool>(false);
         JoltGpuControlGroup group;
-        group.prepareModel = [this, own, catalog, &domain] {
+        group.modelDeferred = [deferred] { return *deferred; };
+        group.prepareModel = [this, own, catalog, deferred, &domain]() -> std::unique_ptr<JoltGpuModelUpdate> {
+            catalog->clear();
+            *deferred = false;
             for (const auto &joint : acceptedJoints)
                 if (joint.author.identity.z != domain.row)
                     catalog->push_back(joint);
@@ -469,6 +527,10 @@ class JoltGpuScene::Impl
             auto prepared =
                 joints.PrepareReplacement(authors, remap, storage.Get(Resource::Joints)->Freeze(),
                                           storage.GetJointLayout(), storage.Get(Resource::BodyStates)->Freeze());
+            if (!prepared.stream) {
+                *deferred = true;
+                return {};
+            }
             return storage.PrepareJointReplacement(std::move(authors), std::move(prepared.stream),
                                                    std::move(prepared.updates), std::move(prepared.dispatches));
         };
@@ -550,7 +612,9 @@ class JoltGpuScene::Impl
             if (captured.runtimeIntent & JointResetPoseDrive)
                 authoredJoints.at(captured.value.id).poseDrive.reset();
         }
-        group.prepareModel = [this, values] {
+        auto deferred = std::make_shared<bool>(false);
+        group.modelDeferred = [deferred] { return *deferred; };
+        group.prepareModel = [this, values, deferred] {
             std::vector<JoltGpuJointModelUpdate> changes;
             changes.reserve(values->size());
             for (auto &captured : *values) {
@@ -562,7 +626,7 @@ class JoltGpuScene::Impl
                 value.author.identity.z = slots[byId.at(value.bodyIdA)].partition->row;
                 changes.push_back({value.row, value.author, captured.runtimeIntent});
             }
-            return joints.PrepareUpdate(storage, std::move(changes));
+            return joints.PrepareUpdate(storage, std::move(changes), *deferred);
         };
         group.modelAccepted = [this, values]() noexcept {
             for (const auto &captured : *values)
@@ -712,6 +776,11 @@ class JoltGpuScene::Impl
                                                                  (*plan)->bodies, (*plan)->joints);
             return (*transaction)->Prepare();
         };
+        prepare.retireJointRuntime = [transaction] {
+            if (*transaction)
+                (*transaction)->InvalidateJointRuntimeCopies();
+        };
+        commit.reprepareModel = prepare.prepareWork;
         commit.prepareModel = [transaction] { return (*transaction)->Commit(); };
         commit.modelAccepted = [this, plan]() noexcept {
             for (const auto &[record, identity] : (*plan)->identities)
@@ -945,7 +1014,10 @@ class JoltGpuScene::Impl
         pendingCompletions.reserve(pendingCompletions.size() + 2);
 
         JoltGpuControlGroup group;
-        group.prepareModel = [this, change] {
+        auto deferred = std::make_shared<bool>(false);
+        group.modelDeferred = [deferred] { return *deferred; };
+        group.prepareModel = [this, change, deferred]() -> std::unique_ptr<JoltGpuModelUpdate> {
+            *deferred = false;
             RequireOwnership(change->slot, change->bodyId);
             const uint32_t packed = Packed(change->slot);
             change->identity->slot = packed;
@@ -975,7 +1047,10 @@ class JoltGpuScene::Impl
                  acceptedBody.mass.z != change->model.mass.z ||
                  different(acceptedBody.invInertiaDiagonal, change->model.invInertiaDiagonal) ||
                  different(acceptedBody.inertiaRotation, change->model.inertiaRotation));
-            auto warm = mobilityChanged ? joints.PrepareMobilityReset(storage, packed) : JoltGpuJointReplacement{};
+            auto warm =
+                mobilityChanged ? joints.PrepareMobilityReset(storage, packed, *deferred) : JoltGpuJointReplacement{};
+            if (*deferred)
+                return {};
             std::vector<uint8_t> sleepAuthor(sizeof(change->sleep));
             std::memcpy(sleepAuthor.data(), &change->sleep, sizeof(change->sleep));
             warm.updates.push_back({storage.Get(Resource::SleepStates), uint64_t(packed) * sizeof(BodySleepRecord),
@@ -1234,6 +1309,7 @@ class JoltGpuScene::Impl
     {
         auto publication = std::make_shared<Publication>();
         auto pairCapture = std::make_shared<JoltGpuColliderPairCapture>();
+        auto articulationCapture = std::make_shared<JoltGpuArticulationCapture>();
         publication->worldId = domain.id;
         publication->worldRow = domain.row;
         publication->simulationEpoch = epoch;
@@ -1247,6 +1323,9 @@ class JoltGpuScene::Impl
                 prefix->push_back({slots[index].bodyId, slots[index].queuedTarget});
         auto completions = std::make_shared<std::vector<TargetCompletion>>(domain.pendingCompletions);
         completions->reserve(completions->size() + 2u * prefix->size());
+        const bool acceptedStateIntent = std::any_of(domain.pending.begin(), domain.pending.end(), [](const auto &g) {
+            return bool(g.prepareModel) || !g.commands.empty();
+        });
         JoltGpuControlGroup capture;
         capture.prepareModel = [this, &domain, publication, prefix, completions,
                                 controlOnly]() -> std::unique_ptr<JoltGpuModelUpdate> {
@@ -1276,7 +1355,7 @@ class JoltGpuScene::Impl
             }
             return {};
         };
-        capture.prepareWork = [this, &domain, publication, pairCapture] {
+        capture.prepareWork = [this, &domain, publication, pairCapture, articulationCapture, acceptedStateIntent] {
             JoltGpuGeometryHandles records;
             for (uint32_t slot = publication->bodyBase; slot < uint64_t(publication->bodyBase) + publication->bodyCount;
                  ++slot)
@@ -1294,8 +1373,19 @@ class JoltGpuScene::Impl
                                                      storage.SetGeometry(std::move(lease),
                                                                          publication->hasGenericGeometry);
                                                  }),
-                        [this, &domain, publication, pairCapture] {
-                            return PrepareColliderPairs(domain, publication, pairCapture);
+                        [this, &domain, publication, pairCapture, articulationCapture, acceptedStateIntent] {
+                            return Then(PrepareColliderPairs(domain, publication, pairCapture),
+                                        [this, &domain, publication, articulationCapture, acceptedStateIntent] {
+                                            articulationCapture->preparing = true;
+                                            return programs.GetArticulations().PrepareAccepted(
+                                                storage, domain.row, publication->directory, domain.articulationCache,
+                                                [&domain, articulationCapture](auto state) {
+                                                    articulationCapture->preparing = false;
+                                                    domain.articulationCache = state;
+                                                    articulationCapture->value = std::move(state);
+                                                },
+                                                acceptedStateIntent);
+                                        });
                         });
         };
         domain.pending.push_back(std::move(capture));
@@ -1340,6 +1430,7 @@ class JoltGpuScene::Impl
             return sources;
         };
         control.colliderPairs = pairCapture;
+        control.articulations = articulationCapture;
         control.commandProgram = &commands;
         control.prepareContactReport = std::move(reports.phase);
         control.groups = std::move(domain.pending);
@@ -1407,7 +1498,7 @@ class JoltGpuScene::Impl
                   ContactObserverFactory prepareContacts = {}, ParticipantFactory prepareParticipants = {})
     {
         Service();
-        if (writer || domain.closed || !domain.admission)
+        if (writer || domain.closed || !domain.admission || tick.IsPressureActive())
             return false;
         auto finalConsumer = prepareFinalConsumer();
         auto control = PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer),
@@ -1610,6 +1701,18 @@ class JoltGpuScene::Impl
 
     void Service()
     {
+        // An idle pressure sweep also owns this shared Tick source. It is not
+        // a second Scene writer and cannot overlap a new layout/cleanup writer.
+        if (tick.IsPressureActive())
+            return;
+        if (!writer && pressureDomain &&
+            (tick.GetStatus() == JoltGpuTick::Status::Failed || tick.GetStatus() == JoltGpuTick::Status::Cancelled)) {
+            // Idle retirement has the same fatal-owner/receipt cleanup path as
+            // an ordinary writer; a failed source must not become unreopenable.
+            writer = pressureDomain;
+            writerKind = WriterKind::Cancelled;
+            Cancel(*writer);
+        }
         if (writer &&
             (tick.GetStatus() == JoltGpuTick::Status::Failed || tick.GetStatus() == JoltGpuTick::Status::Cancelled) &&
             writerKind != WriterKind::Cancelled)
@@ -1620,9 +1723,13 @@ class JoltGpuScene::Impl
             if (tick.GetStatus() == JoltGpuTick::Status::Cancelled || tick.GetStatus() == JoltGpuTick::Status::Failed)
                 tick.ReopenForPartitionCleanup();
             writer = nullptr;
+            pressureDomain = nullptr;
         }
         if (writer && tick.IsComplete()) {
             if (writerKind == WriterKind::Cleanup) {
+                // Complete follows every accepted cleanup receipt. Do not drop
+                // the old numeric tail at the earlier modelAccepted callback.
+                writer->articulationCache.reset();
                 writer->cleanup = false;
                 writer->status = JoltGpuTick::Status::Cancelled;
                 writer = nullptr;
@@ -1643,11 +1750,20 @@ class JoltGpuScene::Impl
                 continue;
             if (!domain->cleanup && (!domain->retiring || domain->retired))
                 continue;
+            // No shared writer remains, and Cancel's accepted receipts passed
+            // CanRetire above. Cleanup prevents reopen and removes every native
+            // row of this World, so its old representation has no future reader.
+            // Release before topology/reset allocations, not after they succeed.
+            if (domain->cleanup)
+                domain->articulationCache.reset();
             const auto &worlds = storage.GetModel().worlds;
             const bool noNumericalRange =
                 domain->row >= worlds.size() || (!worlds[domain->row].bodies.y && !worlds[domain->row].leaves.w);
             if (noNumericalRange) {
                 ReleaseRecords(*domain);
+                // No writer remains here: any cancelled source already passed
+                // CanRetire above, including worlds with no cleanup GPU range.
+                domain->articulationCache.reset();
                 domain->cleanup = false;
                 if (domain->retiring) {
                     domain->retired = true;
@@ -1697,7 +1813,11 @@ class JoltGpuScene::Impl
     std::vector<Partition *> ordered;
     std::vector<uint32_t> freeRows;
     Partition *writer = nullptr;
+    Partition *pressureDomain = nullptr;
     WriterKind writerKind = WriterKind::Control;
+    uint64_t observedPressure = 0;
+    size_t pressureCursor = 0;
+    bool pressurePending = false;
     std::shared_ptr<Publication> candidate;
     std::shared_ptr<std::vector<TargetCompletion>> candidateCompletions;
     // Entire backend shutdown drains this one source; domain retirement never
@@ -1710,9 +1830,11 @@ JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const S
                            const ShaderTargetCode &mutationTarget, const ShaderTargetCode &commandTarget,
                            const ShaderTargetCode &broadphaseTarget, const ShaderTargetCode &narrowphaseTarget,
                            const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints,
-                           FailureObserver failureObserver)
+                           FailureObserver failureObserver, const ShaderTargetCode *captureTarget,
+                           const ShaderTargetCode *dynamicsTarget)
     : m_impl(std::make_unique<Impl>(host, work, stepTarget, mutationTarget, commandTarget, broadphaseTarget,
-                                    narrowphaseTarget, constraintTarget, joints, std::move(failureObserver)))
+                                    narrowphaseTarget, constraintTarget, joints, std::move(failureObserver),
+                                    captureTarget, dynamicsTarget))
 {
 }
 JoltGpuScene::~JoltGpuScene() = default;
@@ -1956,7 +2078,8 @@ bool JoltGpuScene::TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &value, 
 {
     m_impl->Service();
     auto &domain = m_impl->Domain(world);
-    if (m_impl->writer || domain.closed || !domain.admission || domain.row >= m_impl->storage.GetWorldCount())
+    if (m_impl->writer || domain.closed || !domain.admission || m_impl->tick.IsPressureActive() ||
+        domain.row >= m_impl->storage.GetWorldCount())
         return false;
     JoltGpuTickControl control;
     control.needsSnapshot = needsSnapshot;

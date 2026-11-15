@@ -1,6 +1,7 @@
 #include "JoltGpuPrograms.h"
 #include <Jolt/Jolt.h>
 #include <Jolt/Geometry/AABox.h>
+#include "JoltGpuArticulations.h"
 #include "JoltGpuGeometryStore.h"
 #include "JoltGpuSleep.h"
 #include "JoltGpuSleepLayout.h"
@@ -139,6 +140,7 @@ constexpr Port Ports[] = {
     {Resource::StageWork, "stage_work", sizeof(StageWork), {"range"}, 1},
     {Resource::ConstraintSchedule, "constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1},
     {Resource::ConvexGeometry, "convex_geometry", sizeof(UInt4), {}, 1},
+    {Resource::ArticulationControl, "articulation_control", sizeof(QueryRecordWord), {"value"}, 1},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
@@ -177,6 +179,8 @@ constexpr size_t PortIndex(Resource resource)
         return 13;
     case Resource::ConvexGeometry:
         return 14;
+    case Resource::ArticulationControl:
+        return 15;
     case Resource::SleepStates:
         return 11;
     }
@@ -242,8 +246,8 @@ constexpr bool IndexedDefinitions()
     return true;
 }
 
-static_assert(PortCount == StoragePortCount + 3,
-              "Jolt GPU has twelve persistent ports, work/schedule and shared cold geometry");
+static_assert(PortCount == StoragePortCount + 4,
+              "Jolt GPU has twelve persistent ports and four producer-owned virtual views");
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -1207,9 +1211,14 @@ void JoltGpuStepInputs::ClearConstraints() noexcept
     m_constraints.reset();
 }
 
-JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
+JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target,
+                                 const ShaderTargetCode *captureTarget, const ShaderTargetCode *dynamicsTarget)
+    : m_host(host)
 {
     m_sleep = std::make_shared<JoltGpuSleep>(host, target);
+    m_emptyArticulationControl = Allocate(m_host, PortIndex(Resource::ArticulationControl), ArtControlHeaderBytes);
+    m_articulations =
+        std::make_shared<JoltGpuArticulations>(host, target, m_emptyArticulationControl, captureTarget, dynamicsTarget);
     for (const auto &definition : Stages) {
         const auto code = std::find_if(target.entries.begin(), target.entries.end(),
                                        [&](const auto &entry) { return entry.name == definition.entry; });
@@ -1287,23 +1296,29 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
         const auto input = InputIndex(resource);
         const auto &contacts = resident ? resident : inputs.GetContacts();
         const auto &constraints = inputs.GetConstraints();
-        const auto &buffer = resource == Resource::ConvexGeometry ? inputs.GetCaptured(resource)
-                             : resource == Resource::StageWork    ? workUniform
-                             : resource == Resource::ConstraintSchedule
-                                 ? (constraints ? constraints->schedule : nullptr)
-                             : contacts && resource == Resource::StepParams     ? contacts->parameters
-                             : contacts && resource == Resource::Worlds         ? contacts->worlds
-                             : contacts && resource == Resource::Contacts       ? contacts->contacts
-                             : contacts && resource == Resource::ContactPatches ? contacts->patches
-                             : !writer && input < inputs.m_buffers.size()       ? inputs.m_buffers[input]
-                                                                                : storage.m_buffers[binding.slot];
+        const auto &buffer =
+            resource == Resource::ArticulationControl
+                ? (inputs.m_articulations ? inputs.m_articulations->control : m_emptyArticulationControl)
+            : resource == Resource::ConvexGeometry             ? inputs.GetCaptured(resource)
+            : resource == Resource::StageWork                  ? workUniform
+            : resource == Resource::ConstraintSchedule         ? (constraints ? constraints->schedule : nullptr)
+            : contacts && resource == Resource::StepParams     ? contacts->parameters
+            : contacts && resource == Resource::Worlds         ? contacts->worlds
+            : contacts && resource == Resource::Contacts       ? contacts->contacts
+            : contacts && resource == Resource::ContactPatches ? contacts->patches
+            : !writer && input < inputs.m_buffers.size()       ? inputs.m_buffers[input]
+                                                               : storage.m_buffers[binding.slot];
         if (!buffer || !m_host.SharesServicesWith(buffer->GetHost()))
             throw std::invalid_argument("Jolt GPU stage requires captured input: " +
                                         std::string(Ports[binding.slot].name));
         dispatch.buffers.push_back(buffer);
         dispatch.bufferAccesses.push_back(binding.access);
         if (binding.read) {
-            if (resource == Resource::ConvexGeometry) {
+            if (resource == Resource::ArticulationControl) {
+                proof.reads.push_back(
+                    {static_cast<uint32_t>(index), 0,
+                     inputs.m_articulations ? inputs.m_articulations->header.storage.z : ArtControlHeaderBytes});
+            } else if (resource == Resource::ConvexGeometry) {
                 for (const auto &[first, end] : inputs.m_geometry->wordRanges)
                     proof.reads.push_back(
                         {static_cast<uint32_t>(index), first * sizeof(UInt4), (end - first) * sizeof(UInt4)});
@@ -1426,6 +1441,13 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const 
                 }
             }
             uniform = uniforms.emplace(key, std::move(buffer)).first;
+        }
+        if ((entry.definition.reads & Mask(Resource::ArticulationControl)) && !inputs.m_articulations &&
+            !m_emptyArticulationControl->HasInitializedRange(0, ArtControlHeaderBytes) &&
+            std::none_of(uploads.begin(), uploads.end(),
+                         [&](const auto &u) { return u.buffer == m_emptyArticulationControl; })) {
+            const ArticulationControlHeader empty{{0, 0, 0, 0}, {0, 48, 48, 48}, {48, 48, 48, 48}};
+            uploads.push_back({m_emptyArticulationControl, 0, Bytes(&empty, 1)});
         }
         dispatches.push_back(BuildDispatch(entry, storage, inputs, unit, uniform->second));
     }

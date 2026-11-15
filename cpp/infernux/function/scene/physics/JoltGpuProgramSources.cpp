@@ -9,6 +9,12 @@ namespace infernux
 ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program)
 {
     switch (program) {
+    case JoltGpuProgram::ArticulationCapture:
+        return {"jph_gpu_articulation_capture", "Jolt/GPU/Shaders/articulation_normal_capture.slang",
+                jolt_gpu_sources::ArticulationNormalCapture};
+    case JoltGpuProgram::ArticulationDynamics:
+        return {"jph_gpu_articulation_dynamics_owner", "Jolt/GPU/Shaders/articulation_normal_dynamics.slang",
+                jolt_gpu_sources::ArticulationNormalDynamics};
     case JoltGpuProgram::Step:
         return {JPH::GPU::StepModuleName, JPH::GPU::StepSourcePath, jolt_gpu_sources::Step};
     case JoltGpuProgram::Broadphase:
@@ -44,6 +50,24 @@ std::vector<ShaderSourceModule> GetJoltGpuProgramLibraries()
         {"jph_gpu_rigid_math", "Jolt/GPU/Shaders/rigid_math.slang", jolt_gpu_sources::Math},
         {"jph_gpu_joint_fields", "Jolt/GPU/JointPayloadFields.inl", jolt_gpu_sources::JointFields},
         {"jph_gpu_physics_types", "Jolt/GPU/PhysicsTypes.h", jolt_gpu_sources::Types},
+        {"jph_gpu_articulation_integration_types", "Jolt/GPU/ArticulationIntegrationTypes.h",
+         jolt_gpu_sources::ArticulationIntegrationTypes},
+        {"jph_gpu_state_fk_types", "Jolt/GPU/StateFkTypes.h", jolt_gpu_sources::StateFkTypes},
+        {"jph_gpu_articulation_dynamics_types", "Jolt/GPU/ArticulationDynamicsTypes.h",
+         jolt_gpu_sources::ArticulationDynamicsTypes},
+        {"jph_gpu_articulation_aba", "Jolt/GPU/Shaders/articulation_aba.slang", jolt_gpu_sources::ArticulationAba},
+        {"jph_gpu_articulation_joint_load", "Jolt/GPU/Shaders/articulation_joint_load.slang",
+         jolt_gpu_sources::ArticulationJointLoad},
+        {"jph_gpu_articulation_kinematics", "Jolt/GPU/Shaders/articulation_kinematics.slang",
+         jolt_gpu_sources::ArticulationKinematics},
+        {"jph_gpu_articulation_state_fk", "Jolt/GPU/Shaders/articulation_state_fk.slang",
+         jolt_gpu_sources::ArticulationStateFk},
+        {"jph_gpu_articulation_dynamics", "Jolt/GPU/Shaders/articulation_dynamics.slang",
+         jolt_gpu_sources::ArticulationDynamics},
+        {"jph_gpu_articulation_types", "Jolt/GPU/ArticulationTypes.h", jolt_gpu_sources::ArticulationTypes},
+        {"jph_gpu_articulation_control", "Jolt/GPU/ArticulationControlTypes.h",
+         jolt_gpu_sources::ArticulationControlTypes},
+        {"jph_gpu_articulations", "Jolt/GPU/Shaders/rigid_articulations.slang", jolt_gpu_sources::Articulations},
         {"jph_gpu_sleep_types", "Jolt/GPU/SleepTypes.h", jolt_gpu_sources::SleepTypes},
         {"jph_gpu_sleep_math", "Jolt/GPU/Shaders/rigid_sleep_math.slang", jolt_gpu_sources::SleepMath},
         {"jph_gpu_sleep", "Jolt/GPU/Shaders/rigid_sleep.slang", jolt_gpu_sources::Sleep},

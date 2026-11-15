@@ -61,6 +61,8 @@ class Statistics:
     gpu_profile_available: bool
     gpu_profile_serial: int
     gpu_time_ms: float | None
+    gpu_profiled_submission_count: int
+    gpu_elapsed_total_ms: float
 
 class Buffer:
     def __init__(self, *, shape: int | tuple[int, ...], dtype: Any = ..., device: Literal["cpu", "gpu"], data: Any = ...) -> None: ...

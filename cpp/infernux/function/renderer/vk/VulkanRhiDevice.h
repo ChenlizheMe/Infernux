@@ -332,6 +332,10 @@ class VulkanRhiDevice final : public rhi::Device
     {
         return m_deviceLocalAllocationPressure != 0;
     }
+    [[nodiscard]] rhi::ManagedDeviceLocalPressure ObserveManagedDeviceLocalPressure() const noexcept override
+    {
+        return m_managedDeviceLocalPressure;
+    }
     [[nodiscard]] VkDeviceSize TakeDeviceLocalAllocationPressure() noexcept
     {
         const auto bytes = m_deviceLocalAllocationPressure;
@@ -614,6 +618,7 @@ class VulkanRhiDevice final : public rhi::Device
     StagingPoolStatistics m_stagingStats;
     VkDeviceSize m_managedOtherHeapLimit = 0;
     VkDeviceSize m_deviceLocalAllocationPressure = 0;
+    rhi::ManagedDeviceLocalPressure m_managedDeviceLocalPressure;
     rhi::DeviceCaps m_capabilities{};
     vk::VulkanFeatureState m_capabilityState{};
     uint32_t m_graphicsQueueFamily = 0;

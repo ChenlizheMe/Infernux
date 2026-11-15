@@ -850,6 +850,8 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                  result["wait_count"] = statistics.waitCount;
                  result["cpu_submit_ms"] = statistics.cpuSubmitMilliseconds;
                  result["wait_ms"] = statistics.waitMilliseconds;
+                 result["gpu_profiled_submission_count"] = statistics.gpuProfiledSubmissionCount;
+                 result["gpu_elapsed_total_ms"] = statistics.gpuElapsedTotalMilliseconds;
                  result["pending_submission_count"] = host.Queue().GetPendingSubmissionCount();
                  result["gpu_profile_available"] = profile.available;
                  result["gpu_profile_serial"] = profile.serial;

@@ -188,6 +188,8 @@ class ResourceIndexAllocator final
             return 0;
 
         std::lock_guard lock(m_mutex);
+        if (m_pendingRetirement == 0)
+            return 0;
         size_t collected = 0;
         for (uint32_t index = 1; index < m_slots.size(); ++index) {
             Slot &slot = m_slots[index];

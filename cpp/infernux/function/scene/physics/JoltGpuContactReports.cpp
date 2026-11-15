@@ -171,15 +171,20 @@ struct JoltGpuContactReports::Impl
             auto &f = result->frames.at(substep);
             if (first == f.capacity) {
                 (stage == 0 ? f.seeded : f.finished) = true;
+                if (stage != 0)
+                    f.parameters.reset();
                 auto cb = std::move(done);
                 cb();
                 return {};
             }
+            if (stage != 0 && !f.parameters)
+                throw std::logic_error("Contact velocity report lost its admitted pre-velocity parameters");
             if (!impl->Allocate(f.indices, 4ull * (2ull + f.capacity)) ||
                 !impl->Allocate(f.words, uint64_t(f.capacity) * sizeof(ContactReportPatch)) ||
                 !impl->Allocate(selection->buffer, 4ull * std::max<size_t>(1, selection->values.size())) ||
-                !impl->Allocate(uniform, sizeof(params)))
+                !impl->Allocate(f.parameters, sizeof(params)))
                 return {nullptr, [s = shared_from_this()] { return s->Next(); }};
+            uniform = f.parameters;
             f.interest = selection->buffer;
             ports[Params] = uniform;
             ports[LeafInterests] = f.interest;
