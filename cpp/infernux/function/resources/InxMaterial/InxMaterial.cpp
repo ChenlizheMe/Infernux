@@ -1607,7 +1607,6 @@ void InxMaterial::PrepareShaderDefaults()
 {
     if (m_isRenderPublication)
         return;
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     auto &registry = AssetRegistry::Instance();
     const auto &fragment = GetFragShaderReference();
     if (!fragment.guid.empty() &&
@@ -1627,7 +1626,6 @@ void InxMaterial::PrepareShaderDefaults()
                                   meta.stencil, meta.alphaClip);
         }
     }
-#endif
 }
 
 void InxMaterial::TrackRuntimeShaderReferences()

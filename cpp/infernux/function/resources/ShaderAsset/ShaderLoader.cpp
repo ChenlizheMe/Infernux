@@ -22,14 +22,19 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
     result->vertex = vertex ? vertex->program : nullptr;
     try {
         if (!fragment->materialProgram)
-            throw std::invalid_argument("Material fragment must declare a mesh or particle shader: " +
-                                        fragment->filePath);
-        if (fragment->programDomain == ShaderProgramDomain::ParticleSprite) {
+            throw std::invalid_argument("Material requires a graphics fragment author: " + fragment->filePath);
+        if (fragment->programDomain != ShaderProgramDomain::Mesh) {
             if (!stages.vertexKey.empty())
                 throw std::invalid_argument(
-                    "Particle geometry is provided by its output; remove the material vertex selection: " +
+                    "This fragment uses producer-owned geometry; remove the material vertex selection: " +
                     fragment->filePath);
-            result->program = fragment->materialProgram;
+            if (fragment->materialProgram->key.stages == stages)
+                result->program = fragment->materialProgram;
+            else {
+                auto program = std::make_shared<ShaderProgramArtifact>(*fragment->materialProgram);
+                program->key.stages = stages;
+                result->program = std::move(program);
+            }
             return result;
         }
         const bool standard = stages.vertexKey == infernux::kStandardVertexShaderId ||
@@ -123,16 +128,21 @@ std::shared_ptr<ShaderAsset> ShaderLoader::CompileAuthorAsset(const ShaderSource
     asset->renderMeta = ReadShaderAuthorRenderMeta(info);
     if (schema.at("domain") == "fullscreen")
         asset->programDomain = ShaderProgramDomain::Fullscreen;
+    else if (schema.at("domain") == "screen_ui")
+        asset->programDomain = ShaderProgramDomain::ScreenUI;
+    else if (schema.at("domain") == "world_ui")
+        asset->programDomain = ShaderProgramDomain::WorldUI;
     else if (schema.at("domain") == "particle")
         asset->programDomain = ShaderProgramDomain::ParticleSprite;
     else if (schema.at("domain") == "mesh" || schema.at("domain") == "vertex")
         asset->programDomain = ShaderProgramDomain::Mesh;
     asset->sourceDependencies = std::move(dependencies);
     asset->program = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(prepared));
-    if (schema.at("domain") == "mesh" || schema.at("domain") == "particle") {
+    if (schema.at("domain") == "mesh" || schema.at("domain") == "particle" || schema.at("domain") == "screen_ui" ||
+        schema.at("domain") == "world_ui") {
         asset->materialProgram = std::make_shared<const ShaderProgramArtifact>(CreateShaderAuthorMaterial(
             guid, asset->program, prepared.schema,
-            asset->programDomain == ShaderProgramDomain::ParticleSprite ? "" : kStandardVertexShaderId));
+            asset->programDomain == ShaderProgramDomain::Mesh ? kStandardVertexShaderId : ""));
     }
     return asset;
 }

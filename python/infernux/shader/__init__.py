@@ -49,6 +49,28 @@ class surface(_ShaderAsset):
 class particle(_ShaderAsset):
     """Particle fragment shared by billboard, mesh and ribbon geometry."""
 
+class screen_ui(_ShaderAsset):
+    """Screen-space UI fragment; its canvas owns vertex generation."""
+
+
+class world_ui(_ShaderAsset):
+    """World-space UI fragment; its canvas owns projection and billboarding."""
+
+
+class UIContext:
+    """Fragment position, UV, vertex color, primary sample and material color."""
+    position: vec4
+    uv: vec2
+    color: vec4
+    texture_color: vec4
+    material_color: vec4
+
+
+class WorldUIContext(UIContext):
+    """World UI also supplies the element's local position."""
+    local_position: vec2
+
+
 class ParticleContext:
     """Immutable geometry and lifetime values of one rendered particle."""
 

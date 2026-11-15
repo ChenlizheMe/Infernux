@@ -2026,20 +2026,7 @@ bool InxRenderer::CheckAndApplyMsaaRequest()
 
 void InxRenderer::StageEngineGlobalsUBO()
 {
-    EngineGlobalsUBO globals{};
-
-    // Time
-    float t = m_totalTime;
-    globals.time = glm::vec4(t, std::sin(t), std::cos(t), m_deltaTime);
-    globals.sinTime = glm::vec4(std::sin(t / 20.0f), std::sin(t / 4.0f), std::sin(t * 2.0f), std::sin(t * 3.0f));
-    globals.cosTime = glm::vec4(std::cos(t / 20.0f), std::cos(t / 4.0f), std::cos(t * 2.0f), std::cos(t * 3.0f));
-
-    // Camera and screen fields are populated by each RenderView.
-
-    // Frame
-    float dt = m_deltaTime > kEpsilon ? m_deltaTime : kEpsilon;
-    globals.frameParams = glm::vec4(static_cast<float>(GetNextFrameIndex()), m_smoothDeltaTime, 1.0f / dt, 0.0f);
-
+    const auto globals = BuildEngineFrameGlobals(m_totalTime, m_deltaTime, m_smoothDeltaTime, GetNextFrameIndex());
     m_vkCore->StageGlobals(globals);
 }
 
@@ -5223,9 +5210,10 @@ void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &rendere
             if (!m_vkCore)
                 throw std::logic_error("UI material texture resolver requires a live Vulkan core");
             if (textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
-                const bool normal = textureGuid == "normal" || bindingName.find("normal") != std::string::npos ||
-                                    bindingName.find("Normal") != std::string::npos;
-                auto slot = m_vkCore->GetTextureCache().Find(normal ? "_default_normal" : "white");
+                const char *key = textureGuid == "normal"  ? "_default_normal"
+                                  : textureGuid == "black" ? "_default_black"
+                                                           : "white";
+                auto slot = m_vkCore->GetTextureCache().Find(key);
                 auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
                 return ResolveBuiltinUIMaterialTexture(slot, device, sampler);
             }
@@ -5276,7 +5264,8 @@ void InxRenderer::EnsureScreenUIRenderer()
     if (!renderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
                               m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager(),
                               m_sceneRenderTarget->GetColorFormat(), m_sceneRenderTarget->GetDepthFormat(),
-                              m_sceneRenderTarget->GetMsaaSampleCount(), m_vkCore->GetMaxFramesInFlight())) {
+                              m_sceneRenderTarget->GetMsaaSampleCount(), m_vkCore->GetMaxFramesInFlight(),
+                              {m_vkCore->GetPerViewDescSetLayout(), m_vkCore->GetGlobalsDescSetLayout()})) {
         throw std::runtime_error("Failed to initialize the shared Screen UI renderer");
     }
     renderer->SetRetirementQueue(&m_vkCore->GetRetirementQueue());
@@ -5384,10 +5373,11 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
         replacementScreenUI = std::make_unique<InxScreenUIRenderer>();
         const SceneRenderTarget *screenUITarget =
             replacementSceneTarget ? replacementSceneTarget.get() : m_sceneRenderTarget.get();
-        if (!replacementScreenUI->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                             m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager(),
-                                             screenUITarget->GetColorFormat(), screenUITarget->GetDepthFormat(),
-                                             vkSamples, m_vkCore->GetMaxFramesInFlight())) {
+        if (!replacementScreenUI->Initialize(
+                m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
+                m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager(), screenUITarget->GetColorFormat(),
+                screenUITarget->GetDepthFormat(), vkSamples, m_vkCore->GetMaxFramesInFlight(),
+                {m_vkCore->GetPerViewDescSetLayout(), m_vkCore->GetGlobalsDescSetLayout()})) {
             INXLOG_ERROR("Failed to create the replacement Screen UI pipeline for ", samples,
                          "x MSAA; keeping all current resources.");
             return false;

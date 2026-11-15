@@ -24,6 +24,7 @@
 #include "../rhi/GpuRetirementQueue.h"
 #include "../rhi/RhiRenderTexture.h"
 #include "ScreenUITexturePublication.h"
+#include "UIRenderTypes.h"
 #include "WorldUIOcclusionPlan.h"
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/scene/TransformECSStore.h>
@@ -50,69 +51,10 @@ class VkDescriptorManager;
 
 namespace infernux
 {
-class UIShaderMaterialError : public std::runtime_error
-{
-  public:
-    using std::runtime_error::runtime_error;
-    UIShaderMaterialError(const std::string &message, std::string texture, uint64_t generation)
-        : std::runtime_error(message), textureGuid(std::move(texture)), textureGeneration(generation)
-    {
-    }
-    std::string textureGuid;
-    uint64_t textureGeneration = 0;
-};
-
 namespace textlayout
 {
 class TextGeometry;
 }
-
-/**
- * @brief Screen-space UI command list identifier
- */
-enum class ScreenUIList
-{
-    Camera,  ///< Rendered before post-processing
-    Overlay, ///< Rendered after post-processing
-    World    ///< Local UI geometry transformed into the camera's 3D world
-};
-
-/**
- * Stable material contract attached to one retained UI draw command.
- *
- * The GUID and generation select a
- * published UI shader artifact. The text
- * pipeline key is diagnostic only; it never
- * chooses Vulkan code or
- * resources.
- * Screen/world depth rules remain owned by the UI renderer.
- */
-struct UIShaderMaterialBinding
-{
-    std::string materialGuid;
-    uint64_t generation = 0;
-    std::string pipelineKey;
-    // Fixed push-constant values shared by built-in and authored UI programs.
-    std::array<float, 4> baseColor{1.0f, 1.0f, 1.0f, 1.0f};
-    float alphaClipThreshold = 0.0f;
-    bool alphaClipEnabled = false;
-
-    [[nodiscard]] bool IsValid() const noexcept
-    {
-        return !materialGuid.empty() && generation != 0 && !pipelineKey.empty();
-    }
-
-    bool operator==(const UIShaderMaterialBinding &other) const noexcept
-    {
-        return materialGuid == other.materialGuid && generation == other.generation &&
-               pipelineKey == other.pipelineKey && baseColor == other.baseColor &&
-               alphaClipThreshold == other.alphaClipThreshold && alphaClipEnabled == other.alphaClipEnabled;
-    }
-    bool operator!=(const UIShaderMaterialBinding &other) const noexcept
-    {
-        return !(*this == other);
-    }
-};
 
 /**
  * @brief GPU-based 2D screen-space UI renderer
@@ -144,7 +86,8 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
      * @return true if successful
      */
     bool Initialize(VkDevice device, VmaAllocator allocator, vk::VkDescriptorManager &descriptorManager,
-                    VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount);
+                    VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount,
+                    const std::array<VkDescriptorSetLayout, 2> &viewLayouts);
 
     void SetRetirementQueue(GpuRetirementQueue *queue)
     {
@@ -421,13 +364,15 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
     // frameSlot is owned by VkCore: its previous GPU submission must be complete.
     // Publish UI commands before rendering; all cameras consume that snapshot.
     void Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height, uint32_t frameSlot,
-                const Snapshot &snapshot = {}, const rhi::GraphicsRenderingSignature *target = nullptr);
+                const std::array<VkDescriptorSet, 2> &viewSets, const Snapshot &snapshot = {},
+                const rhi::GraphicsRenderingSignature *target = nullptr);
 
     /// Draw world-space UI against the current camera depth attachment.
     void RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, const glm::mat4 &viewProjection,
                      const rhi::GraphicsRenderingSignature &target, uint32_t frameSlot, uint32_t cullingMask,
-                     const glm::mat4 &view, const glm::mat4 &projection, const glm::mat4 &billboardView,
-                     uint32_t firstOrdinal = 0, uint32_t endOrdinal = 0xffffffffu, const Snapshot &snapshot = {});
+                     const std::array<VkDescriptorSet, 2> &viewSets, const glm::mat4 &view, const glm::mat4 &projection,
+                     const glm::mat4 &billboardView, uint32_t firstOrdinal = 0, uint32_t endOrdinal = 0xffffffffu,
+                     const Snapshot &snapshot = {});
 
     using WorldDepthRun = WorldUIOcclusionRun;
     [[nodiscard]] bool HasSelectiveWorldOcclusion(uint32_t cullingMask = 0xffffffffu,
@@ -451,12 +396,14 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
      */
     bool CreatePipeline();
     bool CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline,
-                              const rhi::GraphicsRenderingSignature *target = nullptr);
+                              const rhi::GraphicsRenderingSignature *target = nullptr,
+                              const char *vertexEntry = "vertex_main", const char *fragmentEntry = "fragment_main");
     VkPipeline GetScreenPipeline(const rhi::GraphicsRenderingSignature *target);
     bool CreateWorldPipeline();
     bool CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &pipeline,
                              bool alwaysOnTop = false, VkShaderModule vertex = VK_NULL_HANDLE,
-                             VkShaderModule fragment = VK_NULL_HANDLE);
+                             VkShaderModule fragment = VK_NULL_HANDLE, const char *vertexEntry = "vertex_main",
+                             const char *fragmentEntry = "fragment_main");
     VkPipeline GetWorldPipeline(const rhi::GraphicsRenderingSignature &target, bool alwaysOnTop = false);
     VkPipeline GetMaterialPipeline(const UIShaderMaterialBinding &binding, ShaderProgramDomain domain,
                                    const rhi::GraphicsRenderingSignature *target = nullptr, bool alwaysOnTop = false);
@@ -589,6 +536,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
     VkShaderModule m_fragShader = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_materialDescriptorSetLayout = VK_NULL_HANDLE;
+    std::array<VkDescriptorSetLayout, 2> m_viewLayouts{}; // Borrowed from the device/view owner.
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
     VkShaderModule m_worldVertShader = VK_NULL_HANDLE;

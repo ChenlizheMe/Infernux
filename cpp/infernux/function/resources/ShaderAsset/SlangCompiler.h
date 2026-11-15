@@ -69,8 +69,8 @@ class SlangCompiler
     /// contracts used by asset loading, material composition and scene workers.
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderCompilation CompileAuthorProgram(const ShaderAuthorSource &source);
 
-    /// One logical root block, mapped to native push constants or the RHI's
-    /// reserved WGSL uniform address. Libraries and source ranges stay shared.
+    /// One logical root block: native push constants and the RHI uniform
+    /// address on WGSL. Algorithms and their logical fields stay identical.
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderCompilation
     CompileRootProgram(ShaderSourceModule source, const std::vector<ShaderSourceModule> &libraries,
                        const std::vector<ShaderCodeTarget> &targets, bool precise = false,

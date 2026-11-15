@@ -121,7 +121,7 @@ class ParameterAuthor(ShaderEmitter):
             self.fields[name] = ShaderInput(name, self.literal(call.args[0]), kind, metadata.get("domain"))
             self.types["self." + name] = RESOURCE_TYPES[kind]
             return
-        prefix = self.alias + (".material." if self.domain in {"mesh", "particle"} else ".parameter.")
+        prefix = self.alias + (".material." if self.domain in {"mesh", "particle", "screen_ui", "world_ui"} else ".parameter.")
         if not declaration.startswith(prefix) or declaration[len(prefix):] not in {*_PARAMETER_TYPES, "texture_2d"}:
             self.error(call, "Expected " + prefix + " followed by a supported value type")
         kind = declaration[len(prefix):]
@@ -143,7 +143,7 @@ class ParameterAuthor(ShaderEmitter):
         numeric = lambda item: type(item) in (int, float)
         valid = True
         if kind == "texture_2d":
-            if self.domain not in {"mesh", "particle"}:
+            if self.domain not in {"mesh", "particle", "screen_ui", "world_ui"}:
                 self.error(node, "Texture asset properties belong to materials; fullscreen images use shader.input",
                            code="author.parameter")
             valid = value in ("white", "black", "normal")
@@ -192,10 +192,11 @@ class ParameterAuthor(ShaderEmitter):
 
     def parameter_declarations(self, parameters):
         code = []
+        descriptor_set = 0
         for index, field in enumerate(field for field in parameters if field.kind == "texture_2d"):
             owner, node = self.field_sources[field.name]
             code.extend([owner.source_directive(node),
-                         f"[[vk::binding({1 + 2 * index}, 0)]] InxColor2D inx_{field.name};"])
+                         f"[[vk::binding({1 + 2 * index}, {descriptor_set})]] InxColor2D inx_{field.name};"])
         uniforms = tuple(field for field in parameters if field.kind != "texture_2d")
         histories = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "History2D")
         buffers = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "Buffer")
@@ -208,6 +209,6 @@ class ParameterAuthor(ShaderEmitter):
             for field in buffers:
                 code.extend(["    uint _inx_buffer_offset_" + field.name + ";",
                              "    uint _inx_buffer_count_" + field.name + ";"])
-            binding = "[[vk::binding(0, 0)]] " if self.domain in {"mesh", "particle"} else ""
+            binding = f"[[vk::binding(0, {descriptor_set})]] " if self.domain in {"mesh", "particle", "screen_ui", "world_ui"} else ""
             code.extend(["};", binding + "ConstantBuffer<ShaderParameters> inx_parameters;"])
         return code

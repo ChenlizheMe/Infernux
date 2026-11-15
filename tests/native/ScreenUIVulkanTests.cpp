@@ -10,12 +10,15 @@
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
-#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <function/scene/SceneManager.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <nlohmann/json.hpp>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -51,167 +54,75 @@ static std::shared_ptr<const ShaderProgramArtifact> CompileUiProgram(bool world,
                                                                      bool materialProperties = false,
                                                                      bool dualTextureBindings = false)
 {
-    const std::string domain = world ? "WorldUI" : "ScreenUI";
-    const std::string vertex = "ShaderInfo { Name \"Tests/" + domain + "Vertex\" Capabilities [" + domain + "] }\n" +
-                               (world ? R"glsl(
-#version 450
-layout(location=0) in vec3 aPosition;
-layout(location=1) in vec2 aUV;
-layout(location=2) in vec4 aColor;
-layout(location=3) in vec2 aLocalPosition;
-layout(location=4) in vec3 aAnchor;
-layout(location=5) in vec3 aLocalOffset;
-layout(location=6) in float aPolicy;
-layout(push_constant) uniform WorldUIConstants {
-    mat4 viewProjection;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 screenScale;
-    vec4 cameraRight;
-    vec4 cameraUp;
-} pc;
-layout(location=0) out vec4 outColor;
-layout(location=1) out vec2 outUV;
-layout(location=2) out vec2 outLocalPosition;
-void main() {
-    vec3 position = aPosition;
-    if (aPolicy > 0.5)
-        position = aAnchor + pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y +
-                   cross(pc.cameraRight.xyz, pc.cameraUp.xyz) * aLocalOffset.z +
-                   vec3(aLocalPosition * pc.screenScale, 0.0);
-    gl_Position = pc.viewProjection * vec4(position, 1.0);
-    outColor = aColor;
-    outUV = aUV;
-    outLocalPosition = aLocalPosition;
-}
-)glsl"
-                                      : R"glsl(
-#version 450
-layout(location=0) in vec2 aPosition;
-layout(location=1) in vec2 aUV;
-layout(location=2) in vec4 aColor;
-layout(push_constant) uniform ScreenUIConstants {
-    vec2 scale;
-    vec2 translate;
-    float encodeSample;
-    float _pad0;
-    float _pad1;
-    float _pad2;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 _tailPadding;
-} pc;
-layout(location=0) out vec4 outColor;
-layout(location=1) out vec2 outUV;
-void main() {
-    gl_Position = vec4(aPosition * pc.scale + pc.translate, 0.0, 1.0);
-    outColor = aColor;
-    outUV = aUV;
-}
-)glsl");
-    const std::string fragment = "ShaderInfo { Name \"Tests/" + domain +
-                                 (alternate && !reload ? "Alternate" : "Default") + "Fragment\" Capabilities [" +
-                                 domain + "] }\n" +
-                                 (world ? R"glsl(
-#version 450
-layout(location=0) in vec4 inColor;
-layout(location=1) in vec2 inUV;
-layout(location=2) in vec2 inLocalPosition;
-layout(set=0,binding=0) uniform sampler2D uiTexture;
-layout(push_constant) uniform WorldUIConstants {
-    mat4 viewProjection;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 screenScale;
-    vec4 cameraRight;
-    vec4 cameraUp;
-} pc;
-layout(location=0) out vec4 outColor;
-void main() {
-    outColor = texture(uiTexture, inUV) * inColor * pc.materialColor * vec4(MULTIPLIER, 1.0)
-               + vec4(inLocalPosition, 0.0, 0.0) * 0.000001;
-    if ((pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold) || outColor.a <= 0.0)
-        discard;
-}
-)glsl"
-                                        : R"glsl(
-#version 450
-layout(location=0) in vec4 inColor;
-layout(location=1) in vec2 inUV;
-layout(set=0,binding=0) uniform sampler2D uiTexture;
-layout(push_constant) uniform ScreenUIConstants {
-    vec2 scale;
-    vec2 translate;
-    float encodeSample;
-    float _pad0;
-    float _pad1;
-    float _pad2;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 _tailPadding;
-} pc;
-layout(location=0) out vec4 outColor;
-void main() {
-    outColor = texture(uiTexture, inUV) * inColor * pc.materialColor * vec4(MULTIPLIER, 1.0);
-    if (pc.alphaClipEnabled > 0.5 && outColor.a < pc.alphaClipThreshold)
-        discard;
-}
-)glsl");
-    std::string authoredFragment = fragment;
+    using nlohmann::json;
+    const std::string domain = world ? "world_ui" : "screen_ui";
+    const std::string key = "Tests/" + domain + (alternate && !reload ? "/alternate" : "/default");
+    ShaderAuthorSource author;
+    author.source = {key, key + ".frag.py", "import inx_geometry;\nimport inx_ui_context;\n"};
+    json fields = json::array();
+    const auto field = [&](const char *name, const char *kind, const json &value) {
+        fields.push_back({{"name", name},
+                          {"kind", kind},
+                          {"default", value},
+                          {"stages", {"fragment"}},
+                          {"range", nullptr},
+                          {"hdr", false}});
+    };
     if (materialProperties) {
-        const std::string capability = "Capabilities [" + domain + "] }";
-        const size_t info = authoredFragment.find(capability);
-        assert(info != std::string::npos);
-        authoredFragment.replace(info, capability.size(), "Capabilities [" + domain + R"(]
-    Properties {
-        Float gain = 1.0
-        Float2 offset = [0.0, 0.0]
-        Float3 axis = [0.0, 0.0, 0.0]
-        Float4 channel = [0.0, 0.0, 0.0, 0.0]
-        Color tint = [1.0, 1.0, 1.0, 1.0]
-        Int mode = 1
-        Mat4 matrix = [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]
-        Texture2D detailTex = white
+        field("gain", "float", 1.0);
+        field("offset", "vec2", {0.0, 0.0});
+        field("axis", "vec3", {0.0, 0.0, 0.0});
+        field("channel", "vec4", {0.0, 0.0, 0.0, 0.0});
+        field("tint", "color", {1.0, 1.0, 1.0, 1.0});
+        field("mode", "int", 1);
+        field("matrix", "mat4", {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}});
+        field("detailTex", "texture_2d", "white");
+        if (dualTextureBindings)
+            field("iconTex", "texture_2d", "white");
+        author.source.source += R"slang(
+struct Parameters {
+    float gain;
+    float2 offset;
+    float3 axis;
+    float4 channel;
+    float4 tint;
+    int mode;
+    column_major float4x4 matrix;
+};
+[[vk::binding(0, 0)]] ConstantBuffer<Parameters> material;
+[[vk::binding(1, 0)]] Texture2D<float4> inx_detailTex;
+[[vk::binding(2, 0)]] SamplerState detail_sampler;
+)slang";
+        if (dualTextureBindings)
+            author.source.source += R"slang(
+[[vk::binding(3, 0)]] Texture2D<float4> inx_iconTex;
+[[vk::binding(4, 0)]] SamplerState icon_sampler;
+)slang";
     }
-})");
-        if (dualTextureBindings) {
-            const std::string textureProperty = "Texture2D detailTex = white";
-            const size_t property = authoredFragment.find(textureProperty);
-            assert(property != std::string::npos);
-            authoredFragment.insert(property + textureProperty.size(), "\n        Texture2D iconTex = white");
-        }
-        const std::string plainSample = "texture(uiTexture, inUV)";
-        const size_t sample = authoredFragment.find(plainSample);
-        assert(sample != std::string::npos);
-        authoredFragment.replace(sample, plainSample.size(),
-                                 dualTextureBindings
-                                     ? "texture(uiTexture, inUV) * texture(detailTex, inUV) * texture(iconTex, inUV)"
-                                     : "texture(uiTexture, inUV) * texture(detailTex, inUV)");
-        const std::string plainMultiplier = "vec4(MULTIPLIER, 1.0)";
-        const size_t factor = authoredFragment.find(plainMultiplier);
-        assert(factor != std::string::npos);
-        authoredFragment.replace(factor, plainMultiplier.size(),
-                                 plainMultiplier + " * vec4(vec3((material.gain + material.offset.x + "
-                                                   "material.axis.x + material.channel.x + material.tint.r + "
-                                                   "float(material.mode) + material.matrix[0][0]) / 7.0), 1.0)");
+    author.source.source +=
+        std::string("float4 inx_author_ui(") + (world ? "InxWorldUIContext" : "InxUIContext") + " ctx) {\n";
+    author.source.source += "    float4 color = ctx.texture_color * ctx.color * ctx.material_color * float4(" +
+                            (alternate ? "0.125, 0.5, 1.0" : std::string("1.0, 1.0, 1.0")) + ", 1.0);\n";
+    if (materialProperties) {
+        author.source.source += R"slang(
+    color *= inx_detailTex.Sample(detail_sampler, ctx.uv);
+    color.rgb *= (material.gain + material.offset.x + material.axis.x + material.channel.x +
+                  material.tint.r + float(material.mode) + material.matrix[0][0]) / 7.0;
+)slang";
+        if (dualTextureBindings)
+            author.source.source += "    color *= inx_iconTex.Sample(icon_sampler, ctx.uv);\n";
     }
-    const size_t multiplier = authoredFragment.find("MULTIPLIER");
-    assert(multiplier != std::string::npos);
-    authoredFragment.replace(multiplier, sizeof("MULTIPLIER") - 1, alternate ? "0.125, 0.5, 1.0" : "1.0, 1.0, 1.0");
-    InxShaderLoader compiler(true, false, false, false, false, true, false, false, false, false);
-    const auto vertexDescriptor = compiler.ParseShaderSource(vertex, "UITest.vert");
-    const auto fragmentDescriptor = compiler.ParseShaderSource(authoredFragment, "UITest.frag");
-    assert(!ShaderStageLinker::ShouldPrewarmSceneMaterial(vertexDescriptor, fragmentDescriptor));
-    const auto compiled = compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", authoredFragment, "UITest.frag");
-    for (const auto &error : compiled.errors)
-        std::cerr << error << '\n';
-    assert(compiled.IsValid());
-    auto artifact = std::make_shared<ShaderProgramArtifact>(compiled.CreateRuntimeArtifact());
+    if (world)
+        author.source.source += "    color += float4(ctx.local_position, 0.0, 0.0) * 0.000001;\n";
+    author.source.source += "    return color;\n}\n" + GetSlangUIAuthorSource(world, false);
+    author.schema =
+        json({{"name", key}, {"domain", domain}, {"surface", false}, {"parameters", fields}, {"inputs", json::array()}})
+            .dump();
+    const auto compiled = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(author));
+    auto artifact =
+        std::make_shared<ShaderProgramArtifact>(CreateShaderAuthorMaterial(key, compiled, author.schema, ""));
     assert(artifact->IsValid());
+    assert(artifact->key.stages.vertexKey.empty());
     assert(artifact->domain == (world ? ShaderProgramDomain::WorldUI : ShaderProgramDomain::ScreenUI));
     if (materialProperties) {
         assert(artifact->properties.size() == (dualTextureBindings ? 9 : 8));
@@ -221,151 +132,6 @@ void main() {
                }) == (dualTextureBindings ? 2 : 1));
     }
     assert(!ShaderStageLinker::ShouldPublishScenePrewarmArtifact(*artifact));
-    if (!alternate) {
-        auto conflictingFragment = authoredFragment;
-        const std::string domainCapability = "Capabilities [" + domain + "]";
-        const auto capabilityPosition = conflictingFragment.find(domainCapability);
-        assert(capabilityPosition != std::string::npos);
-        conflictingFragment.replace(capabilityPosition, domainCapability.size(),
-                                    "Capabilities [" + domain + ", BindlessTextures]");
-        const auto conflicting =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", conflictingFragment, "UITest.frag");
-        assert(!conflicting.IsValid());
-        assert(std::any_of(conflicting.errors.begin(), conflicting.errors.end(),
-                           [](const auto &error) { return error.find("cannot combine") != std::string::npos; }));
-    }
-    if (!world && !alternate) {
-        auto badFragment = authoredFragment;
-        const size_t descriptor = badFragment.find("layout(set=0,binding=0)");
-        assert(descriptor != std::string::npos);
-        badFragment.replace(descriptor, sizeof("layout(set=0,binding=0)") - 1, "layout(set=1,binding=0)");
-        const auto wrongDescriptor =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-        assert(!wrongDescriptor.IsValid());
-        assert(std::any_of(wrongDescriptor.errors.begin(), wrongDescriptor.errors.end(),
-                           [](const auto &error) { return error.find("set 0 binding 0") != std::string::npos; }));
-
-        badFragment = authoredFragment;
-        const size_t image = badFragment.find("layout(set=0,binding=0) uniform sampler2D uiTexture;");
-        const size_t sample = badFragment.find("texture(uiTexture, inUV)");
-        assert(image != std::string::npos && sample != std::string::npos);
-        badFragment.replace(sample, sizeof("texture(uiTexture, inUV)") - 1,
-                            "texture(uiTexture, inUV) + subpassLoad(extraInput)");
-        badFragment.insert(image,
-                           "layout(input_attachment_index=0,set=0,binding=1) uniform subpassInput extraInput;\n");
-        const auto inputAttachment =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-        assert(!inputAttachment.IsValid());
-        assert(std::any_of(inputAttachment.errors.begin(), inputAttachment.errors.end(), [](const auto &error) {
-            return error.find("descriptors outside the UI material ABI") != std::string::npos;
-        }));
-
-        badFragment = authoredFragment;
-        const size_t imageDecl = badFragment.find("uniform sampler2D uiTexture;");
-        assert(imageDecl != std::string::npos);
-        badFragment.replace(imageDecl, sizeof("uniform sampler2D uiTexture;") - 1, "uniform sampler2D uiTexture[2];");
-        const size_t imageSample = badFragment.find("texture(uiTexture, inUV)");
-        assert(imageSample != std::string::npos);
-        badFragment.replace(imageSample, sizeof("texture(uiTexture, inUV)") - 1, "texture(uiTexture[0], inUV)");
-        const auto arrayImage =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-        assert(!arrayImage.IsValid());
-        assert(std::any_of(arrayImage.errors.begin(), arrayImage.errors.end(),
-                           [](const auto &error) { return error.find("one non-arrayed 2D") != std::string::npos; }));
-
-        badFragment = authoredFragment;
-        const size_t nestedImageDecl = badFragment.find("uniform sampler2D uiTexture;");
-        const size_t nestedImageSample = badFragment.find("texture(uiTexture, inUV)");
-        assert(nestedImageDecl != std::string::npos && nestedImageSample != std::string::npos);
-        badFragment.replace(nestedImageSample, sizeof("texture(uiTexture, inUV)") - 1,
-                            "texture(uiTexture[0][0], inUV)");
-        badFragment.replace(nestedImageDecl, sizeof("uniform sampler2D uiTexture;") - 1,
-                            "uniform sampler2D uiTexture[1][2];");
-        const auto nestedArrayImage =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-        assert(!nestedArrayImage.IsValid());
-        assert(std::any_of(nestedArrayImage.errors.begin(), nestedArrayImage.errors.end(),
-                           [](const auto &error) { return error.find("one non-arrayed 2D") != std::string::npos; }));
-
-        badFragment = authoredFragment;
-        const size_t msDecl = badFragment.find("uniform sampler2D uiTexture;");
-        const size_t msSample = badFragment.find("texture(uiTexture, inUV)");
-        assert(msDecl != std::string::npos && msSample != std::string::npos);
-        badFragment.replace(msSample, sizeof("texture(uiTexture, inUV)") - 1,
-                            "texelFetch(uiTexture, ivec2(inUV * 128.0), 0)");
-        badFragment.replace(msDecl, sizeof("uniform sampler2D uiTexture;") - 1, "uniform sampler2DMS uiTexture;");
-        const auto msImage = compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-        assert(!msImage.IsValid());
-        assert(std::any_of(msImage.errors.begin(), msImage.errors.end(),
-                           [](const auto &error) { return error.find("one non-arrayed 2D") != std::string::npos; }));
-
-        for (const auto *samplerType : {"samplerCube", "sampler3D", "sampler2DArray"}) {
-            badFragment = authoredFragment;
-            const size_t typePosition = badFragment.find("sampler2D uiTexture");
-            const size_t samplePosition = badFragment.find("texture(uiTexture, inUV)");
-            assert(typePosition != std::string::npos && samplePosition != std::string::npos);
-            badFragment.replace(samplePosition, sizeof("texture(uiTexture, inUV)") - 1,
-                                "texture(uiTexture, vec3(inUV, 0.0))");
-            badFragment.replace(typePosition, sizeof("sampler2D uiTexture") - 1,
-                                std::string(samplerType) + " uiTexture");
-            const auto wrongDimension =
-                compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-            assert(!wrongDimension.IsValid());
-            assert(std::any_of(wrongDimension.errors.begin(), wrongDimension.errors.end(),
-                               [](const auto &error) { return error.find("non-arrayed 2D") != std::string::npos; }));
-        }
-
-        auto badVertex = vertex;
-        const size_t vertexUV = badVertex.find("layout(location=1) in vec2 aUV");
-        assert(vertexUV != std::string::npos);
-        badVertex.replace(vertexUV, sizeof("layout(location=1) in vec2 aUV") - 1, "layout(location=4) in vec2 aUV");
-        const auto wrongVertex =
-            compiler.CompileLinkedProgramArtifact(badVertex, "UITest.vert", authoredFragment, "UITest.frag");
-        assert(!wrongVertex.IsValid());
-        assert(std::any_of(wrongVertex.errors.begin(), wrongVertex.errors.end(),
-                           [](const auto &error) { return error.find("input location 1") != std::string::npos; }));
-
-        badFragment = authoredFragment;
-        const size_t capability = badFragment.find("Capabilities [ScreenUI]");
-        assert(capability != std::string::npos);
-        badFragment.replace(capability, sizeof("Capabilities [ScreenUI]") - 1, "Capabilities [WorldUI]");
-        const auto wrongDomain =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-        assert(!wrongDomain.IsValid());
-        assert(std::any_of(wrongDomain.errors.begin(), wrongDomain.errors.end(),
-                           [](const auto &error) { return error.find("same program domain") != std::string::npos; }));
-    }
-    if (world && !alternate) {
-        auto minimalFragment = authoredFragment;
-        const size_t optionalVarying = minimalFragment.find("layout(location=2) in vec2 inLocalPosition");
-        const size_t optionalUse =
-            minimalFragment.find("\n               + vec4(inLocalPosition, 0.0, 0.0) * 0.000001");
-        assert(optionalVarying != std::string::npos && optionalUse != std::string::npos);
-        const size_t varyingLineEnd = minimalFragment.find('\n', optionalVarying);
-        const size_t expressionEnd = minimalFragment.find(';', optionalUse);
-        assert(varyingLineEnd != std::string::npos && expressionEnd != std::string::npos);
-        minimalFragment.erase(optionalUse, expressionEnd - optionalUse);
-        minimalFragment.erase(optionalVarying, varyingLineEnd + 1 - optionalVarying);
-        const auto optionalVaryingOmitted =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", minimalFragment, "UITest.frag");
-        for (const auto &error : optionalVaryingOmitted.errors)
-            std::cerr << "Optional WorldUI varying validation: " << error << std::endl;
-        assert(optionalVaryingOmitted.IsValid());
-
-        auto badFragment = authoredFragment;
-        const size_t localVarying = badFragment.find("layout(location=2) in vec2 inLocalPosition");
-        assert(localVarying != std::string::npos);
-        badFragment.replace(localVarying, sizeof("layout(location=2) in vec2 inLocalPosition") - 1,
-                            "layout(location=2) in vec3 inLocalPosition");
-        const size_t localUse = badFragment.find("vec4(inLocalPosition, 0.0, 0.0)");
-        assert(localUse != std::string::npos);
-        badFragment.replace(localUse, sizeof("vec4(inLocalPosition, 0.0, 0.0)") - 1, "vec4(inLocalPosition, 0.0)");
-        const auto wrongVarying =
-            compiler.CompileLinkedProgramArtifact(vertex, "UITest.vert", badFragment, "UITest.frag");
-        assert(!wrongVarying.IsValid());
-        assert(std::any_of(wrongVarying.errors.begin(), wrongVarying.errors.end(),
-                           [](const auto &error) { return error.find("input location 2") != std::string::npos; }));
-    }
     return artifact;
 }
 
@@ -625,9 +391,39 @@ int main(int argc, char **argv)
             assert(999.0f - std::sqrt(dx * dx + dy * dy) <= tolerance + 0.001f);
         }
     }
+    // The same view-owned camera/global allocations may be read by any UI
+    // shader. The UI producer keeps its primary image at group 3.
+    rhi::BufferDesc viewBufferDesc;
+    viewBufferDesc.byteSize = sizeof(UniformBufferObject);
+    viewBufferDesc.usage = rhi::BufferUsageFlags::Uniform;
+    viewBufferDesc.memory = rhi::BufferMemory::Upload;
+    const auto cameraBuffer = device.CreateBuffer(viewBufferDesc);
+    UniformBufferObject cameraData{};
+    assert(device.WriteBuffer(cameraBuffer, 0, &cameraData, sizeof(cameraData)));
+    viewBufferDesc.byteSize = sizeof(EngineGlobalsUBO);
+    const auto globalsBuffer = device.CreateBuffer(viewBufferDesc);
+    EngineGlobalsUBO globalsData{};
+    assert(device.WriteBuffer(globalsBuffer, 0, &globalsData, sizeof(globalsData)));
+    rhi::BindingLayoutDesc viewLayoutDesc;
+    viewLayoutDesc.entryCount = 1;
+    viewLayoutDesc.entries[0] = {5, rhi::BindingType::UniformBuffer,
+                                 rhi::ShaderStage::Vertex | rhi::ShaderStage::Fragment, 1};
+    const auto cameraLayout = device.CreateBindingLayout(viewLayoutDesc);
+    viewLayoutDesc.entries[0].binding = 0;
+    const auto globalsLayout = device.CreateBindingLayout(viewLayoutDesc);
+    rhi::BindGroupDesc viewGroupDesc;
+    viewGroupDesc.layout = cameraLayout;
+    viewGroupDesc.bufferCount = 1;
+    viewGroupDesc.buffers[0] = {5, rhi::BindingType::UniformBuffer, cameraBuffer, 0, sizeof(cameraData)};
+    const auto cameraGroup = device.CreateBindGroup(viewGroupDesc);
+    viewGroupDesc.layout = globalsLayout;
+    viewGroupDesc.buffers[0] = {0, rhi::BindingType::UniformBuffer, globalsBuffer, 0, sizeof(globalsData)};
+    const auto globalsGroup = device.CreateBindGroup(viewGroupDesc);
+    const std::array<VkDescriptorSetLayout, 2> viewLayouts{device.Resolve(cameraLayout), device.Resolve(globalsLayout)};
+    const std::array<VkDescriptorSet, 2> viewSets{device.Resolve(cameraGroup), device.Resolve(globalsGroup)};
     InxScreenUIRenderer renderer;
     assert(renderer.Initialize(context.GetDevice(), context.GetVmaAllocator(), device.GetDescriptorManager(),
-                               VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
+                               VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4, viewLayouts));
     renderer.SetRetirementQueue(&retirement);
     std::vector<ShaderProgramKey> releasedProgramKeys;
     renderer.SetMaterialProgramRelease([&](const ShaderProgramKey &key) { releasedProgramKeys.push_back(key); });
@@ -961,17 +757,17 @@ int main(int argc, char **argv)
                         // A shared writable buffer makes the red quad disappear.
                         activeRenderer->BeginFrame(128, 128);
                         activeRenderer->AddFilledRect(list, 8, 8, 56, 120, 1, 0, 0, 1);
-                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, 0);
+                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, 0, viewSets);
                         activeRenderer->BeginFrame(128, 128);
                         activeRenderer->AddFilledRect(list, 72, 8, 120, 120, 0, 1, 0, 1);
-                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, 3);
+                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, 3, viewSets);
                         return;
                     }
                     if (list == ScreenUIList::World)
                         activeRenderer->RenderWorld(ctx.GetCommandBuffer(), 128, 128, camera, signature, frameSlot,
-                                                    cullingMask, cameraView, cameraProjection, billboardView);
+                                                    cullingMask, viewSets, cameraView, cameraProjection, billboardView);
                     else
-                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, frameSlot);
+                        activeRenderer->Render(ctx.GetCommandBuffer(), list, 128, 128, frameSlot, viewSets);
                     renderMs =
                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
                 };
@@ -2277,7 +2073,8 @@ int main(int argc, char **argv)
 
         auto replacementUI = std::make_unique<InxScreenUIRenderer>();
         assert(replacementUI->Initialize(context.GetDevice(), context.GetVmaAllocator(), device.GetDescriptorManager(),
-                                         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4));
+                                         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4,
+                                         viewLayouts));
         replacementUI->SetRetirementQueue(&retirement);
         replacementUI->SetMaterialProgramAcquire(acquireUI);
         replacementUI->SetMaterialProgramRelease(releaseUI);
@@ -2334,6 +2131,12 @@ int main(int argc, char **argv)
     ImGui::EndFrame();
     ImGui::DestroyContext();
     shutdownPacket.reset(); // CPU packets have no dangling ImGui/GPU owners.
+    device.Release(cameraGroup);
+    device.Release(globalsGroup);
+    device.Release(cameraLayout);
+    device.Release(globalsLayout);
+    device.Release(cameraBuffer);
+    device.Release(globalsBuffer);
     device.Release(group);
     device.Release(layout);
     device.Release(sampler);

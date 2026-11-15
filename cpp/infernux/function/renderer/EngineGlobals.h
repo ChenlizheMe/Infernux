@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cmath>
+#include <core/config/MathConstants.h>
 #include <core/math/DepthConvention.h>
+#include <cstdint>
 
 #include <glm/glm.hpp>
 
@@ -57,5 +60,18 @@ struct EngineGlobalsUBO
 };
 
 static_assert(sizeof(EngineGlobalsUBO) == 144, "EngineGlobalsUBO must contain nine 16-byte rows");
+
+/// Frame time is authored once by the native host, then copied into each view.
+inline EngineGlobalsUBO BuildEngineFrameGlobals(float time, float delta, float smoothDelta, uint64_t frame)
+{
+    EngineGlobalsUBO globals{};
+    globals.time = glm::vec4(time, std::sin(time), std::cos(time), delta);
+    globals.sinTime =
+        glm::vec4(std::sin(time / 20.0f), std::sin(time / 4.0f), std::sin(time * 2.0f), std::sin(time * 3.0f));
+    globals.cosTime =
+        glm::vec4(std::cos(time / 20.0f), std::cos(time / 4.0f), std::cos(time * 2.0f), std::cos(time * 3.0f));
+    globals.frameParams = glm::vec4(float(frame), smoothDelta, 1.0f / (delta > kEpsilon ? delta : kEpsilon), 0.0f);
+    return globals;
+}
 
 } // namespace infernux

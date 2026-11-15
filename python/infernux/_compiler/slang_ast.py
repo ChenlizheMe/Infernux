@@ -37,6 +37,12 @@ def qualified(node):
     return ""
 
 
+def integer_literal_type(value):
+    if -0x80000000 <= value <= 0x7fffffff:
+        return "int"
+    return "uint" if 0 <= value <= 0xffffffff else "int64_t"
+
+
 def common_type(left, right):
     if left == right:
         return left
@@ -176,7 +182,7 @@ class SlangEmitter(ast.NodeVisitor):
 
     def infer(self, node):
         if isinstance(node, ast.Constant):
-            return "bool" if isinstance(node.value, bool) else "int" if isinstance(node.value, int) else "float"
+            return "bool" if isinstance(node.value, bool) else integer_literal_type(node.value) if isinstance(node.value, int) else "float"
         if isinstance(node, ast.Name):
             return self.types.get(node.id)
         if isinstance(node, ast.Attribute):
@@ -188,6 +194,8 @@ class SlangEmitter(ast.NodeVisitor):
                 scalar = base.rstrip("0123456789")
                 return scalar + str(len(node.attr)) if len(node.attr) > 1 else scalar
         if isinstance(node, ast.UnaryOp):
+            if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant) and type(node.operand.value) is int:
+                return integer_literal_type(-node.operand.value)
             kind = self.infer(node.operand)
             return shaped_type(kind, "bool") if isinstance(node.op, ast.Not) else kind
         if isinstance(node, ast.BoolOp):
@@ -251,6 +259,8 @@ class SlangEmitter(ast.NodeVisitor):
     def visit_Constant(self, node):
         if not isinstance(node.value, (float, int, bool)):
             self.error(node, "GPU expressions use numeric literals")
+        if type(node.value) is int and integer_literal_type(node.value) == "uint":
+            return str(node.value) + "u"
         return json.dumps(node.value)
 
     def visit_Name(self, node):
@@ -286,6 +296,10 @@ class SlangEmitter(ast.NodeVisitor):
         return "(" + self.visit(node.left) + " " + _BINARY[type(node.op)] + " " + self.visit(node.right) + ")"
 
     def visit_UnaryOp(self, node):
+        if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant) and type(node.operand.value) is int:
+            value = -node.operand.value
+            # Both operands remain signed 32-bit constants, including INT_MIN.
+            return "(-2147483647 - 1)" if value == -0x80000000 else str(value)
         return "(" + _UNARY[type(node.op)] + self.visit(node.operand) + ")"
 
     def visit_IfExp(self, node):

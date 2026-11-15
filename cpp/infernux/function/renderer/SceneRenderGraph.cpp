@@ -1870,18 +1870,23 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 break;
             case GraphCommandType::DrawWorldUI:
                 if (m_screenUIRenderer)
-                    m_screenUIRenderer->RenderWorld(ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView,
-                                                    materialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
-                                                    worldUILayerMask & (m_cachedCameraView.cullingMask), m_drawView,
-                                                    m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView, 0,
-                                                    0xffffffffu, m_screenUISnapshot);
+                    m_screenUIRenderer->RenderWorld(
+                        ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView, materialPass.RenderingSignature(),
+                        vkCore->GetCurrentFrameSlot(), worldUILayerMask & (m_cachedCameraView.cullingMask),
+                        {GetPerViewDescriptorSet(), vkCore->GetDeviceContext().GetRhiDevice().Resolve(
+                                                        vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()))},
+                        m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView, 0, 0xffffffffu,
+                        m_screenUISnapshot);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {
                     auto list = (screenUIListIndex == 0) ? ScreenUIList::Camera : ScreenUIList::Overlay;
                     const auto target = materialPass.RenderingSignature();
-                    m_screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h, vkCore->GetCurrentFrameSlot(),
-                                               m_screenUISnapshot, &target);
+                    m_screenUIRenderer->Render(
+                        ctx.GetCommandBuffer(), list, w, h, vkCore->GetCurrentFrameSlot(),
+                        {GetPerViewDescriptorSet(), vkCore->GetDeviceContext().GetRhiDevice().Resolve(
+                                                        vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()))},
+                        m_screenUISnapshot, &target);
                 }
                 break;
             case GraphCommandType::FullscreenQuad:
@@ -5520,9 +5525,12 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 m_screenUIRenderer->RenderWorld(
                                     ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
                                     uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
-                                    worldUILayerMask & (m_cachedCameraView.cullingMask), m_drawView, m_cachedProj,
-                                    m_hasBillboardView ? m_billboardView : m_drawView, run.firstOrdinal, run.endOrdinal,
-                                    m_screenUISnapshot);
+                                    worldUILayerMask & (m_cachedCameraView.cullingMask),
+                                    {GetPerViewDescriptorSet(),
+                                     vkCore->GetDeviceContext().GetRhiDevice().Resolve(
+                                         vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()))},
+                                    m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView,
+                                    run.firstOrdinal, run.endOrdinal, m_screenUISnapshot);
                             };
                         });
                     trackAuthorPass(pass);

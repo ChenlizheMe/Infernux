@@ -650,9 +650,9 @@ void RegisterResourceBindings(py::module_ &m)
                 auto &registry = AssetRegistry::Instance();
                 const auto shader = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
                 if (!shader || !shader->materialProgram)
-                    throw std::invalid_argument("Material requires an imported mesh shader author");
+                    throw std::invalid_argument("Material requires an imported graphics fragment author");
                 auto material = std::make_shared<InxMaterial>(name);
-                material->SetVertShader(infernux::kStandardVertexShaderId);
+                material->SetVertShader(shader->materialProgram->key.stages.vertexKey);
                 material->SetFragShaderReference({guid, shader->shaderId, shader->filePath});
                 material->PrepareShaderDefaults();
                 return material;

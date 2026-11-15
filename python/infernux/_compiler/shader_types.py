@@ -48,6 +48,11 @@ STRUCT_FIELDS = {"InxParticleInput": {'position': 'float4', 'position_ws': 'floa
                                       "layer_mask": "uint", "model_matrix": "float4x4"},
                  "InxProjectionContext": {"view_matrix": "float4x4", "projection_matrix": "float4x4"}}
 
+STRUCT_TYPES.update(UIContext="InxUIContext", WorldUIContext="InxWorldUIContext")
+STRUCT_FIELDS["InxUIContext"] = {"position": "float4", "uv": "float2", "color": "float4",
+                                "texture_color": "float4", "material_color": "float4"}
+STRUCT_FIELDS["InxWorldUIContext"] = dict(STRUCT_FIELDS["InxUIContext"], local_position="float2")
+
 # A logical image carries its sampler through typed library calls. Slang
 # flattens the pair for each target; neither authors nor helpers name slots.
 RESOURCE_MODULE = ("inx_resource_types", "<infernux/shader/resources>", """

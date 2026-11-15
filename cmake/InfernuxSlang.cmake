@@ -11,7 +11,9 @@ if(INFERNUX_SLANG_ROOT)
     unset(slang_DIR CACHE)
     find_package(slang ${INFERNUX_SLANG_VERSION} EXACT CONFIG REQUIRED
         PATHS "${INFERNUX_SLANG_ROOT}" "${INFERNUX_SLANG_ROOT}/cmake"
-              "${INFERNUX_SLANG_ROOT}/lib64/cmake/slang" NO_DEFAULT_PATH)
+              "${INFERNUX_SLANG_ROOT}/lib/cmake/slang"
+              "${INFERNUX_SLANG_ROOT}/lib64/cmake/slang"
+        NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
     if(EMSCRIPTEN)
         # Slang's prepared Wasm SDK exposes static archives, with the same
         # public C++ compilation API as the native shared library.

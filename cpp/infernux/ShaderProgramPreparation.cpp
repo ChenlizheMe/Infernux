@@ -200,6 +200,10 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
                 read, ShaderAuthorPhase::Program, vertex);
             const auto schema = nlohmann::json::parse(work.source.schema);
             const auto domain = schema.at("domain").get<std::string>();
+            // UI draws own the device publication and release of their
+            // programs. Scene preload prepares no UI pipeline or reference.
+            if (domain == "screen_ui" || domain == "world_ui")
+                continue;
             if (domain != "mesh" && domain != "particle")
                 throw std::invalid_argument("Material fragment must declare a mesh or particle shader: " +
                                             fragmentPath);

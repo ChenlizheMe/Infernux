@@ -546,13 +546,14 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
 
         # Vertex shader
         shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
-        particle = shader_ui["fragment_domain"] == "particle"
+        domain = shader_ui["fragment_domain"]
+        producer_geometry = domain in {"particle", "screen_ui", "world_ui"}
         shader_labels = (
             layout_cache["shader_labels"]
             if isinstance(layout_cache, dict)
             else (t("material.vertex"), t("material.fragment"))
         )
-        if not particle:
+        if not producer_geometry:
             field_label(ctx, shader_labels[0], s_lw)
             vert_display = shader_ui["vertex_display"]
 
@@ -574,7 +575,7 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
             ping_path=shader_ui["fragment_path"] or None,
             has_value=bool(shader_ui["fragment_id"]),
             semantic_id="asset.material.shader.fragment",
-            asset_type="Shader.Particle" if particle else "Shader.Fragment",
+            asset_type="Shader.Particle" if domain == "particle" else "Shader.UI" if producer_geometry else "Shader.Fragment",
         )
     _record_profile_timing("materialShader", section_t0)
     if is_builtin:

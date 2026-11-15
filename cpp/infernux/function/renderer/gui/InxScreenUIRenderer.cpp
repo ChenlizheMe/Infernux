@@ -277,9 +277,11 @@ bool CreateShaderModule(VkDevice device, const uint32_t *code, size_t codeSize, 
 
 bool CreatePipelineLayout(VkDevice device, VkDescriptorSetLayout descriptorSetLayout,
                           VkDescriptorSetLayout materialDescriptorSetLayout,
+                          const std::array<VkDescriptorSetLayout, 2> &viewLayouts,
                           const VkPushConstantRange &pushConstantRange, VkPipelineLayout &outLayout)
 {
-    const std::array<VkDescriptorSetLayout, 2> setLayouts{descriptorSetLayout, materialDescriptorSetLayout};
+    const std::array<VkDescriptorSetLayout, 4> setLayouts{materialDescriptorSetLayout, viewLayouts[0], viewLayouts[1],
+                                                          descriptorSetLayout};
     VkPipelineLayoutCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     createInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
@@ -991,7 +993,8 @@ InxScreenUIRenderer::~InxScreenUIRenderer()
 
 bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator,
                                      vk::VkDescriptorManager &descriptorManager, VkFormat colorFormat,
-                                     VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount)
+                                     VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount,
+                                     const std::array<VkDescriptorSetLayout, 2> &viewLayouts)
 {
     if (m_initialized)
         return true;
@@ -999,6 +1002,7 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator,
     m_device = device;
     m_allocator = allocator;
     m_descriptorManager = &descriptorManager;
+    m_viewLayouts = viewLayouts;
     m_colorFormat = colorFormat;
     m_depthFormat = depthFormat;
     m_msaaSamples = msaaSamples;
@@ -1628,8 +1632,8 @@ bool InxScreenUIRenderer::UploadGeometry(ListBuffers &buf, ScreenUIList list, co
 }
 
 void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height,
-                                 uint32_t frameSlot, const Snapshot &snapshot,
-                                 const rhi::GraphicsRenderingSignature *target)
+                                 uint32_t frameSlot, const std::array<VkDescriptorSet, 2> &viewSets,
+                                 const Snapshot &snapshot, const rhi::GraphicsRenderingSignature *target)
 {
     SnapshotScope selected(*this, snapshot);
     if (list == ScreenUIList::World)
@@ -1760,6 +1764,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     const VkViewport viewport = MakeViewport(width, height);
     vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
 
+    vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.View", cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                          m_pipelineLayout, 1, 2, viewSets.data(), 0, nullptr);
     const ScreenUIPushConstants projection = MakeOrthoPushConstants(width, height);
     VkDescriptorSet lastBoundDescSet = VK_NULL_HANDLE;
     VkDescriptorSet lastMaterialDescSet = VK_NULL_HANDLE;
@@ -1820,14 +1826,14 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
             encodeSample = list == ScreenUIList::Overlay && TextureNeedsDisplayEncoding(textureId) ? 1.0f : 0.0f;
         }
         if (texDescSet != lastBoundDescSet) {
-            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set0Tex", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &texDescSet,
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set3Tex", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 3, 1, &texDescSet,
                                                   0, nullptr);
             lastBoundDescSet = texDescSet;
         }
         if (materialDescSet != VK_NULL_HANDLE && materialDescSet != lastMaterialDescSet) {
-            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set1Material", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 1, 1,
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.Render.Set0Material", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1,
                                                   &materialDescSet, 0, nullptr);
             lastMaterialDescSet = materialDescSet;
         }
@@ -1893,19 +1899,21 @@ bool InxScreenUIRenderer::CreatePipeline()
     // Ortho projection plus the sampled texture's display-encoding flag.
     auto pushConstRange = MakeVertexPushConstantRange(sizeof(ScreenUIPushConstants));
     pushConstRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    std::array<VkDescriptorSetLayoutBinding, kUIMaterialTextureCapacity + 1> materialBindings{};
+    std::array<VkDescriptorSetLayoutBinding, 2 * kUIMaterialTextureCapacity + 1> materialBindings{};
     materialBindings[0] = vkrender::MakeDescriptorSetLayoutBinding(
         0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
-    for (uint32_t slot = 0; slot < kUIMaterialTextureCapacity; ++slot)
-        materialBindings[slot + 1] =
-            vkrender::MakeDescriptorSetLayoutBinding(slot + 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+    for (uint32_t slot = 0; slot < kUIMaterialTextureCapacity; ++slot) {
+        materialBindings[1 + 2 * slot] = vkrender::MakeDescriptorSetLayoutBinding(
+            1 + 2 * slot, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT);
+        materialBindings[2 + 2 * slot] = vkrender::MakeDescriptorSetLayoutBinding(
+            2 + 2 * slot, VK_DESCRIPTOR_TYPE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
+    }
     if (!vkrender::CreateDescriptorSetLayout(m_device, materialBindings.data(),
                                              static_cast<uint32_t>(materialBindings.size()),
                                              m_materialDescriptorSetLayout))
         return false;
-    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, m_materialDescriptorSetLayout, pushConstRange,
-                              m_pipelineLayout))
+    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, m_materialDescriptorSetLayout, m_viewLayouts,
+                              pushConstRange, m_pipelineLayout))
         return false;
 
     return CreateScreenPipeline(m_vertShader, m_fragShader, m_pipeline);
@@ -1926,13 +1934,13 @@ VkPipeline InxScreenUIRenderer::GetScreenPipeline(const rhi::GraphicsRenderingSi
 }
 
 bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderModule fragment, VkPipeline &pipeline,
-                                               const rhi::GraphicsRenderingSignature *target)
+                                               const rhi::GraphicsRenderingSignature *target, const char *vertexEntry,
+                                               const char *fragmentEntry)
 {
     // ---- Graphics pipeline (replicates ImGui's pipeline for scene render target) ----
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex, vertex == m_vertShader ? "vertex_main" : "main"),
-        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
-                            fragment == m_fragShader ? "fragment_main" : "main"),
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex, vertexEntry),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment, fragmentEntry),
     };
 
     VkVertexInputBindingDescription bindingDesc{};
@@ -2011,8 +2019,8 @@ bool InxScreenUIRenderer::CreateWorldPipeline()
 
     VkPushConstantRange pushConstants = MakeVertexPushConstantRange(sizeof(WorldUIPushConstants));
     pushConstants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, m_materialDescriptorSetLayout, pushConstants,
-                              m_worldPipelineLayout))
+    if (!CreatePipelineLayout(m_device, m_descriptorSetLayout, m_materialDescriptorSetLayout, m_viewLayouts,
+                              pushConstants, m_worldPipelineLayout))
         return false;
 
     rhi::GraphicsRenderingSignature target;
@@ -2024,7 +2032,8 @@ bool InxScreenUIRenderer::CreateWorldPipeline()
 }
 
 bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignature &target, VkPipeline &result,
-                                              bool alwaysOnTop, VkShaderModule vertex, VkShaderModule fragment)
+                                              bool alwaysOnTop, VkShaderModule vertex, VkShaderModule fragment,
+                                              const char *vertexEntry, const char *fragmentEntry)
 {
 
     if (vertex == VK_NULL_HANDLE)
@@ -2033,9 +2042,8 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
         fragment = m_worldFragShader;
 
     const std::array<VkPipelineShaderStageCreateInfo, 2> stages = {
-        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex, vertex == m_worldVertShader ? "vertex_main" : "main"),
-        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment,
-                            fragment == m_worldFragShader ? "fragment_main" : "main"),
+        MakeShaderStageInfo(VK_SHADER_STAGE_VERTEX_BIT, vertex, vertexEntry),
+        MakeShaderStageInfo(VK_SHADER_STAGE_FRAGMENT_BIT, fragment, fragmentEntry),
     };
     VkVertexInputBindingDescription bindingDescription{};
     bindingDescription.stride = sizeof(WorldGPUVertex);
@@ -2384,13 +2392,16 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkShaderModule vertex = VK_NULL_HANDLE;
     VkShaderModule fragment = VK_NULL_HANDLE;
-    const bool created = CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->vertexSpirv.data()),
-                                            forward->vertexSpirv.size(), vertex) &&
-                         CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->fragmentSpirv.data()),
-                                            forward->fragmentSpirv.size(), fragment) &&
-                         (domain == ShaderProgramDomain::ScreenUI
-                              ? CreateScreenPipeline(vertex, fragment, pipeline, target)
-                              : CreateWorldPipeline(*target, pipeline, alwaysOnTop, vertex, fragment));
+    const bool created =
+        CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->vertexSpirv.data()),
+                           forward->vertexSpirv.size(), vertex) &&
+        CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->fragmentSpirv.data()),
+                           forward->fragmentSpirv.size(), fragment) &&
+        (domain == ShaderProgramDomain::ScreenUI
+             ? CreateScreenPipeline(vertex, fragment, pipeline, target, forward->vertexEntryPoint.c_str(),
+                                    forward->fragmentEntryPoint.c_str())
+             : CreateWorldPipeline(*target, pipeline, alwaysOnTop, vertex, fragment, forward->vertexEntryPoint.c_str(),
+                                   forward->fragmentEntryPoint.c_str()));
     if (vertex)
         vkDestroyShaderModule(m_device, vertex, nullptr);
     if (fragment)
@@ -2510,10 +2521,9 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         MaterialUBOLayout layout{0, artifact.materialBufferSize, {}};
         ShaderReflection reflection;
         const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
-        if (!reflection.Reflect(forward->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT))
-            throw std::runtime_error("UI material parameter layout could not be reflected");
+        reflection.LoadTargetLayout(*forward->fragmentTarget, forward->fragmentEntryPoint);
         for (const auto &buffer : reflection.GetUniformBuffers())
-            if (buffer.set == 1 && buffer.binding == 0)
+            if (buffer.set == 0 && buffer.binding == 0)
                 layout.members = buffer.members;
         resource->buffer = std::make_unique<MaterialUBO>();
         if (!resource->buffer->Create(m_allocator, m_device, layout))
@@ -2531,7 +2541,7 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     VkWriteDescriptorSet bufferWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     std::vector<VkDescriptorImageInfo> imageInfos(resource->textures.size());
     std::vector<VkWriteDescriptorSet> writes;
-    writes.reserve(imageInfos.size() + 1);
+    writes.reserve(2 * imageInfos.size() + 1);
     vk::SubmissionReads uploadSources;
     if (resource->buffer) {
         bufferInfo.buffer = resource->buffer->GetBuffer();
@@ -2551,10 +2561,13 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
         imageInfos[slot] = {texture.sampler, texture.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         write.dstSet = resource->set;
-        write.dstBinding = 1 + slot;
+        write.dstBinding = 1 + 2 * slot;
         write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         write.pImageInfo = &imageInfos[slot];
+        writes.push_back(write);
+        write.dstBinding = 2 + 2 * slot;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
         writes.push_back(write);
     }
     vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -2648,7 +2661,8 @@ std::vector<InxScreenUIRenderer::WorldDepthRun> InxScreenUIRenderer::GetWorldDep
 
 void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height,
                                       const glm::mat4 &viewProjection, const rhi::GraphicsRenderingSignature &target,
-                                      uint32_t frameSlot, uint32_t cullingMask, const glm::mat4 &view,
+                                      uint32_t frameSlot, uint32_t cullingMask,
+                                      const std::array<VkDescriptorSet, 2> &viewSets, const glm::mat4 &view,
                                       const glm::mat4 &projection, const glm::mat4 &billboardView,
                                       uint32_t firstOrdinal, uint32_t endOrdinal, const Snapshot &snapshot)
 {
@@ -2766,6 +2780,9 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
     vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
     const VkRect2D scissor{{0, 0}, {width, height}};
     vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
+    vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.View", cmdBuf,
+                                          VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 1, 2, viewSets.data(),
+                                          0, nullptr);
     VkDescriptorSet lastDescriptor = VK_NULL_HANDLE;
     VkDescriptorSet lastMaterialDescriptor = VK_NULL_HANDLE;
     uint32_t submittedDraws = 0;
@@ -2824,14 +2841,14 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
         if (!ValidateTextureUsage(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(descriptor))))
             return;
         if (descriptor != lastDescriptor) {
-            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.Set0", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 0, 1,
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.Set3Tex", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 3, 1,
                                                   &descriptor, 0, nullptr);
             lastDescriptor = descriptor;
         }
         if (materialDescriptor != VK_NULL_HANDLE && materialDescriptor != lastMaterialDescriptor) {
-            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.Set1Material", cmdBuf,
-                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 1, 1,
+            vkdebug::CmdBindDescriptorSetsTracked("InxScreenUIRenderer.RenderWorld.Set0Material", cmdBuf,
+                                                  VK_PIPELINE_BIND_POINT_GRAPHICS, m_worldPipelineLayout, 0, 1,
                                                   &materialDescriptor, 0, nullptr);
             lastMaterialDescriptor = materialDescriptor;
         }

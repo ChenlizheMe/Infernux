@@ -31,7 +31,7 @@ class TypedMaterial(shader.frag):
     basis = shader.material.mat3(default=((1.0, 0.2, 0.0), (0.0, 0.8, 0.1), (0.3, 0.0, 0.9)))
     def main(self, ctx: shader.mesh_input) -> shader.vec4:
         color = self.basis @ shader.vec3(0.2, 0.4, 0.6)
-        if self.enabled and self.mask == shader.uint(2147483649):
+        if self.enabled and self.mask == 2147483649:
             return shader.vec4(color, 1.0)
         return shader.vec4(0.0)
 ''', "typed_material.frag.py", "typed_material")
@@ -49,6 +49,8 @@ class TypedMaterial(shader.frag):
     ("shader.sign(shader.vec3(-1.0, 0.0, 1.0))", "int3"),
     ("shader.dot(shader.ivec3(1, 2, 3), shader.ivec3(3, 2, 1))", "int"),
     ("shader.frame_time() + shader.frame_delta_time()", "float"),
+    ("2147483649", "uint"),
+    ("-2147483648", "int"),
 ])
 def test_intrinsic_results_keep_their_native_types(expression, kind):
     result = "shader.vec4(value, 1.0)" if kind.endswith("3") else "shader.vec4(value, 0.0, 0.0, 1.0)"

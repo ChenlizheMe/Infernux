@@ -40,7 +40,11 @@ def read_shader_info(source, source_path):
     if suffix == ".frag.py":
         bases = classes[0].bases if classes else ()
         base = qualified(bases[0]).rsplit(".", 1)[-1] if len(bases) == 1 else ""
-        result["domain"] = {"frag": "mesh", "surface": "mesh", "fullscreen": "fullscreen", "particle": "particle"}.get(base, "")
+        result["domain"] = {"frag": "mesh", "surface": "mesh", "fullscreen": "fullscreen", "particle": "particle", "screen_ui": "screen_ui", "world_ui": "world_ui"}.get(base, "")
+    if result["domain"] in {"screen_ui", "world_ui"}:
+        result.update(surface_type="transparent", render_queue=3000, cull_mode="none", depth_write=False,
+                      depth_test="off" if result["domain"] == "screen_ui" else "greater_equal", blend="alpha",
+                      cast_shadows=False, receive_shadows=False)
     declared = set()
     for declaration in classes:
         for statement in declaration.body:

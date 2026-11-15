@@ -55,7 +55,7 @@ def parse_shader_properties(filepath: str) -> list:
     from infernux.core.shader import Shader
     from infernux._compiler.shader_parameters import material_properties
     schema = Shader.get_schema(filepath)
-    return material_properties(schema["parameters"]) if schema["domain"] in {"mesh", "vertex", "particle"} else []
+    return material_properties(schema["parameters"]) if schema["domain"] in {"mesh", "vertex", "particle", "screen_ui", "world_ui"} else []
 
 
 def shader_ref_id(value) -> str:

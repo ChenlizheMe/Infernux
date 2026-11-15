@@ -137,8 +137,9 @@ class AssetReferenceCatalog:
                     continue
                 if metadata.get_bool("shader_hidden"):
                     continue
-                domain = {"shader.fragment": "mesh", "shader.particle": "particle"}.get(cache_key)
-                if domain and metadata.get_string("shader_domain") != domain:
+                domains = {"shader.fragment": ("mesh",), "shader.particle": ("particle",),
+                           "shader.ui": ("screen_ui", "world_ui")}.get(cache_key)
+                if domains and metadata.get_string("shader_domain") not in domains:
                     continue
                 name = metadata.get_string("shader_id")
             else:

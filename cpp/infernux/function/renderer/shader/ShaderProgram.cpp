@@ -202,7 +202,7 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     const bool hasReflectedBindlessTextureABI =
         std::any_of(m_descriptorBindings.begin(), m_descriptorBindings.end(), [](const auto &binding) {
             return binding.set == BindlessTextureSet && binding.binding == BindlessTextureBinding &&
-                   binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                   binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && binding.descriptorCount != 1;
         });
     if (hasReflectedBindlessTextureABI &&
         (!IsBindlessTextureEnabled() || GetBindlessTextureDescSetLayout() == VK_NULL_HANDLE)) {

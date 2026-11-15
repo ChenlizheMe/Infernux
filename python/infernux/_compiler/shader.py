@@ -38,6 +38,7 @@ class ShaderDefinition:
             self.generated_source, self.source_path, self.module_name, self.libraries, targets,
             source_ranges=self.source_ranges,
             input_kinds=tuple((field.name, field.kind) for field in self.inputs),
+            root_constants=self.domain in {"screen_ui", "world_ui"},
         )
 
 
@@ -46,8 +47,8 @@ class _Author(ParameterAuthor):
         if main.decorator_list or main.args.vararg or main.args.kwarg or main.args.kwonlyargs or main.args.defaults:
             self.error(main, "Shader entry parameters have a fixed typed signature")
         arguments = main.args.args
-        if self.is_surface and len(arguments) != 2:
-            self.error(main, "Surface accepts self and a typed surface context")
+        if (self.is_surface or self.domain in {"screen_ui", "world_ui"}) and len(arguments) != 2:
+            self.error(main, "This shader entry accepts self and its typed context")
         if not arguments or arguments[0].arg != "self":
             self.error(main, "Shader main is an instance method")
         if len(arguments) > 2:
@@ -56,11 +57,12 @@ class _Author(ParameterAuthor):
         if len(arguments) == 2:
             uv = arguments[1]
             kind = self.annotation(uv.annotation) if uv.annotation is not None else None
-            expected = ({"InxMeshInput"} if self.domain == "mesh" else {"InxParticleInput"} if self.domain == "particle"
+            expected = ({"InxUIContext"} if self.domain == "screen_ui" else {"InxWorldUIContext"} if self.domain == "world_ui" else {"InxMeshInput"} if self.domain == "mesh" else {"InxParticleInput"} if self.domain == "particle"
                         else {"float2", "InxFragmentInput", "InxMultisampleInput"})
             if kind not in expected:
                 self.error(uv, {"mesh": "Mesh input is shader.mesh_input",
-                                "particle": "Particle input is shader.ParticleContext"}.get(
+                                "particle": "Particle input is shader.ParticleContext",
+                                "screen_ui": "Screen UI input is shader.UIContext", "world_ui": "World UI input is shader.WorldUIContext"}.get(
                                     self.domain, "Fullscreen input is shader.vec2, shader.fragment_input or shader.multisample_input"))
             signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
@@ -92,6 +94,8 @@ class _Author(ParameterAuthor):
                     result + " " + entry + specialization + "(" + evaluation_signature + ")" + (semantic if marker else ""), "{", *coverage,
                     "    " + result + " color = inx_author_fragment" + arguments_specialization + "(" + argument + ");",
                     "    clip(" + alpha + " - " + threshold + ");", "    return color;", "}"]
+        if self.domain in {"screen_ui", "world_ui"}:
+            return [self.source_directive(main), result + " inx_author_ui(" + signature + ")", "{", *self.lines, "}"]
         declaration = ("InxSurfaceData inx_author_surface(" + signature + ")" if self.is_surface else
                        result + " fragment_main(" + signature + ")" + semantic)
         return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
@@ -367,9 +371,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         author.error(ast.Constant(lineno=1, col_offset=0), "Declare one shader class")
     declaration = body[0]
     bases = {author.alias + ".fullscreen": "fullscreen", author.alias + ".frag": "mesh",
-             author.alias + ".surface": "mesh", author.alias + ".particle": "particle"}
+             author.alias + ".surface": "mesh", author.alias + ".particle": "particle",
+             author.alias + ".screen_ui": "screen_ui", author.alias + ".world_ui": "world_ui"}
     if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) not in bases:
-        author.error(declaration, "Declare shader.fullscreen, shader.frag, shader.surface or shader.particle")
+        author.error(declaration, "Declare a fullscreen, mesh, particle, screen UI or world UI shader")
     author.domain = bases[author.qualified(declaration.bases[0])]
     author.lighting_mode = "true" if author.domain == "fullscreen" else "false"
     author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
@@ -433,7 +438,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.types["self." + name] = vertex.author.types["self." + name]
     parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
     inputs = tuple(field for field in author.fields.values() if isinstance(field, ShaderInput))
-    if author.domain in {"mesh", "particle"}:
+    if author.domain in {"mesh", "particle", "screen_ui", "world_ui"}:
         if inputs:
             author.error(declaration, "Material image resources are declared as material properties")
     dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
@@ -473,6 +478,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
         author.source_ranges.extend(emitter.source_ranges)
     code.extend(author.function(main))
+    if author.domain in {"screen_ui", "world_ui"}:
+        from infernux.lib import _Infernux
+        code.append(_Infernux._shader_ui_author_source(
+            author.domain == "world_ui", author.annotation(main.returns) == "InxFragmentOutput"))
     if author.domain == "particle":
         code.append(_particle_passes(author.annotation(main.returns)))
     if author.is_surface:

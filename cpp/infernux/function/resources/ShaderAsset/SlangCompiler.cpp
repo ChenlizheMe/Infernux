@@ -212,18 +212,6 @@ ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &
     return frontend(source, reader, phase, vertex);
 }
 
-ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source)
-{
-    auto result = Compile(source.source, source.libraries, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}, false,
-                          source.sourceRanges);
-    const auto schema = nlohmann::json::parse(source.schema);
-    std::vector<std::pair<std::string, std::string>> inputs;
-    for (const auto &input : schema.at("inputs"))
-        inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
-    ApplyShaderAuthorInputs(result, inputs);
-    return result;
-}
-
 ShaderCompilation SlangCompiler::CompileRootProgram(ShaderSourceModule source,
                                                     const std::vector<ShaderSourceModule> &libraries,
                                                     const std::vector<ShaderCodeTarget> &targets, bool precise,
@@ -231,17 +219,32 @@ ShaderCompilation SlangCompiler::CompileRootProgram(ShaderSourceModule source,
 {
     ShaderCompilation result;
     for (const auto target : targets) {
-        const std::string declaration = target == ShaderCodeTarget::SpirV
-                                            ? "#define INX_ROOT_CONSTANTS [[vk::push_constant]]\n"
-                                            : "#define INX_ROOT_CONSTANTS [[vk::binding(" +
-                                                  std::to_string(rhi::RootConstantBinding) + ", " +
-                                                  std::to_string(rhi::RootConstantGroup) + ")]]\n";
+        const auto declaration = target == ShaderCodeTarget::SpirV
+                                     ? "#define INX_ROOT_CONSTANTS [[vk::push_constant]]\n"
+                                     : "#define INX_ROOT_CONSTANTS [[vk::binding(" +
+                                           std::to_string(rhi::RootConstantBinding) + ", " +
+                                           std::to_string(rhi::RootConstantGroup) + ")]]\n";
         const ShaderSourceModule prepared{source.name, source.path, declaration + "#line 1\n" + source.source};
         auto compiled = Compile(prepared, libraries, {target}, precise, sourceRanges);
         result.targets.push_back(std::move(compiled.targets.front()));
         result.diagnostics.insert(result.diagnostics.end(), std::make_move_iterator(compiled.diagnostics.begin()),
                                   std::make_move_iterator(compiled.diagnostics.end()));
     }
+    return result;
+}
+
+ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source)
+{
+    const auto schema = nlohmann::json::parse(source.schema);
+    const auto &domain = schema.at("domain");
+    const std::vector<ShaderCodeTarget> targets{ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl};
+    auto result = domain == "screen_ui" || domain == "world_ui"
+                      ? CompileRootProgram(source.source, source.libraries, targets, false, source.sourceRanges)
+                      : Compile(source.source, source.libraries, targets, false, source.sourceRanges);
+    std::vector<std::pair<std::string, std::string>> inputs;
+    for (const auto &input : schema.at("inputs"))
+        inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
+    ApplyShaderAuthorInputs(result, inputs);
     return result;
 }
 

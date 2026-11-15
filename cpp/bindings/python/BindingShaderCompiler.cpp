@@ -7,6 +7,7 @@
 #include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangParticleModule.h>
+#include <function/resources/ShaderAsset/SlangUIModule.h>
 
 #include <pybind11/stl.h>
 #include <stdexcept>
@@ -218,12 +219,15 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         py::arg("guid"), py::call_guard<py::gil_scoped_release>());
     m.def("_slang_version", [] { return SlangCompiler::Get().GetVersion(); }, py::call_guard<py::gil_scoped_release>());
 
+    m.def("_shader_ui_author_source", &GetSlangUIAuthorSource, py::arg("world"), py::arg("depth"),
+          py::call_guard<py::gil_scoped_release>());
+
     m.def(
         "_compile_shader_program",
         [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,
            const std::vector<std::tuple<std::string, std::string, std::string>> &libraries,
            const std::vector<std::string> &targetNames, bool precise, const std::vector<SourceRangeTuple> &sourceRanges,
-           const std::vector<std::pair<std::string, std::string>> &inputKinds) {
+           const std::vector<std::pair<std::string, std::string>> &inputKinds, bool rootConstants) {
             std::vector<ShaderSourceModule> modules;
             for (const auto &[name, path, text] : libraries)
                 modules.push_back({name, path, text});
@@ -242,8 +246,12 @@ void RegisterShaderCompilerBindings(py::module_ &m)
             ShaderCompilation compiled;
             {
                 py::gil_scoped_release release;
-                compiled = SlangCompiler::Get().Compile({moduleName, sourcePath, source}, modules, targets, precise,
-                                                        SourceRanges(sourceRanges));
+                const ShaderSourceModule module{moduleName, sourcePath, source};
+                auto &compiler = SlangCompiler::Get();
+                compiled =
+                    rootConstants
+                        ? compiler.CompileRootProgram(module, modules, targets, precise, SourceRanges(sourceRanges))
+                        : compiler.Compile(module, modules, targets, precise, SourceRanges(sourceRanges));
                 ApplyShaderAuthorInputs(compiled, inputKinds);
             }
             py::dict result;
@@ -323,7 +331,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         py::arg("libraries") = std::vector<std::tuple<std::string, std::string, std::string>>{},
         py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false,
         py::arg("source_ranges") = std::vector<SourceRangeTuple>{},
-        py::arg("input_kinds") = std::vector<std::pair<std::string, std::string>>{});
+        py::arg("input_kinds") = std::vector<std::pair<std::string, std::string>>{}, py::arg("root_constants") = false);
 }
 
 } // namespace infernux

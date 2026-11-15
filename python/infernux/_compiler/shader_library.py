@@ -23,7 +23,8 @@ _ENGINE_FUNCTIONS.update({
     "lighting.six_way_smoke": ("inx_particle_six_way_smoke", "float3", (
         "InxParticleInput", "float3", "float3", "float3", "float", "float", "float", "float", "float")),
 })
-_ENGINE_MODULES = {"inx_particle": ("ParticleContext",),
+_ENGINE_MODULES = {"inx_ui_context": ("UIContext", "WorldUIContext"),
+                   "inx_particle": ("ParticleContext",),
                    "inx_particle_lighting": ("lighting.particle_pbr", "lighting.six_way_smoke"),
                    "inx_frame": ("frame_time", "frame_delta_time", "view", "ViewContext"),
                    "inx_camera": ("camera", "CameraContext")}
@@ -163,7 +164,8 @@ class ShaderEmitter(SlangEmitter):
         if operation in _ENGINE_FUNCTIONS and operation != qualified(node.func):
             symbol, _, arguments = _ENGINE_FUNCTIONS[operation]
             if node.keywords or len(node.args) != len(arguments):
-                self.error(node, "shader." + operation + " takes " + str(len(arguments)) + " arguments", code="author.type")
+                count = str(len(arguments)) if arguments else "no"
+                self.error(node, "shader." + operation + " takes " + count + " arguments", code="author.type")
             for value, kind in zip(node.args, arguments):
                 if self.infer(value) != kind:
                     self.error(value, "shader." + operation + " requires " + kind, code="author.type")

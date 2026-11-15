@@ -29,11 +29,17 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     result.compilation = compilation;
     result.key.stages = {std::move(vertexKey), std::move(guid)};
     const bool particle = source.at("domain") == "particle";
-    result.domain = particle ? ShaderProgramDomain::ParticleSprite : ShaderProgramDomain::Mesh;
+    const bool screenUI = source.at("domain") == "screen_ui";
+    const bool worldUI = source.at("domain") == "world_ui";
+    const bool ui = screenUI || worldUI;
+    result.domain = screenUI   ? ShaderProgramDomain::ScreenUI
+                    : worldUI  ? ShaderProgramDomain::WorldUI
+                    : particle ? ShaderProgramDomain::ParticleSprite
+                               : ShaderProgramDomain::Mesh;
     const bool surface = source.value("surface", false);
     result.shadingModel = surface ? source.at("shading_model").get<std::string>() : "";
-    result.compatibilitySignature = ComputeShaderProgramRevision(schema, particle ? "InxParticleInput" : "InxMeshInput",
-                                                                 ShaderCompileTarget::Forward, 0);
+    result.compatibilitySignature =
+        ComputeShaderProgramRevision(schema, source.at("domain").get<std::string>(), ShaderCompileTarget::Forward, 0);
     result.materialLayoutSignature = result.compatibilitySignature;
     const auto uniform = std::find_if(target->resources.begin(), target->resources.end(), [](const auto &resource) {
         return resource.set == 0 && resource.binding.binding == 0 &&
@@ -108,6 +114,11 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
         variant.fragmentTarget = publication;
         result.variants.push_back(std::move(variant));
     };
+    if (ui) {
+        addVariant(ShaderCompileTarget::Forward, "vertex_main", "fragment_main");
+        result.key.revision = ComputeShaderProgramArtifactRevision(result);
+        return result;
+    }
     if (particle) {
         addVariant(ShaderCompileTarget::Forward, nullptr, "fragment_main");
         addVariant(ShaderCompileTarget::ForwardPlus, nullptr, "fragment_forward_plus");
