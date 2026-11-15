@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <function/renderer/gui/InxGUIContext.h>
 #include <imgui.h>
 
@@ -22,7 +23,7 @@ struct Fixture
 {
     Fixture()
     {
-        ImGui::CreateContext();
+        CreateImGuiTestContext();
         auto &io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;

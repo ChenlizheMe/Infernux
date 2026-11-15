@@ -798,12 +798,13 @@ void RegisterGUIBindings(py::module_ &m)
         .def(
             "image_button",
             [](InxGUIContext &ctx, const std::string &id, uint64_t textureId, float width, float height, float uv0_x,
-               float uv0_y, float uv1_x, float uv1_y) {
+               float uv0_y, float uv1_x, float uv1_y, float tint_r, float tint_g, float tint_b, float tint_a) {
                 return ctx.ImageButton(id, reinterpret_cast<void *>(textureId), width, height, uv0_x, uv0_y, uv1_x,
-                                       uv1_y);
+                                       uv1_y, tint_r, tint_g, tint_b, tint_a);
             },
             py::arg("id"), py::arg("texture_id"), py::arg("width"), py::arg("height"), py::arg("uv0_x") = 0.0f,
-            py::arg("uv0_y") = 0.0f, py::arg("uv1_x") = 1.0f, py::arg("uv1_y") = 1.0f)
+            py::arg("uv0_y") = 0.0f, py::arg("uv1_x") = 1.0f, py::arg("uv1_y") = 1.0f,
+            py::arg("tint_r") = 1.0f, py::arg("tint_g") = 1.0f, py::arg("tint_b") = 1.0f, py::arg("tint_a") = 1.0f)
         .def("begin_table", &InxGUIContext::BeginTable)
         .def("end_table", &InxGUIContext::EndTable)
         .def("table_setup_column", &InxGUIContext::TableSetupColumn)

@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <SDL3/SDL.h>
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/VkShaderCache.h>
@@ -599,13 +600,12 @@ int main(int argc, char **argv)
                          0, nullptr, 1, &image);
     finish();
 
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(128, 128);
     io.DeltaTime = 1.f / 60;
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
-    io.Fonts->AddFontDefault();
     assert(io.Fonts->Build());
     io.Fonts->SetTexID(static_cast<ImTextureID>(reinterpret_cast<uintptr_t>(device.Resolve(group))));
     ImGui::NewFrame();

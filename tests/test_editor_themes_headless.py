@@ -15,7 +15,7 @@ from infernux import lib as native
 from infernux.engine.editor_themes import EditorThemes
 from infernux.engine.preferences_store import PreferencesStore
 from infernux.engine.ui.theme import Theme, on_theme_changed
-from infernux.theme_data import validate_theme_document
+from infernux.theme_data import theme_token_names, validate_theme_document
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -53,6 +53,46 @@ def write(service, name="sample.theme.json", document=None, reference="tests/the
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document or {"id": "sample"}), encoding="utf-8")
     return path
+
+
+def test_surface_styles_follow_theme_publication_and_preserve_player_defaults(service):
+    document = {"id": "sample", "colors": {
+        "ROLE_TEXT": [0.2, 0.3, 0.4, 1],
+        "PANEL_GRADIENT_TOP": [0.03, 0.12, 0.25, 0.8],
+        "PANEL_GRADIENT_BOTTOM": [0.01, 0.04, 0.08, 0.2],
+        "BUTTON_ACTIVE_GRADIENT_TOP": [0.1, 0.4, 0.8, 1],
+        "SURFACE_HEX_TINT": [0.1, 0.5, 0.9, 1],
+    }, "floats": {"PANEL_CORNER_CUT": 10, "PANEL_FRAME_WIDTH": 1.2,
+                  "SURFACE_HEX_OPACITY": 0.16, "SURFACE_GRAIN_SCALE": 0.75}}
+    before = Theme.UI_DEFAULT_BUTTON_BG
+    path = write(service, document=document)
+    service.refresh_all()
+    service.select("tests/theme/sample")
+    assert not service.errors
+    assert Theme.PANEL_CORNER_CUT == 10
+    assert Theme.SCENE_TOOL_ICON == pytest.approx(document["colors"]["ROLE_TEXT"])
+    assert Theme.PANEL_GRADIENT_TOP == pytest.approx(document["colors"]["PANEL_GRADIENT_TOP"])
+    assert Theme.SURFACE_HEX_OPACITY == pytest.approx(0.16)
+    document["floats"]["PANEL_CORNER_CUT"] = 6
+    path.write_text(json.dumps(document), encoding="utf-8")
+    service.resource_changed(path)
+    assert Theme.PANEL_CORNER_CUT == 6
+    service.remove_package("tests/theme")
+    assert Theme.PANEL_CORNER_CUT == Theme.SURFACE_HEX_OPACITY == 0
+    assert Theme.UI_DEFAULT_BUTTON_BG == before
+
+
+@pytest.mark.parametrize("token,value", [
+    ("SURFACE_GRAIN_OPACITY", -0.1), ("SURFACE_HEX_OPACITY", 1.1),
+    ("SURFACE_GRAIN_SCALE", 0), ("SURFACE_HEX_SCALE", 9),
+    ("PANEL_CORNER_CUT", -1), ("BUTTON_GLOW_RADIUS", -1),
+])
+def test_packager_and_native_registry_reject_invalid_surface_dimensions(token, value):
+    tokens = theme_token_names((ROOT / "cpp/infernux/function/editor/EditorThemeTable.inl").read_text(encoding="utf-8"))
+    with pytest.raises(ValueError):
+        validate_theme_document({"id": "surface", "floats": {token: value}}, tokens)
+    with pytest.raises(ValueError):
+        native.register_editor_theme("tests/surface", "theme:tests/surface", {}, {}, {token: value})
 
 
 @pytest.mark.parametrize("document", [

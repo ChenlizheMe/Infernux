@@ -262,6 +262,8 @@ class InxGUI
     SDL_Window *m_window_ptr = nullptr;
     ImGuiContext *m_imguiContext_ptr = nullptr;
     std::unique_ptr<InxGUIContext> m_guiContext;
+    uint64_t m_surfaceGrainUpload = 0;
+    uint64_t m_surfaceHexUpload = 0;
     float m_dpiScale = 1.0f;
     VkDescriptorPool m_descriptorPool_vk = VK_NULL_HANDLE;
 
@@ -310,6 +312,7 @@ class InxGUI
     EditorGuiFrameScheduler m_editorFrameScheduler;
 
     void ApplyPendingDockTabSelections();
+    void DrawThemeSurface();
     void PromoteActiveModal();
     void DeferTextureRelease(ImGuiTextureResource resource);
     void ReleaseTextureResource(ImGuiTextureResource &resource);

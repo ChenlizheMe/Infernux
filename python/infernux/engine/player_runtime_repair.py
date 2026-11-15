@@ -189,12 +189,20 @@ def prepare_player_runtime(request, installed_root, inspect, *, options=None):
     or newly compiled payload can be returned. Failures never publish a partial
     replacement. Build logs survive failure and cancellation.
     """
+    installed = Path(installed_root).resolve()
+    try:
+        inspect(installed)
+        return installed
+    except (OSError, ValueError, RuntimeError) as mismatch:
+        request.report("runtime-rebuild", 0, 1, str(mismatch))
+
+    # Compatible authoring/CI payloads are read-only inputs. Only an actual
+    # rebuild publishes files and therefore requires an installed owner.
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version
     from infernux.plugins.registry import PluginRegistry
     from infernux.version import ENGINE_COMPATIBILITY_VERSION
 
-    installed = Path(installed_root).resolve()
     registry = PluginRegistry(str(request.project_root))
     package = registry.installed_package_for_path(str(installed))
     if not package.get("enabled", True):
@@ -203,11 +211,6 @@ def prepare_player_runtime(request, installed_root, inspect, *, options=None):
     if Version(ENGINE_COMPATIBILITY_VERSION) not in SpecifierSet(requirement):
         raise RuntimeError(f"Platform plugin {package['reference']} requires Infernux {requirement}; "
                            f"the running engine is {ENGINE_COMPATIBILITY_VERSION}")
-    try:
-        inspect(installed)
-        return installed
-    except (OSError, ValueError, RuntimeError) as mismatch:
-        request.report("runtime-rebuild", 0, 1, str(mismatch))
     identity = f"{ENGINE_RELEASE}/{request.target}/cp{sys.version_info.major}{sys.version_info.minor}/{sys.platform}/{platform.machine()}"
     key = hashlib.sha256(identity.encode()).hexdigest()[:16]
     cache = Path(request.project_root) / "Library/PlayerRuntime" / key

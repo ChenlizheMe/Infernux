@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <function/renderer/gui/InxTextLayout.h>
 
 #include <array>
@@ -156,13 +157,12 @@ int main()
     AllocationAudit audit;
     ImGui::GetAllocatorFunctions(&audit.allocate, &audit.free, &audit.context);
     ImGui::SetAllocatorFunctions(AllocationAudit::Allocate, AllocationAudit::Free, &audit);
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1280, 720);
     io.DeltaTime = 1.f / 60;
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasVtxOffset;
-    io.Fonts->AddFontDefault();
     ImGui::NewFrame();
     {
         const std::string literal = "中e\xCC\x81<size=200%><br><noparse>A";
@@ -475,7 +475,7 @@ int main()
     assert(infernux::textlayout::GetFontCache().empty());
     assert(infernux::textlayout::GetMissingFonts().empty());
     io.Fonts->Clear();
-    io.Fonts->AddFontDefault();
+    InstallImGuiTestFont();
     ImGui::NewFrame();
     const auto reloaded = infernux::textlayout::LayoutText(explicitChain);
     assert(reloaded.font && reloaded.fallbackFonts.size() == 1);

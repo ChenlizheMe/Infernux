@@ -13,6 +13,7 @@
 #include <cstring>
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
+#include <function/editor/EditorThemeDrawing.h>
 #include <imgui_internal.h>
 #include <limits>
 #include <misc/cpp/imgui_stdlib.h>
@@ -201,7 +202,45 @@ void InxGUIContext::TextWrapped(const std::string &text)
 /* buttons / clickables */
 bool InxGUIContext::Button(const std::string &label, std::function<void()> onClick, float width, float height)
 {
-    bool clicked = ImGui::Button(label.c_str(), ImVec2(width, height));
+    if (ImGui::GetCurrentWindow()->SkipItems)
+        return false;
+    const auto &styles = theme_drawing::ActiveStyles();
+    bool clicked;
+    if (styles.button.HasFill()) {
+        auto appearance = styles.button;
+        // Preserve ImGui's hit testing, navigation and text. The lower draw
+        // channel supplies theme chrome without covering the button caption.
+        auto *draw = ImGui::GetWindowDrawList();
+        // Merge finishes before onClick can re-enter. Retain the two small
+        // channels on the UI thread instead of allocating them per button.
+        static thread_local ImDrawListSplitter layers;
+        layers.Split(draw, 2);
+        layers.SetCurrentChannel(draw, 1);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+        clicked = ImGui::Button(label.c_str(), ImVec2(width, height));
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemActive() && styles.buttonActiveTop.w > 0.0f) {
+            appearance.top = styles.buttonActiveTop;
+            appearance.bottom = styles.buttonActiveBottom;
+        } else if (ImGui::IsItemHovered() && styles.buttonHoverTop.w > 0.0f) {
+            appearance.top = styles.buttonHoverTop;
+            appearance.bottom = styles.buttonHoverBottom;
+        }
+        layers.SetCurrentChannel(draw, 0);
+        if (ImGui::IsItemVisible()) {
+            const ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+            theme_drawing::Fill(draw, rect, appearance, GetDpiScale(), ImGui::GetStyle().FrameRounding);
+            theme_drawing::Border(draw, rect, appearance, GetDpiScale());
+        }
+        layers.Merge(draw);
+    } else {
+        clicked = ImGui::Button(label.c_str(), ImVec2(width, height));
+        if (styles.button.HasBorder() && ImGui::IsItemVisible())
+            theme_drawing::Border(ImGui::GetWindowDrawList(), ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax()),
+                                  styles.button, GetDpiScale());
+    }
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("button", label);
     if (clicked && onClick)
@@ -247,13 +286,21 @@ bool InxGUIContext::SelectableRow(const std::string &label, bool selected, const
     const float statusLeft = std::max(origin.x + inset, right - statusSize.x);
     const ImRect nameClip(ImVec2(origin.x + inset, origin.y),
                           ImVec2(std::max(origin.x + inset, statusLeft - inset), origin.y + rowHeight));
-    ImGui::RenderTextClipped(nameClip.Min, nameClip.Max, label.c_str(), ImGui::FindRenderedTextEnd(label.c_str()),
-                             nullptr, ImVec2(0.0f, 0.5f), &nameClip);
+    // Font glyphs can overhang their advance (including Maple's raster guard).
+    // Clip actual glyph quads even when the nominal text width fits the column.
+    const auto caption = [](const char *text, const char *end, ImVec2 size, const ImRect &clip, float align, ImU32 color) {
+        const ImVec2 position(std::max(clip.Min.x, clip.Min.x + (clip.GetWidth() - size.x) * align),
+                              std::max(clip.Min.y, clip.Min.y + (clip.GetHeight() - size.y) * 0.5f));
+        const ImVec4 fineClip(clip.Min.x, clip.Min.y, clip.Max.x, clip.Max.y);
+        ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(), position, color,
+                                           text, end, 0.0f, &fineClip);
+    };
+    const char *nameEnd = ImGui::FindRenderedTextEnd(label.c_str());
+    caption(label.c_str(), nameEnd, ImGui::CalcTextSize(label.c_str(), nameEnd), nameClip, 0.0f,
+            ImGui::GetColorU32(ImGuiCol_Text));
     const ImRect statusClip(ImVec2(statusLeft, origin.y), ImVec2(right, origin.y + rowHeight));
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(statusColor[0], statusColor[1], statusColor[2], statusColor[3]));
-    ImGui::RenderTextClipped(statusClip.Min, statusClip.Max, status.c_str(), nullptr, &statusSize, ImVec2(1.0f, 0.5f),
-                             &statusClip);
-    ImGui::PopStyleColor();
+    caption(status.c_str(), nullptr, statusSize, statusClip, 1.0f,
+            ImGui::GetColorU32(ImVec4(statusColor[0], statusColor[1], statusColor[2], statusColor[3])));
     return clicked;
 }
 
@@ -1091,8 +1138,11 @@ bool InxGUIContext::BeginChild(const std::string &id, float width, float height,
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ++m_childBgTransparentCount;
     }
-    return ImGui::BeginChild(id.c_str(), ImVec2(width, height), border ? ImGuiChildFlags_Borders : 0,
-                             static_cast<ImGuiWindowFlags>(flags));
+    const bool visible = ImGui::BeginChild(id.c_str(), ImVec2(width, height), border ? ImGuiChildFlags_Borders : 0,
+                                          static_cast<ImGuiWindowFlags>(flags));
+    if (visible && !inPopup)
+        DrawWindowSurface();
+    return visible;
 }
 
 void InxGUIContext::EndChild()
@@ -1123,6 +1173,7 @@ bool InxGUIContext::BeginPopup(const std::string &id)
     ImGui::PopStyleVar(chromeVars);
     if (open) {
         PushPopupContentStyle();
+        DrawWindowSurface();
         RecordSemanticWindow("popup", id, id);
     }
     return open;
@@ -1146,6 +1197,7 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
         // Modals are closed through the shared EndPopup wrapper, which pops
         // one content-style entry — keep the stack balanced.
         PushPopupContentStyle();
+        DrawWindowSurface();
         ImGuiWindow *window = ImGui::GetCurrentWindow();
         // Docking preserves the display order of undocked windows even when
         // they are submitted before this popup. A modal must remain above
@@ -1186,6 +1238,7 @@ bool InxGUIContext::BeginPopupContextItem(const std::string &id, int mouseButton
     ImGui::PopStyleVar(chromeVars);
     if (open) {
         PushPopupContentStyle();
+        DrawWindowSurface();
         RecordSemanticWindow("context_menu", id, id);
     }
     return open;
@@ -1202,6 +1255,7 @@ bool InxGUIContext::BeginPopupContextWindow(const std::string &id, int mouseButt
     ImGui::PopStyleVar(chromeVars);
     if (open) {
         PushPopupContentStyle();
+        DrawWindowSurface();
         RecordSemanticWindow("context_menu", id, id);
     }
     return open;
@@ -1239,12 +1293,14 @@ void InxGUIContext::Image(void *textureId, float width, float height, float uv0_
 }
 
 bool InxGUIContext::ImageButton(const std::string &id, void *textureId, float width, float height, float uv0_x,
-                                float uv0_y, float uv1_x, float uv1_y)
+                                float uv0_y, float uv1_x, float uv1_y, float tint_r, float tint_g,
+                                float tint_b, float tint_a)
 {
     if (!textureId)
         return false;
     const bool clicked = ImGui::ImageButton(id.c_str(), reinterpret_cast<ImTextureID>(textureId), ImVec2(width, height),
-                                            ImVec2(uv0_x, uv0_y), ImVec2(uv1_x, uv1_y));
+                                            ImVec2(uv0_x, uv0_y), ImVec2(uv1_x, uv1_y), ImVec4(0, 0, 0, 0),
+                                            ImVec4(tint_r, tint_g, tint_b, tint_a));
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("image_button", id, true, id);
     return clicked;
@@ -1324,6 +1380,8 @@ bool InxGUIContext::BeginWindow(const std::string &name, bool *open, int flags)
 {
     ConstrainNextFloatingWindowToMainViewport(name.c_str(), flags);
     const bool visible = ImGui::Begin(name.c_str(), open, flags);
+    if (visible)
+        DrawWindowSurface();
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     if (captureSemantics)
         RecordSemanticWindow("window", name, WindowSemanticId(name));
@@ -2778,12 +2836,12 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const float dpi = GetDpiScale();
     // Unity ObjectField: one shared frame height, left text inset, picker flush
     // to the right. Hover/active fill covers the whole control (body + picker).
-    constexpr ImVec4 bodyIdleColor{0.10f, 0.10f, 0.10f, 0.82f};
-    constexpr ImVec4 bodyHoverColor{0.20f, 0.18f, 0.18f, 0.95f};
-    constexpr ImVec4 bodyActiveColor{0.28f, 0.22f, 0.22f, 1.0f};
-    constexpr ImVec4 borderIdleColor{0.22f, 0.22f, 0.22f, 1.0f};
-    constexpr ImVec4 borderHoverColor{0.42f, 0.36f, 0.36f, 1.0f};
-    constexpr ImVec4 borderActiveColor{0.55f, 0.38f, 0.38f, 1.0f};
+    const ImVec4 bodyIdleColor = EditorThemeRegistry::Color("FRAME_BG");
+    const ImVec4 bodyHoverColor = EditorThemeRegistry::Color("FRAME_BG_HOVERED");
+    const ImVec4 bodyActiveColor = EditorThemeRegistry::Color("FRAME_BG_ACTIVE");
+    const ImVec4 borderIdleColor = EditorThemeRegistry::Color("BORDER");
+    const ImVec4 borderHoverColor = EditorThemeRegistry::Color("ROLE_ACCENT");
+    const ImVec4 borderActiveColor = EditorThemeRegistry::Color("ROLE_ACCENT");
     const ImVec4 buttonIdleColor = EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_IDLE");
     const ImVec4 buttonHoverColor = EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_HOVER");
     const ImVec4 buttonActiveColor = EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_ACTIVE");

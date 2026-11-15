@@ -9,7 +9,9 @@ import importlib
 import json
 import os
 import platform
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -148,6 +150,41 @@ def _installed_exporter_registry(project: Path, target: str):
     return registry
 
 
+def _install_source_platform(project: Path, target: str, *, editor_root_override: Path | None = None):
+    """Consume source-built artifacts through a real project installation."""
+    from infernux.plugins import InxPackage, PluginManager, PluginRegistry
+
+    plugin = EXPORTERS[target][0]
+    # One candidate project reuses its installed payload for development and
+    # release runs, including any ABI repair completed by its first build.
+    if PluginRegistry(str(project)).is_installed("infernux/platform-" + plugin):
+        return
+    source = PLUGIN_EDITORS[plugin].resolve().parent
+    editor = editor_root_override.expanduser().resolve() if editor_root_override else source / "editor"
+    cache = project / ".runtime" / "platform-acceptance"
+    cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("INFERNUX_PACKAGE_CACHE_ROOT", str(cache / "packages"))
+    with tempfile.TemporaryDirectory(prefix="install-", dir=cache) as temporary:
+        stage = Path(temporary) / "package"
+        stage.mkdir()
+        for member in source.iterdir():
+            if member.name.casefold() == "editor":
+                continue
+            if member.is_dir():
+                shutil.copytree(member, stage / member.name)
+            else:
+                shutil.copy2(member, stage / member.name)
+        shutil.copytree(editor, stage / "editor")
+        archive = Path(temporary) / "platform.inxpkg"
+        preview = InxPackage.export_source(str(stage), str(archive))
+        manager = PluginManager(str(project), runtime=True, installation_only=True)
+        try:
+            manager.install_package(str(archive), install_dependencies=False,
+                                    update=manager.registry.is_installed(preview.metadata["reference"]))
+        finally:
+            manager.shutdown()
+
+
 def _prepare_project_registry(project: Path, *, runtime_host: bool = True):
     """Load project-authored types before cooking project data assets.
 
@@ -258,8 +295,8 @@ def _parser() -> argparse.ArgumentParser:
         "--plugin-editor-root",
         type=Path,
         help=(
-            "Explicit editor root for the selected source platform plugin. "
-            "Release engineering uses this to consume an out-of-source working package."
+            "Editor payload to install for the selected source platform plugin. "
+            "Release engineering uses this for an out-of-source working package."
         ),
     )
     parser.add_argument(
@@ -322,7 +359,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine_origins = _prepare_engine(installed=arguments.installed)
     from infernux.engine.build import (
         BuildConfiguration,
-        BuildExporterRegistry,
         BuildProfile,
         BuildRequest,
         BuildService,
@@ -372,16 +408,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         progress=on_progress,
     )
-    if arguments.installed:
-        registry = _installed_exporter_registry(project, arguments.target)
-    else:
-        _prepare_project_registry(project)
-        exporter = _load_exporter(
-            arguments.target,
-            editor_root_override=arguments.plugin_editor_root,
-        )
-        registry = BuildExporterRegistry()
-        registry.register("tests/acceptance/build-player", exporter)
+    if not arguments.installed:
+        _install_source_platform(project, arguments.target, editor_root_override=arguments.plugin_editor_root)
+    registry = _installed_exporter_registry(project, arguments.target)
     service = BuildService(registry)
     try:
         plan = service.create_plan(request)

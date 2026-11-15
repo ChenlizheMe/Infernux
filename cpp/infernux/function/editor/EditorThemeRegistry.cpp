@@ -54,7 +54,8 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
                               "INSPECTOR_HEADER_TERTIARY", "INSPECTOR_HEADER_LIST", "PREFAB_HEADER_BG",
                               "PROJECT_EXPAND_STRIP_BG", "PROJECT_SUBASSET_CELL_BG", "UI_EDITOR_CANVAS_HEADER_BG"});
     derive("ROLE_BG_HOVER", {"HIERARCHY_ROW_HOVER", "BTN_SUBTLE_HOVER", "FRAME_BG_HOVERED"});
-    derive("ROLE_TEXT", {"TEXT", "LOG_INFO", "META_TEXT", "UI_EDITOR_CANVAS_HEADER_TEXT", "CURVE_EDITOR_KEY"});
+    derive("ROLE_TEXT", {"TEXT", "LOG_INFO", "META_TEXT", "UI_EDITOR_CANVAS_HEADER_TEXT", "CURVE_EDITOR_KEY",
+                         "SCENE_TOOL_ICON", "SCENE_TOOL_ICON_SELECTED"});
     derive("ROLE_TEXT_DIM", {"TEXT_DISABLED", "TEXT_DIM", "TEXT_DIM2", "LOG_TRACE", "LOG_BADGE",
                              "STATUS_PROGRESS_LABEL_CLR", "UI_EDITOR_LABEL_COLOR", "UI_EDITOR_FALLBACK_TEXT"});
     derive("ROLE_BORDER", {"BORDER", "STATUS_BAR_BORDER", "INSPECTOR_LIST_BODY_BORDER", "UI_EDITOR_CANVAS_BORDER",
@@ -64,7 +65,7 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
     derive("ROLE_SUCCESS", {"SUCCESS_TEXT"});
     derive("ROLE_ACCENT", {"APPLY_BUTTON", "PREFAB_TEXT", "PREFAB_TEXT2", "STATUS_PROGRESS_CLR", "SELECTION_BG",
                            "BTN_SELECTED", "HIERARCHY_ROW_SELECTED", "INSPECTOR_INLINE_BTN_ACTIVE", "INSPECTOR_INLINE_BTN_ON",
-                           "PREFAB_BTN_NORMAL", "TREE_DND_LINE_CLR", "UI_EDITOR_ALIGN_GUIDE", "UI_EDITOR_ALIGN_GUIDE_FAINT",
+                           "PREFAB_BTN_NORMAL", "SCENE_TOOL_SELECTED_BG", "TREE_DND_LINE_CLR", "UI_EDITOR_ALIGN_GUIDE", "UI_EDITOR_ALIGN_GUIDE_FAINT",
                            "UI_EDITOR_ELEMENT_HOVER", "UI_EDITOR_ELEMENT_SELECT", "CURVE_EDITOR_LINE", "CURVE_EDITOR_KEY_SELECTED"});
     const bool accent = overrides.count("ROLE_ACCENT") != 0;
     if (accent) {
@@ -74,6 +75,8 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
     if (accent || overrides.count("ROLE_TEXT") || overrides.count("ROLE_BG_BASE")) {
         theme.colors["PREFAB_BTN_HOVERED"] = Mix(theme.colors.at("ROLE_ACCENT"), theme.colors.at("ROLE_TEXT"), 0.18f);
         theme.colors["PREFAB_BTN_ACTIVE"] = Mix(theme.colors.at("ROLE_ACCENT"), theme.colors.at("ROLE_BG_BASE"), 0.12f);
+        theme.colors["SCENE_TOOL_SELECTED_HOVER"] = theme.colors.at("PREFAB_BTN_HOVERED");
+        theme.colors["SCENE_TOOL_SELECTED_ACTIVE"] = theme.colors.at("PREFAB_BTN_ACTIVE");
     }
     if (accent || overrides.count("ROLE_BG_SURFACE") || overrides.count("ROLE_BG_HOVER") || overrides.count("ROLE_BG_RAISED")) {
         const auto tint = [&](std::initializer_list<const char *> tokens, const char *surface, float strength) {
@@ -282,6 +285,12 @@ static ThemeData BuildDeclaredTheme(const std::unordered_map<std::string, ImVec4
             throw std::invalid_argument("Editor dimensions must be finite: " + key);
         if (key.rfind("GLOBAL_", 0) == 0 && value < 0.0f)
             throw std::invalid_argument("Global editor dimensions must be non-negative: " + key);
+        if ((key.rfind("PANEL_", 0) == 0 || key.rfind("BUTTON_", 0) == 0) && value < 0.0f)
+            throw std::invalid_argument("Theme chrome dimensions must be non-negative: " + key);
+        if ((key == "SURFACE_GRAIN_OPACITY" || key == "SURFACE_HEX_OPACITY") && (value < 0.0f || value > 1.0f))
+            throw std::invalid_argument("Surface opacity must be in [0, 1]: " + key);
+        if ((key == "SURFACE_GRAIN_SCALE" || key == "SURFACE_HEX_SCALE") && (value < 0.25f || value > 8.0f))
+            throw std::invalid_argument("Surface scale must be in [0.25, 8]: " + key);
         base.floats[key] = value;
     }
     return base;

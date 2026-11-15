@@ -174,6 +174,9 @@ class InxGUIContext
                         float width = 0.0f, int maxVisibleItems = 8, const std::string &searchHint = "Filter...",
                         const std::string &emptyText = "No results");
 
+    void SetSurfaceRenderer(std::function<void()> render) { m_surfaceRenderer = std::move(render); }
+    void DrawWindowSurface() { if (m_surfaceRenderer) m_surfaceRenderer(); }
+
     using TransientBeginHandler =
         std::function<void(const std::string &, const std::string &, int, std::function<bool()>)>;
     using TransientEndHandler = std::function<void(const std::string &)>;
@@ -261,7 +264,8 @@ class InxGUIContext
     void Image(void *textureId, float width, float height, float uv0_x = 0.0f, float uv0_y = 0.0f, float uv1_x = 1.0f,
                float uv1_y = 1.0f);
     bool ImageButton(const std::string &id, void *textureId, float width, float height, float uv0_x = 0.0f,
-                     float uv0_y = 0.0f, float uv1_x = 1.0f, float uv1_y = 1.0f);
+                     float uv0_y = 0.0f, float uv1_x = 1.0f, float uv1_y = 1.0f,
+                     float tint_r = 1.0f, float tint_g = 1.0f, float tint_b = 1.0f, float tint_a = 1.0f);
 
     /* tables */
     bool BeginTable(const std::string &id, int columns, int flags = 0, float innerWidth = 0.0f);
@@ -478,6 +482,7 @@ class InxGUIContext
                                                                           uint64_t pickerTextureId, float labelWidth);
 
   private:
+    std::function<void()> m_surfaceRenderer;
     struct FramedGroup
     {
         ImDrawListSplitter splitter;

@@ -104,41 +104,32 @@ int main() {
                     publication->GetView(),publication->GetSampler(),slot,publication};
             };
             particle::ParticleGpuSurfaceBinding surface;
-            assert(surface.Create(device,artifact,material,{}, {},resolver,nullptr));
+            const bool initiallyReady = surface.Create(device,artifact,material,{}, {},resolver,nullptr);
+            assert(initiallyReady == (mode == "already_ready"));
             auto bound=[&](){
                 const auto& d=device.groups.at(surface.ResolveBindGroup().index);
                 assert(d.textureCount==1 && d.textures[0].binding==2);
                 return d.textures[0].texture;
             };
-            const auto before=bound(); const auto callsBefore=realCalls;
-            assert(before==(mode=="already_ready" ? real : white)->Acquire()->GetView());
-            bool unchangedFailureIsCached = true, invalidationRetriesOnce = true;
-            if (mode == "failed_then_ready") {
-                for (unsigned frame = 0; frame < 3; ++frame) {
-                    material->SetFloat("animatedIntensity", static_cast<float>(frame));
-                    assert(surface.RefreshTextureBindings(false));
-                }
-                unchangedFailureIsCached = realCalls == callsBefore;
-                material->InvalidateTextureAssets(guid, false);
-                for (unsigned frame = 0; frame < 3; ++frame)
-                    assert(surface.RefreshTextureBindings(false));
-                invalidationRetriesOnce = realCalls == callsBefore + 1;
-            }
+            const auto before = initiallyReady ? bound() : rhi::TextureViewHandle{};
+            assert(initiallyReady || !surface.ResolveBindGroup().IsValid());
+            assert(!initiallyReady || before == real->Acquire()->GetView());
             const auto recoveryCallsBefore = realCalls;
             const auto versionBefore=material->GetVersion();
             status=particle::GpuBillboardTextureStatus::Ready;
             material->InvalidateTextureAssets(guid,false); // Same formal asset-notification path.
             assert(material->GetVersion()>versionBefore);
+            if (!initiallyReady)
+                assert(surface.Create(device,artifact,material,{}, {},resolver,nullptr));
             for(unsigned frame=0;frame<3;++frame) {
                 assert(surface.RefreshMaterialBuffer(false));
                 assert(surface.RefreshTextureBindings(false));
             }
             const auto after=bound();
-            const bool passed=after==real->Acquire()->GetView() && unchangedFailureIsCached && invalidationRetriesOnce;
+            const bool passed=after==real->Acquire()->GetView();
             observation={{"case",mode},{"passed",passed},{"before_view",before.index},{"after_view",after.index},
                          {"real_view",real->Acquire()->GetView().index},{"real_resolver_calls_after_ready",realCalls-recoveryCallsBefore},
-                         {"unchanged_failure_is_cached", unchangedFailureIsCached},
-                         {"invalidation_retries_once", invalidationRetriesOnce},
+                         {"unavailable_input_blocks_binding", !initiallyReady || mode=="already_ready"},
                          {"material_version_changed",true},{"refresh_frames",3}};
             if(!passed) ++failed;
             surface.Destroy(); real.reset(); white.reset();

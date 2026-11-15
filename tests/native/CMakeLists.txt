@@ -201,7 +201,7 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux
     )
-    target_link_libraries(infernux_text_layout_tests PRIVATE imgui InfernuxFoundation)
+    target_link_libraries(infernux_text_layout_tests PRIVATE imgui infernux_runtime_test_support)
     add_test(NAME infernux.text_layout COMMAND infernux_text_layout_tests)
 
     infernux_add_native_test(infernux_shader_source_dependency_tests tests/native/ShaderSourceDependencyTests.cpp)

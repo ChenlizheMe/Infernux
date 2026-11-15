@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <function/renderer/gui/InxGUIContext.h>
 #include <imgui.h>
 
@@ -25,7 +26,7 @@ struct InkBounds
 
 static void CheckRow(float scale, float windowWidth)
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1200, 700);
@@ -85,7 +86,7 @@ static void CheckRow(float scale, float windowWidth)
 
 static void CheckPropertyGroups(float scale, float windowWidth)
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1200, 700);

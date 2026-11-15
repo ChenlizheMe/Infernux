@@ -1763,7 +1763,7 @@
   "themes.unavailable": "Theme service is not ready.",
   "themes.scope.all": "All themes",
   "themes.scope.builtin": "Built-in themes",
-  "themes.scope.plugins": "Theme plugins",
+  "themes.scope.plugins": "Themes",
   "themes.manage_plugins": "Manage plugins",
   "themes.immediate": "Select a theme to apply it immediately.",
   "themes.search": "Search themes, authors and plugins",
@@ -1779,11 +1779,7 @@
   "themes.source.file": "Theme source",
   "themes.identity": "Theme identifier",
   "themes.editor_only": "Themes affect the editor appearance. Fonts and sizes follow Preferences; game UI and Player output are unchanged.",
-  "themes.authoring_hint": "Theme plugins use the same installation, update and removal workflow as other plugins. Edit the theme source to preview changes.",
-  "themes.preview": "Current appearance",
-  "themes.preview.controls": "Control preview",
-  "themes.preview.button": "Button",
-  "themes.preview.disabled": "Disabled",
-  "themes.manage_plugin": "Manage this plugin",
+  "themes.authoring_hint": "Install, update and remove themes through the plugin manager. Save the theme source to apply your changes.",
+  "themes.manage_plugin": "Manage theme",
   "themes.apply": "Apply theme"
 }

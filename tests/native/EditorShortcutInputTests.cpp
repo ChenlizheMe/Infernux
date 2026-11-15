@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <SDL3/SDL.h>
 #include <function/editor/EditorShortcutInput.h>
 #include <platform/input/InputManager.h>
@@ -8,7 +9,7 @@
 
 int main()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(640, 480);

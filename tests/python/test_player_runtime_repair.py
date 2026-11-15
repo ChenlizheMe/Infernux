@@ -257,7 +257,20 @@ def test_a_manifest_without_an_installed_package_cannot_claim_generated_files(pl
     manager, _source, installed, request, options = player_package
     manager.registry.remove_install(REFERENCE)
     with pytest.raises(RuntimeError, match="Install the platform plugin"):
-        prepare_player_runtime(request, installed, lambda _root: None, options=options)
+        prepare_player_runtime(request, installed, _inspect, options=options)
+    assert not Path(options["counter"]).exists()
+
+
+def test_compatible_source_payload_is_reused_without_an_installation_or_build(player_package):
+    manager, source, _installed, request, options = player_package
+    manager.registry.remove_install(REFERENCE)
+    payload = source / PAYLOAD
+    (payload / "Player.inxmanifest").write_text("compatible", encoding="utf-8")
+    for name in ("Runtime.bin", "Generated.bin", "Transient.bin"):
+        (payload / name).write_bytes(b"prebuilt")
+    before = {path.name: path.read_bytes() for path in payload.iterdir() if path.is_file()}
+    assert prepare_player_runtime(request, payload, _inspect, options=options) == payload.resolve()
+    assert {path.name: path.read_bytes() for path in payload.iterdir() if path.is_file()} == before
     assert not Path(options["counter"]).exists()
 
 

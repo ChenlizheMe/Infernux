@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -5,7 +6,7 @@
 
 static void CheckTreePop(bool header)
 {
-    auto *context = ImGui::CreateContext();
+    auto *context = CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(400, 300);

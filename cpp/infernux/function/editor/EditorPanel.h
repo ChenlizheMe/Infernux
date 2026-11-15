@@ -172,6 +172,7 @@ class EditorPanel : public InxGUIRenderable
         m_contentVisible = contentPresented;
 
         if (visible) {
+            ctx->DrawWindowSurface();
             struct InteractionBridgeScope
             {
                 InxGUIContext *context;

@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <function/renderer/gui/EditorGuiLayoutReset.h>
 #include <function/renderer/gui/EditorWindowBounds.h>
 #include <function/renderer/gui/EditorWindowPresentation.h>
@@ -8,7 +9,7 @@
 
 static void TestDockspaceViewportResize()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DeltaTime = 1.0f / 60.0f;
@@ -65,7 +66,7 @@ static void TestDockspaceViewportResize()
 
 static void TestWindowPresentation()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1000, 700);
@@ -170,7 +171,7 @@ static void RenderWindow(const char *name)
 
 int main()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(958, 699);

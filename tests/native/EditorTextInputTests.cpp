@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <function/renderer/gui/InxGUIContext.h>
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <imgui_internal.h>
@@ -20,7 +21,7 @@ struct Fixture
     infernux::InxGUIContext context;
     Fixture()
     {
-        ImGui::CreateContext();
+        CreateImGuiTestContext();
         auto &io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;

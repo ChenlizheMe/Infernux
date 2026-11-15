@@ -153,17 +153,21 @@ class PreloadManager:
 
     def _coordinator(self):
         if self._reload is None:
-            from infernux.engine.resources_manager import ResourcesManager
             from infernux.engine.reload.coordinator import ReloadCoordinator
-            from infernux.engine.reload.components import ComponentAdapter
-            resources = ResourcesManager.instance()
-            if resources is not None and path_key(resources._project_path) == path_key(self.project_root):
-                self._reload = resources._ensure_event_handler().reload
-            else:
-                self._reload = ReloadCoordinator(self.project_root, adapter=ComponentAdapter(lambda: ()))
-                self._owns_reload = True
             self._reload_adapter = _ReloadPreloads(self)
-            self._reload.adapter.add(self._reload_adapter)
+            if self.runtime:
+                self._reload = ReloadCoordinator(self.project_root, adapter=self._reload_adapter)
+                self._owns_reload = True
+            else:
+                from infernux.engine.resources_manager import ResourcesManager
+                from infernux.engine.reload.components import ComponentAdapter
+                resources = ResourcesManager.instance()
+                if resources is not None and path_key(resources._project_path) == path_key(self.project_root):
+                    self._reload = resources._ensure_event_handler().reload
+                else:
+                    self._reload = ReloadCoordinator(self.project_root, adapter=ComponentAdapter(lambda: ()))
+                    self._owns_reload = True
+                self._reload.adapter.add(self._reload_adapter)
         return self._reload
 
     def _publish_paths(self, paths):

@@ -1473,7 +1473,7 @@ class PyComponentProxy(Component):
 class Camera(Component):
     render_to_texture: bool
     render_on_demand: bool
-    memory_output_size: vec2f
+    memory_output_size: Vector2
     def reset_aspect_ratio(self) -> None: ...
     def _update_automatic_aspect_ratio(self, aspect: float) -> None: ...
     has_custom_aspect_ratio: bool
@@ -3232,6 +3232,7 @@ class InxGUIContext:
     def image_button(
         self, id: str, texture_id: int, width: float, height: float,
         uv0_x: float = 0.0, uv0_y: float = 0.0, uv1_x: float = 1.0, uv1_y: float = 1.0,
+        tint_r: float = 1.0, tint_g: float = 1.0, tint_b: float = 1.0, tint_a: float = 1.0,
     ) -> bool: ...
 
     # Tables

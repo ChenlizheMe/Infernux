@@ -124,8 +124,6 @@ class ThemePanel(CatalogBrowserPanel):
                 ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
                 ctx.text_wrapped(row["error"])
                 ctx.pop_style_color()
-            elif row["id"] == active_editor_theme():
-                self._render_preview(ctx)
             if row["path"]:
                 ctx.dummy(0.0, gap)
                 ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
@@ -141,28 +139,6 @@ class ThemePanel(CatalogBrowserPanel):
         ctx.end_child()
         ctx.set_cursor_pos_y(footer_y)
         self._render_footer(ctx, service, row, footer_h)
-
-    @staticmethod
-    def _render_preview(ctx):
-        ctx.label(t("themes.preview"))
-        ctx.separator()
-        colors = (Theme.ROLE_BG_BASE, Theme.ROLE_BG_SURFACE, Theme.ROLE_TEXT, Theme.ROLE_ACCENT)
-        gap = metric(ctx, 6.0)
-        width = max(1.0, (ctx.get_content_region_avail_width() - gap * 3) / 4)
-        for index, color in enumerate(colors):
-            ctx.push_style_color(ImGuiCol.ChildBg, *color)
-            ctx.begin_child(f"##theme_swatch_{index}", width, metric(ctx, 40.0), True, Theme.WINDOW_FLAGS_NO_SCROLL)
-            ctx.end_child()
-            ctx.pop_style_color()
-            if index < 3:
-                ctx.same_line(0.0, gap)
-        ctx.dummy(0.0, gap)
-        ctx.label(t("themes.preview.controls"))
-        ctx.button(t("themes.preview.button") + "##theme_preview_button", width=metric(ctx, 112.0))
-        ctx.same_line()
-        ctx.begin_disabled(True)
-        ctx.button(t("themes.preview.disabled") + "##theme_preview_disabled", width=metric(ctx, 112.0))
-        ctx.end_disabled()
 
     def _render_footer(self, ctx, service, row, height):
         ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)

@@ -735,9 +735,9 @@ class SceneViewOverlaysMixin:
                 ctx.same_line(0, gap)
             active = (self._gizmo_tool_mode == mode)
             if active:
-                ctx.push_style_color(ImGuiCol.Button, 235.0 / 255.0, 87.0 / 255.0, 87.0 / 255.0, 0.95)
-                ctx.push_style_color(ImGuiCol.ButtonHovered, 1.0, 107.0 / 255.0, 107.0 / 255.0, 1.0)
-                ctx.push_style_color(ImGuiCol.ButtonActive, 220.0 / 255.0, 67.0 / 255.0, 67.0 / 255.0, 1.0)
+                ctx.push_style_color(ImGuiCol.Button, *Theme.SCENE_TOOL_SELECTED_BG)
+                ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.SCENE_TOOL_SELECTED_HOVER)
+                ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.SCENE_TOOL_SELECTED_ACTIVE)
             else:
                 ctx.push_style_color(ImGuiCol.Button, *Theme.SCENE_OVERLAY_COMBO_BG)
                 ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.SCENE_OVERLAY_COMBO_HOVER)
@@ -745,7 +745,9 @@ class SceneViewOverlaysMixin:
             tex_id = self._tool_icon_ids.get(mode, 0)
             clicked = False
             if tex_id != 0:
-                clicked = ctx.image_button(btn_id, tex_id, icon_size, icon_size)
+                tint = Theme.SCENE_TOOL_ICON_SELECTED if active else Theme.SCENE_TOOL_ICON
+                clicked = ctx.image_button(btn_id, tex_id, icon_size, icon_size,
+                                           tint_r=tint[0], tint_g=tint[1], tint_b=tint[2], tint_a=tint[3])
             else:
                 clicked = ctx.button(label, width=combo_h, height=combo_h)
             if clicked:

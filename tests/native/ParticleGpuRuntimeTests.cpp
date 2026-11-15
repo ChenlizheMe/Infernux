@@ -2919,19 +2919,19 @@ int main()
     assert(graphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
     assert(textureResolveCount == 1 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
     billboardDesc.material->SetTextureGuid("texSampler", "normal");
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 3 && device.groupCreates == groupCreatesBeforeBillboard + 4u &&
+    assert(!billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(textureResolveCount == 2 && device.groupCreates == groupCreatesBeforeBillboard + 3u &&
            device.groupReleases == groupReleasesBeforeBillboard);
     assert(device.textureReleases == textureReleasesBeforeBillboard &&
            device.samplerReleases == samplerReleasesBeforeBillboard);
-    assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 4 && device.groupCreates == groupCreatesBeforeBillboard + 4u);
+    assert(!billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
+    assert(textureResolveCount == 3 && device.groupCreates == groupCreatesBeforeBillboard + 3u);
     normalTextureReady = true;
     assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 5 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
+    assert(textureResolveCount == 4 && device.groupCreates == groupCreatesBeforeBillboard + 4u &&
            device.groupReleases == groupReleasesBeforeBillboard);
     (void)deletionQueue.Collect(1);
-    assert(device.groupReleases == groupReleasesBeforeBillboard + 2u &&
+    assert(device.groupReleases == groupReleasesBeforeBillboard + 1u &&
            device.textureReleases == textureReleasesBeforeBillboard &&
            device.samplerReleases == samplerReleasesBeforeBillboard);
 
@@ -2942,18 +2942,19 @@ int main()
     normalSlot->RequestRevision(3);
     normalTextureReady = false;
     assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(textureResolveCount == 6 && device.groupCreates == groupCreatesBeforeBillboard + 5u &&
+    assert(textureResolveCount == 5 && device.groupCreates == groupCreatesBeforeBillboard + 4u &&
            !normalRevisionTwo.expired());
     auto normalRevisionThree = AcquireTestTexture(device, textureSlots, "normal", 3, {403, 1}, {503, 1});
+    normalTextureReady = true;
     assert(normalRevisionThree.gpuSlot == normalSlot && normalRevisionThree.gpuView->GetRevision() == 3);
     normalRevisionTwoOwner.reset();
     assert(!normalRevisionTwo.expired());
     const uint32_t resolvesBeforeSlotPublication = textureResolveCount;
     assert(billboard.RecordDraw(graphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(textureResolveCount == resolvesBeforeSlotPublication &&
-           device.groupCreates == groupCreatesBeforeBillboard + 6u && !normalRevisionTwo.expired());
+           device.groupCreates == groupCreatesBeforeBillboard + 5u && !normalRevisionTwo.expired());
     (void)deletionQueue.Collect(1);
-    assert(device.groupReleases == groupReleasesBeforeBillboard + 3u && normalRevisionTwo.expired() &&
+    assert(device.groupReleases == groupReleasesBeforeBillboard + 2u && normalRevisionTwo.expired() &&
            device.textureReleases == textureReleasesBeforeBillboard + 1 &&
            device.samplerReleases == samplerReleasesBeforeBillboard + 1);
     normalRevisionThree = {};

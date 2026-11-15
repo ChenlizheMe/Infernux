@@ -56,6 +56,12 @@ def validate_theme_document(document: object, tokens: dict) -> dict:
                 raise ValueError(f"Theme {token} requires RGBA values in [0, 1]")
             if token.startswith("GLOBAL_") and any(channel < 0 for channel in channels):
                 raise ValueError(f"Theme {token} requires non-negative dimensions")
+            if kind == "floats" and token.startswith(("PANEL_", "BUTTON_")) and value < 0:
+                raise ValueError(f"Theme chrome dimensions must be non-negative: {token}")
+            if token in ("SURFACE_GRAIN_OPACITY", "SURFACE_HEX_OPACITY") and not 0 <= value <= 1:
+                raise ValueError(f"Surface opacity must be in [0, 1]: {token}")
+            if token in ("SURFACE_GRAIN_SCALE", "SURFACE_HEX_SCALE") and not 0.25 <= value <= 8:
+                raise ValueError(f"Surface scale must be in [0.25, 8]: {token}")
             normalized[token] = [float(channel) for channel in channels] if count else float(value)
         result[kind] = normalized
     return result

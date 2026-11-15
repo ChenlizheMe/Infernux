@@ -340,6 +340,7 @@ set(IMGUI_ALL_SRCS
 )
 
 add_library(imgui STATIC ${IMGUI_ALL_SRCS})
+target_compile_definitions(imgui PRIVATE IMGUI_DISABLE_DEFAULT_FONT=1)
 target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends

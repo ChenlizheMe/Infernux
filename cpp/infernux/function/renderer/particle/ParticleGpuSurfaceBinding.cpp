@@ -586,13 +586,15 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
         if (lease.status != GpuBillboardTextureStatus::Ready)
             lease = m_textureResolver(textureGuid, binding.name, GpuParticleTextureRequest::Poll);
         const bool pending = lease.status == GpuBillboardTextureStatus::Pending;
-        if (!textureGuid.empty() && lease.status != GpuBillboardTextureStatus::Ready)
-            return false;
         if (pending && textureGuid == binding.requestedGuid && binding.gpuView && binding.gpuView->IsValid() &&
             binding.texture.IsValid() && binding.sampler.IsValid()) {
             binding.pending = true;
             continue;
         }
+        // An already resident view may stay alive while its next upload is
+        // pending. A different or failed authored texture cannot use a substitute.
+        if (!textureGuid.empty() && lease.status != GpuBillboardTextureStatus::Ready)
+            return false;
         if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() || !lease.sampler.IsValid() ||
             !lease.gpuView || !lease.gpuView->IsValid()) {
             const std::string fallbackGuid = !binding.defaultGuid.empty() && binding.defaultGuid != textureGuid
