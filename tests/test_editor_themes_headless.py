@@ -58,12 +58,16 @@ def write(service, name="sample.theme.json", document=None, reference="tests/the
 def test_surface_styles_follow_theme_publication_and_preserve_player_defaults(service):
     document = {"id": "sample", "colors": {
         "ROLE_TEXT": [0.2, 0.3, 0.4, 1],
+        "ROLE_BG_SURFACE": [0.9, 0.9, 0.85, 1],
         "PANEL_GRADIENT_TOP": [0.03, 0.12, 0.25, 0.8],
         "PANEL_GRADIENT_BOTTOM": [0.01, 0.04, 0.08, 0.2],
         "BUTTON_ACTIVE_GRADIENT_TOP": [0.1, 0.4, 0.8, 1],
         "SURFACE_HEX_TINT": [0.1, 0.5, 0.9, 1],
     }, "floats": {"PANEL_CORNER_CUT": 10, "PANEL_FRAME_WIDTH": 1.2,
-                  "SURFACE_HEX_OPACITY": 0.16, "SURFACE_GRAIN_SCALE": 0.75}}
+                  "SURFACE_HEX_OPACITY": 0.16, "SURFACE_GRAIN_SCALE": 0.75,
+                  "SURFACE_PATTERN_KIND": 2, "SURFACE_PATTERN_OPACITY": 0.3,
+                  "PANEL_BEVEL_DEPTH": 3, "PANEL_FASTENER_SIZE": 1.5,
+                  "EDITOR_MONO_UI": 1}}
     before = Theme.UI_DEFAULT_BUTTON_BG
     path = write(service, document=document)
     service.refresh_all()
@@ -72,13 +76,18 @@ def test_surface_styles_follow_theme_publication_and_preserve_player_defaults(se
     assert Theme.PANEL_CORNER_CUT == 10
     assert Theme.SCENE_TOOL_ICON == pytest.approx(document["colors"]["ROLE_TEXT"])
     assert Theme.PANEL_GRADIENT_TOP == pytest.approx(document["colors"]["PANEL_GRADIENT_TOP"])
+    assert Theme.OBJECT_FIELD_BG == pytest.approx(document["colors"]["ROLE_BG_SURFACE"])
     assert Theme.SURFACE_HEX_OPACITY == pytest.approx(0.16)
+    assert Theme.SURFACE_PATTERN_KIND == 2
+    assert Theme.PANEL_BEVEL_DEPTH == 3
+    assert Theme.EDITOR_MONO_UI == 1
     document["floats"]["PANEL_CORNER_CUT"] = 6
     path.write_text(json.dumps(document), encoding="utf-8")
     service.resource_changed(path)
     assert Theme.PANEL_CORNER_CUT == 6
     service.remove_package("tests/theme")
     assert Theme.PANEL_CORNER_CUT == Theme.SURFACE_HEX_OPACITY == 0
+    assert Theme.SURFACE_PATTERN_KIND == Theme.PANEL_BEVEL_DEPTH == Theme.EDITOR_MONO_UI == 0
     assert Theme.UI_DEFAULT_BUTTON_BG == before
 
 
@@ -86,6 +95,8 @@ def test_surface_styles_follow_theme_publication_and_preserve_player_defaults(se
     ("SURFACE_GRAIN_OPACITY", -0.1), ("SURFACE_HEX_OPACITY", 1.1),
     ("SURFACE_GRAIN_SCALE", 0), ("SURFACE_HEX_SCALE", 9),
     ("PANEL_CORNER_CUT", -1), ("BUTTON_GLOW_RADIUS", -1),
+    ("SURFACE_PATTERN_OPACITY", 1.1), ("SURFACE_PATTERN_SCALE", 0),
+    ("SURFACE_PATTERN_KIND", 1.5), ("SURFACE_PATTERN_KIND", 4), ("EDITOR_MONO_UI", 2),
 ])
 def test_packager_and_native_registry_reject_invalid_surface_dimensions(token, value):
     tokens = theme_token_names((ROOT / "cpp/infernux/function/editor/EditorThemeTable.inl").read_text(encoding="utf-8"))
@@ -272,6 +283,12 @@ def test_template_packages_offline_and_rejects_bad_data(tmp_path):
     assert exported.metadata["category"] == "theme"
     assert (template / "theme_schema.py").read_bytes() == (ROOT / "python/infernux/theme_data.py").read_bytes()
     assert (template / "README.zh-CN.md").is_file()
+    tokens = json.loads((template / "theme-tokens.json").read_text(encoding="utf-8"))
+    examples = sorted((template / "examples").glob("*.theme.json"))
+    assert {path.stem.removesuffix(".theme") for path in examples} == {"manuscript", "metal", "cassette", "notion"}
+    for example in examples:
+        document = validate_theme_document(json.loads(example.read_text(encoding="utf-8")), tokens)
+        assert document["id"] == example.stem.removesuffix(".theme")
     theme = template / "package/editor/themes/studio.theme.json"
     theme.write_text('{"id":"x", "name":{}}', encoding="utf-8")
     result = subprocess.run(command, cwd=template, capture_output=True, text=True)

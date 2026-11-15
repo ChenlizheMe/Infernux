@@ -38,6 +38,15 @@ Optional native surface styling is also available:
   Other standard controls keep using the global palette, borders and spacing.
 - `SURFACE_GRAIN_TINT/OPACITY/SCALE` control static paper fibers;
   `SURFACE_HEX_TINT/OPACITY/SCALE` control the hexagonal pattern.
+- `SURFACE_PATTERN_KIND` selects no mask (0), drafting marks (1), brushed
+  metal (2) or a pixel raster (3). Use `SURFACE_PATTERN_TINT/OPACITY/SCALE`
+  to tint, blend and size the cached mask.
+- `PANEL_FRAME_ROUGHNESS`, `PANEL_BEVEL_DEPTH` and `PANEL_FASTENER_SIZE`
+  add optional irregular ink edges, inset highlights and small corner screws.
+  Common buttons support the same three `BUTTON_*` dimensions.
+- `EDITOR_MONO_UI` selects the existing editor proportional face (0) or
+  the bundled monospace face (1). It does not change game text defaults,
+  font size or the font atlas; switching themes reuses loaded faces.
 
 Slash-separated suffixes denote separate tokens. Fills default to transparent;
 frame widths and pattern opacities default to zero. Set both color and width to
@@ -53,6 +62,12 @@ accent and text roles unless explicitly overridden, including for light themes.
 Component menu buttons use `INSPECTOR_HEADER_MENU_WIDTH` and
 `INSPECTOR_HEADER_MENU_INSET` for width and right padding. Their three dots are
 drawn at the button center, independently of font baselines or character widths.
+
+`examples/` contains four editable declarations: parchment drafting, aged metal,
+cassette pixel and a minimal light workspace. Copy a declaration into
+`package/editor/themes/` to include that variant in your plugin. These examples
+use cached native masks and existing fonts, with no extra textures or font files.
+The example directory itself is outside the installed payload.
 
 `package/` is the installed payload. This README, the workflow, token reference
 and packager stay outside it. Keep a stable package reference and theme ID when

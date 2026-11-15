@@ -16,6 +16,7 @@
 #include <functional>
 #include <imgui.h>
 #include <unordered_map>
+#include <array>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -270,6 +271,8 @@ class InxGUI
     std::unordered_map<std::string, std::string> m_editorIconTextures;
     uint64_t m_surfaceGrainUpload = 0;
     uint64_t m_surfaceHexUpload = 0;
+    std::array<uint64_t, 4> m_surfacePatternUploads{};
+    ImFont *m_uiFont = nullptr;
     float m_dpiScale = 1.0f;
     VkDescriptorPool m_descriptorPool_vk = VK_NULL_HANDLE;
 

@@ -60,6 +60,7 @@ int main()
     EditorThemeRegistry::Definition theme;
     theme.name = "test/editor-theme";
     theme.colors = {{"ROLE_ACCENT", ImVec4(0.1f, 0.6f, 0.9f, 1.0f)},
+                    {"ROLE_BG_SURFACE", ImVec4(0.9f, 0.9f, 0.85f, 1.0f)},
                     {"ROLE_TEXT_DIM", ImVec4(0.1f, 0.9f, 0.2f, 1.0f)}};
     theme.vec2s = {{"GLOBAL_FRAME_PAD", ImVec2(9.0f, 5.0f)}};
     const auto gameDefault = EditorThemeRegistry::Color("UI_DEFAULT_BUTTON_BG");
@@ -70,6 +71,7 @@ int main()
     assert(ImGui::GetStyle().FramePadding.x == 18.0f);
     assert(ImGui::GetStyle().FramePadding.y == 10.0f);
     assert(EditorThemeRegistry::Color("TEXT_DIM").y == 0.9f);
+    assert(EditorThemeRegistry::Color("OBJECT_FIELD_BG").x == 0.9f);
     assert(EditorThemeRegistry::Color("PREFAB_BTN_HOVERED").z > EditorThemeRegistry::Color("PREFAB_BTN_HOVERED").x);
     assert(EditorThemeRegistry::Color("PREFAB_BTN_ACTIVE").z > EditorThemeRegistry::Color("PREFAB_BTN_ACTIVE").x);
     assert(EditorThemeRegistry::Color("UI_DEFAULT_BUTTON_BG").x == gameDefault.x);
@@ -79,9 +81,11 @@ int main()
 
     // Explicit component overrides win over deterministic semantic derivation.
     theme.colors["PREFAB_BTN_HOVERED"] = ImVec4(0.3f, 0.2f, 0.1f, 1.0f);
+    theme.colors["OBJECT_FIELD_BG"] = ImVec4(0.8f, 0.8f, 0.75f, 1.0f);
     EditorThemeRegistry::Register(theme.name, "test:themes", theme.colors, theme.vec2s, theme.floats);
     assert(publications == 2);
     assert(EditorThemeRegistry::Color("PREFAB_BTN_HOVERED").x == 0.3f);
+    assert(EditorThemeRegistry::Color("OBJECT_FIELD_BG").x == 0.8f);
     EditorThemeRegistry::RemoveOwner("test:themes");
     assert(publications == 3);
     assert(EditorThemeRegistry::ActiveTheme() == "infernux");

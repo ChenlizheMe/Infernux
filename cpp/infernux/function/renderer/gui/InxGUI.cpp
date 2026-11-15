@@ -11,6 +11,7 @@
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/editor/EditorThemeDrawing.h>
+#include <function/editor/EditorSurfacePattern.h>
 #include <function/renderer/TextureUploadBuilder.h>
 #include <function/renderer/vk/DescriptorBindTrace.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
@@ -244,7 +245,9 @@ void InxGUI::DrawThemeSurface()
     const auto &appearance = theme_drawing::ActiveStyles().panel;
     const float grain = EditorThemeRegistry::Float("SURFACE_GRAIN_OPACITY");
     const float hex = EditorThemeRegistry::Float("SURFACE_HEX_OPACITY");
-    if (grain <= 0.0f && hex <= 0.0f && !appearance.HasFill() && !appearance.HasBorder())
+    const float pattern = EditorThemeRegistry::Float("SURFACE_PATTERN_OPACITY");
+    const int patternKind = static_cast<int>(EditorThemeRegistry::Float("SURFACE_PATTERN_KIND"));
+    if (grain <= 0.0f && hex <= 0.0f && pattern <= 0.0f && !appearance.HasFill() && !appearance.HasBorder())
         return;
     ImGuiWindow *window = ImGui::GetCurrentWindow();
     if (window->Flags & ImGuiWindowFlags_NoBackground)
@@ -330,6 +333,18 @@ void InxGUI::DrawThemeSurface()
     if (hex > 0.0f) {
         const float scale = EditorThemeRegistry::Float("SURFACE_HEX_SCALE") * m_dpiScale;
         tileSurface("EditorTheme/SurfaceHex", "SURFACE_HEX_TINT", hex, ImVec2(256.0f * scale, 224.0f * scale));
+    }
+    if (pattern > 0.0f && patternKind != 0) {
+        const std::string key = "EditorTheme/SurfacePattern/" + std::to_string(patternKind);
+        if (m_surfacePatternUploads[patternKind] == 0) {
+            const auto pixels = theme_drawing::BuildSurfacePattern(patternKind);
+            m_surfacePatternUploads[patternKind] = SubmitTextureForImGui(
+                key, pixels.data(), pixels.size(), theme_drawing::SurfacePatternSize,
+                theme_drawing::SurfacePatternSize, patternKind == 3 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR, true);
+        }
+        const float tile = theme_drawing::SurfacePatternSize *
+                           EditorThemeRegistry::Float("SURFACE_PATTERN_SCALE") * m_dpiScale;
+        tileSurface(key.c_str(), "SURFACE_PATTERN_TINT", pattern, ImVec2(tile, tile));
     }
     draw->PopClipRect();
     if (framed && appearance.HasBorder()) {
@@ -420,7 +435,8 @@ bool InxGUI::ReloadGUIFont()
     // Interface text uses the UI face; scene text retains the bundled
     // monospace default shared by desktop and non-editor Player hosts.
     // Both faces resolve through the same cache without duplicate atlas loads.
-    io.FontDefault = uiFont;
+    m_uiFont = uiFont;
+    io.FontDefault = theme_drawing::ActiveStyles().monospace ? monoFont : uiFont;
     textlayout::SetDefaultFont(monoFont);
     InxGUIContext::s_monoFont = monoFont;
 
@@ -807,6 +823,7 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
     if (!m_playerMode && input.IsCursorLocked() && ImGui::GetCurrentContext()->OpenPopupStack.Size != 0)
         input.SetEditorCursorCaptureAllowed(false);
     EditorShortcutInput::PrepareFrame(input.IsCursorLocked());
+    ImGui::GetIO().FontDefault = theme_drawing::ActiveStyles().monospace ? InxGUIContext::s_monoFont : m_uiFont;
     ImGui::NewFrame();
     // Dear ImGui may leave later transitions in InputEventsQueue. Only a synthetic input
     // batch may re-arm the scheduler, and it has a fixed four-build budget;
@@ -1226,6 +1243,7 @@ void InxGUI::Shutdown()
     m_pendingTextureUploads.clear();
     m_surfaceGrainUpload = 0;
     m_surfaceHexUpload = 0;
+    m_surfacePatternUploads.fill(0);
     m_pendingTextureUploadBytes = 0;
     for (auto &entry : m_deferredTextureReleases) {
         ReleaseTextureResource(entry.resource);

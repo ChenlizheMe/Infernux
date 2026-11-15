@@ -100,7 +100,6 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
     const float zoneGap = EditorThemeRegistry::Float("TOPBAR_ZONE_GAP") * dpi;
     const float utilH = EditorThemeRegistry::Float("TOPBAR_UTIL_BTN_H") * dpi;
     const float utilW = EditorThemeRegistry::Float("TOPBAR_UTIL_BTN_W") * dpi;
-    const float dividerH = EditorThemeRegistry::Float("TOPBAR_DIVIDER_H") * dpi;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(EditorThemeRegistry::Vec2("TOOLBAR_FRAME_PAD").x * dpi, (barHeight - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorThemeRegistry::Vec2("TOOLBAR_ITEM_SPC")));
@@ -142,42 +141,47 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
         RenderWindowMenu(ctx);
 
         // ── RIGHT utilities (center reserved for Toolbar transport) ─
-        const float rightW = utilW + zoneGap + 96.0f * dpi + zoneGap;
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - rightW);
-        ImGui::SetCursorPosY((barHeight - utilH) * 0.5f);
+        const std::string layoutLabel = T("menu.layout");
+        const float padX = 8.0f * dpi;
+        const float gap = zoneGap * 0.5f;
+        const float layoutW = ImGui::CalcTextSize(layoutLabel.c_str()).x + padX * 2.0f + utilH;
+        const float rightInset = EditorThemeRegistry::Vec2("BLEED_PADDING").x * dpi;
+        const float rightW = utilW + gap + layoutW;
+        const float utilityY = (barHeight - utilH) * 0.5f;
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - rightInset - rightW, utilityY));
 
-        // Zone hairline between center transport and right utilities.
-        {
-            const ImVec2 origin = ImGui::GetCursorScreenPos();
-            const float midY = origin.y + utilH * 0.5f;
-            const ImU32 hair = ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("ROLE_BORDER"));
-            ImGui::GetWindowDrawList()->AddLine(ImVec2(origin.x - zoneGap * 0.5f, midY - dividerH * 0.5f),
-                                                ImVec2(origin.x - zoneGap * 0.5f, midY + dividerH * 0.5f), hair,
-                                                1.0f * dpi);
-        }
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f * dpi, 4.0f * dpi));
-        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_GHOST"));
+        // Both controls use the same frame height, padding and hover recipe.
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, (utilH - ImGui::GetFontSize()) * 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorThemeRegistry::Float("TOOLBAR_FRAME_RND") * dpi);
+        EditorTheme::PushGhostButtonStyle();
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, EditorThemeRegistry::Color("BTN_GHOST"));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, EditorThemeRegistry::Color("BTN_GHOST_HOVERED"));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, EditorThemeRegistry::Color("BTN_GHOST_ACTIVE"));
         const bool canOpenPalette = CanExecuteCommand("command_palette.open");
         ImGui::BeginDisabled(!canOpenPalette);
-        if (ctx->IconButton("topbar_palette", "glyphs/search", T("command_palette.title"), utilW, utilH))
+        if (ctx->IconButton("topbar_palette", "glyphs/search", "", utilW, utilH))
             ExecuteCommand("command_palette.open", "menu");
         ImGui::EndDisabled();
-        ImGui::PopStyleColor(3);
         if (InxGUISemantics::IsCaptureEnabled())
             ctx->RecordSemanticItem("button", T("command_palette.title"), canOpenPalette, "menu.command_palette");
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             ctx->SetTooltip(T("command_palette.title") + "  ·  Ctrl+Shift+P");
 
-        ImGui::SameLine(0.0f, zoneGap * 0.5f);
-        ImGui::SetCursorPosY((barHeight - utilH) * 0.5f);
-        if (ctx->BeginCombo("##main_layout", T("menu.layout"), ImGuiComboFlags_WidthFitPreview)) {
+        ImGui::SameLine(0.0f, gap);
+        ImGui::SetCursorPosY(utilityY);
+        ImGui::SetNextItemWidth(layoutW);
+        const bool layoutOpen = ctx->BeginCombo("##main_layout", layoutLabel);
+        if (InxGUISemantics::IsCaptureEnabled())
+            ctx->RecordSemanticItem("combo", layoutLabel, true, "menu.layout");
+        if (layoutOpen) {
             const bool canReset = CanExecuteCommand("window.reset_layout");
             if (SemanticMenuItem(ctx, T("menu.reset_layout"), "", false, canReset, "menu.layout.reset"))
                 ExecuteCommand("window.reset_layout", "menu");
             ctx->EndCombo();
         }
-        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(6);
+        ImGui::PopStyleVar(3);
         ImGui::EndMainMenuBar();
     } else {
         ImGui::End();

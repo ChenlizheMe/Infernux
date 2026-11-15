@@ -19,12 +19,18 @@
 | 按钮分层边框 | `BUTTON_FRAME_COLOR`、`BUTTON_FRAME_INNER_COLOR`、`BUTTON_FRAME_HIGHLIGHT`、`BUTTON_GLOW_COLOR` | `BUTTON_FRAME_WIDTH`、`BUTTON_FRAME_INSET`、`BUTTON_CORNER_CUT`、`BUTTON_GLOW_RADIUS` |
 | 静态纸面纤维 | `SURFACE_GRAIN_TINT` | `SURFACE_GRAIN_OPACITY`、`SURFACE_GRAIN_SCALE` |
 | 六边形底纹 | `SURFACE_HEX_TINT` | `SURFACE_HEX_OPACITY`、`SURFACE_HEX_SCALE` |
+| 机械手稿、拉丝金属或像素栅格 | `SURFACE_PATTERN_TINT` | `SURFACE_PATTERN_KIND`、`SURFACE_PATTERN_OPACITY`、`SURFACE_PATTERN_SCALE` |
+| 不规则描边、立体压边、角部螺钉 | 沿用对应边框颜色 | `PANEL_FRAME_ROUGHNESS`、`PANEL_BEVEL_DEPTH`、`PANEL_FASTENER_SIZE`；按钮使用对应 `BUTTON_*` |
 
 表中 `TOP/BOTTOM` 代表两个独立 token。新样式默认关闭：渐变端点默认透明，边框宽度和底纹透明度默认为零。启用边框时同时设置颜色与宽度；切角和发光半径以逻辑像素表示，统一跟随 DPI。按钮样式作用于公共按钮控件；其余标准控件继续使用全局颜色、边框和间距。底纹透明度为 [0,1]、比例为 [0.25,8]，每种底纹首次使用时生成一次纹理并缓存，绘制在文字和控件下面。主题不在每帧运行 Python 绘制脚本，也不需要附带纹理文件。
 
 场景工具栏的选中背景为 `SCENE_TOOL_SELECTED_BG/HOVER/ACTIVE`，普通与选中图标为 `SCENE_TOOL_ICON`、`SCENE_TOOL_ICON_SELECTED`；默认从强调色与文字色派生，浅色主题也能保持图标可读。
 
+`SURFACE_PATTERN_KIND` 为 0（关闭）、1（机械手稿）、2（拉丝金属）或 3（像素栅格）。`EDITOR_MONO_UI` 为 0（既有比例字体）或 1（既有等宽字体）。后者只切换已经加载的编辑器字形，不改变游戏文字默认值、字号，也不重建字体图集。
+
 组件标题的菜单按钮使用 `INSPECTOR_HEADER_MENU_WIDTH` 和 `INSPECTOR_HEADER_MENU_INSET` 控制宽度与右侧留白。三个点由原生绘图居中绘制，不依赖字体中的句点基线或字符宽度。
+
+`examples/` 提供手稿纸面、复古金属、磁带像素和简洁浅色工作台四份可编辑声明。将需要的 JSON 复制到 `package/editor/themes/`，即可作为插件的主题变体。样例使用原生缓存底纹和既有字体，没有额外贴图或字体文件；examples 目录本身不进入安装包。
 
 仅 `package/` 进入安装包。README、CHANGELOG、CI、token 参考、theme_schema.py 和打包器留在仓库外层；不要往 package/ 放缓存、.runtime、预览工程或构建工具。editor/ 内容不进入 Player。
 

@@ -49,7 +49,8 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
     derive("ROLE_BG_BASE", {"WINDOW_BG", "MENU_BAR_BG", "STATUS_BAR_BG", "STATUS_PROGRESS_BG", "LOG_DIM", "GRAPH_MINIMAP_BG"});
     derive("ROLE_BG_SURFACE", {"FRAME_BG", "BTN_IDLE", "BTN_NORMAL", "BTN_DISABLED", "INSPECTOR_INLINE_BTN_IDLE",
                                "INSPECTOR_LIST_BODY_BG", "CURVE_EDITOR_BG", "UI_EDITOR_CANVAS_BG",
-                               "SCENE_OVERLAY_COMBO_BG", "STATUS_ACTIVITY_BG", "CONSOLE_SEGMENT_ACTIVE", "GRAPH_NODE_BG"});
+                               "SCENE_OVERLAY_COMBO_BG", "STATUS_ACTIVITY_BG", "CONSOLE_SEGMENT_ACTIVE", "GRAPH_NODE_BG",
+                               "OBJECT_FIELD_BG"});
     derive("ROLE_BG_RAISED", {"POPUP_BG", "HEADER", "INSPECTOR_HEADER_PRIMARY", "INSPECTOR_HEADER_SECONDARY",
                               "INSPECTOR_HEADER_TERTIARY", "INSPECTOR_HEADER_LIST", "PREFAB_HEADER_BG",
                               "PROJECT_EXPAND_STRIP_BG", "PROJECT_SUBASSET_CELL_BG", "UI_EDITOR_CANVAS_HEADER_BG", "GRAPH_NODE_HEADER"});
@@ -287,10 +288,16 @@ static ThemeData BuildDeclaredTheme(const std::unordered_map<std::string, ImVec4
             throw std::invalid_argument("Global editor dimensions must be non-negative: " + key);
         if ((key.rfind("PANEL_", 0) == 0 || key.rfind("BUTTON_", 0) == 0) && value < 0.0f)
             throw std::invalid_argument("Theme chrome dimensions must be non-negative: " + key);
-        if ((key == "SURFACE_GRAIN_OPACITY" || key == "SURFACE_HEX_OPACITY") && (value < 0.0f || value > 1.0f))
+        if ((key == "SURFACE_GRAIN_OPACITY" || key == "SURFACE_HEX_OPACITY" || key == "SURFACE_PATTERN_OPACITY") &&
+            (value < 0.0f || value > 1.0f))
             throw std::invalid_argument("Surface opacity must be in [0, 1]: " + key);
-        if ((key == "SURFACE_GRAIN_SCALE" || key == "SURFACE_HEX_SCALE") && (value < 0.25f || value > 8.0f))
+        if ((key == "SURFACE_GRAIN_SCALE" || key == "SURFACE_HEX_SCALE" || key == "SURFACE_PATTERN_SCALE") &&
+            (value < 0.25f || value > 8.0f))
             throw std::invalid_argument("Surface scale must be in [0.25, 8]: " + key);
+        if (key == "SURFACE_PATTERN_KIND" && (value < 0 || value > 3 || value != std::floor(value)))
+            throw std::invalid_argument("Surface pattern kind must be 0, 1, 2 or 3");
+        if (key == "EDITOR_MONO_UI" && value != 0.0f && value != 1.0f)
+            throw std::invalid_argument("Editor monospace selection must be 0 or 1");
         base.floats[key] = value;
     }
     return base;
