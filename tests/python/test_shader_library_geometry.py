@@ -53,6 +53,47 @@ def test_rotation_direction_and_axis_scale(rotation_arithmetic, index):
     np.testing.assert_allclose(np.linalg.norm(actual), np.linalg.norm(ROTATIONS[index][0]), atol=2e-5, rtol=0.0)
 
 
+def test_noise_parameter_updates_match_unrolled_octaves(engine):
+    entry = compile_library_compute("noise", """
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> values;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x * 3;
+    float3 p = values[i].xyz;
+    float h = frac(p.x * 0.1031);
+    h = h * (h + 33.33);
+    float reference_hash = frac(h * (h + h));
+    float reference_2d = 0.5 * LIBRARY::value_2d(p.xy)
+        + 0.25 * LIBRARY::value_2d(p.xy * 2.0) + 0.125 * LIBRARY::value_2d(p.xy * 4.0);
+    float reference_3d = 0.5 * LIBRARY::value_3d(p)
+        + 0.25 * LIBRARY::value_3d(p * 2.0) + 0.125 * LIBRARY::value_3d(p * 4.0);
+    values[i + 1] = float4(LIBRARY::hash_1d(p.x), LIBRARY::fbm_2d(p.xy, 3, 2.0, 0.5),
+                          LIBRARY::fbm_3d(p, 3, 2.0, 0.5), 0.0);
+    values[i + 2] = float4(reference_hash, reference_2d, reference_3d, 0.0);
+}
+""", "library-mutable-parameters")
+    points = np.array([[0.25, 0.75, 0.5], [1.5, -0.25, 3.75], [-2.25, 4.5, -1.5],
+                       [7.125, 2.75, 0.125], [-0.75, -1.25, -3.5]], dtype=np.float32)
+    inputs = np.zeros((len(points) * 3, 4), dtype=np.float32)
+    inputs[::3, :3] = points
+    host = engine._acquire_compute_host()
+    kernel = host._create_kernel_from_compiler(bytes(entry["code"]), [(0, "storage")], 0, entry["name"])
+    buffer = host.create_buffer(len(inputs), "float32", 4)
+    try:
+        buffer.set_bytes(inputs.tobytes())
+        kernel.dispatch([buffer], b"", len(points))
+        kernel.wait()
+        values = np.frombuffer(buffer.get_bytes(inputs.nbytes), dtype=np.float32).reshape(-1, 4).copy()
+    finally:
+        kernel.wait()
+        del buffer, kernel
+        host._release_lease()
+    np.testing.assert_array_equal(values[::3, :3], points)
+    assert np.min(values[2::3, 1:3]) > 0.01
+    np.testing.assert_allclose(values[1::3, :3], values[2::3, :3], atol=3e-4, rtol=0.0)
+
+
 @pytest.mark.parametrize("kind", ["rotation", "cross", "depth"])
 def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch, kind):
     monkeypatch.setattr(AssetManager, "_engine", engine)

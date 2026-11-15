@@ -317,7 +317,7 @@ class _KernelEmitter(_NumericalEmitter):
             emitter = _HelperEmitter(self, function)
             signature = list(zip(parameters, types))
             emitter.types.update({argument.arg: kind for argument, kind in signature})
-            emitter.declare_locals(function.body)
+            emitter.declare_locals(function.body, parameters=(argument.arg for argument, _ in signature))
             results = [emitter.infer(node.value) for node in ast.walk(function) if isinstance(node, ast.Return)]
             emitter.local_declarations()
             emitter.block(function.body)

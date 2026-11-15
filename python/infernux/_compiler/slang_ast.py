@@ -138,28 +138,31 @@ class SlangEmitter(ast.NodeVisitor):
             self.visit(statement)
         self.current_statement = previous
 
-    def declare_locals(self, statements):
-        """Python locals have function scope, including names assigned in branches."""
+    def declare_locals(self, statements, *, parameters=()):
+        """Hoist function locals while preserving the existing parameter bindings."""
+        parameters = frozenset(parameters)
         for statement in statements:
             if isinstance(statement, (ast.Assign, ast.AnnAssign)):
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
                 kind = self.annotation(statement.annotation) if isinstance(statement, ast.AnnAssign) else self.infer(statement.value)
                 for target in targets:
-                    if isinstance(target, ast.Name):
+                    if isinstance(target, ast.Name) and target.id not in parameters:
                         previous = self.locals.get(target.id)
                         self.locals[target.id] = common_type(previous, kind) if previous else kind
                         self.types[target.id] = self.locals[target.id]
-            elif isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
+            elif (isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name)
+                  and statement.target.id not in parameters):
                 name = statement.target.id
                 value = ast.BinOp(left=statement.target, op=statement.op, right=statement.value)
                 self.locals[name] = self.types[name] = self.infer(value)
             elif isinstance(statement, ast.For):
                 if not isinstance(statement.target, ast.Name):
                     self.error(statement.target, "GPU ranges use one integer index")
-                self.locals[statement.target.id] = self.types[statement.target.id] = "int"
+                if statement.target.id not in parameters:
+                    self.locals[statement.target.id] = self.types[statement.target.id] = "int"
             if isinstance(statement, (ast.If, ast.For, ast.While)):
-                self.declare_locals(statement.body)
-                self.declare_locals(statement.orelse)
+                self.declare_locals(statement.body, parameters=parameters)
+                self.declare_locals(statement.orelse, parameters=parameters)
 
     def local_declarations(self):
         for name, kind in self.locals.items():

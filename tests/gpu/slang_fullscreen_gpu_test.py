@@ -86,6 +86,7 @@ class Fill(shader.fullscreen):
     mask = shader.parameter.uint()
     enabled = shader.parameter.bool(default=True)
     def main(self, uv: shader.vec2) -> shader.vec4:
+        uv = shader.clamp(uv, shader.vec2(0.0), shader.vec2(1.0))
         transformed = self.placement @ shader.vec4(self.transform @ self.tint.rgb, 1.0)
         rgb = (transformed.rgb * self.gain + shader.vec3(self.offset, 0.0) + self.bias.rgb) * (0.5 + 0.5 * uv.x)
         gate = shader.step(0.0, rgb)

@@ -20,7 +20,9 @@ from infernux import shader
 
 @inx.compute.function
 def _affine_term(value, scale, bias):
-    return value * scale + bias
+    value *= scale
+    value += bias
+    return value
 
 
 @inx.compute.function
@@ -36,12 +38,12 @@ def _helper_kernel(domain_values, output_values, scale, bias):
 
 @inx.compute.function
 def _nested_term(value, scale, bias=4):
-    result = _affine_term(value, scale, bias)
-    if result < 0:
-        result = -result
+    value = _affine_term(value, scale, bias)
+    if value < 0:
+        value = -value
     for increment in range(3):
-        result += increment
-    return result
+        value += increment
+    return value
 
 
 @inx.compute.kernel

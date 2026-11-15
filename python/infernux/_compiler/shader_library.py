@@ -300,7 +300,7 @@ class ShaderEmitter(SlangEmitter):
             self.lighting_mode = "tiled_lighting"
         fields = definition.args.args[1:] if method else definition.args.args
         self.types.update((field.arg, kind) for field, kind in zip(fields, function.arguments))
-        self.declare_locals(definition.body)
+        self.declare_locals(definition.body, parameters=(field.arg for field in fields))
         self.local_declarations()
         self.block(definition.body)
         parameters = ", ".join(kind + " " + field.arg for field, kind in zip(fields, function.arguments))

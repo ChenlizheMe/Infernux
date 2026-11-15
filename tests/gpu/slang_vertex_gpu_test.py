@@ -19,6 +19,9 @@ class Translate(shader.vert):
     marker = shader.material.uint(default=4275878552)
     basis = shader.material.mat3(default=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)))
     def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex = self.offset_vertex(vertex, ctx)
+        return vertex
+    def offset_vertex(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
         if self.enabled and self.marker == 4275878552:
             vertex.position_os += self.offset
             vertex.position_os.x += ctx.time * self.rate

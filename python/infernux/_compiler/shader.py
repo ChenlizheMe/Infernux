@@ -74,7 +74,7 @@ class _Author(ParameterAuthor):
         self.aliases = (self.alias,)
         if self.domain == "particle":
             self.lighting_mode = "tiled_lighting"
-        self.declare_locals(main.body)
+        self.declare_locals(main.body, parameters=(field.arg for field in arguments[1:]))
         self.local_declarations()
         self.block(main.body)
         semantic = " : SV_Target0" if result == "float4" else ""
