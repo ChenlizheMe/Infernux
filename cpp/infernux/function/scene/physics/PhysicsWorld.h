@@ -838,8 +838,8 @@ class PhysicsWorld
     void FailStep(PhysicsDomain &domain) noexcept;
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
     bool AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const;
-    bool BeginGpuControl(PhysicsDomain &domain, bool numericalChange,
-                         const JoltGpuScene::Consumer &consumer = {}) const;
+    bool BeginGpuControl(PhysicsDomain &domain, bool numericalChange, const JoltGpuScene::Consumer &consumer = {},
+                         bool requirePublication = false) const;
     bool AdvanceGpuControl(PhysicsDomain &domain, bool synchronous) const;
     void RetryCapacityBodyCreations(PhysicsDomain &domain);
     void RequireGpu(PhysicsDomain &domain) const;
@@ -847,7 +847,7 @@ class PhysicsWorld
     void DrainGpuSource(PhysicsDomain &domain) const;
     void ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const;
     [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const;
-    void RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer) const;
+    void RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead = false) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunQuery(PhysicsDomain &domain,
                                                                const std::vector<JPH::GPU::QueryInput> &requests,
                                                                uint64_t sweepColliderId = 0,

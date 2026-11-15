@@ -150,6 +150,56 @@ RenderGraphDescription CaptureRenderGraphDescription(
     return result;
 }
 
+std::shared_ptr<const RenderGraphDescription> AcquireRenderGraphPublication(
+    const RenderGraphDescription &source,
+    const std::function<void(const std::shared_ptr<InxMaterial> &)> &prepareMaterial,
+    const std::function<std::shared_ptr<const FullscreenProgram>(const std::string &)> &acquireProgram)
+{
+    const bool immutable =
+        source.sourceRevision != 0 && source.workBindings.empty() &&
+        std::none_of(source.textures.begin(), source.textures.end(),
+                     [](const auto &texture) {
+                         return texture.role == GraphTextureRole::Persistent || texture.renderTexture ||
+                                texture.renderTextureGeneration;
+                     }) &&
+        std::none_of(source.buffers.begin(), source.buffers.end(),
+                     [](const auto &buffer) {
+                         return buffer.computeBuffer || buffer.input || buffer.bufferAuthor || buffer.inputAuthor;
+                     }) &&
+        std::all_of(source.passes.begin(), source.passes.end(), [](const auto &pass) {
+            return std::all_of(pass.commands.begin(), pass.commands.end(), [](const auto &command) {
+                return !command.rendererSelection && !command.selectionAuthor && command.overrideMaterial.empty() &&
+                       !command.overrideMaterialValue;
+            });
+        });
+    if (immutable) {
+        if (auto cached = source.captureCache.lock(); cached && cached->sourceRevision == source.sourceRevision) {
+            if (cached->passes.size() != source.passes.size())
+                throw std::invalid_argument("A RenderGraph revision cannot change its pass layout: " + source.name);
+            bool programsCurrent = true;
+            for (size_t pass = 0; pass < source.passes.size(); ++pass) {
+                if (cached->passes[pass].commands.size() != source.passes[pass].commands.size())
+                    throw std::invalid_argument("A RenderGraph revision cannot change its command layout: " +
+                                                source.name);
+                for (size_t command = 0; command < source.passes[pass].commands.size(); ++command) {
+                    const auto &value = source.passes[pass].commands[command];
+                    if (value.type == GraphCommandType::FullscreenQuad)
+                        programsCurrent &= cached->passes[pass].commands[command].fullscreenProgram ==
+                                           acquireProgram(value.shaderName);
+                }
+            }
+            if (programsCurrent)
+                return cached;
+        }
+    }
+    auto captured = std::make_shared<RenderGraphDescription>(
+        CaptureRenderGraphDescription(source, prepareMaterial, acquireProgram));
+    captured->captureCache.reset();
+    if (immutable)
+        source.captureCache = captured;
+    return captured;
+}
+
 GraphBufferInput::GraphBufferInput(const std::shared_ptr<rhi::ComputeBuffer> &value, uint64_t offset, uint64_t byteSize)
     : m_offset(offset), m_byteSize(byteSize)
 {

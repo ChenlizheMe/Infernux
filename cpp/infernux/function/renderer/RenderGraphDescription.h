@@ -397,11 +397,20 @@ struct RenderGraphDescription
     /// Explicit camera sampling policy, independent of double-buffered resources.
     bool temporalJitter = false;
 
+    /// Non-owning reuse of a capture whose definition has no external author values.
+    /// World/UI/culling/parameters remain on each independent RenderViewPlan.
+    mutable std::weak_ptr<const RenderGraphDescription> captureCache;
+
     [[nodiscard]] bool RenderTextureLayoutsCurrent() const;
 };
 
 /// Capture author values once at the completed-World boundary; no GPU submission.
 RenderGraphDescription CaptureRenderGraphDescription(
+    const RenderGraphDescription &source,
+    const std::function<void(const std::shared_ptr<InxMaterial> &)> &prepareMaterial,
+    const std::function<std::shared_ptr<const FullscreenProgram>(const std::string &)> &acquireProgram);
+
+std::shared_ptr<const RenderGraphDescription> AcquireRenderGraphPublication(
     const RenderGraphDescription &source,
     const std::function<void(const std::shared_ptr<InxMaterial> &)> &prepareMaterial,
     const std::function<std::shared_ptr<const FullscreenProgram>(const std::string &)> &acquireProgram);

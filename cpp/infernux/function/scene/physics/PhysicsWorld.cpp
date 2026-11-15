@@ -980,6 +980,15 @@ bool PhysicsWorld::HasDomainControl(PhysicsDomain &domain) const
 void PhysicsWorld::DrainGpuSource(PhysicsDomain &domain) const
 {
     AdmissionScope admission(*m_gpuScene, domain.owner);
+    struct RequiredMemberScope
+    {
+        JoltGpuScene &scene;
+        RuntimeWorld *previous;
+        ~RequiredMemberScope()
+        {
+            scene.SetRequiredWorld(previous);
+        }
+    } required{*m_gpuScene, m_gpuScene->SetRequiredWorld(&domain.owner)};
     m_gpuWork->DrainRequired(
         m_gpuScene->GetSourceId(), [this, &domain] { return Availability(*m_gpuHost); },
         [this, &domain](FrameWorkOwner::SourceId source, uint64_t maximum) {
@@ -1005,15 +1014,15 @@ bool PhysicsWorld::AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const
         throw std::runtime_error("GPU physics step failed; stop the runtime before restarting");
     return m_gpuScene->GetTickStatus(domain.owner) == JoltGpuTick::Status::Complete;
 }
-bool PhysicsWorld::BeginGpuControl(PhysicsDomain &domain, bool numericalChange,
-                                   const JoltGpuScene::Consumer &consumer) const
+bool PhysicsWorld::BeginGpuControl(PhysicsDomain &domain, bool numericalChange, const JoltGpuScene::Consumer &consumer,
+                                   bool requirePublication) const
 {
     RequireGpu(domain);
     numericalChange = numericalChange || m_gpuScene->HasPendingControl(domain.owner);
     AdmissionScope admission(*m_gpuScene, domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
     auto rendering = PrepareRenderConsumer(domain, numericalChange);
-    if (!numericalChange && !consumer && !rendering)
+    if (!numericalChange && !consumer && !rendering && !requirePublication)
         return true;
     if (!m_gpuScene->TryBeginControl(domain.owner, domain.owner.simulation.simulationEpoch, consumer,
                                      std::move(rendering)))
@@ -1213,22 +1222,37 @@ void PhysicsWorld::FlushAuthoring(PhysicsDomain &domain) const
     if (m_gpuScene && !domain.gpuCancelled)
         const_cast<PhysicsWorld *>(this)->RefreshGpuSurfaces(domain);
 }
-void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer) const
+void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead) const
 {
     RequireOwnerThread();
+    const WorldExecutionScope ownerScope(&domain.owner);
     RequireHealthyStep(domain);
     RequireGpu(domain);
     if (domain.synchronousRead)
         throw std::logic_error("Physics query cannot reenter its synchronous source");
     FlagScope reading(domain.synchronousRead);
+    const auto observe = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        AdmissionScope admission(*m_gpuScene, domain.owner);
+        JoltGpuControlWork prepared;
+        {
+            FrameWorkOwner::Scope preparation(*m_gpuWork);
+            if (consumer)
+                prepared = consumer(publication);
+        }
+        m_gpuScene->RunPublicationObservation(domain.owner, publication, std::move(prepared));
+    };
     if (domain.contacts.dispatching) {
         // User commands stay in the next author FIFO. Queries observe exactly
         // the complete publication responsible for this callback batch.
         const auto batch = domain.contacts.batch;
         if (!batch || batch->publication->simulationEpoch != domain.owner.simulation.simulationEpoch)
             throw std::logic_error("Contact query has no current completed publication");
-        FrameWorkOwner::Scope preparation(*m_gpuWork);
-        RunPreparedWork(domain, consumer ? consumer(batch->publication) : JoltGpuControlWork{});
+        if (publicationRead)
+            observe(batch->publication);
+        else {
+            FrameWorkOwner::Scope preparation(*m_gpuWork);
+            RunPreparedWork(domain, consumer ? consumer(batch->publication) : JoltGpuControlWork{});
+        }
         return;
     }
     try {
@@ -1244,6 +1268,18 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
                 DrainGpuSource(domain);
             (void)AdvanceGpuControl(domain, true);
             const_cast<PhysicsWorld *>(this)->RetryCapacityBodyCreations(domain);
+        }
+        if (publicationRead) {
+            auto publication = m_gpuScene->GetPublished(domain.owner);
+            if (HasDomainControl(domain) || !m_gpuScene->IsCurrentPublication(domain.owner, publication)) {
+                // Complete a real author/layout source dependency, never an alternate query execution path.
+                while (!BeginGpuControl(domain, m_gpuScene->HasPendingControl(domain.owner), {}, true))
+                    DrainGpuSource(domain);
+                (void)AdvanceGpuControl(domain, true);
+                publication = m_gpuScene->GetPublished(domain.owner);
+            }
+            observe(publication);
+            return;
         }
         while (!BeginGpuControl(domain, m_gpuScene->HasPendingControl(domain.owner), consumer))
             DrainGpuSource(domain);
@@ -1908,11 +1944,14 @@ PhysicsWorld::GatherRigidbodyStates(const std::vector<Rigidbody *> &bodies, Phys
     for (auto &group : groups) {
         auto &domain = *group.domain;
         std::exception_ptr error;
-        RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-            group.publication = publication;
-            return PrepareStateBatch(domain, publication, group.bodies, fields, includeBoxes, triggers, exports,
-                                     group.batch, group.motion, group.shapes, error, !exports.empty());
-        });
+        RunControl(
+            domain,
+            [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+                group.publication = publication;
+                return PrepareStateBatch(domain, publication, group.bodies, fields, includeBoxes, triggers, exports,
+                                         group.batch, group.motion, group.shapes, error, !exports.empty());
+            },
+            exports.empty());
         if (error)
             std::rethrow_exception(error);
         MaterializeStateBatch(domain, group.batch, group.motion, group.shapes, exports.empty());
@@ -2224,32 +2263,35 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
     PhysicsBodyMotionState result;
     std::shared_ptr<JoltGpuQueryResult> motion;
     std::exception_ptr error;
-    RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        return PrepareQueryWork(
-            [&]() -> JoltGpuControlWork {
-                const auto allocation = m_gpuScene->FindBody(id);
-                if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->directory->actors.size() ||
-                    !publication->directory->actors[allocation.slot] ||
-                    publication->directory->actors[allocation.slot]->bodyId != id)
-                    throw JoltGpuQueryRequestError("Physics state requires an accepted live body");
-                const auto &identity = *publication->directory->actors[allocation.slot];
-                result.bodyId = id;
-                result.shapeRevision = identity.shapeRevision;
-                if ((static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) == 0)
-                    return {};
-                auto input = Query(QueryGatherMotion, QueryClosest, 0, false);
-                input.meta.z = 0;
-                input.source.y = allocation.slot;
-                input.source.z = static_cast<uint32_t>(fields);
-                input.geometry = identity.rootCenterOfMass;
-                auto prepared = m_gpuQueries->Prepare(publication, {input}, {},
-                                                      domain.queryGeneration.load(std::memory_order_acquire) +
-                                                          static_cast<uint64_t>(domain.controlNumericalChange));
-                motion = prepared.result;
-                return std::move(prepared.work);
-            },
-            error);
-    });
+    RunControl(
+        domain,
+        [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+            return PrepareQueryWork(
+                [&]() -> JoltGpuControlWork {
+                    const auto allocation = m_gpuScene->FindBody(id);
+                    if (allocation.bodyId == UINT32_MAX || allocation.slot >= publication->directory->actors.size() ||
+                        !publication->directory->actors[allocation.slot] ||
+                        publication->directory->actors[allocation.slot]->bodyId != id)
+                        throw JoltGpuQueryRequestError("Physics state requires an accepted live body");
+                    const auto &identity = *publication->directory->actors[allocation.slot];
+                    result.bodyId = id;
+                    result.shapeRevision = identity.shapeRevision;
+                    if ((static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) == 0)
+                        return {};
+                    auto input = Query(QueryGatherMotion, QueryClosest, 0, false);
+                    input.meta.z = 0;
+                    input.source.y = allocation.slot;
+                    input.source.z = static_cast<uint32_t>(fields);
+                    input.geometry = identity.rootCenterOfMass;
+                    auto prepared = m_gpuQueries->Prepare(publication, {input}, {},
+                                                          domain.queryGeneration.load(std::memory_order_acquire) +
+                                                              static_cast<uint64_t>(domain.controlNumericalChange));
+                    motion = prepared.result;
+                    return std::move(prepared.work);
+                },
+                error);
+        },
+        true);
     if (error)
         std::rethrow_exception(error);
     if (motion) {

@@ -770,8 +770,9 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareParameters(con
     return PrepareInputs(prepared);
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInputs(const JoltGpuStepParameters &prepared,
-                                                                         const std::vector<BodyForces> *cpuForces)
+std::shared_ptr<rhi::PreparedComputeBatch>
+JoltGpuStorage::PrepareInputs(const JoltGpuStepParameters &prepared, const std::vector<BodyForces> *cpuForces,
+                              const std::shared_ptr<rhi::ComputeBuffer> &parameterBuffer)
 {
     if (cpuForces)
         ValidateForces(*cpuForces, prepared.Get().selectedCounts.x);
@@ -782,7 +783,10 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInputs(const J
     parameters.counts.y = m_worldCount;
     parameters.counts.z = m_shapeCount;
     parameters.solve.z = parameters.solve.w = 0;
-    std::vector<rhi::ComputeBufferUpdate> updates{{Get(Resource::StepParams), 0, Bytes(&parameters, 1)}};
+    const auto &target = parameterBuffer ? parameterBuffer : Get(Resource::StepParams);
+    if (!target || target->GetByteSize() != sizeof(StepParams) || !m_host.SharesServicesWith(target->GetHost()))
+        throw std::invalid_argument("GPU member parameters require their same-owner typed buffer");
+    std::vector<rhi::ComputeBufferUpdate> updates{{target, 0, Bytes(&parameters, 1)}};
     if (cpuForces && !cpuForces->empty())
         updates.push_back({Get(Resource::BodyForces), uint64_t(parameters.selection.y) * sizeof(BodyForces),
                            Bytes(cpuForces->data(), cpuForces->size())});
@@ -1143,10 +1147,7 @@ void JoltGpuModelUpdate::Cancel() noexcept
 void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource)
 {
     if (resource == Resource::ConvexGeometry) {
-        m_geometry = storage.GetGeometry();
-        m_hasGenericGeometry = storage.HasGenericGeometry();
-        if (!m_geometry || !m_geometry->buffer)
-            throw std::logic_error("Convex geometry was not accepted before tick input capture");
+        CaptureGeometry(storage.GetGeometry(), storage.HasGenericGeometry());
         return;
     }
     const auto slot = InputIndex(resource);
@@ -1156,6 +1157,25 @@ void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource
     m_buffers[slot] = !buffer || resource == Resource::BodyForces ? buffer : buffer->Freeze();
     m_workUniforms.clear();
     m_nextWorkUniform = 0;
+}
+
+void JoltGpuStepInputs::CaptureParameters(const JoltGpuStorage &storage,
+                                          const std::shared_ptr<rhi::ComputeBuffer> &buffer)
+{
+    if (!buffer || buffer->GetByteSize() != sizeof(StepParams) ||
+        !storage.GetHost().SharesServicesWith(buffer->GetHost()) || !buffer->HasInitializedRange(0, sizeof(StepParams)))
+        throw std::logic_error("GPU member parameters require their accepted upload");
+    m_buffers[InputIndex(Resource::StepParams)] = buffer->Freeze();
+    m_workUniforms.clear();
+    m_nextWorkUniform = 0;
+}
+
+void JoltGpuStepInputs::CaptureGeometry(std::shared_ptr<const JoltGpuGeometryLease> geometry, bool generic)
+{
+    if (!geometry || !geometry->buffer)
+        throw std::logic_error("Convex geometry was not accepted before tick input capture");
+    m_geometry = std::move(geometry);
+    m_hasGenericGeometry = generic;
 }
 
 const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStepInputs::GetCaptured(Resource resource) const
@@ -1394,17 +1414,16 @@ void JoltGpuPrograms::AppendResidentCollide(const JoltGpuStorage &storage, const
     dispatches.push_back(std::move(dispatch));
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,
-                                                                          const JoltGpuStepInputs &inputs,
-                                                                          const std::vector<JoltGpuStageWork> &work)
+void JoltGpuPrograms::AppendStages(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                                   const std::vector<JoltGpuStageWork> &work,
+                                   std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                   std::vector<rhi::ComputeDispatchDesc> &dispatches)
 {
     if (!m_host.SharesServicesWith(storage.GetHost()))
         throw std::invalid_argument("Jolt GPU programs and state belong to different compute owners");
     if (storage.GetBodyCount() == 0 || work.empty())
-        return {};
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
-    dispatches.reserve(work.size());
-    std::vector<rhi::ComputeBufferUpdate> uploads;
+        return;
+    dispatches.reserve(dispatches.size() + work.size());
     std::map<std::array<uint32_t, 4>, std::shared_ptr<rhi::ComputeBuffer>> uniforms;
     for (const auto &unit : work) {
         const auto index = static_cast<size_t>(unit.stage);
@@ -1451,6 +1470,15 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const 
         }
         dispatches.push_back(BuildDispatch(entry, storage, inputs, unit, uniform->second));
     }
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,
+                                                                          const JoltGpuStepInputs &inputs,
+                                                                          const std::vector<JoltGpuStageWork> &work)
+{
+    std::vector<rhi::ComputeBufferUpdate> uploads;
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    AppendStages(storage, inputs, work, uploads, dispatches);
     if (dispatches.empty())
         return {};
     return rhi::PrepareComputeBatch(m_host, std::move(uploads), std::move(dispatches));

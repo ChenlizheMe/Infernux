@@ -246,6 +246,7 @@ class JoltGpuScene final
     [[nodiscard]] bool AreControlInputsAccepted(const RuntimeWorld &world) const;
     [[nodiscard]] FrameWorkWaitResult WaitForProgress(RuntimeWorld &world, uint64_t maxWaitNanoseconds);
     [[nodiscard]] FrameWorkWaitResult WaitForSourceProgress(uint64_t maxWaitNanoseconds);
+    RuntimeWorld *SetRequiredWorld(RuntimeWorld *world);
     void SetAdmissionEnabled(RuntimeWorld &world, bool enabled);
     [[nodiscard]] bool IsAdmissionEnabled(const RuntimeWorld &world) const;
     /// Nonblocking, local cancellation. Keep RuntimeWorld alive until CanRetire;
@@ -259,6 +260,10 @@ class JoltGpuScene final
     [[nodiscard]] bool CanRetire(const RuntimeWorld &world);
 
   private:
+    friend class PhysicsWorld;
+    bool IsCurrentPublication(const RuntimeWorld &world, const std::shared_ptr<const Publication> &publication) const;
+    void RunPublicationObservation(RuntimeWorld &world, const std::shared_ptr<const Publication> &publication,
+                                   JoltGpuControlWork work);
     class Impl;
     std::unique_ptr<Impl> m_impl;
 };

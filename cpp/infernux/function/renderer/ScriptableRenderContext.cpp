@@ -206,7 +206,7 @@ CullingResults &ScriptableRenderContext::Cull()
 bool ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 {
     if (m_recordedPlan) {
-        m_recordedPlan->graph = CaptureRenderGraphDescription(
+        m_recordedPlan->graph = AcquireRenderGraphPublication(
             desc, [this](const auto &material) { m_vkCore->PrepareMaterialAuthoring(material); },
             [this](const auto &name) { return m_vkCore->GetFullscreenPipelineCache()->AcquireProgram(name); });
         return true;
@@ -613,13 +613,14 @@ bool ScriptableRenderContext::ExecutePlan(const std::shared_ptr<const RenderView
     if (plan->worldUI && !m_renderWorldOwner->OwnsUI(plan->worldUI->World()))
         throw std::logic_error("World UI plan lost its shared World owner");
     m_graph->SetScreenUISnapshot(plan->ui, plan->worldUI);
+    const auto &previous = m_graph->GetAppliedPlan();
     if (plan->graph &&
-        (m_graph->GetAppliedPlan() != plan || !m_graph->IsPythonGraphCurrent(plan->graph->sourceRevision))) {
+        (!previous || previous->graph != plan->graph || !m_graph->IsPythonGraphCurrent(plan->graph->sourceRevision))) {
         if (!ApplyGraph(*plan->graph))
             return false;
-        UpdateParameterBlocks(plan->parameters);
-        m_graph->SetAppliedPlan(plan);
     }
+    UpdateParameterBlocks(plan->parameters);
+    m_graph->SetAppliedPlan(plan);
     m_orderedDrawCalls = plan->draws;
     m_pendingCommands = plan->commands;
     CullingResults culling = plan->culling;

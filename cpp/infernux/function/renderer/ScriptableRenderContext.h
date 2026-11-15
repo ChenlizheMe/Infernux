@@ -73,7 +73,7 @@ enum class RenderViewPlanState : uint8_t
 
 struct RenderViewPlan
 {
-    std::optional<RenderGraphDescription> graph;
+    std::shared_ptr<const RenderGraphDescription> graph;
     std::vector<GraphParameterBlockUpdate> parameters;
     CullingResults culling;
     std::vector<DrawCall> draws;

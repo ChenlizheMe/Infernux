@@ -154,8 +154,8 @@ class JoltGpuStorage
     /// One CPU-input packet. A null forces pointer leaves the GPU-produced
     /// force port untouched. Capture these values only after packet acceptance.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
-    PrepareInputs(const JoltGpuStepParameters &parameters,
-                  const std::vector<JPH::GPU::BodyForces> *cpuForces = nullptr);
+    PrepareInputs(const JoltGpuStepParameters &parameters, const std::vector<JPH::GPU::BodyForces> *cpuForces = nullptr,
+                  const std::shared_ptr<rhi::ComputeBuffer> &parameterBuffer = {});
     /// Explicit CPU input path. A GPU controller can instead write the resident
     /// BodyForces port directly. Its consumer owner must place
     /// GetSleep().PrepareForceWake immediately after that genuinely accepted
@@ -318,6 +318,8 @@ class JoltGpuStepInputs
   public:
     /// Empty models need no input leases. Writable solver ports are not inputs.
     void Capture(const JoltGpuStorage &storage, JPH::GPU::Resource resource);
+    void CaptureParameters(const JoltGpuStorage &storage, const std::shared_ptr<rhi::ComputeBuffer> &buffer);
+    void CaptureGeometry(std::shared_ptr<const JoltGpuGeometryLease> geometry, bool generic);
     void SetSelection(const JPH::GPU::StepParams &parameters) noexcept
     {
         m_parameters = parameters;
@@ -403,6 +405,12 @@ class JoltGpuPrograms
     {
         return *m_articulations;
     }
+
+    /// Append one member's units using its own input bindings; no cursor or GPU work is accepted.
+    /// On failure discard all unaccepted descriptors. The source prepares one packet after all appends.
+    void AppendStages(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                      const std::vector<JoltGpuStageWork> &work, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                      std::vector<rhi::ComputeDispatchDesc> &dispatches);
 
     /// Prepare one dependency-ordered ready prefix, including repeated solver
     /// iterations. The caller owns its stage cursor and selects a bounded prefix.

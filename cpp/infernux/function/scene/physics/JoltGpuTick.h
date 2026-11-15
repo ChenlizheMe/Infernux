@@ -120,6 +120,8 @@ struct JoltGpuTickControl
     std::function<std::vector<uint32_t>()> prepareSleepSources;
     // Pure observations explicitly opt out; existing Tick/Control/Work retain snapshots.
     bool needsSnapshot = true;
+    std::shared_ptr<const JoltGpuGeometryLease> acceptedGeometry;
+    bool acceptedGenericGeometry = false;
     JoltGpuTickControl() = default;
     JoltGpuTickControl(JoltGpuTickControl &&) = default;
     JoltGpuTickControl &operator=(JoltGpuTickControl &&) = default;
@@ -147,8 +149,9 @@ struct JoltGpuTickControl
     std::function<JoltGpuControlWork(const JoltGpuTickOutput &)> prepareFinalWork;
 };
 
-/// One PhysicsWorld-owned bounded stage cursor using the engine's existing work source,
-/// compute queue and receipts. Storage/programs/work must outlive this owner.
+/// One bounded numerical cursor under the engine's existing physics Source.
+/// A primary cursor may own a clean sibling; both share one admission/queue driver.
+/// Storage/programs/work must outlive the cursors and their accepted receipts.
 class JoltGpuTick final
 {
   public:
@@ -171,10 +174,17 @@ class JoltGpuTick final
     JoltGpuTick(const JoltGpuTick &) = delete;
     JoltGpuTick &operator=(const JoltGpuTick &) = delete;
 
-    /// Requires the shared packed backend's exclusive writer lease. worldRow
+    /// An additional numerical cursor driven only by this Tick's existing Source.
+    /// Scene admits it only under the clean packed-layout member exclusion.
+    [[nodiscard]] JoltGpuTick &GetSharedMember(std::function<void()> failureObserver);
+    void SetSourceFocus(JoltGpuTick *member) noexcept;
+    [[nodiscard]] FrameWorkWaitResult WaitForSourceProgress(uint64_t maxWaitNanoseconds);
+
+    /// Requires the packed backend's writer/layout exclusion. Only a Scene-admitted
+    /// disjoint clean sibling may share this unchanged layout and Source. worldRow
     /// belongs to the accepted layout; controls may move its ranges before
-    /// capture, but may not renumber its reserved row. No other numerical
-    /// writer/controller/layout commit may enter until this cursor retires.
+    /// capture, but may not renumber its reserved row. Arbitrary controller/model/
+    /// layout writers remain excluded until all relevant member receipts retire.
     /// Models/worlds and, when cpuForces is absent, the GPU force producer must
     /// already be accepted. Capture those values immediately here. CPU forces
     /// are followed by their genuine-input wake producer. A direct GPU force
@@ -245,8 +255,15 @@ class JoltGpuTick final
     [[nodiscard]] const JoltGpuTickOutput &GetCompletedOutput() const noexcept;
 
   private:
+    friend class JoltGpuScene;
     class Impl;
+    explicit JoltGpuTick(JoltGpuTick &owner, std::function<void()> failureObserver, bool observation = false);
+    JoltGpuTick &GetObservationMember();
+    void ReleaseObservation() noexcept;
+    void TracePublicationRead(const char *boundary, uint32_t row) const noexcept;
     std::unique_ptr<Impl> m_impl;
+    std::unique_ptr<JoltGpuTick> m_sharedMember;
+    std::unique_ptr<JoltGpuTick> m_observationMember;
 };
 
 } // namespace infernux

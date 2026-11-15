@@ -1,6 +1,7 @@
 #include "JoltGpuScene.h"
 #include "JoltGpuArticulations.h"
 #include "JoltGpuSleep.h"
+#include "PhysicsDomain.h"
 
 #include "JoltGpuBodyMutations.h"
 #include "JoltGpuBroadphase.h"
@@ -9,12 +10,14 @@
 #include "JoltGpuJoints.h"
 #include "JoltGpuNarrowphase.h"
 #include "JoltGpuPackedLayout.h"
+#include <core/log/InxLog.h>
 #include <cstring>
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/MeshCollider.h>
 #include <function/scene/Rigidbody.h>
 #include <function/scene/RuntimeWorld.h>
+#include <function/scene/SceneManager.h>
 
 #include <algorithm>
 #include <cmath>
@@ -106,6 +109,11 @@ class JoltGpuScene::Impl
         std::shared_ptr<const PhysicsColliderPairs> queuedPairs;
         std::shared_ptr<const JoltGpuColliderPairs> pairCache;
         std::shared_ptr<JoltGpuArticulationState> articulationCache;
+        std::shared_ptr<Publication> candidate;
+        std::shared_ptr<std::vector<TargetCompletion>> candidateCompletions;
+        JoltGpuTick *cursor = nullptr;
+        bool shareable = false;
+        uint64_t memberEpoch = 0, memberStep = 0;
         JoltGpuTick::Status status = JoltGpuTick::Status::Idle;
         uint64_t tickSerial = 0, controlSerial = 0, observedTick = 0, observedControl = 0;
         bool admission = true, closed = false, cleanup = false, retiring = false, retired = false;
@@ -1305,7 +1313,8 @@ class JoltGpuScene::Impl
     }
 
     JoltGpuTickControl PrepareControl(Partition &domain, uint64_t epoch, uint64_t step, bool controlOnly,
-                                      Consumer consumer, Consumer finalConsumer, ContactObserverFactory prepareContacts)
+                                      Consumer consumer, Consumer finalConsumer, ContactObserverFactory prepareContacts,
+                                      bool cleanMember = false)
     {
         auto publication = std::make_shared<Publication>();
         auto pairCapture = std::make_shared<JoltGpuColliderPairCapture>();
@@ -1388,6 +1397,15 @@ class JoltGpuScene::Impl
                                         });
                         });
         };
+        if (cleanMember) {
+            // Eligibility proved the directory, pair table and geometry are already accepted.
+            publication->geometry = domain.published->geometry;
+            publication->hasGenericGeometry = domain.published->hasGenericGeometry;
+            publication->colliderPairs = domain.pairCache;
+            pairCapture->value = domain.pairCache;
+            articulationCapture->value = domain.articulationCache;
+            capture.prepareWork = {};
+        }
         domain.pending.push_back(std::move(capture));
         for (auto &group : domain.pending)
             if (!group.commands.empty())
@@ -1432,6 +1450,10 @@ class JoltGpuScene::Impl
         control.colliderPairs = pairCapture;
         control.articulations = articulationCapture;
         control.commandProgram = &commands;
+        if (cleanMember) {
+            control.acceptedGeometry = publication->geometry;
+            control.acceptedGenericGeometry = publication->hasGenericGeometry;
+        }
         control.prepareContactReport = std::move(reports.phase);
         control.groups = std::move(domain.pending);
         domain.pendingSources.reset();
@@ -1472,8 +1494,8 @@ class JoltGpuScene::Impl
                     });
                 });
         };
-        candidate = std::move(publication);
-        candidateCompletions = std::move(completions);
+        domain.candidate = std::move(publication);
+        domain.candidateCompletions = std::move(completions);
         if (!controlOnly)
             for (const auto index : domain.records) {
                 if (index == UINT32_MAX)
@@ -1492,55 +1514,140 @@ class JoltGpuScene::Impl
         return control;
     }
 
+    bool BlocksNumericalWindow(const Partition &domain) const
+    {
+        // Inactive authoring has no Play consumer. Its queued FIFO is retained, not GPU-ready maintenance.
+        // Preparing/playing runtime Worlds, and every cleanup/retirement, still close clean refill.
+        return domain.cleanup || (domain.retiring && !domain.retired) ||
+               (!domain.pending.empty() &&
+                (domain.world != &SceneManager::Instance().AuthoringWorld() || domain.world->simulation.isPlaying));
+    }
+
+    bool MaintenancePending() const
+    {
+        return pressurePending || std::any_of(ordered.begin(), ordered.end(), [this](const auto *domain) {
+                   return domain && BlocksNumericalWindow(*domain);
+               });
+    }
+
+    bool CleanMember(const Partition &domain) const
+    {
+        const auto &published = domain.published;
+        const auto &cache = domain.articulationCache;
+        return domain.world->physics && !domain.world->physics->admittedParticipants && domain.pending.empty() &&
+               domain.row < storage.GetModel().worlds.size() && storage.GetModel().worlds[domain.row].leaves.w == 0 &&
+               (!cache || (!cache->numeric && cache->trees.empty())) && published &&
+               published->layoutGeneration == layoutGeneration && published->geometry &&
+               published->directory == publicationDirectory && domain.pairCache &&
+               domain.pairCache->identities == domain.acceptedPairs;
+    }
+
     template <typename FinalConsumerFactory>
     bool TryBegin(Partition &domain, uint64_t epoch, uint64_t step, float dt, const JoltGpuStepParameters *parameters,
                   Consumer consumer, FinalConsumerFactory prepareFinalConsumer,
                   ContactObserverFactory prepareContacts = {}, ParticipantFactory prepareParticipants = {})
     {
         Service();
-        if (writer || domain.closed || !domain.admission || tick.IsPressureActive())
+        if (domain.cursor && domain.status == JoltGpuTick::Status::Running) {
+            if (domain.memberEpoch != epoch || domain.memberStep != step)
+                throw std::logic_error("GPU member retry changed its fixed identity");
+            return true;
+        }
+        if (domain.closed || !domain.admission || tick.IsPressureActive())
             return false;
+        const bool clean = parameters && CleanMember(domain) && !MaintenancePending();
+        if ((writer || peerWriter) &&
+            (!clean || (writer && !writer->shareable) || (peerWriter && !peerWriter->shareable)))
+            return false;
+        if (writer && peerWriter)
+            return false;
+        JoltGpuTick *selected = &tick;
+        if (writer)
+            selected = &tick.GetSharedMember([this] {
+                if (peerWriter && failureObserver)
+                    failureObserver(*peerWriter->world);
+            });
+        const auto pendingBeforeAdmission = domain.pending.size();
         auto finalConsumer = prepareFinalConsumer();
         auto control = PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer),
-                                      std::move(finalConsumer), std::move(prepareContacts));
+                                      std::move(finalConsumer), std::move(prepareContacts), clean);
         control.prepareParticipant =
             prepareParticipants ? prepareParticipants() : decltype(control.prepareParticipant){};
-        writer = &domain;
-        writerKind = parameters ? WriterKind::Tick : WriterKind::Control;
+        if (selected == &tick)
+            writer = &domain;
+        else
+            peerWriter = &domain;
+        domain.cursor = selected;
+        domain.shareable = clean;
+        domain.memberEpoch = epoch;
+        domain.memberStep = step;
+        if (selected == &tick)
+            writerKind = parameters ? WriterKind::Tick : WriterKind::Control;
         domain.status = JoltGpuTick::Status::Running;
-        tick.SetAdmissionEnabled(true);
+        selected->SetAdmissionEnabled(true);
         try {
             if (parameters)
-                tick.Begin(domain.row, dt, *parameters, std::move(control));
+                selected->Begin(domain.row, dt, *parameters, std::move(control));
             else
-                tick.BeginControl(domain.row, std::move(control));
+                selected->BeginControl(domain.row, std::move(control));
         } catch (...) {
             Cancel(domain);
             throw;
         }
+        try {
+            if (INXLOG_GET_LEVEL() == LOG_DEBUG) {
+                const Partition *debt = nullptr;
+                for (const auto *other : ordered)
+                    if (other && BlocksNumericalWindow(*other)) {
+                        debt = other;
+                        break;
+                    }
+                size_t inactiveAuthorPending = 0;
+                for (const auto *other : ordered)
+                    if (other && other->world == &SceneManager::Instance().AuthoringWorld() &&
+                        !other->world->simulation.isPlaying)
+                        inactiveAuthorPending = other->pending.size();
+                INXLOG_DIAGNOSTIC(
+                    "P4_MEMBER_ADMIT world=", domain.id, " row=", domain.row, " step=", step,
+                    " numerical=", bool(parameters), " clean=", clean, " pending_before=", pendingBeforeAdmission,
+                    " maintenance_now=", MaintenancePending(),
+                    " directory_current=", domain.published && domain.published->directory == publicationDirectory,
+                    " layout_current=", domain.published && domain.published->layoutGeneration == layoutGeneration,
+                    " trees=", domain.articulationCache ? domain.articulationCache->trees.size() : 0,
+                    " numeric_cache=", domain.articulationCache && bool(domain.articulationCache->numeric),
+                    " participant=", domain.world->physics && bool(domain.world->physics->admittedParticipants),
+                    " debt_world=", debt ? debt->id : 0, " debt_playing=", debt && debt->world->simulation.isPlaying,
+                    " debt_closed=", debt && debt->closed, " debt_pending=", debt ? debt->pending.size() : 0,
+                    " inactive_author_pending=", inactiveAuthorPending);
+            }
+        } catch (...) {
+        }
         return true;
     }
 
-    void PublishWriter()
+    void PublishWriter(Partition &domain)
     {
-        auto &domain = *writer;
-        if (candidate) {
-            domain.published = std::move(candidate);
-            if (writerKind == WriterKind::Control)
+        if (domain.candidate) {
+            domain.published = std::move(domain.candidate);
+            if (&domain == writer && writerKind == WriterKind::Control)
                 ++domain.controlSerial;
             else
                 ++domain.tickSerial;
-            if (candidateCompletions)
-                for (const auto &completion : *candidateCompletions) {
+            if (domain.candidateCompletions)
+                for (const auto &completion : *domain.candidateCompletions) {
                     const auto *author = completion.source.Get();
                     auto *body = author ? dynamic_cast<Rigidbody *>(author->rigidbody.GetComponent()) : nullptr;
                     if (body)
                         body->CompletePhysicsTarget(completion.source, completion.channels);
                 }
         }
-        candidateCompletions.reset();
+        domain.candidateCompletions.reset();
         domain.status = JoltGpuTick::Status::Complete;
-        writer = nullptr;
+        domain.cursor = nullptr;
+        if (writer == &domain)
+            writer = nullptr;
+        else
+            peerWriter = nullptr;
     }
 
     void Cancel(Partition &domain)
@@ -1548,6 +1655,8 @@ class JoltGpuScene::Impl
         if (domain.retired)
             return;
         domain.closed = true;
+        if (observationOwner == &domain)
+            observationCursor->Cancel();
         domain.cleanup = true;
         domain.observedTick = domain.tickSerial;
         domain.observedControl = domain.controlSerial;
@@ -1565,9 +1674,9 @@ class JoltGpuScene::Impl
         }
         std::vector<TargetCompletion> targets = domain.pendingCompletions;
         targets.reserve(targets.size() + domain.records.size() * 2u +
-                        (writer == &domain && candidateCompletions ? candidateCompletions->size() : 0u));
-        if (writer == &domain && candidateCompletions)
-            targets.insert(targets.end(), candidateCompletions->begin(), candidateCompletions->end());
+                        (domain.candidateCompletions ? domain.candidateCompletions->size() : 0u));
+        if (domain.candidateCompletions)
+            targets.insert(targets.end(), domain.candidateCompletions->begin(), domain.candidateCompletions->end());
         domain.pending.clear();
         domain.queuedPairs.reset();
         domain.pendingSources.reset();
@@ -1581,12 +1690,13 @@ class JoltGpuScene::Impl
             if (body)
                 body->CompletePhysicsTarget(target.source, target.channels);
         }
-        if (writer == &domain) {
-            tick.Cancel();
-            candidate.reset();
-            candidateCompletions.reset();
-            writerKind = WriterKind::Cancelled;
+        if (domain.cursor) {
+            domain.cursor->Cancel();
+            if (writer == &domain)
+                writerKind = WriterKind::Cancelled;
         }
+        domain.candidate.reset();
+        domain.candidateCompletions.reset();
         domain.status = JoltGpuTick::Status::Cancelled;
     }
 
@@ -1644,8 +1754,8 @@ class JoltGpuScene::Impl
     {
         // Ordinary Cancel is reopenable for this same RuntimeWorld. Only its
         // final retirement may return a row to a different public World identity.
-        if (!domain.retiring || !domain.retired || domain.cleanup || writer == &domain || !domain.pending.empty() ||
-            !domain.records.empty() || domain.liveCount)
+        if (!domain.retiring || !domain.retired || domain.cleanup || writer == &domain || peerWriter == &domain ||
+            observationOwner == &domain || !domain.pending.empty() || !domain.records.empty() || domain.liveCount)
             return false;
         const auto &worlds = storage.GetModel().worlds;
         if (domain.row < worlds.size()) {
@@ -1701,6 +1811,27 @@ class JoltGpuScene::Impl
 
     void Service()
     {
+        if (observationOwner && !observationCallActive && observationCursor->CanRetire()) {
+            observationOwner = nullptr;
+            observationPublication.reset();
+        }
+        if (peerWriter) {
+            auto &domain = *peerWriter;
+            auto &cursor = *domain.cursor;
+            if ((cursor.GetStatus() == JoltGpuTick::Status::Failed ||
+                 cursor.GetStatus() == JoltGpuTick::Status::Cancelled) &&
+                domain.status != JoltGpuTick::Status::Cancelled)
+                Cancel(domain);
+            if (cursor.IsComplete() && !domain.closed && domain.status != JoltGpuTick::Status::Cancelled)
+                PublishWriter(domain);
+            else if (cursor.CanRetire() && domain.status == JoltGpuTick::Status::Cancelled) {
+                if (cursor.GetStatus() == JoltGpuTick::Status::Cancelled ||
+                    cursor.GetStatus() == JoltGpuTick::Status::Failed)
+                    cursor.ReopenForPartitionCleanup();
+                domain.cursor = nullptr;
+                peerWriter = nullptr;
+            }
+        }
         // An idle pressure sweep also owns this shared Tick source. It is not
         // a second Scene writer and cannot overlap a new layout/cleanup writer.
         if (tick.IsPressureActive())
@@ -1710,6 +1841,7 @@ class JoltGpuScene::Impl
             // Idle retirement has the same fatal-owner/receipt cleanup path as
             // an ordinary writer; a failed source must not become unreopenable.
             writer = pressureDomain;
+            writer->cursor = &tick;
             writerKind = WriterKind::Cancelled;
             Cancel(*writer);
         }
@@ -1722,6 +1854,7 @@ class JoltGpuScene::Impl
                 return;
             if (tick.GetStatus() == JoltGpuTick::Status::Cancelled || tick.GetStatus() == JoltGpuTick::Status::Failed)
                 tick.ReopenForPartitionCleanup();
+            writer->cursor = nullptr;
             writer = nullptr;
             pressureDomain = nullptr;
         }
@@ -1732,6 +1865,7 @@ class JoltGpuScene::Impl
                 writer->articulationCache.reset();
                 writer->cleanup = false;
                 writer->status = JoltGpuTick::Status::Cancelled;
+                writer->cursor = nullptr;
                 writer = nullptr;
             } else if (writerKind == WriterKind::Retirement) {
                 writer->retired = true;
@@ -1739,11 +1873,12 @@ class JoltGpuScene::Impl
                 writer->records.clear();
                 writer->freeLocals.clear();
                 writer->published.reset();
+                writer->cursor = nullptr;
                 writer = nullptr;
             } else
-                PublishWriter();
+                PublishWriter(*writer);
         }
-        if (writer)
+        if (writer || peerWriter || observationOwner)
             return;
         for (auto *domain : ordered) {
             if (!domain)
@@ -1782,6 +1917,8 @@ class JoltGpuScene::Impl
             control.commandProgram = &commands;
             control.groups = std::move(domain->pending);
             writer = domain;
+            domain->cursor = &tick;
+            domain->shareable = false;
             writerKind = domain->cleanup ? WriterKind::Cleanup : WriterKind::Retirement;
             tick.SetAdmissionEnabled(true);
             tick.BeginControl(domain->row, std::move(control));
@@ -1812,14 +1949,17 @@ class JoltGpuScene::Impl
     // mark. Null entries are retired zero-range rows available for later Worlds.
     std::vector<Partition *> ordered;
     std::vector<uint32_t> freeRows;
-    Partition *writer = nullptr;
+    Partition *writer = nullptr, *peerWriter = nullptr;
+    RuntimeWorld *requiredWorld = nullptr;
+    Partition *observationOwner = nullptr;
+    JoltGpuTick *observationCursor = nullptr;
+    std::shared_ptr<const Publication> observationPublication;
+    bool observationCallActive = false;
     Partition *pressureDomain = nullptr;
     WriterKind writerKind = WriterKind::Control;
     uint64_t observedPressure = 0;
     size_t pressureCursor = 0;
     bool pressurePending = false;
-    std::shared_ptr<Publication> candidate;
-    std::shared_ptr<std::vector<TargetCompletion>> candidateCompletions;
     // Entire backend shutdown drains this one source; domain retirement never
     // destroys it. RuntimeWorld owners stay alive until their CanRetire result.
     FailureObserver failureObserver;
@@ -1851,7 +1991,8 @@ bool JoltGpuScene::RegisterPartition(RuntimeWorld &world, uint32_t capacity)
         auto &domain = m_impl->Domain(world);
         if (domain.retiring || domain.retired)
             throw std::logic_error("A retired RuntimeWorld partition cannot reopen");
-        if (domain.cleanup || m_impl->writer == &domain)
+        if (domain.cleanup || m_impl->writer == &domain || m_impl->peerWriter == &domain ||
+            m_impl->observationOwner == &domain)
             return !domain.closed;
         if (domain.closed) {
             domain.closed = false;
@@ -2054,7 +2195,7 @@ bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
     if (!m_impl->domains.count(world.id))
         return false;
     const auto &domain = m_impl->Domain(world);
-    return !domain.pending.empty() || (m_impl->writer == &domain && !m_impl->tick.AreControlInputsAccepted());
+    return !domain.pending.empty() || (domain.cursor && !domain.cursor->AreControlInputsAccepted());
 }
 bool JoltGpuScene::TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
                                 const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer,
@@ -2078,7 +2219,7 @@ bool JoltGpuScene::TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &value, 
 {
     m_impl->Service();
     auto &domain = m_impl->Domain(world);
-    if (m_impl->writer || domain.closed || !domain.admission || m_impl->tick.IsPressureActive() ||
+    if (m_impl->writer || m_impl->peerWriter || domain.closed || !domain.admission || m_impl->tick.IsPressureActive() ||
         domain.row >= m_impl->storage.GetWorldCount())
         return false;
     JoltGpuTickControl control;
@@ -2087,12 +2228,95 @@ bool JoltGpuScene::TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &value, 
     group.prepareWork = [value = std::move(value)]() mutable { return std::move(value); };
     control.groups.push_back(std::move(group));
     m_impl->writer = &domain;
+    domain.cursor = &m_impl->tick;
+    domain.shareable = false;
     m_impl->writerKind = Impl::WriterKind::Work;
     domain.status = JoltGpuTick::Status::Running;
     m_impl->tick.SetAdmissionEnabled(true);
     m_impl->tick.BeginControl(domain.row, std::move(control));
     return true;
 }
+bool JoltGpuScene::IsCurrentPublication(const RuntimeWorld &world,
+                                        const std::shared_ptr<const Publication> &publication) const
+{
+    return publication && publication->worldId == world.id &&
+           publication->simulationEpoch == world.simulation.simulationEpoch &&
+           publication->layoutGeneration == m_impl->layoutGeneration &&
+           publication->directory == m_impl->publicationDirectory;
+}
+
+void JoltGpuScene::RunPublicationObservation(RuntimeWorld &world, const std::shared_ptr<const Publication> &publication,
+                                             JoltGpuControlWork prepared)
+{
+    if (!publication || publication->worldId != world.id ||
+        publication->simulationEpoch != world.simulation.simulationEpoch || !publication->geometry ||
+        (publication->bodyCount && (!publication->bodyStates || !publication->bodyStates->IsFrozen())) ||
+        !publication->jointStream || !publication->jointStream->IsFrozen())
+        throw std::logic_error("Publication read requires its complete immutable World/epoch source");
+    if (!prepared.packet && !prepared.continueWork)
+        return;
+    auto &domain = m_impl->Domain(world);
+    if (domain.closed || !domain.admission)
+        throw std::logic_error("Publication read owner is closed");
+    if (m_impl->observationCallActive)
+        throw std::logic_error("Publication read cannot reenter its shared cursor");
+    auto &read = m_impl->tick.GetObservationMember();
+    auto *previousWorld = m_impl->requiredWorld;
+    m_impl->tick.SetSourceFocus(&read);
+    const auto availability = [this] {
+        return m_impl->storage.GetHost().GetQueuePressure().recordingFrames ? FrameGpuAvailability::ForegroundRecording
+                                                                            : FrameGpuAvailability::Ready;
+    };
+    const auto drain = [&] {
+        m_impl->work.DrainRequired(m_impl->tick.GetSourceId(), availability, [this](auto, uint64_t maximum) {
+            return m_impl->tick.WaitForSourceProgress(maximum);
+        });
+    };
+    const auto finish = [&] {
+        m_impl->observationCallActive = false;
+        if (read.CanRetire()) {
+            read.ReleaseObservation();
+            m_impl->observationOwner = nullptr;
+            m_impl->observationPublication.reset();
+        }
+        SetRequiredWorld(previousWorld);
+    };
+    try {
+        // A previous failed read may still own accepted tickets. Retire only those tickets.
+        if (m_impl->observationOwner) {
+            drain();
+            if (!read.CanRetire())
+                throw std::runtime_error("Previous publication read has not retired");
+            read.ReleaseObservation();
+            m_impl->observationOwner = nullptr;
+            m_impl->observationPublication.reset();
+        }
+        // Private friend entry: only Host gather/pose factories, with no external exports,
+        // supply this work. Their kernels read Publication and write private query results.
+        m_impl->observationOwner = &domain;
+        m_impl->observationCursor = &read;
+        m_impl->observationPublication = publication;
+        m_impl->observationCallActive = true;
+        JoltGpuTickControl control;
+        control.needsSnapshot = false;
+        JoltGpuControlGroup group;
+        group.prepareWork = [prepared = std::move(prepared)]() mutable { return std::move(prepared); };
+        control.groups.push_back(std::move(group));
+        read.SetAdmissionEnabled(true);
+        read.BeginControl(domain.row, std::move(control));
+        m_impl->tick.TracePublicationRead("before", domain.row);
+        drain();
+        if (!read.IsComplete())
+            throw std::runtime_error("Publication read did not complete its query work");
+        m_impl->tick.TracePublicationRead("after", domain.row);
+        finish();
+    } catch (...) {
+        read.Cancel();
+        finish();
+        throw;
+    }
+}
+
 bool JoltGpuScene::PublishCompletedTick(RuntimeWorld &world)
 {
     m_impl->Service();
@@ -2118,7 +2342,8 @@ const std::shared_ptr<const JoltGpuScene::Publication> &JoltGpuScene::GetPublish
 }
 bool JoltGpuScene::IsWriterFor(const RuntimeWorld &world) const noexcept
 {
-    return m_impl->writer && m_impl->writer->world == &world;
+    return (m_impl->writer && m_impl->writer->world == &world) ||
+           (m_impl->peerWriter && m_impl->peerWriter->world == &world);
 }
 JoltGpuControlWork JoltGpuScene::PrepareSleepQuery(const std::shared_ptr<const Publication> &publication,
                                                    std::vector<uint32_t> relativeBodies,
@@ -2140,16 +2365,25 @@ FrameWorkOwner::SourceId JoltGpuScene::GetSourceId() const noexcept
 }
 bool JoltGpuScene::AreControlInputsAccepted(const RuntimeWorld &world) const
 {
-    return !IsWriterFor(world) || m_impl->tick.AreControlInputsAccepted();
+    const auto &domain = m_impl->Domain(world);
+    return !domain.cursor || domain.cursor->AreControlInputsAccepted();
 }
 FrameWorkWaitResult JoltGpuScene::WaitForProgress(RuntimeWorld &world, uint64_t maxWait)
 {
     m_impl->Service();
-    return IsWriterFor(world) ? m_impl->tick.WaitForProgress(maxWait) : FrameWorkWaitResult::Blocked;
+    const auto &domain = m_impl->Domain(world);
+    return domain.cursor ? domain.cursor->WaitForProgress(maxWait) : FrameWorkWaitResult::Blocked;
 }
 FrameWorkWaitResult JoltGpuScene::WaitForSourceProgress(uint64_t maxWait)
 {
-    return m_impl->tick.WaitForProgress(maxWait);
+    return m_impl->tick.WaitForSourceProgress(maxWait);
+}
+RuntimeWorld *JoltGpuScene::SetRequiredWorld(RuntimeWorld *world)
+{
+    auto *previous = m_impl->requiredWorld;
+    m_impl->requiredWorld = world;
+    m_impl->tick.SetSourceFocus(world ? m_impl->Domain(*world).cursor : nullptr);
+    return previous;
 }
 void JoltGpuScene::SetAdmissionEnabled(RuntimeWorld &world, bool enabled)
 {
@@ -2159,6 +2393,8 @@ void JoltGpuScene::SetAdmissionEnabled(RuntimeWorld &world, bool enabled)
     // writer must still retire when another world's synchronous read needs it.
     if (m_impl->writer)
         m_impl->tick.SetAdmissionEnabled(true);
+    if (m_impl->peerWriter && m_impl->peerWriter->cursor)
+        m_impl->peerWriter->cursor->SetAdmissionEnabled(true);
 }
 bool JoltGpuScene::IsAdmissionEnabled(const RuntimeWorld &world) const
 {
@@ -2186,7 +2422,8 @@ bool JoltGpuScene::CanRetire(const RuntimeWorld &world)
         return true;
     m_impl->Service();
     auto &domain = m_impl->Domain(world);
-    if (domain.cleanup || m_impl->writer == &domain)
+    if (domain.cleanup || m_impl->writer == &domain || m_impl->peerWriter == &domain ||
+        m_impl->observationOwner == &domain)
         return false;
     if (!domain.retiring)
         return true; // Cancel/reopen retains the same partition, capacity and row.
