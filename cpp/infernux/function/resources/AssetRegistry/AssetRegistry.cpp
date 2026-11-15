@@ -1170,6 +1170,7 @@ void AssetRegistry::RegisterBuiltinMaterial(const std::string &key, std::shared_
         INXLOG_WARN("AssetRegistry::RegisterBuiltinMaterial: null material for key '", key, "'");
         return;
     }
+    mat->SetBuiltin(true);
     mat->BindDependencyGraph(m_assetDb->GetDependencyGraph());
     m_builtinMaterials[key] = std::move(mat);
 }
@@ -1200,7 +1201,6 @@ bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const st
     }
 
     material->SetFilePath(matFilePath);
-    material->SetBuiltin(true);
     RegisterBuiltinMaterial(key, material);
     return true;
 }
@@ -1211,28 +1211,26 @@ bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const st
 
 void AssetRegistry::InitializeBuiltinMaterials()
 {
-    auto registerBuiltin = [this](const std::string &key, std::shared_ptr<InxMaterial> mat) {
-        if (mat) {
-            mat->SetBuiltin(true);
-            RegisterBuiltinMaterial(key, mat);
-        }
-    };
+    RegisterBuiltinMaterial("DefaultLit", InxMaterial::CreateDefaultLit());
+    RegisterBuiltinMaterial("DefaultUnlit", InxMaterial::CreateDefaultUnlit());
+    RegisterBuiltinMaterial("DefaultLineMaterial", InxMaterial::CreateDefaultLineMaterial());
+    RegisterBuiltinMaterial("ParticleSpriteMaterial", InxMaterial::CreateParticleSpriteMaterial());
+    RegisterBuiltinMaterial("ParticleSixWaySmokeMaterial", InxMaterial::CreateParticleSixWaySmokeMaterial());
+    RegisterBuiltinMaterial("SkyboxProcedural", InxMaterial::CreateSkyboxProceduralMaterial());
+    RegisterBuiltinMaterial("ErrorMaterial", InxMaterial::CreateErrorMaterial());
+}
 
-    registerBuiltin("DefaultLit", InxMaterial::CreateDefaultLit());
-    registerBuiltin("DefaultUnlit", InxMaterial::CreateDefaultUnlit());
-    registerBuiltin("DefaultLineMaterial", InxMaterial::CreateDefaultLineMaterial());
-    registerBuiltin("ParticleSpriteMaterial", InxMaterial::CreateParticleSpriteMaterial());
-    registerBuiltin("ParticleSixWaySmokeMaterial", InxMaterial::CreateParticleSixWaySmokeMaterial());
-    registerBuiltin("GizmoMaterial", InxMaterial::CreateGizmoMaterial());
-    registerBuiltin("GridMaterial", InxMaterial::CreateGridMaterial());
-    registerBuiltin("ComponentGizmosMaterial", InxMaterial::CreateComponentGizmosMaterial());
-    registerBuiltin("ComponentGizmoIconMaterial", InxMaterial::CreateComponentGizmoIconMaterial());
-    registerBuiltin("ComponentGizmoCameraIconMaterial", InxMaterial::CreateComponentGizmoCameraIconMaterial());
-    registerBuiltin("ComponentGizmoLightIconMaterial", InxMaterial::CreateComponentGizmoLightIconMaterial());
-    registerBuiltin("ComponentGizmoParticleIconMaterial", InxMaterial::CreateComponentGizmoParticleIconMaterial());
-    registerBuiltin("EditorToolsMaterial", InxMaterial::CreateEditorToolsMaterial());
-    registerBuiltin("SkyboxProcedural", InxMaterial::CreateSkyboxProceduralMaterial());
-    registerBuiltin("ErrorMaterial", InxMaterial::CreateErrorMaterial());
+void AssetRegistry::InitializeEditorMaterials()
+{
+    RegisterBuiltinMaterial("GizmoMaterial", InxMaterial::CreateGizmoMaterial());
+    RegisterBuiltinMaterial("GridMaterial", InxMaterial::CreateGridMaterial());
+    RegisterBuiltinMaterial("ComponentGizmosMaterial", InxMaterial::CreateComponentGizmosMaterial());
+    RegisterBuiltinMaterial("ComponentGizmoIconMaterial", InxMaterial::CreateComponentGizmoIconMaterial());
+    RegisterBuiltinMaterial("ComponentGizmoCameraIconMaterial", InxMaterial::CreateComponentGizmoCameraIconMaterial());
+    RegisterBuiltinMaterial("ComponentGizmoLightIconMaterial", InxMaterial::CreateComponentGizmoLightIconMaterial());
+    RegisterBuiltinMaterial("ComponentGizmoParticleIconMaterial",
+                            InxMaterial::CreateComponentGizmoParticleIconMaterial());
+    RegisterBuiltinMaterial("EditorToolsMaterial", InxMaterial::CreateEditorToolsMaterial());
 }
 
 // =============================================================================

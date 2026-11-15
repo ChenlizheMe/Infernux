@@ -3102,6 +3102,8 @@ void InxRenderer::SetLogLevel(LogLevel level)
 
 void InxRenderer::InitializeDefaultScene()
 {
+    AssetRegistry::Instance().InitializeEditorMaterials();
+
     // Initialize editor gizmos
     m_editorGizmos = std::make_unique<EditorGizmos>();
 

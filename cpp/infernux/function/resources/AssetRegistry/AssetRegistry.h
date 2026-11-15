@@ -258,9 +258,10 @@ class AssetRegistry
 
     // ── Built-in material helpers (named, no GUID) ───────────────────────────
 
-    /// Create and register all engine built-in materials (DefaultLit, Error, Gizmo, etc.).
-    /// Populates builtin material pointers from registered loaders.
+    /// Create the common runtime materials without editor asset dependencies.
     void InitializeBuiltinMaterials();
+    /// Extend the authoring host with grids, tools and component icon materials.
+    void InitializeEditorMaterials();
 
     void RegisterBuiltinMaterial(const std::string &key, std::shared_ptr<InxMaterial> mat);
     /// Weakly track project-shader references on runtime-only material instances.
