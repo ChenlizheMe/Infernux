@@ -3551,6 +3551,10 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     INXLOG_DEBUG("Prepare pipeline.");
     phaseBegin = StartupClock::now();
     m_renderer->PreparePipeline();
+    // Raw native hosts also render frames without the Python bootstrap. Load
+    // the engine face before any frame can ask ImGui for a default font.
+    const auto defaultFontPath = JoinPath({builtinResourcePath, "fonts", "MapleMono-CN-Regular.ttf"});
+    m_renderer->SetGUIFont(defaultFontPath.c_str(), 18.0f);
     startupPhase("prepare_pipeline", phaseBegin);
     if (!m_renderer->PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");

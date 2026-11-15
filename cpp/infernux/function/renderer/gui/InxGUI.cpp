@@ -381,8 +381,7 @@ void InxGUI::ReloadGUIFont()
     // grows incrementally instead of pre-baking all CJK glyphs up-front.
     ImFont *font = io.Fonts->AddFontFromFileTTF(dpiState.fontPath.c_str(), scaledSize, &fontConfig);
     if (font == nullptr) {
-        INXLOG_WARN("InxGUI::ReloadGUIFont(): Failed to load font from ", dpiState.fontPath);
-        return;
+        throw std::runtime_error("Failed to load engine font: " + dpiState.fontPath);
     }
 
     // This is the single engine font used by both ImGui and UIText when a
