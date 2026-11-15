@@ -1041,11 +1041,12 @@ class InxVkCoreModular
     // ========================================================================
 
     /// Reclaim the current slot only after its terminal submission has retired.
-    [[nodiscard]] bool TryPrepareCurrentFrame();
+    /// A nonzero timeout waits once for that slot, without opening another frame.
+    [[nodiscard]] bool TryPrepareCurrentFrame(uint64_t timeoutNanoseconds = 0);
 
     /// Observe completed work and collect resources whose GPU references have retired.
     void CollectRetiredGpuResources();
-    void PollFrameSlot(uint32_t slot);
+    void PollFrameSlot(uint32_t slot, uint64_t timeoutNanoseconds = 0);
 
     /// @brief Immediately flush all deferred deletions and RHI retirements.
     ///

@@ -1195,14 +1195,14 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 #if INFERNUX_FRAME_PROFILE
     double gpuPrepareMs = 0.0;
 #endif
-    const auto prepareGpuFrame = [&](bool collectRetired) {
+    const auto prepareGpuFrame = [&](bool collectRetired, uint64_t timeoutNanoseconds = 0) {
         const auto waitStart =
             samplePerformanceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 #if INFERNUX_FRAME_PROFILE
         const auto start = std::chrono::high_resolution_clock::now();
 #endif
         if (m_vkCore) {
-            if (!m_vkCore->TryPrepareCurrentFrame())
+            if (!m_vkCore->TryPrepareCurrentFrame(timeoutNanoseconds))
                 return false;
             if (collectRetired)
                 m_vkCore->CollectRetiredGpuResources();
@@ -1280,9 +1280,12 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 #endif
     auto _sceneUpdateEnd = std::chrono::high_resolution_clock::now();
     m_sceneUpdateMs = std::chrono::duration<double, std::milli>(_sceneUpdateEnd - _sceneUpdateStart).count();
-    // The slot may have retired while the GUI and scene advanced.
+    // Complete CPU work before waiting for the one slot this frame needs.
+    // Replace the old unconditional 1 ms sleep with a bounded fence wait;
+    // explicit Tick and unavailable surfaces retain their nonblocking path.
+    const bool waitForGpuSlot = pace && !windowSuspended && !m_view->NeedsSurfaceRecreation();
     if (!slotReady)
-        slotReady = prepareGpuFrame(!guiScheduled);
+        slotReady = prepareGpuFrame(!guiScheduled, waitForGpuSlot ? 1'000'000 : 0);
     // Calls after view selection belong to the next opportunity. A skipped
     // opportunity leaves the camera's resident texture available as-is.
     frameScope.CloseCameraRequests();
@@ -1290,7 +1293,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         sceneManager.FinishStepPresentation(false);
         runDeferredTasks();
         RequestFullSpeedFrame();
-        if (pace)
+        if (pace && !waitForGpuSlot)
             SDL_Delay(1);
         return {};
     }

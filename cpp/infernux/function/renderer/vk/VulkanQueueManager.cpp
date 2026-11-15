@@ -556,7 +556,7 @@ VulkanQueueManager::QueueSnapshot VulkanQueueManager::GetSnapshot(rhi::QueueRole
             queue.lastReserved, queue.lastSubmitted, queue.completed};
 }
 
-bool VulkanQueueManager::PollFrameCompletion(uint32_t frameSlot)
+bool VulkanQueueManager::PollFrameCompletion(uint32_t frameSlot, uint64_t timeoutNanoseconds)
 {
     std::lock_guard lock(m_mutex);
     if (frameSlot >= m_graphicsFrameSlots.size())
@@ -565,8 +565,10 @@ bool VulkanQueueManager::PollFrameCompletion(uint32_t frameSlot)
     if (!slot.terminalTicket.IsValid() || slot.completionEpoch <= m_completedCompletionEpoch ||
         m_completedOutOfOrderEpochs.count(slot.completionEpoch))
         return false;
-    const auto status = vkGetFenceStatus(m_device, m_graphicsFrameFences[frameSlot]);
-    if (status == VK_NOT_READY)
+    const auto status = timeoutNanoseconds ? vkWaitForFences(m_device, 1, &m_graphicsFrameFences[frameSlot], VK_TRUE,
+                                                             timeoutNanoseconds)
+                                           : vkGetFenceStatus(m_device, m_graphicsFrameFences[frameSlot]);
+    if (status == VK_NOT_READY || status == VK_TIMEOUT)
         return false;
     if (status != VK_SUCCESS)
         throw std::runtime_error("Graphics completion fence query failed");

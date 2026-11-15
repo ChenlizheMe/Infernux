@@ -1134,7 +1134,7 @@ bool InxVkCoreModular::RecordPresentationReadback(VkCommandBuffer commandBuffer,
 // Frame Synchronization & Deferred Deletion
 // ============================================================================
 
-bool InxVkCoreModular::TryPrepareCurrentFrame()
+bool InxVkCoreModular::TryPrepareCurrentFrame(uint64_t timeoutNanoseconds)
 {
     if (m_frameFailure)
         std::rethrow_exception(m_frameFailure);
@@ -1144,7 +1144,7 @@ bool InxVkCoreModular::TryPrepareCurrentFrame()
     const auto checkStarted = std::chrono::high_resolution_clock::now();
 #endif
     const auto epoch = queues.GetFrameCompletionEpoch(frameSlot);
-    PollFrameSlot(frameSlot);
+    PollFrameSlot(frameSlot, timeoutNanoseconds);
     const bool ready = epoch == rhi::InvalidSubmissionSerial || queues.IsCompletionEpochComplete(epoch);
     if (ready && epoch != rhi::InvalidSubmissionSerial)
         (void)queues.CompleteFrameSlot(frameSlot);
@@ -1155,9 +1155,9 @@ bool InxVkCoreModular::TryPrepareCurrentFrame()
     return ready;
 }
 
-void InxVkCoreModular::PollFrameSlot(uint32_t slot)
+void InxVkCoreModular::PollFrameSlot(uint32_t slot, uint64_t timeoutNanoseconds)
 {
-    if (!m_backend.Queues().PollFrameCompletion(slot))
+    if (!m_backend.Queues().PollFrameCompletion(slot, timeoutNanoseconds))
         return;
     m_submissionExecutor.CompleteFrame(slot);
 #if INFERNUX_FRAME_PROFILE

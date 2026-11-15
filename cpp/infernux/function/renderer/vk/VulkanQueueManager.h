@@ -98,7 +98,9 @@ class VulkanQueueManager
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionSerial GetLastReservedCompletionEpoch() const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionSerial GetCompletedCompletionEpoch() const noexcept;
     /// Report a newly observed terminal fence without releasing or reusing the slot.
-    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool PollFrameCompletion(uint32_t frameSlot);
+    /// Optional bounded wait applies to this fence only; zero remains a poll.
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool PollFrameCompletion(uint32_t frameSlot,
+                                                                       uint64_t timeoutNanoseconds = 0);
     /// Exact completion query for work that owns one known epoch. Unlike the
     /// contiguous retirement watermark, this remains true when an unrelated
     /// older epoch is still outstanding.
