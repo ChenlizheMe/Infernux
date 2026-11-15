@@ -1,7 +1,9 @@
 #include <function/editor/EditorThemeRegistry.h>
 #include "MenuBarPanel.h"
+#include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/EditorMenuItem.h>
 #include <function/renderer/gui/InxGUISemantics.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cctype>
@@ -15,10 +17,7 @@ namespace
 
 bool BeginSemanticMenu(InxGUIContext *ctx, const std::string &label, const std::string &semanticId, bool enabled = true)
 {
-    const bool open = ImGui::BeginMenu(label.c_str(), enabled);
-    if (ctx && InxGUISemantics::IsCaptureEnabled())
-        ctx->RecordSemanticItem("menu", label, enabled, semanticId, open);
-    return open;
+    return ctx->BeginMenu(label, enabled, semanticId);
 }
 
 bool SemanticMenuItem(InxGUIContext *ctx, const std::string &label, const std::string &shortcut, bool selected,
@@ -89,26 +88,99 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
             onRequestClose();
     }
 
-    // These authored overrides replace the already-scaled global style.
+    // Unity-like top bar zones on one Mission Control strip:
+    //   LEFT  = brand + menus
+    //   CENTER = play transport (ToolbarPanel, same ###toolbar identity)
+    //   RIGHT = command palette + layout
+    // Menu hover stays neutral (ROLE_BG_HOVER); accent is reserved for
+    // selection / play — never for browsing File/Edit.
     const float dpi = ctx->GetDpiScale();
     const auto scaled = [dpi](ImVec2 size) { return ImVec2(size.x * dpi, size.y * dpi); };
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_FRAME_PAD")));
+    const float barHeight = EditorThemeRegistry::Float("TOP_BAR_HEIGHT") * dpi;
+    const float zoneGap = EditorThemeRegistry::Float("TOPBAR_ZONE_GAP") * dpi;
+    const float utilH = EditorThemeRegistry::Float("TOPBAR_UTIL_BTN_H") * dpi;
+    const float utilW = EditorThemeRegistry::Float("TOPBAR_UTIL_BTN_W") * dpi;
+    const float dividerH = EditorThemeRegistry::Float("TOPBAR_DIVIDER_H") * dpi;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(EditorThemeRegistry::Vec2("TOOLBAR_FRAME_PAD").x * dpi, (barHeight - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorThemeRegistry::Vec2("TOOLBAR_ITEM_SPC")));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_WIN_PAD")));
     ImGui::PushStyleColor(ImGuiCol_MenuBarBg, EditorThemeRegistry::Color("MENU_BAR_BG"));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, EditorThemeRegistry::Color("POPUP_BG"));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("HEADER_HOVERED"));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("HEADER_ACTIVE"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("ROLE_BG_HOVER"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("ROW_SELECTED"));
 
-    if (ImGui::BeginMainMenuBar()) {
+    const bool visible = ImGui::BeginViewportSideBar(
+        "Toolbar###toolbar", ImGui::GetMainViewport(), ImGuiDir_Up, barHeight,
+        ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
+    if (visible && ImGui::BeginMenuBar()) {
         if (InxGUISemantics::IsCaptureEnabled())
             ctx->RecordSemanticWindow("menu_bar", "Main Menu", "menu_bar");
+
+        // ── LEFT: brand ──────────────────────────────────────────
+        const auto logo = ctx->EditorIcon("icon");
+        const float logoSize = 18.0f * dpi;
+        ImGui::Dummy(ImVec2(logoSize, logoSize));
+        if (logo) {
+            const ImVec2 minimum(ImGui::GetItemRectMin().x, ImGui::GetWindowPos().y + (barHeight - logoSize) * 0.5f);
+            ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)logo, minimum,
+                                                 ImVec2(minimum.x + logoSize, minimum.y + logoSize));
+        }
+        ImGui::SameLine();
+        if (ImGui::GetWindowWidth() >= 1000.0f * dpi) {
+            ctx->PushMonoFont();
+            ImGui::TextUnformatted("INFERNUX");
+            ctx->PopFont();
+            ImGui::SameLine(0.0f, zoneGap);
+        }
+
+        // ── LEFT: menus ──────────────────────────────────────────
         RenderProjectMenu(ctx);
         RenderEditMenu(ctx);
         RenderSceneMenu(ctx);
         RenderDynamicMenus(ctx);
         RenderWindowMenu(ctx);
+
+        // ── RIGHT utilities (center reserved for Toolbar transport) ─
+        const float rightW = utilW + zoneGap + 96.0f * dpi + zoneGap;
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - rightW);
+        ImGui::SetCursorPosY((barHeight - utilH) * 0.5f);
+
+        // Zone hairline between center transport and right utilities.
+        {
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+            const float midY = origin.y + utilH * 0.5f;
+            const ImU32 hair = ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("ROLE_BORDER"));
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(origin.x - zoneGap * 0.5f, midY - dividerH * 0.5f),
+                                                ImVec2(origin.x - zoneGap * 0.5f, midY + dividerH * 0.5f), hair,
+                                                1.0f * dpi);
+        }
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f * dpi, 4.0f * dpi));
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_GHOST"));
+        const bool canOpenPalette = CanExecuteCommand("command_palette.open");
+        ImGui::BeginDisabled(!canOpenPalette);
+        if (ctx->IconButton("topbar_palette", "glyphs/search", T("command_palette.title"), utilW, utilH))
+            ExecuteCommand("command_palette.open", "menu");
+        ImGui::EndDisabled();
+        ImGui::PopStyleColor(3);
+        if (InxGUISemantics::IsCaptureEnabled())
+            ctx->RecordSemanticItem("button", T("command_palette.title"), canOpenPalette, "menu.command_palette");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ctx->SetTooltip(T("command_palette.title") + "  ·  Ctrl+Shift+P");
+
+        ImGui::SameLine(0.0f, zoneGap * 0.5f);
+        ImGui::SetCursorPosY((barHeight - utilH) * 0.5f);
+        if (ctx->BeginCombo("##main_layout", T("menu.layout"), ImGuiComboFlags_WidthFitPreview)) {
+            const bool canReset = CanExecuteCommand("window.reset_layout");
+            if (SemanticMenuItem(ctx, T("menu.reset_layout"), "", false, canReset, "menu.layout.reset"))
+                ExecuteCommand("window.reset_layout", "menu");
+            ctx->EndCombo();
+        }
+        ImGui::PopStyleVar();
         ImGui::EndMainMenuBar();
+    } else {
+        ImGui::End();
     }
 
     ImGui::PopStyleColor(4);
@@ -127,7 +199,7 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
 
 void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
 {
-    if (!BeginSemanticMenu(ctx, T("menu.project"), "menu.project"))
+    if (!BeginSemanticMenu(ctx, T("menu.file"), "menu.project"))
         return;
 
     const bool canNew = CanExecuteCommand("file.new_scene");
@@ -142,29 +214,11 @@ void MenuBarPanel::RenderProjectMenu(InxGUIContext *ctx)
 
     ImGui::Separator();
 
-    // Build Settings toggle
-    const bool canBuildSettings = CanExecuteCommand("window.toggle.build_settings");
-    const bool buildSettingsOpen = IsCommandChecked("window.toggle.build_settings");
-    if (SemanticMenuItem(ctx, T("menu.build_settings"), "", buildSettingsOpen, canBuildSettings,
-                         "menu.project.build_settings"))
-        ExecuteCommand("window.toggle.build_settings", "menu");
+    const bool canBuildSettings = CanExecuteCommand("window.open.build_settings");
+    if (SemanticMenuItem(ctx, T("menu.build_settings"), "", false, canBuildSettings, "menu.project.build_settings"))
+        ExecuteCommand("window.open.build_settings", "menu");
 
-    // Physics Layer Matrix toggle
-    const bool canPhysicsLayers = CanExecuteCommand("window.toggle.physics_layers");
-    const bool physicsLayersOpen = IsCommandChecked("window.toggle.physics_layers");
-    if (SemanticMenuItem(ctx, T("menu.physics_layer_matrix"), "", physicsLayersOpen, canPhysicsLayers,
-                         "menu.project.physics_layer_matrix"))
-        ExecuteCommand("window.toggle.physics_layers", "menu");
-
-    ImGui::Separator();
-
-    // Preferences toggle
-    const bool canPreferences = CanExecuteCommand("window.toggle.preferences");
-    const bool preferencesOpen = IsCommandChecked("window.toggle.preferences");
-    if (SemanticMenuItem(ctx, T("menu.preferences"), "", preferencesOpen, canPreferences, "menu.project.preferences"))
-        ExecuteCommand("window.toggle.preferences", "menu");
-
-    ImGui::EndMenu();
+    ctx->EndMenu();
 }
 
 void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
@@ -199,11 +253,17 @@ void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
         ExecuteCommand("command_palette.open", "menu");
 
     ImGui::Separator();
+    if (SemanticMenuItem(ctx, T("project_settings.title"), "", false, CanExecuteCommand("window.open.project_settings"),
+                         "menu.edit.project_settings"))
+        ExecuteCommand("window.open.project_settings", "menu");
+    if (SemanticMenuItem(ctx, T("menu.preferences"), "", false, CanExecuteCommand("window.open.preferences"),
+                         "menu.edit.preferences"))
+        ExecuteCommand("window.open.preferences", "menu");
     if (SemanticMenuItem(ctx, T("themes.title"), "", IsCommandChecked("window.open.themes"),
                          CanExecuteCommand("window.open.themes"), "menu.edit.themes"))
         ExecuteCommand("window.open.themes", "menu");
 
-    ImGui::EndMenu();
+    ctx->EndMenu();
 }
 
 bool MenuBarPanel::ExecuteCommand(const std::string &commandId, const std::string &source,
@@ -237,7 +297,7 @@ void MenuBarPanel::RenderSceneMenu(InxGUIContext *ctx)
                          "menu.scene.environment_settings"))
         ExecuteCommand("window.toggle.environment", "menu");
 
-    ImGui::EndMenu();
+    ctx->EndMenu();
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -266,12 +326,14 @@ void MenuBarPanel::RenderWindowMenu(InxGUIContext *ctx)
     }
 
     ImGui::Separator();
+    RenderMenuContents(ctx, "Extensions", m_cachedWindowTypes);
+    ImGui::Separator();
 
     const bool canResetLayout = CanExecuteCommand("window.reset_layout");
     if (SemanticMenuItem(ctx, T("menu.reset_layout"), "", false, canResetLayout, "menu.window.reset_layout"))
         ExecuteCommand("window.reset_layout", "menu");
 
-    ImGui::EndMenu();
+    ctx->EndMenu();
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -286,6 +348,8 @@ void MenuBarPanel::RenderDynamicMenus(InxGUIContext *ctx)
 
     // Render each top-level menu.
     for (const auto &top : m_cachedTopMenus) {
+        if (top == "Extensions")
+            continue;
         std::string key;
         for (const auto &info : m_cachedWindowTypes) {
             const auto segments = SplitMenuPath(info.menuPath);
@@ -330,7 +394,7 @@ void MenuBarPanel::RenderMenuGroup(InxGUIContext *ctx, const std::string &topMen
         return;
 
     RenderMenuContents(ctx, topMenu, types);
-    ImGui::EndMenu();
+    ctx->EndMenu();
 }
 
 void MenuBarPanel::RenderMenuContents(InxGUIContext *ctx, const std::string &topMenu,
@@ -393,7 +457,7 @@ void MenuBarPanel::RenderMenuContents(InxGUIContext *ctx, const std::string &top
             const std::string label = ResolveMenuLabel(child.translationKey, child.label);
             if (BeginSemanticMenu(ctx, label, childSemantic)) {
                 renderChildren(child, childSemantic);
-                ImGui::EndMenu();
+                ctx->EndMenu();
             }
         }
     };

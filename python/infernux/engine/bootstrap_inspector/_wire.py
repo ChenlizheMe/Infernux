@@ -182,6 +182,9 @@ def _wire_component_list(ctx):
         for comp in _get_components_safe(obj):
             tn = getattr(comp, 'type_name', type(comp).__name__)
             if tn == "Transform":
+                # The object header owns its UI, but its commands and property
+                # snapshots still resolve through the shared component map.
+                native_map[int(comp.component_id)] = comp
                 continue
 
             if _is_py_entry(comp):
@@ -332,85 +335,23 @@ def _wire_icons_and_body(ctx):
     _component_cache = ctx.component_cache
     _inspector_support = ctx._inspector_support
     _profile_enabled = _inspector_support.is_inspector_profile_enabled()
-    from infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
+    import os
+    import infernux.resources as resources
+    from infernux.engine.ui.editor_icons import EditorIcons
 
-    _icon_cache = {}
-    _icons_loaded = [False]
-
-    def _ensure_icons():
-        if _icons_loaded[0]:
-            return
-        native_engine = engine.get_native_engine()
-        if not native_engine:
-            return
-        import os
-        import infernux.resources as _resources
-        icons_dir = _resources.component_icons_dir
-        if not os.path.isdir(icons_dir):
-            return
-        all_ready = True
-        for fname in os.listdir(icons_dir):
-            if not fname.startswith("component_") or not fname.endswith(".png"):
-                continue
-            key = fname[len("component_"):-len(".png")]
-            icon_path = os.path.join(icons_dir, fname)
-            stamp = texture_stamp(icon_path, "component_icon")
-            if stamp == 0:
-                all_ready = False
-                continue
-            tid, _, _ = query_or_schedule_texture(
-                native_engine,
-                f"compicon|{key}",
-                icon_path,
-                int(stamp),
-                # Inspector draws ~COMPONENT_ICON_SIZE logical px; linear + mips from a 256px
-                # atlas reads mushy. Point sampling + smaller CPU downscale matches Unity-like crisp UI.
-                nearest=True,
-                srgb=False,
-            )
-            # Overwrite even with 0 so a stale handle never survives eviction
-            # or replacement of the underlying texture.
-            _icon_cache[key] = tid
-            if tid == 0:
-                all_ready = False
-        _icons_loaded[0] = all_ready
-
-    def _live_component_icon_id(key):
-        """Re-resolve the currently-published descriptor for an icon.
-
-        Texture ids are raw Vulkan descriptor handles owned by the native
-        preview system, which may replace or evict textures at any time.
-        Binding a handle cached across frames can hit a freed VkDescriptorSet
-        (validation errors, icons rendering as other textures, crashes), so
-        the id is looked up fresh every call. Returns -1 when the native
-        getter is unavailable (older builds) so callers can fall back.
-        """
-        native_engine = engine.get_native_engine()
-        getter = getattr(native_engine, "get_texture_preview_texture_id", None) if native_engine else None
-        if getter is None:
-            return -1
-        try:
-            return int(getter(f"compicon|{key}") or 0)
-        except Exception:
-            return 0
+    component_icons = {
+        name[len("component_"):-4]
+        for name in os.listdir(resources.component_icons_dir)
+        if name.startswith("component_") and name.endswith(".png")
+    }
 
     def _get_component_icon_id(type_name, is_script):
-        _ensure_icons()
+        if type_name == "RenderStack":
+            return EditorIcons.get(engine.get_native_engine(), "effect_fullscreen_effect")
         key = type_name.lower()
-        if _icon_cache.get(key, 0) == 0 and is_script:
+        if is_script and key not in component_icons:
             key = "script"
-        if _icon_cache.get(key, 0) == 0:
-            return 0
-        live = _live_component_icon_id(key)
-        if live == -1:
-            return _icon_cache.get(key, 0)
-        if live == 0:
-            # Evicted or replaced mid-flight: schedule a re-upload on the next
-            # lookup and draw nothing this frame rather than a dead handle.
-            _icons_loaded[0] = False
-            _icon_cache[key] = 0
-            return 0
-        return live
+        return EditorIcons.get(engine.get_native_engine(), f"components/component_{key}")
 
     ctx.get_component_icon_id = _get_component_icon_id
     ip.get_component_icon_id = _get_component_icon_id

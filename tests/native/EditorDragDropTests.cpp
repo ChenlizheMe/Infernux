@@ -46,6 +46,8 @@ void VerifyDelivery(const Value &value, bool any, bool rejectWrongKind, bool pre
     // Panel contexts need not be the same object. The type belongs to the
     // payload, never to a cached source/receiver wrapper instance.
     infernux::InxGUIContext sourceContext, targetContext;
+    ConfigureImGuiTestGUI(sourceContext);
+    ConfigureImGuiTestGUI(targetContext);
     const bool integer = std::holds_alternative<uint64_t>(value);
     const std::string payloadType = integer ? "GOID" : "SCRIPT_FILE";
     int sourceFrames = 0, targetFrames = 0, deliveries = 0, previews = 0;

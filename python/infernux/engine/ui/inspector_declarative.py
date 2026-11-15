@@ -16,6 +16,7 @@ from .inspector_utils import (
     record_inspector_component_item,
     render_compact_section_header,
     render_serialized_field,
+    render_section_kicker,
     serialized_field_label,
 )
 from .theme import ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags, Theme
@@ -58,6 +59,9 @@ class InspectorList:
     drop_factory: Callable[[Any], Any] | None = None
     item_label: Callable[[Any, int], str] | None = None
     item_renderer: Callable[[InxGUIContext, Any, int, str], None] | None = None
+    item_icon: str = ""
+    item_domain: str = ""
+    item_toggle: str = ""
     on_change: Callable[[Any, str, list, list], None] | None = None
 
 
@@ -103,6 +107,7 @@ class InspectorModel:
 
 _INLINE_ASSET_RENDERERS: dict[str, Callable[[InxGUIContext, Iterable[Any], str], None]] = {}
 _MODEL_PROVIDERS: dict[str, Callable[[Any], InspectorModel]] = {}
+_MODEL_PRESENTERS: dict[str, Callable] = {}
 
 
 def register_inline_asset_renderer(
@@ -116,9 +121,13 @@ def register_inline_asset_renderer(
 def register_inspector_model_provider(
     component_type: str,
     provider: Callable[[Any], InspectorModel],
+    *,
+    presenter: Callable | None = None,
 ) -> None:
     """Register a data-model provider without giving the component draw code."""
     _MODEL_PROVIDERS[str(component_type)] = provider
+    if presenter is not None:
+        _MODEL_PRESENTERS[str(component_type)] = presenter
 
 
 def get_inspector_model(component) -> InspectorModel | None:
@@ -132,6 +141,9 @@ def render_inspector_model(ctx: InxGUIContext, component, model: InspectorModel)
     ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_FRAME_PAD)
     ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_ITEM_SPC)
     try:
+        presenter = _MODEL_PRESENTERS.get(str(component.type_name))
+        if presenter is not None:
+            return bool(presenter(ctx, component, model))
         for section in model.sections:
             if section.separator_before:
                 ctx.separator()
@@ -178,6 +190,9 @@ def render_inspector_model(ctx: InxGUIContext, component, model: InspectorModel)
                             header_drop_factory=control.drop_factory,
                             item_label=control.item_label,
                             item_renderer=control.item_renderer,
+                            item_icon=control.item_icon,
+                            item_domain=control.item_domain,
+                            item_toggle=control.item_toggle,
                             on_change=control.on_change,
                         )
                     finally:
@@ -203,10 +218,11 @@ def _render_serialized_target(ctx: InxGUIContext, control: InspectorSerializedTa
     if not fields:
         return
     if control.title:
-        ctx.label(control.title)
+        render_section_kicker(ctx, control.title)
     labels = [serialized_field_label(name, meta) for name, meta in fields.items() if not meta.hidden]
     label_width = max_label_w(ctx, labels) if labels else 0.0
     current_group = ""
+    current_header = ""
     group_visible = True
     for field_name, metadata in fields.items():
         if metadata.hidden:
@@ -222,35 +238,24 @@ def _render_serialized_target(ctx: InxGUIContext, control: InspectorSerializedTa
             )
         if not group_visible:
             continue
-        if metadata.header:
-            ctx.label(metadata.header)
-        if metadata.space > 0:
-            ctx.dummy(0.0, metadata.space)
+        if metadata.visible_when is not None and not metadata.visible_when(target):
+            continue
         current = getattr(target, field_name, metadata.default)
         display_name = serialized_field_label(field_name, metadata)
-        updated = render_serialized_field(
-            ctx,
-            f"##{control.key}_{field_name}",
-            display_name,
-            metadata,
-            current,
-            label_width,
-        )
-        # The nested target (e.g. a pipeline) is replaceable. Its owning
-        # component and the declared control/field names are the stable identity.
+
+        def commit(updated, *, _name=field_name, _current=current):
+            control.on_change(target, _name, _current, updated)
+
+        from .field_draw import draw_field
+        draw_field(ctx, metadata, current, label_width=label_width,
+                   widget_id=f"##{control.key}_{field_name}", on_change=commit,
+                   show_header=metadata.header != current_header)
+        if metadata.header:
+            current_header = metadata.header
         record_inspector_component_item(
             ctx, control.owner, f"{control.key}.{field_name}",
             "inspector_field", display_name, enabled=not metadata.readonly,
         )
-        if has_field_changed(metadata.field_type, current, updated) and not metadata.readonly:
-            if control.on_change is not None:
-                control.on_change(target, field_name, current, updated)
-            else:
-                raise RuntimeError(
-                    f"Serialized Inspector field '{field_name}' has no transaction handler"
-                )
-        if metadata.tooltip and ctx.is_item_hovered():
-            ctx.set_tooltip(metadata.tooltip)
 
 
 def _render_read_only_row(ctx: InxGUIContext, control: InspectorReadOnlyRow, model_key: str) -> None:

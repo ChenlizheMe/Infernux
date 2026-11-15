@@ -15,7 +15,7 @@ import json
 import os
 from typing import Dict, List, Optional, Tuple
 
-from infernux.engine.path_utils import path_key, resolved_path, same_path
+from infernux.engine.path_utils import path_key, resolved_path, same_path, lexical_path_key
 from infernux.core.anim_state_machine import (
     AnimStateMachine,
     AnimState,
@@ -60,6 +60,7 @@ from infernux.engine.interaction import (
     PanelInteractionDescriptor,
     PanelViewStateField,
     PanelViewStateSchema,
+    SelectionService,
 )
 from infernux.lib import InxGUIContext
 
@@ -200,11 +201,6 @@ _ANIMATION_PARAMETER_POLICY = GraphParameterAuthoringPolicy(
 )
 
 
-_FSM_PARAM_COLORS = {
-    "bool": (0.78, 0.25, 0.31, 1.0),
-    "float": (0.34, 0.72, 0.42, 1.0),
-    "int": (0.30, 0.68, 0.52, 1.0),
-}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Panel
@@ -264,6 +260,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
         # Entry node uid
         self._entry_uid: str = ""
+        self._runtime_observed_object_id = 0
+        self._live_animator = None
 
         # The save-as ticket lives in _authoring_document_controller; the panel
         # exposes it read-only through the property defined below.
@@ -1135,12 +1133,41 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     # ═══════════════════════════════════════════════════════════════════
 
     def _before_node_graph_render(self, ctx: InxGUIContext) -> None:
-        del ctx
+        from infernux.engine.play_mode import PlayModeManager
+        from infernux.lib import SceneManager
+        from infernux.components.sprite_animator import SpriteAnimator
+        from infernux.components.skeletal_animator import SkeletalAnimator
+
+        self._view.runtime_nodes.clear()
+        self._live_animator = None
+        play_mode = PlayModeManager.instance()
+        if play_mode is None or play_mode.is_edit_mode or not self._file_path:
+            return
+        scene = SceneManager.instance().get_active_scene()
+        object_id = SelectionService.instance().primary_scene_object_id() or self._runtime_observed_object_id
+        target = scene.find_by_id(object_id) if scene is not None and object_id else None
+        if target is None:
+            return
+        for component_type in (SpriteAnimator, SkeletalAnimator):
+            animator = target.get_component(component_type)
+            if animator is not None and animator._fsm is not None and (
+                lexical_path_key(animator._fsm.file_path) == lexical_path_key(self._file_path)
+            ):
+                self._live_animator = animator
+                self._runtime_observed_object_id = object_id
+                uid = self._name_to_uid.get(animator.current_state, "")
+                if uid:
+                    self._view.runtime_nodes[uid] = animator.normalized_time
+                break
 
     def _render_node_graph_toolbar(self, ctx: InxGUIContext) -> None:
         self._render_toolbar(ctx)
 
     def _render_node_graph_left_panel(self, ctx: InxGUIContext) -> None:
+        if self._live_animator is not None:
+            ctx.label(t("animfsm_editor.live_state"))
+            ctx.readonly_field("##live_state", self._live_animator.current_state)
+            ctx.separator()
         self._render_variables_panel(ctx)
 
     def _node_graph_detail_contributors(
@@ -1194,34 +1221,28 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         fsm = self._fsm
         if fsm is None:
             return
+        dpi = ctx.get_dpi_scale()
 
-        new_label = t("animfsm_editor.new")
-        new_pressed = ctx.button(new_label)
-        ctx.record_semantic_item(
-            "button", new_label, self.can_new_fsm(), "animfsm.toolbar.new"
+        from .asset_toolbar import render_asset_toolbar
+        from infernux.engine.interaction import CommandSource
+
+        def command(name):
+            return self._execute_node_graph_command(name, source=CommandSource.TOOLBAR)
+
+        action = render_asset_toolbar(
+            ctx, self, icon="animfsm", name=fsm.name, path=self._file_path,
+            dirty=self._document_is_dirty(), on_save=lambda: command("file.save"),
+            semantic_prefix="animfsm.toolbar", actions=(
+                ("new", t("animfsm_editor.new"), self.can_new_fsm(), lambda: command("animfsm.new")),
+                ("save_as", t("asset_toolbar.save_as"), True, lambda: command("file.save_as")),
+            ),
         )
-        if new_pressed:
-            from infernux.engine.interaction import CommandSource
-
-            self._execute_node_graph_command(
-                "animfsm.new",
-                source=CommandSource.TOOLBAR,
-            )
+        if action == "new":
             return
 
-        ctx.same_line(0, 8)
-        save_label = t("animfsm_editor.save") if self._file_path else t("animfsm_editor.save_as")
-        save_pressed = ctx.button(save_label)
-        ctx.record_semantic_item("button", save_label, True, "animfsm.toolbar.save")
-        if save_pressed:
-            from infernux.engine.interaction import CommandSource
-
-            self._execute_node_graph_command("file.save", source=CommandSource.TOOLBAR)
-
-        ctx.same_line(0, 16)
         ctx.label(f"{t('animfsm_editor.name')}:")
-        ctx.same_line(0, 8)
-        ctx.set_next_item_width(160)
+        ctx.same_line(0, 8 * dpi)
+        ctx.set_next_item_width(160 * dpi)
         new_name = ctx.text_input("##fsm_name", fsm.name, 128)
         ctx.record_semantic_item(
             "text_input", t("animfsm_editor.name"), True, "animfsm.toolbar.name",
@@ -1236,13 +1257,13 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                     merge_key="animfsm:graph:name",
                 )
 
-        ctx.same_line(0, 16)
+        ctx.same_line(0, 16 * dpi)
         ctx.label(f"{t('animfsm_editor.mode')}:")
-        ctx.same_line(0, 8)
+        ctx.same_line(0, 8 * dpi)
         # Modes represent different asset domains. Switching starts a new
         # resource after resolving unsaved changes instead of mutating an
         # incompatible graph in place.
-        ctx.set_next_item_width(110)
+        ctx.set_next_item_width(110 * dpi)
         _MODES = ["2d", "3d", "timeline"]
         _LABELS = ["2D", "3D", t("animfsm_editor.mode_timeline")]
         mode_idx = _MODES.index(fsm.mode) if fsm.mode in _MODES else 0
@@ -1267,9 +1288,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 payload={"mode": _MODES[new_mode_idx]},
             )
 
-        if self._file_path:
-            ctx.same_line(0, 12)
-            ctx.label(self._file_path)
 
     @staticmethod
     def _sanitize_param_identifier(raw: str) -> str:
@@ -1357,7 +1375,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         clip_mode = len(terms) == 0
 
         if not has_p:
-            ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
+            ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
             ctx.label(t("animfsm_editor.cond_no_parameters_hint"))
             ctx.pop_style_color(1)
             ctx.dummy(0, 2)
@@ -1453,7 +1471,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
         ctx.dummy(0, 4)
         ctx.begin_group()
-        add_clicked = IGUI._mini_icon_button(ctx, "##addrow", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS)
+        add_clicked = IGUI.icon_button(
+            ctx, "##addrow", Theme.ICON_IMG_PLUS, tooltip=t("animfsm_editor.add_condition")
+        )
         if semantic_prefix:
             ctx.record_semantic_item(
                 "button", "Add Condition", True, f"{semantic_prefix}.condition.add",
@@ -1465,7 +1485,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         ctx.same_line(0, 6)
         can_remove = len(terms) > 1
         ctx.begin_disabled(not can_remove)
-        remove_clicked = IGUI._mini_icon_button(ctx, "##rmrow", Theme.ICON_IMG_MINUS, Theme.ICON_MINUS)
+        remove_clicked = IGUI.icon_button(
+            ctx, "##rmrow", Theme.ICON_IMG_MINUS, tooltip=t("animfsm_editor.remove_condition")
+        )
         ctx.end_disabled()
         if semantic_prefix:
             ctx.record_semantic_item(
@@ -1490,15 +1512,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             GraphWorkspaceEntry(
                 GraphElementRef(GraphElementKind.PARAMETER, parameter.stable_id),
                 parameter.name,
-                parameter.value_type.value_type.value,
-                _FSM_PARAM_COLORS.get(
-                    {
-                        ValueType.BOOL: "bool",
-                        ValueType.I32: "int",
-                        ValueType.F32: "float",
-                    }[parameter.value_type.value_type],
-                    _FSM_PARAM_COLORS["float"],
-                ),
+                (str(self._live_animator.get_parameter(parameter.name))
+                 if self._live_animator is not None else parameter.value_type.value_type.value),
+                Theme.pin_color(parameter.value_type.value_type),
                 semantic_kind="animfsm_parameter",
                 semantic_id=f"animfsm.parameter.{index}",
                 semantic_string_value=parameter.value_type.value_type.value,
@@ -1765,7 +1781,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             self._graph_selection.primary_id(GraphElementKind.NODE)
         )
         if node is None or node.type_id != FSM_STATE_NODE_TYPE_ID:
-            ctx.push_style_color(ImGuiCol.Text, 0.50, 0.51, 0.53, 1.0)
+            ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
             ctx.label(t("animfsm_editor.no_state_selected"))
             ctx.pop_style_color(1)
             return
@@ -1788,7 +1804,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         is_default = (state.name == fsm.default_state)
         row_w = ctx.get_content_region_avail_width()
         base_x = ctx.get_cursor_pos_x()
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
         ctx.label(t("animfsm_editor.section_state"))
         ctx.pop_style_color(1)
         ctx.same_line(0, 0)
@@ -1796,7 +1812,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             badge = t("animfsm_editor.default_badge")
             tw = ctx.calc_text_width(badge)
             ctx.set_cursor_pos_x(base_x + row_w - tw)
-            ctx.push_style_color(ImGuiCol.Text, 0.48, 0.65, 0.45, 1.0)
+            ctx.push_style_color(ImGuiCol.Text, *Theme.DOMAIN_ANIMATION)
             ctx.label(badge)
             ctx.record_semantic_item(
                 "status", "Default: true", False, "animfsm.state.default",
@@ -1833,7 +1849,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 )
 
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
         ctx.label(t("animfsm_editor.section_reference"))
         ctx.pop_style_color(1)
         ctx.separator()
@@ -1855,7 +1871,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             self._render_clip_reference_row(ctx, state, node, lw)
 
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
         ctx.label(t("animfsm_editor.section_playback"))
         ctx.pop_style_color(1)
         ctx.separator()
@@ -1917,7 +1933,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             )
 
         ctx.dummy(0, Theme.INSPECTOR_SECTION_GAP)
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
         ctx.label(t("animfsm_editor.section_transitions"))
         ctx.pop_style_color(1)
         ctx.separator()
@@ -1935,9 +1951,13 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             ctx.begin_group()
             start_x = ctx.get_cursor_pos_x()
             row_width = ctx.get_content_region_avail_width()
-            field_label(ctx, f"→ {target_name}", row_width - 28.0)
+            IGUI.icon(ctx, "arrow_r")
+            ctx.same_line()
+            ctx.label(target_name)
             ctx.set_cursor_pos_x(start_x + row_width - 20.0)
-            if IGUI._mini_icon_button(ctx, "##del", Theme.ICON_IMG_REMOVE, Theme.ICON_REMOVE):
+            if IGUI.icon_button(
+                ctx, "##del", Theme.ICON_IMG_REMOVE, tooltip=t("animfsm_editor.delete_transition"), kind="ghost"
+            ):
                 remove_link_uid = lk.uid
             prefix = f"animfsm.transition.{lk.uid}"
             ctx.record_semantic_item("button", t("animfsm_editor.delete_transition"), True, f"{prefix}.delete")
@@ -1956,7 +1976,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         if state is None:
             return
         exit_pct = max(0.0, min(100.0, float(state.exit_time_normalized) * 100.0))
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
         ctx.label(t("animfsm_editor.exit_time"))
         ctx.pop_style_color(1)
         ctx.set_next_item_width(-1)
@@ -1991,12 +2011,18 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         ctx.record_semantic_item(
             "panel", f"Transition: {route_label}", False, "animfsm.transition.detail",
         )
-        ctx.push_style_color(ImGuiCol.Text, 0.55, 0.56, 0.58, 1.0)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
         ctx.label(t("animfsm_editor.section_transitions"))
         ctx.pop_style_color(1)
         ctx.separator()
         ctx.dummy(0, 4)
-        ctx.label(route_label)
+        ctx.begin_group()
+        ctx.label(source_name)
+        ctx.same_line()
+        IGUI.icon(ctx, "arrow_r")
+        ctx.same_line()
+        ctx.label(target_name)
+        ctx.end_group()
         ctx.record_semantic_item(
             "status", route_label, False, "animfsm.transition.route",
         )
@@ -2115,6 +2141,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._name_to_uid = {state.name: state.stable_id for state in fsm.states}
         self._uid_to_name = {state.stable_id: state.name for state in fsm.states}
         self._entry_uid = _FSM_ENTRY_NODE_ID
+        self._refresh_state_labels()
 
     def _sync_fsm_from_graph(self) -> None:
         """Compile current NodeGraph authoring state into the FSM asset."""
@@ -2125,6 +2152,20 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._name_to_uid = {state.name: state.stable_id for state in fsm.states}
         self._uid_to_name = {state.stable_id: state.name for state in fsm.states}
         self._entry_uid = _FSM_ENTRY_NODE_ID
+        self._refresh_state_labels()
+
+    def _refresh_state_labels(self):
+        fsm = self._fsm
+        self._view.default_node_id = self._name_to_uid.get(fsm.default_state, "") if fsm is not None else ""
+        self._view.domain_header_nodes = {state.stable_id for state in fsm.states} if fsm is not None else set()
+        self._view.node_subtitles.clear()
+        if fsm is not None:
+            for state in fsm.states:
+                if state.clip_guid:
+                    path = AssetManager._get_path_from_guid(state.clip_guid) or ""
+                    self._view.node_subtitles[state.stable_id] = os.path.basename(path) if path else t("asset.animation_preview_missing_take")
+                elif state.kind == "group":
+                    self._view.node_subtitles[state.stable_id] = f"{t('animfsm_editor.node_kind_group')} · {len(state.clips)}"
 
     def _unique_state_name(
         self, want: str, *, reserved_names: Optional[set[str]] = None
@@ -2370,6 +2411,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         Ctrl+S and the panel save controls remain the only persistence paths.
         """
         del event
+        self._runtime_observed_object_id = 0
+        self._live_animator = None
+        self._view.runtime_nodes.clear()
 
     def _on_canvas_drop(self, payload_type: str, payload, gx: float, gy: float):
         """Handle items dropped onto the node graph canvas (clip / timeline file paths)."""

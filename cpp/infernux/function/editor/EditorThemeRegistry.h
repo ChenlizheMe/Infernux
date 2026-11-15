@@ -66,6 +66,16 @@ class EditorThemeRegistry
     static void SetChangeCallback(std::function<void()> callback);
     static void SetDisplayScale(float scale);
 
+    /// Register (or replace) a theme derived from an existing one. Token
+    /// overrides must name tokens that exist in the base theme. When the
+    /// overrides contain ROLE_ACCENT, the accent-driven tokens are re-derived
+    /// first so a theme plugin can recolor the editor with a single value.
+    /// Throws std::invalid_argument for an unknown base or token.
+    static void RegisterTheme(const std::string &name, const std::unordered_map<std::string, ImVec4> &colors,
+                              const std::unordered_map<std::string, ImVec2> &vec2s,
+                              const std::unordered_map<std::string, float> &floats,
+                              const std::string &base = "infernux");
+
     /// Push the active theme's palette into ImGui's global style colors.
     /// Themes every built-in widget at once (C++ and Python). Cheap; call on
     /// startup and once per theme switch.

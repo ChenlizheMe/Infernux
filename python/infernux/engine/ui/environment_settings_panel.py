@@ -27,10 +27,10 @@ from .theme import Theme, ImGuiCol
 
 _LABEL_W = 190.0
 
-# Procedural sky material property names (Skybox Procedural)
-_SKY_TOP = "skyTopColor"
-_SKY_HORIZON = "skyHorizonColor"
-_SKY_GROUND = "groundColor"
+# Procedural sky material property names (infernux/skybox/procedural)
+_SKY_TOP = "sky_top_color"
+_SKY_HORIZON = "sky_horizon_color"
+_SKY_GROUND = "ground_color"
 _SKY_EXPOSURE = "exposure"
 
 # Ambient sources — order must match SceneEnvironmentSettings::AmbientSource
@@ -298,7 +298,7 @@ class EnvironmentSettingsPanel(EditorPanel):
         else:
             self._finish_sky_material_edit(guid, _SKY_GROUND)
 
-        exposure = mat.get_float(_SKY_EXPOSURE, 1.0)
+        exposure = mat.get_float(_SKY_EXPOSURE)
         self._field_label(ctx, t("environment.sky_exposure"))
         new_exp = ctx.drag_float("##env_sky_exposure", float(exposure), 0.01, 0.0, 8.0)
         if new_exp != exposure:

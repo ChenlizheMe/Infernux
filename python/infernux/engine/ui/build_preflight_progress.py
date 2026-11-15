@@ -185,6 +185,7 @@ class BuildPreflightProgressService:
                     "build_preflight.cancel",
                     self.cancel,
                     enabled=transaction.phase not in {"complete"},
+                    kind="ghost",
                 ),
             ),
             semantic_prefix=self.MODAL_ID,

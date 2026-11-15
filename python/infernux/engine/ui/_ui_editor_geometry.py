@@ -44,6 +44,10 @@ class UIEditorGeometryMixin:
 
     @staticmethod
     def _point_in_quad(px, py, corners):
+        area = sum(corners[i][0] * corners[(i + 1) % 4][1]
+                   - corners[(i + 1) % 4][0] * corners[i][1] for i in range(4))
+        if area == 0.0:
+            return False
         signs = []
         for idx in range(4):
             ax, ay = corners[idx]
@@ -55,27 +59,10 @@ class UIEditorGeometryMixin:
         return not (has_pos and has_neg)
 
     def _get_oriented_box_screen(self, elem, ref_w, ref_h, origin_x, origin_y):
-        rx, ry, rw, rh = elem.get_rect(ref_w, ref_h)
-        cx = rx + rw * 0.5
-        cy = ry + rh * 0.5
-        rot = math.radians(float(elem.get_layout_rotation()))
-        cos_a = math.cos(rot)
-        sin_a = math.sin(rot)
-
-        local = [
-            (-rw * 0.5, -rh * 0.5),
-            (rw * 0.5, -rh * 0.5),
-            (rw * 0.5, rh * 0.5),
-            (-rw * 0.5, rh * 0.5),
-        ]
-        corners = []
-        for lx, ly in local:
-            px = cx + lx * cos_a - ly * sin_a
-            py = cy + lx * sin_a + ly * cos_a
-            sx, sy = self._canvas_to_screen(px, py, origin_x, origin_y)
-            corners.append((round(sx), round(sy)))
-
-        center_sx, center_sy = self._canvas_to_screen(cx, cy, origin_x, origin_y)
+        geometry = elem._resolved_rect_geometry(ref_w, ref_h)
+        corners = [tuple(round(value) for value in self._canvas_to_screen(x, y, origin_x, origin_y))
+                   for x, y in geometry.corners]
+        center_sx, center_sy = self._canvas_to_screen(*geometry.center, origin_x, origin_y)
         top_mid = ((corners[0][0] + corners[1][0]) * 0.5, (corners[0][1] + corners[1][1]) * 0.5)
         dir_x = top_mid[0] - center_sx
         dir_y = top_mid[1] - center_sy

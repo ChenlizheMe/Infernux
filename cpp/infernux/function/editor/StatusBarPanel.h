@@ -34,6 +34,11 @@ class StatusBarPanel : public InxGUIRenderable
     /// Update the engine-status indicator.
     void SetEngineStatus(const std::string &text, float progress, const std::string &kind = "activity");
 
+    void SetSessionLabel(const std::string &label)
+    {
+        m_sessionLabel = label;
+    }
+
     /// Refresh editor state once per GUI build, independently of simulation FPS.
     std::function<void()> syncFromEngine;
 
@@ -48,7 +53,7 @@ class StatusBarPanel : public InxGUIRenderable
     void RenderEngineStatus(float x, float y, float width, float height, float dpi, const std::string &text,
                             float progress, const std::string &kind);
 
-    const ImVec4 &LevelColorForString(const std::string &level) const;
+    ImVec4 LevelColorForString(const std::string &level) const;
 
     ConsolePanel *m_console = nullptr;
 
@@ -64,6 +69,7 @@ class StatusBarPanel : public InxGUIRenderable
     std::string m_statusText;
     float m_statusProgress = -1.0f;
     std::string m_statusKind{"activity"};
+    std::string m_sessionLabel;
 };
 
 } // namespace infernux

@@ -228,6 +228,12 @@ class BootstrapPanelsMixin:
             wm,
             factory_overrides=_factories,
         )
+        for entry, page in (
+            ("build_settings", "player"),
+            ("physics_settings", "physics"),
+            ("tag_layer_settings", "tags_layers"),
+        ):
+            wm.register_window_alias(entry, "project_settings", page)
         panel_interactions.require_types(
             BUILTIN_EDITOR_WINDOW_TYPE_IDS | PERMANENT_EDITOR_SURFACE_TYPE_IDS
         )
@@ -301,6 +307,8 @@ class BootstrapPanelsMixin:
         """Create a fresh C++ ConsolePanel for WindowManager re-open."""
         from infernux.lib import ConsolePanel as NativeConsolePanel
         panel = NativeConsolePanel(self.project_path)
+        from infernux.engine.i18n import t
+        panel.translate = t
         self._wire_console_command_callbacks(panel)
         panel.on_request_focus = lambda: self.window_manager.open_window("console")
         panel.on_selection_changed = lambda uid, history: self._on_console_selection_changed(panel, uid, history)
@@ -344,11 +352,6 @@ class BootstrapPanelsMixin:
                 if not separator:
                     return {}
                 return {"old_value": old_value, "new_value": new_value}
-            if command_id == "console.set_detail_height":
-                old_value, separator, new_value = value.partition("\t")
-                if not separator:
-                    return {}
-                return {"old_value": old_value, "new_value": new_value}
             return {}
 
         panel.execute_command = lambda command_id, source, argument: (
@@ -378,10 +381,6 @@ class BootstrapPanelsMixin:
         selection = SelectionService.instance()
         entry_uid = int(uid or 0)
         if entry_uid > 0:
-            object_id = panel.get_entry_context_object_id(entry_uid)
-            if object_id and self._navigate_console_entry_to_object(object_id, record_history=bool(record_history)):
-                panel.set_selection_snapshot(entry_uid)
-                return
             selection.select(
                 SelectionTarget.diagnostic_entry(
                     "console",
@@ -443,7 +442,7 @@ class BootstrapPanelsMixin:
             self.menu_bar,
         )
         engine.register_gui("editor_shortcut_input", self.shortcut_input, priority=-100)
-        engine.register_gui("menu_bar", self.menu_bar)
+        engine.register_gui("menu_bar", self.menu_bar, priority=-90)
 
         # Toolbar (native C++ panel)
         from infernux.lib import ToolbarPanel as NativeToolbarPanel
@@ -487,6 +486,8 @@ class BootstrapPanelsMixin:
         from infernux.lib import ConsolePanel as NativeConsolePanel
         from infernux.debug import DebugConsole
         self.console = NativeConsolePanel(self.project_path)
+        from infernux.engine.i18n import t
+        self.console.translate = t
         self._wire_console_command_callbacks(self.console)
         # Bridge Python Debug.log() → C++ ConsolePanel
         DebugConsole.instance().set_native_console(self.console)
@@ -533,6 +534,9 @@ class BootstrapPanelsMixin:
         from infernux.lib import StatusBarPanel as NativeStatusBarPanel
         self.status_bar = NativeStatusBarPanel()
         self.status_bar.set_console_panel(self.console)
+        from pathlib import Path
+        from infernux import __version__
+        self.status_bar.set_session_label(f"{Path(self.project_path).name} · {__version__}")
         from infernux.engine.interaction import CommandSource
 
         self.status_bar.execute_command = lambda command_id, source, argument: (

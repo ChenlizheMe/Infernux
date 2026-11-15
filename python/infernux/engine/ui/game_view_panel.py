@@ -39,7 +39,8 @@ from .runtime_canvas_snapshot import (
 from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .panel_registry import editor_panel
-from .theme import Theme, ImGuiStyleVar
+from .theme import ImGuiCol, Theme, ImGuiStyleVar
+from .igui import IGUI
 from .viewport_utils import capture_viewport_info
 from infernux.debug import Debug
 
@@ -622,7 +623,7 @@ class GameViewPanel(EditorPanel):
                 description="Change Game View Width",
             )
             ctx.same_line(0, 2.0 * dpi)
-            ctx.label(Theme.ICON_REMOVE)
+            ctx.label("\u00d7")  # dimension separator (not the remove glyph)
             ctx.same_line(0, 2.0 * dpi)
             height_before = self._capture_view_state()
             ctx.set_next_item_width(56.0 * dpi)
@@ -688,7 +689,7 @@ class GameViewPanel(EditorPanel):
         ctx.set_next_item_width(compact_slider)
         scale_before = self._capture_view_state()
         old_scale = self._display_scale
-        new_scale = round(ctx.float_slider("##Scale", old_scale, 0.10, 2.0), 3)
+        new_scale = round(IGUI.slider_float(ctx, "##Scale", old_scale, 0.10, 2.0, format="%.2f"), 3)
         scale_changed = abs(old_scale - new_scale) > 0.001
         self._display_scale = new_scale
         if scale_changed:
@@ -702,11 +703,15 @@ class GameViewPanel(EditorPanel):
         )
         ctx.same_line(0, 6.0 * dpi)
         ctx.align_text_to_frame_padding()
-        color_count = Theme.push_inline_button_style(ctx, active=self._fit_mode)
+        fit_bg = Theme.BTN_SUBTLE_HOVER if self._fit_mode else Theme.BTN_NORMAL
+        ctx.push_style_color(ImGuiCol.Button, *fit_bg)
+        ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.BTN_SUBTLE_HOVER)
+        ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.BTN_SUBTLE_HOVER)
+        ctx.push_style_color(ImGuiCol.Text, *(Theme.TEXT if self._fit_mode else Theme.TEXT_DIM))
         ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
         ctx.button(f"{fit_label}##game_view_fit", self._fit_scale, width=fit_w, height=0)
         ctx.pop_style_var(1)
-        ctx.pop_style_color(color_count)
+        ctx.pop_style_color(4)
 
         return target_w, target_h, fit_scale
 

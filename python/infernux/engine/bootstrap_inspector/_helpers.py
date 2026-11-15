@@ -68,16 +68,7 @@ def _can_remove_component(obj, comp, type_name, is_native):
             )
         except (ReferenceError, RuntimeError):
             return False
-    if can_remove:
-        return True
-
-    suffix = (
-        f"required by: {', '.join(blockers)}"
-        if blockers else
-        "the component registry marks it as non-removable"
-    )
-    Debug.log_warning(f"Cannot remove '{type_name}' — {suffix}")
-    return False
+    return can_remove
 
 
 def _get_add_component_entries():

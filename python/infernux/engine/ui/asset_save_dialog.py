@@ -255,8 +255,8 @@ class AssetSaveAsDialog:
         render_editor_modal_actions(
             ctx,
             [
-                EditorModalAction(t("editor.unsaved.save"), "confirm", _save),
-                EditorModalAction(t("editor.unsaved.cancel"), "cancel", _cancel),
+                EditorModalAction(t("editor.unsaved.cancel"), "cancel", _cancel, kind="ghost"),
+                EditorModalAction(t("editor.unsaved.save"), "confirm", _save, kind="primary"),
             ],
             semantic_prefix=self._semantic_prefix,
         )

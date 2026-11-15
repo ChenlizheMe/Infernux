@@ -430,6 +430,10 @@ class InxRenderer
     void CancelClose();
 
     void SetGUIFont(const char *fontPath, float fontSize);
+    void SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath,
+                     const std::string &monoFontPath, float fontSize);
+    void SetEditorIconsDirectory(const std::string &path);
+    uint64_t GetEditorIconId(const std::string &name) const;
     void InvalidateGUIFontAsset(const std::string &path);
     float GetDisplayScale() const;
     void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);

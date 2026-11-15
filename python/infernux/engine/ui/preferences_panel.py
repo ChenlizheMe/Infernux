@@ -17,6 +17,7 @@ from .dpi import editor_dpi_scale
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .project_utils import detect_available_ides
+from .settings_workspace import SettingsWorkspaceMixin, render_settings_workspace
 
 
 _LOCALES = ["en", "zh"]
@@ -30,7 +31,7 @@ _LOCALE_LABELS = ["English", "简体中文"]
     menu_path="",
     interaction=PanelInteractionDescriptor(),
 )
-class PreferencesPanel(EditorPanel):
+class PreferencesPanel(SettingsWorkspaceMixin, EditorPanel):
     """User Preferences utility surface hosted by the global panel lifecycle."""
 
     def __init__(self) -> None:
@@ -43,6 +44,13 @@ class PreferencesPanel(EditorPanel):
         self._shortcut_profile_revision = -1
         self._blender_path = None
         self._blender_error = ""
+        self._settings_page = "appearance"
+
+    SETTINGS_PAGES = (
+        ("appearance", "prefs.appearance", "prefs.appearance_hint", "theme language font 外观 语言 字体"),
+        ("shortcuts", "prefs.shortcuts", "prefs.shortcuts_hint", "keyboard bindings 快捷键 按键"),
+        ("tools", "prefs.external_tools", "prefs.tools_hint", "ide blender editor 外部工具"),
+    )
 
     def _initial_size(self) -> tuple[float, float]:
         return 980.0, 720.0
@@ -52,13 +60,32 @@ class PreferencesPanel(EditorPanel):
     # ------------------------------------------------------------------
 
     def on_render_content(self, ctx) -> None:
-        self._render_body(ctx, editor_dpi_scale(ctx))
+        render_settings_workspace(ctx, self, self._render_page)
 
-    def _render_body(self, ctx, dpi: float) -> None:
-        ctx.label(t("prefs.language"))
-        ctx.same_line(150.0 * dpi)
-        avail = ctx.get_content_region_avail_width()
-        ctx.set_next_item_width(avail)
+    def _render_page(self, ctx, page):
+        dpi = editor_dpi_scale(ctx)
+        if page == "appearance":
+            self._render_language(ctx, dpi)
+            from .inspector_utils import field_label
+            from .theme import Theme
+            names = [name for name in Theme.list_themes() if name != "mission_control"]
+            current = Theme.active_theme()
+            if current == "mission_control":
+                current = "infernux"
+            field_label(ctx, t("prefs.theme"), ctx.inspector_label_width())
+            selected = ctx.combo("##editor_theme", names.index(current), [t(f"theme.{name}") for name in names])
+            if names[selected] != current:
+                Theme.set_theme(names[selected])
+        elif page == "shortcuts":
+            self._render_shortcuts(ctx, dpi)
+        elif page == "tools":
+            self._render_ide(ctx, dpi)
+            ctx.separator()
+            self._render_blender_tool(ctx)
+
+    def _render_language(self, ctx, dpi: float) -> None:
+        from .inspector_utils import field_label
+        field_label(ctx, t("prefs.language"), ctx.inspector_label_width())
 
         current_idx = _LOCALES.index(get_locale()) if get_locale() in _LOCALES else 0
         new_idx = ctx.combo("##language", current_idx, _LOCALE_LABELS)
@@ -69,10 +96,9 @@ class PreferencesPanel(EditorPanel):
                 value=_LOCALES[new_idx],
             )
 
-        ctx.label(t("prefs.ide"))
-        ctx.same_line(150.0 * dpi)
-        avail = ctx.get_content_region_avail_width()
-        ctx.set_next_item_width(avail)
+    def _render_ide(self, ctx, dpi):
+        from .inspector_utils import field_label
+        field_label(ctx, t("prefs.ide"), ctx.inspector_label_width())
 
         available_ides = detect_available_ides()
         current_ide = get_ide()
@@ -102,11 +128,6 @@ class PreferencesPanel(EditorPanel):
             ctx.text_wrapped(t("prefs.ide.available_hint"))
         else:
             ctx.text_wrapped(t("prefs.ide.none_available"))
-
-        ctx.separator()
-        self._render_blender_tool(ctx)
-        ctx.separator()
-        self._render_shortcuts(ctx, dpi)
 
     def _render_blender_tool(self, ctx) -> None:
         from infernux.engine.model_import.toolchain import get_blender_executable

@@ -35,6 +35,7 @@ static void CheckRow(float scale, float windowWidth)
     int atlasWidth, atlasHeight;
     io.Fonts->GetTexDataAsRGBA32(&atlas, &atlasWidth, &atlasHeight);
     infernux::InxGUIContext context;
+    ConfigureImGuiTestGUI(context);
     ImVec2 clickPoint;
     int clicked = 0;
     // Let the new window finish its initial navigation/focus setup before
@@ -95,6 +96,7 @@ static void CheckPropertyGroups(float scale, float windowWidth)
     int atlasWidth, atlasHeight;
     io.Fonts->GetTexDataAsRGBA32(&atlas, &atlasWidth, &atlasHeight);
     infernux::InxGUIContext context;
+    ConfigureImGuiTestGUI(context);
     for (int frame = 0; frame < 4; ++frame) {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(40, 40));
@@ -108,7 +110,11 @@ static void CheckPropertyGroups(float scale, float windowWidth)
         const auto *draw = ImGui::GetWindowDrawList();
         const int firstVertex = draw->VtxBuffer.Size;
         const std::array<float, 4> background{0.125f, 0.25f, 0.375f, 1};
+        const auto frameOrigin = ImGui::GetCursorScreenPos();
+        const float frameAvailable = ImGui::GetContentRegionAvail().x;
         context.BeginFramedGroup(3, 2, 0, background, {0, 0, 0, 1});
+        assert(std::abs(ImGui::GetCursorScreenPos().x - frameOrigin.x - 3) < 0.1f);
+        assert(std::abs(ImGui::GetContentRegionAvail().x - (frameAvailable - 6)) < 0.1f);
         for (const auto *label : {"Speed", "A deliberately very long property name"}) {
             ImGui::PushID(label);
             const auto origin = ImGui::GetCursorScreenPos();
@@ -119,6 +125,7 @@ static void CheckPropertyGroups(float scale, float windowWidth)
             const auto minimum = ImGui::GetItemRectMin();
             assert(std::abs(minimum.x - origin.x - std::min(140.0f, std::max(0.0f, available - 48.0f))) < 0.1f);
             assert(std::abs(minimum.y - origin.y) < 0.1f);
+            assert(ImGui::GetItemRectMax().x <= frameOrigin.x + frameAvailable - 3.0f + 0.1f);
             ImGui::PopID();
         }
         context.BeginFramedGroup(0, 0, 0, background, {0, 0, 0, 1});
@@ -132,9 +139,11 @@ static void CheckPropertyGroups(float scale, float windowWidth)
             if (draw->VtxBuffer[index].col == ImGui::GetColorU32(ImVec4(background[0], background[1], background[2], 1)))
                 fill.Add(draw->VtxBuffer[index].pos);
         assert(fill.found);
-        assert(std::abs(fill.minX - (minimum.x - 3)) < 0.1f);
+        assert(std::abs(fill.minX - frameOrigin.x) < 0.1f);
+        assert(std::abs(fill.maxX - (frameOrigin.x + frameAvailable)) < 0.1f);
         assert(std::abs(fill.minY - minimum.y) < 0.1f);
         assert(std::abs(fill.maxY - maximum.y) < 0.1f);
+        assert(std::abs(ImGui::GetContentRegionAvail().x - frameAvailable) < 0.1f);
         ImGui::EndGroup();
         ImGui::Unindent(20);
         ImGui::PopFont();

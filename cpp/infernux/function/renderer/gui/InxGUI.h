@@ -41,6 +41,10 @@ class InxGUI
     void Init(SDL_Window *window);
 
     void SetGUIFont(const char *fontPath, float fontSize);
+    void SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath,
+                     const std::string &monoFontPath, float fontSize);
+    void SetEditorIconsDirectory(const std::string &path);
+    uint64_t GetEditorIconId(const std::string &name);
     void InvalidateFontAsset(const std::string &path);
     float GetDisplayScale() const
     {
@@ -211,7 +215,7 @@ class InxGUI
     void FailTextureUpload(PendingTextureUpload &pending, const char *error);
     bool AppendTextureUpload(PendingTextureUpload &pending, FrameWorkOwner &owner);
     void RefreshDisplayScale();
-    void ReloadGUIFont();
+    bool ReloadGUIFont();
 
     struct ImGuiTextureResource
     {
@@ -262,6 +266,8 @@ class InxGUI
     SDL_Window *m_window_ptr = nullptr;
     ImGuiContext *m_imguiContext_ptr = nullptr;
     std::unique_ptr<InxGUIContext> m_guiContext;
+    std::string m_editorIconsDirectory;
+    std::unordered_map<std::string, std::string> m_editorIconTextures;
     uint64_t m_surfaceGrainUpload = 0;
     uint64_t m_surfaceHexUpload = 0;
     float m_dpiScale = 1.0f;

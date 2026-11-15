@@ -70,6 +70,14 @@ class _ProjectDeleteSemanticContext:
         self.semantics: list[str] = []
         self.buttons: dict[str, object] = {}
 
+    @staticmethod
+    def push_mono_font() -> None:
+        pass
+
+    @staticmethod
+    def pop_font() -> None:
+        pass
+
     def open_popup(self, popup_id: str) -> None:
         self.opened.append(popup_id)
 
@@ -83,6 +91,10 @@ class _ProjectDeleteSemanticContext:
 
     @staticmethod
     def set_next_window_pos(_x, _y, _condition, _pivot_x, _pivot_y) -> None:
+        pass
+
+    @staticmethod
+    def set_next_window_size(_width, _height, _condition) -> None:
         pass
 
     @staticmethod
@@ -108,7 +120,59 @@ class _ProjectDeleteSemanticContext:
         pass
 
     @staticmethod
-    def same_line() -> None:
+    def same_line(*_args) -> None:
+        pass
+
+    @staticmethod
+    def get_content_region_avail_height() -> float:
+        return 400.0
+
+    @staticmethod
+    def get_content_region_avail_width() -> float:
+        return 600.0
+
+    @staticmethod
+    def get_cursor_pos_x() -> float:
+        return 0.0
+
+    @staticmethod
+    def get_cursor_pos_y() -> float:
+        return 0.0
+
+    @staticmethod
+    def set_cursor_pos_x(_value: float) -> None:
+        pass
+
+    @staticmethod
+    def set_cursor_pos_y(_value: float) -> None:
+        pass
+
+    @staticmethod
+    def calc_text_width(text: str) -> float:
+        return 7.0 * len(text)
+
+    @staticmethod
+    def push_style_color(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_color(_count: int = 1) -> None:
+        pass
+
+    @staticmethod
+    def push_style_var_float(*_args) -> None:
+        pass
+
+    @staticmethod
+    def pop_style_var(_count: int = 1) -> None:
+        pass
+
+    @staticmethod
+    def begin_disabled(_disabled: bool = True) -> None:
+        pass
+
+    @staticmethod
+    def end_disabled() -> None:
         pass
 
     @staticmethod

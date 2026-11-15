@@ -55,7 +55,8 @@ expected = {
     "inxpackage_import": "", "preferences": "", "themes": "", "physics_settings": "",
     "toolbar": "", "console": "Window", "game_view": "Window",
     "hierarchy": "Window", "history": "Window", "inspector": "Window",
-    "project": "Window", "scene_view": "Window", "tag_layer_settings": "Window",
+    "project": "Window", "scene_view": "Window", "tag_layer_settings": "",
+    "project_settings": "",
     "ui_editor": "Window",
 }
 actual = {key: info.menu_path for key, info in bootstrap.window_manager.get_registered_types().items()}

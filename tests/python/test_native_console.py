@@ -105,7 +105,7 @@ def test_disconnected_debug_bridge_does_not_write_to_old_panel():
         DebugConsole._instance = None
 
 
-def test_component_log_selects_owning_object_and_retains_diagnostic(scene, native_console):
+def test_context_log_selects_diagnostic_and_retains_object_reference(scene, native_console):
     from infernux.engine._bootstrap_panels import BootstrapPanelsMixin
     from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
     from infernux.engine.interaction import EditorInteractionCore, SelectionDomain, SelectionService, SelectionTarget
@@ -117,10 +117,12 @@ def test_component_log_selects_owning_object_and_retains_diagnostic(scene, nativ
     core = EditorInteractionCore()
     owner = object.__new__(ConsoleOwner)
     owner.interaction_core = core
-    core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
     core.panels.register_selection_authority("console", (SelectionDomain.DIAGNOSTIC_ENTRY,))
-    core.navigation.register(SelectionDomain.SCENE_OBJECT, lambda _target, _request: True)
-    core.selection.add_listener(lambda _change: native_console.set_selection_snapshot(0))
+    core.selection.add_listener(
+        lambda change: native_console.set_selection_snapshot(
+            int(change.after.primary.target_id) if change.after.primary else 0
+        )
+    )
     game_object = scene.create_game_object("Logged object")
     component = game_object.add_component("BoxCollider")
     try:
@@ -130,8 +132,8 @@ def test_component_log_selects_owning_object_and_retains_diagnostic(scene, nativ
         object_id = game_object.id
         assert native_console.get_entry_context_object_id(uid) == object_id
         owner._on_console_selection_changed(native_console, uid, False)
-        assert core.selection.snapshot.primary == SelectionTarget.scene_object(object_id)
-        assert core.selection.snapshot.owner_id == "hierarchy"
+        assert core.selection.snapshot.primary == SelectionTarget.diagnostic_entry("console", str(uid))
+        assert core.selection.snapshot.owner_id == "console"
         assert native_console._selected_uid == uid
 
         Debug.log("object observation", game_object)

@@ -9,15 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
+from infernux.engine.i18n import t
 from infernux.lib import InxGUIContext
 
 from .theme import ImGuiCol, ImGuiMouseCursor, ImGuiStyleVar, ImGuiWindowFlags, Theme
-OVERLAY_PANEL_BG = (0.14, 0.14, 0.145, 1.0)
-OVERLAY_PANEL_ROUNDING = 6.0
 OVERLAY_RESIZE_GRIP = 8.0
 OVERLAY_MIN_HEIGHT = 120.0
 OVERLAY_CONTENT_PAD = (8.0, 6.0)
-OVERLAY_GRIP_LINE = (0.42, 0.42, 0.44, 0.85)
 
 WORKSPACE_ROW_H = 22.0
 WORKSPACE_ROW_INSET_X = 6.0
@@ -26,21 +24,9 @@ WORKSPACE_ROW_DOT_X = 9.0
 WORKSPACE_ROW_TEXT_X = 18.0
 WORKSPACE_ROW_META_PAD = 64.0
 # Compact ShaderGraph-style chips (neutral gray).
-WORKSPACE_CARD_IDLE = (0.17, 0.17, 0.17, 1.0)
-WORKSPACE_CARD_HOVER = (0.22, 0.22, 0.22, 1.0)
-WORKSPACE_CARD_SELECTED = (0.27, 0.27, 0.27, 1.0)
-WORKSPACE_CARD_BORDER = (0.32, 0.32, 0.32, 0.85)
-WORKSPACE_CARD_BORDER_SELECTED = (0.48, 0.48, 0.48, 1.0)
-WORKSPACE_CARD_ROUNDING = 4.0
 WORKSPACE_ROW_GAP = 2.0
 
 # Pagination tabs — selected accent matches theme red (210, 80, 80).
-_TAB_TEXT_IDLE = (0.62, 0.62, 0.64, 1.0)
-_TAB_TEXT_HOVER = (0.82, 0.82, 0.84, 1.0)
-_TAB_TEXT_ACTIVE = (210.0 / 255.0, 80.0 / 255.0, 80.0 / 255.0, 1.0)
-_TAB_UNDERLINE = _TAB_TEXT_ACTIVE
-_TAB_BASELINE = (0.28, 0.28, 0.28, 1.0)
-_TAB_HOVER_BG = (1.0, 1.0, 1.0, 0.04)
 _TAB_FRAME_PAD = (8.0, 3.0)
 _TAB_ITEM_SPACING = (2.0, 0.0)
 _TAB_ROW_GAP = 6.0
@@ -95,8 +81,8 @@ def paint_overlay_background(
         y0,
         x0 + width,
         y0 + height,
-        *OVERLAY_PANEL_BG,
-        OVERLAY_PANEL_ROUNDING,
+        *Theme.ROLE_BG_SURFACE,
+        Theme.OVERLAY_ROUNDING,
     )
 
 
@@ -121,7 +107,7 @@ def render_floating_overlay(
     ctx.set_cursor_pos_y(y)
     ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
     ctx.push_style_color(ImGuiCol.Border, 0.0, 0.0, 0.0, 0.0)
-    ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, OVERLAY_PANEL_ROUNDING)
+    ctx.push_style_var_float(ImGuiStyleVar.ChildRounding, Theme.OVERLAY_ROUNDING)
     visible = ctx.begin_child(
         child_id, width, panel_h, False,
         int(ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse),
@@ -162,7 +148,7 @@ def render_floating_overlay(
                 grip_y,
                 x0 + width * 0.62,
                 grip_y,
-                *OVERLAY_GRIP_LINE,
+                *Theme.BORDER,
                 1.5,
             )
     finally:
@@ -210,11 +196,11 @@ def render_compact_tab_bar(
             x1 = ctx.get_item_rect_max_x()
             y1 = ctx.get_item_rect_max_y()
             if hovered and not selected:
-                ctx.draw_filled_rect(x0, y0, x1, y1, *_TAB_HOVER_BG, 0.0)
+                ctx.draw_filled_rect(x0, y0, x1, y1, *Theme.BTN_GHOST_HOVERED, 0.0)
             text_color = (
-                _TAB_TEXT_ACTIVE
+                Theme.ROLE_ACCENT
                 if selected
-                else (_TAB_TEXT_HOVER if hovered else _TAB_TEXT_IDLE)
+                else (Theme.TEXT if hovered else Theme.TEXT_DISABLED)
             )
             ctx.draw_text_aligned(
                 x0 + pad_x,
@@ -245,7 +231,7 @@ def render_compact_tab_bar(
             baseline_y,
             content_right,
             baseline_y,
-            *_TAB_BASELINE,
+            *Theme.BORDER,
             1.0,
         )
         for selected, _hovered, x0, _y0, x1, y1 in tab_rects:
@@ -256,7 +242,7 @@ def render_compact_tab_bar(
                 y1 - 1.0,
                 x1 - 2.0,
                 y1 - 1.0,
-                *_TAB_UNDERLINE,
+                *Theme.ROLE_ACCENT,
                 _TAB_UNDERLINE_THICK,
             )
 
@@ -286,11 +272,11 @@ def render_workspace_add_header(
     ctx.set_cursor_pos_x(row_x + max(0.0, row_w - btn_size))
     if disabled:
         ctx.begin_disabled(True)
-    clicked = IGUI._mini_icon_button(
+    clicked = IGUI.icon_button(
         ctx,
         f"##workspace_add_{button_id.lstrip('#')}",
         Theme.ICON_IMG_PLUS,
-        Theme.ICON_PLUS,
+        tooltip=t("igui.add"),
     )
     recorder = getattr(ctx, "record_semantic_item", None)
     if semantic_id and callable(recorder):
@@ -362,17 +348,17 @@ def paint_workspace_entry(
     hovered = bool(ctx.is_item_hovered())
     held = hovered and bool(ctx.is_mouse_button_down(0))
     if selected:
-        fill = WORKSPACE_CARD_SELECTED
-        border = WORKSPACE_CARD_BORDER_SELECTED
+        fill = Theme.HIERARCHY_ROW_SELECTED
+        border = Theme.ROLE_ACCENT
     elif held or hovered:
-        fill = WORKSPACE_CARD_HOVER
-        border = WORKSPACE_CARD_BORDER
+        fill = Theme.FRAME_BG_HOVERED
+        border = Theme.BORDER
     else:
-        fill = WORKSPACE_CARD_IDLE
-        border = WORKSPACE_CARD_BORDER
+        fill = Theme.FRAME_BG
+        border = Theme.BORDER
 
-    ctx.draw_filled_rect(x0, y0, x1, y1, *fill, WORKSPACE_CARD_ROUNDING)
-    ctx.draw_rect(x0, y0, x1, y1, *border, 1.0, WORKSPACE_CARD_ROUNDING)
+    ctx.draw_filled_rect(x0, y0, x1, y1, *fill, Theme.OVERLAY_ROUNDING)
+    ctx.draw_rect(x0, y0, x1, y1, *border, 1.0, Theme.OVERLAY_ROUNDING)
 
     mid_y = (y0 + y1) * 0.5
     ctx.draw_filled_circle(

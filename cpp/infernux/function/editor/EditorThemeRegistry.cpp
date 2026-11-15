@@ -46,18 +46,18 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
         for (const auto *token : tokens)
             theme.colors.at(token) = Alpha(theme.colors.at(role), theme.colors.at(token).w);
     };
-    derive("ROLE_BG_BASE", {"WINDOW_BG", "MENU_BAR_BG", "STATUS_BAR_BG", "STATUS_PROGRESS_BG", "LOG_DIM"});
+    derive("ROLE_BG_BASE", {"WINDOW_BG", "MENU_BAR_BG", "STATUS_BAR_BG", "STATUS_PROGRESS_BG", "LOG_DIM", "GRAPH_MINIMAP_BG"});
     derive("ROLE_BG_SURFACE", {"FRAME_BG", "BTN_IDLE", "BTN_NORMAL", "BTN_DISABLED", "INSPECTOR_INLINE_BTN_IDLE",
                                "INSPECTOR_LIST_BODY_BG", "CURVE_EDITOR_BG", "UI_EDITOR_CANVAS_BG",
-                               "SCENE_OVERLAY_COMBO_BG", "STATUS_ACTIVITY_BG", "CONSOLE_SEGMENT_ACTIVE"});
+                               "SCENE_OVERLAY_COMBO_BG", "STATUS_ACTIVITY_BG", "CONSOLE_SEGMENT_ACTIVE", "GRAPH_NODE_BG"});
     derive("ROLE_BG_RAISED", {"POPUP_BG", "HEADER", "INSPECTOR_HEADER_PRIMARY", "INSPECTOR_HEADER_SECONDARY",
                               "INSPECTOR_HEADER_TERTIARY", "INSPECTOR_HEADER_LIST", "PREFAB_HEADER_BG",
-                              "PROJECT_EXPAND_STRIP_BG", "PROJECT_SUBASSET_CELL_BG", "UI_EDITOR_CANVAS_HEADER_BG"});
+                              "PROJECT_EXPAND_STRIP_BG", "PROJECT_SUBASSET_CELL_BG", "UI_EDITOR_CANVAS_HEADER_BG", "GRAPH_NODE_HEADER"});
     derive("ROLE_BG_HOVER", {"HIERARCHY_ROW_HOVER", "BTN_SUBTLE_HOVER", "FRAME_BG_HOVERED"});
     derive("ROLE_TEXT", {"TEXT", "LOG_INFO", "META_TEXT", "UI_EDITOR_CANVAS_HEADER_TEXT", "CURVE_EDITOR_KEY",
-                         "SCENE_TOOL_ICON", "SCENE_TOOL_ICON_SELECTED"});
+                         "SCENE_TOOL_ICON", "SCENE_TOOL_ICON_SELECTED", "GRAPH_GRID", "GRAPH_GRID_MAJOR"});
     derive("ROLE_TEXT_DIM", {"TEXT_DISABLED", "TEXT_DIM", "TEXT_DIM2", "LOG_TRACE", "LOG_BADGE",
-                             "STATUS_PROGRESS_LABEL_CLR", "UI_EDITOR_LABEL_COLOR", "UI_EDITOR_FALLBACK_TEXT"});
+                             "STATUS_PROGRESS_LABEL_CLR", "UI_EDITOR_LABEL_COLOR", "UI_EDITOR_FALLBACK_TEXT", "GRAPH_MINIMAP_NODE"});
     derive("ROLE_BORDER", {"BORDER", "STATUS_BAR_BORDER", "INSPECTOR_LIST_BODY_BORDER", "UI_EDITOR_CANVAS_BORDER",
                            "CURVE_EDITOR_GRID", "CURVE_EDITOR_AXIS", "COLOR_SWATCH_BORDER"});
     derive("ROLE_ERROR", {"ERROR_TEXT", "LOG_ERROR"});
@@ -109,7 +109,6 @@ ThemeData MakeAccentVariant(const ThemeData &base, const ImVec4 &accent)
 ThemeData CanonicalBaseTheme()
 {
     auto theme = BuildBaseTheme();
-    DeriveRoles(theme, theme.colors);
     return theme;
 }
 
@@ -126,7 +125,8 @@ struct Registry
     Registry()
     {
         ThemeData base = CanonicalBaseTheme();
-        Add("infernux", base);                                                       // theme red (default)
+        Add("infernux", base);
+        Add("mission_control", base);
         Add("graphite", MakeAccentVariant(base, ImVec4(0.30f, 0.56f, 0.86f, 1.0f))); // steel blue
         Add("amber", MakeAccentVariant(base, ImVec4(0.92f, 0.62f, 0.22f, 1.0f)));    // instrument amber
         active = "infernux";
@@ -386,6 +386,14 @@ void EditorThemeRegistry::ConfigureImGuiDimensions(ImGuiStyle &style, float scal
     style.FrameBorderSize = scalar("GLOBAL_FRAME_BORDER");
     style.TabBorderSize = scalar("GLOBAL_TAB_BORDER");
     style.TabBarBorderSize = scalar("GLOBAL_TAB_BAR_BORDER");
+    style.TabBarOverlineSize = 2.0f * scale;
+    style.TabCloseButtonMinWidthSelected = -1.0f;
+    style.TabCloseButtonMinWidthUnselected = 0.0f;
+    style.WindowMenuButtonPosition = ImGuiDir_Right;
+    style.SeparatorTextBorderSize = scale;
+    style.SeparatorTextAlign = ImVec2(0.0f, 0.5f);
+    style.SeparatorTextPadding = ImVec2(Vec2("FIELD_PADDING").x * scale,
+                                      (Vec2("MENU_ITEM_SPC").y + 1.0f) * scale);
 
     style.WindowRounding = scalar("GLOBAL_WINDOW_ROUNDING");
     style.ChildRounding = scalar("GLOBAL_CHILD_ROUNDING");
@@ -417,7 +425,7 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     // Text
     c[ImGuiCol_Text] = text;
-    c[ImGuiCol_TextDisabled] = dim;
+    c[ImGuiCol_TextDisabled] = Color("TEXT_DISABLED");
     c[ImGuiCol_TextSelectedBg] = Alpha(accent, 0.35f);
     c[ImGuiCol_InputTextCursor] = text;
     c[ImGuiCol_TextLink] = accent;
@@ -428,14 +436,15 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_WindowBg] = bg;
     c[ImGuiCol_ChildBg] = surf;
     c[ImGuiCol_PopupBg] = Color("POPUP_BG");
-    c[ImGuiCol_FrameBg] = surf;
+    c[ImGuiCol_FrameBg] = Color("FRAME_BG");
     c[ImGuiCol_FrameBgHovered] = Color("FRAME_BG_HOVERED");
     c[ImGuiCol_FrameBgActive] = Color("FRAME_BG_ACTIVE");
 
     // Title / menu
-    c[ImGuiCol_TitleBg] = bg;
-    c[ImGuiCol_TitleBgActive] = bg;
-    c[ImGuiCol_TitleBgCollapsed] = Alpha(bg, 0.75f);
+    // Dock tab strips draw with TitleBg; they sit on the void tone.
+    c[ImGuiCol_TitleBg] = Color("MENU_BAR_BG");
+    c[ImGuiCol_TitleBgActive] = Color("MENU_BAR_BG");
+    c[ImGuiCol_TitleBgCollapsed] = Alpha(Color("MENU_BAR_BG"), 0.75f);
     c[ImGuiCol_MenuBarBg] = Color("MENU_BAR_BG");
 
     // Scrollbar
@@ -446,8 +455,9 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     // Accent widgets
     c[ImGuiCol_CheckMark] = accent;
-    c[ImGuiCol_SliderGrab] = Alpha(accent, 0.88f);
-    c[ImGuiCol_SliderGrabActive] = accent;
+    // Slider grabs are warm-white plates; the accent belongs to the filled track.
+    c[ImGuiCol_SliderGrab] = text;
+    c[ImGuiCol_SliderGrabActive] = Mix(text, accent, 0.35f);
     c[ImGuiCol_NavHighlight] = transparent;
     c[ImGuiCol_NavWindowingHighlight] = Alpha(accent, 0.70f);
     c[ImGuiCol_NavWindowingDimBg] = Alpha(bg, 0.20f);
@@ -476,15 +486,16 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_ResizeGripActive] = Alpha(accent, 0.50f);
 
     // Tabs
-    c[ImGuiCol_Tab] = bg;
-    c[ImGuiCol_TabHovered] = hover;
-    c[ImGuiCol_TabSelected] = surf;
+    // Inactive tabs have no plate; the strip itself reads as void.
+    c[ImGuiCol_Tab] = transparent;
+    c[ImGuiCol_TabHovered] = Alpha(text, 0.04f);
+    c[ImGuiCol_TabSelected] = bg;
     // A focused editor panel uses the canonical Infernux selection red at
     // full opacity. The dimmed overline below intentionally keeps its current
     // subdued accent treatment for visible but unfocused dock tabs.
     c[ImGuiCol_TabSelectedOverline] = Alpha(panelFocus, 1.0f);
-    c[ImGuiCol_TabDimmed] = bg;
-    c[ImGuiCol_TabDimmedSelected] = surf;
+    c[ImGuiCol_TabDimmed] = transparent;
+    c[ImGuiCol_TabDimmedSelected] = bg;
     c[ImGuiCol_TabDimmedSelectedOverline] = Alpha(accent, 0.60f);
 
     // Docking
@@ -498,18 +509,18 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_PlotHistogramHovered] = accent;
 
     // Drag-drop
-    c[ImGuiCol_DragDropTarget] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-    c[ImGuiCol_DragDropTargetBg] = transparent;
+    c[ImGuiCol_DragDropTarget] = text;
+    c[ImGuiCol_DragDropTargetBg] = Alpha(text, 0.06f);
 
     // Modal
-    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.56f);
+    c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.55f);
 
     // Tables
     c[ImGuiCol_TableHeaderBg] = surf;
     c[ImGuiCol_TableBorderStrong] = border;
     c[ImGuiCol_TableBorderLight] = Mix(bg, border, 0.5f);
     c[ImGuiCol_TableRowBg] = transparent;
-    c[ImGuiCol_TableRowBgAlt] = ImVec4(1.0f, 1.0f, 1.0f, 0.02f);
+    c[ImGuiCol_TableRowBgAlt] = Alpha(text, 0.02f);
 }
 
 } // namespace infernux

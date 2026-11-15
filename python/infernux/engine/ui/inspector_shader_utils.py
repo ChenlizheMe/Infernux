@@ -7,6 +7,11 @@ that callers can provide for per-session caching.
 
 import json
 import os
+
+
+def shader_menu_folders(name: str) -> tuple[str, ...]:
+    """Group shader IDs by their declared logical path in the asset picker."""
+    return tuple(part for part in name.split("/")[:-1] if part)
 import re
 from infernux.engine.path_utils import lexical_path_key, path_key, portable_path
 

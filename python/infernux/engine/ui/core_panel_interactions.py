@@ -1454,8 +1454,6 @@ def console_panel_interaction(
                 "set_view_option",
                 "get_search_query",
                 "set_search_query",
-                "get_detail_height",
-                "set_detail_height",
                 "request_search_focus",
             ),
             "console panel",
@@ -1539,27 +1537,6 @@ def console_panel_interaction(
                 description="Search Console",
             )
 
-        def _detail_args(context: CommandContext):
-            try:
-                old_value = float(context.payload.get("old_value"))
-                new_value = float(context.payload.get("new_value"))
-            except (TypeError, ValueError):
-                return None
-            if not math.isfinite(old_value) or not math.isfinite(new_value):
-                return None
-            return max(40.0, old_value), max(40.0, new_value)
-
-        def _set_detail_height(context: CommandContext) -> bool:
-            args = _detail_args(context)
-            if args is None:
-                return False
-            return view_state.set_value(
-                args[0],
-                args[1],
-                panel.set_detail_height,
-                description="Resize Console Details",
-            )
-
         return PanelCommandAdapter(
             {
                 "console.clear": BoundPanelCommand(_clear, _has_entries),
@@ -1572,13 +1549,6 @@ def console_panel_interaction(
                     lambda context: bool(
                         (args := _search_args(context)) is not None
                         and args[0] != args[1]
-                    ),
-                ),
-                "console.set_detail_height": BoundPanelCommand(
-                    _set_detail_height,
-                    lambda context: bool(
-                        (args := _detail_args(context)) is not None
-                        and abs(args[0] - args[1]) > 0.5
                     ),
                 ),
                 "view.focus_search": BoundPanelCommand(
@@ -1601,7 +1571,6 @@ def console_panel_interaction(
             PanelCommandSpec("console.clear"),
             PanelCommandSpec("console.set_option"),
             PanelCommandSpec("console.set_search"),
-            PanelCommandSpec("console.set_detail_height"),
             PanelCommandSpec("view.focus_search"),
             PanelCommandSpec("edit.copy"),
             PanelCommandSpec("edit.deselect"),

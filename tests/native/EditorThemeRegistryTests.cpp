@@ -32,7 +32,7 @@ int main()
     assert(spacing.x == 4.0f);
     assert(spacing.y == 2.0f);
 
-    assert(EditorThemeRegistry::Float("COMPONENT_ICON_SIZE") == 16.0f);
+    assert(EditorThemeRegistry::Float("COMPONENT_ICON_SIZE") == 18.0f);
 
     ExpectMissingToken("color", [] { (void)EditorThemeRegistry::Color("INFERNUX_TEST_MISSING_TOKEN"); });
     ExpectMissingToken("vec2", [] { (void)EditorThemeRegistry::Vec2("INFERNUX_TEST_MISSING_TOKEN"); });
@@ -85,7 +85,7 @@ int main()
     EditorThemeRegistry::RemoveOwner("test:themes");
     assert(publications == 3);
     assert(EditorThemeRegistry::ActiveTheme() == "infernux");
-    assert(ImGui::GetStyle().FramePadding.x == 16.0f);
+    assert(ImGui::GetStyle().FramePadding.x == 12.0f);
     EditorThemeRegistry::RemoveOwner("test:themes");
     assert(publications == 3);
     EditorThemeRegistry::SetChangeCallback({});

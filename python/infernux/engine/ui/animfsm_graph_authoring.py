@@ -19,6 +19,7 @@ from infernux.graph.registry import (
 )
 
 from .graph_document_authoring import _canvas_definition
+from .theme import Theme
 
 
 FSM_ENTRY_NODE_ID = "animfsm.entry"
@@ -40,7 +41,7 @@ FSM_STATE_NODE_DEF = NodeDef(
         PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="animfsm_editor.port_out"),
     ),
     presentation=NodePresentation(
-        header_color=(0.20, 0.20, 0.22, 1.0),
+        header_color=Theme.DOMAIN_ANIMATION,
         min_width=172.0,
         body_bottom_pad=0.0,
         visual_style="graph",
@@ -55,7 +56,7 @@ FSM_ENTRY_NODE_DEF = NodeDef(
         PortDef("out", PortDirection.OUTPUT, PortKind.EXEC, display_name="animfsm_editor.port_start"),
     ),
     presentation=NodePresentation(
-        header_color=(0.22, 0.21, 0.23, 1.0),
+        header_color=Theme.ROLE_BG_RAISED,
         min_width=88.0,
         deletable=False,
         body_bottom_pad=0.0,

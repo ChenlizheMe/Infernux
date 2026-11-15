@@ -156,6 +156,11 @@ class ImGuiMouseCursor:
     Hand       = 7
 
 
+def _mix_rgba(a: RGBA, b: RGBA, t: float) -> RGBA:
+    """Blend RGB of *a* toward *b* by *t*; keeps *a*'s alpha."""
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3])
+
+
 class Theme:
     """
     Python view of native theme tokens plus editor drawing helpers.
@@ -269,6 +274,31 @@ class Theme:
         return 3
 
     @staticmethod
+    def push_menu_vars(ctx) -> int:
+        """Use the shared compact menu spacing."""
+        return Theme.push_popup_vars(ctx)
+
+    @staticmethod
+    def push_modal_vars(ctx) -> int:
+        """Use dialog padding independently of compact menus."""
+        from .dpi import scaled_editor_metric
+        for key, value in ((ImGuiStyleVar.WindowPadding, Theme.MODAL_WIN_PAD),
+                           (ImGuiStyleVar.ItemSpacing, Theme.MODAL_ITEM_SPC),
+                           (ImGuiStyleVar.FramePadding, Theme.MODAL_FRAME_PAD)):
+            ctx.push_style_var_vec2(key, *(scaled_editor_metric(ctx, item) for item in value))
+        return 3
+
+    @staticmethod
+    def push_bleed_vars(ctx) -> int:
+        """Apply the common inset around docked content."""
+        from .dpi import scaled_editor_metric
+        ctx.push_style_var_vec2(
+            ImGuiStyleVar.WindowPadding,
+            *(scaled_editor_metric(ctx, value) for value in Theme.BLEED_PADDING),
+        )
+        return 1
+
+    @staticmethod
     def push_status_bar_button_style(ctx) -> int:
         """
         Push status bar button style. Returns 3."""
@@ -296,8 +326,8 @@ class Theme:
         """
         Push console toolbar compact spacing. Returns 3."""
         from .dpi import scaled_editor_metric
-        for key, value in ((ImGuiStyleVar.FramePadding, Theme.CONSOLE_FRAME_PAD),
-                           (ImGuiStyleVar.ItemSpacing, Theme.CONSOLE_ITEM_SPC)):
+        for key, value in ((ImGuiStyleVar.FramePadding, Theme.MENU_FRAME_PAD),
+                           (ImGuiStyleVar.ItemSpacing, Theme.MENU_ITEM_SPC)):
             ctx.push_style_var_vec2(key, *(scaled_editor_metric(ctx, item) for item in value))
         ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, scaled_editor_metric(ctx, Theme.TOOLBAR_FRAME_BRD))
         return 3
@@ -386,6 +416,45 @@ class Theme:
             if idx + 1 < len(entries):
                 ctx.same_line(0, spacing)
         return clicked[0]
+
+
+    @staticmethod
+    def push_button_kind_style(ctx, kind: str) -> tuple[int, int]:
+        """Push action-button colors for *kind*. Returns ``(colors, vars)``.
+
+        ``primary`` solid accent · ``secondary`` default raised button ·
+        ``ghost`` transparent until hovered · ``danger`` transparent with an
+        error outline and error text. Pop with :meth:`pop_button_kind_style`.
+        """
+        if kind == "primary":
+            accent = Theme.ROLE_ACCENT
+            ctx.push_style_color(ImGuiCol.Button, *accent)
+            ctx.push_style_color(ImGuiCol.ButtonHovered, *_mix_rgba(accent, Theme.ROLE_TEXT, 0.15))
+            ctx.push_style_color(ImGuiCol.ButtonActive, *_mix_rgba(accent, (0.0, 0.0, 0.0, 1.0), 0.15))
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ROLE_TEXT)
+            return 4, 0
+        if kind == "ghost":
+            return Theme.push_ghost_button_style(ctx), 0
+        if kind == "danger":
+            r, g, b, _ = Theme.ERROR_TEXT
+            ctx.push_style_color(ImGuiCol.Button, 0.0, 0.0, 0.0, 0.0)
+            ctx.push_style_color(ImGuiCol.ButtonHovered, r, g, b, 0.18)
+            ctx.push_style_color(ImGuiCol.ButtonActive, r, g, b, 0.30)
+            ctx.push_style_color(ImGuiCol.Border, r, g, b, 0.55)
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
+            ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 1.0)
+            return 5, 1
+        if kind == "secondary":
+            return 0, 0
+        raise ValueError(f"unknown button kind: {kind!r}")
+
+    @staticmethod
+    def pop_button_kind_style(ctx, pushed: tuple[int, int]) -> None:
+        colors, style_vars = pushed
+        if style_vars:
+            ctx.pop_style_var(style_vars)
+        if colors:
+            ctx.pop_style_color(colors)
 
 
 _theme_listeners = {}
@@ -491,3 +560,22 @@ Theme._NATIVE_OVERRIDES_APPLIED = 0
 Theme._NATIVE_THEME_GENERATION = -1
 _apply_native_theme_overrides()
 Theme._NATIVE_THEME_GENERATION = _native_theme_generation()
+
+_PIN_COLOR_TOKENS = {
+    "bool": "PIN_BOOL", "float": "PIN_FLOAT", "f32": "PIN_FLOAT",
+    "int": "PIN_INT", "i32": "PIN_INT", "u32": "PIN_INT",
+    "vec2": "PIN_VECTOR", "vec3": "PIN_VECTOR", "vec4": "PIN_VECTOR",
+    "mat3": "PIN_VECTOR", "mat4": "PIN_VECTOR", "color": "PIN_COLOR",
+    "gradient": "PIN_COLOR", "curve": "DOMAIN_ANIMATION",
+    "mesh": "PIN_VECTOR", "texture2d": "PIN_COLOR", "asset_ref": "TEXT_DIM",
+    "exec": "PIN_TRIGGER", "event": "PIN_TRIGGER", "trigger": "PIN_TRIGGER",
+}
+
+
+def pin_color(value_type):
+    """One data-type palette for ports, edges and parameter rows."""
+    key = value_type.value if hasattr(value_type, "value") else value_type
+    return getattr(Theme, _PIN_COLOR_TOKENS.get(key, "PIN_TRIGGER"))
+
+
+Theme.pin_color = staticmethod(pin_color)

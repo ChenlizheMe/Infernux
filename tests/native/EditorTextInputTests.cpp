@@ -22,6 +22,7 @@ struct Fixture
     Fixture()
     {
         CreateImGuiTestContext();
+        ConfigureImGuiTestGUI(context);
         auto &io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;

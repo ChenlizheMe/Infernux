@@ -812,17 +812,14 @@ class BootstrapSelectionMixin:
             native.clear_selection_outline()
 
     def _on_global_selection_changed(self, change) -> None:
-        self._present_selection_snapshot(
-            change.after,
-            preserve_console_selection=change.reason == "console_navigate_to_object",
-        )
+        self._present_selection_snapshot(change.after)
         self._record_selection_snapshot(
             change.after,
             previous_snapshot=change.before,
             record=change.record_history,
         )
 
-    def _present_selection_snapshot(self, snapshot, *, preserve_console_selection: bool = False) -> None:
+    def _present_selection_snapshot(self, snapshot) -> None:
         """Project the one authoritative selection into editor views."""
         from infernux.engine.interaction import SelectionDomain
 
@@ -839,7 +836,7 @@ class BootstrapSelectionMixin:
             except (TypeError, ValueError):
                 console_uid = 0
         console = getattr(self, "console", None)
-        if console is not None and not preserve_console_selection:
+        if console is not None:
             console.set_selection_snapshot(console_uid)
 
         inspector = self.inspector_panel
@@ -854,6 +851,14 @@ class BootstrapSelectionMixin:
                 inspector.set_selected_component_ids(component_ids)
         elif hasattr(inspector, "clear_selected_components"):
             inspector.clear_selected_components()
+
+        if console_uid:
+            from infernux.engine.ui.inspector_snapshot import InspectorSnapshotService, InspectorTarget
+            InspectorSnapshotService.instance().set_active_target(InspectorTarget.none())
+            inspector.show_diagnostic()
+            self.project_panel.clear_selection(False)
+            self._set_outline(0, [])
+            return
 
         if domain in (SelectionDomain.ASSET, SelectionDomain.ASSET_SUBRESOURCE):
             paths = [
@@ -977,26 +982,6 @@ class BootstrapSelectionMixin:
                     record_history=True,
                     activate_panel=False,
                 )
-
-    def _navigate_console_entry_to_object(self, object_id: int, *, record_history: bool = True) -> bool:
-        """Reveal a console-targeted scene object in Hierarchy and Inspector."""
-        if not object_id:
-            return False
-
-        from infernux.lib import SceneManager
-
-        obj = SceneManager.instance().find_runtime_object_by_id(object_id)
-        if obj is None:
-            return False
-
-        from infernux.engine.interaction import SelectionTarget
-
-        return self.interaction_core.navigation.locate(
-            SelectionTarget.scene_object(object_id),
-            owner_id="hierarchy",
-            reason="console_navigate_to_object",
-            record_history=record_history,
-        )
 
     def _record_selection_snapshot(
         self,

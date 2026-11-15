@@ -2922,6 +2922,24 @@ void InxRenderer::CancelClose()
     }
 }
 
+void InxRenderer::SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath,
+                              const std::string &monoFontPath, float fontSize)
+{
+    if (!m_gui)
+        throw std::logic_error("InxRenderer::SetGUIFonts(): InxGUI is not initialized");
+    m_gui->SetGUIFonts(uiFontPath, uiCjkFontPath, monoFontPath, fontSize);
+}
+
+void InxRenderer::SetEditorIconsDirectory(const std::string &path)
+{
+    m_gui->SetEditorIconsDirectory(path);
+}
+
+uint64_t InxRenderer::GetEditorIconId(const std::string &name) const
+{
+    return m_gui->GetEditorIconId(name);
+}
+
 void InxRenderer::SetGUIFont(const char *fontPath, float fontSize)
 {
     if (m_gui) {

@@ -361,3 +361,16 @@ def invalidate_all_resource_previews() -> None:
     native = _resolve_native_engine(None)
     if native is not None:
         native.pump_preview_tasks()
+
+
+def render_preview_placeholder(ctx, file_path: str, icon: str, height: float) -> None:
+    """Keep pending previews distinct from failures without querying the renderer again."""
+    from infernux.engine.i18n import t
+    from .asset_load_errors import AssetLoadErrors
+    errors = AssetLoadErrors.instance()
+    error = errors.error(file_path) if errors is not None else ""
+    ctx.empty_state(f"preview:{file_path}", "warning" if error else icon,
+                    t("asset.preview_failed" if error else "asset.preview_rendering"),
+                    t("asset.preview_console") if error else "", height)
+    if error and ctx.is_item_hovered():
+        ctx.set_tooltip(error)

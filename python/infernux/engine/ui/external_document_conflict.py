@@ -177,6 +177,7 @@ class ExternalDocumentConflictCoordinator:
                     t("editor.external_conflict.reload"),
                     "reload",
                     lambda: self._reload(ctx),
+                    kind="danger",
                 ),
                 EditorModalAction(
                     t("editor.external_conflict.keep_local"),
@@ -187,6 +188,7 @@ class ExternalDocumentConflictCoordinator:
                     t("editor.external_conflict.save_copy"),
                     "save_copy",
                     lambda: self._save_copy(ctx),
+                    kind="primary",
                 ),
             ],
             semantic_prefix="editor.external_conflict",

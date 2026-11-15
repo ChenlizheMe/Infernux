@@ -27,6 +27,7 @@ _EXPORTS = {
     "PhysicsLayerMatrixPanel": (".tag_layer_settings", "PhysicsLayerMatrixPanel"),
     "EngineStatus": (".engine_status", "EngineStatus"),
     "BuildSettingsPanel": (".build_settings_panel", "BuildSettingsPanel"),
+    "ProjectSettingsPanel": (".project_settings_panel", "ProjectSettingsPanel"),
     "PreferencesPanel": (".preferences_panel", "PreferencesPanel"),
     "ThemePanel": (".theme_panel", "ThemePanel"),
     "HistoryPanel": (".history_panel", "HistoryPanel"),

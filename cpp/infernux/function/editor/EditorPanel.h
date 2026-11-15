@@ -1,6 +1,7 @@
 #pragma once
 
 #include <function/editor/EditorPanelFocusPublisher.h>
+#include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUIContext.h>
 #include <function/renderer/gui/InxGUIRenderable.h>
 
@@ -73,6 +74,15 @@ class EditorPanel : public InxGUIRenderable
         return m_windowId;
     }
 
+    void SetTitle(const std::string &title)
+    {
+        m_title = title;
+    }
+    [[nodiscard]] const std::string &GetTitle() const
+    {
+        return m_title;
+    }
+
     // The second argument distinguishes a direct pointer activation from
     // passive/native focus synchronization. Only the former is user history.
     std::function<void(bool, bool)> onPanelFocused;
@@ -130,15 +140,36 @@ class EditorPanel : public InxGUIRenderable
         std::string label = m_title + "###" + m_windowId;
 
         bool requestedOpen = m_isOpen;
+        ctx->PushUIFont(EditorThemeRegistry::Float("EDITOR_TITLE_FONT_SIZE"));
+        struct TitleFontScope
+        {
+            InxGUIContext *context;
+            ~TitleFontScope()
+            {
+                context->PopFont();
+            }
+        } titleFontScope{ctx};
+        // Docked panel bleed — one inset language for content panels.
+        // Chrome strips (toolbar) opt out via UsesContentBleed().
+        const bool pushBleed = UsesContentBleed();
+        if (pushBleed) {
+            const float bleedDpi = ctx->GetDpiScale();
+            const ImVec2 bleed = EditorThemeRegistry::Vec2("BLEED_PADDING");
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(bleed.x * bleedDpi, bleed.y * bleedDpi));
+        }
         bool visible = ImGui::Begin(label.c_str(), &requestedOpen, GetWindowFlags());
         struct WindowScope
         {
+            bool popBleed = false;
             ~WindowScope()
             {
                 ImGui::End();
+                if (popBleed)
+                    ImGui::PopStyleVar();
             }
         };
         std::optional<WindowScope> windowScope{std::in_place};
+        windowScope->popBleed = pushBleed;
         const bool closeRequested = m_isOpen && !requestedOpen;
         m_contentVisiblePreviousFrame = m_contentVisible;
         const bool contentPresented = m_isOpen && ctx->IsCurrentWindowContentPresented();
@@ -187,6 +218,23 @@ class EditorPanel : public InxGUIRenderable
                 },
                 [this](const std::string &token) { EndTransientInteraction(token); });
             VisiblePreRender(ctx);
+            const float panelDpi = ctx->GetDpiScale();
+            const ImVec2 fieldPadding = EditorThemeRegistry::Vec2("FIELD_PADDING");
+            const ImVec2 contentSpacing = EditorThemeRegistry::Vec2("CONTENT_SPACING");
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                                ImVec2(fieldPadding.x * panelDpi, fieldPadding.y * panelDpi));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                                ImVec2(contentSpacing.x * panelDpi, contentSpacing.y * panelDpi));
+            ctx->PushUIFont(EditorThemeRegistry::Float("EDITOR_FONT_SIZE"));
+            struct ContentStyleScope
+            {
+                InxGUIContext *context;
+                ~ContentStyleScope()
+                {
+                    context->PopFont();
+                    ImGui::PopStyleVar(2);
+                }
+            } contentStyleScope{ctx};
             OnRenderContent(ctx);
         }
 
@@ -224,6 +272,13 @@ class EditorPanel : public InxGUIRenderable
     virtual ImGuiWindowFlags GetWindowFlags() const
     {
         return ImGuiWindowFlags_None;
+    }
+
+    /// When true, Begin latches BLEED_PADDING as WindowPadding.
+    /// Toolbar / chrome strips return false and set their own padding in PreRender.
+    virtual bool UsesContentBleed() const
+    {
+        return true;
     }
 
     /// Override for per-frame work before window begins.

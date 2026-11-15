@@ -436,6 +436,19 @@ class AssetReferenceFieldModel(ObjectReferenceFieldModel):
     def has_picker(self) -> bool:
         return bool(not self.read_only and super().has_picker)
 
+    @property
+    def picker_menu_folders(self) -> Optional[Callable[[str], tuple[str, ...]]]:
+        """Logical path per candidate label for cascading picker menus.
+
+        Shaders pick through Unity-style folder menus; other asset types use
+        the searchable list (``None``).
+        """
+        if not self.asset_type.casefold().startswith("shader"):
+            return None
+        from infernux.engine.ui.inspector_shader_utils import shader_menu_folders
+
+        return shader_menu_folders
+
     def dispatch_chrome(self, flags: int) -> ObjectFieldGesture:
         gesture = ObjectFieldGesture(int(flags))
         if gesture & (ObjectFieldGesture.OPEN | ObjectFieldGesture.KEYBOARD_OPEN):

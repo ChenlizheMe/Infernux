@@ -269,13 +269,13 @@ def _render_serializable_value(ctx, parent_id, field_name, metadata, value, labe
     )
 
 
-def _render_serializable_members(ctx, parent_id, current_value, *, readonly=False, value_renderer=None):
+def _render_serializable_members(ctx, parent_id, current_value, *, readonly=False, value_renderer=None, skip_fields=()):
     """Collect only editable, visible members; never mutate the live object."""
     from infernux.components.fields import get_serialized_fields, get_raw_field_value, FieldType
 
     fields = [
         (name, metadata) for name, metadata in get_serialized_fields(type(current_value)).items()
-        if not metadata.hidden and (metadata.visible_when is None or metadata.visible_when(current_value))
+        if name not in skip_fields and not metadata.hidden and (metadata.visible_when is None or metadata.visible_when(current_value))
     ]
     label_width = max_label_w(ctx, [serialized_field_label(name, metadata) for name, metadata in fields]) if fields else 0.0
     render_value = value_renderer or _render_serializable_value

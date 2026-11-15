@@ -203,6 +203,7 @@ class PluginReloadProgressService:
                     "plugin_reload_progress.cancel",
                     self.cancel,
                     enabled=transaction.phase != "complete",
+                    kind="ghost",
                 ),
             ),
             semantic_prefix=self.MODAL_ID,

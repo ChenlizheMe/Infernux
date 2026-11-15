@@ -19,6 +19,7 @@ int main()
     int width, height;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     infernux::InxGUIContext context;
+    ConfigureImGuiTestGUI(context);
     infernux::EditorShortcutInput input;
     std::vector<std::string> chords;
     input.routeShortcut = [&](const std::string &chord, bool, bool) {

@@ -108,6 +108,7 @@ static int ExtendedCases(nlohmann::json &report)
         panel.SetSceneHeaderSnapshot("Projection primary", true, "Prefab");
         panel.SetSelectionSnapshot({b->GetID()}, b->GetID());
         InxGUIContext context;
+        ConfigureImGuiTestGUI(context);
         const auto frame = [&] {
             ImGui::NewFrame();
             ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
@@ -345,6 +346,7 @@ static int ExtendedCases(nlohmann::json &report)
             p.rangeSelectId = [&](uint64_t) { called = true; };
             p.setOrderedIds = [&](const auto &ids) { order = ids; };
             InxGUIContext context;
+            ConfigureImGuiTestGUI(context);
             ImGui::NewFrame();
             p.VisiblePreRender(&context);
             ImGui::EndFrame();
@@ -366,6 +368,7 @@ int main()
     int width, height;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     InxGUIContext context;
+    ConfigureImGuiTestGUI(context);
     auto &manager = SceneManager::Instance();
     auto *scene = manager.CreateScene("Audit hierarchy range");
     manager.SetActiveScene(scene);

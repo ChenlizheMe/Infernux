@@ -56,6 +56,7 @@ from .editor_panel import EditorPanel
 from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
+from .inspector_utils import field_label, render_section_kicker
 from ._dialogs import pick_folder_dialog, pick_file_dialog
 
 
@@ -562,10 +563,9 @@ class BuildSettingsPanel(EditorPanel):
     # ------------------------------------------------------------------
 
     def _render_output_section(self, ctx):
-        ctx.label(t("build.game_name"))
+        field_label(ctx, t("build.game_name"), ctx.inspector_label_width())
         root = get_project_root()
         placeholder = os.path.basename(root) if root else "MyGame"
-        ctx.set_next_item_width(_metric(ctx, 300.0))
         new_name = ctx.text_input("##game_name", self._game_name, 256)
         ctx.record_semantic_item(
             "text_input",
@@ -577,8 +577,12 @@ class BuildSettingsPanel(EditorPanel):
         if new_name != self._game_name:
             self._game_name = new_name
             self._save()
-        ctx.same_line(0, _metric(ctx, 20.0))
-        new_debug = ctx.checkbox(t("build.debug_mode") + "##debug_mode", self._debug_mode)
+        if not self._game_name:
+            ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+            ctx.text_wrapped(t("build.game_name_hint").format(name=placeholder))
+            ctx.pop_style_color(1)
+        field_label(ctx, t("build.debug_mode"), ctx.inspector_label_width())
+        new_debug = ctx.checkbox_field("##debug_mode", self._debug_mode)
         ctx.record_semantic_item(
             "checkbox",
             t("build.debug_mode"),
@@ -589,8 +593,8 @@ class BuildSettingsPanel(EditorPanel):
         if new_debug != self._debug_mode:
             self._debug_mode = new_debug
             self._save()
-        ctx.same_line(0, _metric(ctx, 20.0))
-        new_lto = ctx.checkbox(t("build.lto") + "##lto", self._lto)
+        field_label(ctx, t("build.lto"), ctx.inspector_label_width())
+        new_lto = ctx.checkbox_field("##lto", self._lto)
         ctx.record_semantic_item(
             "checkbox", t("build.lto"), True, "build_settings.lto", bool_value=new_lto
         )
@@ -601,17 +605,14 @@ class BuildSettingsPanel(EditorPanel):
         # capabilities by the exporter. It is deliberately not a packaging
         # checkbox: users should not be able to produce a Player whose
         # runtime backend contradicts its platform.
-        ctx.same_line(0, _metric(ctx, 20.0))
-        ctx.label(t("build.jit_runtime_automatic"))
-        if not self._game_name:
-            ctx.same_line()
-            ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
-            ctx.label(t("build.game_name_hint").format(name=placeholder))
-            ctx.pop_style_color(1)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+        ctx.text_wrapped(t("build.jit_runtime_automatic"))
+        ctx.pop_style_color(1)
 
-        ctx.label(t("build.output_directory"))
+        gap = _metric(ctx, Theme.INSPECTOR_INLINE_BTN_GAP)
+        field_label(ctx, t("build.output_directory"), ctx.inspector_label_width())
         ctx.set_next_item_width(
-            ctx.get_content_region_avail_width() - _metric(ctx, 84.0)
+            ctx.get_content_region_avail_width() - _metric(ctx, 80.0) - gap
         )
         new_val = ctx.text_input("##output_dir", self._output_dir, 512)
         ctx.record_semantic_item(
@@ -624,7 +625,7 @@ class BuildSettingsPanel(EditorPanel):
         if new_val != self._output_dir:
             self._output_dir = new_val
             self._save()
-        ctx.same_line()
+        ctx.same_line(0, gap)
         browse_output_label = t("build.browse")
         ctx.button(
             browse_output_label + "##browse_out",
@@ -634,17 +635,17 @@ class BuildSettingsPanel(EditorPanel):
         ctx.record_semantic_item(
             "button", browse_output_label, True, "build_settings.output_dir.browse"
         )
-        ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
-        ctx.label(t("build.output_directory_hint"))
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+        ctx.text_wrapped(t("build.output_directory_hint"))
         ctx.pop_style_color(1)
 
-        ctx.label(t("build.icon"))
+        field_label(ctx, t("build.icon"), ctx.inspector_label_width())
         icon_path = self._asset_path_for_guid(self._icon_guid)
         clear_btn_w = _metric(ctx, 80.0) if self._icon_guid else 0.0
         icon_input_w = (
             ctx.get_content_region_avail_width()
-            - _metric(ctx, 84.0)
-            - (clear_btn_w + (_metric(ctx, 4.0) if clear_btn_w else 0.0))
+            - _metric(ctx, 80.0) - gap
+            - (clear_btn_w + gap if clear_btn_w else 0.0)
         )
         ctx.set_next_item_width(max(_metric(ctx, 120.0), icon_input_w))
         new_icon = ctx.text_input("##build_icon", icon_path, 512)
@@ -660,7 +661,7 @@ class BuildSettingsPanel(EditorPanel):
                 self._accept_icon_path(new_icon)
             else:
                 self._clear_icon_path()
-        ctx.same_line()
+        ctx.same_line(0, gap)
         browse_icon_label = t("build.browse")
         ctx.button(
             browse_icon_label + "##browse_icon",
@@ -671,7 +672,7 @@ class BuildSettingsPanel(EditorPanel):
             "button", browse_icon_label, True, "build_settings.icon.browse"
         )
         if self._icon_guid:
-            ctx.same_line(0, _metric(ctx, 4.0))
+            ctx.same_line(0, gap)
             clear_icon_label = t("build.clear_icon")
             ctx.button(
                 clear_icon_label + "##clear_icon",
@@ -682,8 +683,8 @@ class BuildSettingsPanel(EditorPanel):
                 "button", clear_icon_label, True, "build_settings.icon.clear"
             )
         else:
-            ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
-            ctx.label("  " + t("build.icon_hint"))
+            ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DISABLED)
+            ctx.text_wrapped(t("build.icon_hint"))
             ctx.pop_style_color(1)
 
     def _browse_output_dir(self):
@@ -775,13 +776,14 @@ class BuildSettingsPanel(EditorPanel):
         visible = tuple(item for item in descriptors if item.is_visible(values))
         if not visible:
             return
-        ctx.label(t("build.platform_options"))
+        render_section_kicker(ctx, t("build.platform_options"))
         for option in visible:
             label = t(option.label) if option.label.startswith("build.") else option.label
             semantic_id = f"build_settings.platform_options.{target_id}.{option.key}"
             current = values[option.key]
             changed = False
             following = current
+            field_label(ctx, label, ctx.inspector_label_width())
             if option.kind is BuildOptionKind.ENUM:
                 choice_values = [item.value for item in option.choices]
                 choice_labels = [
@@ -797,16 +799,14 @@ class BuildSettingsPanel(EditorPanel):
                 )
                 changed = following != current
             elif option.kind is BuildOptionKind.BOOLEAN:
-                following = bool(ctx.checkbox(
-                    label + f"##platform_{option.key}", bool(current)
+                following = bool(ctx.checkbox_field(
+                    f"##platform_{option.key}", bool(current)
                 ))
                 ctx.record_semantic_item(
                     "checkbox", label, True, semantic_id, bool_value=following
                 )
                 changed = following != current
             elif option.kind is BuildOptionKind.INTEGER:
-                ctx.label(label)
-                ctx.set_next_item_width(_metric(ctx, 180.0))
                 following = int(ctx.input_int(
                     f"##platform_{option.key}", int(current), option.step,
                 ))
@@ -820,7 +820,6 @@ class BuildSettingsPanel(EditorPanel):
                 )
                 changed = following != current
             else:
-                ctx.label(label)
                 following = ctx.text_input(
                     f"##platform_{option.key}", str(current), 512
                 )
@@ -850,9 +849,10 @@ class BuildSettingsPanel(EditorPanel):
     # ------------------------------------------------------------------
 
     def _render_game_output_section(self, ctx):
-        ctx.label(t("build.render_output"))
+        render_section_kicker(ctx, t("build.render_output"))
         fixed = self._render_output["width"] > 0
-        following = bool(ctx.checkbox(t("build.fixed_render_resolution"), fixed))
+        field_label(ctx, t("build.fixed_render_resolution"), ctx.inspector_label_width())
+        following = bool(ctx.checkbox_field("##fixed_render_resolution", fixed))
         ctx.record_semantic_item("checkbox", t("build.fixed_render_resolution"), True,
                                  "build_settings.fixed_render_resolution", bool_value=following)
         if following != fixed:
@@ -860,9 +860,7 @@ class BuildSettingsPanel(EditorPanel):
             self._save()
         if following:
             for key in ("width", "height"):
-                ctx.label(t(f"build.render_{key}"))
-                ctx.same_line()
-                ctx.set_next_item_width(_metric(ctx, 120.0))
+                field_label(ctx, t(f"build.render_{key}"), ctx.inspector_label_width())
                 value = max(1, min(16384, int(ctx.input_int(f"##render_{key}", self._render_output[key], 1))))
                 ctx.record_semantic_item("int_input", t(f"build.render_{key}"), True,
                                          f"build_settings.render_{key}", numeric_value=float(value))
@@ -870,9 +868,7 @@ class BuildSettingsPanel(EditorPanel):
                     self._render_output[key] = value
                     self._save()
         modes = ["linear", "nearest"]
-        ctx.label(t("build.presentation_filter"))
-        ctx.same_line()
-        ctx.set_next_item_width(_metric(ctx, 180.0))
+        field_label(ctx, t("build.presentation_filter"), ctx.inspector_label_width())
         index = int(ctx.combo("##presentation_filter", modes.index(self._render_output["filter"]),
                               [t("build.filter_linear"), t("build.filter_nearest")]))
         ctx.record_semantic_item("combo", t("build.presentation_filter"), True,

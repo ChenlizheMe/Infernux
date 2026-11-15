@@ -8,6 +8,7 @@
  */
 
 #include "Infernux.h"
+#include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/vk/VulkanBackendContext.h>
 #include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
@@ -3553,8 +3554,11 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     m_renderer->PreparePipeline();
     // Raw native hosts also render frames without the Python bootstrap. Load
     // the engine face before any frame can ask ImGui for a default font.
-    const auto defaultFontPath = JoinPath({builtinResourcePath, "fonts", "MapleMono-CN-Regular.ttf"});
-    m_renderer->SetGUIFont(defaultFontPath.c_str(), 18.0f);
+    m_renderer->SetGUIFonts(JoinPath({builtinResourcePath, "fonts", "Inter-VF.ttf"}),
+                            JoinPath({builtinResourcePath, "fonts", "NotoSansSC-Regular.ttf"}),
+                            JoinPath({builtinResourcePath, "fonts", "MapleMono-CN-Regular.ttf"}),
+                            EditorThemeRegistry::Float("EDITOR_FONT_SIZE"));
+    m_renderer->SetEditorIconsDirectory(JoinPath({builtinResourcePath, "icons"}));
     startupPhase("prepare_pipeline", phaseBegin);
     if (!m_renderer->PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");

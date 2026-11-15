@@ -53,9 +53,9 @@ def render_unsaved_changes_dialog(
     render_editor_modal_actions(
         ctx,
         [
-            EditorModalAction(save_label, "save", lambda: _choose("save")),
-            EditorModalAction(discard_label, "discard", lambda: _choose("discard")),
-            EditorModalAction(cancel_label, "cancel", lambda: _choose("cancel")),
+            EditorModalAction(discard_label, "discard", lambda: _choose("discard"), kind="danger"),
+            EditorModalAction(cancel_label, "cancel", lambda: _choose("cancel"), kind="ghost"),
+            EditorModalAction(save_label, "save", lambda: _choose("save"), kind="primary"),
         ],
         semantic_prefix=semantic_prefix,
     )

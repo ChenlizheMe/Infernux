@@ -9,6 +9,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -32,6 +33,68 @@ enum LogLevel
 INFERNUX_FOUNDATION_API std::string FormatDiagnosticMessage(LogLevel level, const std::string &sourceFile,
                                                             int sourceLine, const std::string &message,
                                                             const std::string &projectRoot = "");
+
+namespace detail
+{
+struct DiagnosticChannel;
+struct OwnedDiagnosticState;
+struct DiagnosticSinkState;
+} // namespace detail
+
+// A current problem, distinct from append-only log history. Core producers
+// publish no editor, Python or scene object pointers through this channel.
+struct OwnedDiagnosticEvent
+{
+    std::string owner;
+    std::string key;
+    LogLevel level = LOG_ERROR;
+    std::string message;
+    std::string sourceFile;
+    int sourceLine = 0;
+    bool resolved = false;
+};
+
+class OwnedDiagnostic final
+{
+  public:
+    OwnedDiagnostic() = default;
+    OwnedDiagnostic(OwnedDiagnostic &&) noexcept = default;
+    OwnedDiagnostic &operator=(OwnedDiagnostic &&) noexcept = default;
+    OwnedDiagnostic(const OwnedDiagnostic &) = delete;
+    OwnedDiagnostic &operator=(const OwnedDiagnostic &) = delete;
+    // Releasing the source token retires its one current diagnostic.
+    void Reset() noexcept
+    {
+        m_state.reset();
+    }
+    explicit operator bool() const noexcept
+    {
+        return bool(m_state);
+    }
+    INFERNUX_FOUNDATION_API void Set(LogLevel level, const std::string &message, const std::string &sourceFile = "",
+                                     int sourceLine = 0);
+
+  private:
+    friend class InxLog;
+    std::shared_ptr<detail::OwnedDiagnosticState> m_state;
+};
+
+class DiagnosticSubscription final
+{
+  public:
+    DiagnosticSubscription() = default;
+    INFERNUX_FOUNDATION_API ~DiagnosticSubscription();
+    INFERNUX_FOUNDATION_API DiagnosticSubscription(DiagnosticSubscription &&) noexcept;
+    INFERNUX_FOUNDATION_API DiagnosticSubscription &operator=(DiagnosticSubscription &&) noexcept;
+    DiagnosticSubscription(const DiagnosticSubscription &) = delete;
+    DiagnosticSubscription &operator=(const DiagnosticSubscription &) = delete;
+    // Stops copied/in-progress delivery before a subscriber's members retire.
+    INFERNUX_FOUNDATION_API void Reset() noexcept;
+
+  private:
+    friend class InxLog;
+    std::shared_ptr<detail::DiagnosticSinkState> m_state;
+};
 
 class InxLog
 {
@@ -73,6 +136,11 @@ class InxLog
         deferredFileLogging_ = false;
         deferredRetention_ = 0;
     }
+
+    using DiagnosticCallback = std::function<void(const OwnedDiagnosticEvent &)>;
+    INFERNUX_FOUNDATION_API OwnedDiagnostic CreateOwnedDiagnostic(const std::string &owner, const std::string &key);
+    // Replays current diagnostics once, then receives changes; no Host polling.
+    INFERNUX_FOUNDATION_API DiagnosticSubscription SubscribeDiagnostics(DiagnosticCallback callback);
 
     /// Callback signature for log sinks.
     using SinkCallback =
@@ -177,9 +245,7 @@ class InxLog
     }
 
   private:
-    InxLog() : logLevel(LOG_INFO), nextSinkId_(0)
-    {
-    }
+    INFERNUX_FOUNDATION_API InxLog();
     ~InxLog()
     {
         Shutdown();
@@ -243,6 +309,7 @@ class InxLog
     };
     std::vector<SinkEntry> sinks_;
     size_t nextSinkId_ = 0;
+    std::shared_ptr<detail::DiagnosticChannel> m_diagnosticChannel;
 
     const char *LogLevelToString(LogLevel level)
     {

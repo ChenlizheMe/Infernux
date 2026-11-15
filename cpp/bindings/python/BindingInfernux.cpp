@@ -1666,6 +1666,17 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 return renderer->TrimGpuResidencyBudget();
             })
         .def(
+            "set_gui_fonts",
+            [](Infernux &self, const std::string &uiFontPath, const std::string &uiCjkFontPath,
+               const std::string &monoFontPath, float fontSize) {
+                self.GetRenderer()->SetGUIFonts(uiFontPath, uiCjkFontPath, monoFontPath, fontSize);
+            },
+            py::arg("ui_font_path"), py::arg("ui_cjk_font_path"), py::arg("mono_font_path"), py::arg("font_size"))
+        .def(
+            "get_editor_icon_id",
+            [](Infernux &self, const std::string &name) { return self.GetRenderer()->GetEditorIconId(name); },
+            py::arg("name"))
+        .def(
             "set_gui_font",
             [](Infernux &self, const std::string &fontPath, float fontSize) {
                 auto *r = self.GetRenderer();
