@@ -320,7 +320,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     }
     void MarkAsDeleted()
     {
-        m_shaderDomainDiagnostic.reset();
+        m_shaderProgramDiagnostic.reset();
         m_isDeleted = true;
     }
 
@@ -848,11 +848,13 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 
     friend class MaterialLoader;
+    friend class Infernux;
     friend class InxVkCoreModular;
+    void ReportShaderProgramError(const std::string &message);
     void InvalidateShaderSelection() noexcept
     {
         m_selectedShaderArtifact.reset();
-        m_shaderDomainDiagnostic.reset();
+        m_shaderProgramDiagnostic.reset();
     }
 
     std::string m_name;
@@ -895,7 +897,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     bool m_isRenderPublication = false;
     std::shared_ptr<const ShaderProgramArtifact> m_selectedShaderArtifact;
     // Source ownership only; copies/publications do not inherit diagnostics.
-    std::shared_ptr<OwnedDiagnostic> m_shaderDomainDiagnostic;
+    std::shared_ptr<OwnedDiagnostic> m_shaderProgramDiagnostic;
     mutable std::weak_ptr<InxMaterial> m_cachedRenderPublication;
     mutable uint64_t m_cachedRenderPublicationVersion = 0;
     std::unordered_map<std::string, std::shared_ptr<const rhi::RenderTextureGeneration>> m_renderTextureGenerations;

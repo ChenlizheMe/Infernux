@@ -73,6 +73,30 @@ class {shader_id}(shader.surface):
                                   alpha=base.a * self.base_color.a)
 '''
 
+SHADER_LIBRARY_TEMPLATE = '''import infernux.shader as shader
+
+
+def remap(value: float, source_range: shader.vec2, target_range: shader.vec2) -> float:
+    """Map a scalar between explicit linear ranges."""
+    weight = (value - source_range.x) / (source_range.y - source_range.x)
+    return shader.lerp(target_range.x, target_range.y, weight)
+'''
+
+SHADING_MODEL_TEMPLATE = '''import infernux.shader as shader
+
+
+class {shader_id}(shader.shadingmodel):
+    shader_id = "project/shading/{file_stem}"
+    lighting_contract = "unlit"
+
+    def shade(self, surface: shader.SurfaceData, ctx: shader.ShadingContext) -> shader.vec3:
+        return surface.albedo + surface.emission
+'''
+
+_SHADER_TEMPLATES = {"vert": VERTEX_SHADER_TEMPLATE, "frag": FRAGMENT_SHADER_TEMPLATE,
+                     "shaderlib": SHADER_LIBRARY_TEMPLATE, "shadingmodel": SHADING_MODEL_TEMPLATE}
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -707,8 +731,8 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
         return AssetCreationResult(False, "Shader name cannot be empty")
 
     shader_type = str(shader_type).strip().lower()
-    if shader_type not in {"vert", "frag"}:
-        return AssetCreationResult(False, "Shader type must be 'vert' or 'frag'; GPU kernels use infernux.compute.kernel.")
+    if shader_type not in _SHADER_TEMPLATES:
+        return AssetCreationResult(False, "Shader type must be vert, frag, shaderlib or shadingmodel.")
 
     extension = f'.{shader_type}.py'
     if shader_name.lower().endswith(extension):
@@ -726,7 +750,7 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
     if os.path.exists(file_path):
         return AssetCreationResult(False, f"'{file_name}' already exists")
 
-    template = VERTEX_SHADER_TEMPLATE if shader_type == 'vert' else FRAGMENT_SHADER_TEMPLATE
+    template = _SHADER_TEMPLATES[shader_type]
     content = template.format(shader_id=shader_id, file_stem=file_name[:-len(f'.{shader_type}.py')])
 
     written, error = _write_new_text_asset(file_path, content)

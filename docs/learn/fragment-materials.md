@@ -48,7 +48,7 @@ Other literal class declarations are `hidden`, `surface_type`, `render_queue`, `
 
 ## Material values and textures {#properties}
 
-`shader.material` declares float, int, color, vec2/3/4, mat4, and texture_2d properties. `default`, `label`, numeric `range`, and color `hdr` metadata drive the existing Material Inspector. A range supplies a slider; it does not silently clamp shader arithmetic. Boolean, unsigned integer, and mat3 Material ownership are still being extended; fullscreen parameters already support them.
+`shader.material` declares float, int, uint, bool, color, vec2/3/4, mat3/mat4, and texture_2d properties. Vertex and fragment fields share their declared types and target layouts. `default`, `label`, numeric `range`, and color `hdr` metadata drive the Material Inspector. A range supplies a slider; it does not clamp shader arithmetic. Use `set_bool` and `set_uint` for those scalar types, and two-dimensional row/column values with `set_matrix` for 3×3 or 4×4 matrices.
 
 Texture defaults are `"white"`, `"black"`, and `"normal"`. The referenced texture asset owns color space, GPU format, mipmaps, and sampler settings. A shader does not add another sRGB policy. A logical `Color2D` carries its image and sampler; users do not write layouts, descriptor bindings, or register numbers.
 
@@ -142,6 +142,23 @@ Models may call typed methods and static ShaderLib functions. Surface/model/libr
 
 GPU files import `infernux.shader` and explicit static ShaderLib exports. They do not import NumPy, Torch, game components, or arbitrary host modules. For example, `palette.shaderlib.py` can export a typed function and a neighboring shader can use `from .palette import quantize`. Built-in surface helpers are available through `from infernux.shader.lib.surface import texture_uv, sample_normal`. These imports are compile-time dependencies, not Python import execution.
 
+Built-in libraries share their actual typed functions between author assets:
+
+| Module | Examples | Contract |
+| --- | --- | --- |
+| `geometry` | `rotate_axis`, `project`, `reject` | Axis rotation uses radians, a nonzero axis and the right-hand rule. |
+| `uv` | `rotate`, `flipbook`, `triplanar_sample` | The caller supplies UVs, atlas dimensions and any animation time. |
+| `noise` | `value_2d`, `value_3d`, `gradient_2d`, `cellular_2d`, `fbm_2d` | Procedural noise without textures or host state. |
+| `shapes` | `cross_mask`, `circle_mask`, `rectangle_mask`, `line_mask` | Antialiased coverage masks; these require fragment derivatives. |
+| `camera` | `world_position`, `clip_position`, `linear_eye_depth` | Top-left image UVs, canonical camera matrices and positive eye depth. |
+| `depth` | `fade`, `linear_fog`, `exponential_fog`, `edge` | Distance-based helpers consume positive linear eye depth. |
+| `color` | `luminance`, `srgb_to_linear`, `linear_to_srgb`, `white_balance` | Explicit color-space conversion and linear HDR chromatic adaptation. |
+| `surface` | `texture_uv`, `tangent_to_world`, `sample_normal` | Geometry inputs are explicit; normal-map sampling requires a fragment. |
+
+For example, a surface can import `from infernux.shader.lib.noise import fbm_2d` and evaluate `fbm_2d(ctx.position_ws.xz, 4, 2.0, 0.5)`. It remains statically compiled GPU code. Per-function requirements propagate through imported helpers: implicit LOD, derivatives and discard require the fragment stage. A pure helper is still usable from a vertex asset even when another function in its library needs fragment data.
+
+MCP clients can use `infernux.shader.list` to discover registered assets and `infernux.shader.library.search` to read current function signatures, documentation and requirements. `infernux.shader.create` creates vertex, fragment, shading-model or library templates through the same Project transaction and Undo path.
+
 `shader.frag` is a separate raw fragment entry: `main(self, ctx: shader.mesh_input) -> shader.vec4`. It currently supplies Forward/Forward+ color. The engine does not reinterpret that final shaded RGB as an albedo or claim that it automatically supplies surface auxiliary passes. Use `shader.surface` when those shared passes are required. Fullscreen programs use `shader.fullscreen`, graph `shader.input(...)` ports, and `shader.parameter`; they share the same compiler and target-layout service.
 
 ## Checking changes {#diagnostics}
@@ -200,7 +217,7 @@ Project 新建片元资产现在生成 `*.frag.py` Surface 模板。文件名使
 
 ## 材质值与纹理 {#properties_1}
 
-`shader.material` 声明 float、int、color、vec2/3/4、mat4 和 texture_2d。`default`、`label`、数值 `range`、颜色 `hdr` 直接进入已有 Material Inspector。`range` 提供滑条，不会偷偷限幅 Shader 的计算。Material 的 bool、uint 和 mat3 所有者仍在扩展；全屏参数已经支持这些类型。
+`shader.material` 声明 float、int、uint、bool、color、vec2/3/4、mat3/mat4 和 texture_2d，顶点与片元共用声明类型及目标布局。`default`、`label`、数值 `range`、颜色 `hdr` 直接进入 Material Inspector。`range` 提供滑条，不会限幅 Shader 的计算。bool 和 uint 分别使用 `set_bool` 与 `set_uint`；`set_matrix` 使用二维行列数据，支持 3×3 和 4×4 矩阵。
 
 纹理默认值为 `"white"`、`"black"`、`"normal"`。颜色空间、GPU 格式、mipmap 与 sampler 由引用的纹理资产决定，Shader 不维护第二套 sRGB 设置。逻辑 `Color2D` 同时携带 image 和 sampler，用户不写 layout、描述符 binding 或寄存器编号。
 
@@ -293,6 +310,23 @@ Slang 在编译时专门化这个接口；作者无需复制灯光循环，也�
 ## ShaderLib 与原始片元 {#libraries_1}
 
 GPU 文件导入 `infernux.shader` 与明确的静态 ShaderLib 导出，不导入 NumPy、Torch、游戏组件或任意宿主模块。例如 `palette.shaderlib.py` 导出 typed 函数，相邻 Shader 用 `from .palette import quantize` 引用。内置 Surface 工具通过 `from infernux.shader.lib.surface import texture_uv, sample_normal` 引入。这些是编译依赖，不是执行 Python import。
+
+内置函数库使用同一份实际类型声明，供不同作者资产引用：
+
+| 模块 | 代表函数 | 使用约定 |
+| --- | --- | --- |
+| `geometry` | `rotate_axis`、`project`、`reject` | 轴旋转用弧度、非零轴和右手定则。 |
+| `uv` | `rotate`、`flipbook`、`triplanar_sample` | 调用者提供 UV、图集尺寸与需要的动画时间。 |
+| `noise` | `value_2d`、`value_3d`、`gradient_2d`、`cellular_2d`、`fbm_2d` | 无纹理、无宿主状态的程序噪声。 |
+| `shapes` | `cross_mask`、`circle_mask`、`rectangle_mask`、`line_mask` | 返回抗锯齿覆盖率，需要片元导数。 |
+| `camera` | `world_position`、`clip_position`、`linear_eye_depth` | 左上角图像 UV、统一相机矩阵与正的线性视深。 |
+| `depth` | `fade`、`linear_fog`、`exponential_fog`、`edge` | 基于距离的函数接收正的线性视深。 |
+| `color` | `luminance`、`srgb_to_linear`、`linear_to_srgb`、`white_balance` | 明确的颜色空间转换与线性 HDR 色适应。 |
+| `surface` | `texture_uv`、`tangent_to_world`、`sample_normal` | 显式传几何输入，法线贴图采样需要片元阶段。 |
+
+例如在 Surface 文件中写 `from infernux.shader.lib.noise import fbm_2d`，再求 `fbm_2d(ctx.position_ws.xz, 4, 2.0, 0.5)`，仍然是静态编译的 GPU 计算。阶段要求沿实际函数调用传播：隐式 LOD、导数和 discard 需要片元阶段。同一库里另一个函数需要片元数据，不会限制其中纯函数在顶点资产中的使用。
+
+MCP 可通过 `infernux.shader.list` 发现已注册资产，通过 `infernux.shader.library.search` 读取当前函数签名、文档和阶段要求。`infernux.shader.create` 使用与 Project 相同的事务和 Undo，创建顶点、片元、光照模型或函数库模板。
 
 `shader.frag` 是独立的原始片元入口：`main(self, ctx: shader.mesh_input) -> shader.vec4`，目前提供 Forward／Forward+ 颜色。引擎不会把这个最终 RGB 猜成 albedo，也不会声称它自动提供 Surface 的辅助通道。需要这些通道时使用 `shader.surface`。全屏程序使用 `shader.fullscreen`、图的 `shader.input(...)` 端口和 `shader.parameter`，共用编译及目标布局服务。
 

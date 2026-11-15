@@ -68,7 +68,7 @@
 <p><code>shader_id</code> is a case-sensitive locator independent of the filename and class name. Built-ins use <code>infernux/lit</code>, <code>infernux/unlit</code>, and <code>infernux/post/...</code>; internal fullscreens use <code>infernux/internal/...</code> and <code>hidden = True</code>. <code>inx.Shader.get_schema("infernux/lit")</code> and <code>inx.Material.from_shader("infernux/lit")</code> resolve the registered asset. Ambiguous IDs require a GUID or path instead of choosing an arbitrary file. Without an explicit ID the file stem is the locator.</p>
 <p>Other literal class declarations are <code>hidden</code>, <code>surface_type</code>, <code>render_queue</code>, <code>cull_mode</code>, <code>depth_write</code>, <code>depth_test</code>, <code>blend</code>, <code>pass_tag</code>, <code>stencil</code>, <code>alpha_clip</code>, <code>cast_shadows</code>, and <code>receive_shadows</code>. They are asset/default-state controls, not Material uniforms. A transparent surface supplies alpha blend, disabled depth writes, and queue 3000 unless explicitly declared otherwise. <code>alpha_clip</code> is a numeric threshold or None. Material state overrides remain effective. Hidden assets still appear in Project; they are excluded from ordinary shader selectors.</p>
 <h2 id="properties">Material values and textures</h2>
-<p><code>shader.material</code> declares float, int, color, vec2/3/4, mat4, and texture_2d properties. <code>default</code>, <code>label</code>, numeric <code>range</code>, and color <code>hdr</code> metadata drive the existing Material Inspector. A range supplies a slider; it does not silently clamp shader arithmetic. Boolean, unsigned integer, and mat3 Material ownership are still being extended; fullscreen parameters already support them.</p>
+<p><code>shader.material</code> declares float, int, uint, bool, color, vec2/3/4, mat3/mat4, and texture_2d properties. Vertex and fragment fields share their declared types and target layouts. <code>default</code>, <code>label</code>, numeric <code>range</code>, and color <code>hdr</code> metadata drive the Material Inspector. A range supplies a slider; it does not clamp shader arithmetic. Use <code>set_bool</code> and <code>set_uint</code> for those scalar types, and two-dimensional row/column values with <code>set_matrix</code> for 3×3 or 4×4 matrices.</p>
 <p>Texture defaults are <code>"white"</code>, <code>"black"</code>, and <code>"normal"</code>. The referenced texture asset owns color space, GPU format, mipmaps, and sampler settings. A shader does not add another sRGB policy. A logical <code>Color2D</code> carries its image and sampler; users do not write layouts, descriptor bindings, or register numbers.</p>
 <p>The built-in Lit material uses these names:</p>
 <table>
@@ -195,6 +195,60 @@
 <p>Models may call typed methods and static ShaderLib functions. Surface/model/library dependencies are prepared together and republished on accepted source updates. Built-in PBR, Unlit and Toon participate in Deferred's model dispatch. Custom model assets currently use Forward/Forward+ color evaluation, including the existing Forward route inside a Deferred pipeline; a custom GBuffer/deferred dispatcher is still being implemented.</p>
 <h2 id="libraries">Shader libraries and raw fragments</h2>
 <p>GPU files import <code>infernux.shader</code> and explicit static ShaderLib exports. They do not import NumPy, Torch, game components, or arbitrary host modules. For example, <code>palette.shaderlib.py</code> can export a typed function and a neighboring shader can use <code>from .palette import quantize</code>. Built-in surface helpers are available through <code>from infernux.shader.lib.surface import texture_uv, sample_normal</code>. These imports are compile-time dependencies, not Python import execution.</p>
+<p>Built-in libraries share their actual typed functions between author assets:</p>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Examples</th>
+<th>Contract</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>geometry</code></td>
+<td><code>rotate_axis</code>, <code>project</code>, <code>reject</code></td>
+<td>Axis rotation uses radians, a nonzero axis and the right-hand rule.</td>
+</tr>
+<tr>
+<td><code>uv</code></td>
+<td><code>rotate</code>, <code>flipbook</code>, <code>triplanar_sample</code></td>
+<td>The caller supplies UVs, atlas dimensions and any animation time.</td>
+</tr>
+<tr>
+<td><code>noise</code></td>
+<td><code>value_2d</code>, <code>value_3d</code>, <code>gradient_2d</code>, <code>cellular_2d</code>, <code>fbm_2d</code></td>
+<td>Procedural noise without textures or host state.</td>
+</tr>
+<tr>
+<td><code>shapes</code></td>
+<td><code>cross_mask</code>, <code>circle_mask</code>, <code>rectangle_mask</code>, <code>line_mask</code></td>
+<td>Antialiased coverage masks; these require fragment derivatives.</td>
+</tr>
+<tr>
+<td><code>camera</code></td>
+<td><code>world_position</code>, <code>clip_position</code>, <code>linear_eye_depth</code></td>
+<td>Top-left image UVs, canonical camera matrices and positive eye depth.</td>
+</tr>
+<tr>
+<td><code>depth</code></td>
+<td><code>fade</code>, <code>linear_fog</code>, <code>exponential_fog</code>, <code>edge</code></td>
+<td>Distance-based helpers consume positive linear eye depth.</td>
+</tr>
+<tr>
+<td><code>color</code></td>
+<td><code>luminance</code>, <code>srgb_to_linear</code>, <code>linear_to_srgb</code>, <code>white_balance</code></td>
+<td>Explicit color-space conversion and linear HDR chromatic adaptation.</td>
+</tr>
+<tr>
+<td><code>surface</code></td>
+<td><code>texture_uv</code>, <code>tangent_to_world</code>, <code>sample_normal</code></td>
+<td>Geometry inputs are explicit; normal-map sampling requires a fragment.</td>
+</tr>
+</tbody>
+</table>
+<p>For example, a surface can import <code>from infernux.shader.lib.noise import fbm_2d</code> and evaluate <code>fbm_2d(ctx.position_ws.xz, 4, 2.0, 0.5)</code>. It remains statically compiled GPU code. Per-function requirements propagate through imported helpers: implicit LOD, derivatives and discard require the fragment stage. A pure helper is still usable from a vertex asset even when another function in its library needs fragment data.</p>
+<p>MCP clients can use <code>infernux.shader.list</code> to discover registered assets and <code>infernux.shader.library.search</code> to read current function signatures, documentation and requirements. <code>infernux.shader.create</code> creates vertex, fragment, shading-model or library templates through the same Project transaction and Undo path.</p>
 <p><code>shader.frag</code> is a separate raw fragment entry: <code>main(self, ctx: shader.mesh_input) -&gt; shader.vec4</code>. It currently supplies Forward/Forward+ color. The engine does not reinterpret that final shaded RGB as an albedo or claim that it automatically supplies surface auxiliary passes. Use <code>shader.surface</code> when those shared passes are required. Fullscreen programs use <code>shader.fullscreen</code>, graph <code>shader.input(...)</code> ports, and <code>shader.parameter</code>; they share the same compiler and target-layout service.</p>
 <h2 id="diagnostics">Checking changes</h2>
 <p><code>inx.Shader.check(path, source=draft)</code> checks a file or unsaved draft without publishing a GPU program. It returns validity, logical schema, and source diagnostics for SPIR-V and WGSL. <code>inx.Shader.get_schema(path)</code> reads the imported asset's fields. Error locations point to the original author, model, or library file. Host imports and unsupported type/stage combinations are preparation errors.</p>
@@ -235,7 +289,7 @@
 <p><code>shader_id</code> 是区分大小写、独立于文件名和类名的定位标识。内置入口使用 <code>infernux/lit</code>、<code>infernux/unlit</code> 和 <code>infernux/post/...</code>；内部全屏程序使用 <code>infernux/internal/...</code>，并声明 <code>hidden = True</code>。<code>inx.Shader.get_schema("infernux/lit")</code> 和 <code>inx.Material.from_shader("infernux/lit")</code> 可直接定位资产。重复 ID 要求使用 GUID 或路径，不随机选一个文件。未显式声明 ID 时，文件主干名就是其定位标识。</p>
 <p>其它静态类声明包括 <code>hidden</code>、<code>surface_type</code>、<code>render_queue</code>、<code>cull_mode</code>、<code>depth_write</code>、<code>depth_test</code>、<code>blend</code>、<code>pass_tag</code>、<code>stencil</code>、<code>alpha_clip</code>、<code>cast_shadows</code>、<code>receive_shadows</code>。这些是资产及默认状态，不是材质 Uniform。透明 Surface 未明确另设时采用 alpha 混合、不写深度和 3000 队列。<code>alpha_clip</code> 为数值阈值或 None。材质显式状态覆盖仍然有效。Hidden 资产仍显示在 Project，只在普通 Shader 选择器中隐藏。</p>
 <h2 id="properties_1">材质值与纹理</h2>
-<p><code>shader.material</code> 声明 float、int、color、vec2/3/4、mat4 和 texture_2d。<code>default</code>、<code>label</code>、数值 <code>range</code>、颜色 <code>hdr</code> 直接进入已有 Material Inspector。<code>range</code> 提供滑条，不会偷偷限幅 Shader 的计算。Material 的 bool、uint 和 mat3 所有者仍在扩展；全屏参数已经支持这些类型。</p>
+<p><code>shader.material</code> 声明 float、int、uint、bool、color、vec2/3/4、mat3/mat4 和 texture_2d，顶点与片元共用声明类型及目标布局。<code>default</code>、<code>label</code>、数值 <code>range</code>、颜色 <code>hdr</code> 直接进入 Material Inspector。<code>range</code> 提供滑条，不会限幅 Shader 的计算。bool 和 uint 分别使用 <code>set_bool</code> 与 <code>set_uint</code>；<code>set_matrix</code> 使用二维行列数据，支持 3×3 和 4×4 矩阵。</p>
 <p>纹理默认值为 <code>"white"</code>、<code>"black"</code>、<code>"normal"</code>。颜色空间、GPU 格式、mipmap 与 sampler 由引用的纹理资产决定，Shader 不维护第二套 sRGB 设置。逻辑 <code>Color2D</code> 同时携带 image 和 sampler，用户不写 layout、描述符 binding 或寄存器编号。</p>
 <p>内置 Lit 使用以下字段：</p>
 <table>
@@ -362,6 +416,60 @@
 <p>模型可调用 typed 方法和静态 ShaderLib。Surface／模型／库的依赖一起准备，并在源码成功更新后发布。内置 PBR／Unlit／Toon 参与 Deferred 的模型分发。自定义模型资产目前在 Forward／Forward+ 求颜色，包括 Deferred 管线已有的 Forward 绘制通道；自定义 GBuffer／延迟分发仍在实现。</p>
 <h2 id="libraries_1">ShaderLib 与原始片元</h2>
 <p>GPU 文件导入 <code>infernux.shader</code> 与明确的静态 ShaderLib 导出，不导入 NumPy、Torch、游戏组件或任意宿主模块。例如 <code>palette.shaderlib.py</code> 导出 typed 函数，相邻 Shader 用 <code>from .palette import quantize</code> 引用。内置 Surface 工具通过 <code>from infernux.shader.lib.surface import texture_uv, sample_normal</code> 引入。这些是编译依赖，不是执行 Python import。</p>
+<p>内置函数库使用同一份实际类型声明，供不同作者资产引用：</p>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>代表函数</th>
+<th>使用约定</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>geometry</code></td>
+<td><code>rotate_axis</code>、<code>project</code>、<code>reject</code></td>
+<td>轴旋转用弧度、非零轴和右手定则。</td>
+</tr>
+<tr>
+<td><code>uv</code></td>
+<td><code>rotate</code>、<code>flipbook</code>、<code>triplanar_sample</code></td>
+<td>调用者提供 UV、图集尺寸与需要的动画时间。</td>
+</tr>
+<tr>
+<td><code>noise</code></td>
+<td><code>value_2d</code>、<code>value_3d</code>、<code>gradient_2d</code>、<code>cellular_2d</code>、<code>fbm_2d</code></td>
+<td>无纹理、无宿主状态的程序噪声。</td>
+</tr>
+<tr>
+<td><code>shapes</code></td>
+<td><code>cross_mask</code>、<code>circle_mask</code>、<code>rectangle_mask</code>、<code>line_mask</code></td>
+<td>返回抗锯齿覆盖率，需要片元导数。</td>
+</tr>
+<tr>
+<td><code>camera</code></td>
+<td><code>world_position</code>、<code>clip_position</code>、<code>linear_eye_depth</code></td>
+<td>左上角图像 UV、统一相机矩阵与正的线性视深。</td>
+</tr>
+<tr>
+<td><code>depth</code></td>
+<td><code>fade</code>、<code>linear_fog</code>、<code>exponential_fog</code>、<code>edge</code></td>
+<td>基于距离的函数接收正的线性视深。</td>
+</tr>
+<tr>
+<td><code>color</code></td>
+<td><code>luminance</code>、<code>srgb_to_linear</code>、<code>linear_to_srgb</code>、<code>white_balance</code></td>
+<td>明确的颜色空间转换与线性 HDR 色适应。</td>
+</tr>
+<tr>
+<td><code>surface</code></td>
+<td><code>texture_uv</code>、<code>tangent_to_world</code>、<code>sample_normal</code></td>
+<td>显式传几何输入，法线贴图采样需要片元阶段。</td>
+</tr>
+</tbody>
+</table>
+<p>例如在 Surface 文件中写 <code>from infernux.shader.lib.noise import fbm_2d</code>，再求 <code>fbm_2d(ctx.position_ws.xz, 4, 2.0, 0.5)</code>，仍然是静态编译的 GPU 计算。阶段要求沿实际函数调用传播：隐式 LOD、导数和 discard 需要片元阶段。同一库里另一个函数需要片元数据，不会限制其中纯函数在顶点资产中的使用。</p>
+<p>MCP 可通过 <code>infernux.shader.list</code> 发现已注册资产，通过 <code>infernux.shader.library.search</code> 读取当前函数签名、文档和阶段要求。<code>infernux.shader.create</code> 使用与 Project 相同的事务和 Undo，创建顶点、片元、光照模型或函数库模板。</p>
 <p><code>shader.frag</code> 是独立的原始片元入口：<code>main(self, ctx: shader.mesh_input) -&gt; shader.vec4</code>，目前提供 Forward／Forward+ 颜色。引擎不会把这个最终 RGB 猜成 albedo，也不会声称它自动提供 Surface 的辅助通道。需要这些通道时使用 <code>shader.surface</code>。全屏程序使用 <code>shader.fullscreen</code>、图的 <code>shader.input(...)</code> 端口和 <code>shader.parameter</code>，共用编译及目标布局服务。</p>
 <h2 id="diagnostics_1">检查与更新</h2>
 <p><code>inx.Shader.check(path, source=draft)</code> 检查文件或未保存草稿，不发布 GPU 程序；返回有效性、逻辑 schema、SPIR-V 与 WGSL 的原文件诊断。<code>inx.Shader.get_schema(path)</code> 读取导入资产的字段。报错位置指向真正的作者、模型或库文件。宿主 import 和不支持的类型／阶段组合在准备时报告。</p>

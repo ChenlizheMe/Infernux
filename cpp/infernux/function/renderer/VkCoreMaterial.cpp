@@ -316,18 +316,12 @@ void InxVkCoreModular::PrepareMaterialAuthoring(const std::shared_ptr<InxMateria
         // Publish the selected immutable program only after its author values
         // and resource bindings are ready. Failure cannot leave it marked ready.
         material->m_selectedShaderArtifact = std::move(selected);
-        material->m_shaderDomainDiagnostic.reset();
-    } catch (const ShaderProgramDomainMismatch &error) {
+        material->m_shaderProgramDiagnostic.reset();
+    } catch (const ShaderProgramSelectionError &error) {
         // Preserve the source token across identical retry failures. Clearing it
         // here would resolve/recreate a Console row on every Host opportunity.
         material->m_selectedShaderArtifact.reset();
-        if (!material->m_shaderDomainDiagnostic)
-            material->m_shaderDomainDiagnostic = std::make_shared<OwnedDiagnostic>(
-                InxLog::GetInstance().CreateOwnedDiagnostic("material.shader-domain", material->m_runtimeKey));
-        const auto &fragment = material->GetFragShaderReference();
-        const auto &source = fragment.pathHint.empty() ? material->GetFilePath() : fragment.pathHint;
-        material->m_shaderDomainDiagnostic->Set(LOG_ERROR, "Material '" + material->GetName() + "': " + error.what(),
-                                                source);
+        material->ReportShaderProgramError(error.what());
         throw;
     } catch (...) {
         material->InvalidateShaderSelection();
@@ -457,7 +451,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
                     throw std::logic_error("Selected Forward shader artifact changed during owner-thread preparation");
             }
         }
-    } catch (const ShaderProgramDomainMismatch &error) {
+    } catch (const ShaderProgramDomainMismatch &) {
         if (reportDomainMismatch)
             m_rejectedGeometryMaterialPrograms.insert(material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh");
         MaterialRenderData *previous = m_materialPipelineManager.GetRenderData(material->GetMaterialKey());
@@ -465,21 +459,6 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
                                       previous->pipelineLayout != VK_NULL_HANDLE &&
                                       previous->descriptorSet != VK_NULL_HANDLE &&
                                       m_materialPipelineManager.IsDescriptorSetLive(previous->descriptorSet);
-
-        if (reportDomainMismatch) {
-            static std::unordered_set<std::string> reportedDomainMismatches;
-            const std::string materialName =
-                material->GetName().empty() ? material->GetMaterialKey() : material->GetName();
-            const std::string failureKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
-            if (reportedDomainMismatches.insert(failureKey).second) {
-                INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses domain '",
-                             ShaderProgramDomainName(error.actual),
-                             "', but MeshRenderer geometry requires domain 'Mesh'. Use a Mesh-domain vertex/fragment "
-                             "shader pair. ",
-                             hasLastKnownGood ? "The rejected rebuild did not replace the previous valid GPU pipeline."
-                                              : "This material cannot be rendered by MeshRenderer.");
-            }
-        }
 
         // Shader selection dirties the material before its domain is known. A
         // previous geometry generation remains valid and is intentionally kept

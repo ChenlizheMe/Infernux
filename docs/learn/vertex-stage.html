@@ -139,7 +139,7 @@
 <p>Bone indices, weights, instance addressing, projection and clipping remain engine data. Returning VertexData preserves those streams. Update normals and tangents when a deformation changes surface orientation; moving positions alone does not derive a new normal.</p>
 <p>The standard entry preserves the engine's mesh-to-fragment contract. Arbitrary user varyings and custom clip-space exits are still being extended. Geometry and tessellation stages are separate future capabilities.</p>
 <h2 id="vertex-hook">One material layout</h2>
-<p>The selected vertex and fragment fields merge before compilation. A field declared in both files must have the same type, default and presentation metadata. It then has one value and one target layout shared by both stages. Conflicts identify the field and original source. A rejected selection leaves the previous complete program active. Vertex-only fields use normal Material APIs and serialization.</p>
+<p>The selected vertex and fragment fields merge before compilation. A field declared in both files must have the same type, default and presentation metadata. It then has one value and one target layout shared by both stages. Conflicts identify the field and original source. A rejected selection leaves the previous complete program active. Vertex-only fields use normal Material APIs and serialization, including bool, uint and mat3. Unsigned values retain their full 32-bit range; matrices use two-dimensional row/column coordinates.</p>
 <p>ShaderLib imports work as they do in surfaces. For example, save this as <code>bend.shaderlib.py</code>, then use <code>from .bend import bend</code> in the vertex asset:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
 
@@ -148,7 +148,7 @@
     <span class="k">return</span> <span class="n">position</span> <span class="o">+</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">shader</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">position</span><span class="o">.</span><span class="n">x</span> <span class="o">*</span> <span class="mf">4.0</span> <span class="o">+</span> <span class="n">time</span><span class="p">)</span> <span class="o">*</span> <span class="n">amplitude</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
 </code></pre></div>
 
-<p>Dependencies and diagnostics follow the consuming surface. Use <code>shader.sample_level(image, uv, lod)</code> for vertex texture sampling: a vertex stage has no fragment derivatives for implicit LOD. GPU imports use <code>infernux.shader</code> and static ShaderLib declarations, without NumPy or host code.</p>
+<p>Dependencies and diagnostics follow the consuming surface. Use <code>shader.sample_level(image, uv, lod)</code> for vertex texture sampling: a vertex stage has no fragment derivatives for implicit LOD. GPU imports use <code>infernux.shader</code> and static ShaderLib declarations, without NumPy or host code. Fragment-only requirements follow imported and local helper calls. The author frontend reports an illegal vertex call at its original Python location; an unused fragment helper does not restrict a pure function in the same library.</p>
 <h2 id="geometry-data">Every geometry pass</h2>
 <p>The same deformation feeds visible color, supported GBuffer output, shadow casting, depth, picking, normals, base color and motion. Surface alpha supplies their common coverage rule. The engine applies the appropriate camera or light projection.</p>
 <p>Motion evaluates deformation at the previous sample, with the previous object transform and skeletal pose. Each camera graph retains its last submitted sample time; skipped views do not assume a fixed frame interval. A new or invalidated view does not claim valid previous motion. Each evaluation receives its own <code>ctx.time</code>; <code>ctx.delta_time</code> still describes the current frame.</p>
@@ -268,7 +268,7 @@
 <p>骨骼索引、权重、实例寻址、投影和裁剪由引擎持有，返回 VertexData 不会丢掉这些数据。变形改变表面朝向时，需要同步更新法线和切线，只移动位置不会自动推导解析法线。</p>
 <p>当前标准入口保留引擎既定的网格到片元约定。任意自定义 varying、直接裁剪空间输出仍在扩展；Geometry 和 Tessellation 是独立的后续能力。</p>
 <h2 id="vertex-hook">一份材质布局</h2>
-<p>编译前会合并所选两个阶段的材质字段。同名字段的类型、默认值与展示元数据必须一致，合并后共享一个值和一份目标布局。冲突会指出字段与源码位置，拒绝本次替换，保留上一套完整程序。只在顶点声明的字段同样使用正常的 Material API 与序列化。</p>
+<p>编译前会合并所选两个阶段的材质字段。同名字段的类型、默认值与展示元数据必须一致，合并后共享一个值和一份目标布局。冲突会指出字段与源码位置，拒绝本次替换，保留上一套完整程序。只在顶点声明的字段同样使用正常的 Material API 与序列化，包括 bool、uint 和 mat3。uint 保留完整 32 位范围，矩阵使用二维行列数据。</p>
 <p>顶点使用与 Surface 相同的静态 ShaderLib。例如保存以下函数为 <code>bend.shaderlib.py</code>，在顶点文件中 <code>from .bend import bend</code>：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux.shader</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">shader</span>
 
@@ -277,7 +277,7 @@
     <span class="k">return</span> <span class="n">position</span> <span class="o">+</span> <span class="n">shader</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">shader</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">position</span><span class="o">.</span><span class="n">x</span> <span class="o">*</span> <span class="mf">4.0</span> <span class="o">+</span> <span class="n">time</span><span class="p">)</span> <span class="o">*</span> <span class="n">amplitude</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
 </code></pre></div>
 
-<p>依赖与错误位置跟随使用它的 Surface。顶点采样使用 <code>shader.sample_level(image, uv, lod)</code>，因为该阶段没有片元导数来选择隐式 LOD。GPU 文件只引入 <code>infernux.shader</code> 与静态 ShaderLib，不引入 NumPy 或宿主代码。</p>
+<p>依赖与错误位置跟随使用它的 Surface。顶点采样使用 <code>shader.sample_level(image, uv, lod)</code>，因为该阶段没有片元导数来选择隐式 LOD。GPU 文件只引入 <code>infernux.shader</code> 与静态 ShaderLib，不引入 NumPy 或宿主代码。片元阶段要求沿导入和本地 helper 调用传播。非法顶点调用会定位到原 Python 位置，同库中未调用的片元 helper 不会限制纯函数。</p>
 <h2 id="geometry-data">各几何 Pass 共用</h2>
 <p>可见颜色、受支持的 GBuffer、阴影、深度、拾取、法线、反照率和运动矢量都使用同一个变形。Surface 的 alpha 决定共同覆盖，引擎分别应用相机或光源投影。</p>
 <p>运动矢量会在上一采样时间重新求值，使用上一对象矩阵和骨骼姿态。每个相机图保存上一次真正提交的时间，视图跳帧时不会假设固定帧间隔。新视图或历史失效后的首帧不声称有上一运动数据。两次求值分别得到自己的 <code>ctx.time</code>；<code>ctx.delta_time</code> 仍表示当前帧间隔。</p>

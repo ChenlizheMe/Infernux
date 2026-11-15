@@ -508,7 +508,6 @@ class Infernux
         uint64_t sourceStamp = 0;
         ShaderProgramKey programKey;
         std::string lastError;
-        bool failureReported = false;
     };
 
     [[nodiscard]] MaterialShaderPreparation PrepareMaterialShader(const std::shared_ptr<InxMaterial> &material);

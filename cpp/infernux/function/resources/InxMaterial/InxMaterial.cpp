@@ -1587,6 +1587,15 @@ void InxMaterial::SetFragShader(const std::string &name)
     SetFragShaderReference({"", name, ""});
 }
 
+void InxMaterial::ReportShaderProgramError(const std::string &message)
+{
+    if (!m_shaderProgramDiagnostic)
+        m_shaderProgramDiagnostic = std::make_shared<OwnedDiagnostic>(
+            InxLog::GetInstance().CreateOwnedDiagnostic("material.shader-program", m_runtimeKey));
+    const auto &source = m_fragmentShader.pathHint.empty() ? m_filePath : m_fragmentShader.pathHint;
+    m_shaderProgramDiagnostic->Set(LOG_ERROR, "Material '" + m_name + "': " + message, source);
+}
+
 void InxMaterial::PrepareShaderDefaults()
 {
     if (m_isRenderPublication)

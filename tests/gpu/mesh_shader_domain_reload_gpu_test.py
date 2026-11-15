@@ -127,7 +127,7 @@ class TransitionFragment(shader.surface):
                         # completed World retains its actual prior red image.
                         assert (red.sum() > 100 if args.start_mesh else red is None) and len(owned) == 1
                         if not args.start_mesh:
-                            assert owned[0]['diagnostic_owner'] == 'material.shader-domain', proof['phases'][-1]
+                            assert owned[0]['diagnostic_owner'] == 'material.shader-program', proof['phases'][-1]
                         assert 'mesh' in owned[0]['message'].lower()
                         assert Path(owned[0]['source_file']).name in {'Transition.mat', 'transition.frag.py'}, proof['phases'][-1]
                     # Keep both source GUIDs, shader IDs and the material selection.

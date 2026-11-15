@@ -22,7 +22,7 @@ from .operation_support import (
 _CREATE_KINDS = {
     "folder": "",
     "script": ".py",
-    "shader": ".glsl",
+    "shader": ".frag.py",
     "material": ".mat",
     "physic_material": ".physicMaterial",
     "data_asset": ".inxdata",
@@ -342,12 +342,10 @@ def _create_asset(
             existing = os.path.join(resolved_directory, asset_name)
             if os.path.isdir(existing):
                 return {"asset": asset_identity(existing), "already_exists": True}
+        creation_variant = (variant or "frag") if normalized == "shader" else variant
+        extension = f".{creation_variant}.py" if normalized == "shader" else _CREATE_KINDS[normalized]
         path = EditorAutomationHost.instance().create_project_asset(
-            normalized,
-            resolved_directory,
-            name,
-            _CREATE_KINDS[normalized],
-            variant,
+            normalized, resolved_directory, name, extension, creation_variant,
         )
         if not path:
             raise OperationError("asset.create_rejected", "Project asset creation was rejected.")

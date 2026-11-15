@@ -15,9 +15,16 @@ class Translate(shader.vert):
     shader_id = "tests/vertex/translate"
     offset = shader.material.vec3()
     rate = shader.material.float()
+    enabled = shader.material.bool(default=True)
+    marker = shader.material.uint(default=4275878552)
+    basis = shader.material.mat3(default=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)))
     def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
-        vertex.position_os += self.offset
-        vertex.position_os.x += ctx.time * self.rate
+        if self.enabled and self.marker == 4275878552:
+            vertex.position_os += self.offset
+            vertex.position_os.x += ctx.time * self.rate
+            vertex.position_os.xy += (self.basis @ shader.vec3(0.0, 0.0, 1.0)).xy
+        else:
+            vertex.position_os.x -= 0.5
         return vertex
 '''
 
@@ -87,7 +94,8 @@ class NotMesh(shader.fullscreen):
             labels = ("baseline", "parameter_offset", "parameter_restore", "time_motion", "motion_restore",
                       "vertex_hot_edit", "vertex_restore", "vertex_switch", "switch_restore",
                       "domain_pair_rejected", "pair_recovered", "field_conflict_rejected", "field_conflict_recovered",
-                      "first_invalid_retained", "first_invalid_recovered")
+                      "first_invalid_retained", "first_invalid_recovered", "typed_matrix", "typed_matrix_restore",
+                      "typed_bool_off", "typed_bool_restore", "typed_uint_off", "typed_uint_restore")
             rejected = rejected_sample = None
 
             def after_draw():
@@ -114,7 +122,7 @@ class NotMesh(shader.fullscreen):
                             assert any("disagree on material field" in row["message"] for row in errors), errors
                         elif phase == 13:
                             owned = [row for row in errors if row.get("diagnostic_owner")]
-                            assert len(owned) == 1 and owned[0]["diagnostic_owner"] == "material.shader-domain", errors
+                            assert len(owned) == 1 and owned[0]["diagnostic_owner"] == "material.shader-program", errors
                             sample = native._acquire_game_screen(scene.world_id)
                             assert sample is not None
                             np.testing.assert_array_equal(pixels, baseline)
@@ -123,16 +131,21 @@ class NotMesh(shader.fullscreen):
                                 changed, ticket = frame - 6, None
                                 return
                             assert (sample.sequence, sample.generation) == (rejected_sample.sequence, rejected_sample.generation)
-                        elif phase == 14:
-                            assert not any(row.get("diagnostic_owner") for row in errors), errors
+                        elif phase in (10, 12, 14):
+                            assert not errors, errors
+                        if phase == 14:
                             assert native._acquire_game_screen(scene.world_id).sequence > rejected_sample.sequence
+                        if phase in (9, 11, 13):
+                            assert len(errors) == 1 and errors[0]["diagnostic_owner"] == "material.shader-program", errors
                         center = float(np.nonzero(covered)[1].mean()) if covered.any() else 0.0
                         if phase == 0:
                             baseline, baseline_center = pixels, center
-                        elif phase in (2, 4, 6, 8, 9, 10, 11, 12, 13, 14):
+                        elif phase in (2, 4, 6, 8, 9, 10, 11, 12, 13, 14, 16, 18, 20):
                             np.testing.assert_array_equal(pixels, baseline)
-                        elif phase in (1, 5, 7):
+                        elif phase in (1, 5, 7, 15):
                             assert center > baseline_center + 3, (labels[phase], center, baseline_center)
+                        if phase in (17, 19):
+                            assert center < baseline_center - 3, (labels[phase], center, baseline_center)
                         if phase == 3:
                             assert green.sum() > covered.sum() * 0.9, (green.sum(), covered.sum())
                         else:
@@ -172,6 +185,15 @@ class NotMesh(shader.fullscreen):
                         elif phase == 14:
                             rejected.native.frag_shader_reference = fragment_reference
                             rejected.alpha_clip_enabled, rejected.alpha_clip_threshold = True, 0.5
+                        elif phase == 15:
+                            renderer.set_material(material)
+                            material.set_matrix("basis", [[1.0, 0.0, 0.6], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+                        elif phase == 16:
+                            material.set_matrix("basis", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+                        elif phase in (17, 18):
+                            material.set_bool("enabled", phase == 18)
+                        elif phase in (19, 20):
+                            material.set_uint("marker", 4275878552 if phase == 20 else 0)
                         changed, ticket = frame, None
                     if frame > 300:
                         raise AssertionError(("Vertex GPU timeout", labels[phase]))

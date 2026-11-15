@@ -545,7 +545,9 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
         schema = {"name": Path(source_path).name[:-len(".shaderlib.py")], "domain": "library",
                   "info": read_shader_info(source, source_path),
                   "parameters": [], "inputs": [],
-                  "functions": [{"name": name, "return_type": function.result, "arguments": function.arguments}
+                  "functions": [{"name": name, "return_type": function.result, "arguments": function.arguments,
+                                 "requires": function.effects, "signature": function.source_signature,
+                                 "documentation": function.documentation}
                                 for name, function in module.functions.items()]}
         libraries = tuple(item for item in graph.sources() if item[0] != module.name)
         return module.source, libraries, json.dumps(schema, ensure_ascii=False), graph.ranges()

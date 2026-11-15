@@ -32,8 +32,6 @@ Infernux::MaterialShaderPreparation Infernux::EnsureShaderAuthorMaterial(const S
     const auto prepared = ShaderLoader::PrepareMaterialProgram(asset, vertex, stages, database);
     auto &entry = m_linkedShaderProgramCache[stages];
     if (!prepared->program) {
-        if (entry.lastError != prepared->error)
-            entry.failureReported = false;
         entry.lastError = prepared->error;
         return {false, prepared->error};
     }
@@ -48,7 +46,6 @@ Infernux::MaterialShaderPreparation Infernux::EnsureShaderAuthorMaterial(const S
     }
     entry.programKey = program.key;
     entry.lastError.clear();
-    entry.failureReported = false;
     return {true, {}};
 }
 

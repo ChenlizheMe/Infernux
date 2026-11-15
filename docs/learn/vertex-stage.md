@@ -79,7 +79,7 @@ The standard entry preserves the engine's mesh-to-fragment contract. Arbitrary u
 
 ## One material layout {#vertex-hook}
 
-The selected vertex and fragment fields merge before compilation. A field declared in both files must have the same type, default and presentation metadata. It then has one value and one target layout shared by both stages. Conflicts identify the field and original source. A rejected selection leaves the previous complete program active. Vertex-only fields use normal Material APIs and serialization.
+The selected vertex and fragment fields merge before compilation. A field declared in both files must have the same type, default and presentation metadata. It then has one value and one target layout shared by both stages. Conflicts identify the field and original source. A rejected selection leaves the previous complete program active. Vertex-only fields use normal Material APIs and serialization, including bool, uint and mat3. Unsigned values retain their full 32-bit range; matrices use two-dimensional row/column coordinates.
 
 ShaderLib imports work as they do in surfaces. For example, save this as `bend.shaderlib.py`, then use `from .bend import bend` in the vertex asset:
 
@@ -91,7 +91,7 @@ def bend(position: shader.vec3, time: float, amplitude: float) -> shader.vec3:
     return position + shader.vec3(0.0, shader.sin(position.x * 4.0 + time) * amplitude, 0.0)
 ```
 
-Dependencies and diagnostics follow the consuming surface. Use `shader.sample_level(image, uv, lod)` for vertex texture sampling: a vertex stage has no fragment derivatives for implicit LOD. GPU imports use `infernux.shader` and static ShaderLib declarations, without NumPy or host code.
+Dependencies and diagnostics follow the consuming surface. Use `shader.sample_level(image, uv, lod)` for vertex texture sampling: a vertex stage has no fragment derivatives for implicit LOD. GPU imports use `infernux.shader` and static ShaderLib declarations, without NumPy or host code. Fragment-only requirements follow imported and local helper calls. The author frontend reports an illegal vertex call at its original Python location; an unused fragment helper does not restrict a pure function in the same library.
 
 ## Every geometry pass {#geometry-data}
 
@@ -195,7 +195,7 @@ renderer.set_material(material)
 
 ## 一份材质布局 {#vertex-hook}
 
-编译前会合并所选两个阶段的材质字段。同名字段的类型、默认值与展示元数据必须一致，合并后共享一个值和一份目标布局。冲突会指出字段与源码位置，拒绝本次替换，保留上一套完整程序。只在顶点声明的字段同样使用正常的 Material API 与序列化。
+编译前会合并所选两个阶段的材质字段。同名字段的类型、默认值与展示元数据必须一致，合并后共享一个值和一份目标布局。冲突会指出字段与源码位置，拒绝本次替换，保留上一套完整程序。只在顶点声明的字段同样使用正常的 Material API 与序列化，包括 bool、uint 和 mat3。uint 保留完整 32 位范围，矩阵使用二维行列数据。
 
 顶点使用与 Surface 相同的静态 ShaderLib。例如保存以下函数为 `bend.shaderlib.py`，在顶点文件中 `from .bend import bend`：
 
@@ -207,7 +207,7 @@ def bend(position: shader.vec3, time: float, amplitude: float) -> shader.vec3:
     return position + shader.vec3(0.0, shader.sin(position.x * 4.0 + time) * amplitude, 0.0)
 ```
 
-依赖与错误位置跟随使用它的 Surface。顶点采样使用 `shader.sample_level(image, uv, lod)`，因为该阶段没有片元导数来选择隐式 LOD。GPU 文件只引入 `infernux.shader` 与静态 ShaderLib，不引入 NumPy 或宿主代码。
+依赖与错误位置跟随使用它的 Surface。顶点采样使用 `shader.sample_level(image, uv, lod)`，因为该阶段没有片元导数来选择隐式 LOD。GPU 文件只引入 `infernux.shader` 与静态 ShaderLib，不引入 NumPy 或宿主代码。片元阶段要求沿导入和本地 helper 调用传播。非法顶点调用会定位到原 Python 位置，同库中未调用的片元 helper 不会限制纯函数。
 
 ## 各几何 Pass 共用 {#geometry-data}
 

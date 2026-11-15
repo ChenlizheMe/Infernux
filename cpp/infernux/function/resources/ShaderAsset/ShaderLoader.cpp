@@ -21,13 +21,11 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
     auto result = std::make_shared<ShaderMaterialPreparation>();
     result->vertex = vertex ? vertex->program : nullptr;
     try {
+        if (fragment->programDomain != ShaderProgramDomain::Mesh && !stages.vertexKey.empty())
+            throw std::invalid_argument("Mesh shader vertex requires a Mesh-domain fragment: " + fragment->filePath);
         if (!fragment->materialProgram)
             throw std::invalid_argument("Material requires a graphics fragment author: " + fragment->filePath);
         if (fragment->programDomain != ShaderProgramDomain::Mesh) {
-            if (!stages.vertexKey.empty())
-                throw std::invalid_argument(
-                    "This fragment uses producer-owned geometry; remove the material vertex selection: " +
-                    fragment->filePath);
             if (fragment->materialProgram->key.stages == stages)
                 result->program = fragment->materialProgram;
             else {

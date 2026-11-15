@@ -122,6 +122,18 @@ _ENGINE_OUTPUTS: dict[str, tuple[dict[str, object], tuple[str, ...]]] = {
         {"asset": _OBJECT, "already_exists": _BOOLEAN},
         ("asset", "already_exists"),
     ),
+    "infernux.shader.list": (
+        {"assets": _ARRAY, "total": _INTEGER, "offset": _INTEGER},
+        ("assets", "total", "offset"),
+    ),
+    "infernux.shader.library.search": (
+        {"functions": _ARRAY, "total": _INTEGER, "offset": _INTEGER},
+        ("functions", "total", "offset"),
+    ),
+    "infernux.shader.create": (
+        {"asset": _OBJECT, "already_exists": _BOOLEAN},
+        ("asset", "already_exists"),
+    ),
     "infernux.asset.mesh.save-copy": (
         {"asset": _OBJECT, "source_guid": _STRING},
         ("asset", "source_guid"),

@@ -523,27 +523,23 @@ void Infernux::CreateRenderer()
         [this](const std::shared_ptr<InxMaterial> &material) { return InspectMaterialShaderDomain(material); });
     m_renderer->SetShaderProgramArtifactResolver(
         [this](const std::shared_ptr<InxMaterial> &material, std::optional<ShaderProgramDomain> expectedDomain) {
-            const auto declaredDomain = InspectMaterialShaderDomain(material);
-            if (declaredDomain && expectedDomain && *declaredDomain != *expectedDomain)
-                throw ShaderProgramDomainMismatch(*expectedDomain, *declaredDomain);
-            if (declaredDomain &&
-                (*declaredDomain == ShaderProgramDomain::ScreenUI || *declaredDomain == ShaderProgramDomain::WorldUI)) {
-                throw ShaderProgramSelectionError(
-                    "Material shader domain mismatch before publication: expected " +
-                    std::string(expectedDomain ? ShaderProgramDomainName(*expectedDomain) : "Mesh/ParticleSprite") +
-                    ", got " + ShaderProgramDomainName(*declaredDomain));
-            }
-            const MaterialShaderPreparation prepared = PrepareMaterialShader(material);
-            if (!prepared.success) {
-                const auto stages = material->GetShaderStages();
-                auto &entry = m_linkedShaderProgramCache[stages];
-                if (!entry.failureReported) {
-                    entry.failureReported = true;
-                    INXLOG_ERROR("Material shader combination '", stages.ToString(), "' rejected: ", prepared.error,
-                                 ". The previous complete GPU program is retained when available; otherwise the "
-                                 "material is not drawn. Retry follows a selection or source change.");
+            try {
+                const auto declaredDomain = InspectMaterialShaderDomain(material);
+                if (declaredDomain && expectedDomain && *declaredDomain != *expectedDomain)
+                    throw ShaderProgramDomainMismatch(*expectedDomain, *declaredDomain);
+                if (declaredDomain && IsUIShaderDomain(*declaredDomain)) {
+                    throw ShaderProgramSelectionError(
+                        "Material shader domain mismatch before publication: expected " +
+                        std::string(expectedDomain ? ShaderProgramDomainName(*expectedDomain) : "Mesh/ParticleSprite") +
+                        ", got " + ShaderProgramDomainName(*declaredDomain));
                 }
-                throw ShaderProgramSelectionError(prepared.error);
+                const MaterialShaderPreparation prepared = PrepareMaterialShader(material);
+                if (!prepared.success)
+                    throw ShaderProgramSelectionError(prepared.error);
+                material->m_shaderProgramDiagnostic.reset();
+            } catch (const ShaderProgramSelectionError &error) {
+                material->ReportShaderProgramError(error.what());
+                throw;
             }
         });
     m_renderer->SetUIMaterialShaderValidator(
@@ -1690,6 +1686,10 @@ int Infernux::AdvanceMaterialPreview(bool gpu, int uploadBudget, bool &progresse
         m_hasPreviewPumpWork.store(true, std::memory_order_release);
         progressed = true;
         ++consumed;
+    } catch (const ShaderProgramSelectionError &) {
+        // A thumbnail must not add a permanent second Console row for a
+        // rejected author selection. Material/source owners track its repair.
+        finish(nullptr);
     } catch (const std::exception &error) {
         INXLOG_ERROR("Material preview rejected for '", request.resourceKey, "': ", error.what());
         finish(nullptr);
@@ -3391,7 +3391,7 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
     const auto fragment = stageDomain(material->GetFragShaderReference(), "fragment");
     const auto vertex = stageDomain(material->GetVertShaderReference(), "vertex");
     if (vertex && fragment && *vertex != *fragment)
-        throw ShaderProgramSelectionError("Material shader stages declare conflicting geometry domains");
+        throw ShaderProgramDomainMismatch(*vertex, *fragment);
     return fragment ? fragment : vertex;
 }
 

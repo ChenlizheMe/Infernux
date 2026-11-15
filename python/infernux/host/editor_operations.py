@@ -12,6 +12,7 @@ from .data_asset_operations import build_data_asset_operations
 from .operation_support import OWNER
 from .operations import Operation, OperationRegistry
 from .scene_operations import build_scene_operations
+from .shader_operations import build_shader_operations
 
 
 def build_editor_operations(project_path: str) -> tuple[Operation, ...]:
@@ -19,6 +20,7 @@ def build_editor_operations(project_path: str) -> tuple[Operation, ...]:
         build_scene_operations()
         + build_asset_operations(str(project_path))
         + build_data_asset_operations()
+        + build_shader_operations(str(project_path))
     )
 
 

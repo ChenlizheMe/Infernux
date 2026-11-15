@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
-from .shader_library import declarations
+from .shader_library import declarations, function_effects
 from .shader_parameters import ParameterAuthor, ShaderParameter
 
 
@@ -30,6 +30,7 @@ class VertexDefinition:
             emitter.fields = self.author.fields
             emitter.types = self.author.types.copy()
             emitter.functions = self.author.functions
+            emitter.stage = "vertex" if method.name in {"deform", "project"} else None
             code.extend(emitter.emit_function(method, emitter.functions["self." + method.name], method=True))
             ranges.extend(emitter.source_ranges)
         code.append("}")
@@ -72,6 +73,7 @@ def read_vertex(path, graph, owner, location, *, source=None):
         if name in author.functions:
             author.error(method, "Duplicate vertex method: " + method.name)
         author.functions[name] = author.signature(method, "inx_vertex_author::" + method.name, method=True)
+    author.functions = function_effects(methods, author.functions, author, method=True)
     entry = author.functions.get("self.deform")
     if entry is None or entry.arguments != ("InxVertexData", "InxVertexContext") or entry.result != "InxVertexData":
         author.error(declaration, "deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) returns shader.VertexData",
@@ -81,8 +83,8 @@ def read_vertex(path, graph, owner, location, *, source=None):
         author.error(declaration, "project(self, vertex: shader.mesh_input, ctx: shader.ProjectionContext) returns shader.vec4",
                      code="author.type")
     for name, parameter in author.fields.items():
-        if not isinstance(parameter, ShaderParameter) or parameter.kind in {"bool", "uint", "mat3"}:
-            author.error(author.field_nodes[name], "This value type is not supported by the mesh material owner", code="author.parameter")
+        if not isinstance(parameter, ShaderParameter):
+            author.error(author.field_nodes[name], "Vertex values are material properties", code="author.parameter")
         author.fields[name] = replace(parameter, stages=("vertex",))
     return VertexDefinition(declaration.name, str(path), source, author, tuple(methods), dependencies,
                             read_shader_info(source, str(path)))

@@ -61,6 +61,33 @@ class Function:
     result: str
     arguments: tuple[str, ...]
     lighting_specialization: bool = False
+    effects: tuple[str, ...] = ()
+    source_signature: str = ""
+    documentation: str = ""
+
+
+_FRAGMENT_EFFECTS = {"ddx": "derivatives", "ddy": "derivatives", "fwidth": "derivatives",
+                     "sample": "implicit_lod", "sample_bias": "implicit_lod", "clip": "discard"}
+
+
+def function_effects(definitions, functions, owner, *, method=False):
+    """Propagate effects through local and already-resolved imported calls."""
+    definitions = {("self." if method else "") + definition.name: definition for definition in definitions}
+    calls = {name: tuple(qualified(node.func) for node in ast.walk(definition) if isinstance(node, ast.Call))
+             for name, definition in definitions.items()}
+    direct = {name: {_FRAGMENT_EFFECTS[owner.symbol(call)] for call in targets
+                     if owner.symbol(call) != call and owner.symbol(call) in _FRAGMENT_EFFECTS}
+              for name, targets in calls.items()}
+    effects = direct.copy()
+    while True:
+        propagated = {name: direct[name].union(*(effects[call] if call in effects else functions[call].effects
+                                                for call in targets if call in functions))
+                      for name, targets in calls.items()}
+        if propagated == effects:
+            break
+        effects = propagated
+    return {name: replace(function, effects=tuple(sorted(effects[name]))) if name in effects else function
+            for name, function in functions.items()}
 
 
 @dataclass
@@ -74,6 +101,7 @@ class Module:
 
 class ShaderEmitter(SlangEmitter):
     lighting_mode = "false"
+    stage = None
 
     def __init__(self, source, path, *, aliases=("shader",), functions=None, types=None):
         super().__init__(source, path, aliases=aliases, types=types)
@@ -134,6 +162,11 @@ class ShaderEmitter(SlangEmitter):
             return "inx_buffer_length(" + self.visit(node.args[0]) + ")"
         operation = self.symbol(qualified(node.func))
         intrinsic = operation != qualified(node.func)
+        effects = ((_FRAGMENT_EFFECTS[operation],) if intrinsic and operation in _FRAGMENT_EFFECTS else
+                   self.functions[qualified(node.func)].effects if qualified(node.func) in self.functions else ())
+        if self.stage not in {None, "fragment"} and effects:
+            self.error(node, qualified(node.func) + " requires the fragment stage (" + ", ".join(effects) + ")",
+                       code="author.stage")
         if intrinsic and operation == "vec4":
             # Each argument is evaluated once. Scalar lanes remain separable
             # when an auxiliary pass needs alpha but not color.
@@ -256,8 +289,11 @@ class ShaderEmitter(SlangEmitter):
                 self.error(field, "GPU helper parameters need type annotations")
         if definition.returns is None:
             self.error(definition, "GPU helpers need a return type annotation")
+        signature = definition.name + "(" + ", ".join(field.arg + ": " + ast.unparse(field.annotation) for field in fields)
+        signature += ") -> " + ast.unparse(definition.returns)
         return Function(symbol, self.annotation(definition.returns),
-                        tuple(self.annotation(field.annotation) for field in fields))
+                        tuple(self.annotation(field.annotation) for field in fields),
+                        source_signature=signature, documentation=ast.get_docstring(definition) or "")
 
     def emit_function(self, definition, function, *, method=False, public=False):
         if function.lighting_specialization:
@@ -390,6 +426,8 @@ class LibraryGraph:
             function = replace(emitter.signature(definition, module.name + "::" + definition.name),
                                lighting_specialization=lighting)
             module.functions[definition.name] = functions[definition.name] = function
+        functions = function_effects(body, functions, emitter)
+        module.functions = {definition.name: functions[definition.name] for definition in body}
         code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias, graph=self, owner=emitter),
                 *("import " + name + ";" for name in dependencies),
                 "namespace " + module.name + " {"]
