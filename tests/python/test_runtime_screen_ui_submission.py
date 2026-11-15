@@ -221,7 +221,7 @@ def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatc
     monkeypatch.setattr(
         module,
         "_runtime_ui_revision",
-        lambda *_args: 100 if element.text == "first" else 101,
+        lambda *_args, **_kwargs: 100 if element.text == "first" else 101,
     )
     monkeypatch.setattr(
         module,
@@ -286,7 +286,7 @@ def test_runtime_submission_anchors_against_live_logical_canvas(monkeypatch, sce
         lambda *_args, **_kwargs: [canvas],
     )
     monkeypatch.setattr(module, "_get_tex_cache", lambda: texture_cache)
-    monkeypatch.setattr(module, "_runtime_ui_revision", lambda *_args: 1)
+    monkeypatch.setattr(module, "_runtime_ui_revision", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(
         module,
         "_ui_dispatch",
@@ -365,7 +365,7 @@ def test_runtime_submission_resolves_text_before_geometry_and_keeps_authored_siz
     _install_scene_manager(monkeypatch, runtime_scene)
     monkeypatch.setattr(module, "collect_sorted_runtime_canvas_snapshot", lambda *_args: [canvas])
     monkeypatch.setattr(module, "_get_tex_cache", lambda: texture_cache)
-    monkeypatch.setattr(module, "_runtime_ui_revision", lambda *_args: 1)
+    monkeypatch.setattr(module, "_runtime_ui_revision", lambda *_args, **_kwargs: 1)
     monkeypatch.setattr(
         module,
         "_ui_dispatch",

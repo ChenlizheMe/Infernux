@@ -378,6 +378,13 @@ class _UICommandDependencies:
             self.generation += 1
             self.geometry_revision = None
             self.bindings_revision = None
+            if not self.elements:
+                self.materials = self.images = ()
+                self.element_resources.clear()
+                self.resource_states = None
+                self.snapshot = (self.generation, 0, (), ())
+        if not self.elements:
+            return self.snapshot
         geometry_revision = self.geometry.poll()
         if geometry_revision != self.geometry_revision:
             affected = set()

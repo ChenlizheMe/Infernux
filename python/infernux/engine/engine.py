@@ -297,6 +297,11 @@ class Engine(WorkRuntime):
         it from those callbacks; it is not driven from a second per-frame
         Python traversal.
         """
+        from infernux.lib import SceneManager, _Infernux
+        from infernux.engine.runtime_worlds import current_world_runtime
+        from infernux.execution import simulation_state
+        from infernux.runtime_services import _update_snapshot, _dispatch_updates
+
         engine_ref = weakref.ref(self)
 
         def _pre_scene_tick(delta_time):
@@ -307,7 +312,6 @@ class Engine(WorkRuntime):
                 # Reload, queued scene work, and deserialization share the
                 # owner-thread safe point. Typed changes merge here and become
                 # visible when SceneManager begins the runtime frame.
-                from infernux.lib import SceneManager, _Infernux
                 with _Infernux._RuntimeWorldScope(SceneManager.instance()._authoring_runtime_world_id):
                     with engine._authoring_scheduler.change_journal.transaction():
                         if not _PLAYER_MODE:
@@ -356,7 +360,6 @@ class Engine(WorkRuntime):
                         engine._cpu_work()
                     finally:
                         engine._frame_work.end_scope()
-                from infernux.runtime_services import _update_snapshot, _dispatch_updates
                 engine._clock_callbacks = _update_snapshot()
                 engine._clock_delta = float(delta_time)
                 if engine._clock_callbacks['service_update']:
@@ -371,7 +374,6 @@ class Engine(WorkRuntime):
                 from infernux.core.assets import AssetManager
 
                 AssetManager.flush_model_instance_sync()
-            from infernux.lib import _Infernux, SceneManager
             manager = SceneManager.instance()
             identities = manager._runtime_world_ids
             author_only = not identities and engine._runtime_world_session is None
@@ -486,7 +488,6 @@ class Engine(WorkRuntime):
             engine = engine_ref()
             if engine is None:
                 return True
-            from infernux.engine.runtime_worlds import current_world_runtime
             domain = current_world_runtime()
             scheduler = domain.scheduler if domain is not None else engine._authoring_scheduler
             world = scheduler.world_id
@@ -501,7 +502,6 @@ class Engine(WorkRuntime):
             boundary = {'PHYSICS_SIMULATION': 'physics', 'RENDER_EXTRACTION': 'render'}.get(barrier.name)
             if boundary is None or not engine._result_consumers:
                 return True
-            from infernux.execution import simulation_state
             state = simulation_state()
             ready = True
             blocked = set()
