@@ -692,10 +692,18 @@ class FunctionHIR:
         outputs = tuple(sorted({access.buffer for access in loop.buffer_writes}))
         if not outputs:
             reject(DiagnosticCode.INDIRECT_WRITE, "continuation requires an output row")
-        if set(inputs) & set(outputs):
-            reject(DiagnosticCode.ALIAS_RISK, "continuation inputs must be immutable and outputs write-only")
-        if gathered and (len(loop.buffer_writes) != 1 or outputs != loop.fully_written_outputs):
-            reject(DiagnosticCode.INDIRECT_WRITE, "gather/reduce requires one unconditional write-only output row")
+        row_index = AffineExpr.variable(loop.index_name)
+        read_write = set(inputs) & set(outputs)
+        if any(access.buffer in read_write and access.index != row_index for access in loop.buffer_reads):
+            reject(DiagnosticCode.ALIAS_RISK, "continuation written buffers may only read their current row")
+        # Ordered inner reductions retain their original immutable-input,
+        # one-complete-output contract. Independent readonly gathers do not
+        # make a different buffer's row-local state update cross-row work.
+        if loop.local_reductions:
+            if read_write:
+                reject(DiagnosticCode.ALIAS_RISK, "continuation inputs must be immutable and outputs write-only")
+            if len(loop.buffer_writes) != 1 or outputs != loop.fully_written_outputs:
+                reject(DiagnosticCode.INDIRECT_WRITE, "gather/reduce requires one unconditional write-only output row")
         extents = []
         for parameter, name in enumerate(arguments):
             if argument_types[name] != ValueType.ARRAY:
@@ -703,7 +711,8 @@ class FunctionHIR:
             accesses = [item for item in (*loop.buffer_reads, *loop.buffer_writes) if item.buffer == name]
             bounds = tuple(dict.fromkeys(pair for access in accesses for pair in access.bounds))
             upper = tuple(dict.fromkeys(access.bounds[-1][1] for access in accesses if access.bounds))
-            extents.append(ResourceExtent(parameter, not gathered, bounds, upper))
+            row_local = bool(accesses) and all(access.index == row_index for access in accesses)
+            extents.append(ResourceExtent(parameter, row_local, bounds, upper))
         return ContinuationPlan(not diagnostics, tuple(diagnostics), loop.index_name, inputs, outputs, arguments,
                                 loop.operation_cost, sum(access.multiplicity for access in loop.buffer_reads),
                                 len(loop.buffer_writes), resource_extents=tuple(extents), gathered=gathered,

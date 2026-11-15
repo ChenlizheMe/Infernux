@@ -558,6 +558,7 @@
   "console.error_pause": "Pause on error",
   "scene_view.loading": "Loading scene...",
   "scene_view.global": "Global",
+  "scene_view.world": "World",
   "scene_view.local": "Local",
   "scene_view.tool_select": "Select (Q)",
   "scene_view.tool_move": "Move (W)",

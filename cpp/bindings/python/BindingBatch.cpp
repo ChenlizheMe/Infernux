@@ -5,6 +5,8 @@
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/scene/ComponentDataStore.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/PyComponentProxy.h>
+#include <function/scene/RuntimeWorld.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
 #include <function/scene/Transform.h>
@@ -47,9 +49,15 @@ class ComponentExecutionState
         Closed
     };
 
-    ComponentExecutionState(py::handle owner, SceneManager &manager, uint64_t worldId, uint64_t epoch, bool playing)
-        : m_owner(owner), m_manager(manager), m_worldId(worldId), m_epoch(epoch), m_playing(playing)
+    ComponentExecutionState(py::handle owner, SceneManager &manager, uint64_t worldId)
+        : m_owner(owner), m_manager(manager), m_worldId(worldId)
     {
+        auto *world = manager.FindRuntimeWorld(worldId);
+        auto *component = owner.attr("_get_bound_native_component")().cast<Component *>();
+        if (!world || !component)
+            throw std::invalid_argument("Component execution requires its live native owner");
+        m_worldHandle = world->handle;
+        m_component = component->GetHandle();
     }
 
     Status Read(py::handle scope, const StepPermission &permission) const
@@ -57,11 +65,22 @@ class ComponentExecutionState
         if (PythonTruth(scope.attr("_closed")))
             return Status::Closed;
         auto *world = m_manager.FindRuntimeWorld(m_worldId);
-        if (!world)
+        if (!world || world->handle != m_worldHandle || m_worldHandle->destroyRequested ||
+            (m_worldHandle->state != "preparing" && m_worldHandle->state != "ready"))
             return Status::Closed;
         const WorldExecutionScope worldScope(world);
         const py::object owner = m_owner();
         if (owner.is_none() || PythonTruth(owner.attr("_is_destroyed")))
+            return Status::Closed;
+        const auto *component = Component::FindByComponentId(m_component.id);
+        if (!component || component->GetComponentID() != m_component.id ||
+            component->GetLifetimeGeneration() != m_component.generation || !component->GetGameObject() ||
+            !component->GetGameObject()->GetScene() ||
+            component->GetGameObject()->GetScene()->GetRuntimeWorld() != world)
+            return Status::Closed;
+        const auto *proxy = dynamic_cast<const PyComponentProxy *>(component);
+        if (proxy ? !proxy->GetPyComponent().is(owner)
+                  : owner.attr("_get_bound_native_component")().cast<Component *>() != component)
             return Status::Closed;
         const auto fieldIsTrue = [&owner](const char *key) {
             const py::object fields = owner.attr("__dict__");
@@ -73,12 +92,14 @@ class ComponentExecutionState
                 throw py::error_already_set();
             return value && PythonTruth(py::reinterpret_borrow<py::object>(value));
         };
-        if (fieldIsTrue("_is_destroying") || fieldIsTrue("_play_domain_destroy_finalized") ||
-            m_manager.GetSimulationEpoch() != m_epoch || m_manager.IsPlaying() != m_playing)
+        if (fieldIsTrue("_is_destroying") || fieldIsTrue("_play_domain_destroy_finalized"))
             return Status::Closed;
-        if (!PythonTruth(owner.attr("_runtime_active_in_hierarchy")) || !PythonTruth(owner.attr("_enabled")))
+        const bool active =
+            proxy ? PythonTruth(owner.attr("_runtime_active_in_hierarchy")) && PythonTruth(owner.attr("_enabled"))
+                  : component->IsEnabled() && component->GetGameObject()->IsActiveInHierarchy();
+        if (!active)
             return Status::Paused;
-        if (m_playing && m_manager.IsPaused()) {
+        if (m_manager.IsPlaying() && m_manager.IsPaused()) {
             if (!m_manager.IsStepping() ||
                 permission != std::tuple(m_worldId, m_manager.GetSimulationEpoch(), m_manager.GetStepPermissionIndex()))
                 return Status::Paused;
@@ -106,8 +127,8 @@ class ComponentExecutionState
     py::weakref m_owner;
     const SceneManager &m_manager;
     uint64_t m_worldId;
-    uint64_t m_epoch;
-    bool m_playing;
+    std::shared_ptr<RuntimeWorldHandle> m_worldHandle;
+    ObjectHandle m_component;
 };
 
 struct CpuTransformPose
@@ -1008,7 +1029,7 @@ namespace infernux
 void RegisterBatchBindings(py::module_ &m)
 {
     py::class_<ComponentExecutionState>(m, "_ComponentExecutionState")
-        .def(py::init<py::handle, SceneManager &, uint64_t, uint64_t, bool>())
+        .def(py::init<py::handle, SceneManager &, uint64_t>())
         .def("state", &ComponentExecutionState::State);
     py::class_<TransformExchange>(m, "_TransformExchange")
         .def(py::init<ObjectHandle, bool>())

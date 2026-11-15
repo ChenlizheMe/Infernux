@@ -21,11 +21,19 @@ std::shared_ptr<const FullscreenProgram> InxVkCoreModular::AcquireFullscreenProg
     auto &registry = AssetRegistry::Instance();
     auto *database = registry.GetAssetDatabase();
     auto path = database->GetPathFromGuid(name);
-    if (path.empty())
-        path = asset_formats::FindShaderSourceKind(name) ? name : database->FindShaderPathById(name, "fragment");
+    std::string guid = path.empty() ? std::string{} : name;
+    if (path.empty()) {
+        if (asset_formats::FindShaderSourceKind(name)) {
+            path = name;
+            guid = database->GetGuidFromPath(path);
+        } else {
+            guid = database->FindShaderGuidById(name, "fragment");
+            path = database->GetPathFromGuid(guid);
+        }
+    }
     if (!asset_formats::FindShaderSourceKind(path))
         return {};
-    const auto asset = registry.LoadAssetByPath<ShaderAsset>(path, ResourceType::Shader);
+    const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
     if (!asset || !asset->program)
         throw std::runtime_error("Fullscreen author program is unavailable: " + path);
     const auto target = std::find_if(asset->program->targets.begin(), asset->program->targets.end(),
@@ -33,7 +41,7 @@ std::shared_ptr<const FullscreenProgram> InxVkCoreModular::AcquireFullscreenProg
     if (target == asset->program->targets.end())
         throw std::logic_error("Vulkan shader asset has no SPIR-V target: " + path);
     auto result = std::make_shared<FullscreenProgram>();
-    result->assetGuid = database->GetGuidFromPath(path);
+    result->assetGuid = std::move(guid);
     result->shaderId = asset->shaderId;
     result->code = std::shared_ptr<const ShaderTargetCode>(asset->program, &*target);
     result->schema = asset->authoringSchema;

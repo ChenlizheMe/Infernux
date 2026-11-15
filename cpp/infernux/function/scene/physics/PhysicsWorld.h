@@ -12,6 +12,7 @@
 #include "JoltGpuScene.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsContactTypes.h"
+#include "PhysicsParticipant.h"
 #include "PhysicsTargetReference.h"
 
 #include <array>
@@ -73,6 +74,27 @@ struct RigidbodyMassProperties;
 struct SwingTwistJointSettings;
 struct SixDOFJointSettings;
 enum class JointSwingType;
+
+class PhysicsPresentationPosePending final : public std::exception
+{
+  public:
+    const char *what() const noexcept override
+    {
+        return "Presentation CPU pose dependency is not ready";
+    }
+};
+
+class PhysicsPresentationPoseReadScope final
+{
+  public:
+    PhysicsPresentationPoseReadScope();
+    ~PhysicsPresentationPoseReadScope();
+    PhysicsPresentationPoseReadScope(const PhysicsPresentationPoseReadScope &) = delete;
+    PhysicsPresentationPoseReadScope &operator=(const PhysicsPresentationPoseReadScope &) = delete;
+
+  private:
+    PhysicsDomain *m_domain = nullptr;
+};
 
 struct PhysicsBodyPoseUpdate
 {
@@ -256,6 +278,8 @@ struct RaycastBatchProfile
  */
 class PhysicsWorld
 {
+    friend class PhysicsPresentationPoseReadScope;
+
   public:
     static PhysicsWorld &Instance();
     void BeginRetireDomain(RuntimeWorld &world) noexcept;
@@ -291,10 +315,21 @@ class PhysicsWorld
     /// True only when this admitted fixed step has completed and published.
     /// False retains the same epoch/step and its shared-source continuation.
     bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
+    std::shared_ptr<PhysicsParticipant> RegisterParticipant(const Component &component,
+                                                            PhysicsParticipant::Recipes recipes,
+                                                            PhysicsParticipant::Controls controls, uint32_t count);
+    /// Existing Host service / Tick source only; never waits for GPU completion.
+    bool ServiceParticipantPreparation();
+    bool ServiceParticipantOutputs();
+    [[nodiscard]] bool HasActiveParticipants() const;
     void CompletePendingStep();
     /// Budgeted author-only GPU pose publication after the Transform frame cache.
     /// Retains the previous complete pose while this same-source control waits.
     void RefreshRenderPoses();
+    /// Settle the admitted physical prefix and zero-dt authors without consuming Fixed.
+    [[nodiscard]] bool ServicePausedAuthorPresentation();
+    [[nodiscard]] bool ServicePresentationPoseReads(const std::vector<Transform *> &world,
+                                                    const std::vector<Transform *> &local);
     /// Continue an existing managed control within this host's shared budget.
     /// Does not capture author input, admit a solver or wait synchronously.
     void ServiceGpuWork();
@@ -719,9 +754,6 @@ class PhysicsWorld
     /// and their transforms are up to date. Call before editor-mode raycasts.
     void EnsureSceneBodiesRegistered(class Scene *scene);
 
-    /// Rebuild the broad-phase tree so raycasts find newly added static bodies.
-    void OptimizeBroadPhase();
-
     /// @brief Dispatch buffered contact events to Component callbacks.
     ///        Call once per fixed step, immediately after Step().
     [[nodiscard]] size_t DispatchContactEvents();
@@ -830,6 +862,8 @@ class PhysicsWorld
     [[nodiscard]] RaycastHit DecodeQueryHit(const JoltGpuQueryResult &result, const JPH::GPU::QueryHit &record) const;
     void RefreshGpuActor(PhysicsDomain &domain, uint32_t bodyId,
                          const std::function<void(PreparedGpuActor &)> &edit = {});
+    [[nodiscard]] std::vector<std::pair<Transform *, Rigidbody *>>
+    CollectCpuPoseReads(const std::vector<Transform *> &transforms, bool worldSpace) const;
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(PhysicsDomain &domain, uint32_t bodyId,
                                                          PhysicsStateFields fields) const;
     [[nodiscard]] JoltGpuScene::ContactObserver
@@ -849,7 +883,8 @@ class PhysicsWorld
                                                                        bool queryTriggers) const;
     void MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
                                const std::shared_ptr<JoltGpuQueryResult> &motion,
-                               const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical) const;
+                               const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical,
+                               PhysicsStateFields cachedFields = static_cast<PhysicsStateFields>(0x1ff)) const;
 
     bool m_initialized = false;
     std::thread::id m_ownerThreadId{};

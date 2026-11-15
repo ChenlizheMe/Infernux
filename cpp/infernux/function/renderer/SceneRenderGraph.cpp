@@ -1875,7 +1875,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                         {GetPerViewDescriptorSet(), vkCore->GetDeviceContext().GetRhiDevice().Resolve(
                                                         vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()))},
                         m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView, 0, 0xffffffffu,
-                        m_screenUISnapshot);
+                        m_worldUISnapshot);
                 break;
             case GraphCommandType::DrawScreenUI:
                 if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {
@@ -2121,9 +2121,11 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
             auto mask = m_cachedCameraView.cullingMask;
             if (command->type == GraphCommandType::DrawWorldUI)
                 mask &= command->worldUILayerMask;
-            for (const auto &texture : m_screenUIRenderer->GetRenderTextureReads(list, mask, m_screenUISnapshot))
+            for (const auto &texture : m_screenUIRenderer->GetRenderTextureReads(
+                     list, mask, list == ScreenUIList::World ? m_worldUISnapshot : m_screenUISnapshot))
                 reads.push_back({pass.name, texture,
-                                 m_screenUIRenderer->GetRenderTextureReadGeneration(texture, m_screenUISnapshot)});
+                                 m_screenUIRenderer->GetRenderTextureReadGeneration(
+                                     texture, list == ScreenUIList::World ? m_worldUISnapshot : m_screenUISnapshot)});
             continue;
         }
         if (!command ||
@@ -2410,10 +2412,9 @@ void SceneRenderGraph::EnsureGraphBuilt()
             if (!command || command->type != GraphCommandType::DrawWorldUI)
                 continue;
             const uint32_t mask = cameraMask & command->worldUILayerMask;
-            if (!m_screenUIRenderer->HasSelectiveWorldOcclusion(mask, m_screenUISnapshot))
+            if (!m_screenUIRenderer->HasSelectiveWorldOcclusion(mask, m_worldUISnapshot))
                 continue;
-            const auto runs =
-                m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, mask, m_screenUISnapshot);
+            const auto runs = m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, mask, m_worldUISnapshot);
             if (!worldUIDepthSignature)
                 worldUIDepthSignature = 1469598103934665603ull;
             worldUIDepthSignature = (worldUIDepthSignature ^ passIndex) * 1099511628211ull;
@@ -2437,7 +2438,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
             const auto *command = pass.PrimaryCommand();
             if (!command || command->type != GraphCommandType::DrawWorldUI ||
                 !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraMask & command->worldUILayerMask,
-                                                                m_screenUISnapshot))
+                                                                m_worldUISnapshot))
                 continue;
             auto candidate = BuildWorldUIDepthReplay(m_pythonGraphDesc,
                                                      m_cameraClearFlags == CameraClearFlags::DontClear, pass.name);
@@ -2955,6 +2956,8 @@ bool SceneRenderGraph::CompleteSubmissionExecution(VkCommandBuffer commandBuffer
 
 void SceneRenderGraph::CommitSubmissionExecution()
 {
+    if (auto *target = GetOutputTarget())
+        target->SetDisplayEncoded(OutputDisplayEncoded());
     if (m_hasCachedCameraVP && !m_cameraMatricesStaged) {
         InvalidateTemporalHistory();
     } else {
@@ -3959,7 +3962,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             const auto *candidateCommand = candidate.PrimaryCommand();
             if (!candidateCommand || candidateCommand->type != GraphCommandType::DrawWorldUI || !m_screenUIRenderer ||
                 !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraWorldUIMask & candidateCommand->worldUILayerMask,
-                                                                m_screenUISnapshot))
+                                                                m_worldUISnapshot))
                 continue;
             auto source = BuildWorldUIDepthReplay(m_pythonGraphDesc, m_cameraClearFlags == CameraClearFlags::DontClear,
                                                   candidate.name);
@@ -5451,7 +5454,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 }
                 const auto &worldUIOpaqueSource = selectiveSource->second;
                 const auto worldUIDepthRuns = m_screenUIRenderer->GetWorldDepthRuns(
-                    m_cachedProj * m_drawView, cameraWorldUIMask & command->worldUILayerMask, m_screenUISnapshot);
+                    m_cachedProj * m_drawView, cameraWorldUIMask & command->worldUILayerMask, m_worldUISnapshot);
                 const auto opaqueCommand = worldUIOpaqueSource.draw;
                 auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource.passName);
                 const auto uiMaterialPass = m_pythonMaterialPasses.at(passDesc.name);
@@ -5533,7 +5536,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                      vkCore->GetDeviceContext().GetRhiDevice().Resolve(
                                          vkCore->ResolveViewGlobalsBinding(GetViewGlobalsBinding()))},
                                     m_drawView, m_cachedProj, m_hasBillboardView ? m_billboardView : m_drawView,
-                                    run.firstOrdinal, run.endOrdinal, m_screenUISnapshot);
+                                    run.firstOrdinal, run.endOrdinal, m_worldUISnapshot);
                             };
                         });
                     trackAuthorPass(pass);

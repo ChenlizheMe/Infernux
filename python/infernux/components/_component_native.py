@@ -208,6 +208,7 @@ class ComponentNativeMixin:
         # DontDestroyOnLoad refreshes world-scoped handles by rebinding the
         # same proxy.  Registered callbacks still belong to this component.
         same_native_proxy = self._cpp_component is cpp_component and cpp_component is not None
+        previous_physics = self.__dict__.get('_physics_build_plan')
         self._cpp_component = cpp_component
         self._native_handle = getattr(cpp_component, "handle", None) if cpp_component is not None else None
         self._native_scene = getattr(game_object, "scene", None) if game_object is not None else None
@@ -225,6 +226,13 @@ class ComponentNativeMixin:
             self._execution_order = int(cpp_component.execution_order)
             self._enabled = bool(cpp_component.enabled)
             self._sync_coroutine_scheduler_state()
+            self.__dict__['_physics_preparing'] = not cpp_component._preparation_ready
+            if previous_physics is not None and '_play_domain_retirement_owner' not in self.__dict__:
+                from infernux.engine.runtime_worlds import component_world_id
+                world = previous_physics._world()
+                if not same_native_proxy or world is None or world.identity != component_world_id(self):
+                    from infernux.physics.participant import _queue_component_physics
+                    _queue_component_physics(self, rebuild=True)
 
     def _sync_native_state(
         self,
@@ -253,6 +261,10 @@ class ComponentNativeMixin:
         """Invalidate native references after scene rebuild/destruction."""
         self.__dict__.pop("_transform_cache", None)
         if release_fields:
+            from infernux.execution import close_component_execution
+            close_component_execution(self)
+            from infernux.physics.participant import _retire_component_physics
+            _retire_component_physics(self)
             self._release_component_data_slot()
         self._cpp_component = None
         self._native_handle = None
@@ -291,6 +303,9 @@ class ComponentNativeMixin:
     def _cancel_play_domain_replacement(self) -> None:
         """Release the cleanup owner after rollback has rebound this instance."""
         self.__dict__.pop("_play_domain_retirement_owner", None)
+        if self.__dict__.get('_physics_build_plan') is not None:
+            from infernux.physics.participant import _restore_component_physics_activation
+            _restore_component_physics_activation(self)
 
     def _tracks_scene_structure_binding(self) -> bool:
         """Inspector builtin wrappers may need a Play-rebuild rebind.

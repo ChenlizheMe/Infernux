@@ -263,10 +263,11 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_screenUIOutput = screenOutput;
     }
 
-    void SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot)
+    void SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot, InxScreenUIRenderer::Snapshot world = {})
     {
-        if (m_screenUISnapshot != snapshot) {
+        if (m_screenUISnapshot != snapshot || m_worldUISnapshot != world) {
             m_screenUISnapshot = std::move(snapshot);
+            m_worldUISnapshot = std::move(world);
             // Selective occlusion runs and texture dependencies are values in
             // this UI publication, not merely in the author's graph topology.
             m_needsRebuild = true;
@@ -324,6 +325,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
     [[nodiscard]] bool HasOutputTexture() const noexcept
     {
         return m_outputTexture != nullptr;
+    }
+    [[nodiscard]] bool OutputDisplayEncoded() const noexcept
+    {
+        return m_pythonGraphDesc.outputDisplayEncoded;
     }
     [[nodiscard]] SceneRenderTarget *GetOutputTarget() const noexcept
     {
@@ -941,6 +946,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     rhi::RenderViewContext m_renderView;
     InxScreenUIRenderer *m_screenUIRenderer = nullptr;
     InxScreenUIRenderer::Snapshot m_screenUISnapshot;
+    InxScreenUIRenderer::Snapshot m_worldUISnapshot;
     bool m_screenUIOutput = true;
     OutlineRenderer *m_outlineRenderer = nullptr;
     bool m_outlinePassesEnabled = false;

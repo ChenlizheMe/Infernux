@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import weakref
 import threading
+from infernux.lib import SceneManager, ScreenUIList
+from infernux.components import InxComponent
+from infernux.ui import UICanvas, UIFrame
+from infernux.ui.enums import RenderMode, UILayoutDirection
+from infernux.ui._layout_driver import rebuild_world
 from infernux.engine.ui.runtime_canvas_snapshot import (
     collect_sorted_runtime_canvas_snapshot,
     runtime_canvas_snapshot_token,
@@ -16,6 +21,7 @@ from infernux.engine.ui.runtime_canvas_snapshot import (
 from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 from infernux.ui.inx_ui_screen_component import (
     WORLD_UI_PIXELS_PER_UNIT,
+    InxUIScreenComponent,
     is_ui_screen_component,
     _get_layout_revision,
 )
@@ -650,9 +656,6 @@ def map_runtime_ui_pointer(
 def _collect_world_ui_elements(*scenes):
     """Share one hierarchy snapshot between UI rendering, input and picking."""
     global _world_elements_key, _world_elements
-    from infernux.components import InxComponent
-    from infernux.ui import UICanvas
-
     key = tuple(
         (scene, int(getattr(scene, "world_id", 0)),
          int(getattr(scene, "structure_version", 0)),
@@ -726,6 +729,7 @@ class RuntimeScreenUISubmission:
         self._canvas_snapshot = ()
         self._last_submission_frame = -1
         self._command_packets = UICommandPackets(_get_tex_cache())
+        self._presentation_packets = {}
 
     @property
     def target_size(self) -> tuple[int, int]:
@@ -739,15 +743,34 @@ class RuntimeScreenUISubmission:
         self._target_width = width
         self._target_height = height
 
-    def submit(self, *, force=False, world_id=None, target_size=None, camera_size=None) -> bool:
+    def retire_world(self, world):
+        self._presentation_packets = {key: value for key, value in self._presentation_packets.items()
+                                      if key[0] != int(world)}
+
+    def collect_presentation_pose_objects(self):
+        """Collect this World's actual UI consumers before any layout or draw reads."""
+        from infernux.lib import SceneManager
+        scenes = runtime_ui_scenes(SceneManager.instance())
+        canvases = collect_sorted_runtime_canvas_snapshot(*scenes)
+        objects = {element.game_object.id: element.game_object
+                   for element in _collect_world_ui_elements(*scenes)
+                   if element.enabled and element.game_object.active_in_hierarchy}
+        local = {}
+        for canvas in canvases:
+            if not canvas.enabled or not canvas.game_object.active_in_hierarchy:
+                continue
+            local[canvas.game_object.id] = canvas.game_object
+            for element in canvas_elements(canvas):
+                if element.enabled and element.game_object.active_in_hierarchy:
+                    local[element.game_object.id] = element.game_object
+        return list(objects.values()), list(local.values())
+
+    def submit(self, *, force=False, world_id=None, target_size=None, camera_size=None, prepared_pose_reads=False, capture_key=None, world_only=False, include_world=True) -> bool:
         """Publish current-frame UI commands before camera RenderGraph submission.
 
         Returns ``True`` when commands were rebuilt and ``False`` when the
         native renderer retained an identical cached command snapshot.
         """
-        from infernux.lib import SceneManager, ScreenUIList
-        from infernux.ui.enums import RenderMode
-
         if force:
             self._last_submission_frame = -1
         engine = self._engine_ref()
@@ -771,21 +794,29 @@ class RuntimeScreenUISubmission:
         if canvas_token != self._canvas_snapshot_token:
             self._canvas_snapshot = tuple(collect_sorted_runtime_canvas_snapshot(*scenes))
             self._canvas_snapshot_token = canvas_token
-        canvases = self._canvas_snapshot
-        world_elements = _collect_world_ui_elements(*scenes)
+        canvases = () if world_only else self._canvas_snapshot
+        world_elements = _collect_world_ui_elements(*scenes) if include_world else ()
         self._prepare_native_layouts(canvases, world_elements, renderer, width, height, camera_size)
 
         packets = self._command_packets
+        if capture_key is not None:
+            view_key = capture_key[0], capture_key[-1]
+            entry = self._presentation_packets.get(view_key)
+            if entry is None or entry[0] != capture_key:
+                entry = capture_key, UICommandPackets(_get_tex_cache(), freeze_custom=True)
+                self._presentation_packets[view_key] = entry
+            packets = entry[1]
         texture_cache = packets.texture_cache
         revision = _runtime_ui_revision(
             None, canvases, width, height, texture_cache.generation,
-            world_elements, None, scenes,
+            world_elements, None, scenes, dependencies=packets.dependencies,
         )
         revision = hash((revision, camera_size)) & ((1 << 63) - 1) or 1
         font_epoch = renderer.command_packet_epoch()
         packets.prepare((renderer, source_world, width, height, camera_size, font_epoch,
-                         _runtime_command_epoch()), font_epoch=font_epoch,
-                        texture_engine=engine if force else None)
+                         _runtime_command_epoch(packets.dependencies)), font_epoch=font_epoch,
+                        texture_engine=engine if force else None,
+                        prepared_pose_reads=prepared_pose_reads)
         if force or packets.has_pending_textures:
             renderer.begin_frame(width, height)
         else:
@@ -800,9 +831,19 @@ class RuntimeScreenUISubmission:
             return True
 
         get_texture_id = texture_cache.get_bound(engine)
+        self._submit_prepared_elements(world_elements, canvases, renderer, get_texture_id,
+                                       ScreenUIList, RenderMode, packets, width, height, camera_size,
+                                       prepared_pose_reads)
+        if not force:
+            self._last_submission_frame = frame_token
+        return True
+
+    def _submit_prepared_elements(self, world_elements, canvases, renderer, get_texture_id,
+                                  ScreenUIList, RenderMode, packets, width, height, camera_size,
+                                  prepared_pose_reads):
         packets.submit_elements(
             world_elements, renderer, self._submit_world_element,
-            get_texture_id, ScreenUIList,
+            get_texture_id, ScreenUIList, prepared_pose_reads,
         )
         for canvas in canvases:
             canvas_width, canvas_height = self._canvas_size(canvas, (width, height), camera_size)
@@ -815,21 +856,29 @@ class RuntimeScreenUISubmission:
                 ScreenUIList,
                 RenderMode,
                 packets,
+                prepared_pose_reads,
             )
         packets.flush(renderer)
-        if not force:
-            self._last_submission_frame = frame_token
-        return True
 
     def capture_completed(self, context) -> bool:
         """Prepare this view's resources before running authored render work."""
-        if self._command_packets.selected_textures_pending:
+        packets = self._command_packets
+        view = None if context._ui_world_only else context.view
+        if context._ui_world_only or view.paused_author_presentation:
+            entry = self._presentation_packets.get((context._ui_world_id, 0 if view is None else view.camera_id))
+            if entry is not None:
+                packets = entry[1]
+        if not context._has_screen_ui_snapshot and packets.selected_textures_pending:
             return False
         engine = self._engine_ref()
         if engine is not None:
             renderer = engine.get_screen_ui_renderer()
             if renderer is not None:
-                return context.capture_screen_ui(renderer)
+                previous = renderer._set_prepared_pose_reads(bool(context._ui_author_revision))
+                try:
+                    return context.capture_screen_ui(renderer)
+                finally:
+                    renderer._set_prepared_pose_reads(previous)
         return False
 
     @staticmethod
@@ -839,9 +888,6 @@ class RuntimeScreenUISubmission:
 
     def _prepare_native_layouts(self, canvases, world_elements, renderer, width, height, camera_size):
         """Publish layout before geometry dependencies and command keys are read."""
-        from infernux.ui import UIFrame, UILayoutDirection
-        from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
-        from infernux.ui._layout_driver import rebuild_world
         for canvas in canvases:
             prepare = getattr(canvas, '_prepare_native_layout', None)
             if prepare is not None:
@@ -898,7 +944,7 @@ class RuntimeScreenUISubmission:
                     _resolve_text_layout(element, renderer.measure_text, text_scale)
 
     @staticmethod
-    def _submit_world_element(element, renderer, get_texture_id, screen_ui_list, *, defer_group_alpha=False) -> None:
+    def _submit_world_element(element, renderer, get_texture_id, screen_ui_list, prepared_pose_reads=False, *, defer_group_alpha=False) -> None:
         game_object = element.game_object
         if game_object is None or not game_object.active_in_hierarchy or not element.enabled:
             return
@@ -921,7 +967,14 @@ class RuntimeScreenUISubmission:
             bool(element.world_constant_screen_size),
         )
         ignored_id = int(ignored_occluder.id) if ignored_occluder is not None and not element.world_always_on_top else 0
-        begin_element(*world_args, ignored_id) if ignored_id else begin_element(*world_args)
+        if prepared_pose_reads:
+            previous = renderer._set_prepared_pose_reads(True)
+            try:
+                begin_element(*world_args, ignored_id) if ignored_id else begin_element(*world_args)
+            finally:
+                renderer._set_prepared_pose_reads(previous)
+        else:
+            begin_element(*world_args, ignored_id) if ignored_id else begin_element(*world_args)
         try:
             _ui_dispatch(
                 element,
@@ -954,6 +1007,7 @@ class RuntimeScreenUISubmission:
         screen_ui_list,
         render_mode,
         packets=None,
+        prepared_pose_reads=False,
     ) -> None:
         canvas_object = getattr(canvas, "game_object", None)
         if canvas_object is not None and not canvas_object.active_in_hierarchy:
@@ -980,7 +1034,7 @@ class RuntimeScreenUISubmission:
 
         elements = canvas_elements(canvas)
         args = (canvas, ui_list, logical_width, logical_height, scale_x, scale_y,
-                text_scale, get_texture_id)
+                text_scale, get_texture_id, prepared_pose_reads)
         if packets is not None:
             packets.submit_elements(
                 elements, renderer, RuntimeScreenUISubmission._submit_screen_element,
@@ -996,7 +1050,7 @@ class RuntimeScreenUISubmission:
 
     @staticmethod
     def _submit_screen_element(element, renderer, canvas, ui_list, logical_width, logical_height,
-                               scale_x, scale_y, text_scale, get_texture_id, *, defer_group_alpha=False):
+                               scale_x, scale_y, text_scale, get_texture_id, prepared_pose_reads=False, *, defer_group_alpha=False):
         element_object = getattr(element, "game_object", None)
         if element_object is not None and not element_object.active_in_hierarchy:
             return
@@ -1008,7 +1062,14 @@ class RuntimeScreenUISubmission:
         if callable(begin_object):
             px, py, pw, ph = canvas.pixel_adjust_rect(geometry.rect, scale_x, scale_y)
             pivot = element.pivot
-            begin_object(element_object, ui_list, px + pw * pivot.x, py + ph * (1 - pivot.y), scale_x, scale_y)
+            if prepared_pose_reads:
+                previous = renderer._set_prepared_pose_reads(True)
+                try:
+                    begin_object(element_object, ui_list, px + pw * pivot.x, py + ph * (1 - pivot.y), scale_x, scale_y)
+                finally:
+                    renderer._set_prepared_pose_reads(previous)
+            else:
+                begin_object(element_object, ui_list, px + pw * pivot.x, py + ph * (1 - pivot.y), scale_x, scale_y)
         clip = element.get_effective_clip_rect(logical_width, logical_height)
         if clip is not None:
             left, top, width_clip, height_clip = canvas.pixel_adjust_rect(

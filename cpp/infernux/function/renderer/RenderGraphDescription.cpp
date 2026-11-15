@@ -346,9 +346,9 @@ const GraphTextureDesc *FindGraphOutputTextureAlias(const RenderGraphDescription
 bool RenderGraphTopologyEquals(const RenderGraphDescription &a, const RenderGraphDescription &b)
 {
     if (a.name != b.name || a.outputTexture != b.outputTexture || a.msaaSamples != b.msaaSamples ||
-        a.temporalJitter != b.temporalJitter || a.linearOutputTexture != b.linearOutputTexture ||
-        a.linearOutputPassCount != b.linearOutputPassCount || a.textures != b.textures ||
-        a.buffers.size() != b.buffers.size() || a.passes.size() != b.passes.size() ||
+        a.outputDisplayEncoded != b.outputDisplayEncoded || a.temporalJitter != b.temporalJitter ||
+        a.linearOutputTexture != b.linearOutputTexture || a.linearOutputPassCount != b.linearOutputPassCount ||
+        a.textures != b.textures || a.buffers.size() != b.buffers.size() || a.passes.size() != b.passes.size() ||
         a.workBindings.size() != b.workBindings.size()) {
         return false;
     }
@@ -467,6 +467,7 @@ RenderGraphDescription NormalizeRenderGraphForOutput(RenderGraphDescription desc
                 throw std::invalid_argument("RenderGraph linear output boundary exceeds its pass list");
             desc.passes.resize(desc.linearOutputPassCount);
             desc.outputTexture = desc.linearOutputTexture;
+            desc.outputDisplayEncoded = false;
         }
         desc.passes.erase(std::remove_if(desc.passes.begin(), desc.passes.end(),
                                          [](const GraphPassDesc &pass) {

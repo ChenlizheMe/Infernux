@@ -268,6 +268,8 @@ struct RendererFramePerformanceSnapshot
     UIPerformanceMetricStats scene;
     UIPerformanceMetricStats gui;
     UIPerformanceMetricStats prepare;
+    UIPerformanceMetricStats input, callbacks, gpuWait, draw;
+    std::array<UIPerformanceMetricStats, 6> drawPhases;
     std::vector<RendererFramePerformanceSample> slowestFrames;
 };
 
@@ -602,6 +604,7 @@ class InxRenderer
     [[nodiscard]] std::shared_ptr<const GameScreenSample> AcquireGameScreenOutput(uint64_t worldId);
     [[nodiscard]] GameScreenOutputStatus GetGameScreenOutputStatus(uint64_t worldId) const;
     [[nodiscard]] uint64_t GetGameScreenTextureId(const std::shared_ptr<const GameScreenSample> &sample);
+    uint64_t GetGameScreenLiveTextureId(uint64_t worldId);
 
     /// Screen-camera graphs have executed and initial uploads have drained.
     [[nodiscard]] bool IsGamePresentationReady() const;
@@ -714,6 +717,11 @@ class InxRenderer
     void SetPreGuiCallback(std::function<void()> callback)
     {
         m_preGuiCallback = std::move(callback);
+    }
+
+    void SetEditorViewWorldProvider(std::function<uint64_t(bool)> provider)
+    {
+        m_editorViewWorldProvider = std::move(provider);
     }
 
     /// @brief Set a callback invoked each frame AFTER VkCore::DrawFrame() + EndFrame().
@@ -854,6 +862,9 @@ class InxRenderer
     void SubmitPendingCaptureReadbacks(bool frameSubmitted);
     std::vector<PendingCapture> m_pendingCaptures;
     uint64_t m_sceneRenderTargetGeneration = 0;
+    std::vector<std::pair<SceneRenderTarget *, bool>> m_guiTargetEncodings;
+    uint64_t m_sceneRenderedWorldId = 0;
+    uint64_t m_sceneRenderedTargetGeneration = 0;
     uint64_t m_gameRenderTargetGeneration = 0;
     std::unique_ptr<EditorGizmos> m_editorGizmos;
     std::unique_ptr<EditorTools> m_editorTools;
@@ -1003,7 +1014,7 @@ class InxRenderer
     SceneRenderGraph *EnsureGameRenderGraph(const RenderViewData *camera);
     bool HasActiveGameViews(bool allowScreen = true);
     void PrepareWorldRenderInputs();
-    bool PublishRuntimeRenderFrame(RuntimeWorld &world);
+    bool PublishRuntimeRenderFrame(RuntimeWorld &world, bool pausedAuthor = false);
     bool IsStepScreenComplete(RuntimeWorld &world);
     std::unordered_map<uint64_t, std::shared_ptr<const GameScreenSample>> m_stepScreenSamples;
     void RetireRuntimeRenderFrame(uint64_t worldId);
@@ -1014,6 +1025,7 @@ class InxRenderer
     /// operations (deserialize, scene load) complete before any ImGui
     /// panel renders — preventing stale-reference hangs.
     std::function<void()> m_preGuiCallback;
+    std::function<uint64_t(bool)> m_editorViewWorldProvider;
 
     /// Callback invoked before SceneManager::Update with the raw frame delta.
     std::function<void(float)> m_frameBeginCallback;

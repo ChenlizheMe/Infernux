@@ -87,22 +87,25 @@ void ScenePickingService::Initialize(InxVkCoreModular *core)
 
 void ScenePickingService::Destroy()
 {
-    if (m_state) {
-        std::scoped_lock lock(m_state->mutex);
-        for (auto &[id, snapshot] : m_state->snapshots) {
-            (void)id;
-            if (snapshot.status == ScenePickStatus::Pending) {
-                snapshot.status = ScenePickStatus::Cancelled;
-                snapshot.error = "Scene picking service stopped";
-            }
-        }
-    }
-    m_hasPending = false;
+    CancelPending("Scene picking service stopped");
     DestroyTarget();
     m_particleDrawRegistry = nullptr;
     m_dynamicRenderingCommands = {};
     m_synchronization2Commands = {};
     m_core = nullptr;
+}
+
+void ScenePickingService::CancelPending(const std::string &reason)
+{
+    m_hasPending = false;
+    std::scoped_lock lock(m_state->mutex);
+    for (auto &[id, snapshot] : m_state->snapshots) {
+        (void)id;
+        if (snapshot.status == ScenePickStatus::Pending) {
+            snapshot.status = ScenePickStatus::Cancelled;
+            snapshot.error = reason;
+        }
+    }
 }
 
 uint64_t ScenePickingService::Request(float x, float y, float viewportWidth, float viewportHeight)

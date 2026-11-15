@@ -558,6 +558,7 @@
   "console.error_pause": "错误时暂停",
   "scene_view.loading": "场景加载中...",
   "scene_view.global": "全局",
+  "scene_view.world": "世界",
   "scene_view.local": "局部",
   "scene_view.tool_select": "选择 (Q)",
   "scene_view.tool_move": "移动 (W)",

@@ -79,6 +79,7 @@ class SkeletonInstance final : public Component
     void DetachRenderer(SkinnedMeshRenderer *renderer);
     void MarkPoseDirty();
     void PublishRenderPoses();
+    [[nodiscard]] std::vector<Transform *> GetPresentationPoseDependencies() const;
 
     nlohmann::json SerializeDocument() const override;
     static void ValidateSerializedDocument(const nlohmann::json &document);

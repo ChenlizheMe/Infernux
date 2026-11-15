@@ -88,8 +88,21 @@ enum class JoltGpuContactReportStage
     AfterVelocity
 };
 
+enum class JoltGpuParticipantStage : uint32_t
+{
+    Predict,
+    Prepare,
+    Exchange,
+    Accept,
+    Initialize
+};
+
 struct JoltGpuTickControl
 {
+    // Native Work factories only: no project Python or independent submissions.
+    std::function<JoltGpuControlWork(JoltGpuParticipantStage, const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
+                                     std::function<void()>)>
+        prepareParticipant;
     // Captured existing settings; elapsed physical dt is filled by Tick for
     // each actual substep. Never Host time or number of admitted packets.
     JPH::GPU::BodySleepParameters sleepParameters{};
@@ -97,6 +110,8 @@ struct JoltGpuTickControl
     // Runs after control groups. Scene retains stable owner IDs and resolves
     // packed slots here; shader decides whether each source actually moved.
     std::function<std::vector<uint32_t>()> prepareSleepSources;
+    // Pure observations explicitly opt out; existing Tick/Control/Work retain snapshots.
+    bool needsSnapshot = true;
     JoltGpuTickControl() = default;
     JoltGpuTickControl(JoltGpuTickControl &&) = default;
     JoltGpuTickControl &operator=(JoltGpuTickControl &&) = default;

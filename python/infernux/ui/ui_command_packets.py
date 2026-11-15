@@ -6,7 +6,7 @@ as an ordered batch, without per-element measurement/key polling each frame.
 
 from weakref import WeakSet
 
-from .ui_render_dispatch import _can_retain_runtime_commands, resolve_text_layout
+from .ui_render_dispatch import _UICommandDependencies, _can_retain_runtime_commands, resolve_text_layout
 from .inx_ui_screen_component import _get_layout_revision
 
 
@@ -71,9 +71,12 @@ class _CommandGroup:
 
 
 class UICommandPackets:
-    def __init__(self, texture_cache):
+    def __init__(self, texture_cache, *, freeze_custom=False):
+        self.freeze_custom = freeze_custom
         self.epoch = None
         self.groups = {}
+        self.dependencies = _UICommandDependencies(self._invalidate, retain_geometry=freeze_custom)
+        self.prepared_pose_reads = False
         self.pending = []
         self.pending_opacities = []
         self.font_epoch = None
@@ -83,7 +86,13 @@ class UICommandPackets:
         self.selected_textures_pending = False
         self._texture_engine = None
 
-    def prepare(self, epoch, *, font_epoch=None, texture_engine=None):
+    def _invalidate(self, element):
+        for group in self.groups.values():
+            if element in group.indices:
+                group.invalidate(element)
+
+    def prepare(self, epoch, *, font_epoch=None, texture_engine=None, prepared_pose_reads=False):
+        self.prepared_pose_reads = prepared_pose_reads
         self.pending.clear()
         self.pending_opacities.clear()
         self._texture_engine = texture_engine
@@ -99,7 +108,7 @@ class UICommandPackets:
             for group in self.groups.values():
                 for index, bindings in group.textures.items():
                     self.has_pending_textures |= any(state[1] for state in bindings.values())
-                    if any(state[1] or cache.binding_state(guid) != state
+                    if any((state[1] and not self.freeze_custom) or cache.binding_state(guid) != state
                            for guid, state in bindings.items()):
                         group.dirty.add(index)
             self.texture_generation = cache.generation
@@ -124,13 +133,14 @@ class UICommandPackets:
                     for guid, previous in bindings.items():
                         self.texture_cache.get(self._texture_engine, TextureRef(guid))
                         current = self.texture_cache.binding_state(guid)
-                        if current[1] or current != previous:
+                        if (current[1] and not self.freeze_custom) or current != previous:
                             group.dirty.add(index)
             for index in sorted(group.dirty | group.custom):
                 self.measure(group.elements[index], renderer, scale)
             layout_revision = _get_layout_revision()
             if group.layout_revision != layout_revision:
-                group.dirty.update(range(len(group.elements)))
+                if not self.freeze_custom:
+                    group.dirty.update(range(len(group.elements)))
                 group.layout_revision = layout_revision
 
             if not group.custom:
@@ -145,7 +155,7 @@ class UICommandPackets:
             # They may mutate a later sibling; observe that edit before it is
             # submitted, just as the ordinary sequential draw path does.
             for index, element in enumerate(group.elements):
-                if index in group.custom:
+                if index in group.custom and (not self.freeze_custom or index in group.dirty):
                     self.flush(renderer)
                     # Native object/transform bindings require a command
                     # packet even for authored draws. Record and enqueue it
@@ -162,7 +172,8 @@ class UICommandPackets:
                         self.measure(group.elements[dirty_index], renderer, scale)
                     layout_revision = _get_layout_revision()
                     if layout_revision != group.layout_revision:
-                        group.dirty.update(range(len(group.elements)))
+                        if not self.freeze_custom:
+                            group.dirty.update(range(len(group.elements)))
                         group.layout_revision = layout_revision
                 else:
                     if index in group.dirty:
@@ -183,6 +194,15 @@ class UICommandPackets:
 
     def flush(self, renderer):
         if self.pending:
-            renderer.append_command_packets(self.pending, self.pending_opacities)
+            # Append resolves native World spans too. Scope just that engine
+            # call, including intermediate flushes before custom callbacks.
+            if self.prepared_pose_reads:
+                previous = renderer._set_prepared_pose_reads(True)
+                try:
+                    renderer.append_command_packets(self.pending, self.pending_opacities)
+                finally:
+                    renderer._set_prepared_pose_reads(previous)
+            else:
+                renderer.append_command_packets(self.pending, self.pending_opacities)
             self.pending.clear()
             self.pending_opacities.clear()

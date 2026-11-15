@@ -85,6 +85,10 @@ class SceneViewOverlaysMixin:
             ctx.pop_style_color(3)
 
         self._draw_pos_overlay(ctx, vp)
+        if self._engine:
+            overlay_hovered = self._draw_world_controls(
+                ctx, vp, cursor_start_x, cursor_start_y, scene_height,
+            ) or overlay_hovered
         overlay_hovered = self._draw_particle_preview_overlay(
             ctx,
             cursor_start_x,

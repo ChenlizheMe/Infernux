@@ -57,9 +57,10 @@ void Component::UnregisterIfOwner()
 
 Component::Component(Component &&other) noexcept
     : m_gameObject(other.m_gameObject), m_enabled(other.m_enabled), m_wasEnabled(other.m_wasEnabled),
-      m_hasAwake(other.m_hasAwake), m_hasStarted(other.m_hasStarted), m_hasDestroyed(other.m_hasDestroyed),
-      m_isBeingDestroyed(other.m_isBeingDestroyed), m_executionOrder(other.m_executionOrder),
-      m_componentId(other.m_componentId), m_prefabSourceId(std::exchange(other.m_prefabSourceId, 0)),
+      m_preparationReady(other.m_preparationReady), m_hasAwake(other.m_hasAwake), m_hasStarted(other.m_hasStarted),
+      m_hasDestroyed(other.m_hasDestroyed), m_isBeingDestroyed(other.m_isBeingDestroyed),
+      m_executionOrder(other.m_executionOrder), m_componentId(other.m_componentId),
+      m_prefabSourceId(std::exchange(other.m_prefabSourceId, 0)),
       m_prefabSourceGuid(std::move(other.m_prefabSourceGuid)), m_lifetimeGeneration(other.m_lifetimeGeneration)
 {
     // Update registry to point to this new address
@@ -75,6 +76,7 @@ Component &Component::operator=(Component &&other) noexcept
         m_gameObject = other.m_gameObject;
         m_enabled = other.m_enabled;
         m_wasEnabled = other.m_wasEnabled;
+        m_preparationReady = other.m_preparationReady;
         m_hasAwake = other.m_hasAwake;
         m_hasStarted = other.m_hasStarted;
         m_hasDestroyed = other.m_hasDestroyed;
@@ -128,6 +130,8 @@ bool Component::IsComponentType(const std::string &typeName) const
 
 void Component::CallAwake()
 {
+    if (!m_preparationReady)
+        return;
     if (const Scene *scene = m_gameObject ? m_gameObject->GetScene() : nullptr;
         scene && (scene->IsPreview() || (!scene->IsPlaying() && !WantsEditModeLifecycle())))
         return;
@@ -153,7 +157,7 @@ void Component::CallAwake()
 
 void Component::CallStart()
 {
-    if (m_hasStarted || m_hasDestroyed) {
+    if (m_hasStarted || m_hasDestroyed || !m_preparationReady) {
         return;
     }
     m_hasStarted = true;
@@ -164,7 +168,7 @@ void Component::CallOnEnable()
 {
     if (m_gameObject && m_gameObject->GetScene() && m_gameObject->GetScene()->IsPreview())
         return;
-    if (!m_hasAwake || m_wasEnabled || m_hasDestroyed) {
+    if (!m_hasAwake || m_wasEnabled || m_hasDestroyed || !m_preparationReady) {
         return;
     }
     m_wasEnabled = true;
@@ -197,9 +201,17 @@ void Component::CallOnDestroy()
     OnDestroy();
 }
 
+void Component::NotifyPresentationChanged() const
+{
+    if (!m_gameObject)
+        return;
+    SceneManager::Instance().NotifyAuthorPresentationChanged(m_gameObject);
+}
+
 void Component::CallOnValidate()
 {
     OnValidate();
+    NotifyPresentationChanged();
 }
 
 void Component::CallReset()
@@ -218,6 +230,7 @@ void Component::SetEnabled(bool enabled)
     }
 
     m_enabled = enabled;
+    NotifyPresentationChanged();
 
     // Enabled components enter or leave scene queries (camera discovery in
     // particular), so cached query results must observe this state change.

@@ -11,6 +11,7 @@ from infernux.lib._Infernux import (
 )
 from infernux.components.builtin.collider import Collider
 from infernux.coroutine import Coroutine
+from infernux.physics.participant import PhysicsBuildPlan
 
 _T = TypeVar("_T")
 
@@ -97,6 +98,12 @@ class InxComponent:
     # =========================================================================
     # Lifecycle methods — override in subclasses
     # =========================================================================
+
+    def build_physics(self, plan: "PhysicsBuildPlan") -> None:
+        """Declare GPU Work/state after restore or runtime attach, before Awake.
+        Schema/native-owner changes initialize a fresh generation; disable/enable preserves it.
+        """
+        ...
 
     def awake(self) -> None:
         """Called once when the component is first created."""

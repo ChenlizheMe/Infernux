@@ -569,20 +569,27 @@ InxMaterial::InxMaterial(const std::string &name) : m_name(name)
 
 InxMaterial::~InxMaterial()
 {
-    if (m_dependencyGraph)
+    if (m_dependencyGraph) {
         m_dependencyGraph->ClearRuntimeDependenciesOf(GetTextureDependencyOwner());
+        if (m_guid.empty())
+            m_dependencyGraph->ClearRuntimeDependenciesOf(GetMaterialKey());
+    }
 }
 
 void InxMaterial::BindDependencyGraph(std::shared_ptr<AssetDependencyGraph> graph)
 {
+    if (m_dependencyGraph == graph)
+        return;
     if (m_dependencyGraph && m_dependencyGraph != graph)
         throw std::logic_error("A published material belongs to a different asset database");
     m_dependencyGraph = std::move(graph);
+    PublishDependencies();
 }
 
 void InxMaterial::PublishDependencies()
 {
-    if (!m_dependencyGraph || m_guid.empty())
+    const auto graph = m_dependencyGraph ? m_dependencyGraph : AssetDependencyGraph::Current();
+    if (!graph)
         return;
     std::unordered_set<std::string> dependencies;
     for (const auto &[name, property] : m_properties) {
@@ -595,7 +602,13 @@ void InxMaterial::PublishDependencies()
     for (const auto *reference : {&m_vertexShader, &m_fragmentShader})
         if (!reference->guid.empty())
             dependencies.insert(reference->guid);
-    m_dependencyGraph->SetAssetDependencies(m_guid, dependencies);
+    if (!m_guid.empty())
+        graph->SetAssetDependencies(m_guid, dependencies);
+    else {
+        graph->ClearRuntimeDependenciesOf(GetMaterialKey());
+        for (const auto &guid : dependencies)
+            graph->AddRuntimeDependency(GetMaterialKey(), guid);
+    }
 }
 
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
@@ -670,6 +683,26 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     return *this;
 }
 
+void InxMaterial::AdvanceAuthorVersion()
+{
+    ++m_version;
+    NotifyPresentationContentChanged();
+}
+
+void InxMaterial::NotifyPresentationContentChanged()
+{
+    if (m_isRenderPublication)
+        return;
+    if (!m_dependencyGraph) {
+        if (const auto graph = AssetDependencyGraph::Current())
+            BindDependencyGraph(graph);
+    } else {
+        PublishDependencies();
+    }
+    if (m_dependencyGraph)
+        m_dependencyGraph->PublishContentChange(GetMaterialKey());
+}
+
 void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value)
 {
     const auto existing = m_properties.find(name);
@@ -689,6 +722,10 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
                 std::get<std::vector<glm::vec4>>(value).size())
             throw std::invalid_argument("material property '" + name + "' does not match the reflected array length");
     }
+    if (existing != m_properties.end() && type != MaterialPropertyType::Texture2D && existing->second.value == value &&
+        !existing->second.inheritsShaderDefault &&
+        (!m_rendererMaterialOverrides || m_rendererMaterialOverrides->properties.count(name)))
+        return;
     if (m_renderTextures.erase(name) || replacesTexture)
         m_textureAssetsPending = true;
     if (m_rendererMaterialOverrides)
@@ -701,7 +738,7 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
                                            : std::string{};
     m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range, textureDefault};
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
     if (replacesTexture)
         PublishDependencies();
 }
@@ -869,7 +906,7 @@ void InxMaterial::SetRenderTexture(const std::string &name, std::shared_ptr<rhi:
     m_runtimeTextureOverrides.insert(name);
     m_textureAssetsPending = true;
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
 }
 
 std::shared_ptr<rhi::RenderTexture> InxMaterial::GetRenderTexture(const std::string &name) const
@@ -885,7 +922,7 @@ void InxMaterial::SetBuffer(const std::string &name, std::shared_ptr<rhi::Comput
     if (!buffer) {
         if (m_buffers.erase(name) != 0) {
             m_propertiesDirty = true;
-            ++m_version;
+            AdvanceAuthorVersion();
         }
         return;
     }
@@ -906,7 +943,7 @@ void InxMaterial::SetBuffer(const std::string &name, std::shared_ptr<rhi::Comput
 #endif
     m_buffers[name] = std::move(buffer);
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
 }
 
 std::shared_ptr<rhi::ComputeBuffer> InxMaterial::GetBuffer(const std::string &name) const
@@ -978,7 +1015,7 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     m_properties[name] =
         MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr, range, textureDefault};
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
 
     PublishDependencies();
 }
@@ -989,7 +1026,7 @@ void InxMaterial::ClearTexture(const std::string &name)
     m_textureAssetsPending = true;
     if (m_renderTextures.erase(name)) {
         m_propertiesDirty = true;
-        ++m_version;
+        AdvanceAuthorVersion();
     }
     auto it = m_properties.find(name);
     if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
@@ -1001,7 +1038,7 @@ void InxMaterial::ClearTexture(const std::string &name)
             return;
         it->second.value = std::string{};
         m_propertiesDirty = true;
-        ++m_version;
+        AdvanceAuthorVersion();
         PublishDependencies();
     }
 }
@@ -1023,7 +1060,7 @@ bool InxMaterial::RemoveProperty(const std::string &name)
     InvalidateShaderSelection();
     m_properties.erase(it);
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
     PublishDependencies();
     return true;
 }
@@ -1577,7 +1614,7 @@ void InxMaterial::SetShader(const std::string &name)
     if (switched)
         ResetRenderStateAuthorship();
     m_pipelineDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
     NotifyRoutingChanged();
     PublishDependencies();
 }
@@ -1711,7 +1748,7 @@ void InxMaterial::PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers)
     }
     m_pipelineDirty = true;
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
     NotifyRoutingChanged();
     TrackRuntimeShaderReferences();
     PublishDependencies();
@@ -2124,7 +2161,7 @@ void InxMaterial::SetTextureSampler(const std::string &name, const MaterialTextu
         return;
     m_textureSamplers[name] = sampler;
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
 }
 
 const MaterialTextureSampler *InxMaterial::GetTextureSampler(const std::string &name) const noexcept
@@ -2140,7 +2177,7 @@ void InxMaterial::ClearTextureSampler(const std::string &name)
     if (m_textureSamplers.erase(name) == 0)
         return;
     m_propertiesDirty = true;
-    ++m_version;
+    AdvanceAuthorVersion();
 }
 
 void InxMaterial::SetFloatArray(const std::string &name, const std::vector<float> &values)

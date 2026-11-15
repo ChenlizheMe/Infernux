@@ -1792,7 +1792,7 @@ std::unordered_set<std::string> AssetDatabase::PublishQuerySnapshotForPaths(cons
     }
 
     snapshot->catalog = std::move(catalog);
-    BuildShaderPathIndex(*snapshot);
+    BuildShaderIdIndex(*snapshot);
     InstallQuerySnapshot(std::move(snapshot));
     return changedSubAssets;
 }
@@ -2259,16 +2259,15 @@ void AssetDatabase::BeginRuntimeAssetCatalog(const std::string &packageRoot, con
                 auto roots = previous->runtimeArtifactRoots
                                  ? std::make_shared<RuntimeArtifactRoots>(*previous->runtimeArtifactRoots)
                                  : std::make_shared<RuntimeArtifactRoots>();
-                auto shaderPaths = previous->shaderPaths;
+                auto shaderGuids = previous->shaderGuids;
                 for (const auto &guid : newGuids) {
                     roots->emplace(guid, contentRoot);
                     auto key = ShaderPathIndexKey(*preparation->workingSet.metas.at(guid));
-                    if (!key.empty() &&
-                        !shaderPaths.try_emplace(key, preparation->workingSet.guidToPath.at(guid)).second)
+                    if (!key.empty() && !shaderGuids.try_emplace(key, guid).second)
                         throw std::runtime_error("runtime content conflicts with a published shader: " + key);
                 }
                 preparation->query->runtimeArtifactRoots = std::move(roots);
-                preparation->query->shaderPaths = std::move(shaderPaths);
+                preparation->query->shaderGuids = std::move(shaderGuids);
                 preparation->documents["asset_guids"] = std::move(newGuids);
             } catch (...) {
                 preparation->failure = std::current_exception();
@@ -4252,7 +4251,7 @@ std::shared_ptr<AssetDatabase::QuerySnapshot> AssetDatabase::BuildQuerySnapshotA
             throw std::logic_error("Query snapshot build found null metadata");
         snapshot->metas.emplace(guid, metadata);
     }
-    BuildShaderPathIndex(*snapshot);
+    BuildShaderIdIndex(*snapshot);
     for (const auto &[guid, result] : importResults)
         if (!result.succeeded)
             snapshot->importErrors.emplace(guid, result.error);
@@ -6693,10 +6692,24 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
 
 std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const std::string &shaderType) const
 {
+    const auto snapshot = LoadQuerySnapshot();
+    const auto guid = FindShaderGuidInCatalog(*snapshot, shaderId, shaderType);
+    const auto path = snapshot->guidToPath.find(guid);
+    return path == snapshot->guidToPath.end() ? std::string{} : path->second;
+}
+
+std::string AssetDatabase::FindShaderGuidById(const std::string &shaderId, const std::string &shaderType) const
+{
+    return FindShaderGuidInCatalog(*LoadQuerySnapshot(), shaderId, shaderType);
+}
+
+std::string AssetDatabase::FindShaderGuidInCatalog(const QuerySnapshot &snapshot, const std::string &shaderId,
+                                                   const std::string &shaderType)
+{
     if (shaderType.empty()) {
         std::string path;
         for (const auto &kind : asset_formats::kShaderSourceKinds) {
-            const auto candidate = FindShaderPathById(shaderId, std::string(kind.stage));
+            const auto candidate = FindShaderGuidInCatalog(snapshot, shaderId, std::string(kind.stage));
             if (candidate.empty())
                 continue;
             if (!path.empty() && path != candidate)
@@ -6714,18 +6727,17 @@ std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const
         stage = shaderType;
     }
 
-    const auto snapshot = LoadQuerySnapshot();
-    const auto found = snapshot->shaderPaths.find(stage + ":" + shaderId);
-    if (found == snapshot->shaderPaths.end())
+    const auto found = snapshot.shaderGuids.find(stage + ":" + shaderId);
+    if (found == snapshot.shaderGuids.end())
         return {};
     if (found->second.empty())
         throw std::invalid_argument("Shader ID is ambiguous: " + shaderId + "; use an asset GUID or path");
     return found->second;
 }
 
-void AssetDatabase::BuildShaderPathIndex(QuerySnapshot &snapshot)
+void AssetDatabase::BuildShaderIdIndex(QuerySnapshot &snapshot)
 {
-    snapshot.shaderPaths.clear();
+    snapshot.shaderGuids.clear();
     for (const auto &[guid, meta] : snapshot.metas) {
         if (!meta)
             continue;
@@ -6734,8 +6746,8 @@ void AssetDatabase::BuildShaderPathIndex(QuerySnapshot &snapshot)
             continue;
         const auto path = snapshot.guidToPath.find(guid);
         if (path != snapshot.guidToPath.end()) {
-            const auto [found, inserted] = snapshot.shaderPaths.try_emplace(std::move(key), path->second);
-            if (!inserted && found->second != path->second)
+            const auto [found, inserted] = snapshot.shaderGuids.try_emplace(std::move(key), guid);
+            if (!inserted && found->second != guid)
                 found->second.clear();
         }
     }

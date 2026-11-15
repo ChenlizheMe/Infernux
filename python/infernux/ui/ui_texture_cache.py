@@ -92,6 +92,8 @@ class UITextureCache:
             query = getattr(native, "_get_imported_texture_ui_texture_id", None)
             if not callable(query):
                 raise RuntimeError("The current engine lacks GUID-backed UI texture binding")
+            if _Infernux.__runtime_profile__ == "desktop":
+                _Infernux._observe_presentation_asset(guid)
             key = f"ui_img|{guid}"
             tid, pending = query(key, guid)
             tid = int(tid)

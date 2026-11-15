@@ -280,6 +280,9 @@ class WorldRuntime:
         from infernux.components.serializable_object import _SHARED_SERIALIZABLE_REGISTRY
         self.identity = int(identity)
         self.initializing = True
+        self.physics_plans = {}
+        self.prepared_component_activation = ()
+        self.physics_preparations = {}
         self.type_registrations = {key: value for key, value in _author_type_registrations.items()
                                    if not value.project_script}
         self.script_registrations = {}
@@ -318,6 +321,13 @@ class WorldRuntime:
         self.epoch = RuntimeRevisionEpoch(0, {})
 
     def begin_retirement(self):
+        from infernux.physics.participant import _retire_component_physics
+        for plan in tuple(self.physics_plans.values()):
+            if plan._component is not None:
+                _retire_component_physics(plan._component)
+        self.physics_plans.clear()
+        self.prepared_component_activation = ()
+        self.physics_preparations.clear()
         self.initializing = False
         transaction = self.scene_loads._active_scene_transaction
         if transaction is not None and not transaction.is_complete:
@@ -353,6 +363,9 @@ class RuntimeWorldSession:
         self.records = tuple(item.snapshot._python_component_records() for item in self.sources)
         self.scene_service = scene_service
         self._preparations = deque()
+        self._component_activations = deque()
+        self._prefer_component_preparation = False
+        self.initial_handle = None
         self.closed = False
         if engine._runtime_world_session is not None:
             raise RuntimeError('an initial-world template is already installed')
@@ -386,15 +399,12 @@ class RuntimeWorldSession:
         if type(count) is not int or count < 1:
             raise ValueError('initial world count must be a positive integer')
         handles = tuple(self.reserve() for _ in range(count))
-        self.request_create(handles[1:])
-        handle = handles[0]
-        for _ in self._prepare(handle, start_play=False):
-            pass
-        if self.closed or handle.destroy_requested or handle.retirement_outcome == 'cancelled':
-            raise RuntimeWorldInitializationCancelled(handle.error)
-        if handle.state != 'ready':
-            raise RuntimeError(handle.error or 'initial world preparation failed')
-        return int(handle.id)
+        self.initial_handle = handles[0]
+        # Every world uses the same budgeted source/generator, including the first.
+        for index, handle in enumerate(handles):
+            self._preparations.append((handle, self._prepare(handle, start_play=bool(index))))
+        self.pump()
+        return int(self.initial_handle.id)
 
     def initialization_current(self, handle, *, started=False):
         """Check the captured owner after a user lifecycle callback returns."""
@@ -498,6 +508,21 @@ class RuntimeWorldSession:
                 with _Infernux._RuntimeWorldScope(identity):
                     instance._call_on_after_deserialize()
                 yield
+            from infernux.physics.participant import _build_component_physics
+            for _target, component, _native in attached:
+                with _Infernux._RuntimeWorldScope(identity):
+                    _build_component_physics(component)
+                yield
+            while True:
+                with _Infernux._RuntimeWorldScope(identity):
+                    from infernux.lib import Physics
+                    ready = Physics._participants_ready()
+                if ready and not domain.physics_preparations:
+                    break
+                if self.closed or handle.destroy_requested:
+                    raise GeneratorExit
+                yield False
+            domain.prepared_component_activation = tuple(attached)
             with _Infernux._RuntimeWorldScope(identity):
                 if self.scene_service is not None:
                     domain.scene_loads._runtime_scene_service = self.scene_service.clone_for_runtime(
@@ -513,6 +538,8 @@ class RuntimeWorldSession:
                 raise GeneratorExit
             paused = self._is_paused()
             with _Infernux._RuntimeWorldScope(identity):
+                if start_play:
+                    self._release_component_activation(identity)
                 if not manager._publish_runtime_world(identity):
                     handle.error = 'RuntimeWorld publication was cancelled'
                     handle.retirement_outcome = 'cancelled'
@@ -602,8 +629,11 @@ class RuntimeWorldSession:
 
     def _describe_preparations(self):
         from infernux.lib import _Infernux
-        pending = not self.closed and bool(self._preparations)
-        candidate = (_Infernux._FrameWorkCandidate(self._preparations[0][0].id, 0, True)
+        pending = not self.closed and bool(self._preparations or self._component_activations)
+        component_first = bool(self._component_activations) and (not self._preparations or self._prefer_component_preparation)
+        identity = (self._component_activations[0][0] if component_first else
+                    self._preparations[0][0].id if self._preparations else 0)
+        candidate = (_Infernux._FrameWorkCandidate(identity, 0, True)
                      if pending else _Infernux._FrameWorkCandidate())
         return _Infernux._FrameWorkFacts(host=candidate, pending=pending)
 
@@ -611,8 +641,30 @@ class RuntimeWorldSession:
         from infernux.engine.runtime_dispatch import assert_runtime_owner_thread, _assert_world_dispatch_safe_point
         assert_runtime_owner_thread()
         work = self.engine._frame_work
-        if (self.closed or gpu or not self._preparations or not work.active or not work.accepting
-                or work.remaining(background=True) <= 0 or self._preparations[0][0].id != token):
+        if (self.closed or gpu or not work.active or not work.accepting
+                or work.remaining(background=True) <= 0):
+            return False
+        component_first = bool(self._component_activations) and (not self._preparations or self._prefer_component_preparation)
+        self._prefer_component_preparation = not component_first
+        if component_first:
+            if not self._component_activations or self._component_activations[0][0] != token:
+                return False
+            identity, preparation = self._component_activations.popleft()
+            domain = self.engine._world_runtimes.get(identity)
+            from infernux.lib import SceneManager, _Infernux
+            handle = SceneManager.instance()._get_runtime_world_handle(identity)
+            if domain is None or handle is None or handle.state not in {'preparing', 'ready'}:
+                preparation.cancel()
+                return True
+            with _Infernux._RuntimeWorldScope(identity):
+                if preparation.requires_dispatch_safe_point:
+                    _assert_world_dispatch_safe_point(domain)
+                result = preparation.advance()
+                if result is not True:
+                    self._component_activations.append((identity, preparation))
+                    return result is None
+            return True
+        if not self._preparations or self._preparations[0][0].id != token:
             return False
         handle, preparation = self._preparations[0]
         domain = self.engine._world_runtimes.get(int(handle.id))
@@ -628,18 +680,41 @@ class RuntimeWorldSession:
         # FrameWorkOwner accounts this complete synchronous quantum, then
         # chooses a peer source before it can choose our next world again.
         try:
-            next(preparation)
+            progress = next(preparation)
         except StopIteration:
-            pass
-        else:
-            self._preparations.append((handle, preparation))
-        return True
+            return True
+        self._preparations.append((handle, preparation))
+        return progress is not False
+
+    def _release_component_activation(self, identity):
+        from infernux.lib import _Infernux
+        from infernux.physics.participant import _activate_components
+        domain = self.engine._world_runtimes[int(identity)]
+        with _Infernux._RuntimeWorldScope(int(identity)):
+            _activate_components(domain.prepared_component_activation, activate=False)
+        domain.prepared_component_activation = ()
+
+    def release_initial_components(self):
+        # Readiness is complete; release flags in the same quantum as first Play.
+        self._release_component_activation(self.initial_handle.id)
+
+    def defer_component_activation(self, identity, attached, *, build=False, rebuild=False):
+        from infernux.physics.participant import _ComponentPreparation
+        preparation = _ComponentPreparation(int(identity), attached, build=build, rebuild=rebuild)
+        self._component_activations.append((int(identity), preparation))
+        self.pump()
+
+    def defer_participant_observation(self, identity, lease):
+        # Reuse the finite preparation queue and its original Host source.
+        from infernux.physics.participant import _ParticipantObservation
+        self._component_activations.append((int(identity), _ParticipantObservation(lease)))
+        self.pump()
 
     def pump(self):
         """Advertise ready preparation to the existing Host work driver."""
         from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
         assert_runtime_owner_thread()
-        if not self.closed and self._preparations:
+        if not self.closed and (self._preparations or self._component_activations):
             self.engine._frame_work.wake(self._source)
 
     def close(self):
@@ -655,6 +730,9 @@ class RuntimeWorldSession:
             else:
                 self._cancel_reservation(handle, 'Play session closed')
         self._preparations.clear()
+        for _identity, preparation in self._component_activations:
+            preparation.cancel()
+        self._component_activations.clear()
         for handle in manager._managed_runtime_world_handles:
             if handle.state == 'preparing':
                 self._cancel_reservation(handle, 'Play session closed')

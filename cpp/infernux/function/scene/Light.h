@@ -100,7 +100,7 @@ class Light : public Component
     }
     void SetLightType(LightType type)
     {
-        m_lightType = type;
+        SetPresentationValue(m_lightType, decltype(m_lightType)(type));
     }
 
     // ========================================================================
@@ -114,12 +114,12 @@ class Light : public Component
     }
     void SetColor(const glm::vec3 &color)
     {
-        m_color = color;
+        SetPresentationValue(m_color, decltype(m_color)(color));
         UpdateEffectiveColorCache();
     }
     void SetColor(float r, float g, float b)
     {
-        m_color = glm::vec3(r, g, b);
+        SetPresentationValue(m_color, decltype(m_color)(glm::vec3(r, g, b)));
         UpdateEffectiveColorCache();
     }
 
@@ -129,7 +129,7 @@ class Light : public Component
     }
     void SetUseColorTemperature(bool enabled)
     {
-        m_useColorTemperature = enabled;
+        SetPresentationValue(m_useColorTemperature, decltype(m_useColorTemperature)(enabled));
         UpdateEffectiveColorCache();
     }
     [[nodiscard]] LightColorMode GetColorMode() const
@@ -148,7 +148,8 @@ class Light : public Component
     void SetColorTemperature(float kelvin)
     {
         if (std::isfinite(kelvin))
-            m_colorTemperature = glm::clamp(kelvin, 1000.0f, 20000.0f);
+            SetPresentationValue(m_colorTemperature,
+                                 decltype(m_colorTemperature)(glm::clamp(kelvin, 1000.0f, 20000.0f)));
         UpdateEffectiveColorCache();
     }
 
@@ -165,7 +166,7 @@ class Light : public Component
     }
     void SetIntensity(float intensity)
     {
-        m_intensity = std::max(intensity, 0.0f);
+        SetPresentationValue(m_intensity, decltype(m_intensity)(std::max(intensity, 0.0f)));
     }
 
     /// @brief Get final emitted color in linear RGB, including intensity.
@@ -185,7 +186,7 @@ class Light : public Component
     }
     void SetRange(float range)
     {
-        m_range = std::max(range, 0.001f);
+        SetPresentationValue(m_range, decltype(m_range)(std::max(range, 0.001f)));
     }
 
     // ========================================================================
@@ -199,7 +200,8 @@ class Light : public Component
     }
     void SetSpotAngle(float angle)
     {
-        m_spotAngle = glm::clamp(angle, 0.1f, std::max(m_outerSpotAngle, 0.1f));
+        SetPresentationValue(m_spotAngle,
+                             decltype(m_spotAngle)(glm::clamp(angle, 0.1f, std::max(m_outerSpotAngle, 0.1f))));
     }
 
     /// @brief Get outer spot angle in degrees
@@ -209,7 +211,8 @@ class Light : public Component
     }
     void SetOuterSpotAngle(float angle)
     {
-        m_outerSpotAngle = glm::clamp(angle, std::max(m_spotAngle, 0.1f), 179.0f);
+        SetPresentationValue(m_outerSpotAngle,
+                             decltype(m_outerSpotAngle)(glm::clamp(angle, std::max(m_spotAngle, 0.1f), 179.0f)));
     }
 
     [[nodiscard]] glm::vec2 GetAreaSize() const
@@ -218,7 +221,7 @@ class Light : public Component
     }
     void SetAreaSize(const glm::vec2 &size)
     {
-        m_areaSize = glm::max(size, glm::vec2(0.001f));
+        SetPresentationValue(m_areaSize, decltype(m_areaSize)(glm::max(size, glm::vec2(0.001f))));
     }
     [[nodiscard]] bool GetAreaTwoSided() const
     {
@@ -226,7 +229,7 @@ class Light : public Component
     }
     void SetAreaTwoSided(bool twoSided)
     {
-        m_areaTwoSided = twoSided;
+        SetPresentationValue(m_areaTwoSided, decltype(m_areaTwoSided)(twoSided));
     }
 
     // ========================================================================
@@ -239,7 +242,7 @@ class Light : public Component
     }
     void SetShadows(LightShadows shadows)
     {
-        m_shadows = shadows;
+        SetPresentationValue(m_shadows, decltype(m_shadows)(shadows));
     }
 
     [[nodiscard]] float GetShadowStrength() const
@@ -248,7 +251,7 @@ class Light : public Component
     }
     void SetShadowStrength(float strength)
     {
-        m_shadowStrength = glm::clamp(strength, 0.0f, 1.0f);
+        SetPresentationValue(m_shadowStrength, decltype(m_shadowStrength)(glm::clamp(strength, 0.0f, 1.0f)));
     }
 
     [[nodiscard]] float GetShadowBias() const
@@ -267,7 +270,7 @@ class Light : public Component
     }
     void SetShadowSoftness(float softness)
     {
-        m_shadowSoftness = glm::clamp(softness, 0.25f, 8.0f);
+        SetPresentationValue(m_shadowSoftness, decltype(m_shadowSoftness)(glm::clamp(softness, 0.25f, 8.0f)));
     }
 
     // ========================================================================
@@ -280,7 +283,7 @@ class Light : public Component
     }
     void SetRenderMode(LightRenderMode mode)
     {
-        m_renderMode = mode;
+        SetPresentationValue(m_renderMode, decltype(m_renderMode)(mode));
     }
 
     /// @brief Get culling mask (which layers this light affects)
@@ -290,7 +293,7 @@ class Light : public Component
     }
     void SetCullingMask(uint32_t mask)
     {
-        m_cullingMask = mask;
+        SetPresentationValue(m_cullingMask, decltype(m_cullingMask)(mask));
     }
 
     [[nodiscard]] uint32_t GetInfluenceDomains() const
@@ -325,7 +328,7 @@ class Light : public Component
     }
     void SetBaked(bool baked)
     {
-        m_baked = baked;
+        SetPresentationValue(m_baked, decltype(m_baked)(baked));
     }
 
     // ========================================================================
@@ -374,7 +377,8 @@ class Light : public Component
     void SetInfluenceDomain(LightInfluenceDomain domain, bool enabled)
     {
         const uint32_t bit = static_cast<uint32_t>(domain);
-        m_influenceDomains = enabled ? (m_influenceDomains | bit) : (m_influenceDomains & ~bit);
+        SetPresentationValue(m_influenceDomains, decltype(m_influenceDomains)(enabled ? (m_influenceDomains | bit)
+                                                                                      : (m_influenceDomains & ~bit)));
     }
 };
 

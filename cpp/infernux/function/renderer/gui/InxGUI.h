@@ -118,8 +118,18 @@ class InxGUI
     /// ownedBytes charges an exclusively handed-off preview image. Borrowed
     /// asset/RenderTexture views keep zero to avoid counting their owners twice.
     uint64_t PublishTextureViewForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> texture,
-                                        bool pinned = false, uint64_t ownedBytes = 0);
-    uint64_t PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture);
+                                        bool pinned = false, uint64_t ownedBytes = 0, bool displayEncoded = false);
+    uint64_t PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture,
+                                          bool displayEncoded = false);
+    struct FrameImage
+    {
+        uint64_t textureId = 0;
+        std::shared_ptr<const void> pixels;
+    };
+    /// A cached editor image resolves completed pixels at native command recording,
+    /// independently of Python layout frequency. The returned ID is layout-only.
+    uint64_t PublishLiveImageForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> initialView,
+                                      std::function<FrameImage()> resolve);
     [[nodiscard]] vk::RenderGraph::PersistentImageInitializations TakeRenderTextureInitializations();
     /// Explicit CPU consumer; ordinary GUI display never requests this copy.
     std::shared_ptr<vk::ImageReadbackTicket> RequestTextureReadback(const std::string &name);
@@ -325,6 +335,22 @@ class InxGUI
     bool m_playerMode = false;
     bool m_hasDrawData = false;
     bool m_presentationGeometryMismatch = false;
+    bool m_recordingFrameImages = false;
+    struct LiveImageBinding
+    {
+        std::string name;
+        std::function<FrameImage()> resolve;
+        uint64_t lastUsedFrame = 0;
+    };
+    struct ImageCommandOverride
+    {
+        ImDrawCmd *command;
+        ImTextureRef texture;
+        ImVec4 clip;
+    };
+    std::unordered_map<uint64_t, LiveImageBinding> m_liveImageBindings;
+    std::vector<ImageCommandOverride> m_imageCommandOverrides;
+    std::vector<std::pair<uint64_t, FrameImage>> m_resolvedFrameImages;
     EditorGuiInputRearmBudget m_syntheticInputRearm;
     EditorGuiFrameScheduler m_editorFrameScheduler;
 

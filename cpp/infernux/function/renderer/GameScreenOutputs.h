@@ -15,6 +15,7 @@
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VulkanQueueManager.h"
 #include <algorithm>
+#include <core/log/InxLog.h>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -35,6 +36,7 @@ class GameScreenOutputs final
         std::shared_ptr<rhi::RenderTexture> texture;
         mutable uint64_t textureId = 0;
         mutable bool registered = false;
+        mutable bool guiDisplayEncoded = false;
         mutable std::vector<uint64_t> guiDescriptors;
     };
     struct Slot
@@ -49,6 +51,11 @@ class GameScreenOutputs final
         GameScreenOutputConfig config;
         rhi::SampleCount samples = rhi::SampleCount::One;
         bool retired = false;
+        uint64_t guiRecordedSequence = 0, guiRecordingCount = 0;
+        GameScreenColorContract colorContract;
+        OwnedDiagnostic colorDiagnostic;
+        OwnedDiagnostic preserveColorDiagnostic;
+        OwnedDiagnostic allocationDiagnostic;
         bool workWithheld = false;
         bool waitingForPublication = false;
         bool forceSample = false, requiredBufferWork = false;
@@ -267,10 +274,9 @@ class GameScreenOutputs final
                 std::any_of(slot->pixels->guiDescriptors.begin(), slot->pixels->guiDescriptors.end(),
                             [this](uint64_t id) { return m_gui.IsTextureReferencedByCurrentDrawData(id); });
             if (slot->pixels.use_count() == 1 && !guiUsesPixels) {
-                Unregister(*slot->pixels);
-                slot->pixels->guiDescriptors.clear();
                 admit(slot);
                 output->workWithheld = false;
+                output->allocationDiagnostic.Reset();
                 output->error.clear();
                 return true;
             }
@@ -308,10 +314,15 @@ class GameScreenOutputs final
             output->slots.push_back(slot);
             admit(slot);
             output->workWithheld = false;
+            output->allocationDiagnostic.Reset();
             output->error.clear();
             return true;
         } catch (const std::exception &error) {
             output->error = error.what();
+            if (!output->allocationDiagnostic)
+                output->allocationDiagnostic = InxLog::GetInstance().CreateOwnedDiagnostic(
+                    "WorldScreen/" + std::to_string(worldId), "screen.allocation");
+            output->allocationDiagnostic.Set(LOG_ERROR, output->error);
             output->workWithheld = true;
             return false;
         }
@@ -461,6 +472,8 @@ class GameScreenOutputs final
         result.pendingSamples = output->pending.size();
         result.allocatedSlots = output->slots.size();
         result.hasCompletedSample = static_cast<bool>(output->front);
+        result.guiRecordedSequence = output->guiRecordedSequence;
+        result.guiRecordingCount = output->guiRecordingCount;
         result.hasPresentationConsumer =
             std::any_of(output->consumers.begin(), output->consumers.end(),
                         [](const auto &entry) { return entry.second.kind == GameScreenConsumerKind::Presentation; });
@@ -484,6 +497,57 @@ class GameScreenOutputs final
         }
     }
 
+    bool ValidateColorContract(uint64_t worldId, const GameScreenColorContract &contract, bool checkPrevious = true)
+    {
+        auto output = Ensure(worldId);
+        if (!contract.hasColor) {
+            output->colorDiagnostic.Reset();
+            output->preserveColorDiagnostic.Reset();
+            output->allocationDiagnostic.Reset();
+            output->colorContract = {};
+            output->error.clear();
+            output->workWithheld = false;
+            return true;
+        }
+        const auto previous = output->lastAccepted;
+        const bool mixedPrevious = checkPrevious && contract.preservesPreviousColor && previous && output->admission &&
+                                   previous->generation == output->admission->generation &&
+                                   previous->displayEncoded != contract.firstDisplayEncoded;
+        if (contract.compatible)
+            output->colorDiagnostic.Reset();
+        if (checkPrevious && !mixedPrevious)
+            output->preserveColorDiagnostic.Reset();
+        if (!contract.compatible || mixedPrevious) {
+            const std::string message =
+                mixedPrevious
+                    ? "Screen color encoding changed while a Camera preserves the previous image. Use a full color "
+                      "clear "
+                      "or keep the previous output encoding."
+                    : "Screen Cameras preserve pixels with different output color encodings. All contributing Cameras "
+                      "must use the same encoding, or begin with a full color clear.";
+            auto &diagnostic = mixedPrevious ? output->preserveColorDiagnostic : output->colorDiagnostic;
+            if (!diagnostic)
+                diagnostic = InxLog::GetInstance().CreateOwnedDiagnostic(
+                    "WorldScreen/" + std::to_string(worldId),
+                    mixedPrevious ? "screen.preserve_color_encoding" : "screen.color_encoding");
+            diagnostic.Set(LOG_ERROR, message);
+            output->error = message;
+            output->workWithheld = true;
+            if (checkPrevious) {
+                // These CPU plans were rejected before submission. Release the
+                // admission so it cannot pin the rejected source indefinitely.
+                output->work.reset();
+                output->admission.reset();
+            }
+            return false;
+        }
+        if (checkPrevious) {
+            output->colorContract = contract;
+            output->error.clear();
+        }
+        return true;
+    }
+
     /// Output completion gets a distinct public-plan work item and batch ticket.
     /// No per-World submitter, frame fence, image resolve or full-image copy.
     uint32_t AppendCompletion(vk::VulkanFrameSubmission &submission, uint64_t worldId,
@@ -503,7 +567,11 @@ class GameScreenOutputs final
         sample->sequence = output->nextSequence++;
         sample->outputId = output->id;
         sample->completedWorldFrame = source->CompletedWorldFrame();
+        sample->pausedAuthorPresentation = source->IsPausedAuthorPresentation();
+        sample->presentationRevision = source->PausedAuthor().revision;
+        sample->baseCompletedWorldFrame = source->PausedAuthor().baseCompletedWorldFrame;
         sample->simulationEpoch = source->SimulationEpoch();
+        sample->displayEncoded = output->colorContract.displayEncoded;
         sample->source = source;
         sample->admission = admission;
         sample->image = output->work->pixels->texture->Acquire();
@@ -561,8 +629,6 @@ class GameScreenOutputs final
                     continue;
                 }
                 if (!output->retired && (!output->front || sample->sequence > output->front->sequence)) {
-                    if (output->front)
-                        Unregister(*std::static_pointer_cast<const PixelStorage>(output->front->storageOwner));
                     output->front = sample;
                 }
                 it = pending.erase(it);
@@ -634,6 +700,12 @@ class GameScreenOutputs final
     }
     void Reconfigure(Output &output, bool rasterChanged = true)
     {
+        output.allocationDiagnostic.Reset();
+        if (output.consumers.empty() && !output.requiredBufferWork) {
+            output.colorDiagnostic.Reset();
+            output.preserveColorDiagnostic.Reset();
+            output.colorContract = {};
+        }
         if (rasterChanged)
             ++output.generation;
         output.error.clear();

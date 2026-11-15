@@ -294,6 +294,7 @@ def play_host(engine, monkeypatch):
     from infernux.renderstack.render_stack import RenderStack
 
     host = Engine.__new__(Engine)
+    host._screen_ui_submission = None
     host._engine = engine
     host._mode = RuntimeMode.Graphical
     host._application_role = "editor"
@@ -331,5 +332,9 @@ def play_host(engine, monkeypatch):
                 host._authoring_scheduler.unbind_native_bridge()
                 host._authoring_scheduler.clear()
                 host._runtime_scene_manager = None
+                # Match Engine.exit after world/work retirement, while this
+                # Python owner is still bound to its native compute lease.
+                from infernux.compute import _release_engine_resources
+                _release_engine_resources()
                 Application._unbind_engine(host)
                 host._engine = None

@@ -412,6 +412,8 @@ class Engine(WorkRuntime):
             engine = engine_ref()
             if engine is None:
                 return
+            if engine._screen_ui_submission is not None:
+                engine._screen_ui_submission.retire_world(identity)
             if int(identity) == int(scene_manager._authoring_runtime_world_id):
                 from infernux.core.assets import AssetManager
                 AssetManager.release_engine(engine)
@@ -484,10 +486,20 @@ class Engine(WorkRuntime):
             engine = engine_ref()
             if engine is None:
                 return True
-            if not engine._runtime_scheduler.resume_native_result_boundary(barrier):
+            from infernux.engine.runtime_worlds import current_world_runtime
+            domain = current_world_runtime()
+            scheduler = domain.scheduler if domain is not None else engine._authoring_scheduler
+            world = scheduler.world_id
+            if (domain is not None and domain.physics_preparations and barrier.name in {
+                    'FIXED_SCRIPT', 'PHYSICS_SIMULATION', 'PHYSICS_POST_SCRIPT',
+                    'UPDATE_SCRIPT', 'LATE_SCRIPT', 'ANIMATION_EVALUATION'}):
+                # Keep this logical interval/cursor; the ordinary Host still
+                # drives preparation, IO and receipts outside Scene callbacks.
+                return False
+            if not scheduler.resume_native_result_boundary(barrier):
                 return False
             boundary = {'PHYSICS_SIMULATION': 'physics', 'RENDER_EXTRACTION': 'render'}.get(barrier.name)
-            if boundary is None:
+            if boundary is None or not engine._result_consumers:
                 return True
             from infernux.execution import simulation_state
             state = simulation_state()
@@ -499,7 +511,7 @@ class Engine(WorkRuntime):
             while index < len(engine._result_consumers):
                 consumer = engine._result_consumers[index]
                 index += 1
-                if consumer._world_id != int(scene_manager._current_runtime_world_id):
+                if consumer._world_id != world:
                     continue
                 if consumer.boundary == 'render_input' and boundary == 'render':
                     resolution = consumer._resolve(scene_manager)
@@ -1545,6 +1557,9 @@ class Engine(WorkRuntime):
 
     def _acquire_game_screen(self, world):
         return self._engine._acquire_game_screen(world)
+
+    def _game_screen_live_image(self, world):
+        return self._engine._game_screen_live_image(int(world))
 
     def _game_screen_image(self, sample):
         return self._engine._game_screen_image(sample)

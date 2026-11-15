@@ -74,6 +74,7 @@ class SceneManager
 
     [[nodiscard]] RuntimeWorld &CurrentWorld() noexcept;
     [[nodiscard]] const RuntimeWorld &CurrentWorld() const noexcept;
+    [[nodiscard]] const RuntimeWorld *QueryWorld() const noexcept;
     [[nodiscard]] uint64_t GetCurrentRuntimeWorldId() const noexcept;
 
     /// Authoring and runtime ownership stay distinct; Scene identities never move between them.
@@ -142,7 +143,8 @@ class SceneManager
     /// @brief Get the currently active scene
     [[nodiscard]] Scene *GetActiveScene() const
     {
-        return CurrentWorld().scenes.active;
+        const auto *world = QueryWorld();
+        return world ? world->scenes.active : nullptr;
     }
 
     /// Publish an explicit time jump in the active world. This is intentionally
@@ -179,18 +181,22 @@ class SceneManager
     [[nodiscard]] Scene *GetSceneByWorldId(uint64_t worldId) const noexcept;
     [[nodiscard]] Scene *GetSceneAt(size_t index) const
     {
-        return index < CurrentWorld().scenes.loaded.size() ? CurrentWorld().scenes.loaded[index].get() : nullptr;
+        const auto *world = QueryWorld();
+        return world && index < world->scenes.loaded.size() ? world->scenes.loaded[index].get() : nullptr;
     }
 
     /// @brief Get all loaded scenes
     [[nodiscard]] const std::vector<std::unique_ptr<Scene>> &GetAllScenes() const
     {
-        return CurrentWorld().scenes.loaded;
+        static const std::vector<std::unique_ptr<Scene>> empty;
+        const auto *world = QueryWorld();
+        return world ? world->scenes.loaded : empty;
     }
 
     [[nodiscard]] size_t GetSceneCount() const
     {
-        return CurrentWorld().scenes.loaded.size();
+        const auto *world = QueryWorld();
+        return world ? world->scenes.loaded.size() : 0;
     }
 
     // ========================================================================
@@ -207,8 +213,9 @@ class SceneManager
     void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta = false);
     void BindRuntimeFrameWork(FrameWorkOwner &work);
     void SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
-                                             std::function<void(uint64_t)> retire);
-    void RecordHostFrame(float deltaTime);
+                                             std::function<void(uint64_t)> retire,
+                                             std::function<bool(RuntimeWorld &)> pausedAuthor = {});
+    void RecordHostFrame(float deltaTime, bool automaticHost = false);
     [[nodiscard]] bool CanContinueRuntimeFrame() const noexcept;
     void ReportRuntimeFrameProgress() noexcept;
     void SetRuntimeInputCallback(std::function<void()> callback);
@@ -254,9 +261,13 @@ class SceneManager
     /// immediate physics queries (raycast, overlap) against the new positions.
     /// Normally called automatically before each physics step; calling it
     /// explicitly is only needed for same-frame queries after transform edits.
-    /// A positive motionDeltaTime is reserved for editor drag contact velocity;
-    /// the ordinary explicit synchronization barrier always uses zero.
-    void SyncTransforms(float motionDeltaTime = 0.0f);
+    void SyncTransforms();
+    /// Queue dirty editor targets; positive dt drives contact velocity in Play.
+    void SyncDraggedTransforms(float motionDeltaTime, bool requestPresentation = true);
+    void RequestPausedAuthorPresentation();
+    void NotifyAuthorPresentationChanged(GameObject *owner = nullptr);
+    void BeginPresentationAssetObservation();
+    void ObservePresentationAsset(const std::string &guid);
 
     /// Publish the Transform writes collected during the current frame to
     /// physics. Called once after TransformECSStore::EndFrameCache().
@@ -273,6 +284,12 @@ class SceneManager
     [[nodiscard]] const FrameProfile &GetLastFrameProfile() const
     {
         return m_lastFrameProfile;
+    }
+
+    [[nodiscard]] size_t GetPendingRuntimeFrameCount() const noexcept
+    {
+        const auto *world = QueryWorld();
+        return world ? world->frame.pending.size() : 0;
     }
 
     /// Completed logical gameplay frames for the current active runtime scene.
@@ -363,7 +380,8 @@ class SceneManager
 
     [[nodiscard]] Scene *GetRuntimePersistentScene() const noexcept
     {
-        return CurrentWorld().scenes.persistent.get();
+        const auto *world = QueryWorld();
+        return world ? world->scenes.persistent.get() : nullptr;
     }
 
     [[nodiscard]] GameObject *FindRuntimeObjectByID(uint64_t id) const;
@@ -652,6 +670,7 @@ class SceneManager
     void ReleaseSkeletonBones(SkeletonInstance *skeleton, const std::vector<Transform *> &bones);
     void QueueSkeletonPose(SkeletonInstance *skeleton);
     void PublishSkeletonPoses();
+    void CollectPresentationPoseTransforms(std::vector<Transform *> &world, std::vector<Transform *> &local) const;
 
     /// Publish procedural vertex/bounds changes without rebuilding the
     /// renderer registry. Camera caches must recull these updates even when
@@ -693,6 +712,7 @@ class SceneManager
     bool ServiceCurrentWorldFrame();
     FrameWorkFacts DescribeRuntimeFrames();
     bool AdvanceRuntimeFrame(bool gpu, uint64_t worldId);
+    bool ServicePausedAuthorPresentation();
     void UnbindRuntimeFrameWork() noexcept;
     void PauseCurrentWorld();
     void PlayCurrentWorld();
@@ -769,6 +789,7 @@ class SceneManager
     uint64_t m_runtimeFrameSource = 0;
     std::function<void()> m_runtimeInput;
     std::function<bool(RuntimeWorld &)> m_runtimeFramePublication;
+    std::function<bool(RuntimeWorld &)> m_pausedAuthorPublication;
     std::function<void(uint64_t)> m_runtimeFrameRetirement;
     std::function<bool(RuntimeWorld &)> m_runtimeFramePresentation;
     std::vector<std::unique_ptr<Scene>> m_previewScenes;

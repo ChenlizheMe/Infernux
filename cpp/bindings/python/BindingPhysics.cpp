@@ -1603,7 +1603,90 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // Physics static class (Unity: Physics.Raycast)
     // ====================================================================
+    py::class_<PhysicsParticipantOutput, std::shared_ptr<PhysicsParticipantOutput>>(m, "_PhysicsParticipantOutput")
+        .def_property_readonly("done", &PhysicsParticipantOutput::IsDone)
+        .def_property_readonly("ready", &PhysicsParticipantOutput::IsReady)
+        .def_property_readonly("error", &PhysicsParticipantOutput::Error)
+        .def_property_readonly(
+            "shape", [](const PhysicsParticipantOutput &value) { return py::make_tuple(value.layout.elementCount); })
+        .def_property_readonly("dtype",
+                               [](const PhysicsParticipantOutput &value) {
+                                   switch (value.layout.scalarType) {
+                                   case rhi::ComputeScalarType::Float32:
+                                       return "float32";
+                                   case rhi::ComputeScalarType::Int32:
+                                       return "int32";
+                                   case rhi::ComputeScalarType::UInt32:
+                                       return "uint32";
+                                   case rhi::ComputeScalarType::Int64:
+                                       return "int64";
+                                   }
+                                   throw std::logic_error("Unknown participant scalar type");
+                               })
+        .def_property_readonly("storage_byte_size",
+                               [](const PhysicsParticipantOutput &value) { return value.layout.GetByteSize(); })
+        .def_property_readonly("storage_buffer", [](const PhysicsParticipantOutput &value) { return value.storage; })
+        .def_property_readonly("value", [](const PhysicsParticipantOutput &value) { return value.value; })
+        .def_property_readonly("token",
+                               [](const PhysicsParticipantOutput &value) {
+                                   return py::make_tuple(value.worldId, value.participantGeneration, value.token);
+                               })
+        .def_property_readonly(
+            "identity",
+            [](const PhysicsParticipantOutput &value) -> py::object {
+                if (!value.IsReady())
+                    return py::none();
+                const auto submission = [](rhi::SubmissionTicket ticket) {
+                    return py::make_tuple(ticket.device, static_cast<uint32_t>(ticket.queue), ticket.serial);
+                };
+                py::dict result;
+                result["world_id"] = value.worldId;
+                result["component"] =
+                    py::make_tuple(value.componentId, value.componentGeneration, value.componentSceneId);
+                result["participant_generation"] = value.participantGeneration;
+                result["simulation_epoch"] = value.simulationEpoch;
+                result["fixed_step_index"] = value.fixedStepIndex;
+                result["is_fixed_step"] = value.isFixedStep;
+                result["name"] = value.name;
+                result["offset"] = value.offset;
+                result["count"] = value.layout.elementCount;
+                result["source_byte_offset"] = value.sourceByteOffset;
+                result["scalar_bytes"] = value.layout.GetScalarBytes();
+                result["dtype"] = value.layout.scalarType == rhi::ComputeScalarType::Float32  ? "float32"
+                                  : value.layout.scalarType == rhi::ComputeScalarType::Int32  ? "int32"
+                                  : value.layout.scalarType == rhi::ComputeScalarType::UInt32 ? "uint32"
+                                                                                              : "int64";
+                result["shape"] = py::make_tuple(value.layout.elementCount);
+                result["lanes"] = value.layout.lanes;
+                result["source_write_submission"] = submission(value.sourceWrite);
+                result["copy_submission"] = submission(value.copySubmission);
+                return std::move(result);
+            })
+        .def("cancel", &PhysicsParticipantOutput::Cancel)
+        .def("fail", &PhysicsParticipantOutput::Fail);
+    py::class_<PhysicsParticipant, std::shared_ptr<PhysicsParticipant>>(m, "_PhysicsParticipant")
+        .def_property_readonly("ready", &PhysicsParticipant::IsReady)
+        .def("close", &PhysicsParticipant::Retire)
+        .def("capture_output", &PhysicsParticipant::CaptureOutput, "name"_a, "offset"_a, "count"_a)
+        .def("set_count", &PhysicsParticipant::SetCount)
+        .def("set_control", [](PhysicsParticipant &owner, const std::string &name, py::bytes value) {
+            const std::string bytes = value;
+            owner.SetControl(name, std::vector<uint8_t>(bytes.begin(), bytes.end()));
+        });
+
     py::class_<PhysicsWorld, std::unique_ptr<PhysicsWorld, py::nodelete>>(m, "Physics")
+        .def_static("_register_participant", [](const Component &component, PhysicsParticipant::Recipes recipes,
+                                                const std::map<std::string, std::pair<std::shared_ptr<rhi::ComputeBuffer>, py::bytes>> &controls,
+                                                uint32_t count) {
+            PhysicsParticipant::Controls decoded;
+            for (const auto &[name, value] : controls) {
+                const std::string bytes = value.second;
+                decoded.emplace(name, PhysicsParticipantControl{value.first, {bytes.begin(), bytes.end()}});
+            }
+            return PhysicsWorld::Instance().RegisterParticipant(component, std::move(recipes), std::move(decoded), count);
+        })
+        .def_static("_participants_ready", [] { return PhysicsWorld::Instance().ServiceParticipantPreparation(); })
+        .def_static("_service_participant_outputs", [] { return PhysicsWorld::Instance().ServiceParticipantOutputs(); })
         .def_static(
             "compute_penetration",
             [](const Collider &a, const glm::vec3 &pa, const glm::quat &qa, const Collider &b, const glm::vec3 &pb,
@@ -1862,7 +1945,7 @@ void RegisterPhysicsBindings(py::module_ &m)
             "_sync_dragged_transforms",
             []() {
                 auto &manager = SceneManager::Instance();
-                manager.SyncTransforms(manager.IsPlaying() ? manager.GetFixedTimeStep() : 0.0f);
+                manager.SyncDraggedTransforms(manager.IsPlaying() && !manager.IsPaused() ? manager.GetFixedTimeStep() : 0.0f);
             },
             "Editor-only drag drive: publish transform targets with contact velocity during play.")
         .def_static(

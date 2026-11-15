@@ -996,6 +996,7 @@ class RenderGraph:
         self._passes: List[RenderPassBuilder] = []
         self._output: Optional[str] = None
         self._linear_output: Optional[str] = None
+        self._display_encoded_outputs: set[str] = set()
         self._msaa_samples: int = output_samples  # 0 = pipeline-owned screen MSAA
         self._temporal_jitter = False
         # Topology auto-recording
@@ -1871,10 +1872,9 @@ class RenderGraph:
     def display_encode_section(self) -> None:
         """Insert the built-in linear → sRGB display-encode passes.
 
-        The swapchain and the editor viewport are UNORM surfaces without
-        hardware sRGB encoding, so every pipeline must end with an explicit
-        display encode. Scene rendering and all post-process effects operate
-        in linear HDR; this is the single place where gamma is applied.
+        Standard pipelines use this tail for UNORM display surfaces. It also
+        declares these output textures as display-encoded. Standalone custom
+        graphs may keep linear output; the display consumer then encodes it.
 
         Idempotent: calling it twice (e.g. from ``screen_ui_section`` and the
         RenderStack build safety net) inserts the passes only once.
@@ -1892,6 +1892,8 @@ class RenderGraph:
             p.set_texture("source_tex", "_display_encode")
             p.write_color("color")
             p.fullscreen_quad("infernux/internal/fullscreen_copy")
+        self._display_encoded_outputs.update((self.get_texture("_display_encode").name,
+                                              self.get_texture("color").name))
 
     # ---- Pass management ----
 
@@ -1955,11 +1957,14 @@ class RenderGraph:
 
     # ---- Output ----
 
-    def set_output(self, texture) -> None:
+    def set_output(self, texture, *, display_encoded: bool | None = None) -> None:
         """Mark a texture as the final graph output.
 
         Args:
             texture: Texture alias (``str``) or ``TextureHandle``.
+            display_encoded: Declare display-encoded sampled color. Standard
+                display encoding declares this automatically; custom outputs
+                remain linear unless explicitly declared.
         """
         if isinstance(texture, str):
             handle = self.get_texture(texture)
@@ -1973,6 +1978,11 @@ class RenderGraph:
             if not isinstance(texture, TextureHandle) or not self._owns_texture(texture):
                 raise ValueError("set_output: TextureHandle does not belong to this RenderGraph")
             self._output = texture.name
+        if display_encoded is not None:
+            if display_encoded:
+                self._display_encoded_outputs.add(self._output)
+            else:
+                self._display_encoded_outputs.discard(self._output)
 
     # ---- Validation & finalization ----
 
@@ -2455,6 +2465,7 @@ class RenderGraph:
         desc.passes = pass_list
 
         desc.output_texture = self._output
+        desc.output_display_encoded = self._output in self._display_encoded_outputs
         # RenderStack can remove/re-append passes while composing effects.
         # Resolve the boundary from the finished topology, not an earlier size.
         boundary = next((i for i, p in enumerate(self._passes)

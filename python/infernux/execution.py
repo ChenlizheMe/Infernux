@@ -133,6 +133,10 @@ class ExecutionScope:
         for resource in tuple(self._resources):
             resource.cancel()
 
+    def cancel(self):
+        """A World scope cancels this component child through its weak resources."""
+        self.close()
+
     def _wake(self):
         for request in self._requests:
             owner = request._owner()
@@ -162,9 +166,11 @@ def component_scope(component):
     manager = SceneManager.instance()
     from infernux.engine.runtime_worlds import component_world_id
     identity = component_world_id(component) or int(manager._current_runtime_world_id)
-    with _Infernux._RuntimeWorldScope(identity):
-        playing = bool(manager.is_playing())
-        domain = (identity, int(manager.simulation_epoch), playing)
+    native = component._get_bound_native_component()
+    if native is None:
+        raise RuntimeError('the calling component has retired')
+    handle = native.handle
+    domain = identity, int(handle.id), int(handle.generation)
     stored = component.__dict__.get('_runtime_execution_scope')
     if stored is not None and stored[0] == domain:
         return stored[1]
@@ -172,7 +178,15 @@ def component_scope(component):
         stored[1].close()
     scope = ExecutionScope()
     scope._world_id = identity
-    scope._component_state = _Infernux._ComponentExecutionState(component, manager, *domain)
+    scope._component_state = _Infernux._ComponentExecutionState(component, manager, identity)
+    from infernux.application import Application
+    engine = Application._current_engine()
+    parent = engine._world_runtimes.get(identity) if engine is not None else None
+    if parent is not None:
+        if parent.scope._closed:
+            scope.close()
+        else:
+            parent.scope._resources.add(scope)
     component.__dict__['_runtime_execution_scope'] = domain, scope
     return scope
 

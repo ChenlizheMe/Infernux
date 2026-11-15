@@ -89,7 +89,7 @@ class GameViewPanel(EditorPanel):
     _AUTO_RESOLUTION_INDEX = 6
     _PRESET_NAMES = [p[0] for p in _RESOLUTION_PRESETS]
     
-    def __init__(self, title: str = "Game", engine=None, play_mode_manager: Optional[PlayModeManager] = None):
+    def __init__(self, title: str = "Game", engine=None, play_mode_manager: Optional[PlayModeManager] = None, *, world_view=None):
         super().__init__(title, window_id="game_view")
         self._engine = engine
         if engine is not None:
@@ -105,7 +105,6 @@ class GameViewPanel(EditorPanel):
         # Game render target size tracking
         self._last_game_width = 0
         self._last_game_height = 0
-        self._game_camera_was_enabled = False
 
         # Retain the active scene's screen-space canvases across GUI builds.
         # The shared collector already caches its DFS, but asking it on every
@@ -138,26 +137,15 @@ class GameViewPanel(EditorPanel):
         self._display_scale = 0.5
         self._fit_mode = True            # When True, scale auto-adjusts to fill area
         self._settings_loaded = False
-        self._world_layout = 1  # Grid; one ordinary World still fills one tile.
-        self._world_input_mode = 0  # Broadcast, preserving the existing default.
-        self._selected_world_id = 0
+        self._world_view = world_view
         self._captured_world_id = 0
         self._screen_consumers = {}
         self._screen_samples = {}
-        self._world_count_draft = 1
-        self._world_count_editing = False
         self._last_screen_routes = {}
 
         # Sample the renderer's real frame serial once per second. UI rendering
         # has its own 60 Hz cadence and must not be counted as engine frames.
-        self._fps_sample_time = None
-        self._fps_sample_frame = None
-        self._fps_next_sample_time = None
-        self._display_fps = 0.0
-        self._display_frame_ms = 0.0
         # Game-only FPS (excludes editor panel overhead)
-        self._display_game_fps = 0.0
-        self._display_game_frame_ms = 0.0
         self._fps_toolbar_hidden = False
         self._bind_output_settings()
 
@@ -168,27 +156,21 @@ class GameViewPanel(EditorPanel):
         self._output_settings.add_listener(self._apply_project_output)
         self._apply_project_output(self._output_settings.capture_document())
 
-    def _set_game_render_active(self, active: bool) -> None:
-        # This same Panel now owns named subscriptions. The old global switch
-        # releases only its legacy host/default-game alias during migration.
-        active = bool(active)
-        if self._engine and not self._game_camera_was_enabled and active:
-            self._engine.set_game_camera_enabled(False)
-        self._game_camera_was_enabled = active
-        if not active:
-            if self._engine:
-                for consumer in self._screen_consumers.values():
-                    self._engine._release_game_screen(consumer)
-            self._screen_consumers.clear()
-            self._screen_samples.clear()
-            self._last_screen_routes.clear()
-            self._captured_world_id = 0
-            Input.set_game_focused(False)
-            Input.set_game_viewport_size(0.0,0.0)
-            native = _NativeInputManager.instance()
-            native._set_world_game_view(0,True,[],[])
-            native.set_editor_game_viewport((0,0,0,0),(0,0,0,0))
-            native.set_editor_cursor_capture_allowed(False)
+    def _release_game_screens(self) -> None:
+        """Release this panel's presentation subscriptions and input routes."""
+        if self._engine:
+            for consumer in self._screen_consumers.values():
+                self._engine._release_game_screen(consumer)
+        self._screen_consumers.clear()
+        self._screen_samples.clear()
+        self._last_screen_routes.clear()
+        self._captured_world_id = 0
+        Input.set_game_focused(False)
+        Input.set_game_viewport_size(0.0, 0.0)
+        native = _NativeInputManager.instance()
+        native._set_world_game_view(0, True, [], [])
+        native.set_editor_game_viewport((0, 0, 0, 0), (0, 0, 0, 0))
+        native.set_editor_cursor_capture_allowed(False)
 
     def set_engine(self, engine):
         self._engine = engine
@@ -462,13 +444,12 @@ class GameViewPanel(EditorPanel):
         self._last_game_width = 0
         self._last_game_height = 0
         self._auto_resolution = (0, 0)
-        self._game_camera_was_enabled = False
         self._invalidate_ui_scene_cache()
 
     def on_disable(self):
         self._output_settings.remove_listener(self._apply_project_output)
         self._commit_pending_view_edits()
-        self._set_game_render_active(False)
+        self._release_game_screens()
         self._reset_pointer_input()
 
     def _reset_pointer_input(self):
@@ -506,7 +487,7 @@ class GameViewPanel(EditorPanel):
         self._was_focused = False
         Input.set_game_focused(False)
         self._reset_pointer_input()
-        self._set_game_render_active(False)
+        self._release_game_screens()
 
     def _on_visible_pre(self, ctx):
         self._load_resolution_settings()
@@ -586,17 +567,17 @@ class GameViewPanel(EditorPanel):
             ctx.label(t("game_view.engine_not_init"))
             return
 
-        # Ensure native Game rendering is enabled once the panel has rendered.
-        # Do not disable it on transient dock/tab invisibility because scene
-        # switches can temporarily interrupt panel visibility for a frame.
-        self._set_game_render_active(True)
+        # ImGui can measure a hidden tab without presenting its viewport.
+        if not self._content_presented_this_frame:
+            self._release_game_screens()
+            return
 
         from .dpi import editor_dpi_scale
 
         dpi = editor_dpi_scale(ctx)
-        self._render_world_toolbar(ctx, dpi)
+        world_rows = self._world_view.rows
         self._render_resolution_toolbar(ctx, dpi)
-        if self._world_layout == 0:
+        if self._world_view.layout == 0:
             target_w, target_h, fit_scale = self._render_scale_toolbar(ctx, dpi)
         else:
             target_w, target_h = self._current_target_resolution()
@@ -606,7 +587,7 @@ class GameViewPanel(EditorPanel):
         # that already used SameLine reserves another full row in ImGui.
         ctx.spacing()
 
-        self._render_game_viewport(ctx, target_w, target_h, fit_scale)
+        self._render_game_viewport(ctx, target_w, target_h, fit_scale, world_rows=world_rows)
 
     def _render_resolution_toolbar(self, ctx, dpi: float):
         """Resolution preset combo and optional custom width/height inputs."""
@@ -721,55 +702,7 @@ class GameViewPanel(EditorPanel):
 
     def _render_fps_counter(self, ctx):
         """FPS counter (right-aligned, Unity-style)."""
-        is_playing = self._is_playing()
-        now = _pc()
-        snapshot = None
-        # The native snapshot is only needed when the displayed one-second
-        # sample can change. Avoid a pybind property read on every GUI tick.
-        if is_playing and (
-            self._fps_next_sample_time is None
-            or now >= self._fps_next_sample_time
-        ):
-            native_engine = getattr(self._engine, '_engine', None)
-            snapshot = getattr(native_engine, 'renderer_frame_snapshot', None)
-            if snapshot is not None:
-                frame = int(snapshot.get('frame', 0))
-                if (
-                    self._fps_sample_time is None
-                    or self._fps_sample_frame is None
-                    or frame < self._fps_sample_frame
-                ):
-                    self._fps_sample_time = now
-                    self._fps_sample_frame = frame
-                else:
-                    elapsed = now - self._fps_sample_time
-                    if elapsed >= 1.0:
-                        completed_frames = frame - self._fps_sample_frame
-                        self._display_fps = completed_frames / elapsed
-                        self._display_frame_ms = (
-                            elapsed * 1000.0 / completed_frames
-                            if completed_frames > 0 else 0.0
-                        )
-                        game_frame_ms = float(snapshot.get('game_only_frame_ms', 0.0))
-                        self._display_game_frame_ms = max(game_frame_ms, 0.0)
-                        self._display_game_fps = (
-                            1000.0 / game_frame_ms if game_frame_ms > 0.0 else 0.0
-                        )
-                        self._fps_sample_time = now
-                        self._fps_sample_frame = frame
-                self._fps_next_sample_time = now + 1.0
-        elif not is_playing:
-            self._fps_sample_time = None
-            self._fps_sample_frame = None
-            self._fps_next_sample_time = None
-            self._display_fps = 0.0
-            self._display_frame_ms = 0.0
-
-        fps_text = (
-            f"FPS: {self._display_fps:.0f} ({self._display_frame_ms:.1f} ms)"
-            if is_playing and self._fps_sample_time is not None
-            else "FPS: --"
-        )
+        fps_text = self._world_view.fps_text
         if fps_text != getattr(self, '_cached_fps_text', None):
             self._cached_fps_text = fps_text
             self._cached_fps_text_w, _ = ctx.calc_text_size(fps_text)
@@ -822,70 +755,21 @@ class GameViewPanel(EditorPanel):
         # Canvas/OnMouse dispatch and capture cancellation for each World.
         native_input._set_game_view_output(float(target_w), float(target_h), (0.0, 0.0, 1.0, 1.0))
 
-    def _world_rows(self):
-        manager = self._play_mode_manager
-        if manager.is_edit_mode:
-            from infernux.lib import SceneManager
-            return ((int(SceneManager.instance()._authoring_runtime_world_id), 'ready', '', True),)
-        if manager.state not in (PlayModeState.PLAYING,PlayModeState.PAUSED,PlayModeState.ENTERING):
-            return ()  # Restore/recovery has no published author or runtime image.
-        from infernux import WorldManager
-        return tuple((world.id,world.state,world.error,
-                      world.display_in_game and not world.destroy_requested)
-                     for world in WorldManager.get_world_statuses())
 
-    def _render_world_toolbar(self, ctx, dpi):
-        from infernux import WorldManager
-        manager = self._play_mode_manager
-        rows = self._world_rows()
-        active = manager.state in (PlayModeState.PLAYING,PlayModeState.PAUSED)
-        count = (sum(state in ('ready','preparing') and display for _,state,_,display in rows)
-                 if active else manager.initial_world_count)
-        if active:
-            # Display is independent: hidden live Worlds still count.
-            count = sum(world.state in ('ready','preparing') and not world.destroy_requested
-                        for world in WorldManager.get_world_statuses())
-        if not self._world_count_editing:
-            self._world_count_draft = count
-        ctx.set_next_item_width(92.0*dpi)
-        self._world_count_draft = int(ctx.input_int(t('game_view.worlds')+'##world_count',self._world_count_draft))
-        committed = ctx.is_item_deactivated_after_edit()
-        self._world_count_editing = ctx.is_item_active()
-        if committed and manager.state != PlayModeState.ENTERING:
-            target = max(0 if active else 1,self._world_count_draft)
-            if active:
-                WorldManager.set_world_count(target)
-            elif manager.is_edit_mode:
-                manager.initial_world_count = target
-        ctx.same_line()
-        ctx.set_next_item_width(100.0*dpi)
-        self._world_layout = ctx.combo('##world_layout',self._world_layout,
-                                      [t('game_view.selected'),t('game_view.grid')],-1)
-        selectable = tuple(world for world,state,_error,display in rows if display and state == 'ready')
-        if self._world_layout == 0 and selectable:
-            selected = selectable.index(self._selected_world_id) if self._selected_world_id in selectable else 0
-            ctx.same_line()
-            ctx.set_next_item_width(110.0*dpi)
-            selected = ctx.combo('##world_selected',selected,[f'World {world}' for world in selectable],-1)
-            self._selected_world_id = selectable[selected]
-        ctx.same_line()
-        ctx.set_next_item_width(120.0*dpi)
-        self._world_input_mode = ctx.combo('##world_input',self._world_input_mode,
-                                          [t('game_view.broadcast'),t('game_view.selected_input')],-1)
-        ready = sum(state == 'ready' for _,state,_,_ in rows)
-        preparing = sum(state == 'preparing' for _,state,_,_ in rows)
-        ctx.same_line()
-        ctx.label(f'{ready} / {preparing} '+t('game_view.ready_preparing'))
-        ctx.spacing()
 
-    def _render_game_viewport(self, ctx, target_w, target_h, fit_scale):
+
+    @property
+    def viewed_world_id(self):
+        """Scene-owned viewing identity, independent of the primary World."""
+        return self._world_view.world_id
+
+    def _render_game_viewport(self, ctx, target_w, target_h, fit_scale, *, world_rows):
         import math
-        rows = tuple(row for row in self._world_rows() if row[3] and row[1] in ('ready','preparing'))
-        visible_ids = {identity for identity,_,_,_ in rows}
-        if self._selected_world_id not in visible_ids:
-            self._selected_world_id = rows[0][0] if rows else 0
-        if self._world_layout == 0:
-            rows = tuple(row for row in rows if row[0] == self._selected_world_id)
+        all_rows = world_rows
+        ordinals = self._world_view.ordinals
+        rows = tuple(row for row in all_rows if row[3] and row[1] in ('ready','preparing'))
+        if self._world_view.layout == 0:
+            rows = tuple(row for row in rows if row[0] == self._world_view.world_id)
         requested = set()
         routes = {}
         hovered = 0
@@ -894,7 +778,7 @@ class GameViewPanel(EditorPanel):
         held = any(native.get_mouse_button(button) for button in range(3))
         if not ctx.begin_child('##GameViewportRegion',0,0,False):
             ctx.end_child()
-            self._set_game_render_active(False)
+            self._release_game_screens()
             return
         avail_w = float(ctx.get_content_region_avail_width())
         avail_h = float(ctx.get_content_region_avail_height())
@@ -903,7 +787,8 @@ class GameViewPanel(EditorPanel):
             ctx.label(t('game_view.no_worlds'))
         elif avail_w > 0 and avail_h > 0:
             gap = 8.0*ctx.get_dpi_scale()
-            label_h = 22.0*ctx.get_dpi_scale()
+            show_tile_labels = self._world_view.layout != 0 and len(rows) > 1
+            label_h = 22.0*ctx.get_dpi_scale() if show_tile_labels else 0.0
             columns = max(1,min(len(rows),math.ceil(math.sqrt(len(rows)*avail_w/avail_h))))
             row_count = math.ceil(len(rows)/columns)
             cell_w = (avail_w-gap*(columns-1))/columns
@@ -913,7 +798,10 @@ class GameViewPanel(EditorPanel):
                 x = start_x+(index%columns)*(cell_w+gap)
                 y = start_y+(index//columns)*(image_h+label_h+gap)
                 ctx.set_cursor_pos_x(x); ctx.set_cursor_pos_y(y)
-                ctx.label(f'World {world}  '+(state if state != 'ready' else ''))
+                if show_tile_labels:
+                    ctx.label(f'World {ordinals[world]}  '+(state if state != 'ready' else ''))
+                elif state != 'ready':
+                    ctx.label(state)
                 if error:
                     ctx.label(error)
                 if state != 'ready' or cell_w <= 0 or image_h <= 0:
@@ -938,7 +826,7 @@ class GameViewPanel(EditorPanel):
                     ctx.label(message)
                     continue
                 self._screen_samples[world] = sample
-                texture = self._engine._game_screen_image(sample)
+                texture = self._engine._game_screen_live_image(world)
                 draw_w,draw_h = self._fit_into_region(sample.width,sample.height,cell_w,image_h,
                     point_filter=self._render_output['filter'] == 'nearest')
                 image_x,image_y = x+(cell_w-draw_w)*.5,y+label_h+(image_h-draw_h)*.5
@@ -949,12 +837,13 @@ class GameViewPanel(EditorPanel):
                 viewport = capture_viewport_info(ctx)
                 rect = (viewport.image_min_x,viewport.image_min_y,float(draw_w),float(draw_h))
                 routes[world] = (rect,int(sample.width),int(sample.height),ctx.get_item_visible_rect())
-                ctx.record_semantic_item('viewport',f'World {world}',True,
+                ctx.record_semantic_item('viewport',f'World {ordinals[world]}',True,
                                          f'{self.window_id}.world.{world}.viewport')
                 if viewport.is_hovered:
                     hovered = world
                 if any(ctx.is_item_clicked(button) for button in range(3)):
-                    self._selected_world_id = self._captured_world_id = world
+                    self._world_view.select(world)
+                    self._captured_world_id = world
                     clicked = True
                 if status['error']:
                     ctx.label(status['error'])
@@ -967,7 +856,7 @@ class GameViewPanel(EditorPanel):
         if self._captured_world_id not in routes:
             self._captured_world_id = 0
         source_world = (self._captured_world_id if self._captured_world_id else
-                        hovered if self._world_input_mode == 0 and hovered else self._selected_world_id)
+                        hovered if self._world_view.input_mode == 0 and hovered else self._world_view.world_id)
         route = routes.get(source_world)
         if route is None:
             Input.set_game_focused(False)
@@ -987,14 +876,14 @@ class GameViewPanel(EditorPanel):
         bottom = max(value[3][1]+value[3][3] for value in routes.values())
         native.set_editor_game_viewport(rect,(left,top,right-left,bottom-top))
         outputs = []
-        for world,state,_error,_display in self._world_rows():
+        for world,state,_error,_display in all_rows:
             if state != 'ready':
                 continue
             sample = self._screen_samples.get(world)
             status = self._engine._game_screen_status(world)
             outputs.append((world,sample.width if sample is not None else status['width'],
                                   sample.height if sample is not None else status['height']))
-        native._set_world_game_view(self._selected_world_id,self._world_input_mode == 0,outputs,
+        native._set_world_game_view(self._world_view.world_id,self._world_view.input_mode == 0,outputs,
                                     [value[3] for value in routes.values()])
         if not held:
             self._captured_world_id = 0  # Release sample still uses its original capture tile.
@@ -1191,6 +1080,14 @@ class GameViewPanel(EditorPanel):
             # collider raycast below.
             self._ui_event_processor.reset()
 
+        dispatcher = self._mouse_event_dispatcher
+        route_scene_input = Input.is_game_focused()
+        pick_scene = route_scene_input and dispatcher.needs_scene_hit()
+        if not surfaces and not pick_scene:
+            self._ui_input_time = None
+            dispatcher.discard()
+            return
+
         # Mouse position in viewport pixels (relative to game image top-left)
         if mouse_frames is None:
             mouse_frames = tuple(Input.get_game_mouse_frame_state(button) for button in range(3))
@@ -1202,9 +1099,6 @@ class GameViewPanel(EditorPanel):
 
         camera = scene.effective_game_camera if scene is not None else None
         from infernux.engine.runtime_screen_ui import map_runtime_ui_pointer
-        route_scene_input = Input.is_game_focused()
-        dispatcher = self._mouse_event_dispatcher
-        pick_scene = route_scene_input and dispatcher.needs_scene_hit()
         mapped_positions = map_runtime_ui_pointer(
             surfaces, camera, game_px, game_py, game_w, game_h,
             include_scene_hit=pick_scene,

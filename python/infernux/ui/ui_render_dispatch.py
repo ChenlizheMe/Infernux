@@ -337,7 +337,9 @@ class _UICommandDependencies:
     no Python setter interception is needed for native-side edits.
     """
 
-    def __init__(self):
+    def __init__(self, invalidate=_invalidate_ui_command_groups, *, retain_geometry=False):
+        self.invalidate = invalidate
+        self.retain_geometry = retain_geometry
         self.key = None
         self.generation = 0
         self.geometry = None
@@ -397,8 +399,11 @@ class _UICommandDependencies:
                 # Child layout depends on ancestor poses, even when the
                 # child's own local Transform signature is unchanged.
                 clear_rect_cache((id(self), self.generation, geometry_revision))
-            for index in affected:
-                _invalidate_ui_command_groups(self.elements[index])
+            # A sealed source already owns its per-view geometry. Another
+            # viewport's derived layout must not replay that source's draws.
+            if not self.retain_geometry:
+                for index in affected:
+                    self.invalidate(self.elements[index])
             self.geometry_revision = geometry_revision
         bindings_revision = _get_resource_binding_revision()
         if bindings_revision != self.bindings_revision:
@@ -459,7 +464,7 @@ class _UICommandDependencies:
             current_resources = {element: tuple(state) for element, state in resources.items()}
             for element in self.element_resources.keys() | current_resources.keys():
                 if self.element_resources.get(element) != current_resources.get(element):
-                    _invalidate_ui_command_groups(element)
+                    self.invalidate(element)
             self.element_resources = current_resources
             self.resource_states = resource_states
         self.snapshot = (
@@ -476,14 +481,15 @@ class _UICommandDependencies:
 _runtime_dependencies = _UICommandDependencies()
 
 
-def _runtime_command_epoch():
-    """Only inherited/topology state invalidates every element's packet."""
-    return (_runtime_dependencies.generation, _get_shared_visual_revision())
+def _runtime_command_epoch(dependencies=None):
+    """Only this capture's topology and shared author edits replace its groups."""
+    dependencies = _runtime_dependencies if dependencies is None else dependencies
+    return (dependencies.generation, _get_shared_visual_revision())
 
 
 def runtime_ui_revision(scene, canvases, width: int, height: int,
                         texture_generation: int = 0, world_elements=(),
-                        persistent_scene=None, runtime_scenes=None) -> int:
+                        persistent_scene=None, runtime_scenes=None, *, dependencies=None) -> int:
     """Build the content revision for native command-list reuse.
 
     UI components increment a shared generation on visual mutation. Scene
@@ -502,9 +508,8 @@ def runtime_ui_revision(scene, canvases, width: int, height: int,
         tuple((canvas, canvas_elements(canvas), canvas._cached_elements_revision)
               for canvas in canvases), world_elements,
     )
-    dependencies = _runtime_dependencies.revision(
-        membership, canvases, world_elements,
-    )
+    tracker = _runtime_dependencies if dependencies is None else dependencies
+    dependencies = tracker.revision(membership, canvases, world_elements)
     from .inx_ui_screen_component import _get_layout_revision
 
     signature = hash((

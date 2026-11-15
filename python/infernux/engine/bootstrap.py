@@ -153,7 +153,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         if self.engine is None:
             raise RuntimeError("Editor startup completed without an Engine")
-        self.engine.set_game_camera_enabled(True)
         native = self.engine.get_native_engine()
         if native is None:
             raise RuntimeError("Editor startup completed without a native Engine")

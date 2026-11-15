@@ -23,7 +23,8 @@ class SceneRenderExtractor final
     [[nodiscard]] size_t ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling);
     [[nodiscard]] size_t ExtractCameraFrame(RenderWorldSnapshot &world, Camera *camera);
     // Called only after the logical frame's Late/Transform/Skeleton boundary.
-    [[nodiscard]] size_t ExtractRuntimeFrame(RenderWorldSnapshot &publication, RuntimeWorld &world);
+    [[nodiscard]] size_t ExtractRuntimeFrame(RenderWorldSnapshot &publication, RuntimeWorld &world,
+                                             PausedAuthorProvenance pausedAuthor = {});
     [[nodiscard]] static RenderViewData CaptureCameraView(const Camera &camera);
 
     using PrepareMaterial = std::function<void(const std::shared_ptr<InxMaterial> &)>;
@@ -66,7 +67,8 @@ class SceneRenderExtractor final
     void CaptureMaterialPublications(RenderWorldFrame &frame);
     void CaptureLighting(RenderWorldFrame &frame);
     size_t ExtractSourceFrame(RenderWorldSnapshot &publication, Camera *primary, uint64_t worldId,
-                              uint64_t completedWorldFrame, uint64_t simulationEpoch, bool includeEditorView);
+                              uint64_t completedWorldFrame, uint64_t simulationEpoch, bool includeEditorView,
+                              PausedAuthorProvenance pausedAuthor = {});
     void SortRenderables(RenderWorldFrame &frame);
     void UpdateCachedRenderableTransforms(RenderWorldFrame &frame);
     void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderProxy &renderable, SceneRenderSource &source,

@@ -171,6 +171,7 @@ class JoltGpuScene final
     /// Owner bookkeeping on the exact failed writer; must not throw, drive, wait, or
     /// destroy this scene. Partition ownership retains the World until source retirement.
     using FailureObserver = std::function<void(RuntimeWorld &)>;
+    using ParticipantFactory = std::function<decltype(JoltGpuTickControl::prepareParticipant)()>;
 
     /// One shared numerical arena/source, never one scene per RuntimeWorld.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,
@@ -227,10 +228,11 @@ class JoltGpuScene final
     /// Busy preserves the complete per-world FIFO and logical tick identity.
     [[nodiscard]] bool TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
                                     const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer = {},
-                                    ContactObserverFactory prepareContacts = {});
+                                    ContactObserverFactory prepareContacts = {},
+                                    ParticipantFactory prepareParticipants = {});
     [[nodiscard]] bool TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer = {},
                                        Consumer finalConsumer = {});
-    [[nodiscard]] bool TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &work);
+    [[nodiscard]] bool TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &work, bool needsSnapshot = true);
     bool PublishCompletedTick(RuntimeWorld &world);
     bool PublishCompletedControl(RuntimeWorld &world);
     [[nodiscard]] const std::shared_ptr<const Publication> &GetPublished(const RuntimeWorld &world) const;

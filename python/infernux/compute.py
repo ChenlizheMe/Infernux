@@ -2501,13 +2501,20 @@ def buffer(*, shape, dtype=float, device: Literal["cpu", "gpu"], data=None) -> B
 
 
 def statistics(*, reset: bool = False) -> Statistics:
-    """Read current GPU/Web transfer counters without creating a GPU host.
+    """Read the engine's shared GPU/Web transfer counters without submitting work.
 
     Native CPU range execution is reported by its request metrics. A CPU-only
     engine has no device transfers, submissions or waits to report here.
+    Native rendering or physics may already use the queue before Python creates
+    a Buffer; acquiring its existing host lease makes those counters visible too.
     """
     from infernux.application import Application
-    host = getattr(Application._current_engine(), "_infernux_compute_host", None)
+    engine = Application._current_engine()
+    host = getattr(engine, "_infernux_compute_host", None)
+    if host is None and engine is not None:
+        native = engine.get_native_engine()
+        if native is not None and native.has_gpu_compute:
+            host = _native_compute_host()
     if host is None:
         values = Statistics(
             submission_count=0,
@@ -3243,7 +3250,9 @@ def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_port
                 raise ComputeCapabilityError("compute work requires compiled kernels on the same native GPU host")
             artifact = executable.artifact
             if not artifact.continuation.eligible or artifact.autodiff_mode != "none" or artifact.gradient_parameters:
-                raise TypeError("compute work requires the shared forward row contract")
+                diagnostics = "; ".join(artifact.continuation.diagnostics)
+                raise TypeError("compute work requires the shared forward row contract" +
+                                (": " + diagnostics if diagnostics else ""))
             domain_count = int(effective[artifact.domain_parameter].element_count)
             if domain_count <= 0:
                 raise ValueError("compute work execution domain must be positive")

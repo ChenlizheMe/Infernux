@@ -861,6 +861,7 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
 
     Component *ptr = component.get();
     ptr->SetGameObject(this);
+    ptr->SetPreparationReady(false);
     auto *proxy = static_cast<PyComponentProxy *>(ptr);
     const bool authoredEnabled = proxy->GetPyComponent().attr("enabled").cast<bool>();
     try {
@@ -886,7 +887,15 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
     return ptr;
 }
 
-void GameObject::ActivatePreparedPythonComponent(Component *component)
+void GameObject::DeferPythonComponentActivation(Component *component)
+{
+    if (!component || component->GetGameObject() != this || dynamic_cast<PyComponentProxy *>(component) == nullptr)
+        throw std::invalid_argument("preparation requires this GameObject's Python component");
+    m_preparedPythonComponents.insert(component);
+    component->SetPreparationReady(false);
+}
+
+void GameObject::ActivatePreparedPythonComponent(Component *component, bool activate)
 {
     if (!component || component->GetGameObject() != this || dynamic_cast<PyComponentProxy *>(component) == nullptr)
         throw std::invalid_argument("component is not a prepared Python proxy owned by this GameObject");
@@ -896,7 +905,8 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     if (!blockers.empty())
         throw std::invalid_argument("prepared component set rejected: " + blockers.front());
     m_preparedPythonComponents.erase(component);
-    if (!m_scene || !IsActiveInHierarchy())
+    component->SetPreparationReady(true);
+    if (!activate || !m_scene || !IsActiveInHierarchy())
         return;
 
     // Prepared records carry the authored enabled bit on the Python object.
@@ -1142,6 +1152,9 @@ void GameObject::PostAddComponent(Component *component, bool reset)
     if (scene->ResolveGameObject(owner) != this || !(component = scene->ResolveComponent(identity)))
         return;
 
+    if (auto *proxy = dynamic_cast<PyComponentProxy *>(component); proxy && !proxy->RequestPhysicsActivation())
+        return;
+
     // Unity: components added to inactive objects do not Awake until the
     // object first becomes active in the hierarchy.
     if (!IsActiveInHierarchy()) {
@@ -1239,6 +1252,7 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         replacement->SetGameObject(this);
         replacement->m_enabled = current->m_enabled;
         replacement->m_wasEnabled = current->m_wasEnabled;
+        replacement->m_preparationReady = current->m_preparationReady;
         replacement->m_hasAwake = current->m_hasAwake;
         replacement->m_hasStarted = current->m_hasStarted;
         replacement->m_hasDestroyed = false;
@@ -1258,7 +1272,10 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         replacement->SetPrefabSource(current->GetPrefabSourceID(), current->GetPrefabSourceGuid());
 
         Component *published = replacement.get();
+        const bool preparing = m_preparedPythonComponents.erase(current) != 0;
         slot = std::move(replacement);
+        if (preparing)
+            m_preparedPythonComponents.insert(published);
         static_cast<PyComponentProxy *>(published)->RefreshPythonMirrorIdentity();
 
         if (m_scene) {

@@ -6,6 +6,7 @@ import numpy.typing as npt
 from infernux.lib import PenetrationResult, RaycastHit
 from infernux.components.builtin.collider import Collider
 from .joint_batch import HingeJointBatch as HingeJointBatch
+from .participant import Participant as Participant, PhysicsBuildPlan as PhysicsBuildPlan
 
 
 class RaycastBatchProfile(TypedDict):
@@ -241,4 +242,4 @@ class Physics:
     def get_ignore_collision(collider1: Any, collider2: Any) -> bool: ...
 
 
-__all__ = ["Physics"]
+__all__ = ["Physics", "HingeJointBatch", "Participant", "PhysicsBuildPlan"]

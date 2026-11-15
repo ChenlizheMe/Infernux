@@ -73,6 +73,8 @@ class PyComponentProxy : public Component
     // Lifecycle (forwarded to Python)
     // ========================================================================
 
+    /// Cold attachment hook; only enqueues existing Host preparation.
+    [[nodiscard]] bool RequestPhysicsActivation();
     void Awake() override;
     void OnEnable() override;
     void Start() override;

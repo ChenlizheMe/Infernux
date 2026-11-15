@@ -5,6 +5,7 @@ use the view's Host state, and retired worlds discard captures without callbacks
 """
 from contextlib import contextmanager
 from infernux.lib import InputManager
+from infernux.ui.ui_event_system import logical_ui_callback_batch
 
 _MISSING = object()
 
@@ -42,7 +43,6 @@ def world_pointer_state(view, factories):
         view._active_pointer_world = world
         for name, value in state.items():
             setattr(view, name, value)
-        from infernux.ui.ui_event_system import logical_ui_callback_batch
         with logical_ui_callback_batch():
             yield
     finally:

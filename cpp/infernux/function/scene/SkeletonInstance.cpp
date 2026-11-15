@@ -396,6 +396,11 @@ void SkeletonInstance::MarkPoseDirty()
     }
 }
 
+std::vector<Transform *> SkeletonInstance::GetPresentationPoseDependencies() const
+{
+    return m_poseDirty && !m_renderers.empty() && m_bindingError.empty() ? GetBones() : std::vector<Transform *>{};
+}
+
 void SkeletonInstance::PublishRenderPoses()
 {
     if (!m_poseDirty)

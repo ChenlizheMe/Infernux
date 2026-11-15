@@ -654,7 +654,7 @@ class RuntimeExecutionScheduler:
     def _eligible(cls, component: Any) -> bool:
         return cls._ensure_owner_active_mirror(component) and not bool(
             getattr(component, "_is_destroyed", False)
-        ) and bool(getattr(component, "_enabled", True))
+        ) and bool(getattr(component, "_enabled", True)) and not component._physics_preparing
 
     @staticmethod
     def _active_coroutine_scheduler(component: Any) -> Any:
@@ -803,7 +803,7 @@ class RuntimeExecutionScheduler:
                     break
                 # The cursor names both the receiver and its coroutine tail.
                 # Pause after a callback resumes that tail, never the callback.
-                if component._is_destroyed or not component._runtime_active_in_hierarchy or (
+                if component._physics_preparing or component._is_destroyed or not component._runtime_active_in_hierarchy or (
                         editor_only and not component._execute_in_edit_mode):
                     counters["phase_skips"] += 1
                     cursor[0] += 1
@@ -990,21 +990,24 @@ class RuntimeExecutionScheduler:
         return phase is None or self._resume_native_phase(phase)
 
     def _resume_native_phase(self, phase):
-        from infernux.lib import SceneManager
-        manager = SceneManager.instance()
         fixed = phase in ('fixed_update', 'physics_pre_step', 'physics_post_step')
-        key = int(manager.simulation_epoch), int(manager.fixed_step_index if fixed else manager._frame_time.frame_count)
-        key_name = '_fixed_dispatch_key' if fixed else '_logical_dispatch_key'
-        if getattr(self, key_name, None) != key:
-            return True
         records = getattr(self, '_fixed_dispatch' if fixed else '_logical_dispatch', {})
         record = records.get(phase)
         if record is None:
             return True
         source, cursor, delta = record
-        if cursor[0] < len(source.dispatch_plan[phase]) or cursor[2] < len(source.update_callbacks.get(phase, ())):
-            with step_execution():
-                self._native_frame.execute_phase(phase, delta, cursor=cursor, dispatch_frame=source)
+        if cursor[0] == len(source.dispatch_plan[phase]) and cursor[2] == len(source.update_callbacks.get(phase, ())):
+            return True
+        # Only an unfinished cursor needs native epoch/time validation. An
+        # empty or completed phase has no continuation to resume.
+        from infernux.lib import SceneManager
+        manager = SceneManager.instance()
+        key = int(manager.simulation_epoch), int(manager.fixed_step_index if fixed else manager._frame_time.frame_count)
+        key_name = '_fixed_dispatch_key' if fixed else '_logical_dispatch_key'
+        if getattr(self, key_name, None) != key:
+            return True
+        with step_execution():
+            self._native_frame.execute_phase(phase, delta, cursor=cursor, dispatch_frame=source)
         return cursor[0] == len(source.dispatch_plan[phase]) and cursor[2] == len(source.update_callbacks.get(phase, ()))
 
     def execute_native_editor_update(self, delta_time: float) -> None:
@@ -1271,6 +1274,7 @@ class ComponentLifecycleMixin:
     _is_destroyed = False
     _enabled = True
     _runtime_active_in_hierarchy = True
+    _physics_preparing = False
     _execute_in_edit_mode = False
     _cds_key = None
     _component_id = 0
@@ -1344,6 +1348,10 @@ class ComponentLifecycleMixin:
         except RuntimeError:
             self._invalidate_native_binding()
 
+    def _request_physics_activation(self):
+        from infernux.physics.participant import _request_physics_activation
+        return _request_physics_activation(self)
+
     def _call_awake(self):
         """Internal: Trigger awake lifecycle."""
         if self._awake_called:
@@ -1415,6 +1423,8 @@ class ComponentLifecycleMixin:
         # prevents any further runtime phase from scheduling this component.
         self.__dict__["_is_destroying"] = True
         self._retire_lifecycle_diagnostics()
+        from infernux.physics.participant import _retire_component_physics
+        _retire_component_physics(self)
         close_component_execution(self)
         self._enabled = False
         try:
@@ -1452,6 +1462,8 @@ class ComponentLifecycleMixin:
         owner = self.__dict__["_play_domain_retirement_owner"]
 
         def cleanup():
+            from infernux.physics.participant import _retire_component_physics
+            _retire_component_physics(self)
             close_component_execution(self)
             try:
                 if self._coroutine_scheduler is not None:

@@ -3,6 +3,7 @@
 #include <function/renderer/RenderGraphDescription.h>
 #include <function/renderer/ScriptableRenderContext.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
+#include <function/scene/physics/PhysicsWorld.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -17,6 +18,29 @@ class PyRenderPipelineCallback : public RenderPipelineCallback
 {
   public:
     using RenderPipelineCallback::RenderPipelineCallback;
+
+    bool PrepareWorldUI(ScriptableRenderContext &context) override
+    {
+        py::gil_scoped_acquire gil;
+        const auto prepare = py::get_override(static_cast<const RenderPipelineCallback *>(this), "prepare_world_ui");
+        return prepare ? prepare(py::cast(&context, py::return_value_policy::reference)).cast<bool>() : true;
+    }
+
+    bool PrepareViewUI(ScriptableRenderContext &context, const RenderViewData &view) override
+    {
+        py::gil_scoped_acquire gil;
+        const auto prepare = py::get_override(static_cast<const RenderPipelineCallback *>(this), "prepare_view_ui");
+        return prepare ? prepare(py::cast(&context, py::return_value_policy::reference),
+                                 py::cast(context.GetViewPublication()))
+                             .cast<bool>()
+                       : true;
+    }
+
+    PresentationPoseObjects CollectPresentationPoseObjects() override
+    {
+        PYBIND11_OVERRIDE_NAME(PresentationPoseObjects, RenderPipelineCallback, "collect_presentation_pose_objects",
+                               CollectPresentationPoseObjects);
+    }
 
     bool ShouldRenderView(const RenderViewData &view) override
     {
@@ -52,12 +76,19 @@ namespace infernux
 {
 void RegisterRenderPipelineBindings(py::module_ &m)
 {
+    py::register_exception<PhysicsPresentationPosePending>(m, "_PresentationPosePending");
+
     // An owning read-only value shared by the context and callback. No
     // Camera/GameObject/Transform pointer is exported through this object.
     py::class_<RenderViewData, std::shared_ptr<RenderViewData>>(m, "RenderView")
         .def_readonly("camera_id", &RenderViewData::cameraId)
         .def_readonly("world_id", &RenderViewData::worldId)
         .def_readonly("world_frame", &RenderViewData::completedWorldFrame)
+        .def_property_readonly("paused_author_presentation",
+                               [](const RenderViewData &v) { return v.pausedAuthor.revision != 0; })
+        .def_property_readonly("presentation_revision", [](const RenderViewData &v) { return v.pausedAuthor.revision; })
+        .def_property_readonly("base_completed_world_frame",
+                               [](const RenderViewData &v) { return v.pausedAuthor.baseCompletedWorldFrame; })
         .def_readonly("simulation_epoch", &RenderViewData::simulationEpoch)
         .def_readonly("name", &RenderViewData::name)
         .def_readonly("scene_name", &RenderViewData::sceneName)
@@ -130,6 +161,16 @@ void RegisterRenderPipelineBindings(py::module_ &m)
                                    const auto plan = self.CapturePlan();
                                    return plan && static_cast<bool>(plan->ui);
                                })
+        .def_property_readonly("_ui_world_only", &ScriptableRenderContext::IsWorldUICapture)
+        .def_property_readonly("_ui_world_id", [](const ScriptableRenderContext &c) { return c.UIWorld().WorldId(); })
+        .def_property_readonly("_ui_world_epoch",
+                               [](const ScriptableRenderContext &c) { return c.UIWorld().SimulationEpoch(); })
+        .def_property_readonly("_ui_author_revision",
+                               [](const ScriptableRenderContext &c) { return c.UIWorld().PausedAuthor().revision; })
+        .def_property_readonly("_ui_completed_frame",
+                               [](const ScriptableRenderContext &c) { return c.UIWorld().CompletedWorldFrame(); })
+        .def_property_readonly("_uses_shared_scene_ui", &ScriptableRenderContext::UsesSharedSceneUI)
+        .def_property_readonly("_uses_published_world_ui", &ScriptableRenderContext::UsesPublishedWorldUI)
         .def("capture_screen_ui", &ScriptableRenderContext::CaptureScreenUI, py::arg("renderer"))
         .def("cull", &ScriptableRenderContext::Cull, py::return_value_policy::reference_internal,
              "Cull this context's retained RenderView") // RenderGraph-driven API
@@ -158,6 +199,9 @@ void RegisterRenderPipelineBindings(py::module_ &m)
     py::class_<RenderPipelineCallback, PyRenderPipelineCallback, std::shared_ptr<RenderPipelineCallback>>(
         m, "RenderPipelineCallback")
         .def(py::init<>())
+        .def("prepare_world_ui", &RenderPipelineCallback::PrepareWorldUI)
+        .def("prepare_view_ui", &RenderPipelineCallback::PrepareViewUI)
+        .def("collect_presentation_pose_objects", &RenderPipelineCallback::CollectPresentationPoseObjects)
         .def("should_render_view", &RenderPipelineCallback::ShouldRenderView, py::arg("view"),
              "Select participation before capturing a new World frame; False is a legal omission")
         .def("render", &RenderPipelineCallback::Render, py::arg("context"), py::arg("view"),

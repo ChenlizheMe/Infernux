@@ -39,6 +39,7 @@ class DeferredTaskRunner:
         self._on_done: Optional[Callable[[bool], None]] = None
         self._index: int = 0
         self._failed: bool = False
+        self._continuation = None
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -101,9 +102,21 @@ class DeferredTaskRunner:
         # Execute the step
         if fn is not None and not self._failed:
             try:
-                result = fn()
-                if result is False:
-                    self._failed = True
+                if self._continuation is None:
+                    result = fn()
+                    if result is False:
+                        self._failed = True
+                    elif hasattr(result, '__next__'):
+                        self._continuation = result
+                if self._continuation is not None:
+                    try:
+                        next(self._continuation)
+                    except StopIteration as completed:
+                        self._continuation = None
+                        if completed.value is False:
+                            self._failed = True
+                    else:
+                        return
             except Exception as exc:
                 from infernux.debug import Debug
                 Debug.log_exception(exc)
@@ -118,6 +131,9 @@ class DeferredTaskRunner:
 
     def cancel(self) -> None:
         """Cancel outstanding steps."""
+        continuation, self._continuation = self._continuation, None
+        if continuation is not None:
+            continuation.close()
         self._steps.clear()
         self._index = 0
         self._on_done = None
@@ -129,6 +145,9 @@ class DeferredTaskRunner:
     # ── internals ─────────────────────────────────────────────────────
 
     def _finish(self) -> None:
+        continuation, self._continuation = self._continuation, None
+        if continuation is not None:
+            continuation.close()
         on_done = self._on_done
         ok = not self._failed
         self._steps.clear()

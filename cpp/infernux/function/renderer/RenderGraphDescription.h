@@ -386,6 +386,7 @@ struct RenderGraphDescription
     std::vector<GraphWorkBindingDesc> workBindings;
     std::vector<GraphPassDesc> passes; ///< All passes in declaration order
     std::string outputTexture;         ///< Name of the final output texture
+    bool outputDisplayEncoded = false; ///< Sampled output already contains display-encoded RGB.
     /// Terminal linear image before display encoding/overlay. Offscreen
     /// cameras consume this prefix, not a display-encoded screen image.
     std::string linearOutputTexture;

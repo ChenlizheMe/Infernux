@@ -801,10 +801,12 @@ def _publish_prepared_scene_python_components(
         if not defer_lifecycle:
             for _target, instance, _native_component in attached:
                 instance._call_on_after_deserialize()
-            for target, _instance, native_component in attached:
-                target._activate_prepared_py_component(native_component)
+            from infernux.physics.participant import _prepare_component_activation
+            _prepare_component_activation(attached)
     except Exception as exc:
-        for target, _instance, native_component in reversed(attached):
+        from infernux.physics.participant import _retire_component_physics
+        for target, instance, native_component in reversed(attached):
+            _retire_component_physics(instance)
             target._remove_prepared_py_component(native_component)
         prepared_graph.discard()
         raise PythonComponentRestoreError(f"failed to publish Python component graph: {exc}") from exc

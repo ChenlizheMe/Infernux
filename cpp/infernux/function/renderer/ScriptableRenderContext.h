@@ -29,6 +29,9 @@ class EditorGizmos;
 class EditorTools;
 class GizmosDrawCallBuffer;
 class InxMaterial;
+class GameObject;
+// First list reads world poses, second list reads local poses, as UITransformDependencies does.
+using PresentationPoseObjects = std::pair<std::vector<GameObject *>, std::vector<GameObject *>>;
 
 // ============================================================================
 // CullingResults
@@ -77,6 +80,7 @@ struct RenderViewPlan
     std::vector<RenderCommand> commands;
     RenderViewPlanState state = RenderViewPlanState::Pending;
     InxScreenUIRenderer::Snapshot ui;
+    InxScreenUIRenderer::Snapshot worldUI;
 };
 
 // ============================================================================
@@ -158,6 +162,18 @@ class ScriptableRenderContext
     [[nodiscard]] static ProfileSnapshot GetProfileSnapshot();
     static void ResetProfileSnapshot();
 #endif
+
+    /// UI capture on the actual immutable World, with no view/camera/projection.
+    explicit ScriptableRenderContext(std::shared_ptr<const RenderWorldFrame> world);
+    [[nodiscard]] bool IsWorldUICapture() const noexcept
+    {
+        return !m_cachedCameraView;
+    }
+    [[nodiscard]] const RenderWorldFrame &UIWorld() const noexcept
+    {
+        return *m_renderWorldOwner;
+    }
+    void SetWorldUISnapshot(InxScreenUIRenderer::Snapshot snapshot);
 
     ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
                             const EditorGizmosContext &gizmoCtx, std::shared_ptr<const RenderWorldFrame> world,
@@ -255,6 +271,12 @@ class ScriptableRenderContext
     }
     void SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot);
     bool CaptureScreenUI(InxScreenUIRenderer &renderer);
+    [[nodiscard]] bool UsesSharedSceneUI() const noexcept
+    {
+        return m_renderWorldOwner->IsSharedSceneView();
+    }
+    /// Runtime views require their sealed owner; authoring/preview use live UI.
+    [[nodiscard]] bool UsesPublishedWorldUI() const;
 
     /// @brief Get the scene associated with this render context.
     /// Returns the gizmo context's active scene, or falls back to
@@ -320,6 +342,21 @@ class RenderPipelineCallback
 {
   public:
     virtual ~RenderPipelineCallback() = default;
+
+    virtual bool PrepareWorldUI(ScriptableRenderContext &)
+    {
+        return true;
+    }
+    virtual bool PrepareViewUI(ScriptableRenderContext &, const RenderViewData &)
+    {
+        return true;
+    }
+
+    /// Pure collection for built-in presentation readers; never renders or runs layout.
+    virtual PresentationPoseObjects CollectPresentationPoseObjects()
+    {
+        return {};
+    }
 
     /// Participation is selected once when the World frame is sealed.
     virtual bool ShouldRenderView(const RenderViewData &view)

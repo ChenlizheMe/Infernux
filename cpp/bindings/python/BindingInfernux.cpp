@@ -817,6 +817,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
     py::class_<InxScreenUIRenderer::CommandPacket, std::shared_ptr<InxScreenUIRenderer::CommandPacket>>(
         m, "_UICommandPacket");
     NativeClass<InxScreenUIRenderer>(m, "InxScreenUIRenderer")
+        .def("_set_prepared_pose_reads", &InxScreenUIRenderer::SetPreparedPoseReads)
         .def("begin_command_packet", &InxScreenUIRenderer::BeginCommandPacket)
         .def("end_command_packet", &InxScreenUIRenderer::EndCommandPacket)
         .def("abort_command_packet", &InxScreenUIRenderer::AbortCommandPacket)
@@ -982,7 +983,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def_readonly("sequence", &GameScreenSample::sequence)
         .def_readonly("generation", &GameScreenSample::generation)
         .def_readonly("world_frame", &GameScreenSample::completedWorldFrame)
+        .def_readonly("paused_author_presentation", &GameScreenSample::pausedAuthorPresentation)
+        .def_readonly("presentation_revision", &GameScreenSample::presentationRevision)
+        .def_readonly("base_completed_world_frame", &GameScreenSample::baseCompletedWorldFrame)
         .def_readonly("simulation_epoch", &GameScreenSample::simulationEpoch)
+        .def_readonly("display_encoded", &GameScreenSample::displayEncoded)
         .def_property_readonly("width", [](const GameScreenSample &s) { return s.image->width; })
         .def_property_readonly("height", [](const GameScreenSample &s) { return s.image->height; });
     py::class_<Infernux>(m, "Infernux")
@@ -1045,12 +1050,17 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("_game_screen_image", [](Infernux &engine, const std::shared_ptr<GameScreenSample> &sample) {
             return RequireRenderer(engine).GetGameScreenTextureId(sample);
         })
+        .def("_game_screen_live_image", [](Infernux &engine, uint64_t world) {
+            return RequireRenderer(engine).GetGameScreenLiveTextureId(world);
+        })
         .def("_game_screen_status", [](Infernux &engine, uint64_t world) {
             const auto status = RequireRenderer(engine).GetGameScreenOutputStatus(world);
             py::dict value;
             value["world_id"] = world;
             value["width"] = status.requested.width; value["height"] = status.requested.height;
             value["generation"] = status.generation;
+            value["gui_recorded_sequence"] = status.guiRecordedSequence;
+            value["gui_recording_count"] = status.guiRecordingCount;
             value["pending"] = status.pendingSamples;
             value["consumers"] = status.consumers;
             value["no_camera"] = status.sourcePublished && !status.hasScreenCamera;
@@ -1575,6 +1585,14 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 timings["scene"] = encodeStats(snapshot.scene);
                 timings["gui"] = encodeStats(snapshot.gui);
                 timings["prepare"] = encodeStats(snapshot.prepare);
+                timings["input"] = encodeStats(snapshot.input);
+                timings["callbacks"] = encodeStats(snapshot.callbacks);
+                timings["gpu_wait"] = encodeStats(snapshot.gpuWait);
+                timings["draw"] = encodeStats(snapshot.draw);
+                constexpr const char *drawPhaseNames[] = {"acquire", "record_submit", "present", "command_prepare",
+                                                         "command_record", "queue_submit"};
+                for (size_t index = 0; index < snapshot.drawPhases.size(); ++index)
+                    timings[drawPhaseNames[index]] = encodeStats(snapshot.drawPhases[index]);
                 py::dict result;
                 result["first_frame"] = snapshot.firstFrame;
                 result["last_frame"] = snapshot.lastFrame;
@@ -1764,6 +1782,18 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             }, py::arg("callback"),
             "Run at the Engine owner boundary after foreground completion in both runtime modes. "
             "False means foreground work was deferred; no renderer is required.")
+        .def("_set_editor_view_world_provider", [](Infernux &self, py::object callback) {
+            auto &renderer = RequireRenderer(self);
+            if (callback.is_none()) {
+                renderer.SetEditorViewWorldProvider(nullptr);
+            } else {
+                auto fn = std::make_shared<PythonCallback>(py::cast<py::function>(callback));
+                renderer.SetEditorViewWorldProvider([fn](bool prepare) {
+                    py::gil_scoped_acquire acquire;
+                    return py::cast<uint64_t>(fn->function(prepare));
+                });
+            }
+        }, py::arg("callback"))
         .def(
             "set_pre_gui_callback",
             [](Infernux &self, py::object callback) {

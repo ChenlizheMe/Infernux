@@ -254,7 +254,7 @@ class Camera : public Component
     }
     void SetCullingMask(uint32_t mask)
     {
-        m_cullingMask = mask;
+        SetPresentationValue(m_cullingMask, decltype(m_cullingMask)(mask));
     }
 
     /// Imported outputs persist by GUID; anonymous runtime allocations do not.
@@ -322,7 +322,7 @@ class Camera : public Component
     }
     void SetDithering(bool enabled)
     {
-        m_dithering = enabled;
+        SetPresentationValue(m_dithering, decltype(m_dithering)(enabled));
     }
 
     [[nodiscard]] bool GetStopNaNs() const
@@ -331,7 +331,7 @@ class Camera : public Component
     }
     void SetStopNaNs(bool enabled)
     {
-        m_stopNaNs = enabled;
+        SetPresentationValue(m_stopNaNs, decltype(m_stopNaNs)(enabled));
     }
 
     // ========================================================================
@@ -354,6 +354,7 @@ class Camera : public Component
     void ResetHistory()
     {
         ++m_temporalHistoryRevision;
+        NotifyPresentationChanged();
     }
     [[nodiscard]] uint64_t GetTemporalHistoryRevision() const
     {
@@ -372,7 +373,7 @@ class Camera : public Component
     }
     void SetInvertCulling(bool invert)
     {
-        m_invertCulling = invert;
+        SetPresentationValue(m_invertCulling, decltype(m_invertCulling)(invert));
     }
 
     /// @brief Get projection matrix

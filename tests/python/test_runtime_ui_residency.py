@@ -221,7 +221,6 @@ def test_host_input_hits_nonactive_canvas_and_observes_sort_order(scene, monkeyp
             input_frame.frame_index += 1
             panel._is_playing = lambda: True
             panel._is_paused = lambda: False
-            panel._game_camera_was_enabled = True
             monkeypatch.setattr(game_view.ClosablePanel, "get_active_view_id", lambda: panel.window_id)
             panel.process_runtime_input()
             queued = panel._ui_event_processor._queued_callback_count

@@ -330,7 +330,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         RequireBytes(Shapes, uint64_t(std::max(1u, storage.GetShapeCount())) * sizeof(ShapeModel));
         RequireBytes(Worlds, uint64_t(w) * sizeof(WorldRange));
         RequireBytes(Joints, storage.GetJointLayout()->ByteSize());
-        RequireBytes(Contacts, uint64_t(std::max(1u, Checked(4ull * p))) * sizeof(Contact));
+        if (frozen[Contacts]->GetByteSize() < uint64_t(std::max(1u, Checked(4ull * p))) * sizeof(Contact) ||
+            frozen[Contacts]->GetByteSize() % sizeof(Contact))
+            throw std::invalid_argument("GPU constraints require initialized contact capacity covering logical 4C");
         if (!frozen[Sleeps] || !implementation->host.SharesServicesWith(frozen[Sleeps]->GetHost()))
             throw std::invalid_argument("GPU constraints require the selected sleep source");
         RequireBytes(Sleeps, uint64_t(b) * sizeof(BodySleepRecord));

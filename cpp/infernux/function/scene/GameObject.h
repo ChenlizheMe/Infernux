@@ -381,7 +381,9 @@ class GameObject : public NativeLifetimeOwner
     Component *AddPreparedPythonComponent(std::unique_ptr<Component> component, size_t componentIndex);
 
     /// Activate one proxy previously attached by AddPreparedPythonComponent.
-    void ActivatePreparedPythonComponent(Component *component);
+    void ActivatePreparedPythonComponent(Component *component, bool activate = true);
+    /// Reuse prepared publication for direct attach or a cold recipe rebuild.
+    void DeferPythonComponentActivation(Component *component);
 
     /// Remove an unactivated prepared proxy without RequireComponent blocking.
     bool RemovePreparedPythonComponent(Component *component);

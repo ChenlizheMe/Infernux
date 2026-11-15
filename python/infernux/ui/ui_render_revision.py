@@ -61,6 +61,14 @@ def mark_runtime_ui_dirty(element=None, *, binding: bool = False, subtree: bool 
     """
     global _runtime_ui_revision, _shared_visual_revision, _resource_binding_revision
     _runtime_ui_revision += 1
+    from infernux.lib import _Infernux
+    if _Infernux.__runtime_profile__ == "desktop":
+        if element is None:
+            _Infernux._notify_presentation_author_edit(None)
+        else:
+            owner = element._try_get_game_object()
+            if owner is not None:
+                _Infernux._notify_presentation_author_edit(owner)
     if binding or element is None:
         _resource_binding_revision += 1
     if element is None:

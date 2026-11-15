@@ -384,27 +384,48 @@ void AssetDependencyGraph::NotifyEvent(const std::string &guid, ResourceType typ
         std::rethrow_exception(failure);
 }
 
+void AssetDependencyGraph::SetRuntimeContentCallback(const std::string &owner, std::function<void()> callback)
+{
+    std::lock_guard<std::mutex> lock(m_runtimeMutex);
+    if (callback)
+        m_runtimeContentCallbacks[owner] = std::move(callback);
+    else
+        m_runtimeContentCallbacks.erase(owner);
+}
+
 void AssetDependencyGraph::PublishContentChange(const std::string &guid)
 {
     if (guid.empty())
         throw std::invalid_argument("Asset content publication requires a GUID");
     const auto snapshot = GetAssetSnapshot();
-    std::lock_guard<std::mutex> lock(m_runtimeMutex);
-    if (m_contentSerial == std::numeric_limits<uint64_t>::max())
-        throw std::overflow_error("Asset content revision exhausted");
-    const auto revision = ++m_contentSerial;
-    std::vector<std::string> pending{guid};
-    std::unordered_set<std::string> visited;
-    while (!pending.empty()) {
-        auto current = std::move(pending.back());
-        pending.pop_back();
-        if (!visited.insert(current).second)
-            continue;
-        m_contentRevisions[current] = revision;
-        const auto found = snapshot->m_dependents.find(current);
-        if (found != snapshot->m_dependents.end())
-            pending.insert(pending.end(), found->second.begin(), found->second.end());
+    std::vector<std::function<void()>> notifications;
+    {
+        std::lock_guard<std::mutex> lock(m_runtimeMutex);
+        if (m_contentSerial == std::numeric_limits<uint64_t>::max())
+            throw std::overflow_error("Asset content revision exhausted");
+        const auto revision = ++m_contentSerial;
+        std::vector<std::string> pending{guid};
+        std::unordered_set<std::string> visited;
+        while (!pending.empty()) {
+            auto current = std::move(pending.back());
+            pending.pop_back();
+            if (!visited.insert(current).second)
+                continue;
+            m_contentRevisions[current] = revision;
+            const auto found = snapshot->m_dependents.find(current);
+            if (found != snapshot->m_dependents.end())
+                pending.insert(pending.end(), found->second.begin(), found->second.end());
+            const auto runtime = m_runtimeDependents.find(current);
+            if (runtime != m_runtimeDependents.end())
+                pending.insert(pending.end(), runtime->second.begin(), runtime->second.end());
+            const auto observer = m_runtimeContentCallbacks.find(current);
+            if (observer != m_runtimeContentCallbacks.end())
+                notifications.push_back(observer->second);
+        }
     }
+    // Match the existing publication callback boundary; never call scene users under the graph lock.
+    for (const auto &notify : notifications)
+        notify();
 }
 
 uint64_t AssetDependencyGraph::GetContentRevision(const std::string &guid) const
@@ -448,6 +469,7 @@ void AssetDependencyGraph::Clear()
     m_runtimeDependents.clear();
     m_callbacks.clear();
     m_contentRevisions.clear();
+    m_runtimeContentCallbacks.clear();
     m_contentSerial = 1;
 }
 

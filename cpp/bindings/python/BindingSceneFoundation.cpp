@@ -17,6 +17,7 @@
 #include "function/scene/RectTransformLayout.h"
 #include "function/scene/Rigidbody.h"
 #include "function/scene/Scene.h"
+#include "function/scene/SceneManager.h"
 #include "function/scene/SkinnedMeshRenderer.h"
 #include "function/scene/SphereCollider.h"
 #include "function/scene/TrailRenderer.h"
@@ -94,6 +95,13 @@ void BindObjectHandle(py::module_ &m)
 
 void BindComponent(py::module_ &m)
 {
+    m.def("_observe_presentation_asset",
+          [](const std::string &guid) { SceneManager::Instance().ObservePresentationAsset(guid); });
+    m.def(
+        "_notify_presentation_author_edit",
+        [](GameObject *owner) { SceneManager::Instance().NotifyAuthorPresentationChanged(owner); },
+        py::arg("owner") = nullptr);
+
     NativeClass<Component>(m, "Component")
         .def_property_readonly("type_name", &Component::GetTypeName)
         .def_property_readonly("component_id", &Component::GetComponentID)
@@ -110,6 +118,7 @@ void BindComponent(py::module_ &m)
         .def("_set_component_id", &Component::SetComponentID, py::arg("component_id"),
              "Internal transactional restore hook")
         .def_property("enabled", &Component::IsEnabled, &Component::SetEnabled)
+        .def_property_readonly("_preparation_ready", &Component::IsPreparationReady)
         .def_property("execution_order", &Component::GetExecutionOrder, &Component::SetExecutionOrder)
         .def_property_readonly(
             "game_object", [](Component *c) { return c->GetGameObject(); }, py::return_value_policy::reference,

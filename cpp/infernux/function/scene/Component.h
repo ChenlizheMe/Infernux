@@ -197,6 +197,14 @@ class Component : public NativeLifetimeOwner
 
     /// @brief Call OnValidate (editor only)
     void CallOnValidate();
+    void NotifyPresentationChanged() const;
+    template <class T> void SetPresentationValue(T &field, T value)
+    {
+        if (field == value)
+            return;
+        field = std::move(value);
+        NotifyPresentationChanged();
+    }
 
     /// @brief Call Reset
     void CallReset();
@@ -284,6 +292,20 @@ class Component : public NativeLifetimeOwner
     [[nodiscard]] bool IsEnabled() const
     {
         return m_enabled;
+    }
+
+    /// A cold component producer gates activation without changing author enabled.
+    [[nodiscard]] bool IsPreparationReady() const
+    {
+        return m_preparationReady;
+    }
+    void SetPreparationReady(bool ready)
+    {
+        if (m_preparationReady == ready)
+            return;
+        m_preparationReady = ready;
+        if (m_gameObject)
+            InvalidateGameObjectLifecycleCaches(m_gameObject);
     }
 
     [[nodiscard]] bool HasAwake() const
@@ -475,6 +497,7 @@ class Component : public NativeLifetimeOwner
     GameObject *m_gameObject = nullptr;
     bool m_enabled = true;
     bool m_wasEnabled = false; // Track previous enabled state for OnEnable/OnDisable
+    bool m_preparationReady = true;
     bool m_hasAwake = false;
     bool m_hasStarted = false;
     bool m_hasDestroyed = false;

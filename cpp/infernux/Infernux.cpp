@@ -61,6 +61,7 @@
 #include <function/scene/ComponentFactory.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
+#include <function/scene/SceneRenderBridge.h>
 #include <function/scene/physics/PhysicsWorld.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -3327,7 +3328,10 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
         return;
     }
 
-    std::vector<uint64_t> expandedIds = ExpandSelectionOutlineIds(SceneManager::Instance(), objectIds);
+    auto *world = SceneRenderBridge::Instance().GetEditorViewedWorld();
+    const WorldExecutionScope editorView(world);
+    std::vector<uint64_t> expandedIds =
+        world ? ExpandSelectionOutlineIds(SceneManager::Instance(), objectIds) : std::vector<uint64_t>{};
     const uint64_t primaryObjectId = objectIds.empty() ? 0 : objectIds.back();
     m_selectedObjectId = primaryObjectId;
     m_renderer->SetSelectionState(primaryObjectId, expandedIds);
@@ -3349,11 +3353,11 @@ Infernux::MaterialShaderPreparation Infernux::PrepareMaterialShader(const std::s
     if (material->GetGuid().empty())
         AssetRegistry::Instance().RegisterRuntimeMaterial(material);
 
-    auto resolvePath = [&](const ShaderAssetReference &reference, const char *stage) {
+    auto resolveGuid = [&](const ShaderAssetReference &reference, const char *stage) {
         if (!reference.guid.empty()) {
             // A missing GUID remains a missing reference. Never fall through
             // to path_hint or shader_id and silently bind a different asset.
-            return adb->GetPathFromGuid(reference.guid);
+            return reference.guid;
         }
 
         // path_hint is display/diagnostic metadata only. A GUID-less, pathless
@@ -3361,13 +3365,13 @@ Infernux::MaterialShaderPreparation Infernux::PrepareMaterialShader(const std::s
         // an AssetDatabase dependency and may use the program registry.
         if (!reference.pathHint.empty())
             return std::string{};
-        return adb->FindShaderPathById(reference.shaderId, stage);
+        return adb->FindShaderGuidById(reference.shaderId, stage);
     };
 
-    const std::string fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
+    const std::string fragmentGuid = resolveGuid(material->GetFragShaderReference(), "fragment");
     const auto stages = material->GetShaderStages();
-    const std::string vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
-    return EnsureShaderAuthorMaterial(stages, vertexPath, fragmentPath);
+    const std::string vertexGuid = resolveGuid(material->GetVertShaderReference(), "vertex");
+    return EnsureShaderAuthorMaterial(stages, vertexGuid, fragmentGuid);
 }
 
 std::optional<ShaderProgramDomain>
@@ -3380,7 +3384,7 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
                                  const char *stage) -> std::optional<ShaderProgramDomain> {
         auto guid = reference.guid;
         if (guid.empty() && reference.pathHint.empty() && !reference.shaderId.empty())
-            guid = database->GetGuidFromCatalogPath(database->FindShaderPathById(reference.shaderId, stage));
+            guid = database->FindShaderGuidById(reference.shaderId, stage);
         if (guid.empty())
             return std::nullopt;
         const auto asset = AssetRegistry::Instance().LoadAsset<ShaderAsset>(guid, ResourceType::Shader);

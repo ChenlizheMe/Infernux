@@ -1182,7 +1182,8 @@ void JoltGpuStepInputs::SetContacts(std::shared_ptr<const JoltGpuContactWorkset>
     const auto contactCount = uint64_t(contacts->patchCount) * MaxContactPointsPerPair;
     if (contacts->parameters->GetByteSize() != sizeof(StepParams) ||
         contacts->worlds->GetByteSize() != authorWorlds->GetByteSize() ||
-        contacts->contacts->GetByteSize() != std::max(uint64_t{1}, contactCount) * sizeof(Contact) ||
+        contacts->contacts->GetByteSize() < std::max(uint64_t{1}, contactCount) * sizeof(Contact) ||
+        contacts->contacts->GetByteSize() % sizeof(Contact) ||
         contacts->patches->GetByteSize() < sizeof(ContactPatch) ||
         contacts->patches->GetByteSize() % sizeof(ContactPatch))
         throw std::invalid_argument("Jolt GPU contact workset differs from its logical resource layout");
@@ -1266,9 +1267,10 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
     }
 }
 
-rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage,
-                                                        const JoltGpuStepInputs &inputs, const JoltGpuStageWork &work,
-                                                        const std::shared_ptr<rhi::ComputeBuffer> &workUniform) const
+rhi::ComputeDispatchDesc
+JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                               const JoltGpuStageWork &work, const std::shared_ptr<rhi::ComputeBuffer> &workUniform,
+                               const std::shared_ptr<const JoltGpuContactWorkset> &resident) const
 {
     rhi::ComputeDispatchDesc dispatch;
     dispatch.kernel = entry.kernel;
@@ -1283,7 +1285,7 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
         const bool writer = binding.access != rhi::ComputeBufferAccess::Read;
         const auto resource = Ports[binding.slot].resource;
         const auto input = InputIndex(resource);
-        const auto &contacts = inputs.GetContacts();
+        const auto &contacts = resident ? resident : inputs.GetContacts();
         const auto &constraints = inputs.GetConstraints();
         const auto &buffer = resource == Resource::ConvexGeometry ? inputs.GetCaptured(resource)
                              : resource == Resource::StageWork    ? workUniform
@@ -1339,6 +1341,42 @@ rhi::ComputeDispatchDesc JoltGpuPrograms::BuildDispatch(const Entry &entry, cons
         dispatch.groupCountY > maximum[1] || dispatch.groupCountZ > maximum[2])
         throw std::invalid_argument("Jolt GPU bounded work exceeds the device dispatch range");
     return dispatch;
+}
+
+void JoltGpuPrograms::AppendResidentCollide(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                                            const std::shared_ptr<const JoltGpuContactWorkset> &contacts,
+                                            uint32_t capacity, const StageWork &work,
+                                            const std::shared_ptr<rhi::ComputeBuffer> &uniform,
+                                            const rhi::ComputeIndirectArguments &arguments,
+                                            std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                            std::vector<rhi::ComputeDispatchDesc> &dispatches)
+{
+    const auto range = work.range;
+    if (!m_host.SharesServicesWith(storage.GetHost()) || !contacts || range.z || range.w || !range.y ||
+        range.y > WorkItemLimit(Domain::Patches) || range.x > capacity || range.y > capacity - range.x ||
+        !contacts->contacts ||
+        contacts->contacts->GetByteSize() < uint64_t(capacity) * MaxContactPointsPerPair * sizeof(Contact))
+        throw std::invalid_argument("Resident collide requires its bounded admitted capacity");
+    if (!uniform || uniform->IsFrozen() || uniform->GetByteSize() != sizeof(StageWork) ||
+        !m_host.SharesServicesWith(uniform->GetHost()))
+        throw std::invalid_argument("Resident collide requires its admitted StageWork uniform slot");
+    uploads.push_back({uniform, 0, Bytes(&work, 1)});
+    auto dispatch = BuildDispatch(m_entries[static_cast<size_t>(Stage::CollidePairs)], storage, inputs,
+                                  {Stage::CollidePairs, work}, uniform, contacts);
+    dispatch.indirectArguments = arguments;
+    // Indirect work cannot manufacture initialized coverage. Direct bounded
+    // initialization established every Contact capacity slot beforehand.
+    dispatch.proof->writes.clear();
+    for (size_t i = 0; i < m_entries[static_cast<size_t>(Stage::CollidePairs)].bindings.size(); ++i)
+        if (Ports[m_entries[static_cast<size_t>(Stage::CollidePairs)].bindings[i].slot].resource ==
+            Resource::Contacts) {
+            // This dispatch retains initialized capacity even where indirect
+            // groups do not write. Its actual binding must carry the Read bit
+            // required by that proof; the shared shader recipe stays Write.
+            dispatch.bufferAccesses[i] = rhi::ComputeBufferAccess::ReadWrite;
+            dispatch.proof->reads.push_back({static_cast<uint32_t>(i), 0, contacts->contacts->GetByteSize()});
+        }
+    dispatches.push_back(std::move(dispatch));
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,

@@ -62,6 +62,12 @@ struct RenderProxy
     RenderProxyCacheData cache;
 };
 
+struct PausedAuthorProvenance
+{
+    uint64_t revision = 0;
+    uint64_t baseCompletedWorldFrame = 0;
+};
+
 struct RenderViewData
 {
     glm::mat4 view{1.0f};
@@ -74,6 +80,7 @@ struct RenderViewData
     uint64_t cameraId = 0;
     uint64_t worldId = 0;
     uint64_t completedWorldFrame = 0;
+    PausedAuthorProvenance pausedAuthor;
     uint64_t simulationEpoch = 0;
     uint64_t cameraObjectId = 0;
     uint64_t sceneWorldId = 0;
@@ -119,12 +126,12 @@ class RenderWorldFrame final
   public:
     [[nodiscard]] const std::vector<RenderProxy> &Proxies() const noexcept
     {
-        return m_proxies;
+        return m_sourceFrame ? m_sourceFrame->Proxies() : m_proxies;
     }
 
     [[nodiscard]] const DrawCallResult &DrawCalls() const noexcept
     {
-        return m_drawCalls;
+        return m_sourceFrame ? m_sourceFrame->DrawCalls() : m_drawCalls;
     }
 
     [[nodiscard]] const RenderViewData &PrimaryView() const noexcept
@@ -148,13 +155,31 @@ class RenderWorldFrame final
         return m_completedWorldFrame;
     }
 
+    [[nodiscard]] bool OwnsUI(const std::shared_ptr<const RenderWorldFrame> &source) const noexcept
+    {
+        return source.get() == this || m_sourceFrame == source;
+    }
+    [[nodiscard]] bool IsSharedSceneView() const noexcept
+    {
+        return static_cast<bool>(m_sourceFrame);
+    }
+
+    [[nodiscard]] const PausedAuthorProvenance &PausedAuthor() const noexcept
+    {
+        return m_pausedAuthor;
+    }
+    [[nodiscard]] bool IsPausedAuthorPresentation() const noexcept
+    {
+        return m_pausedAuthor.revision != 0;
+    }
+
     [[nodiscard]] uint64_t SimulationEpoch() const noexcept
     {
         return m_simulationEpoch;
     }
     [[nodiscard]] const std::shared_ptr<const RenderLightingSource> &Lighting() const noexcept
     {
-        return m_lighting;
+        return m_sourceFrame ? m_sourceFrame->Lighting() : m_lighting;
     }
 
     [[nodiscard]] uint64_t WorldId() const noexcept
@@ -195,6 +220,11 @@ class RenderWorldFrame final
   private:
     friend class RenderWorldSnapshot;
     friend class SceneRenderExtractor;
+    friend class SceneRenderBridge;
+
+    // A Scene camera changes its view without copying a completed World's
+    // geometry or replacing the device-pose/storage owners of that value.
+    std::shared_ptr<const RenderWorldFrame> m_sourceFrame;
 
     std::vector<RenderProxy> m_proxies;
     DrawCallResult m_drawCalls;
@@ -202,6 +232,7 @@ class RenderWorldFrame final
     std::vector<RenderViewData> m_views;
     std::unordered_map<uint64_t, size_t> m_viewIndices;
     uint64_t m_completedWorldFrame = 0;
+    PausedAuthorProvenance m_pausedAuthor;
     uint64_t m_simulationEpoch = 0;
     std::shared_ptr<const RenderLightingSource> m_lighting;
     uint64_t m_worldId = 0;
@@ -238,6 +269,7 @@ class RenderWorldSnapshot final
         frame.m_views.clear();
         frame.m_viewIndices.clear();
         frame.m_completedWorldFrame = 0;
+        frame.m_pausedAuthor = {};
         frame.m_simulationEpoch = 0;
         frame.m_lighting.reset();
         frame.m_worldId = 0;

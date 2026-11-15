@@ -141,7 +141,10 @@ void TransformECSStore::ApplyRectLayout(Handle h, bool authored)
         m_fcDirty[h.index] &= static_cast<uint8_t>(~0x01);
     }
     m_dirty[h.index] = 1;
-    InvalidateSubtree(m_owners[h.index], false);
+    if (authored)
+        InvalidateSubtree(m_owners[h.index], false);
+    else
+        InvalidateSubtreeFrom(m_owners[h.index], false, nullptr, nullptr, false);
 }
 
 void TransformECSStore::ResolveRectLocalPosition(Handle h, const glm::vec3 &position)
@@ -808,8 +811,9 @@ bool TransformECSStore::EndFrameCache()
 
         // Invalidate subtrees for any dirty slot.
         if (hasChildren) {
-            InvalidateSubtreeFrom(owner, (d & 0x02) != 0, notifyOwner ? nullptr : owner, notifyOwner ? owner : nullptr,
-                                  (d & 0x30) != 0);
+            const bool physicsCommit = !notifyOwner && (d & 0x03) != 0;
+            InvalidateSubtreeFrom(owner, (d & 0x02) != 0, physicsCommit ? owner : nullptr,
+                                  notifyOwner ? owner : nullptr, (d & 0x30) != 0);
         } else if (notifyOwner && m_invalidationObserver) {
             m_invalidationObserver(owner, nullptr, owner, (d & 0x30) != 0);
         }

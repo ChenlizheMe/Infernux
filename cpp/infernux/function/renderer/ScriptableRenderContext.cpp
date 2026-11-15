@@ -84,6 +84,27 @@ ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, Scene
 // SetupCameraProperties
 // ============================================================================
 
+ScriptableRenderContext::ScriptableRenderContext(std::shared_ptr<const RenderWorldFrame> world)
+    : m_renderWorldOwner(std::move(world)), m_captureCompletedWorld(true)
+{
+    if (!m_renderWorldOwner)
+        throw std::logic_error("World UI capture requires its immutable World owner");
+    auto &manager = SceneManager::Instance();
+    auto *source = manager.FindRuntimeWorld(m_renderWorldOwner->WorldId());
+    if (!source)
+        throw std::logic_error("World UI capture requires its live source World");
+    m_captureWorldScope = std::make_unique<WorldExecutionScope>(source);
+    m_scene = source->scenes.active;
+    m_recordedPlan = std::make_shared<RenderViewPlan>();
+}
+
+void ScriptableRenderContext::SetWorldUISnapshot(InxScreenUIRenderer::Snapshot snapshot)
+{
+    if (!m_recordedPlan || !snapshot || !m_renderWorldOwner->OwnsUI(snapshot->World()))
+        throw std::logic_error("World UI must belong to the selected shared World source");
+    m_recordedPlan->worldUI = std::move(snapshot);
+}
+
 void ScriptableRenderContext::SetupCameraProperties()
 {
     const auto &view = *m_cachedCameraView;
@@ -548,20 +569,30 @@ bool ScriptableRenderContext::RenderWithGraph(const RenderGraphDescription &desc
     return true;
 }
 
+bool ScriptableRenderContext::UsesPublishedWorldUI() const
+{
+    const bool published = m_recordedPlan && static_cast<bool>(m_recordedPlan->worldUI);
+    if (!published && (m_captureCompletedWorld || m_renderWorldOwner->IsSharedSceneView()))
+        throw std::logic_error("Runtime UI capture requires its shared World UI publication");
+    return published;
+}
+
 bool ScriptableRenderContext::CaptureScreenUI(InxScreenUIRenderer &renderer)
 {
-    if (!m_captureCompletedWorld || !m_recordedPlan || m_recordedPlan->ui)
-        throw std::logic_error("Completed UI must be sealed exactly once during its owning view capture");
-    if (auto snapshot = renderer.CaptureCompletedWorld(m_renderWorldOwner)) {
-        SetScreenUISnapshot(std::move(snapshot));
-        return true;
+    if (!m_captureCompletedWorld || !m_recordedPlan)
+        throw std::logic_error("World UI preparation requires its owning view capture");
+    if (!m_recordedPlan->ui) {
+        if (auto snapshot = renderer.CaptureWorldCommands(m_renderWorldOwner))
+            SetScreenUISnapshot(std::move(snapshot));
+        else
+            return false;
     }
-    return false;
+    return renderer.PrepareSnapshot(m_recordedPlan->ui);
 }
 
 void ScriptableRenderContext::SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot)
 {
-    if (!m_captureCompletedWorld || !m_recordedPlan || !snapshot || snapshot->World() != m_renderWorldOwner)
+    if (!m_recordedPlan || !snapshot || !m_renderWorldOwner->OwnsUI(snapshot->World()))
         throw std::logic_error("Completed UI snapshot must belong to this exact captured World publication");
     m_recordedPlan->ui = std::move(snapshot);
 }
@@ -572,11 +603,16 @@ bool ScriptableRenderContext::ExecutePlan(const std::shared_ptr<const RenderView
         throw std::logic_error("A view execution requires its captured plan");
     if (plan->state != RenderViewPlanState::Submitted)
         return false;
-    if (plan->ui && plan->ui->World() != m_renderWorldOwner)
+    if (plan->ui && !m_renderWorldOwner->OwnsUI(plan->ui->World()))
         throw std::logic_error("Game UI plan does not own the selected completed World");
     if (!m_cachedCameraView->editorView && m_renderWorldOwner->CompletedWorldFrame() && !plan->ui)
         throw std::logic_error("Completed Game view plan has no UI publication owner");
-    m_graph->SetScreenUISnapshot(plan->ui);
+    if ((m_renderWorldOwner->CompletedWorldFrame() || m_renderWorldOwner->IsPausedAuthorPresentation()) &&
+        !plan->worldUI)
+        throw std::logic_error("Runtime view requires its shared World UI publication");
+    if (plan->worldUI && !m_renderWorldOwner->OwnsUI(plan->worldUI->World()))
+        throw std::logic_error("World UI plan lost its shared World owner");
+    m_graph->SetScreenUISnapshot(plan->ui, plan->worldUI);
     if (plan->graph &&
         (m_graph->GetAppliedPlan() != plan || !m_graph->IsPythonGraphCurrent(plan->graph->sourceRevision))) {
         if (!ApplyGraph(*plan->graph))

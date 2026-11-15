@@ -3,6 +3,7 @@
 #include "SceneRenderExtractor.h"
 #include "SceneRenderer.h"
 #include "function/renderer/GameScreenOutput.h"
+#include "function/renderer/gui/InxScreenUIRenderer.h"
 #include <functional>
 #include <optional>
 
@@ -11,6 +12,7 @@ namespace infernux
 
 class Camera;
 class RuntimeWorld;
+class AssetDependencyGraph;
 struct RenderViewPlan;
 using RenderViewPlans = std::unordered_map<uint64_t, std::shared_ptr<const RenderViewPlan>>;
 
@@ -19,7 +21,11 @@ struct RenderWorldPublication
 {
     std::shared_ptr<const RenderWorldFrame> world;
     RenderViewPlans plans;
+    std::unordered_map<uint64_t, bool> viewParticipation;
+    InxScreenUIRenderer::Snapshot worldUI;
+    std::unordered_map<uint64_t, InxScreenUIRenderer::Snapshot> preparedUI;
     std::optional<GameScreenSourceConfig> screenConfig;
+    GameScreenColorContract screenColor;
     uint64_t renderPolicyRevision = 0;
 
     [[nodiscard]] bool Participates(uint64_t cameraId) const;
@@ -45,6 +51,19 @@ class SceneRenderBridge final
     void UpdateCameraData(float *outPos, float *outLookAt, float *outUp);
     void OnWindowResize(uint32_t width, uint32_t height);
     void PrepareFrame(bool useActiveCameraCulling = true);
+    void SetEditorViewedWorld(uint64_t worldId) noexcept
+    {
+        m_editorViewedWorld = worldId;
+    }
+    [[nodiscard]] uint64_t GetEditorViewedWorldId() const noexcept
+    {
+        return m_editorViewedWorld;
+    }
+    [[nodiscard]] RuntimeWorld *GetEditorViewedWorld() const noexcept;
+    [[nodiscard]] const std::shared_ptr<const RenderWorldFrame> &AcquirePreparedEditorFrame() const noexcept
+    {
+        return m_preparedEditor;
+    }
     void SetMaterialPreparation(SceneRenderExtractor::PrepareMaterial prepare)
     {
         m_prepareMaterial = std::move(prepare);
@@ -55,6 +74,10 @@ class SceneRenderBridge final
     [[nodiscard]] bool PublishRuntimeFrame(RuntimeWorld &world, const CaptureViews &capture,
                                            uint64_t renderPolicyRevision,
                                            const std::optional<GameScreenSourceConfig> &screenConfig);
+    [[nodiscard]] bool PublishPausedAuthorPresentation(RuntimeWorld &world, const CaptureViews &capture,
+                                                       uint64_t renderPolicyRevision,
+                                                       const std::optional<GameScreenSourceConfig> &screenConfig);
+    [[nodiscard]] std::shared_ptr<const RenderWorldPublication> AcquireLatestDisplayPublication(uint64_t worldId) const;
     /// Rebuild only render work from a complete World, retaining its exact
     /// geometry, camera, pose, lighting and UI owners. Never extracts or steps.
     [[nodiscard]] bool RefreshRuntimeViewPlans(const std::shared_ptr<const RenderWorldPublication> &source,
@@ -100,22 +123,26 @@ class SceneRenderBridge final
     struct RuntimePublication
     {
         SceneRenderExtractor extractor;
+        std::shared_ptr<AssetDependencyGraph> assetGraph;
         RenderWorldSnapshot staging;
         std::shared_ptr<RenderWorldPublication> pending;
         std::shared_ptr<const RenderWorldPublication> completed;
+        std::shared_ptr<RenderWorldPublication> pausedPending;
+        std::shared_ptr<const RenderWorldPublication> display;
     };
     SceneRenderExtractor m_extractor;
     SceneRenderExtractor m_previewExtractor;
     RenderWorldSnapshot m_previewPublication;
     SceneRenderExtractor::PrepareMaterial m_prepareMaterial;
     RenderWorldSnapshot m_editorPublication;
-    std::unordered_map<uint64_t, std::unique_ptr<RuntimePublication>> m_runtimePublications;
+    std::unordered_map<uint64_t, std::shared_ptr<RuntimePublication>> m_runtimePublications;
     std::shared_ptr<const RenderWorldFrame> m_preparedEditor;
     std::shared_ptr<const RenderWorldFrame> m_preparedRuntime;
     std::shared_ptr<const RenderWorldPublication> m_preparedRuntimePublication;
     std::vector<std::shared_ptr<const RenderWorldPublication>> m_preparedRuntimePublications;
     std::unordered_map<uint64_t, std::shared_ptr<const RenderWorldPublication>> m_preparedRuntimeByWorld;
     uint64_t m_editorCameraId = 0;
+    uint64_t m_editorViewedWorld = 0;
     bool m_runtimePrepared = false;
     SceneRenderer m_sceneRenderer;
 };

@@ -397,6 +397,14 @@ class JoltGpuPrograms
                                                                            const std::vector<JoltGpuStageWork> &work);
 
   private:
+    friend class JoltGpuBroadphase;
+    // Append only: same Tick producer, packet admission and real receipts.
+    void AppendResidentCollide(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                               const std::shared_ptr<const JoltGpuContactWorkset> &contacts, uint32_t capacity,
+                               const JPH::GPU::StageWork &work, const std::shared_ptr<rhi::ComputeBuffer> &uniform,
+                               const rhi::ComputeIndirectArguments &arguments,
+                               std::vector<rhi::ComputeBufferUpdate> &uploads,
+                               std::vector<rhi::ComputeDispatchDesc> &dispatches);
     struct Binding
     {
         size_t slot;
@@ -410,9 +418,10 @@ class JoltGpuPrograms
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<Binding> bindings;
     };
-    [[nodiscard]] rhi::ComputeDispatchDesc BuildDispatch(const Entry &entry, const JoltGpuStorage &storage,
-                                                         const JoltGpuStepInputs &inputs, const JoltGpuStageWork &work,
-                                                         const std::shared_ptr<rhi::ComputeBuffer> &workUniform) const;
+    [[nodiscard]] rhi::ComputeDispatchDesc
+    BuildDispatch(const Entry &entry, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                  const JoltGpuStageWork &work, const std::shared_ptr<rhi::ComputeBuffer> &workUniform,
+                  const std::shared_ptr<const JoltGpuContactWorkset> &resident = {}) const;
     static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
     std::shared_ptr<JoltGpuSleep> m_sleep;

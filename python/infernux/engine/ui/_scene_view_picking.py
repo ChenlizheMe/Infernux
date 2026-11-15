@@ -194,6 +194,7 @@ class SceneViewPickingMixin:
         selection = SelectionService.instance()
         self._pending_scene_pick = {
             "request_id": request_id,
+            "world_id": self.viewed_world_id,
             "x": local_x,
             "y": local_y,
             "width": vp.width,
@@ -261,6 +262,9 @@ class SceneViewPickingMixin:
     def _poll_scene_object_pick(self):
         pending = getattr(self, "_pending_scene_pick", None)
         if not pending or not self._engine:
+            return
+        if pending["world_id"] != self.viewed_world_id:
+            self._pending_scene_pick = None
             return
         result = self._engine.query_scene_object_pick(pending["request_id"])
         status = result.get("status", "unknown")

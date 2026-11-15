@@ -36,6 +36,7 @@
 #include <function/scene/GameObject.h>
 #include <function/scene/SceneManager.h>
 #include <function/scene/WorldUIProjection.h>
+#include <function/scene/physics/PhysicsWorld.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <imgui_internal.h> // for ImGui::GetDrawListSharedData()
 #include <numeric>
@@ -598,6 +599,12 @@ class InxScreenUIRenderer::SnapshotScope
 
 InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureCompletedWorld(std::shared_ptr<const RenderWorldFrame> world)
 {
+    auto snapshot = CaptureWorldCommands(std::move(world));
+    return snapshot && PrepareSnapshot(snapshot) ? snapshot : Snapshot{};
+}
+
+InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureWorldCommands(std::shared_ptr<const RenderWorldFrame> world)
+{
     if (!world || !m_initialized || m_recordingPacket || m_worldElementStart >= 0 || m_selectedSnapshot)
         throw std::logic_error("Completed UI capture requires a sealed native command submission");
     if (SceneManager::Instance().CurrentWorld().id != world->WorldId())
@@ -615,6 +622,9 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureCompletedWorld(std::sh
     data.selective = m_hasSelectiveWorldOcclusion;
     data.frameBuffers.resize(m_frameBuffers.size());
     data.bindings = m_commandBindings;
+    for (const auto &list : data.bindings)
+        for (const auto &binding : list)
+            SceneManager::Instance().ObservePresentationAsset(binding.materialGuid);
     data.textures = m_texturePublications;
     data.hdr = {m_cameraHDRRanges, m_overlayHDRRanges, m_worldHDRRanges};
     data.worlds = m_worldElementSpans;
@@ -646,6 +656,17 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureCompletedWorld(std::sh
         span.transform = {};
     }
 
+    m_completedSnapshots.erase(std::remove_if(m_completedSnapshots.begin(), m_completedSnapshots.end(),
+                                              [](const auto &weak) { return weak.expired(); }),
+                               m_completedSnapshots.end());
+    m_completedSnapshots.push_back(snapshot);
+    return snapshot;
+}
+
+bool InxScreenUIRenderer::PrepareSnapshot(const Snapshot &snapshot)
+{
+    if (!snapshot || snapshot->m_data->renderer != this)
+        throw std::logic_error("UI preparation requires its actual retained renderer owner");
     // Resolve each selected material while source assets still belong to F.
     // The resulting UBO, sampled views, artifact and descriptor lease remain
     // private to this publication. Pipeline variants use the existing shared
@@ -682,10 +703,10 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureCompletedWorld(std::sh
                                 throw;
                             }
                         }
-                        if (found->second.artifact && !found->second.artifact->properties.empty() &&
-                            GetMaterialDescriptor(binding, *found->second.artifact) == VK_NULL_HANDLE)
-                            return {}; // Retry this completed publication after its pending texture becomes ready.
                     }
+                    if (found->second.artifact && !found->second.artifact->properties.empty() &&
+                        GetMaterialDescriptor(binding, *found->second.artifact) == VK_NULL_HANDLE)
+                        return false; // Retain commands while this exact snapshot awaits its texture.
                     if (found->second.generation != binding.generation ||
                         (found->second.artifact && found->second.artifact->domain != domain))
                         throw UIShaderMaterialError(
@@ -698,11 +719,7 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureCompletedWorld(std::sh
             }
         }
     }
-    m_completedSnapshots.erase(std::remove_if(m_completedSnapshots.begin(), m_completedSnapshots.end(),
-                                              [](const auto &weak) { return weak.expired(); }),
-                               m_completedSnapshots.end());
-    m_completedSnapshots.push_back(snapshot);
-    return snapshot;
+    return true;
 }
 
 void InxScreenUIRenderer::AdoptCompletedSnapshots(InxScreenUIRenderer &previous)
@@ -1263,6 +1280,9 @@ void InxScreenUIRenderer::BeginWorldElement(const std::array<float, 16> &localTo
 
 void InxScreenUIRenderer::ResolveWorldPose(WorldElementSpan &span)
 {
+    std::optional<PhysicsPresentationPoseReadScope> prepared;
+    if (m_preparedPoseReads)
+        prepared.emplace();
     if (!span.transform.IsValid())
         return; // Explicit-matrix commands do not bind a scene object.
     auto &store = TransformECSStore::Instance();
@@ -1292,6 +1312,9 @@ void InxScreenUIRenderer::BeginWorldObject(GameObject *object, float pivotX, flo
 
 bool InxScreenUIRenderer::ResolveScreenPose(ScreenElementSpan &span)
 {
+    std::optional<PhysicsPresentationPoseReadScope> prepared;
+    if (m_preparedPoseReads)
+        prepared.emplace();
     if (!span.transform.IsValid())
         return false;
     auto &store = TransformECSStore::Instance();
@@ -1355,6 +1378,9 @@ void InxScreenUIRenderer::BeginScreenObject(GameObject *object, ScreenUIList lis
     span.vertexStart = drawList->VtxBuffer.Size;
     span.list = list;
     span.transform = object->GetTransform()->GetECSHandle();
+    std::optional<PhysicsPresentationPoseReadScope> prepared;
+    if (m_preparedPoseReads)
+        prepared.emplace();
     // Capture the local screen pose.  Using world values here makes moving or
     // scaling a Canvas move all of its children in screen space.
     const auto position = object->GetTransform()->GetLocalPosition();

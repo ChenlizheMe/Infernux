@@ -115,6 +115,8 @@ class WorkRuntime:
         return consumer
 
     def _retire_result_consumers(self):
+        if not self._result_consumers:
+            return
         from infernux.lib import SceneManager
         manager = SceneManager.instance()
         self._result_consumers[:] = [consumer for consumer in self._result_consumers if consumer._current(manager)]

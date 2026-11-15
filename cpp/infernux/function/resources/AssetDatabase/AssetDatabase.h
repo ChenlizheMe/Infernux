@@ -490,6 +490,7 @@ class AssetDatabase : public NativeLifetimeOwner
 
     /// @brief Find shader file path by shader_id
     [[nodiscard]] std::string FindShaderPathById(const std::string &shaderId, const std::string &shaderType) const;
+    [[nodiscard]] std::string FindShaderGuidById(const std::string &shaderId, const std::string &shaderType) const;
 
     /// @brief Get resource type by file extension
     [[nodiscard]] ResourceType GetResourcesType(const std::string &extensionName) const;
@@ -770,7 +771,7 @@ class AssetDatabase : public NativeLifetimeOwner
         std::unordered_map<std::string, std::string> guidToPath;
         std::unordered_map<std::string, std::string> pathToGuid;
         std::unordered_map<std::string, std::shared_ptr<const InxResourceMeta>> metas;
-        std::unordered_map<std::string, std::string> shaderPaths;
+        std::unordered_map<std::string, std::string> shaderGuids;
         std::unordered_map<std::string, std::string> importErrors;
         std::shared_ptr<const RuntimeArtifactRoots> runtimeArtifactRoots;
         std::shared_ptr<const AssetCatalogSnapshot> catalog;
@@ -888,7 +889,9 @@ class AssetDatabase : public NativeLifetimeOwner
     void PublishRefreshAssetEvents(const WorkingSet &previous);
     [[nodiscard]] std::unordered_set<std::string> PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
-    static void BuildShaderPathIndex(QuerySnapshot &snapshot);
+    static void BuildShaderIdIndex(QuerySnapshot &snapshot);
+    static std::string FindShaderGuidInCatalog(const QuerySnapshot &snapshot, const std::string &shaderId,
+                                               const std::string &shaderType);
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
     [[nodiscard]] AssetIndexRoots CaptureScanRootIdentity() const;

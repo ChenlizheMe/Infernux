@@ -3,6 +3,7 @@
 #include "JoltGpuRenderBindings.h"
 #include "JoltGpuRenderPoses.h"
 #include "PhysicsContactPublication.h"
+#include "PhysicsParticipant.h"
 #include "PhysicsWorld.h"
 #include <map>
 #include <set>
@@ -18,6 +19,10 @@ struct PhysicsDomain final
     explicit PhysicsDomain(RuntimeWorld &world);
     RuntimeWorld &owner;
     glm::vec3 gravity;
+    std::vector<std::weak_ptr<PhysicsParticipant>> participants;
+    std::weak_ptr<PhysicsParticipant> participantPreparing;
+    bool participantOutputPending = false;
+    decltype(JoltGpuTickControl::prepareParticipant) admittedParticipants;
     bool retiring = false;
     bool gpuCancelled = false;
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
@@ -77,5 +82,16 @@ struct PhysicsDomain final
         std::optional<Keys> checkedKeys;
     };
     RenderState rendering;
+    struct PresentationPoseReads
+    {
+        std::shared_ptr<const JoltGpuScene::Publication> publication;
+        uint64_t generation = 0;
+        PhysicsRigidbodyStateBatch batch;
+        std::shared_ptr<JoltGpuQueryResult> motion, shapes;
+        std::exception_ptr error;
+    };
+    std::shared_ptr<PresentationPoseReads> presentationPoseReads;
+    uint32_t presentationPoseReadDepth = 0;
+    uint64_t presentationPoseReadGeneration = 0;
 };
 } // namespace infernux

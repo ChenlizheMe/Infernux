@@ -1,5 +1,6 @@
 #include "SceneRenderTarget.h"
 #include "InxVkCoreModular.h"
+#include "gui/backend/ImGuiTextureOwnership.h"
 #include "rhi/GpuRetirementQueue.h"
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RhiVulkanTypes.h"
@@ -198,8 +199,26 @@ void SceneRenderTarget::CreateImGuiDescriptor()
         throw std::runtime_error("Failed to create ImGui descriptor set for scene texture");
 }
 
+void SceneRenderTarget::SetDisplayEncoded(bool encoded)
+{
+    m_displayEncoded = encoded;
+    SetRecordingDisplayEncoded(encoded);
+}
+
+void SceneRenderTarget::SetRecordingDisplayEncoded(bool encoded)
+{
+    if (m_imguiDescriptorSet != VK_NULL_HANDLE)
+        ImGui_ImplVulkan_SetTextureLinearColor(m_imguiDescriptorSet, !encoded);
+}
+
+void SceneRenderTarget::RestoreDisplayEncoding()
+{
+    SetRecordingDisplayEncoded(m_displayEncoded);
+}
+
 void SceneRenderTarget::ClearBorrowedHandles()
 {
+    m_displayEncoded = false;
     m_imguiDescriptorSet = VK_NULL_HANDLE;
     m_sampler = VK_NULL_HANDLE;
     m_outlineMaskSampler = VK_NULL_HANDLE;

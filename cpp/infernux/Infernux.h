@@ -496,8 +496,8 @@ class Infernux
 
     std::string ReloadShaderAuthorSource(const std::string &shaderPath);
     [[nodiscard]] MaterialShaderPreparation EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
-                                                                       const std::string &vertexPath,
-                                                                       const std::string &fragmentPath);
+                                                                       const std::string &vertexGuid,
+                                                                       const std::string &fragmentGuid);
     // Sources checked by the last synchronous candidate publication. Diagnostic
     // owners use this receipt to retire only errors resolved by that result.
     std::vector<std::string> m_shaderReloadSources;

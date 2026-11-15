@@ -284,7 +284,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             callback(*this);
             return {};
         }
-        if (!buffers[Roots] && !Allocate(buffers[Roots], 4u))
+        if (reportsStatus && !buffers[Roots] && !Allocate(buffers[Roots], 4u))
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         if (resultBytes && !Allocate(buffers[resultPort], resultBytes))
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
@@ -295,26 +295,33 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
         if (!started) {
-            if (initializeStatus)
+            if (reportsStatus && initializeStatus)
                 uploads.push_back({buffers[Roots], uint64_t(statusIndex) * 4u, Bytes(uint32_t(0))});
             if (!requestBytes.empty())
                 uploads.push_back({buffers[Requests], 0u, requestBytes});
             if (!boundsBytes.empty())
                 uploads.push_back({buffers[Bounds], 0u, boundsBytes});
         }
+        const size_t firstUniform = uploads.size();
+        const auto uniform = [&](const auto &value) -> std::shared_ptr<rhi::ComputeBuffer> {
+            auto bytes = Bytes(value);
+            for (size_t i = firstUniform; i < uploads.size(); ++i)
+                if (uploads[i].data == bytes)
+                    return uploads[i].buffer;
+            auto buffer = rhi::ComputeBuffer::TryCreatePrivate(
+                owner->host, {sizeof(value) / 4u, rhi::ComputeScalarType::UInt32, 1u, rhi::BufferUsageFlags::None});
+            if (buffer)
+                uploads.push_back({buffer, 0u, std::move(bytes)});
+            return buffer;
+        };
         while (next < plan.size() && dispatches.size() < maximumDispatches) {
             const auto &op = plan[next];
             uint32_t count = std::min(2048u, op.count - offset);
-            auto params = rhi::ComputeBuffer::TryCreatePrivate(
-                owner->host,
-                {sizeof(SleepWorkParameters) / 4u, rhi::ComputeScalarType::UInt32, 1u, rhi::BufferUsageFlags::None});
-            auto work = rhi::ComputeBuffer::TryCreatePrivate(
-                owner->host, {sizeof(StageWork) / 4u, rhi::ComputeScalarType::UInt32, 1u, rhi::BufferUsageFlags::None});
+            auto params = uniform(op.parameters);
+            StageWork range{{op.first + offset, count, 0u, 0u}};
+            auto work = uniform(range);
             if (!params || !work)
                 break;
-            uploads.push_back({params, 0u, Bytes(op.parameters)});
-            StageWork range{{op.first + offset, count, 0u, 0u}};
-            uploads.push_back({work, 0u, Bytes(range)});
             rhi::ComputeDispatchDesc dispatch;
             dispatch.kernel = owner->entries[op.entry].kernel;
             dispatch.groupCountX = Groups(count);
@@ -377,7 +384,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         bool final = next == plan.size();
         std::vector<rhi::ComputeBufferRead> reads;
-        if (final) {
+        if (final && reportsStatus) {
             reads.push_back({buffers[Roots], uint64_t(statusIndex) * 4u, 4u});
             if (query)
                 reads.push_back({buffers[Results], 0u, resultBytes});
@@ -390,7 +397,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
                                     self->started = true;
                                     self->cursor = next;
                                     self->cursorOffset = offset;
-                                    if (final) {
+                                    if (final && self->reportsStatus) {
                                         uint32_t status = 0;
                                         packet->Readback(0)->ReadInto(&status, sizeof(status));
                                         if (status)
@@ -403,8 +410,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
                                     }
                                     return self->Next();
                                 },
-                                final ? JoltGpuControlWork::ResumeAfter::Completion
-                                      : JoltGpuControlWork::ResumeAfter::Acceptance};
+                                final ? finalResumeAfter : JoltGpuControlWork::ResumeAfter::Acceptance};
         if (multi)
             work.prepareMinimum = [self = shared_from_this()] { return self->Next(1u); };
         return work;
@@ -414,7 +420,8 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
     std::vector<Operation> plan;
     size_t cursor = 0;
     uint32_t cursorOffset = 0, statusIndex = 0;
-    bool initializeStatus = true, started = false, query = false;
+    bool initializeStatus = true, started = false, query = false, reportsStatus = true;
+    JoltGpuControlWork::ResumeAfter finalResumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
     Port resultPort = Results;
     uint64_t resultBytes = 0;
     std::vector<uint8_t> requestBytes, boundsBytes;
@@ -432,6 +439,9 @@ JoltGpuControlWork JoltGpuSleep::PrepareInitialize(const JoltGpuStorage &s, cons
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
     auto p = Selection(s, selection);
+    // This shader has no status writer; its successor only advances the GPU work cursor.
+    e->reportsStatus = false;
+    e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     e->Add(Initialize, p.selected.y, p.selected.z, p);
     e->completed = [done = std::move(done)](auto &) { done(); };
     return e->Next();
@@ -572,6 +582,8 @@ JoltGpuControlWork JoltGpuSleep::PrepareSnapshot(const JoltGpuStorage &s, const 
     auto p = Selection(s, selection);
     e->resultPort = Snapshot;
     e->resultBytes = uint64_t(p.selected.z) * 16u;
+    // Export has no status writer. Its snapshot consumer retains the completion boundary.
+    e->reportsStatus = false;
     e->Add(Export, p.selected.y, p.selected.z, p);
     e->completed = [done = std::move(done)](auto &self) {
         done(self.buffers[Snapshot] ? self.buffers[Snapshot]->Freeze() : nullptr);

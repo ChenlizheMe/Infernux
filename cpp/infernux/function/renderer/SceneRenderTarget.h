@@ -54,6 +54,10 @@ class SceneRenderTarget
     {
         return reinterpret_cast<uint64_t>(m_imguiDescriptorSet);
     }
+    void SetDisplayEncoded(bool encoded);
+    /// Transient GUI recording state; accepted pixels remain the fallback.
+    void SetRecordingDisplayEncoded(bool encoded);
+    void RestoreDisplayEncoding();
 
     /// @brief Get current dimensions
     uint32_t GetWidth() const
@@ -193,6 +197,7 @@ class SceneRenderTarget
     [[nodiscard]] bool HasOwnedResources() const noexcept;
 
     InxVkCoreModular *m_vkCore = nullptr;
+    bool m_displayEncoded = false;
     // RHI generations own images/views/samplers. Raw Vulkan handles below are
     // borrowed only for the current SceneRenderGraph and ImGui integration.
     std::shared_ptr<const rhi::RenderTextureGeneration> m_attachments;

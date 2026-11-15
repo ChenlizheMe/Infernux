@@ -403,6 +403,14 @@ void PyComponentProxy::InvalidatePythonMirrorBinding() noexcept
     }
 }
 
+bool PyComponentProxy::RequestPhysicsActivation()
+{
+    PythonLifecyclePhaseScope acquire;
+    if (m_pyComponent.is_none() || !py::hasattr(m_pyComponent, "_request_physics_activation"))
+        return true;
+    return m_pyComponent.attr("_request_physics_activation")().cast<bool>();
+}
+
 void PyComponentProxy::Awake()
 {
     PythonLifecyclePhaseScope acquire;

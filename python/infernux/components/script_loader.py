@@ -334,6 +334,16 @@ class ComponentBodyReloadTransaction:
         self._instance_defaults = ()
         self._inserted_instance_defaults.clear()
         self._finalized = True
+        # Queue only after the durable transaction. A rejected body/schema
+        # publication leaves the old GPU recipe/state untouched.
+        physics_instances = {id(image.instance): image.instance for image in self._schema_instance_images
+                             if isinstance(image.instance, InxComponent)}
+        for component_type, operations in self.plans:
+            if issubclass(component_type, InxComponent) and any(name == 'build_physics' for name, _, _ in operations):
+                physics_instances.update((id(instance), instance) for instance in _transaction_instances(self, component_type))
+        from infernux.physics.participant import _queue_component_physics
+        for instance in physics_instances.values():
+            _queue_component_physics(instance, rebuild=True)
         for migration in self.schema_migrations:
             component_type = migration.target_type
             if component_type.on_script_reload is InxComponent.on_script_reload:

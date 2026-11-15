@@ -17,18 +17,16 @@ namespace infernux
 {
 
 Infernux::MaterialShaderPreparation Infernux::EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
-                                                                         const std::string &vertexPath,
-                                                                         const std::string &fragmentPath)
+                                                                         const std::string &vertexGuid,
+                                                                         const std::string &fragmentGuid)
 {
     auto &registry = AssetRegistry::Instance();
     auto *database = GetAssetDatabase();
-    const auto guid = database->GetGuidFromPath(fragmentPath);
-    const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+    const auto asset = registry.LoadAsset<ShaderAsset>(fragmentGuid, ResourceType::Shader);
     if (!asset)
-        return {false, "Material fragment author is unavailable: " + fragmentPath};
-    const auto vertex = vertexPath.empty() ? nullptr
-                                           : registry.LoadAsset<ShaderAsset>(database->GetGuidFromPath(vertexPath),
-                                                                             ResourceType::Shader);
+        return {false, "Material fragment author is unavailable: " + fragmentGuid};
+    const auto vertex =
+        vertexGuid.empty() ? nullptr : registry.LoadAsset<ShaderAsset>(vertexGuid, ResourceType::Shader);
     const auto prepared = ShaderLoader::PrepareMaterialProgram(asset, vertex, stages, database);
     auto &entry = m_linkedShaderProgramCache[stages];
     if (!prepared->program) {

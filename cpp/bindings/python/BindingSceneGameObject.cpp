@@ -399,7 +399,10 @@ static void BindPythonComponentAccess(NativeClass<GameObject> &cls)
            py::arg("component_instance"), py::arg("component_index"), py::arg("component_id") = 0,
            "Internal deferred Python component publication hook")
         .def("_activate_prepared_py_component", &GameObject::ActivatePreparedPythonComponent,
-             py::arg("native_component"), "Internal prepared Python component activation hook")
+             py::arg("native_component"), py::arg("activate") = true,
+             "Internal prepared Python component activation hook")
+        .def("_defer_python_component_activation", &GameObject::DeferPythonComponentActivation,
+             py::arg("native_component"))
         .def("_remove_prepared_py_component", &GameObject::RemovePreparedPythonComponent, py::arg("native_component"),
              "Internal prepared Python component rollback hook")
         .def(
@@ -479,6 +482,8 @@ static void BindPythonComponentAccess(NativeClass<GameObject> &cls)
                         oldComponent.attr("_invalidate_native_binding")();
                     }
 
+                    if (py::hasattr(newComponent, "_request_physics_activation"))
+                        newComponent.attr("_request_physics_activation")();
                     return newComponent;
                 }
                 return py::none();

@@ -11,6 +11,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import cache
 import threading
 from types import MappingProxyType
 from typing import Hashable, Iterable, Iterator, Mapping
@@ -62,6 +63,7 @@ class RuntimeFrameBarrier(str, Enum):
     RETIREMENT = "retirement"
 
     @classmethod
+    @cache
     def from_native(cls, barrier):
         return cls[barrier.name]
 

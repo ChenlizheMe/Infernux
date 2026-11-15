@@ -4,6 +4,7 @@ from __future__ import annotations
 
 
 from dataclasses import dataclass
+import weakref
 
 from infernux.engine.ui import (
     SceneViewPanel,
@@ -128,6 +129,11 @@ def enforce_native_builtin_window_policy(type_id: str, instance: object) -> None
 class BootstrapPanelsMixin:
     """BootstrapPanelsMixin method group for EditorBootstrap."""
 
+    def _create_scene_view(self, engine):
+        self.scene_view = SceneViewPanel(engine=engine, world_view=self._world_view)
+        self.scene_view.set_play_mode_manager(engine.get_play_mode_manager())
+        return self.scene_view
+
     def _register_window_types(self):
         """Register all @editor_panel-decorated panels with WindowManager.
 
@@ -217,9 +223,11 @@ class BootstrapPanelsMixin:
 
         # Panels with runtime dependencies provide factories in one explicit
         # application step; the static registry remains immutable.
+        from infernux.engine.ui._scene_view_worlds import WorldViewState
+        self._world_view = WorldViewState()
         _factories = {
-            "scene_view":         lambda: SceneViewPanel(engine=engine),
-            "game_view":          lambda: GameViewPanel(engine=engine),
+            "scene_view":         lambda: self._create_scene_view(engine),
+            "game_view":          lambda: GameViewPanel(engine=engine, world_view=self._world_view),
             "console":            lambda: self._create_native_console(),
             "tag_layer_settings": lambda: self._create_tag_layer_panel(),
             "physics_settings":   lambda: self._create_physics_settings_panel(),
@@ -555,17 +563,43 @@ class BootstrapPanelsMixin:
         engine.register_gui("status_bar", self.status_bar)
 
         # Scene view
-        self.scene_view = SceneViewPanel(engine=engine)
+        self.scene_view = self._create_scene_view(engine)
         self.scene_view.set_window_manager(wm)
-        if engine._play_mode_manager is not None:
-            self.scene_view.set_play_mode_manager(engine._play_mode_manager)
         wm.register_existing_window("scene_view", self.scene_view, "scene_view")
 
         # Game view
-        self.game_view = GameViewPanel(engine=engine)
+        self.game_view = GameViewPanel(engine=engine, world_view=self._world_view)
         self.game_view.set_window_manager(wm)
         wm.register_existing_window("game_view", self.game_view, "game_view")
         self.game_view.prepare_render_target()
+
+        bootstrap_ref = weakref.ref(self)
+        viewed_world = [None]
+
+        def editor_view_world(prepare):
+            bootstrap = bootstrap_ref()
+            if bootstrap is None:
+                return 0
+            manager = bootstrap.engine.get_play_mode_manager()
+            view = bootstrap._world_view
+            if prepare or view.mode is not manager.state:
+                view.prepare(manager, bootstrap.engine)
+            world_id = int(view.world_id)
+            if viewed_world[0] != world_id:
+                # This callback runs in the previous view's native scope, so
+                # its gesture is retired before a different World owns input.
+                bootstrap.scene_view._interrupt_gizmo_drag(commit=True)
+                bootstrap.scene_view._cancel_custom_handle_capture()
+                bootstrap.scene_view._pending_scene_pick = None
+                from infernux.engine.interaction import SelectionDomain, SelectionService
+
+                selection = SelectionService.instance()
+                if selection.snapshot.domain in (SelectionDomain.SCENE_OBJECT, SelectionDomain.COMPONENT):
+                    selection.clear(reason="editor_view_world_changed", record_history=False)
+                viewed_world[0] = world_id
+            return world_id
+
+        engine.get_native_engine()._set_editor_view_world_provider(editor_view_world)
 
         # UI Editor
         self.ui_editor = UIEditorPanel()

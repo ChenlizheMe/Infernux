@@ -805,6 +805,13 @@ class PlayModeManager(PlayModeSerializationMixin):
                 prepared = self._prepare_loaded_scenes_for_play()
                 if not prepared:
                     raise RuntimeError("Play scripting-domain preparation was rejected")
+                session = self._runtime_world_session
+                handle = session.initial_handle
+                while handle.state == 'preparing':
+                    yield
+                from infernux.engine.runtime_worlds import RuntimeWorldInitializationCancelled
+                if not session.initialization_current(handle):
+                    raise RuntimeWorldInitializationCancelled(handle.error or 'World preparation cancelled')
                 rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
 
                 # Retired edit particle graphs must drain before Start creates
@@ -827,6 +834,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 if not session.initialization_current(handle):
                     raise RuntimeWorldInitializationCancelled('Editor project warmup cancelled Play')
                 report_progress(0.75, "Starting scene components")
+                session.release_initial_components()
                 _control_world_group(scene_manager, scene_manager.play)
                 if not session.initialization_current(handle, started=True):
                     raise RuntimeWorldInitializationCancelled('Editor Start cancelled Play')
@@ -853,7 +861,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                 self._state = PlayModeState.PLAYING
                 self._notify_state_change(PlayModeState.ENTERING, PlayModeState.PLAYING)
                 notify_ms += (time.perf_counter() - notify_started) * 1000.0
-            except Exception as enter_error:
+            except BaseException as enter_error:
                 self._state = PlayModeState.RESTORING
                 try:
                     scene_manager = self._get_scene_manager()
@@ -920,7 +928,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                     Debug.report_recovered(exc, "PlayMode.progress_window")
                     progress = None
             try:
-                step_enter()
+                yield from step_enter()
             finally:
                 if progress is not None:
                     progress.close()

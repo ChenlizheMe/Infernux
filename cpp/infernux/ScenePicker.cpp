@@ -395,6 +395,10 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
 
 uint64_t Infernux::PickGizmoAxis(float screenX, float screenY, float viewportWidth, float viewportHeight)
 {
+    auto *world = SceneRenderBridge::Instance().GetEditorViewedWorld();
+    if (!world)
+        return 0;
+    const WorldExecutionScope editorView(world);
     if (!m_renderer || viewportWidth <= 0.0f || viewportHeight <= 0.0f)
         return 0;
 
@@ -418,6 +422,10 @@ uint64_t Infernux::PickGizmoAxis(float screenX, float screenY, float viewportWid
 
 uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewportWidth, float viewportHeight)
 {
+    auto *world = SceneRenderBridge::Instance().GetEditorViewedWorld();
+    if (!world)
+        return 0;
+    const WorldExecutionScope editorView(world);
     if (!CheckEngineValid("pick scene object")) {
         return 0;
     }
@@ -510,6 +518,10 @@ std::vector<uint64_t> Infernux::PickSceneObjectIds(float screenX, float screenY,
                                                    float viewportHeight)
 {
     std::vector<uint64_t> orderedIds;
+    auto *world = SceneRenderBridge::Instance().GetEditorViewedWorld();
+    if (!world)
+        return orderedIds;
+    const WorldExecutionScope editorView(world);
 
     if (!CheckEngineValid("pick scene objects")) {
         return orderedIds;

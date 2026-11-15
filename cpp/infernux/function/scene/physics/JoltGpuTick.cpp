@@ -46,7 +46,7 @@ class JoltGpuTick::Impl
         };
         source.refresh = source.observe;
         source.describe = [this] { return Describe(); };
-        source.advance = [this](bool gpu, uint64_t token) { return Advance(gpu, token); };
+        source.advance = [this](bool gpu, uint64_t) { return Advance(gpu); };
         sourceId = work.AddSource(std::move(source));
     }
 
@@ -137,6 +137,7 @@ class JoltGpuTick::Impl
         if (status == Status::Running)
             status = Status::Cancelled;
         CancelPackets();
+        broadphase.ResetCapacityHint();
         inputs = {};
         workGeometry.reset();
         parameterInput = {};
@@ -205,17 +206,16 @@ class JoltGpuTick::Impl
         Stages,
         Preservation
     };
-    enum class HostAction : uint64_t
-    {
-        Prepare = 1,
-        Wait
-    };
     enum class Phase
     {
         InitializeSleep,
         CapturePrescribedBounds,
         PrepareKinematics,
         ApplyForces,
+        ParticipantPredict,
+        ParticipantPrepare,
+        ParticipantExchange,
+        ParticipantAccept,
         WakePrescribedBounds,
         BuildBounds,
         Broadphase,
@@ -246,6 +246,7 @@ class JoltGpuTick::Impl
         uint32_t substep = 0;
         uint32_t iteration = 0;
         uint32_t islandBatchFirst = 0;
+        uint32_t islandBatchLanes = 0;
         uint32_t localFirst = 0;
     };
     struct StageSpan
@@ -387,10 +388,11 @@ class JoltGpuTick::Impl
 
     static bool ProducerPhase(Phase phase)
     {
-        return phase == Phase::Broadphase || phase == Phase::CompleteConvexContacts ||
-               phase == Phase::InitializeSleep || phase == Phase::CapturePrescribedBounds ||
-               phase == Phase::WakePrescribedBounds || phase == Phase::BuildTopology ||
-               phase == Phase::WakeComponents || phase == Phase::UpdateSleep ||
+        return phase == Phase::ParticipantPredict || phase == Phase::ParticipantPrepare ||
+               phase == Phase::ParticipantExchange || phase == Phase::ParticipantAccept || phase == Phase::Broadphase ||
+               phase == Phase::CompleteConvexContacts || phase == Phase::InitializeSleep ||
+               phase == Phase::CapturePrescribedBounds || phase == Phase::WakePrescribedBounds ||
+               phase == Phase::BuildTopology || phase == Phase::WakeComponents || phase == Phase::UpdateSleep ||
                phase == Phase::WakeFinalPrescribedBounds || phase == Phase::BuildConstraints ||
                phase == Phase::ReportContactsBeforeVelocity || phase == Phase::ReportContactsAfterVelocity;
     }
@@ -493,10 +495,12 @@ class JoltGpuTick::Impl
     void NextSpan(StageCursor &next) const
     {
         const auto &plan = inputs.GetConstraints();
-        const bool responding = plan && (plan->jointIslandCount || plan->contactIslandCount);
+        const bool responding =
+            bool(control.prepareParticipant) || (plan && (plan->jointIslandCount || plan->contactIslandCount));
         const bool velocity = tickParameters.counts.w && responding;
         const bool position = tickParameters.solve.x && responding;
         next.islandBatchFirst = 0;
+        next.islandBatchLanes = 0;
         next.localFirst = 0;
         switch (next.phase) {
         case Phase::InitializeSleep:
@@ -509,7 +513,31 @@ class JoltGpuTick::Impl
             next.phase = Phase::ApplyForces;
             break;
         case Phase::ApplyForces:
-            next.phase = Phase::WakePrescribedBounds;
+            next.phase = control.prepareParticipant ? Phase::ParticipantPredict : Phase::WakePrescribedBounds;
+            break;
+        case Phase::ParticipantPredict:
+            next.phase = tickParameters.selectedCounts.x ? Phase::WakePrescribedBounds : Phase::ParticipantPrepare;
+            break;
+        case Phase::ParticipantPrepare:
+            next.iteration = 0;
+            next.phase = tickParameters.selectedCounts.x ? Phase::BuildTopology
+                         : velocity                      ? Phase::ParticipantExchange
+                                                         : Phase::ParticipantAccept;
+            break;
+        case Phase::ParticipantExchange:
+            if (tickParameters.selectedCounts.x)
+                next.phase = Phase::SolveJointVelocity;
+            else
+                next.phase =
+                    ++next.iteration < tickParameters.counts.w ? Phase::ParticipantExchange : Phase::ParticipantAccept;
+            break;
+        case Phase::ParticipantAccept:
+            if (tickParameters.selectedCounts.x)
+                next.phase = Phase::UpdateSleep;
+            else {
+                next.iteration = 0;
+                next.phase = ++next.substep < tickParameters.solve.y ? Phase::ParticipantPredict : Phase::Done;
+            }
             break;
         case Phase::WakePrescribedBounds:
             next.phase = Phase::BuildBounds;
@@ -521,10 +549,12 @@ class JoltGpuTick::Impl
             next.phase = Phase::CollidePairs;
             break;
         case Phase::CollidePairs:
-            next.phase = storage.HasGenericGeometry() ? Phase::CompleteConvexContacts : Phase::BuildTopology;
+            next.phase = storage.HasGenericGeometry() ? Phase::CompleteConvexContacts
+                         : control.prepareParticipant ? Phase::ParticipantPrepare
+                                                      : Phase::BuildTopology;
             break;
         case Phase::CompleteConvexContacts:
-            next.phase = Phase::BuildTopology;
+            next.phase = control.prepareParticipant ? Phase::ParticipantPrepare : Phase::BuildTopology;
             break;
         case Phase::BuildTopology:
             next.phase = Phase::WakeComponents;
@@ -551,15 +581,16 @@ class JoltGpuTick::Impl
                                                         : Phase::Integrate;
             break;
         case Phase::WarmJoints:
-            next.phase = Phase::SolveJointVelocity;
+            next.phase = control.prepareParticipant ? Phase::ParticipantExchange : Phase::SolveJointVelocity;
             break;
         case Phase::SolveJointVelocity:
             next.phase = Phase::SolveVelocity;
             break;
         case Phase::SolveVelocity:
-            next.phase = ++next.iteration < tickParameters.counts.w ? Phase::SolveJointVelocity
-                         : control.prepareContactReport             ? Phase::ReportContactsAfterVelocity
-                                                                    : Phase::Integrate;
+            next.phase = ++next.iteration < tickParameters.counts.w
+                             ? (control.prepareParticipant ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
+                         : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
+                                                        : Phase::Integrate;
             break;
         case Phase::Integrate:
             next.iteration = 0;
@@ -572,7 +603,7 @@ class JoltGpuTick::Impl
             next.phase = ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
             break;
         case Phase::FinishJoints:
-            next.phase = Phase::UpdateSleep;
+            next.phase = control.prepareParticipant ? Phase::ParticipantAccept : Phase::UpdateSleep;
             break;
         case Phase::UpdateSleep:
             next.phase = Phase::WakeFinalPrescribedBounds;
@@ -615,14 +646,27 @@ class JoltGpuTick::Impl
         const auto quantum = JPH::GPU::WorkItemLimit(span.domain);
         JPH::GPU::StageWork parameters{};
         if (IslandDomain(span.domain)) {
-            const auto lanes = std::min({uint32_t{64}, quantum, IslandCount(span.domain) - next.islandBatchFirst});
             const auto maximum = IslandMaxItems(span.domain);
+            if (next.localFirst == 0) {
+                const auto remaining = IslandCount(span.domain) - next.islandBatchFirst;
+                const auto originalLanes = std::min({uint32_t{64}, quantum, remaining});
+                const auto originalCount = std::min(quantum / originalLanes, maximum);
+                // Spend unused rectangular items on independent islands without
+                // reducing the old local slice. Large islands keep their slice
+                // length; a small maximum can fill more than one workgroup.
+                next.islandBatchLanes = std::min(remaining, quantum / originalCount);
+            }
+            // A batch owns these same islands until every local slice is done.
+            // Recomputing its width for a short final slice would skip the
+            // prefix of newly included islands after a yield/retry.
+            const auto lanes = next.islandBatchLanes;
             const auto count = std::min(quantum / lanes, maximum - next.localFirst);
             parameters.range = {next.localFirst, count, next.islandBatchFirst, lanes};
             next.localFirst += count;
             if (next.localFirst == maximum) {
                 next.localFirst = 0;
                 next.islandBatchFirst += lanes;
+                next.islandBatchLanes = 0;
             }
         } else {
             const auto count = std::min(quantum, ItemCount(span.domain) - next.localFirst);
@@ -639,16 +683,22 @@ class JoltGpuTick::Impl
 
     void CaptureStageSpans()
     {
-        stageCursor.phase = tickParameters.selectedCounts.x ? Phase::InitializeSleep : Phase::Done;
+        stageCursor = {};
+        stageCursor.phase = tickParameters.selectedCounts.x ? Phase::InitializeSleep
+                            : control.prepareParticipant    ? Phase::ParticipantPredict
+                                                            : Phase::Done;
         Normalize(stageCursor);
     }
 
     void AcceptContactWorkset(std::shared_ptr<const JoltGpuContactWorkset> contacts)
     {
         inputs.SetContacts(std::move(contacts));
-        stageCursor.phase = Phase::CollidePairs;
+        stageCursor.phase = storage.HasGenericGeometry() ? Phase::CompleteConvexContacts
+                            : control.prepareParticipant ? Phase::ParticipantPrepare
+                                                         : Phase::BuildTopology;
         stageCursor.localFirst = 0;
         stageCursor.islandBatchFirst = 0;
+        stageCursor.islandBatchLanes = 0;
         Normalize(stageCursor);
     }
 
@@ -703,6 +753,8 @@ class JoltGpuTick::Impl
         prescribedBounds.reset();
         completedOutput = std::move(finalOutput);
         status = Status::Complete;
+        // Factories have been consumed and every actual receipt retired.
+        control = {};
         inputs = {};
         parameters.reset();
         cpuForces.reset();
@@ -824,15 +876,12 @@ class JoltGpuTick::Impl
         // Only explicitly acceptance-ready producer preparation may overlap its
         // accepted GPU predecessor. Completion consumers retain the same gate.
         if (!batch && workContinuation && ContinuationNeedsWait()) {
-            facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
             facts.gpuBusy = true;
             return facts;
         }
         if (!batch && workContinuation && submissionBusy)
             return facts;
         if (NumericalInputsAccepted() && finalAccepted) {
-            if (!receipts.empty())
-                facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
             facts.gpuBusy = !receipts.empty();
             return facts;
         }
@@ -840,16 +889,13 @@ class JoltGpuTick::Impl
                         !finalPrepared)) ||
             (batch && !preservation &&
              (batch->RequiresPreparation() || batch->HasPreservationWork() || NeedsSmallerPrefix()))) {
-            facts.host = {static_cast<uint64_t>(HostAction::Prepare), 0, true, false};
+            facts.host.ready = true;
         } else if (!submissionBusy && CanSubmit()) {
             facts.gpu = {0, 0, true, false};
         }
         // Accepted predecessors do not block this source's ready successor.
         // Its actual buffer dependencies and queue-slot admission order it.
-        if (!facts.host.ready && !facts.gpu.ready && !receipts.empty())
-            facts.host = {static_cast<uint64_t>(HostAction::Wait), 0, true, false};
-        facts.gpuBusy = !receipts.empty() && !facts.gpu.ready &&
-                        (!facts.host.ready || facts.host.token == static_cast<uint64_t>(HostAction::Wait));
+        facts.gpuBusy = !receipts.empty() && !facts.gpu.ready && !facts.host.ready;
         return facts;
     }
 
@@ -939,6 +985,8 @@ class JoltGpuTick::Impl
 
     JoltGpuControlWork PrepareSnapshot()
     {
+        if (!control.needsSnapshot)
+            return {}; // Explicit pure Work has no World-publication consumer.
         using namespace JPH::GPU;
         const auto &liveLayout = *storage.GetJointLayout();
         const auto slice = liveLayout.WorldSlice(finalOutput.jointBase, finalOutput.jointCount);
@@ -1125,10 +1173,25 @@ class JoltGpuTick::Impl
                 batchKind = PacketKind::Inputs;
                 return true;
             }
+            if (stageCursor.phase == Phase::ParticipantPredict || stageCursor.phase == Phase::ParticipantPrepare ||
+                stageCursor.phase == Phase::ParticipantExchange || stageCursor.phase == Phase::ParticipantAccept) {
+                const auto stage = stageCursor.phase == Phase::ParticipantPredict    ? JoltGpuParticipantStage::Predict
+                                   : stageCursor.phase == Phase::ParticipantPrepare  ? JoltGpuParticipantStage::Prepare
+                                   : stageCursor.phase == Phase::ParticipantExchange ? JoltGpuParticipantStage::Exchange
+                                                                                     : JoltGpuParticipantStage::Accept;
+                SelectControlWork(control.prepareParticipant(stage, tickParameters, fixedDeltaTime, stageCursor.substep,
+                                                             stageCursor.iteration,
+                                                             [this] {
+                                                                 NextSpan(stageCursor);
+                                                                 Normalize(stageCursor);
+                                                             }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
             if (stageCursor.phase == Phase::Broadphase) {
                 inputs.ClearContacts();
                 SelectControlWork(
-                    broadphase.Prepare(storage, inputs, tickParameters,
+                    broadphase.Prepare(storage, inputs, programs, tickParameters,
                                        [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }),
                     PacketKind::NumericalWork);
                 return true;
@@ -1345,23 +1408,13 @@ class JoltGpuTick::Impl
         return true;
     }
 
-    bool Advance(bool gpu, uint64_t token)
+    bool Advance(bool gpu)
     {
         if (!admissionEnabled || status != Status::Running)
             return false;
         try {
             if (gpu)
                 return Submit();
-            if (token == static_cast<uint64_t>(HostAction::Wait)) {
-                if (receipts.empty())
-                    return false;
-                const auto remaining = work.ServiceRemaining();
-                if (remaining <= 0 || !host.Queue().WaitFor(receipts.front().completion.GetSubmission(),
-                                                            static_cast<uint64_t>(remaining)))
-                    return false;
-                Poll();
-                return true;
-            }
             return Prepare();
         } catch (...) {
             Fail();
@@ -1453,6 +1506,8 @@ void JoltGpuTick::SetAdmissionEnabled(bool enabled) noexcept
     if (m_impl->admissionEnabled == enabled)
         return;
     m_impl->admissionEnabled = enabled;
+    if (!enabled)
+        m_impl->broadphase.ResetCapacityHint();
     if (enabled)
         m_impl->work.Wake(m_impl->sourceId);
 }

@@ -288,7 +288,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void SetName(const std::string &name)
     {
         if (m_name != name)
-            ++m_version;
+            AdvanceAuthorVersion();
         m_name = name;
     }
 
@@ -374,7 +374,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         InvalidateShaderSelection();
         TrackRuntimeShaderReferences();
         m_pipelineDirty = true;
-        ++m_version;
+        AdvanceAuthorVersion();
         NotifyRoutingChanged();
         PublishDependencies();
     }
@@ -391,7 +391,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         if (switched)
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
-        ++m_version;
+        AdvanceAuthorVersion();
         NotifyRoutingChanged();
         PublishDependencies();
     }
@@ -455,7 +455,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_renderState = state;
         m_renderStateOverrides |= kAllRenderStateOverrides;
         m_pipelineDirty = true;
-        ++m_version;
+        AdvanceAuthorVersion();
         NotifyRoutingChanged();
     }
 
@@ -469,7 +469,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
             return;
         m_renderState.renderQueue = queue;
         m_renderStateOverrides |= static_cast<uint32_t>(RenderStateOverride::RenderQueue);
-        ++m_version;
+        AdvanceAuthorVersion();
         NotifyRoutingChanged();
     }
 
@@ -480,7 +480,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void SetPassTag(const std::string &tag)
     {
         if (m_passTag != tag) {
-            ++m_version;
+            AdvanceAuthorVersion();
             NotifyRoutingChanged();
         }
         m_passTag = tag;
@@ -512,7 +512,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     {
         if (m_renderStateOverrides != overrides) {
             InvalidateShaderSelection();
-            ++m_version;
+            AdvanceAuthorVersion();
             NotifyRoutingChanged();
         }
         m_renderStateOverrides = overrides;
@@ -845,6 +845,8 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void ApplyDocument(const nlohmann::json &document);
     void PublishDocument(InxMaterial &&staged, bool keepRuntimeBuffers = false);
     void RebaseRendererInstance(const InxMaterial &previous, const InxMaterial &next);
+    void AdvanceAuthorVersion();
+    void NotifyPresentationContentChanged();
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 
     friend class MaterialLoader;

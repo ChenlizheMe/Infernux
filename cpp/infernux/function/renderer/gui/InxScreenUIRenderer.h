@@ -219,6 +219,12 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         std::unique_ptr<Data> m_data;
     };
     [[nodiscard]] Snapshot CaptureCompletedWorld(std::shared_ptr<const RenderWorldFrame> world);
+    [[nodiscard]] Snapshot CaptureWorldCommands(std::shared_ptr<const RenderWorldFrame> world);
+    [[nodiscard]] bool PrepareSnapshot(const Snapshot &snapshot);
+    bool SetPreparedPoseReads(bool enabled) noexcept
+    {
+        return std::exchange(m_preparedPoseReads, enabled);
+    }
     // MSAA/target replacement keeps the completed CPU values and sampled
     // allocation leases; only attachment-dependent pipeline variants retire.
     void AdoptCompletedSnapshots(InxScreenUIRenderer &previous);
@@ -385,6 +391,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
     class SnapshotScope;
     void RetireCompletedSnapshot(CompletedSnapshot::Data &data);
     const CompletedSnapshot::Data *m_selectedSnapshot = nullptr;
+    bool m_preparedPoseReads = false;
     std::vector<std::weak_ptr<const CompletedSnapshot>> m_completedSnapshots;
     static constexpr int ListIndex(ScreenUIList list) noexcept
     {
@@ -482,7 +489,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         TransformECSStore::Handle transform;
     };
 
-    static void ResolveWorldPose(WorldElementSpan &span);
+    void ResolveWorldPose(WorldElementSpan &span);
 
     struct ScreenElementSpan
     {
@@ -501,7 +508,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
         float currentScaleX = 1.0f;
         float currentScaleY = 1.0f;
     };
-    static bool ResolveScreenPose(ScreenElementSpan &span);
+    bool ResolveScreenPose(ScreenElementSpan &span);
     static void ApplyScreenPose(const ScreenElementSpan &span, const ImVec2 &source, ImVec2 &target);
 
     struct HDRColorRange

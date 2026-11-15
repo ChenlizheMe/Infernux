@@ -278,6 +278,60 @@ InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameL
     return state->logicalValue;
 }
 
+bool InputManager::CanCoalesceFrames(const InputFrameSample &left, const InputFrameSample &right) noexcept
+{
+    const auto allZero = [](const auto &values) {
+        return std::all_of(values.begin(), values.end(), [](const auto &value) { return value == 0; });
+    };
+    const auto stationary = [&](const InputFrameSample &value) {
+        if (value.logical || !allZero(value.keyDownConsumed) || !allZero(value.keyDown) || !allZero(value.keyUp) ||
+            !allZero(value.mouseDown) || !allZero(value.mouseUp) || value.anyKeyDown || value.syntheticInputFrame ||
+            value.mouseDX != 0 || value.mouseDY != 0 || value.scrollX != 0 || value.scrollY != 0 ||
+            value.gameScroll.first != 0 || value.gameScroll.second != 0 || !value.inputString.empty() ||
+            !value.gameInputString.empty() || !value.accelerationEvents.empty() || !value.droppedFiles.empty())
+            return false;
+        for (const auto &mouse : value.gameMouseFrames)
+            if (std::get<2>(mouse) != 0 || std::get<3>(mouse) != 0 || std::get<5>(mouse) || std::get<6>(mouse))
+                return false;
+        return std::all_of(value.touches.begin(), value.touches.end(), [](const auto &touch) {
+            return touch.phase == TouchPhase::Stationary && !touch.beganThisFrame && touch.deltaX == 0 &&
+                   touch.deltaY == 0 && touch.deltaTime == 0;
+        });
+    };
+    if (!stationary(left) || !stationary(right))
+        return false;
+    const auto screen = [](const ScreenState &value) {
+        return std::tie(value.revision, value.logicalWidth, value.logicalHeight, value.framebufferWidth,
+                        value.framebufferHeight, value.pixelRatio, value.safeAreaX, value.safeAreaY,
+                        value.safeAreaWidth, value.safeAreaHeight, value.keyboardInset, value.keyboardInsetKnown,
+                        value.focused, value.occluded);
+    };
+    const auto touchState = [](const TouchState &value) {
+        return std::tie(value.touchId, value.fingerId, value.timestampNs, value.windowId, value.x, value.y,
+                        value.deltaX, value.deltaY, value.deltaTime, value.pressure, value.contactWidth,
+                        value.contactHeight, value.isPrimary, value.beganThisFrame, value.beginX, value.beginY,
+                        value.cancelReason, value.phase);
+    };
+    // Routing already preserves its immutable owner when its fields are
+    // unchanged. A different owner remains an ordered input boundary.
+    return left.worldRouting == right.worldRouting && left.keys == right.keys &&
+           left.gameKeyOwned == right.gameKeyOwned && left.mouseButtons == right.mouseButtons &&
+           left.gameMouseOwned == right.gameMouseOwned && left.gameMouseFrames == right.gameMouseFrames &&
+           left.mouseX == right.mouseX && left.mouseY == right.mouseY &&
+           left.syntheticGameplayInput == right.syntheticGameplayInput && left.syntheticHeld == right.syntheticHeld &&
+           left.gameplayFocused == right.gameplayFocused &&
+           left.gameplayViewportOrigin == right.gameplayViewportOrigin &&
+           left.gameplayViewportSize == right.gameplayViewportSize &&
+           left.gameplayRenderSize == right.gameplayRenderSize &&
+           left.gameplayTouchViewport == right.gameplayTouchViewport && left.acceleration == right.acceleration &&
+           left.gyroscopeRotationRate == right.gyroscopeRotationRate &&
+           left.accelerometerAvailable == right.accelerometerAvailable &&
+           left.gyroscopeAvailable == right.gyroscopeAvailable && screen(left.screen) == screen(right.screen) &&
+           left.touches.size() == right.touches.size() &&
+           std::equal(left.touches.begin(), left.touches.end(), right.touches.begin(),
+                      [&](const auto &a, const auto &b) { return touchState(a) == touchState(b); });
+}
+
 InputFrameLease InputManager::CaptureFrame()
 {
     // Never recapture an open World's old scope. One shared immutable value

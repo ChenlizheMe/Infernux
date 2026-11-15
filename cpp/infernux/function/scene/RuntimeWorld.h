@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <core/math/FrameTimeSmoothing.h>
 #include <core/math/Random.h>
 #include <cstddef>
@@ -84,6 +85,28 @@ class RuntimeWorld final
         float unscaledDeltaTime = 0.0f;
         float deltaTime = 0.0f;
         InputFrameLease input;
+        bool automaticHost = false;
+        float sampledTimeScale = 1.0f;
+        float sampledMaximumDeltaTime = 0.0f;
+        float sampledFixedTimeStep = 0.0f;
+
+        bool TryAppendAutomatic(FrameAdmission &next)
+        {
+            const double combined = static_cast<double>(deltaTime) + next.deltaTime;
+            const double combinedUnscaled = static_cast<double>(unscaledDeltaTime) + next.unscaledDeltaTime;
+            // Bound only pending coalescing, including at zero/low timeScale.
+            // A single larger Host sample retains its original duration.
+            const float coalescingLimit = (std::min)(sampledMaximumDeltaTime, sampledFixedTimeStep);
+            if (!automaticHost || !next.automaticHost || unscaledDeltaTime <= 0 || next.unscaledDeltaTime <= 0 ||
+                sampledTimeScale != next.sampledTimeScale || sampledMaximumDeltaTime != next.sampledMaximumDeltaTime ||
+                sampledFixedTimeStep != next.sampledFixedTimeStep || combined > coalescingLimit ||
+                combinedUnscaled > coalescingLimit || !InputManager::CanCoalesceFrames(*input, *next.input))
+                return false;
+            unscaledDeltaTime = static_cast<float>(combinedUnscaled);
+            deltaTime = static_cast<float>(combined);
+            input = std::move(next.input);
+            return true;
+        }
     };
 
     struct FrameState
@@ -92,7 +115,6 @@ class RuntimeWorld final
         InputFrameLease input;
         FramePhase phase = FramePhase::Idle;
         uint64_t generation = 0;
-        uint64_t fixedTarget = 0;
         std::vector<uint64_t> phaseScenes;
         size_t sceneCursor = 0;
         bool updateStarted = false;
@@ -161,6 +183,17 @@ class RuntimeWorld final
         size_t runtimeLifecycleLateUpdateCount = 0;
     };
 
+    // Explicit authored edits own a display request, independently of logical F.
+    struct PausedAuthorPresentation
+    {
+        uint64_t requested = 0;
+        uint64_t published = 0;
+        [[nodiscard]] bool Pending() const noexcept
+        {
+            return requested != published;
+        }
+    };
+
     struct RenderMembership
     {
         uint64_t renderTransformRevision = 1;
@@ -199,8 +232,25 @@ class RuntimeWorld final
     SimulationState simulation;
     LifecycleState lifecycle;
     FrameState frame;
+    PausedAuthorPresentation pausedAuthor;
     RenderMembership render;
     SceneCollection scenes;
+};
+
+/// A NoView UI query may suppress implicit authoring/primary selection.
+/// Explicit execution scopes remain authoritative, including management work.
+class WorldQueryScope final
+{
+  public:
+    explicit WorldQueryScope(bool allowDefaultWorld) noexcept;
+    ~WorldQueryScope();
+    WorldQueryScope(const WorldQueryScope &) = delete;
+    WorldQueryScope &operator=(const WorldQueryScope &) = delete;
+
+    [[nodiscard]] static bool AllowsDefaultWorld() noexcept;
+
+  private:
+    bool m_previous;
 };
 
 /// Restore the caller's World after callbacks, including exceptional returns.

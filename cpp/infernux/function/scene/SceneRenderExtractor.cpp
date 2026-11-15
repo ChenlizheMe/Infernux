@@ -1,11 +1,13 @@
 #include "SceneRenderExtractor.h"
 #include "SceneManager.h"
 #include "SkinnedMeshRenderer.h"
+#include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
@@ -121,9 +123,14 @@ size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Came
     return ExtractSourceFrame(world, camera, owner->id, 0, 0, false);
 }
 
-size_t SceneRenderExtractor::ExtractRuntimeFrame(RenderWorldSnapshot &publication, RuntimeWorld &world)
+size_t SceneRenderExtractor::ExtractRuntimeFrame(RenderWorldSnapshot &publication, RuntimeWorld &world,
+                                                 PausedAuthorProvenance pausedAuthor)
 {
     WorldExecutionScope scope(&world);
+    SceneManager::Instance().BeginPresentationAssetObservation();
+    std::optional<PhysicsPresentationPoseReadScope> preparedReads;
+    if (pausedAuthor.revision)
+        preparedReads.emplace();
     Scene *scene = world.scenes.active;
     Camera *editorCamera = nullptr;
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
@@ -132,13 +139,14 @@ size_t SceneRenderExtractor::ExtractRuntimeFrame(RenderWorldSnapshot &publicatio
     Camera *primary = scene ? scene->FindGameCamera(editorCamera) : nullptr;
     // The caller has already completed skeleton/transform publication. Do not
     // perform another simulation update or borrow a later Host's live state.
-    return ExtractSourceFrame(publication, primary, world.id, world.simulation.frameTime.frameCount,
-                              world.simulation.simulationEpoch, false);
+    return ExtractSourceFrame(publication, primary, world.id,
+                              pausedAuthor.revision ? 0 : world.simulation.frameTime.frameCount,
+                              world.simulation.simulationEpoch, false, pausedAuthor);
 }
 
 size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication, Camera *primary, uint64_t worldId,
                                                 uint64_t completedWorldFrame, uint64_t simulationEpoch,
-                                                bool includeEditorView)
+                                                bool includeEditorView, PausedAuthorProvenance pausedAuthor)
 {
 #if INFERNUX_FRAME_PROFILE
     using Clock = std::chrono::high_resolution_clock;
@@ -159,6 +167,10 @@ size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication
             renderer->RefreshProceduralGeometry(object->GetTransform()->GetWorldMatrix());
         for (uint32_t slot = 0, count = std::max(1u, renderer->GetMaterialCount()); slot < count; ++slot) {
             const auto material = renderer->GetEffectiveMaterial(slot);
+            if (material) {
+                material->BindDependencyGraph(AssetDependencyGraph::Current());
+                manager.ObservePresentationAsset(material->GetMaterialKey());
+            }
             if (m_prepareMaterial && material && prepared.insert(material.get()).second)
                 m_prepareMaterial(material);
         }
@@ -178,10 +190,12 @@ size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication
     RenderWorldFrame &frame = publication.BeginFrame(worldId, currentVersion);
     CaptureViews(frame, primary, includeEditorView);
     frame.m_completedWorldFrame = completedWorldFrame;
+    frame.m_pausedAuthor = pausedAuthor;
     frame.m_simulationEpoch = simulationEpoch;
     for (auto &view : frame.m_views) {
         view.worldId = worldId;
         view.completedWorldFrame = completedWorldFrame;
+        view.pausedAuthor = pausedAuthor;
         view.simulationEpoch = simulationEpoch;
     }
     if (const auto *primaryView = primary ? frame.FindView(primary->GetComponentID()) : nullptr)
@@ -327,6 +341,10 @@ void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
     const SceneEnvironmentSettings environment = scene ? scene->GetEnvironment() : SceneEnvironmentSettings{};
     auto sourceSky =
         scene ? scene->ResolveSkyboxMaterial() : AssetRegistry::Instance().GetBuiltinMaterial("SkyboxProcedural");
+    if (sourceSky) {
+        sourceSky->BindDependencyGraph(AssetDependencyGraph::Current());
+        manager.ObservePresentationAsset(sourceSky->GetMaterialKey());
+    }
     if (sourceSky && m_prepareMaterial)
         m_prepareMaterial(sourceSky);
     auto capturedSky = sourceSky ? sourceSky->CaptureRenderPublication() : nullptr;

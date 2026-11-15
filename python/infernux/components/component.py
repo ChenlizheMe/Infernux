@@ -249,6 +249,9 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                 (base.__dict__[name] for base in self.__class__.__mro__ if name in base.__dict__),
                 None,
             )
+            # Native properties read their defaults from the C++ component.
+            if hasattr(descriptor, '_is_cpp_property'):
+                continue
             default_value = copy_serialized_field_default(metadata)
 
             if isinstance(descriptor, SerializedFieldDescriptor):
@@ -266,9 +269,6 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
                         values = {}
                         self.__dict__["_field_values"] = values
                     values[name] = default_value
-            elif hasattr(descriptor, '_is_cpp_property'):
-                # Skip ALL CppProperty descriptors — their values come from C++.
-                continue
             elif metadata.default is not None:
                 setattr(self, name, default_value)
 
@@ -400,6 +400,18 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
     # Lifecycle methods (override in subclasses)
     # ========================================================================
     
+    def build_physics(self, plan):
+        """Cold declaration after owner/fields/assets are ready, before Awake.
+
+        Register public compute.Work recipes and named persistent state through
+        the provided PhysicsBuildPlan. Runtime stages execute natively; do not
+        query or advance physics here. Runtime attach uses the Host preparation
+        service; its result is available before Awake. Accepted schema changes
+        or a new native/World binding create a fresh initialized generation.
+        Ordinary disable/enable preserves the same state.
+        """
+        pass
+
     def awake(self):
         """
         Called when the component first becomes active in the hierarchy.

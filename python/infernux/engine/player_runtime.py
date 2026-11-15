@@ -62,6 +62,7 @@ class PlayerRuntimeSession(WorkRuntime):
         self._pending_content: Optional[tuple[ContentPublication, str]] = None
         self._content_roots: tuple[str, ...] = ()
         self._state = "stopped"
+        self._activation = None
         self._membership_warmup_frames = 0
         self._startup_warmup = None
 
@@ -383,7 +384,29 @@ class PlayerRuntimeSession(WorkRuntime):
             raise RuntimeError("Player startup cancelled")
 
     def activate(self) -> bool:
-        """Start the loaded scene without creating an editor play snapshot."""
+        """Accept activation; cold Worlds and real GPU init use the existing Host service."""
+        if self._activation is not None or self._state != 'stopped':
+            return False
+        self._activation = self._activate_steps()
+        self._state = 'starting'
+        self._advance_activation()
+        return self._state in {'starting', 'playing'}
+
+    def _advance_activation(self):
+        if self._activation is None:
+            return
+        try:
+            next(self._activation)
+        except StopIteration:
+            self._activation = None
+            if self._state != 'playing':
+                self._state = 'stopped'
+        except BaseException:
+            self._activation = None
+            raise
+
+    def _activate_steps(self):
+        """Start the loaded scene after restored participants are actually ready."""
         if self._runtime_manifest is None or self._runtime_catalog is None:
             Debug.log_error("Player activation rejected: runtime contract is not configured")
             return False
@@ -413,6 +436,11 @@ class PlayerRuntimeSession(WorkRuntime):
         try:
             identity = session.create(self.initial_world_count)
             self._runtime_world_id = identity
+            handle = session.initial_handle
+            while handle.state == 'preparing':
+                yield
+            if not session.initialization_current(handle):
+                raise RuntimeWorldInitializationCancelled(handle.error or 'World preparation cancelled')
             domain = engine._world_runtimes[identity]
             self._scene_service_installed = True
             with native_module._RuntimeWorldScope(identity):
@@ -421,6 +449,7 @@ class PlayerRuntimeSession(WorkRuntime):
                 self._refresh_execution_membership()
                 manager = SceneManager.instance()
                 handle = manager._get_runtime_world_handle(identity)
+                session.release_initial_components()
                 manager.play()
                 if not session.initialization_current(handle, started=True):
                     raise RuntimeWorldInitializationCancelled('Player Start cancelled activation')
@@ -438,7 +467,7 @@ class PlayerRuntimeSession(WorkRuntime):
                 session.finish_initialization()
         except BaseException:
             # A callback can close this session. Never stop or clear its successor.
-            if not session.closed and identity is not None:
+            if not session.closed and identity in engine._world_runtimes:
                 from infernux.lib import _Infernux
                 with _Infernux._RuntimeWorldScope(identity):
                     SceneManager.instance().stop()
@@ -457,7 +486,8 @@ class PlayerRuntimeSession(WorkRuntime):
         return True
 
     def prepare_frame(self) -> None:
-        """Service every published world's own scene loader, including after reorder/delete."""
+        """Service cold activation and each published world's existing scene loader."""
+        self._advance_activation()
         if not self.is_playing:
             return
         from infernux.lib import SceneManager, _Infernux
@@ -481,6 +511,9 @@ class PlayerRuntimeSession(WorkRuntime):
         from infernux.lib import SceneManager
 
         self._state = "stopping"
+        activation, self._activation = self._activation, None
+        if activation is not None:
+            activation.close()
         self._shutdown_work_runtime()
         if self._pending_content is not None:
             publication, _ = self._pending_content

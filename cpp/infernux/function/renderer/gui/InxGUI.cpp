@@ -924,6 +924,15 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
     const ImDrawData *drawData = ImGui::GetDrawData();
     m_hasDrawData = drawData != nullptr && drawData->Valid;
 
+    for (auto it = m_liveImageBindings.begin(); it != m_liveImageBindings.end();) {
+        if (it->second.lastUsedFrame != m_guiFrameCounter) {
+            RemoveImGuiTexture(it->second.name);
+            it = m_liveImageBindings.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     // Reclaim only after panels have touched every texture referenced by this
     // frame. Resources are retired through the existing grace queue, so draw
     // data assembled above remains valid through GPU submission.
@@ -1091,11 +1100,31 @@ void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
     }
     drawData->Textures = nullptr;
     const auto record = [&] {
+        // Restore cached draw commands even if an image resolver fails. Only the
+        // current native recording sees these IDs; Python keeps stable geometry.
+        struct ImageScope
+        {
+            InxGUI &gui;
+            ImageScope(InxGUI &owner) : gui(owner)
+            {
+                gui.m_recordingFrameImages = true;
+            }
+            ~ImageScope()
+            {
+                for (const auto &entry : gui.m_imageCommandOverrides) {
+                    entry.command->TexRef = entry.texture;
+                    entry.command->ClipRect = entry.clip;
+                }
+                gui.m_imageCommandOverrides.clear();
+                gui.m_resolvedFrameImages.clear();
+                gui.m_recordingFrameImages = false;
+            }
+        } imageScope(*this);
         auto &descriptors = m_vkCore_ptr->GetDeviceContext().GetRhiDevice().GetDescriptorManager();
         const auto epoch = vkdebug::GetDescriptorRecordingSubmissionSerial();
         VkDescriptorSet last = VK_NULL_HANDLE;
-        for (const ImDrawList *list : drawData->CmdLists) {
-            for (const ImDrawCmd &draw : list->CmdBuffer) {
+        for (ImDrawList *list : drawData->CmdLists) {
+            for (ImDrawCmd &draw : list->CmdBuffer) {
                 if (draw.UserCallback || draw.ElemCount == 0)
                     continue;
                 const auto clip = draw.ClipRect;
@@ -1104,6 +1133,25 @@ void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
                 if (std::max(clip.x, origin.x) >= std::min(clip.z, origin.x + extent.width / scale.x) ||
                     std::max(clip.y, origin.y) >= std::min(clip.w, origin.y + extent.height / scale.y))
                     continue;
+                const auto layoutId = static_cast<uint64_t>(draw.GetTexID());
+                const auto live = m_liveImageBindings.find(layoutId);
+                if (live != m_liveImageBindings.end()) {
+                    auto image = std::find_if(m_resolvedFrameImages.begin(), m_resolvedFrameImages.end(),
+                                              [layoutId](const auto &entry) { return entry.first == layoutId; });
+                    if (image == m_resolvedFrameImages.end()) {
+                        auto frame = live->second.resolve();
+                        if (frame.pixels)
+                            m_vkCore_ptr->GetRetirementQueue().RetireAfter(epoch, [pixels = frame.pixels] {});
+                        m_resolvedFrameImages.emplace_back(layoutId, std::move(frame));
+                        image = std::prev(m_resolvedFrameImages.end());
+                    }
+                    m_imageCommandOverrides.push_back({&draw, draw.TexRef, draw.ClipRect});
+                    if (image->second.textureId == 0) {
+                        draw.ClipRect = ImVec4(0, 0, 0, 0);
+                        continue;
+                    }
+                    draw.TexRef = ImTextureRef(static_cast<ImTextureID>(image->second.textureId));
+                }
                 const auto set = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(draw.GetTexID()));
                 if (set != last) {
                     descriptors.MarkUsed(&set, 1, epoch, cmdBuf, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
@@ -1138,6 +1186,9 @@ void InxGUI::Shutdown()
     VkDevice device = m_vkCore_ptr->GetDevice();
     vkDeviceWaitIdle(device);
 
+    m_liveImageBindings.clear();
+    m_imageCommandOverrides.clear();
+    m_resolvedFrameImages.clear();
     m_pendingTextureUploads.clear();
     m_pendingTextureUploadBytes = 0;
     for (auto &entry : m_deferredTextureReleases) {
@@ -1327,13 +1378,16 @@ uint64_t InxGUI::GetAllocatedImGuiTextureUploadBytes() const noexcept
 }
 
 uint64_t InxGUI::PublishTextureViewForImGui(const std::string &name, std::shared_ptr<const rhi::TextureGpuView> texture,
-                                            bool pinned, uint64_t ownedBytes)
+                                            bool pinned, uint64_t ownedBytes, bool displayEncoded)
 {
     if (name.empty())
         throw std::invalid_argument("ImGui texture name cannot be empty");
     if (!texture || !texture->IsValid())
         return 0;
 
+    const rhi::PixelFormat format = texture->GetFormat();
+    const bool requiresDisplayEncoding = !displayEncoded && format != rhi::PixelFormat::Undefined &&
+                                         !rhi::IsDepthFormat(format) && !rhi::IsIntegerFormat(format);
     auto existing = m_textures_umap.find(name);
     if (existing != m_textures_umap.end() && existing->second.externalView &&
         existing->second.externalView->GetSourceId() == texture->GetSourceId() &&
@@ -1341,6 +1395,7 @@ uint64_t InxGUI::PublishTextureViewForImGui(const std::string &name, std::shared
         existing->second.externalView->GetView() == texture->GetView() &&
         existing->second.externalView->GetSampler() == texture->GetSampler() &&
         existing->second.externalView->GetFormat() == texture->GetFormat() &&
+        existing->second.requiresDisplayEncoding == requiresDisplayEncoding &&
         existing->second.residentBytes == ownedBytes &&
         std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name) ==
             m_pendingTextureRemovals.end()) {
@@ -1356,10 +1411,6 @@ uint64_t InxGUI::PublishTextureViewForImGui(const std::string &name, std::shared
         throw std::logic_error("ImGui texture view requires its resident image description");
     const VkSampler sampler = rhiDevice.Resolve(texture->GetSampler());
     const VkImageView view = rhiDevice.Resolve(texture->GetView());
-    const rhi::PixelFormat format = texture->GetFormat();
-    const bool requiresDisplayEncoding =
-        format != rhi::PixelFormat::Undefined && !rhi::IsDepthFormat(format) && !rhi::IsIntegerFormat(format);
-
     // Preview the exact authored view used by materials. In particular, sRGB
     // decoding must happen before filtering and mip interpolation; sampling a
     // compatible UNORM alias would interpolate encoded values and diverge from
@@ -1408,7 +1459,9 @@ uint64_t InxGUI::PublishTextureViewForImGui(const std::string &name, std::shared
     m_textureResidency->heldBytes += ownedBytes;
     m_pendingTextureRemovals.erase(std::remove(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name),
                                    m_pendingTextureRemovals.end());
-    RequestFrame();
+    // A texture emitted during this GUI build is already in its draw data.
+    if (m_hasDrawData && !m_recordingFrameImages)
+        RequestFrame();
     return reinterpret_cast<uint64_t>(descriptor);
 }
 
@@ -1458,11 +1511,15 @@ void InxGUI::RemoveImGuiTexture(const std::string &name)
         throw std::overflow_error("ImGui texture upload version overflow");
     ++generation;
 
-    if (m_textures_umap.find(name) != m_textures_umap.end() &&
-        std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(), name) ==
-            m_pendingTextureRemovals.end())
-        m_pendingTextureRemovals.push_back(name);
-    RequestFrame();
+    const auto texture = m_textures_umap.find(name);
+    if (texture == m_textures_umap.end() || std::find(m_pendingTextureRemovals.begin(), m_pendingTextureRemovals.end(),
+                                                      name) != m_pendingTextureRemovals.end())
+        return;
+    m_pendingTextureRemovals.push_back(name);
+    // Stream fronts advance independently of the editor's GUI cadence. The
+    // current draw data and pixel leases keep their sampled image resident.
+    if (!texture->second.requiresPixelLease)
+        RequestFrame();
 }
 
 bool InxGUI::HasImGuiTexture(const std::string &name) const
@@ -1500,12 +1557,12 @@ ImGuiTexturePublication InxGUI::GetImGuiTexturePublication(const std::string &na
     return {};
 }
 
-uint64_t InxGUI::PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture)
+uint64_t InxGUI::PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture, bool displayEncoded)
 {
     const auto generation = texture->Acquire();
     const auto &sampled = generation->sampledColor;
     const std::string name = "RenderTextureUI/" + sampled->GetSourceId();
-    const auto id = PublishTextureViewForImGui(name, sampled);
+    const auto id = PublishTextureViewForImGui(name, sampled, false, 0, displayEncoded);
     auto &resource = m_textures_umap.at(name);
     resource.renderTexture = texture;
     if (resource.publication->renderTexture != texture || resource.publication->renderTextureGeneration != generation) {
@@ -1515,6 +1572,25 @@ uint64_t InxGUI::PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderT
         resource.publication = std::move(publication);
     }
     vk::RenderGraph::AddPersistentImageInitialization(m_renderTextureInitializations, generation);
+    return id;
+}
+
+uint64_t InxGUI::PublishLiveImageForImGui(const std::string &name,
+                                          std::shared_ptr<const rhi::TextureGpuView> initialView,
+                                          std::function<FrameImage()> resolve)
+{
+    const auto existing = m_textures_umap.find(name);
+    if (existing != m_textures_umap.end()) {
+        const auto id = reinterpret_cast<uint64_t>(existing->second.descriptorSet);
+        auto &binding = m_liveImageBindings.at(id);
+        binding.lastUsedFrame = m_guiFrameCounter;
+        existing->second.lastUsedFrame = m_guiFrameCounter;
+        return id;
+    }
+    // A genuine descriptor gives the opaque layout ID a collision-free lifetime.
+    // It is never submitted: RecordCommand replaces it with completed pixels.
+    const auto id = PublishTextureViewForImGui(name, std::move(initialView), true);
+    m_liveImageBindings.emplace(id, LiveImageBinding{name, std::move(resolve), m_guiFrameCounter});
     return id;
 }
 

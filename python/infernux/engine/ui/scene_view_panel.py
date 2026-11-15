@@ -79,9 +79,11 @@ from ._scene_view_camera import SceneViewCameraMixin
 from ._scene_view_overlays import SceneViewOverlaysMixin
 from ._scene_view_picking import SceneViewPickingMixin
 from ._scene_view_math import SceneViewMathMixin
+from ._scene_view_worlds import SceneViewWorldsMixin, WorldViewState
 
 @editor_panel("Scene", type_id="scene_view", title_key="panel.scene")
 class SceneViewPanel(
+    SceneViewWorldsMixin,
     SceneViewGizmoMixin,
     SceneViewCameraMixin,
     SceneViewOverlaysMixin,
@@ -116,10 +118,13 @@ class SceneViewPanel(
     KEY_LEFT_SHIFT = _keys.KEY_LEFT_SHIFT
     KEY_RIGHT_SHIFT = _keys.KEY_RIGHT_SHIFT
     
-    def __init__(self, title: str = "Scene", engine=None):
+    def __init__(self, title: str = "Scene", engine=None, *, world_view=None):
         super().__init__(title, window_id="scene_view")
         self._engine = engine
         self._play_mode_manager = None
+        self._world_view = WorldViewState() if world_view is None else world_view
+        self._world_count_draft = 1
+        self._world_count_editing = False
         self._last_frame_time = 0.0
         self._on_object_picked = None
         
@@ -453,10 +458,13 @@ class SceneViewPanel(
 
         else:
             # Placeholder when texture not ready
+            ctx.set_next_item_allow_overlap()
             ctx.invisible_button("scene_placeholder", float(scene_width), float(scene_height))
+            vp = capture_viewport_info(ctx)
             ctx.set_cursor_pos_x(cursor_start_x + 8)
             ctx.set_cursor_pos_y(cursor_start_y + 8)
-            ctx.label(t("scene_view.loading"))
+            ctx.label(t("scene_view.loading" if self.viewed_world_id else "game_view.no_worlds"))
+            self._draw_world_controls(ctx, vp, cursor_start_x, cursor_start_y, scene_height)
 
     # ------------------------------------------------------------------
     # Orientation Gizmo  (Unity-style axis widget)

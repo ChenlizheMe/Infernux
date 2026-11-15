@@ -240,7 +240,7 @@ void Camera::SetDepth(float depth)
     if (m_depth == depth)
         return;
 
-    m_depth = depth;
+    SetPresentationValue(m_depth, decltype(m_depth)(depth));
     if (GameObject *owner = GetGameObject()) {
         if (Scene *scene = owner->GetScene())
             scene->BumpStructureVersion();
@@ -250,16 +250,17 @@ void Camera::SetDepth(float depth)
 void Camera::SetProjectionMode(CameraProjection mode)
 {
     RequireProjectionMode(static_cast<int>(mode));
-    m_projectionMode = mode;
+    SetPresentationValue(m_projectionMode, decltype(m_projectionMode)(mode));
     m_projectionDirty = true;
 }
 
 void Camera::SetFieldOfView(float fov)
 {
     RequireFieldOfView(fov);
-    m_fov = fov;
+    SetPresentationValue(m_fov, decltype(m_fov)(fov));
     if (m_usePhysicalProperties)
-        m_focalLength = VerticalFieldOfViewToFocalLength(fov, m_sensorSize.y);
+        SetPresentationValue(m_focalLength,
+                             decltype(m_focalLength)(VerticalFieldOfViewToFocalLength(fov, m_sensorSize.y)));
     m_projectionDirty = true;
 }
 
@@ -267,9 +268,9 @@ void Camera::SetUsePhysicalProperties(bool enabled)
 {
     if (m_usePhysicalProperties == enabled)
         return;
-    m_usePhysicalProperties = enabled;
+    SetPresentationValue(m_usePhysicalProperties, decltype(m_usePhysicalProperties)(enabled));
     if (enabled)
-        m_fov = FocalLengthToVerticalFieldOfView(m_focalLength, m_sensorSize.y);
+        SetPresentationValue(m_fov, decltype(m_fov)(FocalLengthToVerticalFieldOfView(m_focalLength, m_sensorSize.y)));
     m_projectionDirty = true;
 }
 
@@ -277,32 +278,32 @@ void Camera::SetIso(int value)
 {
     if (value <= 0)
         throw std::invalid_argument("Camera.iso must be positive");
-    m_iso = value;
+    SetPresentationValue(m_iso, decltype(m_iso)(value));
 }
 
 void Camera::SetShutterSpeed(float value)
 {
     RequirePositive(value, "shutterSpeed");
-    m_shutterSpeed = value;
+    SetPresentationValue(m_shutterSpeed, decltype(m_shutterSpeed)(value));
 }
 
 void Camera::SetAperture(float value)
 {
     RequireFiniteRange(value, MinAperture, MaxAperture, "aperture");
-    m_aperture = value;
+    SetPresentationValue(m_aperture, decltype(m_aperture)(value));
 }
 
 void Camera::SetFocusDistance(float value)
 {
     RequirePositive(value, "focusDistance");
-    m_focusDistance = value;
+    SetPresentationValue(m_focusDistance, decltype(m_focusDistance)(value));
 }
 
 void Camera::SetBladeCount(int value)
 {
     if (value < MinBladeCount || value > MaxBladeCount)
         throw std::invalid_argument("Camera.bladeCount must be in [3, 11]");
-    m_bladeCount = value;
+    SetPresentationValue(m_bladeCount, decltype(m_bladeCount)(value));
 }
 
 void Camera::SetCurvature(const glm::vec2 &value)
@@ -311,27 +312,27 @@ void Camera::SetCurvature(const glm::vec2 &value)
     RequireFiniteRange(value.y, MinAperture, MaxAperture, "curvature.y");
     if (value.x > value.y)
         throw std::invalid_argument("Camera.curvature requires x <= y");
-    m_curvature = value;
+    SetPresentationValue(m_curvature, decltype(m_curvature)(value));
 }
 
 void Camera::SetBarrelClipping(float value)
 {
     RequireFiniteRange(value, 0.0f, 1.0f, "barrelClipping");
-    m_barrelClipping = value;
+    SetPresentationValue(m_barrelClipping, decltype(m_barrelClipping)(value));
 }
 
 void Camera::SetAnamorphism(float value)
 {
     RequireFiniteRange(value, -1.0f, 1.0f, "anamorphism");
-    m_anamorphism = value;
+    SetPresentationValue(m_anamorphism, decltype(m_anamorphism)(value));
 }
 
 void Camera::SetFocalLength(float value)
 {
     RequirePositive(value, "focalLength");
-    m_focalLength = value;
+    SetPresentationValue(m_focalLength, decltype(m_focalLength)(value));
     if (m_usePhysicalProperties)
-        m_fov = FocalLengthToVerticalFieldOfView(value, m_sensorSize.y);
+        SetPresentationValue(m_fov, decltype(m_fov)(FocalLengthToVerticalFieldOfView(value, m_sensorSize.y)));
     m_projectionDirty = true;
 }
 
@@ -358,9 +359,9 @@ void Camera::SetSensorSize(const glm::vec2 &value)
 {
     RequirePositive(value.x, "sensorSize.x");
     RequirePositive(value.y, "sensorSize.y");
-    m_sensorSize = value;
+    SetPresentationValue(m_sensorSize, decltype(m_sensorSize)(value));
     if (m_usePhysicalProperties)
-        m_fov = FocalLengthToVerticalFieldOfView(m_focalLength, value.y);
+        SetPresentationValue(m_fov, decltype(m_fov)(FocalLengthToVerticalFieldOfView(m_focalLength, value.y)));
     m_projectionDirty = true;
 }
 
@@ -368,29 +369,29 @@ void Camera::SetLensShift(const glm::vec2 &value)
 {
     if (!std::isfinite(value.x) || !std::isfinite(value.y))
         throw std::invalid_argument("Camera.lensShift must be finite");
-    m_lensShift = value;
+    SetPresentationValue(m_lensShift, decltype(m_lensShift)(value));
     m_projectionDirty = true;
 }
 
 void Camera::SetGateFit(PhysicalGateFit value)
 {
     RequireGateFit(static_cast<int>(value));
-    m_gateFit = value;
+    SetPresentationValue(m_gateFit, decltype(m_gateFit)(value));
     m_projectionDirty = true;
 }
 
 void Camera::SetAspectRatio(float aspect)
 {
     RequirePositive(aspect, "aspectRatio");
-    m_aspectRatio = std::max(0.01f, aspect);
-    m_hasCustomAspectRatio = true;
+    SetPresentationValue(m_aspectRatio, decltype(m_aspectRatio)(std::max(0.01f, aspect)));
+    SetPresentationValue(m_hasCustomAspectRatio, decltype(m_hasCustomAspectRatio)(true));
     m_projectionDirty = true;
 }
 
 void Camera::ResetAspectRatio()
 {
-    m_hasCustomAspectRatio = false;
-    m_aspectRatio = m_automaticAspectRatio;
+    SetPresentationValue(m_hasCustomAspectRatio, decltype(m_hasCustomAspectRatio)(false));
+    SetPresentationValue(m_aspectRatio, decltype(m_aspectRatio)(m_automaticAspectRatio));
     m_projectionDirty = true;
 }
 
@@ -438,7 +439,7 @@ void Camera::SetRect(const glm::vec4 &rect)
     if (m_rect == rect)
         return;
     const bool wasVisible = GetPixelWidth() != 0 && GetPixelHeight() != 0;
-    m_rect = rect;
+    SetPresentationValue(m_rect, decltype(m_rect)(rect));
     RefreshViewportAspect();
     ResetHistory();
     if (wasVisible != (GetPixelWidth() != 0 && GetPixelHeight() != 0))
@@ -485,22 +486,22 @@ void Camera::SetScreenDimensions(uint32_t width, uint32_t height)
 void Camera::SetOrthographicSize(float size)
 {
     RequirePositive(size, "orthoSize");
-    m_orthoSize = size;
+    SetPresentationValue(m_orthoSize, decltype(m_orthoSize)(size));
     m_projectionDirty = true;
 }
 
 void Camera::SetClipPlanes(float nearClip, float farClip)
 {
     RequireClipPlanes(nearClip, farClip);
-    m_nearClip = nearClip;
-    m_farClip = farClip;
+    SetPresentationValue(m_nearClip, decltype(m_nearClip)(nearClip));
+    SetPresentationValue(m_farClip, decltype(m_farClip)(farClip));
     m_projectionDirty = true;
 }
 
 void Camera::SetClearFlags(CameraClearFlags flags)
 {
     RequireClearFlags(static_cast<int>(flags));
-    m_clearFlags = flags;
+    SetPresentationValue(m_clearFlags, decltype(m_clearFlags)(flags));
 }
 
 void Camera::SetBackgroundColor(const glm::vec4 &color)
@@ -508,7 +509,7 @@ void Camera::SetBackgroundColor(const glm::vec4 &color)
     for (unsigned i = 0; i < 4; ++i)
         if (!std::isfinite(color[i]))
             throw std::invalid_argument("Camera.backgroundColor must be finite");
-    m_backgroundColor = color;
+    SetPresentationValue(m_backgroundColor, decltype(m_backgroundColor)(color));
 }
 
 // ============================================================================
@@ -718,13 +719,13 @@ void Camera::SetViewMatrix(const glm::mat4 &view)
         for (int row = 0; row < 4; ++row)
             if (!std::isfinite(inverse[column][row]))
                 throw std::invalid_argument("Camera inverse view matrix must fit finite float32 values");
-    m_viewOverride = view;
-    m_cameraToWorldOverride = inverse;
+    SetPresentationValue(m_viewOverride, decltype(m_viewOverride)(view));
+    SetPresentationValue(m_cameraToWorldOverride, decltype(m_cameraToWorldOverride)(inverse));
 }
 
 void Camera::ResetViewMatrix()
 {
-    m_viewOverride.reset();
+    SetPresentationValue(m_viewOverride, decltype(m_viewOverride){});
 }
 
 glm::mat4 Camera::GetProjectionMatrix() const
@@ -800,13 +801,13 @@ void Camera::SetProjectionMatrix(const glm::mat4 &projection)
     const double determinant = glm::determinant(glm::dmat4(projection));
     if (!std::isfinite(determinant) || determinant == 0.0)
         throw std::invalid_argument("Camera projection matrix must be invertible");
-    m_projectionOverride = projection;
+    SetPresentationValue(m_projectionOverride, decltype(m_projectionOverride)(projection));
     m_inverseRayProjectionDirty = true;
 }
 
 void Camera::ResetProjectionMatrix()
 {
-    m_projectionOverride.reset();
+    SetPresentationValue(m_projectionOverride, decltype(m_projectionOverride){});
     m_inverseRayProjectionDirty = true;
 }
 
@@ -970,11 +971,11 @@ void Camera::AssignTargetTexture(std::shared_ptr<rhi::RenderTexture> target, con
             graph.RemoveRuntimeDependency(GetInstanceGuid(), m_targetTextureGuid);
         if (!guid.empty())
             graph.AddRuntimeDependency(GetInstanceGuid(), guid);
-        m_targetTextureGuid = guid;
+        SetPresentationValue(m_targetTextureGuid, decltype(m_targetTextureGuid)(guid));
     }
     if (target || !guid.empty())
-        m_memoryOutputTexture.reset();
-    m_targetTexture = std::move(target);
+        SetPresentationValue(m_memoryOutputTexture, decltype(m_memoryOutputTexture){});
+    SetPresentationValue(m_targetTexture, decltype(m_targetTexture)(std::move(target)));
     const auto outputSize = GetOutputDimensions();
     if (outputSize.y > 0)
         UpdateAutomaticAspectRatio(outputSize.x / outputSize.y);
@@ -985,10 +986,10 @@ void Camera::SetRenderToTexture(bool enabled)
 {
     if (m_renderToTexture == enabled)
         return;
-    m_renderToTexture = enabled;
-    m_requestedRenderSerials = {};
+    SetPresentationValue(m_renderToTexture, decltype(m_renderToTexture)(enabled));
+    SetPresentationValue(m_requestedRenderSerials, decltype(m_requestedRenderSerials){});
     if (!enabled)
-        m_memoryOutputTexture.reset();
+        SetPresentationValue(m_memoryOutputTexture, decltype(m_memoryOutputTexture){});
     ResetHistory();
     InvalidateOutput();
 }
@@ -997,8 +998,8 @@ void Camera::SetRenderOnDemand(bool enabled) noexcept
 {
     if (m_renderOnDemand == enabled)
         return;
-    m_renderOnDemand = enabled;
-    m_requestedRenderSerials = {};
+    SetPresentationValue(m_renderOnDemand, decltype(m_renderOnDemand)(enabled));
+    SetPresentationValue(m_requestedRenderSerials, decltype(m_requestedRenderSerials){});
 }
 
 void Camera::SetMemoryOutputSize(const glm::vec2 &size)
@@ -1006,7 +1007,7 @@ void Camera::SetMemoryOutputSize(const glm::vec2 &size)
     const auto pixels = MemoryOutputPixels(size);
     if (m_memoryOutputSize == pixels)
         return;
-    m_memoryOutputSize = pixels;
+    SetPresentationValue(m_memoryOutputSize, decltype(m_memoryOutputSize)(pixels));
     if (WantsMemoryOutput()) {
         ResetHistory();
         InvalidateOutput();

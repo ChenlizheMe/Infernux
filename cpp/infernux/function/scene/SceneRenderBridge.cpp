@@ -1,9 +1,11 @@
 #include "SceneRenderBridge.h"
 
 #include "SceneManager.h"
+#include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <core/types/ShaderTypes.h>
 #include <function/renderer/ScriptableRenderContext.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <stdexcept>
 
 namespace infernux
@@ -26,6 +28,18 @@ SceneRenderBridge &SceneRenderBridge::Instance()
     // The engine singletons intentionally outlive Python and renderer teardown.
     static SceneRenderBridge *instance = new SceneRenderBridge();
     return *instance;
+}
+
+RuntimeWorld *SceneRenderBridge::GetEditorViewedWorld() const noexcept
+{
+    auto &manager = SceneManager::Instance();
+    if (!manager.IsRuntimeWorldManagementActive())
+        return m_editorViewedWorld == manager.AuthoringWorld().id ? &manager.AuthoringWorld() : nullptr;
+    auto *world = manager.FindRuntimeWorld(m_editorViewedWorld);
+    return world && world != &manager.AuthoringWorld() && world->handle && !world->handle->destroyRequested &&
+                   (world->handle->state == "ready" || world->handle->state == "preparing")
+               ? world
+               : nullptr;
 }
 
 void SceneRenderBridge::UpdateCameraData(float *outPos, float *outLookAt, float *outUp)
@@ -67,9 +81,12 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
                                             const std::optional<GameScreenSourceConfig> &screenConfig)
 {
     WorldExecutionScope scope(&world);
-    auto &state = m_runtimePublications[world.id];
-    if (!state)
-        state = std::make_unique<RuntimePublication>();
+    auto &slot = m_runtimePublications[world.id];
+    if (!slot)
+        slot = std::make_shared<RuntimePublication>();
+    // View delegates may Stop this World and erase its publication index.
+    const auto state = slot;
+    state->assetGraph = AssetDependencyGraph::Current();
     state->extractor.SetMaterialPreparation(m_prepareMaterial);
     try {
         if (!state->pending) {
@@ -95,9 +112,10 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
         }
         if (!capture(*state->pending, retained.get()))
             return false;
-        std::atomic_store_explicit(&state->completed,
-                                   std::shared_ptr<const RenderWorldPublication>(std::move(state->pending)),
-                                   std::memory_order_release);
+        const std::shared_ptr<const RenderWorldPublication> completed = std::move(state->pending);
+        std::atomic_store_explicit(&state->completed, completed, std::memory_order_release);
+        std::atomic_store_explicit(&state->display, completed, std::memory_order_release);
+        state->pausedPending.reset();
     } catch (const ShaderProgramSelectionError &) {
         state->pending.reset();
         // The author service owns the source diagnostic. Publish no part of
@@ -105,6 +123,64 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
         return false;
     }
     return true;
+}
+
+bool SceneRenderBridge::PublishPausedAuthorPresentation(RuntimeWorld &world, const CaptureViews &capture,
+                                                        uint64_t renderPolicyRevision,
+                                                        const std::optional<GameScreenSourceConfig> &screenConfig)
+{
+    const WorldExecutionScope scope(&world);
+    auto &slot = m_runtimePublications[world.id];
+    if (!slot)
+        slot = std::make_shared<RuntimePublication>();
+    // View delegates may Stop this World and erase its publication index.
+    const auto state = slot;
+    state->assetGraph = AssetDependencyGraph::Current();
+    const auto serial = world.pausedAuthor.requested;
+    const auto epoch = world.simulation.simulationEpoch;
+    state->extractor.SetMaterialPreparation(m_prepareMaterial);
+    try {
+        auto &pending = state->pausedPending;
+        if (pending &&
+            (pending->world->PausedAuthor().revision != serial || pending->world->SimulationEpoch() != epoch ||
+             pending->renderPolicyRevision != renderPolicyRevision))
+            pending.reset();
+        if (!pending) {
+            const auto base = std::atomic_load_explicit(&state->completed, std::memory_order_acquire);
+            PausedAuthorProvenance provenance;
+            provenance.revision = serial;
+            provenance.baseCompletedWorldFrame = base ? base->world->CompletedWorldFrame() : 0;
+            (void)state->extractor.ExtractRuntimeFrame(state->staging, world, provenance);
+            pending = std::make_shared<RenderWorldPublication>();
+            pending->world = state->staging.Acquire();
+            pending->screenConfig = screenConfig;
+            pending->renderPolicyRevision = renderPolicyRevision;
+        }
+        if (!capture(*pending, nullptr))
+            return false;
+        if (world.handle->destroyRequested || world.simulation.simulationEpoch != epoch ||
+            world.pausedAuthor.requested != serial) {
+            pending.reset();
+            return false;
+        }
+        std::atomic_store_explicit(&state->display, std::shared_ptr<const RenderWorldPublication>(std::move(pending)),
+                                   std::memory_order_release);
+        return true;
+    } catch (const ShaderProgramSelectionError &) {
+        state->pausedPending.reset();
+        return false;
+    } catch (const PhysicsPresentationPosePending &) {
+        state->pausedPending.reset();
+        return false;
+    }
+}
+
+std::shared_ptr<const RenderWorldPublication> SceneRenderBridge::AcquireLatestDisplayPublication(uint64_t worldId) const
+{
+    const auto found = m_runtimePublications.find(worldId);
+    return found == m_runtimePublications.end()
+               ? nullptr
+               : std::atomic_load_explicit(&found->second->display, std::memory_order_acquire);
 }
 
 bool SceneRenderBridge::RefreshRuntimeViewPlans(const std::shared_ptr<const RenderWorldPublication> &source,
@@ -127,9 +203,16 @@ bool SceneRenderBridge::RefreshRuntimeViewPlans(const std::shared_ptr<const Rend
     if (found == m_runtimePublications.end())
         return false;
     auto expected = source;
-    return std::atomic_compare_exchange_strong_explicit(
-        &found->second->completed, &expected, std::shared_ptr<const RenderWorldPublication>(std::move(candidate)),
-        std::memory_order_acq_rel, std::memory_order_acquire);
+    const std::shared_ptr<const RenderWorldPublication> replacement = std::move(candidate);
+    if (!std::atomic_compare_exchange_strong_explicit(&found->second->display, &expected, replacement,
+                                                      std::memory_order_acq_rel, std::memory_order_acquire))
+        return false;
+    if (!source->world->IsPausedAuthorPresentation()) {
+        expected = source;
+        (void)std::atomic_compare_exchange_strong_explicit(&found->second->completed, &expected, replacement,
+                                                           std::memory_order_acq_rel, std::memory_order_acquire);
+    }
+    return true;
 }
 
 std::shared_ptr<const RenderWorldPublication> SceneRenderBridge::AcquireLatestRuntimePublication(uint64_t worldId) const
@@ -142,6 +225,12 @@ std::shared_ptr<const RenderWorldPublication> SceneRenderBridge::AcquireLatestRu
 
 void SceneRenderBridge::RetireRuntimeWorld(uint64_t worldId)
 {
+    const auto retiring = m_runtimePublications.find(worldId);
+    if (retiring != m_runtimePublications.end() && retiring->second->assetGraph) {
+        const auto owner = std::string("world-presentation:") + std::to_string(worldId);
+        retiring->second->assetGraph->SetRuntimeContentCallback(owner, {});
+        retiring->second->assetGraph->ClearRuntimeDependenciesOf(owner);
+    }
     m_runtimePublications.erase(worldId);
     if (m_preparedRuntime && m_preparedRuntime->WorldId() == worldId) {
         m_preparedRuntime.reset();
@@ -190,7 +279,7 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
             const auto found = m_runtimePublications.find(worldId);
             if (found == m_runtimePublications.end())
                 continue;
-            auto completed = std::atomic_load_explicit(&found->second->completed, std::memory_order_acquire);
+            auto completed = std::atomic_load_explicit(&found->second->display, std::memory_order_acquire);
             if (!completed)
                 continue;
             if (!completed->world || completed->world->WorldId() != worldId)
@@ -205,16 +294,47 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
     } else {
         // Stop releases producer state. Acquired graphs may still retain the
         // final publication until their in-flight work retires normally.
-        m_runtimePublications.clear();
+        while (!m_runtimePublications.empty())
+            RetireRuntimeWorld(m_runtimePublications.begin()->first);
     }
-    m_extractor.SetMaterialPreparation(m_prepareMaterial);
-    try {
-        (void)m_extractor.ExtractEditorFrame(m_editorPublication, useActiveCameraCulling);
-    } catch (const ShaderProgramSelectionError &) {
-        // The failed working frame is private; the completed editor frame is
-        // still valid while its existing source diagnostic is being resolved.
+    m_preparedEditor.reset();
+    if (m_runtimePrepared) {
+        const auto *viewed = GetEditorViewedWorld();
+        const auto source = viewed ? AcquirePreparedRuntimePublication(viewed->id) : nullptr;
+        const Camera *camera = GetEditorCamera();
+        if (source && camera) {
+            const auto &world = source->world;
+            auto frame = std::make_shared<RenderWorldFrame>();
+            frame->m_sourceFrame = world;
+            frame->m_worldId = world->WorldId();
+            frame->m_completedWorldFrame = world->CompletedWorldFrame();
+            frame->m_pausedAuthor = world->PausedAuthor();
+            frame->m_simulationEpoch = world->SimulationEpoch();
+            frame->m_structuralRevision = world->StructuralRevision();
+            frame->m_transformRevision = world->TransformRevision();
+            frame->m_contentRevision = world->ContentRevision();
+            frame->m_poseRevision = world->PoseRevision();
+            frame->m_frameRevision = world->FrameRevision();
+            auto view = SceneRenderExtractor::CaptureCameraView(*camera);
+            view.worldId = frame->m_worldId;
+            view.completedWorldFrame = frame->m_completedWorldFrame;
+            view.pausedAuthor = frame->m_pausedAuthor;
+            view.simulationEpoch = frame->m_simulationEpoch;
+            view.editorView = true;
+            frame->m_primaryView = view;
+            frame->m_viewIndices.emplace(view.cameraId, 0);
+            frame->m_views.push_back(std::move(view));
+            m_preparedEditor = std::move(frame);
+        }
+    } else if (GetEditorViewedWorld()) {
+        m_extractor.SetMaterialPreparation(m_prepareMaterial);
+        try {
+            (void)m_extractor.ExtractEditorFrame(m_editorPublication, useActiveCameraCulling);
+        } catch (const ShaderProgramSelectionError &) {
+            // Keep the last completed authoring frame while its source is repaired.
+        }
+        m_preparedEditor = m_editorPublication.Acquire();
     }
-    m_preparedEditor = m_editorPublication.Acquire();
     const Camera *editorCamera = GetEditorCamera();
     m_editorCameraId = editorCamera ? editorCamera->GetComponentID() : 0;
     // Retirement consults acquired publications, never a partial F's Component
@@ -234,7 +354,7 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
             ++it;
     }
     m_sceneRenderer.m_buildOwner.reset();
-    const auto selected = m_preparedEditor && m_editorCameraId ? m_preparedEditor : m_preparedRuntime;
+    const auto selected = m_preparedEditor;
     m_sceneRenderer.WritableRenderWorld().SelectPublication(selected);
     m_sceneRenderer.m_visibleCount.store(selected ? selected->Proxies().size() : 0, std::memory_order_relaxed);
 }

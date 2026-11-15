@@ -191,6 +191,9 @@ class InputManager
     /// Call every admitted Host, including while another WorldFrame is open.
     /// Reads raw live members even under an older World InputReadScope.
     [[nodiscard]] InputFrameLease CaptureFrame();
+    /// Only equivalent, transient-free external samples may share one
+    /// automatic World service demand. Explicit frames retain their samples.
+    [[nodiscard]] static bool CanCoalesceFrames(const InputFrameSample &left, const InputFrameSample &right) noexcept;
     void SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcast,
                                  std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs,
                                  std::vector<std::array<float, 4>> imageRects);

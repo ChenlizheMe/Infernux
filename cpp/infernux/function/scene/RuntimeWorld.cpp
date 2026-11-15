@@ -10,6 +10,7 @@ namespace
 {
 std::atomic<uint64_t> s_nextRuntimeWorldId{1};
 thread_local RuntimeWorld *s_currentWorld = nullptr;
+thread_local bool s_allowDefaultWorldQuery = true;
 } // namespace
 
 RuntimeWorld::SceneCollection::SceneCollection() = default;
@@ -51,6 +52,21 @@ RuntimeWorld::~RuntimeWorld()
     PhysicsWorld::Instance().RetireDomain(*physics);
     physics.reset();
     InputManager::Instance().RetireWorldInput(id);
+}
+
+WorldQueryScope::WorldQueryScope(bool allowDefaultWorld) noexcept : m_previous(s_allowDefaultWorldQuery)
+{
+    s_allowDefaultWorldQuery = m_previous && allowDefaultWorld;
+}
+
+WorldQueryScope::~WorldQueryScope()
+{
+    s_allowDefaultWorldQuery = m_previous;
+}
+
+bool WorldQueryScope::AllowsDefaultWorld() noexcept
+{
+    return s_allowDefaultWorldQuery;
 }
 
 WorldExecutionScope::WorldExecutionScope(RuntimeWorld *world) noexcept : m_previous(s_currentWorld), m_world(world)

@@ -44,6 +44,26 @@ struct GameScreenSourceConfig
     rhi::SampleCount samples = rhi::SampleCount::One;
 };
 
+/// All color contributors to a screen must agree when they preserve pixels.
+/// A full color replacement starts a new domain; depth never changes it.
+struct GameScreenColorContract
+{
+    bool hasColor = false, compatible = true;
+    bool preservesPreviousColor = false, firstDisplayEncoded = false, displayEncoded = false;
+
+    void Append(bool encoded, bool preservesColor) noexcept
+    {
+        if (!hasColor) {
+            firstDisplayEncoded = encoded;
+            preservesPreviousColor = preservesColor;
+        } else if (preservesColor && encoded != displayEncoded) {
+            compatible = false;
+        }
+        hasColor = true;
+        displayEncoded = encoded;
+    }
+};
+
 /// One admitted source/configuration. A desired resize cannot rewrite it.
 struct GameScreenAdmission
 {
@@ -63,6 +83,9 @@ struct GameScreenSample
     uint64_t worldId = 0, generation = 0, sequence = 0;
     rhi::RenderViewId outputId = rhi::InvalidRenderViewId;
     uint64_t completedWorldFrame = 0, simulationEpoch = 0;
+    bool pausedAuthorPresentation = false;
+    uint64_t presentationRevision = 0, baseCompletedWorldFrame = 0;
+    bool displayEncoded = false;
     rhi::SubmissionTicket completion; // Internal dependency identity; never a user timeline API.
     std::shared_ptr<rhi::WorkCompletionReceipt> receipt = std::make_shared<rhi::WorkCompletionReceipt>();
     rhi::SubmissionSerial retirementEpoch = rhi::InvalidSubmissionSerial;
@@ -81,6 +104,7 @@ struct GameScreenOutputStatus
     bool hasCompletedSample = false, workWithheld = false, waitingForPublication = false;
     bool sourcePublished = false, hasScreenCamera = false;
     bool hasPresentationConsumer = false, hasRequiredConsumer = false;
+    uint64_t guiRecordedSequence = 0, guiRecordingCount = 0;
     // Snapshot facts for the shared SceneManager Step owner. Desired config
     // above never changes the identity/config of these retained records.
     std::shared_ptr<const GameScreenAdmission> admitted;

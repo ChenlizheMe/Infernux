@@ -392,7 +392,7 @@ class RenderGraph:
     def append_pass(self, builder: RenderPassBuilder) -> None:
         """Append an existing RenderPassBuilder to the graph."""
         ...
-    def set_output(self, texture: str | TextureHandle) -> None:
+    def set_output(self, texture: str | TextureHandle, *, display_encoded: bool | None = None) -> None:
         """Set the final output texture of the render graph."""
         ...
     def validate_no_ip_before_first_pass(self) -> None:

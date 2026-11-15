@@ -20,7 +20,9 @@ interacts with the standard ``RenderPipeline`` interface.
 
 from __future__ import annotations
 
+from infernux.lib import SceneManager
 from infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack.render_stack import RenderStack
 
 
 def _scene_cache_key(scene) -> tuple[int, str]:
@@ -61,8 +63,6 @@ class RenderStackPipeline(RenderPipeline):
     def should_render_view(self, view) -> bool:
         # Selection runs inside this new view's native WorldExecutionScope.
         # A presentation variant bypasses selection and keeps its sealed F.
-        from infernux.lib import SceneManager
-
         stack = self._find_scene_render_stack(SceneManager.instance().get_active_scene())
         return stack.pipeline.should_render_view(view) if stack is not None else True
 
@@ -82,8 +82,6 @@ class RenderStackPipeline(RenderPipeline):
         3. Full scene scan across Python components
         4. ``None`` to select the engine default renderer
         """
-        from infernux.renderstack.render_stack import RenderStack
-
         if scene is None:
             return None
 

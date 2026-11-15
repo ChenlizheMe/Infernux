@@ -44,6 +44,7 @@ class ScenePickingService
         m_particleDrawRegistry = registry;
     }
     void Destroy();
+    void CancelPending(const std::string &reason);
 
     [[nodiscard]] uint64_t Request(float x, float y, float viewportWidth, float viewportHeight);
     [[nodiscard]] ScenePickSnapshot Query(uint64_t requestId) const;

@@ -718,5 +718,6 @@ class Physics(metaclass=_PhysicsMeta):
 
 
 from .joint_batch import HingeJointBatch
+from .participant import Participant, PhysicsBuildPlan
 
-__all__ = ["Physics", "HingeJointBatch"]
+__all__ = ["Physics", "HingeJointBatch", "Participant", "PhysicsBuildPlan"]
