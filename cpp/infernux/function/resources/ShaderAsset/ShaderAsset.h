@@ -3,7 +3,6 @@
 #include <core/types/ShaderProgramArtifact.h>
 #include <core/types/ShaderTypes.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
-#include <function/resources/ShaderAsset/ShaderDescriptor.h>
 
 #include <cstdint>
 #include <memory>
@@ -34,20 +33,7 @@ struct ShaderMaterialPrograms
     std::unordered_map<std::string, std::shared_ptr<const ShaderMaterialPreparation>> entries;
 };
 
-struct ShaderStageVariant
-{
-    ShaderCompileTarget target = ShaderCompileTarget::Forward;
-    std::vector<char> spirv;
-
-    [[nodiscard]] bool IsValid() const noexcept
-    {
-        return target >= ShaderCompileTarget::Forward && target < ShaderCompileTarget::Count && !spirv.empty() &&
-               spirv.size() % sizeof(uint32_t) == 0;
-    }
-};
-
-/// ShaderLoader's prepared source publication: typed author programs and
-/// libraries, or the existing standalone pass variants during their migration.
+/// Frozen typed source publication, shared by graphics and compute consumers.
 struct ShaderAsset
 {
     /// Shader identity (e.g. "pbr", "unlit", "surface_water")
@@ -58,13 +44,6 @@ struct ShaderAsset
 
     /// Source file path (for hot-reload cache key)
     std::string filePath;
-
-    /// Parsed authoring contract retained for stage linking and diagnostics.
-    ShaderDescriptor descriptor;
-
-    /// Compiled variants keyed by semantic render target. Forward is required;
-    /// optional targets are emitted as supported.
-    std::vector<ShaderStageVariant> variants;
 
     /// Render-state annotations (fragment shaders only)
     ShaderRenderMeta renderMeta;
@@ -81,46 +60,12 @@ struct ShaderAsset
     // its requested vertex combinations, including one rejected source pair.
     std::shared_ptr<ShaderMaterialPrograms> materialPrograms = std::make_shared<ShaderMaterialPrograms>();
 
-    [[nodiscard]] const ShaderStageVariant *FindVariant(ShaderCompileTarget target) const noexcept
-    {
-        for (const auto &variant : variants) {
-            if (variant.target == target)
-                return &variant;
-        }
-        return nullptr;
-    }
-
-    [[nodiscard]] bool HasVariant(ShaderCompileTarget target) const noexcept
-    {
-        const auto *variant = FindVariant(target);
-        return variant != nullptr && variant->IsValid();
-    }
-
-    bool SetVariant(ShaderCompileTarget target, std::vector<char> spirv)
-    {
-        ShaderStageVariant replacement{target, std::move(spirv)};
-        if (!replacement.IsValid())
-            return false;
-        for (auto &variant : variants) {
-            if (variant.target == target) {
-                variant = std::move(replacement);
-                return true;
-            }
-        }
-        variants.push_back(std::move(replacement));
-        return true;
-    }
-
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept
     {
         size_t bytes = sizeof(*this) + shaderId.capacity() + shaderType.capacity() + filePath.capacity() +
-                       descriptor.GetRuntimeMemoryBytes() - sizeof(descriptor) +
-                       variants.capacity() * sizeof(ShaderStageVariant) + renderMeta.cullMode.capacity() +
-                       renderMeta.depthWrite.capacity() + renderMeta.depthTest.capacity() +
-                       renderMeta.blend.capacity() + renderMeta.passTag.capacity() + renderMeta.stencil.capacity() +
-                       renderMeta.alphaClip.capacity();
-        for (const auto &variant : variants)
-            bytes += variant.spirv.capacity();
+                       renderMeta.cullMode.capacity() + renderMeta.depthWrite.capacity() +
+                       renderMeta.depthTest.capacity() + renderMeta.blend.capacity() + renderMeta.passTag.capacity() +
+                       renderMeta.stencil.capacity() + renderMeta.alphaClip.capacity();
         bytes += authoringSchema.capacity() + authorSourceText.capacity();
         bytes += sourceDependencies.capacity() * sizeof(std::string);
         for (const auto &dependency : sourceDependencies)

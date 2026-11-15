@@ -1,4 +1,4 @@
-bool VerifyParticleRuntimeInputSnapshots(TestResources &resources, infernux::InxShaderLoader &compiler,
+bool VerifyParticleRuntimeInputSnapshots(TestResources &resources,
                                          const infernux::particle::GpuParticleSpawnProgram &spawnProgram)
 {
     using namespace infernux;
@@ -6,21 +6,22 @@ bool VerifyParticleRuntimeInputSnapshots(TestResources &resources, infernux::Inx
     constexpr uint32_t wordCount = 64 + 32 + boneCount * 16;
     constexpr uint64_t bytes = wordCount * 4;
     auto &device = resources.context.GetRhiDevice();
-    const auto code = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=0) writeonly buffer Output { uint result[]; };
-layout(std140, set=0, binding=5) uniform Transforms { uvec4 matrices[16]; };
-layout(std430, set=1, binding=0) readonly buffer Metadata { uint metadata[]; };
-layout(std430, set=1, binding=4) readonly buffer Palette { uint palette[]; };
-void main() {
-    uint i = gl_GlobalInvocationID.x;
-    if (i < 64u) result[i] = matrices[i / 4u][i % 4u];
+    const auto code = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint> result;
+struct Transforms {  uint4 matrices[16];  };
+[[vk::binding(5, 0)]] ConstantBuffer<Transforms> test_transforms;
+[[vk::binding(0, 1)]] StructuredBuffer<uint> metadata;
+[[vk::binding(4, 1)]] StructuredBuffer<uint> palette;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint i = dispatch_id.x;
+    if (i < 64u) result[i] = test_transforms.matrices[i / 4u][i % 4u];
     else if (i < 96u) result[i] = metadata[i - 64u];
     else if (i < 96u + 1025u * 16u) result[i] = palette[i - 96u];
 }
-)glsl",
-                                                             "Tests/ParticleRuntimeInputs.comp"));
+)slang",
+                                         "Tests/ParticleRuntimeInputs.comp.slang");
     if (!Require(!code.empty(), "Runtime input shader failed"))
         return false;
     struct Owner

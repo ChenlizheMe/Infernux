@@ -43,6 +43,11 @@ enum class ShaderProgramDomain : unsigned char
     Count,
 };
 
+[[nodiscard]] constexpr bool IsUIShaderDomain(ShaderProgramDomain domain) noexcept
+{
+    return domain == ShaderProgramDomain::ScreenUI || domain == ShaderProgramDomain::WorldUI;
+}
+
 [[nodiscard]] constexpr const char *ShaderProgramDomainName(ShaderProgramDomain domain) noexcept
 {
     switch (domain) {
@@ -88,8 +93,8 @@ class ShaderProgramDomainMismatch : public ShaderProgramSelectionError
 // ============================================================================
 // ShaderCompileTarget — identifies which rendering pass variant to compile for.
 //
-// Shared between InxShaderLoader (compile-time variant generation) and
-// InxMaterial (per-pass pipeline storage).  Defined in a lightweight header
+// Shared by typed program compilation and material pass storage.
+// Defined in a lightweight header
 // to avoid pulling in heavy shader-compiler includes through InxMaterial.h.
 // ============================================================================
 

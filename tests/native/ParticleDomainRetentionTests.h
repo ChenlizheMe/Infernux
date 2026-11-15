@@ -1,4 +1,4 @@
-bool VerifyParticleDomainRetention(TestResources &resources, infernux::InxShaderLoader &compiler,
+bool VerifyParticleDomainRetention(TestResources &resources,
                                    const infernux::particle::GpuParticleEmitterProgram &prototype,
                                    const infernux::particle::GpuParticleSortProgram &sortProgram,
                                    const infernux::particle::GpuParticleCullProgram &cullProgram,
@@ -8,59 +8,59 @@ bool VerifyParticleDomainRetention(TestResources &resources, infernux::InxShader
 {
     using namespace infernux;
     using namespace infernux::particle;
-    const auto noop = SpirvWords(compiler.CompileComputeGlsl(
-        "#version 450\nlayout(local_size_x=256) in; void main() {}", "Tests/DomainRetentionNoop.comp"));
-    const auto bootstrap = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=2) buffer Counters { uint counters[]; };
-layout(std430, set=0, binding=4) buffer Indirect { uvec4 indirectArgs; };
-layout(std430, set=0, binding=9) buffer Dispatch { uvec4 dispatches[]; };
-void main() {
-    if (gl_GlobalInvocationID.x != 0u) return;
+    const auto noop = CompileTestCompute("[shader(\"compute\")] [numthreads(256,1,1)] void main() {}",
+                                         "Tests/DomainRetentionNoop.comp.slang");
+    const auto bootstrap = CompileTestCompute(R"slang(
+
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> counters;
+[[vk::binding(4, 0)]] RWStructuredBuffer<uint4> indirectArgs;
+[[vk::binding(9, 0)]] RWStructuredBuffer<uint4> dispatches;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x != 0u) return;
     counters[0] = 32u;
-    indirectArgs = uvec4(0u);
-    dispatches[0] = dispatches[1] = uvec4(1u, 1u, 1u, 0u);
+    indirectArgs[0] = uint4(0u);
+    dispatches[0] = dispatches[1] = uint4(1u, 1u, 1u, 0u);
 }
-)glsl",
-                                                                  "Tests/DomainRetentionBootstrap.comp"));
-    const auto update = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=0) buffer States { uvec4 states[]; };
-layout(std430, set=3, binding=0) buffer Burst { uint bursts[]; };
-layout(std430, set=3, binding=1) readonly buffer Metadata { uint metadata[]; };
-layout(std430, set=3, binding=2) buffer Parameters { uvec4 parameters[]; };
-layout(std430, set=3, binding=3) buffer Requests { uint requests[]; };
-layout(std430, set=3, binding=4) readonly buffer Playing { uint playing[]; };
-void main() {
-    if (gl_GlobalInvocationID.x != 0u) return;
+)slang",
+                                              "Tests/DomainRetentionBootstrap.comp.slang");
+    const auto update = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint4> states;
+[[vk::binding(0, 3)]] RWStructuredBuffer<uint> bursts;
+[[vk::binding(1, 3)]] StructuredBuffer<uint> metadata;
+[[vk::binding(2, 3)]] RWStructuredBuffer<uint4> parameters;
+[[vk::binding(3, 3)]] RWStructuredBuffer<uint> requests;
+[[vk::binding(4, 3)]] StructuredBuffer<uint> playing;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x != 0u) return;
     uint previous = parameters[0].x;
-    states[0] = uvec4(previous, playing[0], metadata[0], metadata[7]);
+    states[0] = uint4(previous, playing[0], metadata[0], metadata[7]);
     parameters[0].x += 10u;
     requests[0] = previous == 100u ? 1u : (previous == 110u ? 0u : 2u);
     if (bursts[0] != 0xffffffffu) bursts[0] += previous == 100u ? 7u : 5u;
 }
-)glsl",
-                                                               "Tests/DomainRetentionUpdate.comp"));
-    const auto rendering = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=0) readonly buffer States { uvec4 states[]; };
-layout(std430, set=0, binding=3) writeonly buffer Instances { uvec4 snapshots[]; };
-void main() {
-    if (gl_GlobalInvocationID.x == 0u) snapshots[0] = states[0];
+)slang",
+                                           "Tests/DomainRetentionUpdate.comp.slang");
+    const auto rendering = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] StructuredBuffer<uint4> states;
+[[vk::binding(3, 0)]] RWStructuredBuffer<uint4> snapshots;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x == 0u) snapshots[0] = states[0];
 }
-)glsl",
-                                                                  "Tests/DomainRetentionRendering.comp"));
-    const auto readbackCode = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=1) in;
-layout(std430, set=0, binding=0) readonly buffer Input { uvec4 snapshot; };
-layout(std430, set=0, binding=1) writeonly buffer Output { uvec4 result; };
-void main() { result = snapshot; }
-)glsl",
-                                                                     "Tests/DomainRetentionReadback.comp"));
+)slang",
+                                              "Tests/DomainRetentionRendering.comp.slang");
+    const auto readbackCode = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] StructuredBuffer<uint4> snapshot;
+[[vk::binding(1, 0)]] RWStructuredBuffer<uint4> result;
+[shader("compute")] [numthreads(1, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) { result[0] = snapshot[0]; }
+)slang",
+                                                 "Tests/DomainRetentionReadback.comp.slang");
     if (!Require(!noop.empty() && !bootstrap.empty() && !update.empty() && !rendering.empty() && !readbackCode.empty(),
                  "Particle domain retention shaders failed"))
         return false;

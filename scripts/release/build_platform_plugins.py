@@ -73,7 +73,7 @@ def _git_revision(directory):
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=directory, text=True).strip()
 
 
-def _validate_payload(platform, payload, tools=None, *, source_revision=None):
+def _validate_payload(platform, payload, *, source_revision=None):
     descriptor = PLATFORM_PLAYERS[platform]
     payload_format = descriptor["payload_format"]
     source_revision = source_revision or _git_revision(ROOT)
@@ -100,14 +100,10 @@ def _validate_payload(platform, payload, tools=None, *, source_revision=None):
             if not (payload / "java/org/libsdl/app/SDLActivity.java").is_file():
                 raise ValueError("Android Player is missing its SDL Java host")
         elif payload_format == "web":
-            if tools is None:
-                raise ValueError("Web Player packaging requires Windows and Linux shader tools")
             contract_path = ROOT / descriptor["repository_path"] / "package/editor/infernux_web/native_payload.py"
             contract = runpy.run_path(str(contract_path))
             contract["inspect_player_payload"](payload, engine=VERSION, engine_release=RELEASE,
                                                source_revision=source_revision)
-            for host in contract["HOSTS"]:
-                contract["inspect_shader_tools"](tools, host=host)
             required = contract["PLAYER_FILES"]
         else:
             required = descriptor["required_files"]
@@ -116,13 +112,13 @@ def _validate_payload(platform, payload, tools=None, *, source_revision=None):
                 raise FileNotFoundError(root / name)
 
 
-def package(platform, payload, output, *, tools=None):
+def package(platform, payload, output):
     payload = payload.resolve()
     descriptor = PLATFORM_PLAYERS[platform]
     repository = ROOT / descriptor["repository_path"]
     revision = _git_revision(ROOT)
     plugin_revision = _git_revision(repository)
-    _validate_payload(platform, payload, tools, source_revision=revision)
+    _validate_payload(platform, payload, source_revision=revision)
     reference = descriptor["reference"]
     stem = reference.replace("/", ".")
     output.mkdir(parents=True, exist_ok=True)
@@ -132,8 +128,6 @@ def package(platform, payload, output, *, tools=None):
                         ignore=shutil.ignore_patterns("player", "tools", "__pycache__"))
         plugin = next(path for path in (stage / "editor").iterdir() if (path / "__init__.py").is_file())
         shutil.copytree(payload, plugin / "player", ignore=shutil.ignore_patterns("*.meta", "__pycache__"))
-        if tools is not None:
-            shutil.copytree(tools, plugin / "tools", ignore=shutil.ignore_patterns("*.meta"))
         metadata = read(stage / "inx_package.json")
         metadata.update(version=PACKAGE_VERSION, engine="==" + PACKAGE_VERSION)
         write(stage / "inx_package.json", metadata)
@@ -182,7 +176,7 @@ def build(platform, args):
              "--python-runtime-manifest", os.environ["INFERNUX_WEB_PYTHON_RUNTIME_MANIFEST"],
              "--numpy-payload-root", os.environ["INFERNUX_WEB_NUMPY_PAYLOAD_ROOT"],
              "--host-python", sys.executable, "--build-root", build_root, "--player-output", payload])
-    return package(platform, payload, args.output, tools=args.tools if platform == "web" else None)
+    return package(platform, payload, args.output)
 
 
 def assemble(directory, *, sdk_wheels=(), source_revision=None):
@@ -233,7 +227,6 @@ def main():
     parser.add_argument("operation", choices=("build", "package", "assemble", "catalog"))
     parser.add_argument("--targets", nargs="+", choices=PLATFORMS)
     parser.add_argument("--payload", type=Path)
-    parser.add_argument("--tools", type=Path)
     parser.add_argument("--build-root", type=Path, default=ROOT / "out/build/platform-plugins" / RELEASE)
     parser.add_argument("--output", type=Path, default=ROOT / "dist/platform-plugins" / RELEASE)
     parser.add_argument("--source-revision")
@@ -252,7 +245,7 @@ def main():
             if args.operation == "build":
                 build(platform, args)
             else:
-                package(platform, args.payload, args.output, tools=args.tools)
+                package(platform, args.payload, args.output)
 
 
 if __name__ == "__main__":

@@ -36,7 +36,6 @@
 #include <cstring>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
-#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/ShaderAsset/ShaderAuthorInputs.h>

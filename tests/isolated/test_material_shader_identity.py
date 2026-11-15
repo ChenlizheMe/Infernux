@@ -62,20 +62,23 @@ def exercise(project, location, case):
         ),
         encoding="utf-8",
     )
-    vertex = assets / "Vertex.vert"
-    fragment = (assets if location == "assets" else package / "runtime") / "Fragment.frag"
+    vertex = assets / "Vertex.vert.py"
+    fragment = (assets if location == "assets" else package / "runtime") / "Fragment.frag.py"
     vertex.write_text(
-        '#version 450\nShaderInfo {\n Name "TestVertex"\n Properties {\n Float keep = 1.0\n }\n}\n', encoding="utf-8"
-    )
+        'import infernux.shader as shader\nclass Vertex(shader.vert):\n'
+        '    shader_id = "TestVertex"\n    keep = shader.material.float(default=1.0)\n'
+        '    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:\n'
+        '        return vertex\n', encoding="utf-8")
     source = (
-        '#version 450\nShaderInfo {\n Name "TestFragment"\n ShadingModel Unlit\n'
-        " Properties {\n Float packageGain = 0.75\n }\n}\n"
-        "void surface(out SurfaceData s) { s = InitSurfaceData(); s.albedo = vec3(material.packageGain); }\n"
+        'import infernux.shader as shader\nclass Fragment(shader.frag):\n'
+        '    shader_id = "TestFragment"\n    package_gain = shader.material.float(default=0.75)\n'
+        '    def main(self, ctx: shader.mesh_input) -> shader.vec4:\n'
+        '        return shader.vec4(self.package_gain, 0.0, 0.0, 1.0)\n'
     )
     fragment.write_text(source, encoding="utf-8")
     if case in ("same_name", "switch_guid"):
-        decoy = assets / "AAA_Decoy.frag"
-        decoy.write_text(source.replace("packageGain", "wrongGain"), encoding="utf-8")
+        decoy = assets / "AAA_Decoy.frag.py"
+        decoy.write_text(source.replace("package_gain", "wrong_gain"), encoding="utf-8")
     PreferencesStore()._path = str(project / "preferences.json")
     engine = Engine(LogLevel.Warn, RuntimeMode.Headless)
     try:
@@ -91,12 +94,14 @@ def exercise(project, location, case):
             "vertex": {"guid": vertex_guid, "shader_id": "TestVertex"},
             "fragment": {"guid": fragment_guid, "shader_id": "TestFragment"},
         }
-        document["properties"] = {"keep": {"type": 0, "value": 1.0}, "packageGain": {"type": 0, "value": 0.375}}
+        document["properties"] = {"keep": {"type": 0, "value": 1.0}, "package_gain": {"type": 0, "value": 0.375}}
+        document["_shader_property_order"] = ["keep", "package_gain"]
+        document["textureSamplers"] = {}
         assert native.deserialize_document(document)
         document = native.serialize_document()
         state = SimpleNamespace(extra={})
         _sync_shader_annotations(document, state)
-        assert any(value == "TestFragment" for _, value in shaders.get_shader_candidates(".frag"))
+        assert document["shaders"]["fragment"]["guid"] == fragment_guid
         if case in ("refresh", "missing", "restored", "rename"):
             before = copy.deepcopy(document)
             if case in ("missing", "restored"):
@@ -112,7 +117,7 @@ def exercise(project, location, case):
                     sidecar.write_bytes(metadata)
                     assert database.import_asset(str(fragment)).guid == fragment_guid
             elif case == "rename":
-                moved = fragment.with_name("Renamed.frag")
+                moved = fragment.with_name("Renamed.frag.py")
                 fragment.replace(moved)
                 assert database.move_asset(str(fragment), str(moved)).succeeded
                 moved.write_text(source.replace("TestFragment", "RenamedFragment"), encoding="utf-8")
@@ -120,12 +125,14 @@ def exercise(project, location, case):
             shaders.bump_shader_property_generation()
             _sync_shader_annotations(document, state)
         if case == "empty":
-            vertex.write_text('#version 450\nShaderInfo { Name "TestVertex" }\n', encoding="utf-8")
+            vertex.write_text(
+                'import infernux.shader as shader\nclass Vertex(shader.vert):\n    shader_id = "TestVertex"\n'
+                '    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:\n'
+                '        return vertex\n', encoding="utf-8")
             fragment.write_text(
-                '#version 450\nShaderInfo { Name "TestFragment" ShadingModel Unlit }\n'
-                "void surface(out SurfaceData s) { s = InitSurfaceData(); }\n",
-                encoding="utf-8",
-            )
+                'import infernux.shader as shader\nclass Fragment(shader.frag):\n    shader_id = "TestFragment"\n'
+                '    def main(self, ctx: shader.mesh_input) -> shader.vec4:\n'
+                '        return shader.vec4(1.0)\n', encoding="utf-8")
             assert database.reimport_asset(str(vertex)).succeeded
             assert database.reimport_asset(str(fragment)).succeeded
             shaders.bump_shader_property_generation()
@@ -153,8 +160,8 @@ def exercise(project, location, case):
         if case == "switch_guid":
             document["shaders"]["fragment"]["guid"] = database.get_guid_from_path(str(decoy))
             _sync_shader_annotations(document, state)
-            assert shaders.get_material_property_display_order(document) == ["keep", "wrongGain"]
-            assert document["properties"]["wrongGain"]["value"] == pytest.approx(0.75)
+            assert shaders.get_material_property_display_order(document) == ["keep", "wrong_gain"]
+            assert document["properties"]["wrong_gain"]["value"] == pytest.approx(0.75)
             return
         if case == "stable_values":
             parse = shaders.parse_shader_properties
@@ -167,25 +174,25 @@ def exercise(project, location, case):
             shaders.parse_shader_properties = counted_parse
             try:
                 for _ in range(50):
-                    document["properties"]["packageGain"]["value"] += 1
+                    document["properties"]["package_gain"]["value"] += 1
                     _sync_shader_annotations(document, state)
-                assert document["properties"]["packageGain"]["value"] == pytest.approx(50.375)
+                assert document["properties"]["package_gain"]["value"] == pytest.approx(50.375)
                 assert calls == [], "value edits must reuse the published schema"
             finally:
                 shaders.parse_shader_properties = parse
-            document["properties"]["packageGain"]["value"] = 0.375
-        assert document["properties"]["packageGain"]["value"] == pytest.approx(0.375)
-        assert "packageGain" in shaders.get_material_property_display_order(document)
-        assert "wrongGain" not in document["properties"]
+            document["properties"]["package_gain"]["value"] = 0.375
+        assert document["properties"]["package_gain"]["value"] == pytest.approx(0.375)
+        assert "package_gain" in shaders.get_material_property_display_order(document)
+        assert "wrong_gain" not in document["properties"]
         loaded = copy.deepcopy(document)
         _sync_material_shader_metadata(loaded)
-        assert loaded["properties"]["packageGain"]["value"] == pytest.approx(0.375)
-        assert "wrongGain" not in loaded["properties"]
+        assert loaded["properties"]["package_gain"]["value"] == pytest.approx(0.375)
+        assert "wrong_gain" not in loaded["properties"]
         if case != "missing":
             assert native.deserialize_document(loaded)
             reopened = InxMaterial.create_default_unlit()
             assert reopened.deserialize_document(native.serialize_document())
-            assert reopened.serialize_document()["properties"]["packageGain"]["value"] == pytest.approx(0.375)
+            assert reopened.serialize_document()["properties"]["package_gain"]["value"] == pytest.approx(0.375)
         if case == "disk":
             material_path = assets / "Authored.mat"
             native.save_to(str(material_path))
@@ -193,15 +200,15 @@ def exercise(project, location, case):
             result = _load_material(str(material_path))
             assert result is not None
             material, extra = result
-            assert extra["cached_data"]["properties"]["packageGain"]["value"] == pytest.approx(0.375)
-            assert "packageGain" in shaders.get_material_property_display_order(extra["cached_data"])
+            assert extra["cached_data"]["properties"]["package_gain"]["value"] == pytest.approx(0.375)
+            assert "package_gain" in shaders.get_material_property_display_order(extra["cached_data"])
             assert material.save(str(material_path))
             saved = json.loads(material_path.read_text(encoding="utf-8"))
-            assert saved["properties"]["packageGain"]["value"] == pytest.approx(0.375)
+            assert saved["properties"]["package_gain"]["value"] == pytest.approx(0.375)
             assert saved["shaders"]["fragment"]["guid"] == fragment_guid
             from_disk = InxMaterial.create_default_unlit()
             assert from_disk.deserialize_document(saved)
-            assert from_disk.serialize_document()["properties"]["packageGain"]["value"] == pytest.approx(0.375)
+            assert from_disk.serialize_document()["properties"]["package_gain"]["value"] == pytest.approx(0.375)
     finally:
         shaders.bump_shader_property_generation()
         engine.exit()

@@ -60,6 +60,7 @@ def _compile_sources(sources, label):
             f"<{label}:{stage}>",
             f"particle_test_{stage}",
             targets=["spirv", "wgsl"],
+            root_constants=True,
         )
         compiled[stage] = bytes(result["targets"][0]["entries"][0]["code"])
     return compiled
@@ -73,12 +74,9 @@ def test_gpu_particle_cook_uses_shared_slang_and_reuses_prepared_code(monkeypatc
         calls.append(source)
         return compile_program(source, *args, **kwargs)
 
-    def reject_graphics_glsl(*args, **kwargs):
-        raise AssertionError("Particle graphics must use the common Slang compiler")
-
     monkeypatch.setattr(native, "_compile_shader_program", compile_program_spy)
-    monkeypatch.setattr(native, "_compile_graphics_glsl_batch", reject_graphics_glsl)
-    monkeypatch.setattr(native, "_compile_compute_glsl_batch", reject_graphics_glsl)
+    assert not hasattr(native, "_compile_graphics_glsl_batch")
+    assert not hasattr(native, "_compile_compute_glsl_batch")
     gpu_backend._SPIRV_DESCRIPTOR_CACHE.clear()
     source = _gpu_source()
     first = compile_gpu_particle_spirv(source)
@@ -1025,6 +1023,7 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
         "<particle-collision-layout>",
         "particle_collision_layout",
         targets=["spirv", "wgsl"],
+        root_constants=True,
     )
     collider_offsets = {
         "collider_to_world": 0,

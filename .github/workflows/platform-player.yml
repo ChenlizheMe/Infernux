@@ -406,11 +406,6 @@ jobs:
             "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/infernux_web/tools"
           cp -a "$INFERNUX_WEB_BUILD_CACHE/player/publish/player" \
             "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/infernux_web/player"
-          cmake -S external/plugins/infernux_web/native/tools \
-            -B "$INFERNUX_WEB_BUILD_CACHE/shader-tools" -G Ninja \
-            "-DINFERNUX_DAWN_SOURCE=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/dawn-31e25af254ab572c77054edec4946d2244e184dd" \
-            "-DINFERNUX_WEB_TOOLS_OUTPUT_DIR=$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor/infernux_web/tools"
-          cmake --build "$INFERNUX_WEB_BUILD_CACHE/shader-tools" --target prebuild_web_tools --parallel 2
 
       - name: Build Web Player fixture
         run: |

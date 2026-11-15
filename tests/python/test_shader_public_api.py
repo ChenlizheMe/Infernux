@@ -1,4 +1,4 @@
-"""Public ShaderInfo operations exercise the real asset/renderer boundary."""
+"""Public typed shader operations exercise the real asset/renderer boundary."""
 
 from types import SimpleNamespace
 from pathlib import Path
@@ -21,18 +21,18 @@ def shader_assets(engine, monkeypatch):
     asset_root.mkdir(parents=True, exist_ok=True)
 
     def create(name, stage="fragment", filename=None):
-        path = asset_root / (filename or (name + (".frag" if stage == "fragment" else ".vert")))
+        path = asset_root / (filename or (name + (".frag.py" if stage == "fragment" else ".vert.py")))
+        source = 'import infernux.shader as shader\n'
         if stage == "fragment":
-            source = (
-                f'#version 450\nShaderInfo {{ Name "{name}" Hidden On '
-                "Capabilities [Fullscreen] Outputs { Float4 outColor } }\n"
-                "void main() { outColor = vec4(1,0,0,1); }\n"
-            )
+            source += (f'class Public(shader.fullscreen):\n    shader_id = {name!r}\n'
+                       '    hidden = True\n'
+                       '    def main(self, ctx: shader.fragment_input) -> shader.vec4:\n'
+                       '        return shader.vec4(1,0,0,1)\n')
         else:
-            source = (
-                f'#version 450\nShaderInfo {{ Name "{name}" Hidden On '
-                "Capabilities [Fullscreen] }\nvoid main(){gl_Position=vec4(0,0,0,1);}\n"
-            )
+            source += (f'class Public(shader.vert):\n    shader_id = {name!r}\n'
+                       '    hidden = True\n'
+                       '    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:\n'
+                       '        return vertex\n')
         path.write_text(source, encoding="utf-8")
         result = AssetManager.import_asset(str(path))
         assert result, result.error
@@ -46,11 +46,11 @@ def shader_assets(engine, monkeypatch):
 
 def test_query_tracks_resource_host_lifetime(engine, monkeypatch):
     monkeypatch.setattr(AssetManager, "_engine", None)
-    assert not Shader.is_loaded("default")
+    assert not Shader.is_loaded("infernux/lit", "fragment")
     monkeypatch.setattr(AssetManager, "_engine", SimpleNamespace(_engine=engine))
-    assert Shader.is_loaded("default")
+    assert Shader.is_loaded("infernux/lit", "fragment")
     monkeypatch.setattr(AssetManager, "_engine", None)
-    assert not Shader.is_loaded("default")
+    assert not Shader.is_loaded("infernux/lit", "fragment")
 
 
 def test_reload_publishes_standalone_asset_by_name_and_path(shader_assets):
@@ -75,8 +75,8 @@ def test_reload_rejects_unregistered_and_wrong_stage(shader_assets):
 
 
 def test_duplicate_name_requires_explicit_path(shader_assets):
-    first, _ = shader_assets("Public_Duplicate_040", filename="First.frag")
-    shader_assets("Public_Duplicate_040", filename="Second.frag")
+    first, _ = shader_assets("Public_Duplicate_040", filename="First.frag.py")
+    shader_assets("Public_Duplicate_040", filename="Second.frag.py")
     with pytest.raises(ValueError, match="Ambiguous"):
         Shader.reload("Public_Duplicate_040")
     assert Shader.reload(str(first))
@@ -98,7 +98,7 @@ def test_reload_reports_compile_failure(shader_assets):
     path, _ = shader_assets("Public_Broken_040")
     assert Shader.reload(str(path))
     path.write_text(
-        path.read_text(encoding="utf-8").replace("outColor =", "outColor = invalid_symbol +"), encoding="utf-8"
+        path.read_text(encoding="utf-8").replace("return shader.vec4(", "return invalid_symbol + shader.vec4("), encoding="utf-8"
     )
     with pytest.raises(RuntimeError, match="Shader reload failed"):
         Shader.reload(str(path))
@@ -108,4 +108,4 @@ def test_reload_reports_compile_failure(shader_assets):
 def test_frozen_player_reload_is_not_an_authoring_write(monkeypatch):
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     with pytest.raises(RuntimeError, match="read-only"):
-        Shader.reload("Assets/Shader.frag")
+        Shader.reload("Assets/Shader.frag.py")

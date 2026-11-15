@@ -148,7 +148,7 @@ class MaterialPipelineManager
                                                             const std::vector<char> &fragShaderCode,
                                                             const ShaderProgramKey &programKey,
                                                             std::shared_ptr<const ShaderProgramArtifact> shaderArtifact,
-                                                            const ShaderProgramMetadata &metadata = {});
+                                                            const ShaderProgramMetadata &metadata);
 
     /**
      * @brief Get existing render data for a material (doesn't create new)

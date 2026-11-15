@@ -526,7 +526,7 @@ def _compile_cached_programs(
                 source,
                 f"<{label}:{stage}>",
                 f"particle_{stage.replace('.', '_')}",
-                targets=["spirv"],
+                targets=["spirv"], root_constants=True,
             )
             binary = bytes(compiled["targets"][0]["entries"][0]["code"])
             descriptor = {
@@ -1887,10 +1887,11 @@ def _slang_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
     span = last - first
     offset = f"({value} - {_float_literal(first)})"
     if mode in ("repeat", "default"):
-        return f"({_float_literal(first)} + mod({offset}, {_float_literal(span)}))"
+        return f"({_float_literal(first)} + {offset} - {_float_literal(span)} * floor({offset} / {_float_literal(span)}))"
+    period = _float_literal(span * 2.0)
     return (
         f"({_float_literal(first)} + {_float_literal(span)} - "
-        f"abs(mod({offset}, {_float_literal(span * 2.0)}) - {_float_literal(span)}))"
+        f"abs({offset} - {period} * floor({offset} / {period}) - {_float_literal(span)}))"
     )
 
 
@@ -4082,7 +4083,7 @@ struct ParticleContinuationConstants {
     uint reserved1;
     uint reserved2;
  };
-[[vk::push_constant]] ConstantBuffer<ParticleContinuationConstants> continuation_pc;
+INX_ROOT_CONSTANTS ConstantBuffer<ParticleContinuationConstants> continuation_pc;
 """
 
 
@@ -4663,7 +4664,7 @@ def _shader_prelude(
     uint continuation_reserved0;
     uint continuation_reserved1;
  };
-[[vk::push_constant]] ConstantBuffer<ParticlePushConstants> pc;"""
+INX_ROOT_CONSTANTS ConstantBuffer<ParticlePushConstants> pc;"""
         if continuation_dispatch
         else """struct ParticlePushConstants { 
     uint capacity;
@@ -4679,7 +4680,7 @@ def _shader_prelude(
     uint use_alive_list;
     uint reserved;
  };
-[[vk::push_constant]] ConstantBuffer<ParticlePushConstants> pc;"""
+INX_ROOT_CONSTANTS ConstantBuffer<ParticlePushConstants> pc;"""
     )
     return (
         _COMPUTE_COMMON
@@ -6821,8 +6822,9 @@ float inx_wrap_curve_parameter_time(float value, float first, float last, uint m
     float span = last - first;
     if (span <= 0.0 || mode == 0u || mode == 4u) return value;
     float offset = value - first;
-    if (mode == 1u || mode == 3u) return first + mod(offset, span);
-    return first + span - abs(mod(offset, span * 2.0) - span);
+    if (mode == 1u || mode == 3u) return first + offset - span * floor(offset / span);
+    float period = span * 2.0;
+    return first + span - abs(offset - period * floor(offset / period) - span);
 }}
 
 float inx_sample_curve_parameter(uint base_slot, float sample_time) {{

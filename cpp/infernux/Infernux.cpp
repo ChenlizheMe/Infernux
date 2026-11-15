@@ -184,17 +184,6 @@ AcceptanceClock ReadPlayerAcceptanceClock()
     return {true, fixedDelta, pauseAfterFrame};
 }
 
-bool IsDirectStructuredStage(const ShaderDescriptor &descriptor)
-{
-    return std::any_of(
-        descriptor.capabilities.begin(), descriptor.capabilities.end(), [](const std::string &capability) {
-            std::string normalized = capability;
-            std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                           [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
-            return normalized == "fullscreen" || normalized == "standalone";
-        });
-}
-
 std::optional<uint64_t> ParseComponentId(std::string_view value)
 {
     uint64_t id = 0;
@@ -585,9 +574,6 @@ void Infernux::CreateRenderer()
                     (prepared.error.empty() ? std::string("linked UI program is unavailable") : prepared.error));
             return true;
         });
-    m_renderer->SetShaderAssetResolver([this](const std::string &shaderId, const std::string &shaderType) {
-        return EnsureShaderLoaded(shaderId, shaderType);
-    });
     m_renderer->SetFrameBeginCallback([this](float deltaTime) { BeginRuntimeFrame(deltaTime); });
 }
 
@@ -3351,98 +3337,6 @@ void Infernux::SetSelectionOutlines(const std::vector<uint64_t> &objectIds)
 // Material Pipeline
 // ----------------------------------
 
-void Infernux::RegisterShaderToRenderer(const ShaderAsset &asset)
-{
-    if (!m_renderer || !asset.HasVariant(ShaderCompileTarget::Forward))
-        return;
-
-    const char *stage = asset.shaderType == "vertex" ? "vertex" : "fragment";
-    auto runtimeId = [&](ShaderCompileTarget target) {
-        switch (target) {
-        case ShaderCompileTarget::Forward:
-            return asset.shaderId;
-        case ShaderCompileTarget::GBuffer:
-            return asset.shaderId + "/gbuffer";
-        case ShaderCompileTarget::Shadow:
-            return asset.shaderId + "/shadow";
-        case ShaderCompileTarget::Depth:
-            return asset.shaderId + "/depth";
-        case ShaderCompileTarget::Picking:
-            return asset.shaderId + "/picking";
-        case ShaderCompileTarget::Motion:
-            return asset.shaderId + "/motion";
-        case ShaderCompileTarget::ForwardPlus:
-            return asset.shaderId + "/forward_plus";
-        case ShaderCompileTarget::Normal:
-            return asset.shaderId + "/normal";
-        case ShaderCompileTarget::BaseColor:
-            return asset.shaderId + "/base_color";
-        case ShaderCompileTarget::Count:
-            break;
-        }
-        return std::string();
-    };
-
-    for (const auto &variant : asset.variants) {
-        if (!variant.IsValid())
-            continue;
-        const std::string id = runtimeId(variant.target);
-        if (id.empty())
-            continue;
-        m_renderer->LoadShader(id.c_str(), variant.spirv, stage);
-        if (variant.target != ShaderCompileTarget::Forward)
-            INXLOG_INFO("Registered ", ShaderCompileTargetName(variant.target), " ", stage, " variant '", id, "'");
-    }
-
-    // Render-state metadata (fragment shaders only)
-    if (asset.shaderType == "fragment") {
-        const auto &rm = asset.renderMeta;
-        m_renderer->StoreShaderRenderMeta(asset.shaderId, rm.cullMode, rm.depthWrite, rm.depthTest, rm.blend, rm.queue,
-                                          rm.passTag, rm.stencil, rm.alphaClip);
-    }
-}
-
-bool Infernux::EnsureShaderLoaded(const std::string &shaderId, const std::string &shaderType)
-{
-    if (m_renderer->HasShader(shaderId, shaderType)) {
-        return true;
-    }
-
-    INXLOG_DEBUG("Infernux::EnsureShaderLoaded: shader '", shaderId, "' (", shaderType,
-                 ") not loaded, trying to find and load it");
-
-    auto *adb = GetAssetDatabase();
-    if (!adb) {
-        INXLOG_WARN("Infernux::EnsureShaderLoaded: no AssetDatabase available");
-        return false;
-    }
-    std::string shaderPath = adb->FindShaderPathById(shaderId, shaderType);
-    if (shaderPath.empty()) {
-        INXLOG_WARN("Infernux::EnsureShaderLoaded: could not find shader file for '", shaderId, "' (", shaderType, ")");
-        return false;
-    }
-
-    INXLOG_DEBUG("Infernux::EnsureShaderLoaded: found shader at '", shaderPath, "', loading...");
-
-    // This path is runtime publication, not an editor hot-reload operation.
-    // Loading through AssetRegistry keeps stage identity in imported metadata
-    // for both loose Editor shaders and packed Player GLSL.
-    auto &registry = AssetRegistry::Instance();
-    const std::string guid = adb->GetGuidFromPath(shaderPath);
-    if (guid.empty()) {
-        INXLOG_ERROR("Infernux::EnsureShaderLoaded: shader is not imported: ", shaderPath);
-        return false;
-    }
-    auto shaderAsset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-    if (!shaderAsset || shaderAsset->shaderId != shaderId || shaderAsset->shaderType != shaderType) {
-        INXLOG_ERROR("Infernux::EnsureShaderLoaded: imported shader identity/stage mismatch for '", shaderPath,
-                     "' (expected ", shaderId, "/", shaderType, ")");
-        return false;
-    }
-    RegisterShaderToRenderer(*shaderAsset);
-    return m_renderer->HasShader(shaderId, shaderType);
-}
-
 Infernux::MaterialShaderPreparation Infernux::PrepareMaterialShader(const std::shared_ptr<InxMaterial> &material)
 {
     if (!material)
@@ -3545,10 +3439,6 @@ bool Infernux::IsShaderLoaded(const std::string &shaderId, const std::string &sh
 {
     if (shaderType != "vertex" && shaderType != "fragment")
         throw std::invalid_argument("Shader type must be vertex or fragment");
-    if (!m_renderer)
-        return false;
-    if (m_renderer->HasShader(shaderId, shaderType))
-        return true;
     auto *database = GetAssetDatabase();
     std::string guid;
     bool assetSelector = false;
@@ -3566,18 +3456,8 @@ bool Infernux::IsShaderLoaded(const std::string &shaderId, const std::string &sh
         if (database->GetMetaByGuid(guid)->GetResourceType() != ResourceType::Shader)
             return false;
         const auto asset = AssetRegistry::Instance().GetAsset<ShaderAsset>(guid);
-        if (asset && (assetSelector || asset->shaderId == shaderId) && asset->shaderType == shaderType) {
-            if (asset->materialProgram && m_renderer->HasShaderProgramArtifact(asset->materialProgram->key))
-                return true;
-            if (m_renderer->HasShader(asset->shaderId, shaderType))
-                return true;
-        }
-    }
-    for (const auto &[stages, entry] : m_linkedShaderProgramCache) {
-        const auto &stageGuid = shaderType == "vertex" ? stages.vertexKey : stages.fragmentKey;
-        if (!guid.empty() && stageGuid == guid && entry.programKey.IsValid() &&
-            m_renderer->HasShaderProgramArtifact(entry.programKey))
-            return true;
+        return asset && asset->program && (assetSelector || asset->shaderId == shaderId) &&
+               asset->shaderType == shaderType;
     }
     return false;
 }

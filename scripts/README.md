@@ -89,28 +89,8 @@ build, cibuildwheel's Android backend, the tracked NumPy cross-file contract,
 and an atomic output directory. The command never overwrites an existing
 prefix; pass a new output path when rebuilding an ABI.
 
-`setup/build_web_toolchain.sh` prepares the pinned Emscripten SDK, CPython
-browser runtime, and Dawn Tint translator used by the Web exporter. It accepts
-one cacheable toolchain root, verifies source archives before extraction, keeps
-platform code out of the engine package, and records key output hashes in
-`infernux-web-toolchain.json`. Install `glslangValidator` separately through the
-host package manager because it is a system shader compiler rather than part of
-the cached Web toolchain.
-
-Dawn dependency identities are pinned in
-`setup/dawn_dependencies.lock.json`. Fifteen dependencies are fetched from the
-canonical GitHub repositories named by Dawn's DEPS file. The four
-Chromium-vendored dependencies must be prepared from their official
-`chromium.googlesource.com` repositories and supplied through
-`INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR`. CI uses
-`setup/prepare_dawn_official_snapshots.py` to create and cache this directory
-from the locked commits; an offline release build may provide the same
-directory from a trusted host. It must contain one
-uncompressed, Git-worktree `.tar` per dependency plus `manifest.json`; the
-manifest records `schema: infernux.dawn_official_snapshots`, `version: 1`, the
-locked Dawn revision, and for every archive its dependency `path`, filename,
-SHA-256, official source URL, commit, and tree. The setup fails before placing
-any dependency if any of the four snapshots is missing, unsafe to extract, or
-does not match the lock. It never substitutes a community mirror. Invalid
-cached repositories are moved into the toolchain root's quarantine directories
-rather than deleted.
+`setup/build_web_toolchain.sh` prepares the pinned Emscripten SDK and CPython
+browser runtime in one toolchain root. Web shaders use the engine's resident
+Slang compiler directly; the exporter does not install or invoke a separate
+host shader translator. The setup records the Emscripten and CPython outputs
+in `infernux-web-toolchain.json`.

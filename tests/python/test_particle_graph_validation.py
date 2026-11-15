@@ -118,7 +118,7 @@ class TrailGraph(ParticleScript):
 
         def rendering(self, ctx, particles):
             particles.ribbon(
-                shader="Particle Unlit",
+                shader="infernux/particle/unlit",
                 uv_mode="repeat",
                 uv_scale=2.5,
             )
@@ -171,10 +171,10 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert graph_artifact.kernel_ir["$schema"] == "infernux.particle_kernel_ir"
     assert graph_artifact.kernel_ir["source_behavior_hash"] == graph_artifact.behavior_hash
     assert graph_artifact.kernel_ir["kernel_hash"] == script_artifact.kernel_ir["kernel_hash"]
-    assert graph_artifact.gpu_glsl["$schema"] == "infernux.particle_gpu_glsl"
-    assert graph_artifact.gpu_glsl["kernel_hash"] == graph_artifact.kernel_ir["kernel_hash"]
-    assert [value["stable_id"] for value in graph_artifact.gpu_glsl["emitters"][0]["data_interfaces"]] == ["wind-field"]
-    assert set(graph_artifact.gpu_glsl["emitters"][0]["stages"]) == {
+    assert graph_artifact.gpu_source["$schema"] == "infernux.particle_gpu_slang"
+    assert graph_artifact.gpu_source["kernel_hash"] == graph_artifact.kernel_ir["kernel_hash"]
+    assert [value["stable_id"] for value in graph_artifact.gpu_source["emitters"][0]["data_interfaces"]] == ["wind-field"]
+    assert set(graph_artifact.gpu_source["emitters"][0]["stages"]) == {
         "bootstrap",
         "init",
         "update",
@@ -187,42 +187,14 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
     assert graph_artifact.gpu_spirv["target"] == "vulkan1.2-spirv1.5"
     assert graph_artifact.gpu_spirv["kernel_hash"] == graph_artifact.kernel_ir["kernel_hash"]
     assert set(graph_artifact.gpu_spirv["emitters"][0]["stages"]) == set(
-        graph_artifact.gpu_glsl["emitters"][0]["stages"]
+        graph_artifact.gpu_source["emitters"][0]["stages"]
     )
-    assert set(graph_artifact.gpu_spirv["billboard"]) == {
-        "vertex",
-        "picking_fragment",
-        "motion_vertex",
-        "motion_fragment",
-    }
-    assert set(graph_artifact.gpu_spirv["mesh"]) == {
-        "vertex",
-        "shadow_fragment",
-        "picking_fragment",
-        "motion_vertex",
-        "motion_fragment",
-    }
     from infernux.particle import decode_gpu_particle_spirv
 
     decoded = decode_gpu_particle_spirv(graph_artifact.gpu_spirv, 0)
     assert decoded["stable_id"] == "smoke"
-    assert set(decoded["stages"]) == set(graph_artifact.gpu_glsl["emitters"][0]["stages"])
-    assert set(decoded["billboard"]) == {
-        "vertex",
-        "picking_fragment",
-        "motion_vertex",
-        "motion_fragment",
-    }
-    assert set(decoded["mesh"]) == {
-        "vertex",
-        "shadow_fragment",
-        "picking_fragment",
-        "motion_vertex",
-        "motion_fragment",
-    }
+    assert set(decoded["stages"]) == set(graph_artifact.gpu_source["emitters"][0]["stages"])
     assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["stages"].values())
-    assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["billboard"].values())
-    assert all(binary[:4] == b"\x03\x02#\x07" for binary in decoded["mesh"].values())
     assert script_artifact.hir["emitters"][0]["render_plan"][0]["receive_scene_lighting"] is True
     assert script_artifact.hir["emitters"][0]["render_plan"][0]["cast_shadows"] is False
     runtime_metadata = decode_particle_runtime_metadata(script_artifact.hir)
@@ -298,7 +270,7 @@ def test_particle_graph_rebuilds_deterministically_after_library_cleanup(tmp_pat
     assert rebuilt.behavior_hash == first.behavior_hash
     assert rebuilt.hir == first.hir
     assert rebuilt.kernel_ir == first.kernel_ir
-    assert rebuilt.gpu_glsl == first.gpu_glsl
+    assert rebuilt.gpu_source == first.gpu_source
     assert rebuilt.gpu_spirv == first.gpu_spirv
 
 

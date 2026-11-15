@@ -69,10 +69,6 @@ set(INFERNUX_SHADER_COMPILER_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderAuthorMaterial.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderReflection.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/ShaderTargetReflection.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/GlslStageInterfaceEmitter.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderInfoSchema.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderPassVariantPlanner.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/ShaderAsset/ShaderStageLinker.cpp"
 )
 
 # Shared device and submission contracts. View policy belongs to the runtime.

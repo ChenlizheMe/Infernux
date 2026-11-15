@@ -1,6 +1,6 @@
 // Exercise the actual grid owner, reflected uniforms, per-frame bindings and GPU
 // dispatch. The broader projection/ray oracle lives in the Python GPU suite.
-bool VerifyForwardPlusTileCoverage(TestResources &resources, infernux::InxShaderLoader &compiler)
+bool VerifyForwardPlusTileCoverage(TestResources &resources)
 {
     using namespace infernux;
     using namespace infernux::lighting;
@@ -62,18 +62,19 @@ bool VerifyForwardPlusTileCoverage(TestResources &resources, infernux::InxShader
     const auto maskBytes = owner.grid.Frame(0).config.maskBytes;
     // Production masks are Storage-only. Consume them through a shader as
     // the renderer does, without adding test-only transfer usage to the grid.
-    const auto copyCode = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=64) in;
-layout(std430, set=0, binding=0) readonly buffer Masks { uint masks[]; };
-layout(std430, set=0, binding=1) writeonly buffer Output { uint outputWords[]; };
-layout(push_constant) uniform Copy { uint offset; } pc;
-void main() {
-    uint i = gl_GlobalInvocationID.x;
+    const auto copyCode = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] StructuredBuffer<uint> masks;
+[[vk::binding(1, 0)]] RWStructuredBuffer<uint> outputWords;
+struct Copy {  uint offset;  };
+INX_ROOT_CONSTANTS ConstantBuffer<Copy> pc;
+[shader("compute")] [numthreads(64, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint i = dispatch_id.x;
     if (i < 128u * 128u) outputWords[pc.offset + i] = masks[i];
 }
-)glsl",
-                                                                 "Tests/ForwardPlusCoverageReadback.comp"));
+)slang",
+                                             "Tests/ForwardPlusCoverageReadback.comp.slang");
     if (!Require(!copyCode.empty(), "Forward+ mask consumer compilation failed"))
         return false;
     owner.output =

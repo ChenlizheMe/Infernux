@@ -1,9 +1,6 @@
 [submodule "external/assimp"]
 	path = external/assimp
 	url = https://github.com/assimp/assimp.git
-[submodule "external/glslang"]
-	path = external/glslang
-	url = https://github.com/KhronosGroup/glslang.git
 [submodule "external/glm"]
 	path = external/glm
 	url = https://github.com/g-truc/glm.git
@@ -54,10 +51,6 @@
 [submodule "external/lunasvg_for_infernux"]
 	path = external/lunasvg_for_infernux
 	url = https://github.com/InfernuxEngine/lunasvg_for_infernux.git
-	branch = infernux-support
-[submodule "external/spirv_cross_for_infernux"]
-	path = external/spirv_cross_for_infernux
-	url = https://github.com/InfernuxEngine/spirv_cross_for_infernux.git
 	branch = infernux-support
 [submodule "external/volk_for_infernux"]
 	path = external/volk_for_infernux

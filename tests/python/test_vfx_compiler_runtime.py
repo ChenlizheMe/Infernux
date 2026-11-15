@@ -57,6 +57,13 @@ from infernux.lib import AssetRegistry, GameObject
 particle_system_module = importlib.import_module("infernux.components.particle_system")
 
 
+@pytest.fixture(autouse=True)
+def _bind_particle_resources(engine, monkeypatch):
+    monkeypatch.setattr(AssetManager, "_engine", engine)
+    monkeypatch.setattr(AssetManager, "_asset_database", engine.get_asset_database())
+    monkeypatch.setattr(AssetManager, "_registry", AssetRegistry.instance())
+
+
 class _ParticleGraphGuidDatabase:
     def __init__(self, base, guid: str, source: str):
         self._base = base
@@ -128,7 +135,7 @@ def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
     artifact = SimpleNamespace(
         hir={},
         kernel_ir={},
-        gpu_glsl={"emitters": []},
+        gpu_source={"emitters": []},
         gpu_spirv={},
         revision=1,
         source_key=str(source),
@@ -194,7 +201,7 @@ def test_particle_runtime_batch_ids_do_not_alias_reused_scene_ids(monkeypatch):
 
 
 def _two_output_rendering_graph(
-    shader: str = "Particle Unlit",
+    shader: str = "infernux/particle/unlit",
 ) -> GraphDocument:
     rendering = ParticleEmitterAsset().rendering
     return GraphDocument(

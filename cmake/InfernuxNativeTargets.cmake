@@ -213,53 +213,8 @@ if(INFERNUX_RELEASE_LTO)
     endif()
 endif()
 
-# SPIRV-Cross is compiled for cross targets and supplied by the desktop Vulkan
-# SDK or system packages for native builds.
-if(INFERNUX_SPIRV_CROSS_TARGETS)
-    target_link_libraries(InfernuxShaderCompiler PRIVATE
-        ${INFERNUX_SPIRV_CROSS_TARGETS}
-    )
-    target_compile_definitions(InfernuxShaderCompiler PRIVATE
-        INFERNUX_SPIRV_CROSS_FLAT_INCLUDE=1
-    )
-elseif(DEFINED ENV{VULKAN_SDK})
-    set(VULKAN_SDK_PATH $ENV{VULKAN_SDK})
-    target_include_directories(InfernuxRuntime PRIVATE ${VULKAN_SDK_PATH}/Include)
-
-    if(WIN32)
-        target_link_libraries(InfernuxShaderCompiler PRIVATE
-            ${VULKAN_SDK_PATH}/Lib/spirv-cross-core.lib
-            ${VULKAN_SDK_PATH}/Lib/spirv-cross-glsl.lib
-            ${VULKAN_SDK_PATH}/Lib/spirv-cross-cpp.lib
-            ${VULKAN_SDK_PATH}/Lib/spirv-cross-reflect.lib
-        )
-    else()
-        set(_spirv_cross_lib_dir "${VULKAN_SDK_PATH}/lib")
-        foreach(_sc_lib spirv-cross-core spirv-cross-glsl spirv-cross-cpp spirv-cross-reflect)
-            find_library(_found_${_sc_lib} NAMES ${_sc_lib} PATHS ${_spirv_cross_lib_dir} NO_DEFAULT_PATH)
-            if(_found_${_sc_lib})
-                target_link_libraries(InfernuxShaderCompiler PRIVATE ${_found_${_sc_lib}})
-            else()
-                message(WARNING "SPIRV-Cross library ${_sc_lib} not found in ${_spirv_cross_lib_dir}")
-            endif()
-        endforeach()
-    endif()
-else()
-    set(_spirv_cross_found TRUE)
-    foreach(_sc_lib spirv-cross-core spirv-cross-glsl spirv-cross-cpp spirv-cross-reflect)
-        find_library(_sys_${_sc_lib} NAMES ${_sc_lib})
-        if(_sys_${_sc_lib})
-            target_link_libraries(InfernuxShaderCompiler PRIVATE ${_sys_${_sc_lib}})
-        else()
-            set(_spirv_cross_found FALSE)
-        endif()
-    endforeach()
-    if(NOT _spirv_cross_found)
-        message(FATAL_ERROR
-            "SPIRV-Cross libraries are required by InfernuxShaderCompiler. "
-            "Install spirv-cross-dev or set VULKAN_SDK to a complete SDK.")
-    endif()
-endif()
+# The Vulkan layout projection needs headers; Slang owns target reflection.
+target_link_libraries(InfernuxShaderCompiler PRIVATE Vulkan::Headers)
 
 foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
     # ProfileConfig.h is included by public renderer headers whose class
@@ -286,7 +241,6 @@ endif()
 
 target_link_libraries(InfernuxRuntime PUBLIC
     assimp::assimp
-    glslang::glslang
     SDL3::SDL3
     glm::glm
     imgui

@@ -1904,8 +1904,8 @@ class ParticleSystem(InxComponent):
         native = self._native_engine()
         if native is None:
             raise RuntimeError("GPU ParticleGraph execution requires a graphical renderer")
-        glsl_emitters = artifact.gpu_glsl.get("emitters")
-        if type(glsl_emitters) is not list or len(glsl_emitters) != len(metadata.emitters):
+        source_emitters = artifact.gpu_source.get("emitters")
+        if type(source_emitters) is not list or len(source_emitters) != len(metadata.emitters):
             raise RuntimeError("ParticleGraph GPU emitter metadata is incomplete")
         if len(decoded_emitters) != len(metadata.emitters):
             raise RuntimeError("ParticleGraph decoded GPU programs are incomplete")
@@ -1943,29 +1943,29 @@ class ParticleSystem(InxComponent):
                     getattr(self, "_particle_gpu_layouts", ()),
                 )
             }
-        for index, (emitter, glsl_emitter) in enumerate(
-            zip(metadata.emitters, glsl_emitters)
+        for index, (emitter, source_emitter) in enumerate(
+            zip(metadata.emitters, source_emitters)
         ):
             if any(output.output_type not in {"sprite", "mesh", "ribbon"} for output in emitter.outputs):
                 raise RuntimeError("the GPU particle renderer received an unsupported output type")
             if (
-                type(glsl_emitter) is not dict
-                or glsl_emitter.get("stable_id") != emitter.stable_id
-                or type(glsl_emitter.get("state_stride")) is not int
-                or type(glsl_emitter.get("event_type_count")) is not int
-                or glsl_emitter["event_type_count"] != len(kernel.events.event_types)
-                or type(glsl_emitter.get("collision_enabled")) is not bool
-                or glsl_emitter["collision_enabled"]
+                type(source_emitter) is not dict
+                or source_emitter.get("stable_id") != emitter.stable_id
+                or type(source_emitter.get("state_stride")) is not int
+                or type(source_emitter.get("event_type_count")) is not int
+                or source_emitter["event_type_count"] != len(kernel.events.event_types)
+                or type(source_emitter.get("collision_enabled")) is not bool
+                or source_emitter["collision_enabled"]
                 != emitter.settings.collision_enabled
-                or "continuation" not in glsl_emitter
+                or "continuation" not in source_emitter
             ):
                 raise RuntimeError("ParticleGraph GPU layout does not match its runtime schedule")
             decoded = decoded_emitters[index]
-            glsl_update_render_fusion = glsl_emitter.get("update_render_fusion")
+            source_update_render_fusion = source_emitter.get("update_render_fusion")
             decoded_update_render_fusion = decoded.get("update_render_fusion")
-            if type(glsl_update_render_fusion) is not dict or type(decoded_update_render_fusion) is not dict or glsl_update_render_fusion != decoded_update_render_fusion:
+            if type(source_update_render_fusion) is not dict or type(decoded_update_render_fusion) is not dict or source_update_render_fusion != decoded_update_render_fusion:
                 raise RuntimeError("ParticleGraph GPU update_render_fusion metadata is missing or mismatched")
-            continuation_source = glsl_emitter["continuation"]
+            continuation_source = source_emitter["continuation"]
             continuation_binary = decoded.get("continuation")
             if (continuation_source is None) != (continuation_binary is None):
                 raise RuntimeError(
@@ -2018,7 +2018,7 @@ class ParticleSystem(InxComponent):
                 previous_controller is not None
                 and isinstance(previous_layout, dict)
                 and previous_layout.get("event_type_count")
-                != glsl_emitter["event_type_count"]
+                != source_emitter["event_type_count"]
             ):
                 reload_compatibility[index] = (
                     ParticleRuntimeCompatibility.EMITTER_RESTART
@@ -2031,7 +2031,7 @@ class ParticleSystem(InxComponent):
                 try:
                     migration = build_gpu_particle_migration(
                         previous_layout,
-                        glsl_emitter,
+                        source_emitter,
                         kernel.emitters[index],
                     )
                 except (KeyError, TypeError, ValueError):
@@ -2055,13 +2055,14 @@ class ParticleSystem(InxComponent):
                     "owner_object_id": int(self.game_object.id),
                     "owner_layer_mask": 1 << int(self.game_object.layer),
                     "artifact_revision": artifact.revision,
-                    "kernel_hash": glsl_emitter["kernel_hash"],
+                    "kernel_hash": source_emitter["kernel_hash"],
+                    "kernel_sources": dict(source_emitter["stages"]),
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,
-                    "state_stride": glsl_emitter["state_stride"],
-                    "event_type_count": glsl_emitter["event_type_count"],
-                    "collision_enabled": glsl_emitter["collision_enabled"],
-                    "update_render_fusion": dict(glsl_update_render_fusion),
+                    "state_stride": source_emitter["state_stride"],
+                    "event_type_count": source_emitter["event_type_count"],
+                    "collision_enabled": source_emitter["collision_enabled"],
+                    "update_render_fusion": dict(source_update_render_fusion),
                     "continuation": continuation_program,
                     "parameter_words": list(
                         pack_gpu_particle_parameters(
@@ -2072,7 +2073,7 @@ class ParticleSystem(InxComponent):
                     "preserve_state": preserve_state,
                     "migration": migration,
                     "data_interface_layout": self._gpu_data_interface_layout(
-                        kernel.emitters[index], glsl_emitter, metadata.parameters,
+                        kernel.emitters[index], source_emitter, metadata.parameters,
                         parameter_overrides=parameter_overrides,
                     ),
                     "stages": decoded["stages"],
@@ -2184,7 +2185,7 @@ class ParticleSystem(InxComponent):
                 self._unsubmitted_simulation_seconds = 0.0
             self._particle_event_types = runtime_event_types
             self._particle_kernel = kernel
-            self._particle_gpu_layouts = tuple(glsl_emitters)
+            self._particle_gpu_layouts = tuple(source_emitters)
             self._particle_metadata = metadata
             self._emitter_reload_compatibility = tuple(reload_compatibility)
             self._artifact_revision = artifact.revision
@@ -3223,10 +3224,10 @@ class ParticleSystem(InxComponent):
         )
 
     def _gpu_data_interface_layout(
-        self, emitter, glsl_emitter, parameters, *, parameter_overrides=None
+        self, emitter, source_emitter, parameters, *, parameter_overrides=None
     ) -> dict[str, object]:
         overrides = self._parameter_overrides if parameter_overrides is None else parameter_overrides
-        layout = glsl_emitter.get("data_interface_layout")
+        layout = source_emitter.get("data_interface_layout")
         if type(layout) is not dict:
             raise RuntimeError("ParticleGraph GPU data interface layout is missing")
         volume_layouts = layout.get("volume_interfaces")

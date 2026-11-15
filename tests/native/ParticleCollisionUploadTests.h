@@ -1,6 +1,6 @@
 // The GPU is held behind a timeline while the next CPU snapshot replaces the
 // prior one. Read the actual collision descriptors, including the bulk table.
-bool VerifyParticleCollisionUploads(TestResources &resources, infernux::InxShaderLoader &compiler)
+bool VerifyParticleCollisionUploads(TestResources &resources)
 {
     using namespace infernux;
     constexpr uint32_t staticCount = 513, colliderCount = staticCount + 1;
@@ -53,19 +53,20 @@ bool VerifyParticleCollisionUploads(TestResources &resources, infernux::InxShade
                      owner.executor.Initialize(resources.context, owner.queues, 2),
                  "Collision executor creation failed"))
         return false;
-    const auto code = SpirvWords(compiler.CompileComputeGlsl(
-        "#version 450\n#define COLLIDER_WORD_COUNT " + std::to_string(colliderWords) + "u\n" + R"glsl(
-layout(local_size_x = 64) in;
-layout(std430, set=0, binding=0) readonly buffer Header { uint header[]; };
-layout(std430, set=0, binding=1) readonly buffer Colliders { uint colliders[]; };
-layout(std430, set=0, binding=2) readonly buffer Offsets { uint offsets[]; };
-layout(std430, set=0, binding=3) readonly buffer Grid { uint grid[]; };
-layout(std430, set=0, binding=4) readonly buffer Vertices { uint vertices[]; };
-layout(std430, set=0, binding=5) readonly buffer Indices { uint indices[]; };
-layout(std430, set=0, binding=6) readonly buffer Bvh { uint bvh[]; };
-layout(std430, set=0, binding=7) writeonly buffer Output { uint result[]; };
-void main() {
-    uint outIndex = gl_GlobalInvocationID.x, i = outIndex;
+    const auto code =
+        CompileTestCompute("#define COLLIDER_WORD_COUNT " + std::to_string(colliderWords) + "u\n" + R"slang(
+
+[[vk::binding(0, 0)]] StructuredBuffer<uint> header;
+[[vk::binding(1, 0)]] StructuredBuffer<uint> colliders;
+[[vk::binding(2, 0)]] StructuredBuffer<uint> offsets;
+[[vk::binding(3, 0)]] StructuredBuffer<uint> grid;
+[[vk::binding(4, 0)]] StructuredBuffer<uint> vertices;
+[[vk::binding(5, 0)]] StructuredBuffer<uint> indices;
+[[vk::binding(6, 0)]] StructuredBuffer<uint> bvh;
+[[vk::binding(7, 0)]] RWStructuredBuffer<uint> result;
+[shader("compute")] [numthreads(64, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint outIndex = dispatch_id.x, i = outIndex;
     if (i < 16u) { result[outIndex] = header[i]; return; } i -= 16u;
     if (i < COLLIDER_WORD_COUNT) { result[outIndex] = colliders[i]; return; } i -= COLLIDER_WORD_COUNT;
     if (i < 2u) { result[outIndex] = offsets[i]; return; } i -= 2u;
@@ -74,8 +75,8 @@ void main() {
     if (i < 3u) { result[outIndex] = indices[i]; return; } i -= 3u;
     if (i < 12u) result[outIndex] = bvh[i];
 }
-)glsl",
-                                                             "Tests/ParticleCollisionUpload.comp"));
+)slang",
+                           "Tests/ParticleCollisionUpload.comp.slang");
     if (!Require(!code.empty(), "Collision probe compilation failed"))
         return false;
     rhi::BufferDesc desc;

@@ -572,8 +572,8 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
             metadata.properties != &shaderArtifact->properties ||
             metadata.vertexEntryPoint != forwardVariant->vertexEntryPoint ||
             metadata.fragmentEntryPoint != forwardVariant->fragmentEntryPoint ||
-            metadata.vertexTarget != forwardVariant->vertexTarget.get() ||
-            metadata.fragmentTarget != forwardVariant->fragmentTarget.get()) {
+            &metadata.vertexTarget != forwardVariant->vertexTarget.get() ||
+            &metadata.fragmentTarget != forwardVariant->fragmentTarget.get()) {
             INXLOG_ERROR("Forward material candidate does not belong to its retained shader artifact");
             return nullptr;
         }

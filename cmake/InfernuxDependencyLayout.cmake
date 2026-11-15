@@ -25,7 +25,6 @@ set(INFERNUX_MAINTAINED_FORKS
     llvmlite_for_infernux
     zstd_for_infernux
     lunasvg_for_infernux
-    spirv_cross_for_infernux
     volk_for_infernux
     utf8proc_for_infernux
 )
@@ -44,7 +43,6 @@ set(INFERNUX_OFFICIAL_PLUGIN_NAMES
 set(INFERNUX_THIRD_PARTY_SUBMODULES
     slang_for_infernux
     assimp
-    glslang
     glm
     imgui_for_infernux
     sdl_for_infernux
@@ -54,7 +52,6 @@ set(INFERNUX_THIRD_PARTY_SUBMODULES
     MikkTSpace
     zstd_for_infernux
     lunasvg_for_infernux
-    spirv_cross_for_infernux
     volk_for_infernux
     utf8proc_for_infernux
 )

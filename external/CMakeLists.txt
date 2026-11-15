@@ -46,12 +46,6 @@ else()
 endif()
 set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
 
-# glslang configuration
-set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
-set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
-set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-
 # GLM configuration
 set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
 set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -155,40 +149,9 @@ else()
     )
 endif()
 
-# SPIRV-Cross is linked into target runtimes for shader reflection. A desktop
-# Vulkan SDK only contains host libraries, so cross builds must compile the
-# pinned source for the target ABI instead of accidentally linking host code.
-set(_infernux_spirv_cross_default OFF)
+set(_infernux_cross_runtime_default OFF)
 if(CMAKE_CROSSCOMPILING)
-    set(_infernux_spirv_cross_default ON)
-endif()
-option(INFERNUX_BUILD_TARGET_SPIRV_CROSS
-    "Build pinned SPIRV-Cross sources for the current target"
-    ${_infernux_spirv_cross_default}
-)
-if(INFERNUX_BUILD_TARGET_SPIRV_CROSS)
-    set(SPIRV_CROSS_SHARED OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_STATIC ON CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_GLSL ON CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_FORCE_PIC ON CACHE BOOL "" FORCE)
-    add_subdirectory(spirv_cross_for_infernux EXCLUDE_FROM_ALL)
-    if(NOT TARGET spirv-cross-core OR NOT TARGET spirv-cross-glsl)
-        message(FATAL_ERROR "Pinned SPIRV-Cross did not provide core and GLSL targets")
-    endif()
-    set(INFERNUX_SPIRV_CROSS_TARGETS
-        spirv-cross-core
-        spirv-cross-glsl
-        PARENT_SCOPE
-    )
+    set(_infernux_cross_runtime_default ON)
 endif()
 
 # Cross-platform Vulkan entry points cannot be assumed to exist as direct
@@ -196,7 +159,7 @@ endif()
 # meta-loader so core and extension commands share one dispatch path.
 option(INFERNUX_BUILD_TARGET_VOLK
     "Build the pinned Volk Vulkan meta-loader for the current target"
-    ${_infernux_spirv_cross_default}
+    ${_infernux_cross_runtime_default}
 )
 if(INFERNUX_BUILD_TARGET_VOLK)
     set(VOLK_INSTALL OFF CACHE BOOL "" FORCE)
@@ -245,15 +208,6 @@ if(WIN32)
     # Bundled runtime names must not depend on the MSVC toolset version.
     set_target_properties(assimp PROPERTIES OUTPUT_NAME assimp DEBUG_POSTFIX "")
 endif()
-
-# glslang
-# Keep glslang static even though most runtime dependencies are shared.
-# Its C++ API exposes some inline/non-exported helpers that are fragile when
-# consumed through a Windows DLL import library with MSVC.
-set(_saved_shared_for_glslang "${BUILD_SHARED_LIBS}")
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-add_subdirectory(glslang)
-set(BUILD_SHARED_LIBS "${_saved_shared_for_glslang}" CACHE BOOL "" FORCE)
 
 # glm (header-only library)
 add_subdirectory(glm)
@@ -357,7 +311,6 @@ set(BUILD_SHARED_LIBS "${_saved_shared}" CACHE BOOL "" FORCE)
 # ------------------------------------------------------------------------------
 set(EXTERNAL_LIBS
     assimp::assimp
-    glslang::glslang
     SDL3::SDL3
     glm::glm
     imgui

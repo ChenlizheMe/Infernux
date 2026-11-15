@@ -1,40 +1,41 @@
-bool VerifyParticleSpawnInputSnapshots(TestResources &resources, infernux::InxShaderLoader &compiler,
+bool VerifyParticleSpawnInputSnapshots(TestResources &resources,
                                        const infernux::particle::GpuParticleSpawnProgram &spawnProgram)
 {
     using namespace infernux;
     constexpr uint32_t wordCount = 48;
     constexpr uint64_t bytes = wordCount * sizeof(uint32_t);
     auto &device = resources.context.GetRhiDevice();
-    const auto code = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=1) in;
-layout(std430, set=0, binding=0) writeonly buffer Output { uint result[]; };
-layout(std430, set=3, binding=2) buffer Parameters { uvec4 parameters[]; };
-layout(std430, set=3, binding=3) buffer Requests { uint requests[]; };
-layout(std430, set=3, binding=4) readonly buffer Playing { uint playing[]; };
-void main() {
+    const auto code = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint> result;
+[[vk::binding(2, 3)]] RWStructuredBuffer<uint4> parameters;
+[[vk::binding(3, 3)]] RWStructuredBuffer<uint> requests;
+[[vk::binding(4, 3)]] StructuredBuffer<uint> playing;
+[shader("compute")] [numthreads(1, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
     for (uint i=0u; i<12u; ++i) result[i] = parameters[i / 4u][i % 4u];
     for (uint i=0u; i<3u; ++i) {
         result[12u + i] = playing[i];
         result[15u + i] = requests[i];
     }
-    parameters[1] += uvec4(100u);
+    parameters[1] += uint4(100u);
     requests[0] = 2u;
     requests[1] = 1u;
 }
-)glsl",
-                                                             "Tests/SpawnInputSnapshot.comp"));
-    const auto poisonCode = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=1) in;
-layout(std430, set=0, binding=0) buffer Metadata { uint metadata[]; };
-layout(push_constant) uniform MetadataLayout { uint strideWords; } layoutInfo;
-void main() {
+)slang",
+                                         "Tests/SpawnInputSnapshot.comp.slang");
+    const auto poisonCode = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint> metadata;
+struct MetadataLayout {  uint strideWords;  };
+INX_ROOT_CONSTANTS ConstantBuffer<MetadataLayout> layoutInfo;
+[shader("compute")] [numthreads(1, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
     for (uint word=0u; word<24u; ++word)
         metadata[(word / 8u) * layoutInfo.strideWords + word % 8u] = 0x12340000u + word;
 }
-)glsl",
-                                                                   "Tests/SpawnMetadataPoison.comp"));
+)slang",
+                                               "Tests/SpawnMetadataPoison.comp.slang");
     if (!Require(!code.empty() && !poisonCode.empty(), "Spawn input shader failed"))
         return false;
     struct Owner

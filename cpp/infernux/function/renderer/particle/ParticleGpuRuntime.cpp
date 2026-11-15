@@ -698,6 +698,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         }
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
+        pipelineDesc.entryPoint = kernel.entryPoint;
         pipelineDesc.bindingLayouts[0] = m_layout;
         pipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;

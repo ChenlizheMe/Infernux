@@ -1,6 +1,6 @@
 // Production manager -> frame composer -> two graphics consumers, with CPU
 // authoring of frame N+1 while both submissions are held behind a GPU gate.
-bool VerifyParticleFrameSnapshots(TestResources &resources, infernux::InxShaderLoader &compiler,
+bool VerifyParticleFrameSnapshots(TestResources &resources,
                                   const infernux::particle::GpuParticleEmitterProgram &prototype,
                                   const infernux::particle::GpuParticleSortProgram &sortProgram,
                                   const infernux::particle::GpuParticleCullProgram &cullProgram,
@@ -69,41 +69,42 @@ bool VerifyParticleFrameSnapshots(TestResources &resources, infernux::InxShaderL
     skin->SetActiveTakeName("Move");
     scenes.SetActiveScene(activeScene);
 
-    const auto noop = SpirvWords(compiler.CompileComputeGlsl(
-        "#version 450\nlayout(local_size_x=256) in; void main() {}", "Tests/FrameSnapshotNoop.comp"));
-    const auto bootstrap = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=0) buffer States { uvec4 states[]; };
-layout(std430, set=0, binding=2) buffer Counters { uint counters[]; };
-layout(std430, set=0, binding=4) buffer Indirect { uvec4 indirectArgs; };
-layout(std430, set=0, binding=9) buffer Dispatch { uvec4 dispatches[]; };
-void main() {
-    if (gl_GlobalInvocationID.x < 32u) states[gl_GlobalInvocationID.x] = uvec4(0u);
-    if (gl_GlobalInvocationID.x != 0u) return;
+    const auto noop = CompileTestCompute("[shader(\"compute\")] [numthreads(256,1,1)] void main() {}",
+                                         "Tests/FrameSnapshotNoop.comp.slang");
+    const auto bootstrap = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint4> states;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> counters;
+[[vk::binding(4, 0)]] RWStructuredBuffer<uint4> indirectArgs;
+[[vk::binding(9, 0)]] RWStructuredBuffer<uint4> dispatches;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x < 32u) states[dispatch_id.x] = uint4(0u);
+    if (dispatch_id.x != 0u) return;
     counters[0] = 32u;
-    indirectArgs = uvec4(0u);
-    dispatches[0] = dispatches[1] = uvec4(1u, 1u, 1u, 0u);
+    indirectArgs[0] = uint4(0u);
+    dispatches[0] = dispatches[1] = uint4(1u, 1u, 1u, 0u);
 }
-)glsl",
-                                                                  "Tests/FrameSnapshotBootstrap.comp"));
-    const auto rendering = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=3) writeonly buffer Instances { vec4 snapshots[]; };
-layout(std430, set=0, binding=4) buffer Indirect { uvec4 indirectArgs; };
-layout(std140, set=0, binding=5) uniform Transforms { mat4 transforms[4]; };
-layout(std430, set=1, binding=0) readonly buffer Metadata { uint metadata[]; };
-layout(std430, set=1, binding=4) readonly buffer Palette { mat4 bones[]; };
-layout(std430, set=3, binding=2) readonly buffer Parameters { uvec4 parameters[]; };
-void main() {
-    if (gl_GlobalInvocationID.x != 0u) return;
-    snapshots[0] = vec4(bones[0][3].x, uintBitsToFloat(metadata[16]),
-                        uintBitsToFloat(parameters[0].x), transforms[0][3].x);
-    indirectArgs = uvec4(6u, 1u, 0u, 0u);
+)slang",
+                                              "Tests/FrameSnapshotBootstrap.comp.slang");
+    const auto rendering = CompileTestCompute(R"slang(
+
+[[vk::binding(3, 0)]] RWStructuredBuffer<float4> snapshots;
+[[vk::binding(4, 0)]] RWStructuredBuffer<uint4> indirectArgs;
+struct Transforms {  float4x4 transforms[4];  };
+[[vk::binding(5, 0)]] ConstantBuffer<Transforms> test_transforms;
+[[vk::binding(0, 1)]] StructuredBuffer<uint> metadata;
+[[vk::binding(4, 1)]] StructuredBuffer<float4x4> bones;
+[[vk::binding(2, 3)]] StructuredBuffer<uint4> parameters;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x != 0u) return;
+    snapshots[0] = float4(bones[0][3].x, asfloat(metadata[16]),
+                        asfloat(parameters[0].x), test_transforms.transforms[0][3].x);
+    indirectArgs[0] = uint4(6u, 1u, 0u, 0u);
 }
-)glsl",
-                                                                  "Tests/FrameSnapshotRendering.comp"));
+)slang",
+                                              "Tests/FrameSnapshotRendering.comp.slang");
     const auto geometry = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().Compile(
         {"particle_snapshot_geometry", "Tests/ParticleFrameSnapshot.slang", R"slang(import inx_particle;
 [[vk::binding(1, 2)]] StructuredBuffer<float4> instances;

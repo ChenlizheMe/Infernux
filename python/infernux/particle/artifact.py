@@ -67,7 +67,7 @@ class ParticleArtifact:
     artifact_path: str
     hir: Mapping[str, Any]
     kernel_ir: Mapping[str, Any]
-    gpu_glsl: Mapping[str, Any]
+    gpu_source: Mapping[str, Any]
     gpu_spirv: Mapping[str, Any]
 
 
@@ -80,7 +80,7 @@ class _CompiledParticleArtifact:
     behavior_hash: str
     hir: Mapping[str, Any]
     kernel_ir: Mapping[str, Any]
-    gpu_glsl: Mapping[str, Any]
+    gpu_source: Mapping[str, Any]
     gpu_spirv: Mapping[str, Any]
 
 
@@ -805,7 +805,7 @@ class ParticleArtifactRegistry:
         kernel_program = ParticleKernelLowerer().lower(program)
         kernel_ir = kernel_program.to_dict()
         gpu_program = GpuParticleLowerer().lower(kernel_program)
-        gpu_glsl = gpu_program.to_dict()
+        gpu_source = gpu_program.to_dict()
         gpu_spirv = compile_gpu_particle_spirv(gpu_program)
         return _CompiledParticleArtifact(
             source_hash,
@@ -815,7 +815,7 @@ class ParticleArtifactRegistry:
             program.behavior_hash,
             hir,
             kernel_ir,
-            gpu_glsl,
+            gpu_source,
             gpu_spirv,
         )
 
@@ -831,7 +831,7 @@ class ParticleArtifactRegistry:
             artifact.behavior_hash,
             artifact.hir,
             artifact.kernel_ir,
-            artifact.gpu_glsl,
+            artifact.gpu_source,
             artifact.gpu_spirv,
         )
 
@@ -886,7 +886,7 @@ class ParticleArtifactRegistry:
                     artifact_path,
                     compiled.hir,
                     compiled.kernel_ir,
-                    compiled.gpu_glsl,
+                    compiled.gpu_source,
                     compiled.gpu_spirv,
                 )
 
@@ -1049,7 +1049,7 @@ class ParticleArtifactRegistry:
             "behavior_hash": artifact.behavior_hash,
             "hir": artifact.hir,
             "kernel_ir": artifact.kernel_ir,
-            "gpu_glsl": artifact.gpu_glsl,
+            "gpu_source": artifact.gpu_source,
             "gpu_spirv": artifact.gpu_spirv,
         }
 
@@ -1144,7 +1144,7 @@ class ParticleArtifactRegistry:
                 type(payload) is not dict
                 or set(payload) != {
                     "$schema", "source_key", "source_hash", "source_kind", "revision",
-                    "semantic_hash", "behavior_hash", "hir", "kernel_ir", "gpu_glsl", "gpu_spirv",
+                    "semantic_hash", "behavior_hash", "hir", "kernel_ir", "gpu_source", "gpu_spirv",
                 }
                 or payload.get("$schema") != PARTICLE_ARTIFACT_SCHEMA
                 or type(payload.get("source_key")) is not str
@@ -1152,7 +1152,7 @@ class ParticleArtifactRegistry:
                 or payload.get("source_kind") != source_kind
                 or type(payload.get("hir")) is not dict
                 or type(payload.get("kernel_ir")) is not dict
-                or type(payload.get("gpu_glsl")) is not dict
+                or type(payload.get("gpu_source")) is not dict
                 or type(payload.get("gpu_spirv")) is not dict
             ):
                 return None
@@ -1166,8 +1166,8 @@ class ParticleArtifactRegistry:
             if kernel_program.source_behavior_hash != payload["behavior_hash"]:
                 return None
             gpu_program = GpuParticleLowerer().lower(kernel_program)
-            gpu_glsl = gpu_program.to_dict()
-            if payload["gpu_glsl"] != gpu_glsl:
+            gpu_source = gpu_program.to_dict()
+            if payload["gpu_source"] != gpu_source:
                 return None
             gpu_spirv = validate_gpu_particle_spirv(payload["gpu_spirv"], gpu_program)
             return ParticleArtifact(
@@ -1180,7 +1180,7 @@ class ParticleArtifactRegistry:
                 artifact_path,
                 payload["hir"],
                 kernel_program.to_dict(),
-                gpu_glsl,
+                gpu_source,
                 gpu_spirv,
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError):

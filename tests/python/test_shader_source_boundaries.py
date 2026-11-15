@@ -1,4 +1,4 @@
-"""The production GLSL compiler must see the complete submitted source."""
+"""The shared Slang compiler must see the complete submitted source."""
 
 import pytest
 
@@ -15,11 +15,11 @@ from infernux.lib import _Infernux as native
         ("compute", "unterminated_comment"),
     ],
 )
-def test_glsl_compiles_the_authored_tail(stage, tail):
+def test_slang_compiles_the_authored_tail(stage, tail):
     bodies = {
-        "vertex": "void main() { gl_Position = vec4(0, 0, 0, 1); }\n",
-        "fragment": "layout(location=0) out vec4 color;\nvoid main() { color = vec4(1); }\n",
-        "compute": "layout(local_size_x=1) in;\nvoid main() {}\n",
+        "vertex": '[shader("vertex")] float4 main() : SV_Position { return float4(0, 0, 0, 1); }\n',
+        "fragment": '[shader("fragment")] float4 main() : SV_Target0 { return float4(1); }\n',
+        "compute": '[shader("compute")] [numthreads(1,1,1)] void main() {}\n',
     }
     body = bodies[stage]
     if tail in ("conditional", "missing_endif"):
@@ -29,16 +29,16 @@ def test_glsl_compiles_the_authored_tail(stage, tail):
     elif tail == "comment_brace":
         body += "/* a valid trailing comment with } and { in its text */\n"
     elif tail == "declaration":
-        body += "const float tailConstant = 2.0;\n"
+        body += "static const float tailConstant = 2.0;\n"
     elif tail == "invalid_statement":
-        body += "this is not valid GLSL;\n"
+        body += "this is not valid Slang;\n"
     elif tail == "unterminated_comment":
         body += "/* a comment that never ends\n"
-    source = "#version 450\n" + body
-    compile_batch = native._compile_compute_glsl_batch if stage == "compute" else native._compile_graphics_glsl_batch
+    label = f"boundary-{stage}-{tail}.slang"
     if tail in ("invalid_statement", "unterminated_comment", "missing_endif"):
-        with pytest.raises(RuntimeError, match="GLSL AOT failed"):
-            compile_batch({stage: source}, f"boundary-{stage}-{tail}")
+        with pytest.raises(native.ShaderCompilationError) as failure:
+            native._compile_shader_program(body, label, "boundary", targets=["spirv"])
+        assert failure.value.diagnostics and any(item["path"] == label for item in failure.value.diagnostics)
     else:
-        compiled = compile_batch({stage: source}, f"boundary-{stage}-{tail}")
-        assert bytes(compiled[stage])[:4] == b"\x03\x02\x23\x07"
+        compiled = native._compile_shader_program(body, label, "boundary", targets=["spirv"])
+        assert bytes(compiled["targets"][0]["entries"][0]["code"])[:4] == b"\x03\x02\x23\x07"

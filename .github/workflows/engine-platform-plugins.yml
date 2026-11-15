@@ -175,8 +175,6 @@ jobs:
   web-runtime:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
-    env:
-      INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR: ${{ github.workspace }}/engine/out/toolchains/web-official-snapshots
     defaults:
       run:
         shell: bash -el {0}
@@ -195,7 +193,6 @@ jobs:
       with:
         path: |
           engine/out/toolchains/web
-          engine/out/toolchains/web-official-snapshots
           engine/out/build/web-precompiled-player
         key: web-runtime-${{ runner.os }}-${{ hashFiles('engine/scripts/setup/build_web_toolchain.sh', 'engine/external/plugins/infernux_web/native/**')
           }}
@@ -204,11 +201,8 @@ jobs:
       run: |
         conda activate infernux
         sudo apt-get update
-        sudo apt-get install --yes --no-install-recommends ninja-build pkg-config libssl-dev libffi-dev zlib1g-dev libbz2-dev libsqlite3-dev liblzma-dev glslang-tools
+        sudo apt-get install --yes --no-install-recommends ninja-build pkg-config libssl-dev libffi-dev zlib1g-dev libbz2-dev libsqlite3-dev liblzma-dev
         python -m pip install cmake pybind11
-        python engine/scripts/setup/prepare_dawn_official_snapshots.py \
-          --lock engine/scripts/setup/dawn_dependencies.lock.json \
-          --output "$INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR"
         engine/scripts/setup/build_web_toolchain.sh "$PWD/engine/out/toolchains/web"
         mkdir -p engine/out/build
         bash engine/external/plugins/infernux_web/native/python_runtime/build_numpy_static_runtime.sh \
@@ -231,59 +225,9 @@ jobs:
         name: engine-release-web-player-${{ github.run_id }}-${{ github.run_attempt }}
         path: engine/out/build/web-precompiled-player/publish/player/
         if-no-files-found: error
-  web-shader-tools:
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-        - windows-2022
-        - ubuntu-22.04
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        ref: ${{ github.sha }}
-        submodules: recursive
-        path: engine
-    - uses: conda-incubator/setup-miniconda@v3
-      with:
-        activate-environment: infernux
-        python-version: '3.13'
-        auto-activate-base: false
-    - uses: ilammy/msvc-dev-cmd@v1
-      if: runner.os == 'Windows'
-    - uses: actions/cache@v4
-      with:
-        path: |
-          engine/out/toolchains/dawn
-          engine/out/build/web-shader-tools
-        key: web-tools-${{ runner.os }}-${{ hashFiles('engine/external/plugins/infernux_web/native/tools/**', 'engine/external/plugins/infernux_web/native/prepare_dawn.py')
-          }}
-        restore-keys: web-tools-${{ runner.os }}-
-    - name: Build and publish native shader tools
-      run: |
-        conda activate infernux
-        python -m pip install cmake ninja
-        python engine/external/plugins/infernux_web/native/prepare_dawn.py engine/out/toolchains/dawn
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        $toolsOutput = "$PWD/engine/out/build/web-shader-tools/publish/tools"
-        cmake -S engine/external/plugins/infernux_web/native/tools -B engine/out/build/web-shader-tools -G Ninja "-DINFERNUX_DAWN_SOURCE=$PWD/engine/out/toolchains/dawn" "-DINFERNUX_WEB_TOOLS_OUTPUT_DIR=$toolsOutput"
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        cmake --build engine/out/build/web-shader-tools --target prebuild_web_tools --parallel 2
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    - uses: actions/upload-artifact@v4
-      with:
-        name: engine-release-web-tools-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
-        path: engine/out/build/web-shader-tools/publish/tools/
-        if-no-files-found: error
   web-package:
     needs:
     - web-runtime
-    - web-shader-tools
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
@@ -296,15 +240,10 @@ jobs:
       with:
         name: engine-release-web-player-${{ github.run_id }}-${{ github.run_attempt }}
         path: out/platform-web/player
-    - uses: actions/download-artifact@v4
-      with:
-        pattern: engine-release-web-tools-*-${{ github.run_id }}-${{ github.run_attempt }}
-        merge-multiple: true
-        path: out/platform-web/tools
     - name: Package the exact engine release plugin
       run: >-
         python scripts/release/build_platform_plugins.py package --targets web
-        --payload out/platform-web/player --tools out/platform-web/tools
+        --payload out/platform-web/player
         --output out/platform-plugins
     - uses: actions/upload-artifact@v4
       with:

@@ -95,6 +95,13 @@ void derivative(uint3 id : SV_DispatchThreadID)
                         parameters.value.byteSize == 16 && parameters.value.fields.size() == 3 &&
                         parameters.value.fields[2].name == "bias" && parameters.value.fields[2].offset == 8,
                     "Target parameter block layout changed");
+            ShaderReflection computeLayout;
+            computeLayout.LoadTargetLayout(target, "affine");
+            Require(computeLayout.GetStage() == VK_SHADER_STAGE_COMPUTE_BIT &&
+                        computeLayout.GetStorageBuffers().size() == 2 &&
+                        computeLayout.GetStorageBuffers()[0].stageFlags == VK_SHADER_STAGE_COMPUTE_BIT &&
+                        computeLayout.GetStorageBuffers()[1].stageFlags == VK_SHADER_STAGE_COMPUTE_BIT,
+                    "Compiler target layout lost the Compute stage");
             Require(target.resources[1].binding.readOnlyStorage && !target.resources[2].binding.readOnlyStorage,
                     "Storage access qualifiers changed");
             Require(target.reflection.find("params") != std::string::npos, "Constant-buffer reflection is missing");

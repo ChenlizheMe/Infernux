@@ -28,7 +28,6 @@
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
-#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/scene/Scene.h>
@@ -517,20 +516,11 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     const auto *forward = artifact ? artifact->FindVariant(ShaderCompileTarget::Forward) : nullptr;
     if (publication && !forward)
         throw ShaderProgramSelectionError("Prepared material artifact has no Forward program");
-    const std::vector<char> *vertCode = forward ? &forward->vertexSpirv : nullptr;
-    const std::vector<char> *fragCode = forward ? &forward->fragmentSpirv : nullptr;
-    if (!publication && !forward) {
-        vertCode = m_shaderCache.FindVertCode(material->GetVertShaderName());
-        fragCode = m_shaderCache.FindFragCode(material->GetFragShaderName());
-    }
-    const ShaderProgramKey programKey = artifact ? artifact->key : ShaderProgramKey{stages, 0};
-
-    if (vertCode && fragCode && m_materialPipelineManagerInitialized) {
+    if (forward && m_materialPipelineManagerInitialized) {
         auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-            material, *vertCode, *fragCode, programKey, artifact,
-            {artifact ? artifact->domain : ShaderProgramDomain::Mesh, forward ? forward->vertexEntryPoint : "main",
-             forward ? forward->fragmentEntryPoint : "main", forward ? forward->vertexTarget.get() : nullptr,
-             forward ? forward->fragmentTarget.get() : nullptr, artifact ? &artifact->properties : nullptr});
+            material, forward->vertexSpirv, forward->fragmentSpirv, artifact->key, artifact,
+            {artifact->domain, forward->vertexEntryPoint, forward->fragmentEntryPoint, *forward->vertexTarget,
+             *forward->fragmentTarget, &artifact->properties});
 
         bool forwardOk = renderData && renderData->isValid;
         if (forwardOk)

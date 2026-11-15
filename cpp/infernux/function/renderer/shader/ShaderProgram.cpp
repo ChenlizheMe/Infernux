@@ -169,22 +169,8 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
         return false;
     }
 
-    // Reflect shader resources
-    if (metadata.vertexTarget)
-        m_vertReflection.LoadTargetLayout(*metadata.vertexTarget, metadata.vertexEntryPoint);
-    else if (!m_vertReflection.Reflect(vertSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
-        INXLOG_ERROR("Failed to reflect vertex shader: ", variantKey.program.stages.ToString());
-        Destroy();
-        return false;
-    }
-
-    if (metadata.fragmentTarget)
-        m_fragReflection.LoadTargetLayout(*metadata.fragmentTarget, metadata.fragmentEntryPoint);
-    else if (!m_fragReflection.Reflect(fragSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
-        INXLOG_ERROR("Failed to reflect fragment shader: ", variantKey.program.stages.ToString());
-        Destroy();
-        return false;
-    }
+    m_vertReflection.LoadTargetLayout(metadata.vertexTarget, metadata.vertexEntryPoint);
+    m_fragReflection.LoadTargetLayout(metadata.fragmentTarget, metadata.fragmentEntryPoint);
 
     // Merge reflection data
     MergeReflectionData();

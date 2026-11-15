@@ -49,8 +49,8 @@ struct ShaderProgramMetadata
     ShaderProgramDomain domain = ShaderProgramDomain::Mesh;
     std::string_view vertexEntryPoint = "main";
     std::string_view fragmentEntryPoint = "main";
-    const ShaderTargetCode *vertexTarget = nullptr;
-    const ShaderTargetCode *fragmentTarget = nullptr;
+    const ShaderTargetCode &vertexTarget;
+    const ShaderTargetCode &fragmentTarget;
     const std::vector<ShaderProgramPropertyBinding> *properties = nullptr;
     /// Semantic passes borrow the Forward publication's material layout.
     std::shared_ptr<const ShaderProgram> materialLayoutOwner;
@@ -98,7 +98,7 @@ class ShaderProgram
      * @return true if creation succeeded
      */
     bool Create(VkDevice device, const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
-                const ShaderProgramVariantKey &variantKey, const ShaderProgramMetadata &metadata = {});
+                const ShaderProgramVariantKey &variantKey, const ShaderProgramMetadata &metadata);
 
     /**
      * @brief Destroy all Vulkan resources
@@ -385,7 +385,7 @@ class ShaderProgramCache
      */
     ShaderProgramPublication GetOrCreateProgram(const ShaderProgramVariantKey &variantKey,
                                                 const std::vector<char> &vertSpirv, const std::vector<char> &fragSpirv,
-                                                const ShaderProgramMetadata &metadata = {});
+                                                const ShaderProgramMetadata &metadata);
 
     /**
      * @brief Get existing program

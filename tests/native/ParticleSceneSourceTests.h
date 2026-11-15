@@ -1,4 +1,4 @@
-bool VerifyParticleSceneSources(TestResources &resources, infernux::InxShaderLoader &compiler,
+bool VerifyParticleSceneSources(TestResources &resources,
                                 const infernux::particle::GpuParticleEmitterProgram &prototype,
                                 const infernux::particle::GpuParticleSortProgram &sortProgram,
                                 const infernux::particle::GpuParticleCullProgram &cullProgram,
@@ -98,44 +98,44 @@ try {
                  "Live skin source in a nonactive loaded scene could not be resolved"))
         return false;
 
-    const auto noop = SpirvWords(compiler.CompileComputeGlsl(
-        "#version 450\nlayout(local_size_x=256) in; void main() {}", "Tests/SceneSourceNoop.comp"));
-    const auto bootstrap = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=0) buffer States { uvec4 states[]; };
-layout(std430, set=0, binding=2) buffer Counters { uint counters[]; };
-layout(std430, set=0, binding=4) buffer Indirect { uvec4 indirectArgs; };
-layout(std430, set=0, binding=9) buffer Dispatch { uvec4 dispatches[]; };
-void main() {
-    if (gl_GlobalInvocationID.x < 32u) states[gl_GlobalInvocationID.x] = uvec4(0u);
-    if (gl_GlobalInvocationID.x != 0u) return;
+    const auto noop = CompileTestCompute("[shader(\"compute\")] [numthreads(256,1,1)] void main() {}",
+                                         "Tests/SceneSourceNoop.comp.slang");
+    const auto bootstrap = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] RWStructuredBuffer<uint4> states;
+[[vk::binding(2, 0)]] RWStructuredBuffer<uint> counters;
+[[vk::binding(4, 0)]] RWStructuredBuffer<uint4> indirectArgs;
+[[vk::binding(9, 0)]] RWStructuredBuffer<uint4> dispatches;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x < 32u) states[dispatch_id.x] = uint4(0u);
+    if (dispatch_id.x != 0u) return;
     counters[0] = 32u;
-    indirectArgs = uvec4(0u);
-    dispatches[0] = dispatches[1] = uvec4(1u, 1u, 1u, 0u);
+    indirectArgs[0] = uint4(0u);
+    dispatches[0] = dispatches[1] = uint4(1u, 1u, 1u, 0u);
 }
-)glsl",
-                                                                  "Tests/SceneSourceBootstrap.comp"));
-    const auto rendering = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=256) in;
-layout(std430, set=0, binding=3) writeonly buffer Instances { vec4 snapshots[]; };
-layout(std430, set=1, binding=0) readonly buffer Metadata { uint metadata[]; };
-layout(std430, set=1, binding=4) readonly buffer Palette { mat4 bones[]; };
-void main() {
-    if (gl_GlobalInvocationID.x == 0u)
-        snapshots[0] = vec4(bones[0][3].x, uintBitsToFloat(metadata[16]), float(metadata[3]), 1.0);
+)slang",
+                                              "Tests/SceneSourceBootstrap.comp.slang");
+    const auto rendering = CompileTestCompute(R"slang(
+
+[[vk::binding(3, 0)]] RWStructuredBuffer<float4> snapshots;
+[[vk::binding(0, 1)]] StructuredBuffer<uint> metadata;
+[[vk::binding(4, 1)]] StructuredBuffer<float4x4> bones;
+[shader("compute")] [numthreads(256, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    if (dispatch_id.x == 0u)
+        snapshots[0] = float4(bones[0][3].x, asfloat(metadata[16]), float(metadata[3]), 1.0);
 }
-)glsl",
-                                                                  "Tests/SceneSourceRendering.comp"));
-    const auto readbackCode = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
-#version 450
-layout(local_size_x=1) in;
-layout(std430, set=0, binding=0) readonly buffer Input { vec4 snapshot; };
-layout(std430, set=0, binding=1) writeonly buffer Output { vec4 result; };
-void main() { result = snapshot; }
-)glsl",
-                                                                     "Tests/SceneSourceReadback.comp"));
+)slang",
+                                              "Tests/SceneSourceRendering.comp.slang");
+    const auto readbackCode = CompileTestCompute(R"slang(
+
+[[vk::binding(0, 0)]] StructuredBuffer<float4> snapshot;
+[[vk::binding(1, 0)]] RWStructuredBuffer<float4> result;
+[shader("compute")] [numthreads(1, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) { result[0] = snapshot[0]; }
+)slang",
+                                                 "Tests/SceneSourceReadback.comp.slang");
     if (!Require(!noop.empty() && !bootstrap.empty() && !rendering.empty() && !readbackCode.empty(),
                  "Scene source probe shaders failed"))
         return false;

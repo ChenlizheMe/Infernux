@@ -49,7 +49,7 @@ def replace_payload(source, destination):
             shutil.rmtree(staging)
 
 
-def refresh(targets, *, tools=None, build_root=None, output=None):
+def refresh(targets, *, build_root=None, output=None):
     abi = f'cp{sys.version_info.major}{sys.version_info.minor}'
     if abi != PYTHON_ABI:
         raise ValueError(f'Platform release requires {PYTHON_ABI}, running {abi}')
@@ -60,7 +60,7 @@ def refresh(targets, *, tools=None, build_root=None, output=None):
     for platform in targets:
         descriptor = PLATFORM_PLAYERS[platform]
         payload = build_root / platform / 'publish/player'
-        args = SimpleNamespace(build_root=build_root, output=output, tools=tools)
+        args = SimpleNamespace(build_root=build_root, output=output)
         build(platform, args)
         package_root = ROOT / descriptor['repository_path'] / 'package'
         # Find the module from the existing package layout rather than imposing
@@ -68,8 +68,6 @@ def refresh(targets, *, tools=None, build_root=None, output=None):
         modules = [path for path in (package_root / 'editor').iterdir() if path.is_dir() and not path.name.startswith('.')]
         module = next(path for path in modules if (path / '__init__.py').is_file())
         replace_payload(payload, module / 'player')
-        if tools is not None and descriptor['payload_format'] == 'web':
-            replace_payload(tools, module / 'tools')
         manifest = read(output / (descriptor['reference'].replace('/', '.') + '.release.json'))
         write(output / (platform + '.refresh.json'), {
             'engine_release': RELEASE, 'python_abi': abi,
@@ -82,7 +80,6 @@ def refresh(targets, *, tools=None, build_root=None, output=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--targets', nargs='+', default=['host'])
-    parser.add_argument('--tools', default='')
     parser.add_argument('--build-root', type=Path)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
@@ -91,10 +88,7 @@ def main():
         parser.error('This host has no native Player builder; select an explicit cross-compilation target')
     if ('windows' in targets and sys.platform != 'win32') or ('linux' in targets and not sys.platform.startswith('linux')):
         parser.error('Windows/Linux require their matching build hosts. Use CI to collect the complete platform set.')
-    if 'web' in targets and not args.tools:
-        parser.error('Web refresh requires --tools with Windows/Linux shader tools')
-    refresh(targets, tools=Path(args.tools).resolve() if args.tools else None,
-            build_root=args.build_root, output=args.output)
+    refresh(targets, build_root=args.build_root, output=args.output)
 
 
 if __name__ == '__main__':

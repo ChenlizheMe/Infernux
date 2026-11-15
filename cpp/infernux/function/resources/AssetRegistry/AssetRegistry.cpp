@@ -404,9 +404,7 @@ void AssetRegistry::PublishShader(const std::string &guid, std::shared_ptr<Shade
 {
     if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
         throw std::logic_error("Shader publication requires the initialized registry owner thread");
-    if (guid.empty() || !candidate ||
-        (!candidate->program && (!candidate->HasVariant(ShaderCompileTarget::Forward) ||
-                                 (candidate->shaderType != "vertex" && candidate->shaderType != "fragment"))))
+    if (guid.empty() || !candidate || !candidate->program)
         throw std::invalid_argument("Shader publication requires a compiled imported stage");
     const auto path = m_assetDb->GetPathFromGuid(guid);
     if (path.empty() || FoldFilesystemPathCase(ResolveFilesystemPath(path)) !=

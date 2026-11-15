@@ -23,7 +23,6 @@
 #include <function/renderer/vk/VulkanSubmissionExecutor.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
-#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
@@ -203,9 +202,17 @@ std::vector<uint32_t> SpirvWords(const std::vector<char> &bytes)
 {
     if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
         return {};
+
     std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
     std::memcpy(words.data(), bytes.data(), bytes.size());
     return words;
+}
+
+std::vector<uint32_t> CompileTestCompute(std::string source, const char *path)
+{
+    const auto target = infernux::CompileSlangNativeModule({"native_compute_fixture", path, std::move(source)},
+                                                           infernux::ShaderCodeTarget::SpirV);
+    return SpirvWords(target.entries.front().code);
 }
 
 bool Require(bool condition, const char *message)
@@ -510,43 +517,40 @@ bool VerifyGpuParticleMigration(TestResources &resources,
         "GPU particle migration did not preserve fields, apply defaults, rebuild live/free slots, or count drops");
 }
 
-bool VerifyVectorFieldSampling(TestResources &resources, infernux::InxShaderLoader &compiler)
+bool VerifyVectorFieldSampling(TestResources &resources)
 {
     constexpr uint32_t sampleCount = 5;
     constexpr VkDeviceSize outputBytes = sampleCount * 4 * sizeof(float);
     const std::array<float, 2 * 2 * 2 * 4> texels = {
         1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0, 13, 14, 15, 0, 16, 17, 18, 0, 19, 20, 21, 0, 22, 23, 24, 0,
     };
-    const std::string source = R"(#version 450
-layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
-layout(std430, set = 0, binding = 0) writeonly buffer OutputBuffer { vec4 values[]; } output_buffer;
-layout(set = 0, binding = 1) uniform sampler3D linear_clamp_field;
-layout(set = 0, binding = 2) uniform sampler3D nearest_clamp_field;
-layout(set = 0, binding = 3) uniform sampler3D nearest_repeat_field;
-
-vec3 simulation_to_field(vec3 position) {
-    return vec3(position.x * 0.5 + 0.25, position.y, position.z);
+    const std::string source = R"(
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> output_buffer;
+[[vk::binding(1, 0)]] Sampler3D<float4> linear_clamp_field;
+[[vk::binding(2, 0)]] Sampler3D<float4> nearest_clamp_field;
+[[vk::binding(3, 0)]] Sampler3D<float4> nearest_repeat_field;
+float3 simulation_to_field(float3 position) { return float3(position.x * 0.5 + 0.25, position.y, position.z); }
+float3 field_to_simulation(float3 value) {
+    return mul(float3x3(0.0, -1.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.5), value) * 1.5;
 }
-
-vec3 field_to_simulation(vec3 value) {
-    return mat3(vec3(0.0, 2.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 0.0, 0.5)) * value * 1.5;
+float3 sample_zero_linear(float3 position) {
+    float3 uvw = simulation_to_field(position);
+    if (any(uvw < float3(0.0)) || any(uvw > float3(1.0))) return float3(0.0);
+    return field_to_simulation(linear_clamp_field.SampleLevel(uvw, 0.0).xyz);
 }
-
-vec3 sample_zero_linear(vec3 position) {
-    vec3 uvw = simulation_to_field(position);
-    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return vec3(0.0);
-    return field_to_simulation(texture(linear_clamp_field, uvw).xyz);
-}
-
+[shader("compute")]
+[numthreads(1, 1, 1)]
 void main() {
-    output_buffer.values[0] = vec4(sample_zero_linear(vec3(0.5, 0.5, 0.5)), 1.0);
-    output_buffer.values[1] = vec4(sample_zero_linear(vec3(-1.0, 0.5, 0.5)), 1.0);
-    output_buffer.values[2] = vec4(field_to_simulation(texture(nearest_clamp_field, vec3(1.25, 0.25, 0.75)).xyz), 1.0);
-    output_buffer.values[3] = vec4(field_to_simulation(texture(nearest_repeat_field, vec3(1.25, 0.25, 0.75)).xyz), 1.0);
-    output_buffer.values[4] = vec4(sample_zero_linear(vec3(0.0, 0.25, 0.75)), 1.0);
+    output_buffer[0] = float4(sample_zero_linear(float3(0.5, 0.5, 0.5)), 1.0);
+    output_buffer[1] = float4(sample_zero_linear(float3(-1.0, 0.5, 0.5)), 1.0);
+    output_buffer[2] = float4(field_to_simulation(nearest_clamp_field.SampleLevel(float3(1.25, 0.25, 0.75), 0.0).xyz), 1.0);
+    output_buffer[3] = float4(field_to_simulation(nearest_repeat_field.SampleLevel(float3(1.25, 0.25, 0.75), 0.0).xyz), 1.0);
+    output_buffer[4] = float4(sample_zero_linear(float3(0.0, 0.25, 0.75)), 1.0);
 }
 )";
-    const auto shaderWords = SpirvWords(compiler.CompileComputeGlsl(source, "Tests/VectorFieldSampling.comp"));
+    const auto program = infernux::CompileSlangNativeModule(
+        {"vector_field_sampling", "Tests/VectorFieldSampling.slang", source}, infernux::ShaderCodeTarget::SpirV);
+    const auto shaderWords = SpirvWords(program.entries.front().code);
     if (!Require(!shaderWords.empty(), "Failed to compile Vector Field sampling fixture"))
         return false;
 
@@ -814,10 +818,18 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     resources.pipelines.Initialize(device);
     resources.graph.Initialize(&resources.context);
 
-    const auto computeCode = ReadSpirv(computePath);
+    auto compile = [](const std::filesystem::path &path) {
+        std::ifstream stream(path, std::ios::binary);
+        const std::string source((std::istreambuf_iterator<char>(stream)), {});
+        return infernux::CompileSlangNativeModule({path.stem().string(), path.generic_string(), source},
+                                                  infernux::ShaderCodeTarget::SpirV);
+    };
+    const auto computeTarget = compile(computePath);
+    const auto computeCode = SpirvWords(computeTarget.entries.front().code);
     const auto vertexCode = ReadSpirv(vertexPath);
     const auto fragmentCode = ReadSpirv(fragmentPath);
-    const auto reflectionCode = ReadSpirv(reflectionPath);
+    const auto reflectionTarget = compile(reflectionPath);
+    const auto reflectionCode = SpirvWords(reflectionTarget.entries.front().code);
     const auto particleComputeCode = ReadSpirv(particleComputePath);
     const auto particleVertexCode = ReadSpirv(particleVertexPath);
     const auto particleFragmentCode = ReadSpirv(particleFragmentPath);
@@ -829,10 +841,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Failed to read generated SPIR-V test shaders"))
         return false;
 
-    infernux::InxShaderLoader sortCompiler(false, true, false, true, false, true, false, false, false, false);
-    if (!VerifyForwardPlusTileCoverage(resources, sortCompiler))
+    if (!VerifyForwardPlusTileCoverage(resources))
         return false;
-    if (!VerifyVectorFieldSampling(resources, sortCompiler))
+    if (!VerifyVectorFieldSampling(resources))
         return false;
     const std::array<std::string_view, 5> sortSources = {
         infernux::particle::GpuParticleSortShaderSources::Small(),
@@ -937,15 +948,15 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     };
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
         return false;
-    if (!VerifyParticleMeshMetadata(resources, sortCompiler, spawnProgram, boundsProgram))
+    if (!VerifyParticleMeshMetadata(resources, spawnProgram, boundsProgram))
         return false;
-    if (!VerifyParticleRuntimeInputSnapshots(resources, sortCompiler, spawnProgram))
+    if (!VerifyParticleRuntimeInputSnapshots(resources, spawnProgram))
         return false;
-    if (!VerifyParticleSpawnInputSnapshots(resources, sortCompiler, spawnProgram))
+    if (!VerifyParticleSpawnInputSnapshots(resources, spawnProgram))
         return false;
     if (!VerifyParticleSurfaceSnapshots(resources))
         return false;
-    if (!VerifyParticleCollisionUploads(resources, sortCompiler))
+    if (!VerifyParticleCollisionUploads(resources))
         return false;
     auto initialLinkedParticleProgram =
         std::make_shared<infernux::ShaderProgramArtifact>(*infernux::particle_test::Surface());
@@ -1003,13 +1014,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     primaryMaterialState.depthWriteEnable = false;
     primaryOutput.material->SetRenderState(primaryMaterialState);
     managedProgram.outputs.push_back(primaryOutput);
-    if (!VerifyParticleDomainRetention(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
+    if (!VerifyParticleDomainRetention(resources, managedProgram, sortProgram, cullProgram, boundsProgram,
                                        migrationProgram, spawnProgram))
         return false;
-    if (!VerifyParticleSceneSources(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
+    if (!VerifyParticleSceneSources(resources, managedProgram, sortProgram, cullProgram, boundsProgram,
                                     migrationProgram, spawnProgram))
         return false;
-    if (!VerifyParticleFrameSnapshots(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
+    if (!VerifyParticleFrameSnapshots(resources, managedProgram, sortProgram, cullProgram, boundsProgram,
                                       migrationProgram, spawnProgram))
         return false;
     std::string managedError;
@@ -1296,9 +1307,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto managedEntry = managedEntries->front();
 
     ShaderReflection computeReflection;
-    if (!Require(computeReflection.Reflect(computeCode, VK_SHADER_STAGE_COMPUTE_BIT),
-                 "Generated compute SPIR-V reflection failed"))
-        return false;
+    computeReflection.LoadTargetLayout(computeTarget, computeTarget.entries.front().name);
     const auto &storageBuffers = computeReflection.GetStorageBuffers();
     const auto reflectedBindings = computeReflection.GetDescriptorSetLayoutBindings(0);
     if (!Require(storageBuffers.size() == 1 && storageBuffers[0].set == 0 && storageBuffers[0].binding == 0 &&
@@ -1315,9 +1324,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     ShaderReflection storageReflection;
-    if (!Require(storageReflection.Reflect(reflectionCode, VK_SHADER_STAGE_COMPUTE_BIT),
-                 "Storage resource reflection fixture failed"))
-        return false;
+    storageReflection.LoadTargetLayout(reflectionTarget, reflectionTarget.entries.front().name);
     const auto &reflectedBuffers = storageReflection.GetStorageBuffers();
     const auto &reflectedImages = storageReflection.GetStorageImages();
     const auto &reflectedSampled = storageReflection.GetSampledImages();
@@ -1351,10 +1358,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto outputImage = std::find_if(reflectedImages.begin(), reflectedImages.end(),
                                           [](const auto &info) { return info.binding == 3; });
     if (!Require(inputBuffer != reflectedBuffers.end() && inputBuffer->readOnly &&
-                     outputBuffer != reflectedBuffers.end() && outputBuffer->writeOnly &&
-                     inputImage != reflectedImages.end() && inputImage->readOnly &&
-                     outputImage != reflectedImages.end() && outputImage->writeOnly,
-                 "Storage access qualifiers were not preserved by reflection"))
+                     outputBuffer != reflectedBuffers.end() && !outputBuffer->readOnly &&
+                     inputImage != reflectedImages.end() && !inputImage->writeOnly &&
+                     outputImage != reflectedImages.end() && !outputImage->readOnly,
+                 "Storage access differs from the declared Slang resource types"))
         return false;
     if (!Require(storageReflection.GetUsedDescriptorSets() == std::vector<uint32_t>({1, 2, 3}),
                  "Storage reflection descriptor set discovery is incomplete"))

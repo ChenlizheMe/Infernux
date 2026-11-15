@@ -89,7 +89,6 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
 
     module = _web_module(monkeypatch)
     exporter = importlib.import_module("infernux_web.exporter")
-    pipeline = importlib.import_module("infernux_web.shader_pipeline")
     from infernux.engine.player_package_native import read_entry
 
     targets = module.WebPlatformExporter().targets()
@@ -125,7 +124,7 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
     assert report.available
     assert report.diagnostics == ()
     assert report.details["player"]["python_abi"] == "cp313"
-    assert Path(report.details["tint"]).is_relative_to(root)
+    assert "tint" not in report.details and "glslang" not in report.details
     request = _request(tmp_path)
     assert exporter._web_staging_directory(request) == (
         (tmp_path / "project").resolve() / "Cache/Build/WebHost/web-wasm32"
@@ -143,12 +142,12 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
     staging = exporter._web_staging_directory(request)
     assert staging == shared.resolve() / "WebHost/web-wasm32"
     plan = module.WebPlatformExporter().create_plan(request)
-    assert [step.id for step in plan.steps] == ["cook", "shaders", "imports", "runtime", "package", "audit"]
+    assert [step.id for step in plan.steps] == ["cook", "imports", "runtime", "package", "audit"]
     assert plan.metadata == {"architecture": "wasm32", "graphics_api": "webgpu", "python": "3.13"}
     obsolete = staging / "host-build/CMakeCache.txt"
     obsolete.parent.mkdir(parents=True)
     obsolete.write_text("cache", encoding="utf-8")
-    for name in (".infernux-player-cook", "player-assets", "shader-cook"):
+    for name in (".infernux-player-cook", "player-assets"):
         path = staging / name
         path.mkdir()
         (path / "stale.txt").write_text("stale", encoding="utf-8")
@@ -156,7 +155,6 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
     assert not obsolete.exists()
     assert not (staging / ".infernux-player-cook").exists()
     assert not (staging / "player-assets").exists()
-    assert not (staging / "shader-cook").exists()
     assets = staging / "player-assets"
     assets.mkdir(parents=True)
     (assets / "包内文本.txt").write_text("button reads this content", encoding="utf-8")
@@ -171,15 +169,6 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
     ):
         (branding / name).write_bytes(b"branding")
     exporter._stage_webgpu_capability_inventory(assets)
-    (staging / "shader-cook").mkdir()
-    compiler_calls = []
-
-    def compile_shaders(manifest, output, **tools):
-        compiler_calls.append(tools)
-        output.mkdir()
-        (output / "catalog.json").write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr(pipeline, "compile_shader_manifest", compile_shaders)
     details = report.details
     mode = "windowed"
     render_output = {"width": 480, "height": 270, "filter": "nearest"}
@@ -201,7 +190,6 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
     output = Path(request.output_dir)
     package = output / f"infernux-player.{revision}.inxpkg"
     assert read_entry(package, "包内文本.txt").decode() == "button reads this content"
-    assert read_entry(package, "web-shaders/catalog.json") == b"{}"
     assert not (output / "player-assets").exists()
     assert not list(output.rglob("CMakeCache.txt"))
     for suffix in ("js", "wasm", "data"):
@@ -218,12 +206,10 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
     assert "Module.abort(error.message)" in html
     assert "@INFERNUX_WEB_" not in html
     assert "{{{ SCRIPT }}}" not in html
-    assert len(compiler_calls) == 1
     assert all(Path(item.path).is_relative_to(output) for item in artifacts)
 
     first_revision = revision
     shutil.rmtree(staging / "host-build")
-    shutil.rmtree(assets / "web-shaders")
     presentation["display_mode"] = "fullscreen_borderless"
     exporter._assemble_web_host(
         request,
@@ -247,7 +233,6 @@ def test_web_payload_preparation_plan_and_successive_publication(monkeypatch, tm
     assert (output / f"infernux-player.{revision}.wasm").read_bytes() == (
         root / "player/infernux-runtime.wasm"
     ).read_bytes()
-    assert len(compiler_calls) == 2
     assert all(Path(item.path).is_relative_to(output) for item in artifacts)
 
 
@@ -298,11 +283,6 @@ def _installed_web_payload(tmp_path):
     (player / "Player.inxmanifest").write_text(json.dumps(manifest), encoding="utf-8")
     for suffix in ("js", "wasm", "data"):
         (player / f"infernux-runtime.{suffix}").write_bytes(suffix.encode())
-    for host, suffix in (("windows-x64", ".exe"), ("linux-x64", "")):
-        tools = root / "tools" / host
-        tools.mkdir(parents=True)
-        for name in ("glslangValidator", "tint"):
-            (tools / f"{name}{suffix}").write_bytes(b"native tool")
     return root
 
 
@@ -650,11 +630,6 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         "_stage_web_branding",
         lambda _assets, _source_root, _game_name: None,
     )
-    monkeypatch.setattr(
-        exporter_module,
-        "_stage_web_shader_sources",
-        lambda _request, _staging, _assets, _source_root: None,
-    )
     revision = "1234567890abcdef12345678"
 
     captured_presentation = {}
@@ -759,132 +734,21 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     assert result.logs == ("host built",)
 
 
-def test_web_scene_shader_passes_pinned_tint_validation(tmp_path):
-    renderer = (ROOT / "external" / "plugins" / "infernux_web" / "native" / "WebSceneRenderer.cpp").read_text(
-        encoding="utf-8"
-    )
-    match = re.search(
-        r'constexpr char kSceneShader\[\] = R"wgsl\((.*?)\)wgsl";',
-        renderer,
-        re.DOTALL,
-    )
-    assert match is not None
-    platform_name = "windows-x64" if sys.platform == "win32" else "linux-x64"
-    executable = "tint.exe" if sys.platform == "win32" else "tint"
-    configured = os.environ.get("INFERNUX_TEST_TINT")
-    tint = Path(configured) if configured else PLUGIN_EDITOR / "infernux_web" / "tools" / platform_name / executable
-    if configured:
-        assert tint.is_file(), f"Configured pinned Tint does not exist: {tint}"
-    if not tint.is_file():
-        pytest.skip(f"pinned Tint is unavailable for {platform_name}; set INFERNUX_TEST_TINT to the built tool")
-    shader = tmp_path / "WebSceneRenderer.wgsl"
-    shader.write_text(match.group(1), encoding="utf-8")
-    completed = subprocess.run(
-        [str(tint), "--input-format", "wgsl", "--format", "wgsl", str(shader)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_path):
-    _web_module(monkeypatch)
-    exporter = importlib.import_module("infernux_web.exporter")
-    native = importlib.import_module("infernux.lib")._Infernux
-    monkeypatch.setattr(
-        native,
-        "_prepare_authored_shader_glsl",
-        lambda source, _path: source,
-    )
-    request = _request(tmp_path)
-    source_root = tmp_path / "source"
-    shader_dir = source_root / "resources" / "shaders"
-    shader_dir.mkdir(parents=True)
-    (shader_dir / "fullscreen_triangle.vert").write_text("#version 450\nvoid main() {}\n", encoding="utf-8")
-    player_assets = tmp_path / "player-assets"
-    (player_assets / "Balance_Data").mkdir(parents=True)
-    # Shader staging consumes the actual Player catalog even when this
-    # fixture has no UI materials. Keep its package boundary valid.
-    from infernux.engine.player_package_native import write_pack
-
-    runtime_catalog = tmp_path / "RuntimeAssetCatalog.json"
-    asset_records = tmp_path / "RuntimeAssetRecords.json"
-    asset_records.write_text(json.dumps({"entries": []}), encoding="utf-8")
-    record_path = "Library/RuntimeAssetRecords.json"
-    runtime_catalog.write_text(
-        json.dumps(
-            {
-                "artifacts": [
-                    {
-                        "runtime_artifact_id": "records",
-                        "runtime_path": record_path,
-                        "package": "Balance_Data/Content.inxpkg",
-                        "dependencies": [],
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    write_pack(((record_path, asset_records),), player_assets / "Balance_Data" / "Content.inxpkg")
-    write_pack((("RuntimeAssetCatalog.json", runtime_catalog),), player_assets / "Balance_Data" / "AssetCatalog.inxcat")
-    particle_dir = Path(request.project_root) / "Library" / "Artifacts" / "Particle"
-    particle_dir.mkdir(parents=True)
-    kernel_hash = "a" * 64
-    stage_names = {
-        "bootstrap",
-        "init",
-        "update",
-        "update_rendering_fused",
-        "contact_prepare",
-        "contact_solve",
-        "contact_dispatch",
-        "render_reset",
-        "rendering",
-    }
-    emitters = []
-    for stable_id in ("emitter-b", "emitter-a"):
-        emitters.append(
-            {
-                "stable_id": stable_id,
-                "kernel_hash": kernel_hash,
-                "state_stride": 80,
-                "event_type_count": 0,
-                "collision_enabled": False,
-                "continuation": None,
-                "update_render_fusion": {"eligible": True},
-                "data_interface_layout": {
-                    "mesh_interfaces": [],
-                    "texture2d_parameters": [],
-                    "volume_interfaces": [],
-                },
-                "stages": {name: "#version 450\nlayout(local_size_x=1) in; void main() {}\n" for name in stage_names},
-            }
-        )
-    (particle_dir / "shared.inxparticle").write_text(json.dumps({"gpu_glsl": {"emitters": emitters}}), encoding="utf-8")
-
-    exporter._stage_web_shader_sources(request, tmp_path / "staging", player_assets, source_root)
-
-    catalog = json.loads((player_assets / "web-particles" / "catalog.json").read_text(encoding="utf-8"))
-    assert len(catalog["kernels"]) == 1
-    assert catalog["kernels"][0]["stable_ids"] == ["emitter-a", "emitter-b"]
-    assert len(catalog["kernels"][0]["stages"]) == len(stage_names)
 
 
-def test_web_asset_revision_covers_content_runtime_and_shader_inputs(monkeypatch, tmp_path):
+def test_web_asset_revision_covers_content_runtime_and_authored_sources(monkeypatch, tmp_path):
     _web_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_web.exporter")
     staging = tmp_path / "staging"
     player = staging / "player-assets"
     runtime = tmp_path / "runtime"
-    shaders = staging / "shader-cook"
-    for root in (player, runtime, shaders):
+    for root in (player, runtime):
         root.mkdir(parents=True)
     (player / "Content.inxpkg").write_bytes(b"content")
     (runtime / "main.cpp").write_bytes(b"runtime")
-    (shaders / "manifest.json").write_bytes(b"shader")
+    (player / "effect.frag.py").write_bytes(b"authored shader")
     project_template = tmp_path / "project-template"
     project_template.mkdir()
     (project_template / "shell.html").write_bytes(b"custom shell")

@@ -484,10 +484,8 @@ class Infernux
     /// @param shaderId The shader_id to check/load
     /// @param shaderType "vertex" or "fragment"
     /// @return true if shader is loaded, false otherwise
-    bool EnsureShaderLoaded(const std::string &shaderId, const std::string &shaderType);
 
     /// @brief Push a compiled ShaderAsset into the renderer (SPIR-V + variants + render meta).
-    void RegisterShaderToRenderer(const struct ShaderAsset &asset);
     void RetireShaderPreparations(const std::vector<std::string> &sourcePaths);
 
     struct MaterialShaderPreparation

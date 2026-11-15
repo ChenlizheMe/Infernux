@@ -201,12 +201,6 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_text_layout_tests PRIVATE imgui InfernuxFoundation)
     add_test(NAME infernux.text_layout COMMAND infernux_text_layout_tests)
 
-    infernux_add_native_test(infernux_shader_source_dependency_tests tests/native/ShaderSourceDependencyTests.cpp)
-    target_link_libraries(infernux_shader_source_dependency_tests PRIVATE infernux_runtime_test_support)
-    target_compile_definitions(infernux_shader_source_dependency_tests PRIVATE
-        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/infernux/resources/shaders")
-    add_test(NAME infernux.shader_source_dependencies COMMAND infernux_shader_source_dependency_tests)
-
     infernux_add_native_test(infernux_selectable_row_tests tests/native/SelectableRowTests.cpp)
     target_include_directories(infernux_selectable_row_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux)
@@ -628,10 +622,8 @@ if(INFERNUX_BUILD_TESTS)
 
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/tests/shaders")
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.comp"
         "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.vert"
         "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.frag"
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/ShaderReflectionStorage.comp"
         "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuFixture.comp"
         "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuBillboard.vert"
         "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuBillboard.frag"
@@ -666,10 +658,10 @@ if(INFERNUX_BUILD_TESTS)
     )
     add_test(NAME infernux.render_graph_compute_indirect
         COMMAND infernux_render_graph_compute_indirect_tests
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.comp.spv"
+            "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.comp.slang"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.vert.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.frag.spv"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ShaderReflectionStorage.comp.spv"
+            "${CMAKE_SOURCE_DIR}/tests/native/shaders/ShaderReflectionStorage.comp.slang"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuFixture.comp.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.vert.spv"
             "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.frag.spv"
@@ -856,29 +848,6 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_vector_field_importer_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.vector_field_importer COMMAND infernux_vector_field_importer_tests)
 
-    infernux_add_native_test(infernux_shader_asset_tests
-        tests/native/ShaderAssetTests.cpp
-    )
-    target_link_libraries(infernux_shader_asset_tests PRIVATE infernux_runtime_test_support)
-    add_test(NAME infernux.shader_asset COMMAND infernux_shader_asset_tests)
-
-    infernux_add_native_test(infernux_shader_info_schema_tests
-        tests/native/ShaderInfoSchemaTests.cpp
-    )
-    target_link_libraries(infernux_shader_info_schema_tests PRIVATE infernux_runtime_test_support)
-    target_compile_definitions(infernux_shader_info_schema_tests PRIVATE
-        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/infernux/resources/shaders"
-        INFERNUX_TEST_SHADER_FIXTURE_ROOT="${CMAKE_SOURCE_DIR}/tests/native/shaders"
-    )
-    add_test(NAME infernux.shader_info_schema COMMAND infernux_shader_info_schema_tests)
-
-    infernux_add_native_test(infernux_shader_stage_linker_tests tests/native/ShaderStageLinkerTests.cpp)
-    target_link_libraries(infernux_shader_stage_linker_tests PRIVATE infernux_runtime_test_support)
-    target_compile_definitions(infernux_shader_stage_linker_tests PRIVATE
-        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/infernux/resources/shaders"
-    )
-    add_test(NAME infernux.shader_stage_linker COMMAND infernux_shader_stage_linker_tests)
-
     add_test(
         NAME infernux.headless
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/acceptance/headless_smoke_test.py
@@ -915,9 +884,6 @@ if(INFERNUX_BUILD_TESTS)
         infernux.asset_database_refresh
         infernux.material_document
         infernux.vector_field_importer
-        infernux.shader_asset
-        infernux.shader_info_schema
-        infernux.shader_stage_linker
         PROPERTIES RESOURCE_LOCK infernux_runtime_process
     )
 

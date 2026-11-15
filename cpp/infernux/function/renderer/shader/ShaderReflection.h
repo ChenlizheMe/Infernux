@@ -119,33 +119,12 @@ struct ShaderIOVariable
     VkFormat format = VK_FORMAT_UNDEFINED;
 };
 
-/**
- * @brief ShaderReflection - Extract resource info from compiled SPIR-V
- *
- * Uses SPIRV-Cross to reflect shader resources including:
- * - Uniform buffers and their members
- * - Sampled images (textures)
- * - Push constants
- * - Input/Output variables
- */
+/// Vulkan projection of immutable compiler target layouts.
 class ShaderReflection
 {
   public:
     ShaderReflection() = default;
     ~ShaderReflection() = default;
-
-    /**
-     * @brief Reflect a SPIR-V shader
-     * @param spirvCode The compiled SPIR-V bytecode
-     * @param stage The shader stage (for stage flags)
-     * @return true if reflection succeeded
-     */
-    INFERNUX_SHADER_COMPILER_API bool Reflect(const std::vector<uint32_t> &spirvCode, VkShaderStageFlagBits stage);
-
-    /**
-     * @brief Reflect from a vector<char> (common format from file loading)
-     */
-    INFERNUX_SHADER_COMPILER_API bool Reflect(const std::vector<char> &spirvCode, VkShaderStageFlagBits stage);
 
     /// Consume the compiler's immutable target layout; never reparse executable code.
     INFERNUX_SHADER_COMPILER_API void LoadTargetLayout(const ShaderTargetCode &target, std::string_view entryPoint);

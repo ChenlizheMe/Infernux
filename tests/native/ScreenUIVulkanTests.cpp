@@ -12,7 +12,6 @@
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
-#include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <function/scene/SceneManager.h>
@@ -131,7 +130,7 @@ struct Parameters {
                    return property.textureSlot.has_value();
                }) == (dualTextureBindings ? 2 : 1));
     }
-    assert(!ShaderStageLinker::ShouldPublishScenePrewarmArtifact(*artifact));
+    assert(IsUIShaderDomain(artifact->domain));
     return artifact;
 }
 
@@ -546,7 +545,7 @@ int main(int argc, char **argv)
         VkShaderCache scenePrewarmCache;
         scenePrewarmCache.GetProgramCache().Initialize(context.GetDevice());
         for (const auto &uiProgram : {screenProgram, worldProgram}) {
-            if (ShaderStageLinker::ShouldPublishScenePrewarmArtifact(*uiProgram))
+            if (!IsUIShaderDomain(uiProgram->domain))
                 assert(scenePrewarmCache.PublishProgramArtifact(*uiProgram).accepted);
             assert(!scenePrewarmCache.ShareProgramArtifact(uiProgram->key.stages));
             assert(!scenePrewarmCache.GetProgramCache().HasProgram(uiProgram->key));

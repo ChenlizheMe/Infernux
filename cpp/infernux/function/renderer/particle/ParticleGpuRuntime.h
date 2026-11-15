@@ -67,15 +67,18 @@ struct ShaderBytecode
     size_t wordCount = 0;
     const char *wgsl = nullptr;
     size_t wgslByteSize = 0;
+    const char *entryPoint = "main";
 
-    [[nodiscard]] static ShaderBytecode FromSpirV(const uint32_t *sourceWords, size_t sourceWordCount) noexcept
+    [[nodiscard]] static ShaderBytecode FromSpirV(const uint32_t *sourceWords, size_t sourceWordCount,
+                                                  const char *entry = "main") noexcept
     {
-        return {sourceWords, sourceWordCount, nullptr, 0};
+        return {sourceWords, sourceWordCount, nullptr, 0, entry};
     }
 
-    [[nodiscard]] static ShaderBytecode FromWgsl(const char *source, size_t byteSize) noexcept
+    [[nodiscard]] static ShaderBytecode FromWgsl(const char *source, size_t byteSize,
+                                                 const char *entry = "main") noexcept
     {
-        return {nullptr, 0, source, byteSize};
+        return {nullptr, 0, source, byteSize, entry};
     }
 
     [[nodiscard]] bool IsSpirV() const noexcept
@@ -107,6 +110,7 @@ class ShaderBytecodeStorage
   public:
     void Assign(ShaderBytecode source)
     {
+        m_entryPoint = source.entryPoint;
         if (source.IsWgsl())
             m_code = std::string(source.wgsl, source.wgslByteSize);
         else
@@ -116,13 +120,14 @@ class ShaderBytecodeStorage
     [[nodiscard]] ShaderBytecode View() const noexcept
     {
         if (const auto *text = std::get_if<std::string>(&m_code))
-            return ShaderBytecode::FromWgsl(text->data(), text->size());
+            return ShaderBytecode::FromWgsl(text->data(), text->size(), m_entryPoint.c_str());
         const auto &words = std::get<std::vector<uint32_t>>(m_code);
-        return ShaderBytecode::FromSpirV(words.data(), words.size());
+        return ShaderBytecode::FromSpirV(words.data(), words.size(), m_entryPoint.c_str());
     }
 
   private:
     std::variant<std::vector<uint32_t>, std::string> m_code;
+    std::string m_entryPoint = "main";
 };
 
 struct GpuMeshInterfaceDesc

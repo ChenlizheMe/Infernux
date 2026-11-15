@@ -20,7 +20,6 @@
 
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
-#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <glm/glm.hpp>
@@ -221,7 +220,6 @@ InxVkCoreModular::~InxVkCoreModular()
     // that reference before destroying the table's VkDescriptorSetLayout.
     ShaderProgram::SetBindlessTextureEnabled(false);
     ShaderProgram::SetBindlessTextureDescSetLayout(VK_NULL_HANDLE);
-    InxShaderLoader::SetBindlessTextureABIEnabled(false);
     // Instance/surface creation and logical-device creation can fail before
     // the RHI exists. All earlier stages still need their normal RAII cleanup.
     if (m_backend.Device().HasRhiDevice())
@@ -369,7 +367,6 @@ bool InxVkCoreModular::PrepareSurface()
     ShaderProgram::SetBindlessTextureDescSetLayout(
         bindlessRhiReady ? rhiDevice.Resolve(rhiDevice.GetBindlessTextureTableBinding().layout) : VK_NULL_HANDLE);
     ShaderProgram::SetBindlessTextureEnabled(bindlessTextureABI && bindlessRhiReady);
-    InxShaderLoader::SetBindlessTextureABIEnabled(bindlessTextureABI && bindlessRhiReady);
 
     // Initialize the async-transfer context. On GPUs without a dedicated
     // transfer queue this aliases to the graphics queue and behaves like

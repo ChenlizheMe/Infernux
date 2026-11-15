@@ -98,7 +98,6 @@ void ShaderLoader::OnRelocated(const RuntimeAssetPayload &payload, const std::st
 {
     const auto shader = payload.Get<ShaderAsset>();
     shader->filePath = filePath;
-    shader->descriptor.filePath = filePath;
 }
 
 // =============================================================================
@@ -117,12 +116,6 @@ std::shared_ptr<ShaderAsset> ShaderLoader::CompileAuthorAsset(const ShaderSource
     asset->shaderId = info.at("shader_id");
     asset->shaderType = kind->stage;
     asset->filePath = source.path;
-    asset->descriptor.shaderId = asset->shaderId;
-    asset->descriptor.isFragmentShader = kind->stage == "fragment";
-    asset->descriptor.isVertexShader = kind->stage == "vertex";
-    asset->descriptor.filePath = source.path;
-    asset->descriptor.fileExtension = kind->suffix;
-    asset->descriptor.hidden = info.at("hidden").get<bool>();
     asset->authoringSchema = prepared.schema;
     asset->authorSourceText = source.source;
     asset->renderMeta = ReadShaderAuthorRenderMeta(info);

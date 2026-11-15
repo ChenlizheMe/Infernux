@@ -117,7 +117,19 @@ void ShaderReflection::LoadTargetLayout(const ShaderTargetCode &target, std::str
     if (found == target.entries.end())
         throw std::logic_error("Graphics program entry is absent from its compiler layout: " + std::string(entryPoint));
     const auto &entry = *found;
-    m_stage = entry.stage == rhi::ShaderStage::Vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+    switch (entry.stage) {
+    case rhi::ShaderStage::Vertex:
+        m_stage = VK_SHADER_STAGE_VERTEX_BIT;
+        break;
+    case rhi::ShaderStage::Fragment:
+        m_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        break;
+    case rhi::ShaderStage::Compute:
+        m_stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        break;
+    default:
+        throw std::logic_error("Compiler entry has no supported Vulkan stage");
+    }
     m_sampleRateShading = entry.sampleRateShading;
     for (const auto &value : entry.inputs)
         m_inputs.push_back({value.name, value.location, StageFormat(value)});
