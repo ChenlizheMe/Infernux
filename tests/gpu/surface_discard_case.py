@@ -10,6 +10,7 @@ from infernux.core.material import Material
 from infernux.lib import CameraClearFlags, LightShadows, SceneManager, Vector3
 from infernux.rendergraph import Format
 from infernux.renderstack import RenderPipeline, DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline
+from tests.gpu.surface_discard_diagnostics import coverage_metrics
 
 
 STEPS = ('baseline', 'solid', 'masked_off', 'masked_on', 'reference', 'negative_off', 'clipped', 'restored')
@@ -169,17 +170,18 @@ void surface(out SurfaceData s) { s = InitSurfaceData(); s.albedo = vec3(.5); s.
         if self.step != 'restored':
             return dict(step=self.step)
         images = self.images
+        metrics = coverage_metrics(images, depth=self.depth)
         visible = images['masked_on'][...,0] > .95
         if not self.depth:
             visible &= (images['masked_on'][...,1] < .5) & (images['masked_on'][...,2] > .95)
-        assert visible.sum() > 100, 'Masked caster not visible'
+        assert visible.sum() > 100, f'Masked caster not visible: {metrics}'
         solid_visible = images['solid'][...,0] > .95
         if not self.depth:
             solid_visible &= (images['solid'][...,1] < .5) & (images['solid'][...,2] > .95)
-        assert solid_visible.sum() > visible.sum() * 1.7, 'Mask does not cut the caster'
+        assert solid_visible.sum() > visible.sum() * 1.7, f'Mask does not cut the caster: {metrics}'
         if not self.depth:
             shadow = (images['baseline'][...,0] - images['masked_on'][...,0] > .08) & ~visible
-            assert shadow.sum() > 50, 'Separated receiver shadow is missing'
+            assert shadow.sum() > 50, f'Separated receiver shadow is missing: {metrics}'
         else:
             shadow = visible
         for name in ('masked_off', 'negative_off', 'restored'):

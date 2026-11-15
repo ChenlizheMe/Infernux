@@ -7,6 +7,8 @@ import time
 from infernux.lib import InxGUIRenderable, InxGUIContext
 from typing import Optional, TYPE_CHECKING
 
+from .theme import ImGuiWindowFlags
+
 if TYPE_CHECKING:
     from .window_manager import WindowManager
 
@@ -574,6 +576,10 @@ class ClosablePanel(InxGUIRenderable):
         # Use ### to keep a stable ImGui window ID independent of the
         # displayed title so docking layout survives locale changes.
         safe_title = f"{safe_title}###{self._window_id}"
+        if self._document_is_dirty():
+            # Let the existing close transaction decide before docking removes
+            # the tab or presents a sibling behind the save confirmation.
+            flags |= ImGuiWindowFlags.UnsavedDocument
         visible, self._is_open = ctx.begin_window_closable(safe_title, self._is_open, flags)
         presentation_probe = getattr(ctx, "is_current_window_content_presented", None)
         content_presented = (
