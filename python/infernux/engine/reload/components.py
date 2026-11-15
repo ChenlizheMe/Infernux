@@ -16,9 +16,14 @@ class ComponentAdapter(PlayModeSerializationMixin):
 
     def retire(self, paths):
         from infernux.components.missing_script import MissingScript, create_missing_script_component
+        from infernux.components.registry import component_types_for_script_path
         from infernux.execution import close_component_execution
 
         keys = {path_key(path) for path in paths}
+        declarations = {
+            path_key(path): tuple(cls.__name__ for cls in component_types_for_script_path(path))
+            for path in paths
+        }
         retiring = []
         for scene in self._scenes():
             for obj in scene.get_all_objects():
@@ -39,6 +44,7 @@ class ComponentAdapter(PlayModeSerializationMixin):
                 state["awake_called"] = component._awake_called
                 state["has_started"] = component._has_started
                 state["execution_order"] = component.execution_order
+                state["declaration_names"] = declarations[path_key(path)]
             self._guids[path_key(path)] = state["script_guid"]
             component.enabled = False
             component.stop_all_coroutines()
@@ -64,32 +70,46 @@ class ComponentAdapter(PlayModeSerializationMixin):
         from infernux.components.component import InxComponent
 
         prepared = []
+        by_name, by_guid = {}, {}
+        for name, module in modules.items():
+            declarations = {
+                value.__name__: value for value in vars(module).values()
+                if isinstance(value, type) and issubclass(value, InxComponent)
+                and value is not InxComponent and value.__module__ == name
+            }
+            if declarations:
+                entry = (module.__file__, declarations)
+                by_name[name] = entry
+                guid = self.guid_for_path(module.__file__)
+                if guid:
+                    by_guid[guid] = entry
         for scene in self._scenes():
             for obj in scene.get_all_objects():
                 for missing in tuple(obj.get_py_components()):
                     if not isinstance(missing, MissingScript):
                         continue
-                    module = modules.get(type(missing).__module__)
-                    if module is None:
-                        continue
                     state = getattr(missing, "_reload_state", None)
                     if state is None:
                         state = self._serialize_py_component(missing)
                         state["enabled"] = missing.__dict__.get("_reload_enabled", state["enabled"])
-                    declarations = tuple(
-                        value
-                        for value in vars(module).values()
-                        if isinstance(value, type)
-                        and issubclass(value, InxComponent)
-                        and value is not InxComponent
-                        and value.__module__ == module.__name__
-                    )
-                    candidate = declarations[0] if len(declarations) == 1 else vars(module).get(state["type_name"])
-                    if candidate not in declarations:
+                    entry = by_name.get(type(missing).__module__) or by_guid.get(state["script_guid"])
+                    if entry is None:
+                        continue
+                    script_path, declarations = entry
+                    candidate = declarations.get(state["type_name"])
+                    if candidate is None:
+                        # A rename is unambiguous only across the complete file,
+                        # including declarations that are not mounted in a Scene.
+                        previous = set(state.get("declaration_names", (state["type_name"],)))
+                        removed = previous - declarations.keys()
+                        added = declarations.keys() - previous
+                        if removed == {state["type_name"]} and len(added) == 1:
+                            candidate = declarations[next(iter(added))]
+                    if candidate is None:
                         missing._broken_error = f"Current source does not declare {state['type_name']}"
                         continue
                     instance = candidate()
-                    instance._script_path = missing._script_path
+                    instance._script_path = script_path
                     instance._reload_state = state
                     self._apply_py_component_state(instance, state)
                     instance._enabled = False

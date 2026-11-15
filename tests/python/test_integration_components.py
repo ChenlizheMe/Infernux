@@ -347,10 +347,12 @@ def test_asset_registry_cpu_residency_budget_respects_live_and_explicit_pins(eng
     larger_payload = b"P6\n4 2\n255\n" + bytes(range(24))
     sources[0].write_bytes(larger_payload)
     assert asset_database.reimport_asset(str(sources[0]))
+    imported_first_record = registry.get_asset_residency(guids[0])
+    assert imported_first_record.runtime_version == first_record.runtime_version + 1
     assert registry.reload_asset(guids[0]) is True
     updated_first_record = registry.get_asset_residency(guids[0])
     assert first.pixel_format == "bc1_rgba_srgb"
-    assert updated_first_record.runtime_version == first_record.runtime_version + 1
+    assert updated_first_record.runtime_version == imported_first_record.runtime_version + 1
     assert updated_first_record.cpu_bytes == first_record.cpu_bytes
     first_record = updated_first_record
     assert registry.total_cpu_bytes == baseline_cpu_bytes + first_record.cpu_bytes + second_record.cpu_bytes

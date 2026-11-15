@@ -2155,6 +2155,10 @@ class AssetManager:
 
     @classmethod
     def _current_asset_error(cls, guid: str) -> str:
+        from infernux.application import Application
+
+        if Application.is_player():
+            return ""
         database = cls._asset_database
         read_error = getattr(database, "get_import_error", None)
         return str(read_error(guid) or "") if callable(read_error) else ""
