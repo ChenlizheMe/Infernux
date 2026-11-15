@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from infernux.engine.ui import inspector_shader_utils
 from infernux.engine.ui import inspector_material
@@ -82,47 +83,46 @@ class _RangePropertyContext:
         raise AssertionError("A ranged Int must use int_slider")
 
 
-def test_native_shader_metadata_owns_the_imported_schema_and_normalizes_hdr_values(tmp_path, monkeypatch):
+def test_native_shader_metadata_owns_the_accepted_typed_schema(tmp_path, monkeypatch):
     from infernux.core import asset_types
+    from infernux.core.shader import Shader
 
-    shader = tmp_path / "structured.frag"
-    shader.write_text('ShaderInfo { Name "Source/ShouldNotBeParsed" }\nvoid main() {}\n', encoding="utf-8")
+    shader = tmp_path / "structured.frag.py"
+    shader.write_text('raise AssertionError("A shader draft must never execute")\n', encoding="utf-8")
     color = {
         "name": "base_color",
-        "type": "Color",
+        "kind": "color",
         "default": [1.0, 0.5, 0.25, 1.0],
         "hdr": True,
         "range": [0.0, 1.0],
         "line": 7,
         "column": 9,
     }
-    encoded = {"name": "emission_color", "type": "Color", "default": "[0.0, 0.0, 0.0, 0.0], HDR", "hdr": False}
+    emission = {"name": "emission_color", "kind": "color", "default": [0.0, 0.0, 0.0, 0.0], "hdr": True}
     published = {
         "shader_id": "Imported/Structured",
-        "shader_schema_format": "ShaderInfo",
-        "properties": json.dumps([color, encoded]),
         "shader_hidden": True,
     }
     _write_meta(shader, {"shader_id": "Stale/Sidecar", "shader_hidden": False})
     monkeypatch.setattr(asset_types, "read_published_asset_metadata", lambda path: published)
+    monkeypatch.setattr(Shader, "get_schema", lambda _: {"domain": "mesh", "parameters": [color, emission]})
     assert inspector_shader_utils.parse_shader_id(str(shader)) == "Imported/Structured"
     assert inspector_shader_utils.parse_shader_properties(str(shader)) == [
-        color,
-        {"name": "emission_color", "type": "Color", "default": [0.0, 0.0, 0.0, 0.0], "hdr": True},
+        dict(color, type="Color"), dict(emission, type="Color"),
     ]
     assert inspector_shader_utils.is_shader_hidden(str(shader))
 
 
-def test_shader_schema_sync_drives_material_edits_and_removes_retired_range():
+def test_shader_schema_sync_drives_material_edits_and_removes_retired_range(monkeypatch):
     data = {
         "properties": {
-            "emission_color": {"type": 0, "value": "[0.0, 0.0, 0.0, 0.0], HDR"},
+            "emission_color": {"type": 0, "value": 1.0},
             "amount": {"type": 0, "value": 0.25},
             "steps": {"type": 4, "value": 1},
         }
     }
     schema = [
-        {"name": "emission_color", "type": "Color", "default": "[0.1, 0.2, 0.3, 1.0], HDR", "hdr": False},
+        {"name": "emission_color", "type": "Color", "default": [0.1, 0.2, 0.3, 1.0], "hdr": True},
         {"name": "amount", "type": "Float", "default": 0.5, "hdr": False, "range": [0.0, 1.0]},
         {"name": "steps", "type": "Int", "default": 2, "hdr": False, "range": [0, 8]},
     ]
@@ -142,6 +142,11 @@ def test_shader_schema_sync_drives_material_edits_and_removes_retired_range():
     inspector_shader_utils._apply_shader_props_to_mat(data, schema)
     assert data["properties"]["amount"]["value"] == 0.75
     assert "range" not in data["properties"]["amount"]
+    monkeypatch.setattr(inspector_shader_utils, "_get_shader_properties_cached",
+                        lambda reference, ext: schema if ext == ".frag" else pytest.fail("An empty vertex was read"))
+    for vertex in ("", {"guid": "", "shader_id": ""}):
+        inspector_shader_utils.sync_all_shader_properties(data, vertex, {"guid": "ui-fragment"})
+        assert inspector_shader_utils.get_material_property_display_order(data) == ["emission_color", "amount", "steps"]
 
 
 def test_shader_object_catalog_uses_author_suffixes_ids_and_material_domains(tmp_path, monkeypatch):
@@ -190,7 +195,8 @@ def test_shader_object_catalog_uses_author_suffixes_ids_and_material_domains(tmp
     assert ShaderAssetInfo.from_path(paths[0]).shader_type == "fragment"
     assert ShaderAssetInfo.from_path(paths[3]).shader_type == "vertex"
     assert ShaderAssetInfo.from_path("solver.compute.py").shader_type == "compute"
-    indexed = inspector_shader_utils._scan_shader_catalog(".frag", [str(tmp_path)])
+    from infernux.core import _shader_catalog
+    indexed = _shader_catalog._scan_shader_catalog(".frag", [str(tmp_path)])
     assert indexed["items"] == [("test/paint", "test/paint")]
     assert indexed["paths"]["test/internal"] == paths[2]
     assert indexed["paths"]["test/post"] == paths[1]

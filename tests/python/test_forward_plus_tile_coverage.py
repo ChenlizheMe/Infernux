@@ -1,4 +1,4 @@
-"""Production Forward+ GLSL versus independent pixel-segment/sphere geometry."""
+"""Production Forward+ Slang versus independent pixel-segment/sphere geometry."""
 from pathlib import Path
 import re
 import struct
@@ -13,11 +13,16 @@ from infernux.lib import _Infernux
 def light_grid(engine):
     source = (Path(__file__).resolve().parents[2] /
               "cpp/infernux/function/renderer/lighting/ForwardPlusLightGrid.cpp").read_text(encoding="utf-8")
-    match = re.search(r'ForwardPlusLightGrid::ShaderSource\(\).*?R"glsl\((.*?)\)glsl";', source, re.S)
+    match = re.search(r'ForwardPlusLightGrid::ShaderSource\(\).*?return R"\((.*?)\)";', source, re.S)
     assert match is not None
-    code = _Infernux._compile_compute_glsl_batch({"grid": match[1]}, "test-forward-plus-coverage")["grid"]
+    shader = match[1].replace("ConstantBuffer<ForwardPlusGridConstants> pc;",
+                              "[[vk::push_constant]] ConstantBuffer<ForwardPlusGridConstants> pc;")
+    compiled = _Infernux._compile_shader_program(shader, "<test-forward-plus-coverage>", "light_grid", targets=["spirv"])
+    entry = compiled["targets"][0]["entries"][0]
     host = engine._acquire_compute_host()
-    kernel = host.create_kernel(code, buffer_binding_count=3, push_constant_bytes=112)
+    kernel = host._create_kernel_from_compiler(
+        bytes(entry["code"]), [(0, "read_only_storage"), (1, "storage"), (2, "storage")],
+        push_constant_bytes=112, entry_point=entry["name"], target="spirv")
     state = [host, kernel]
     yield state
     kernel.wait()

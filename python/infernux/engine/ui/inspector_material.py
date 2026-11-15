@@ -386,7 +386,9 @@ def _shader_value_token(value):
 
 def _shader_annotation_key(vertex, fragment):
     return (_shader_value_token(vertex), _shader_value_token(fragment),
-            shader_utils.get_shader_property_generation())
+            shader_utils.get_shader_property_generation(),
+            shader_utils.get_shader_property_revision(vertex, ".vert"),
+            shader_utils.get_shader_property_revision(fragment, ".frag"))
 
 
 def _bump_material_schema_revision(state) -> int:
@@ -583,7 +585,7 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
     return changed, requires_deserialize, requires_pipeline_refresh, change_key
 
 
-def _prepare_surface_options_batch(ctx, rs, so_lw, cache=None):
+def _prepare_surface_options_batch(ctx, rs, so_lw, cache=None, *, domain="mesh"):
     """Prepare the reusable native surface plan and its current values.
 
     The native batch still receives fresh values every frame so controls remain
@@ -610,7 +612,7 @@ def _prepare_surface_options_batch(ctx, rs, so_lw, cache=None):
     locale = get_locale()
     shape_key = (
         _SURFACE_BATCH_SCHEMA, id(ctx), locale, float(so_lw),
-        blend_enabled, alpha_clip, depth_enabled,
+        blend_enabled, alpha_clip, depth_enabled, domain,
     )
     cached_entries = cache.get("entries") if isinstance(cache, dict) else None
     cached_schema_valid = _surface_batch_cache_is_current(cached_entries)
@@ -669,6 +671,9 @@ def _prepare_surface_options_batch(ctx, rs, so_lw, cache=None):
                              "sp": 1.0, "mn": rq_min, "mx": rq_max,
                              "sid": "asset.material.surface.render_queue"})
 
+        if domain in {"screen_ui", "world_ui"}:
+            entries = [(key, desc) for key, desc in entries if key in {"alpha_clip", "alpha_threshold"}]
+
         # The per-document cache owns the native plan.  Keeping a module-level
         # map keyed by ``id(ctx)`` lets a recycled Python object identity reuse
         # a plan compiled from a different descriptor schema.
@@ -696,17 +701,7 @@ def _prepare_surface_options_batch(ctx, rs, so_lw, cache=None):
         "alpha_threshold": float(rs.get("alphaClipThreshold", 0.5)),
         "render_queue": rq,
     }
-    values = []
-    for key, desc in entries:
-        value = value_by_key[key]
-        if desc["t"] == 0:
-            values.append(value)
-        elif desc["t"] == 1:
-            values.append(value)
-        elif desc["t"] == 2:
-            values.append(value)
-        else:
-            values.append(value)
+    values = [value_by_key[key] for key, _ in entries]
     return entries, plan, values, depth_enabled, depth_op
 
 
@@ -764,17 +759,17 @@ def _apply_surface_option_changes(changes, entries, rs, mat_data, overrides,
     return overrides, change_key
 
 
-def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw, cache=None):
+def _render_surface_options_batch(ctx, rs, mat_data, overrides, so_lw, cache=None, *, domain="mesh"):
     """Render all steady-state surface controls through one native bridge call."""
     entries, plan, values, depth_enabled, depth_op = _prepare_surface_options_batch(
-        ctx, rs, so_lw, cache=cache)
+        ctx, rs, so_lw, cache=cache, domain=domain)
     changes = ctx.render_property_batch_plan_values(plan, values, so_lw)
     return _apply_surface_option_changes(
         changes, entries, rs, mat_data, overrides, depth_enabled, depth_op)
 
 
 def _render_surface_options_section(ctx, mat_data, is_builtin, default_open,
-                                    cache=None, layout_cache=None):
+                                    cache=None, layout_cache=None, *, domain="mesh"):
     """Render surface options (cull, depth, blend, alpha clip, render queue).
 
     Returns ``(changed, requires_deserialize, requires_pipeline_refresh, change_key)``.
@@ -809,7 +804,7 @@ def _render_surface_options_section(ctx, mat_data, is_builtin, default_open,
         )
 
         overrides, change_key = _render_surface_options_batch(
-            ctx, rs, mat_data, overrides, so_lw, cache=cache)
+            ctx, rs, mat_data, overrides, so_lw, cache=cache, domain=domain)
         if change_key:
             changed = True
             requires_deserialize = True
@@ -1247,9 +1242,11 @@ def _render_material_top(ctx, panel, state, mat_data, section_readonly,
 
     ctx.separator()
     surface_cache = state.extra.setdefault("_material_surface_batch_cache", {})
+    shaders = mat_data.get("shaders", {})
+    domain = _get_material_shader_ui_cache(state, shaders.get("vertex", ""), shaders.get("fragment", ""))["fragment_domain"]
     so_ch, so_ds, so_pr, so_ck = _render_surface_options_section(
         ctx, mat_data, section_readonly, default_open_sections,
-        cache=surface_cache, layout_cache=layout_cache)
+        cache=surface_cache, layout_cache=layout_cache, domain=domain)
     changed |= so_ch
     requires_deserialize |= so_ds
     requires_pipeline_refresh |= so_pr

@@ -271,6 +271,10 @@ class AssetDatabase : public NativeLifetimeOwner
     /// Unlike the authoring alias resolver, this reads only the published index.
     [[nodiscard]] std::string GetGuidFromCatalogPath(const std::string &path) const;
 
+    /// Resolve an engine resource relative to its registered immutable roots.
+    /// Uses the published catalog; never searches parent directories or imports files.
+    [[nodiscard]] std::string GetPackagedResourceGuid(const std::string &relativePath) const;
+
     /// @brief Resolve the current mutable location of an authoritative GUID.
     /// Returns empty when the referenced asset is missing.
     [[nodiscard]] std::string GetPathFromGuid(const std::string &guid) const;
@@ -887,6 +891,7 @@ class AssetDatabase : public NativeLifetimeOwner
     static void BuildShaderPathIndex(QuerySnapshot &snapshot);
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
     [[nodiscard]] AssetScanRequest CaptureScanRequest() const;
+    [[nodiscard]] AssetIndexRoots CaptureScanRootIdentity() const;
     [[nodiscard]] static AssetScanArtifact BuildScanArtifact(const AssetScanRequest &request);
     static void PlanMetadataRead(WorkerMetadataPrepare &item, uint64_t range = 0);
     void RequireMetadataStorage(WorkerMetadataPrepare &item, const std::shared_ptr<FrameCpuStorageClaim> &storage,
@@ -900,7 +905,7 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] static AssetIndex
     BuildDerivedIndexArtifact(const WorkingSet &workingSet,
                               const std::unordered_map<std::string, std::vector<std::string>> &dependenciesByGuid,
-                              const std::string &normalizedProjectRoot);
+                              const std::string &normalizedProjectRoot, const AssetIndexRoots &scanRoots);
     [[nodiscard]] static std::shared_ptr<QuerySnapshot>
     BuildQuerySnapshotArtifact(const std::unordered_map<std::string, std::string> &guidToPath,
                                const std::unordered_map<std::string, std::string> &pathToGuid,

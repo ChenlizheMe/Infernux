@@ -9,10 +9,13 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace infernux
 {
+
+using AssetIndexRoots = std::vector<std::pair<std::string, bool>>;
 
 struct AssetFileFingerprint
 {
@@ -48,7 +51,7 @@ struct AssetIndexEntry
 class AssetIndex final
 {
   public:
-    INFERNUX_ASSET_RUNTIME_API void Reset(std::string normalizedProjectRoot);
+    INFERNUX_ASSET_RUNTIME_API void Reset(std::string normalizedProjectRoot, AssetIndexRoots scanRoots = {});
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API bool Load(const std::string &path,
                                                        const std::string &normalizedProjectRoot);
     INFERNUX_ASSET_RUNTIME_API void Save(const std::string &path, const PathWriteScope &writeScope = {}) const;
@@ -63,6 +66,10 @@ class AssetIndex final
     {
         return m_entries.size();
     }
+    [[nodiscard]] const AssetIndexRoots &ScanRoots() const noexcept
+    {
+        return m_scanRoots;
+    }
 
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API nlohmann::json SerializeDocument() const;
     INFERNUX_ASSET_RUNTIME_API void DeserializeDocument(const nlohmann::json &document,
@@ -70,6 +77,7 @@ class AssetIndex final
 
   private:
     std::string m_projectRoot;
+    AssetIndexRoots m_scanRoots;
     std::unordered_map<std::string, AssetIndexEntry> m_entries;
 };
 

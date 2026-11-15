@@ -358,7 +358,6 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
         auto &entry = m_linkedShaderProgramCache[work.stages];
         entry.sourceStamp = work.identity->sourceStamp;
         entry.programKey = work.program.key;
-        entry.failedSourceStamp = 0;
         entry.lastError.clear();
         entry.failureReported = false;
         const auto &meta = work.renderMeta;

@@ -1927,6 +1927,8 @@ bool AssetDatabase::RestoreCachedCatalog()
             INXLOG_INFO("AssetDatabase: no committed startup catalog is available");
             return false;
         }
+        if (cached.ScanRoots() != CaptureScanRootIdentity())
+            return false;
     } catch (const std::exception &exception) {
         INXLOG_WARN("AssetDatabase: discarded cached startup catalog: ", exception.what());
         return false;
@@ -2322,6 +2324,14 @@ AssetDatabase::AssetScanRequest AssetDatabase::CaptureScanRequest() const
             {extra, m_readOnlyScanRoots.find(FromFsPath(ToFsPath(extra))) != m_readOnlyScanRoots.end()});
     }
     return request;
+}
+
+AssetIndexRoots AssetDatabase::CaptureScanRootIdentity() const
+{
+    AssetIndexRoots roots;
+    for (const auto &root : CaptureScanRequest().roots)
+        roots.emplace_back(LexicalFilesystemPathKey(root.path), root.readOnly);
+    return roots;
 }
 
 AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetScanRequest &request)
@@ -4176,10 +4186,10 @@ bool AssetDatabase::ContinuePendingFileStateMerge(const std::shared_ptr<PendingR
 
 AssetIndex AssetDatabase::BuildDerivedIndexArtifact(
     const WorkingSet &workingSet, const std::unordered_map<std::string, std::vector<std::string>> &dependenciesByGuid,
-    const std::string &normalizedProjectRoot)
+    const std::string &normalizedProjectRoot, const AssetIndexRoots &scanRoots)
 {
     AssetIndex index;
-    index.Reset(normalizedProjectRoot);
+    index.Reset(normalizedProjectRoot, scanRoots);
     for (const auto &[normalizedPath, guid] : workingSet.pathToGuid) {
         const auto path = workingSet.guidToPath.find(guid);
         if (path == workingSet.guidToPath.end())
@@ -4309,8 +4319,10 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
         if (metadata->HasKey("import_document"))
             state->committedDependencies[guid] = {metadata->GetDataAs<std::string>("import_owner_guid")};
 
+    const auto scanRoots = CaptureScanRootIdentity();
     const bool reusedLoadedIndex =
-        state->pendingImports.empty() && m_lastRefreshReusedCount == state->scanArtifact.files.size() &&
+        state->stagedWorkingSet.assetIndex.ScanRoots() == scanRoots && state->pendingImports.empty() &&
+        m_lastRefreshReusedCount == state->scanArtifact.files.size() &&
         state->stagedWorkingSet.guidToPath.size() == state->stagedWorkingSet.assetIndex.Size() &&
         state->scanArtifact.files.size() == CountSourceAssets(state->stagedWorkingSet.assetIndex);
     state->indexRebuildRequired = !reusedLoadedIndex;
@@ -4323,13 +4335,14 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
     state->phase = PendingRefreshCommit::Phase::IndexBuild;
     QueueCatalogJob(
         m_refreshWork, CatalogIoStage::Index,
-        [state, normalizedProjectRoot, assetIndexPath, assetStartupCachePath, queryGeneration, dependencyGeneration] {
+        [state, normalizedProjectRoot, scanRoots, assetIndexPath, assetStartupCachePath, queryGeneration,
+         dependencyGeneration] {
             try {
                 if (state->indexRebuildRequired) {
                     state->indexProducerThread = std::this_thread::get_id();
                     const auto buildStarted = std::chrono::steady_clock::now();
                     AssetIndex index = BuildDerivedIndexArtifact(state->stagedWorkingSet, state->committedDependencies,
-                                                                 normalizedProjectRoot);
+                                                                 normalizedProjectRoot, scanRoots);
                     state->indexBuildMilliseconds =
                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - buildStarted)
                             .count();
@@ -4443,7 +4456,8 @@ void AssetDatabase::RebuildDerivedIndex()
     dependenciesByGuid.reserve(dependencySets.size());
     for (const auto &[guid, dependencies] : dependencySets)
         dependenciesByGuid.emplace(guid, std::vector<std::string>(dependencies.begin(), dependencies.end()));
-    workingSet.assetIndex = BuildDerivedIndexArtifact(workingSet, dependenciesByGuid, FilesystemPathKey(m_projectRoot));
+    workingSet.assetIndex = BuildDerivedIndexArtifact(workingSet, dependenciesByGuid, FilesystemPathKey(m_projectRoot),
+                                                      CaptureScanRootIdentity());
     InstallWorkingSet(std::move(workingSet));
     restoreWorkingSet.Release();
 }
@@ -5925,6 +5939,18 @@ std::string AssetDatabase::GetGuidFromCatalogPath(const std::string &path) const
     const auto snapshot = LoadQuerySnapshot();
     const auto found = snapshot->pathToGuid.find(normalized);
     return found != snapshot->pathToGuid.end() ? found->second : "";
+}
+
+std::string AssetDatabase::GetPackagedResourceGuid(const std::string &relativePath) const
+{
+    for (const auto &root : m_extraScanRoots) {
+        if (!m_readOnlyScanRoots.count(root))
+            continue;
+        const auto guid = GetGuidFromCatalogPath(JoinPath({root, relativePath}));
+        if (!guid.empty())
+            return guid;
+    }
+    return {};
 }
 
 std::string AssetDatabase::GetPathFromGuid(const std::string &guid) const

@@ -20,7 +20,6 @@
 #include <function/renderer/shader/ShaderProgram.h>
 #endif
 #include <function/resources/AssetRegistry/AssetRegistry.h>
-#include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
@@ -223,24 +222,9 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
     if (database == nullptr)
         throw std::logic_error("engine texture bootstrap requires an initialized AssetDatabase");
 
-    namespace fs = std::filesystem;
-    std::error_code error;
-    const fs::path relative = ToFsPath(textureRef);
-    for (const auto &searchPath : InxShaderLoader::GetShaderSearchPaths()) {
-        fs::path current = ToFsPath(searchPath);
-        for (int depth = 0; depth < 8 && !current.empty(); ++depth) {
-            const fs::path candidate = current / relative;
-            if (fs::exists(candidate, error) && !error) {
-                const std::string resolved = ResolveFilesystemPath(FromFsPath(candidate));
-                std::string guid = database->GetGuidFromPath(resolved);
-                if (guid.empty())
-                    guid = database->ImportAsset(resolved).guid;
-                if (!guid.empty())
-                    return guid;
-            }
-            current = current.parent_path();
-        }
-    }
+    const auto guid = database->GetPackagedResourceGuid(textureRef);
+    if (!guid.empty())
+        return guid;
     throw std::invalid_argument("engine texture cannot be resolved: " + textureRef);
 }
 

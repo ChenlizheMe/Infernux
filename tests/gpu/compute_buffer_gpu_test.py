@@ -252,18 +252,18 @@ def main() -> int:
             partial = values.get_data(offset=5, count=2)
             np.testing.assert_array_equal(partial.numpy(), replacement)
 
-            source = """#version 450
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-layout(std430, set = 0, binding = 0) buffer Values { float values[]; };
-layout(push_constant) uniform Constants { uint count; float scale; } pc;
-void main() {
-    uint index = gl_GlobalInvocationID.x;
+            source = """
+[[vk::binding(0, 0)]] RWStructuredBuffer<float> values;
+struct Constants { uint count; float scale; };
+[[vk::push_constant]] ConstantBuffer<Constants> pc;
+[shader("compute")] [numthreads(64, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint index = dispatch_id.x;
     if (index < pc.count) values[index] *= pc.scale;
 }
 """
-            spirv = native_api._compile_compute_glsl_batch(
-                {"scale": source}, "infernux-compute-kernel-test"
-            )["scale"]
+            program = native_api._compile_shader_program(source, "<compute-buffer-scale>", "scale", targets=["spirv"])
+            spirv = bytes(program["targets"][0]["entries"][0]["code"])
             scalar_source = np.arange(257, dtype=np.float32)
             scalar_values = inx.buffer(
                 shape=len(scalar_source), dtype=np.float32, device="gpu", data=scalar_source
@@ -291,18 +291,17 @@ void main() {
             )
             assert scalar_values._native.last_write_serial == write_serial
 
-            sparse_source = """#version 450
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-layout(std430, set = 0, binding = 0) buffer Constants { float scale; } args;
-layout(std430, set = 0, binding = 2) buffer Values { float values[]; } payload;
-void main() {
-    uint index = gl_GlobalInvocationID.x;
-    if (index < 257) payload.values[index] *= args.scale;
+            sparse_source = """
+[[vk::binding(0, 0)]] StructuredBuffer<float> args;
+[[vk::binding(2, 0)]] RWStructuredBuffer<float> payload;
+[shader("compute")] [numthreads(64, 1, 1)]
+void main(uint3 dispatch_id : SV_DispatchThreadID) {
+    uint index = dispatch_id.x;
+    if (index < 257) payload[index] *= args[0];
 }
 """
-            sparse_spirv = native_api._compile_compute_glsl_batch(
-                {"sparse": sparse_source}, "infernux-compute-sparse-bindings-test"
-            )["sparse"]
+            program = native_api._compile_shader_program(sparse_source, "<compute-sparse-bindings>", "sparse", targets=["spirv"])
+            sparse_spirv = bytes(program["targets"][0]["entries"][0]["code"])
             scale = inx.buffer(shape=1, dtype=np.float32, device="gpu", data=np.array([4], np.float32))
             sparse_kernel = host.create_kernel_with_bindings(sparse_spirv, [0, 2])
             assert sparse_kernel.buffer_bindings == [0, 2]

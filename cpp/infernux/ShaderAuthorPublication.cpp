@@ -16,16 +16,16 @@
 namespace infernux
 {
 
-Infernux::LinkedShaderProgramPreparation Infernux::EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
-                                                                              const std::string &vertexPath,
-                                                                              const std::string &fragmentPath)
+Infernux::MaterialShaderPreparation Infernux::EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
+                                                                         const std::string &vertexPath,
+                                                                         const std::string &fragmentPath)
 {
     auto &registry = AssetRegistry::Instance();
     auto *database = GetAssetDatabase();
     const auto guid = database->GetGuidFromPath(fragmentPath);
     const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
     if (!asset)
-        return {true, false, "This GPU author is not a mesh material: " + fragmentPath};
+        return {false, "Material fragment author is unavailable: " + fragmentPath};
     const auto vertex = vertexPath.empty() ? nullptr
                                            : registry.LoadAsset<ShaderAsset>(database->GetGuidFromPath(vertexPath),
                                                                              ResourceType::Shader);
@@ -35,12 +35,12 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureShaderAuthorMaterial(co
         if (entry.lastError != prepared->error)
             entry.failureReported = false;
         entry.lastError = prepared->error;
-        return {true, false, prepared->error};
+        return {false, prepared->error};
     }
     const auto &program = *prepared->program;
     if (!m_renderer->HasShaderProgramArtifact(program.key)) {
         if (!m_renderer->PublishShaderProgramArtifact(program))
-            return {true, false, "Mesh author program could not be published"};
+            return {false, "Material author program could not be published"};
         const auto &meta = asset->renderMeta;
         m_renderer->StoreShaderRenderMeta(program.key.stages.fragmentKey, meta.cullMode, meta.depthWrite,
                                           meta.depthTest, meta.blend, meta.queue, meta.passTag, meta.stencil,
@@ -49,7 +49,7 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureShaderAuthorMaterial(co
     entry.programKey = program.key;
     entry.lastError.clear();
     entry.failureReported = false;
-    return {true, true, {}};
+    return {true, {}};
 }
 
 std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)

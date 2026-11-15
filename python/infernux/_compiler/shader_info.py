@@ -41,10 +41,14 @@ def read_shader_info(source, source_path):
         bases = classes[0].bases if classes else ()
         base = qualified(bases[0]).rsplit(".", 1)[-1] if len(bases) == 1 else ""
         result["domain"] = {"frag": "mesh", "surface": "mesh", "fullscreen": "fullscreen", "particle": "particle", "screen_ui": "screen_ui", "world_ui": "world_ui"}.get(base, "")
+    ui_state = {}
     if result["domain"] in {"screen_ui", "world_ui"}:
         result.update(surface_type="transparent", render_queue=3000, cull_mode="none", depth_write=False,
                       depth_test="off" if result["domain"] == "screen_ui" else "greater_equal", blend="alpha",
                       cast_shadows=False, receive_shadows=False)
+        ui_state = {field: result[field] for field in (
+            "surface_type", "render_queue", "cull_mode", "depth_write", "depth_test", "blend",
+            "cast_shadows", "receive_shadows", "stencil", "pass_tag")}
     declared = set()
     for declaration in classes:
         for statement in declaration.body:
@@ -73,6 +77,9 @@ def read_shader_info(source, source_path):
                 valid = valid and bool(value.strip()) and "\\" not in value and all(value.split("/"))
             if not valid:
                 owner.error(statement, "Invalid shader declaration: " + field, code="author.metadata")
+            if field in ui_state and value != ui_state[field]:
+                owner.error(statement, "UI geometry owns " + field + "; use the UI element's drawing/depth controls",
+                            code="author.metadata")
             result[field] = value
             declared.add(field)
     if result["surface_type"] == "transparent":

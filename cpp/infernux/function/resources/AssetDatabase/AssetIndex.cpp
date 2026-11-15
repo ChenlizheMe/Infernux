@@ -80,9 +80,10 @@ template <typename Emit> void VisitIndexEntries(const AssetIndex &index, Emit em
 
 } // namespace
 
-void AssetIndex::Reset(std::string normalizedProjectRoot)
+void AssetIndex::Reset(std::string normalizedProjectRoot, AssetIndexRoots scanRoots)
 {
     m_projectRoot = std::move(normalizedProjectRoot);
+    m_scanRoots = std::move(scanRoots);
     m_entries.clear();
 }
 
@@ -106,7 +107,8 @@ bool AssetIndex::Load(const std::string &path, const std::string &normalizedProj
         Reset(normalizedProjectRoot);
         return false;
     }
-    if (!document.contains("import_revision") || document["import_revision"] != kImportRevision) {
+    if (!document.contains("scan_roots") || !document.contains("import_revision") ||
+        document["import_revision"] != kImportRevision) {
         Reset(normalizedProjectRoot);
         return false;
     }
@@ -130,7 +132,8 @@ void AssetIndex::Save(const std::string &path, const PathWriteScope &parentScope
                 first = false;
             });
             output << "],\"import_revision\":" << kImportRevision
-                   << ",\"project_root\":" << nlohmann::json(m_projectRoot) << "}\n";
+                   << ",\"project_root\":" << nlohmann::json(m_projectRoot)
+                   << ",\"scan_roots\":" << nlohmann::json(m_scanRoots) << "}\n";
         },
         options);
 }
@@ -152,12 +155,15 @@ nlohmann::json AssetIndex::SerializeDocument() const
 {
     nlohmann::json entries = nlohmann::json::array();
     VisitIndexEntries(*this, [&](nlohmann::json entry) { entries.push_back(std::move(entry)); });
-    return {{"project_root", m_projectRoot}, {"import_revision", kImportRevision}, {"entries", std::move(entries)}};
+    return {{"project_root", m_projectRoot},
+            {"scan_roots", m_scanRoots},
+            {"import_revision", kImportRevision},
+            {"entries", std::move(entries)}};
 }
 
 void AssetIndex::DeserializeDocument(const nlohmann::json &document, const std::string &normalizedProjectRoot)
 {
-    RequireExactFields(document, {"project_root", "import_revision", "entries"}, "AssetIndex");
+    RequireExactFields(document, {"project_root", "scan_roots", "import_revision", "entries"}, "AssetIndex");
     if (document["import_revision"] != kImportRevision)
         throw std::invalid_argument("AssetIndex import revision does not match");
     if (!document["project_root"].is_string() || document["project_root"].get<std::string>() != normalizedProjectRoot)
@@ -167,6 +173,7 @@ void AssetIndex::DeserializeDocument(const nlohmann::json &document, const std::
 
     AssetIndex staged;
     staged.m_projectRoot = normalizedProjectRoot;
+    staged.m_scanRoots = document.at("scan_roots").get<AssetIndexRoots>();
     std::unordered_set<std::string> guids;
     size_t index = 0;
     for (const auto &item : document["entries"]) {

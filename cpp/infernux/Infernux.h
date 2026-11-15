@@ -490,19 +490,16 @@ class Infernux
     void RegisterShaderToRenderer(const struct ShaderAsset &asset);
     void RetireShaderPreparations(const std::vector<std::string> &sourcePaths);
 
-    struct LinkedShaderProgramPreparation
+    struct MaterialShaderPreparation
     {
-        bool usesLinkedArtifact = false;
         bool success = true;
         std::string error;
     };
 
-    std::string ReloadShaderDependencies(const std::string &shaderPath, const std::string &previousSourcePath);
     std::string ReloadShaderAuthorSource(const std::string &shaderPath);
-    [[nodiscard]] LinkedShaderProgramPreparation EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
-                                                                            const std::string &vertexPath,
-                                                                            const std::string &fragmentPath);
-    std::string ReloadShaderSourceBatch(const std::vector<std::string> &roots);
+    [[nodiscard]] MaterialShaderPreparation EnsureShaderAuthorMaterial(const ShaderStagePair &stages,
+                                                                       const std::string &vertexPath,
+                                                                       const std::string &fragmentPath);
     // Sources checked by the last synchronous candidate publication. Diagnostic
     // owners use this receipt to retire only errors resolved by that result.
     std::vector<std::string> m_shaderReloadSources;
@@ -512,22 +509,11 @@ class Infernux
     {
         uint64_t sourceStamp = 0;
         ShaderProgramKey programKey;
-        uint64_t failedSourceStamp = 0;
         std::string lastError;
         bool failureReported = false;
-        // Compiled UI candidates wait for an actual draw to acquire GPU ownership.
-        std::shared_ptr<const ShaderProgramArtifact> preparedArtifact;
-        uint64_t sourceEnvironmentRevision = 0;
-        // Labels of the published generation, independently of current drafts.
-        std::array<std::string, 2> stageLabels;
     };
 
-    [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
-                                                                                   const std::string &vertexPath,
-                                                                                   const std::string &fragmentPath,
-                                                                                   bool requireCurrentSource = false);
-    [[nodiscard]] LinkedShaderProgramPreparation
-    EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material, bool requireCurrentSource = false);
+    [[nodiscard]] MaterialShaderPreparation PrepareMaterialShader(const std::shared_ptr<InxMaterial> &material);
     [[nodiscard]] std::optional<ShaderProgramDomain>
     InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &material) const;
 

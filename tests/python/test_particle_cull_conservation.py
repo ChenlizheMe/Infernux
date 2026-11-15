@@ -1,4 +1,4 @@
-"""Execute the production culler GLSL and check visible-index conservation."""
+"""Execute the production Slang culler and check visible-index conservation."""
 from pathlib import Path
 import re
 import struct
@@ -13,16 +13,15 @@ from infernux.lib import _Infernux
 def cull_kernels(engine):
     path = Path(__file__).resolve().parents[2] / "cpp/infernux/function/renderer/particle/ParticleGpuCuller.cpp"
     source = path.read_text(encoding="utf-8")
-    common = re.search(r'CommonBindings\s*=\s*R"glsl\((.*?)\)glsl";', source, re.S).group(1)
-    sources = {}
+    common = re.search(r'CommonBindings\s*=\s*R"slang\((.*?)\)slang";', source, re.S).group(1)
+    compiled = {}
     for name in ("Reset", "Cull", "Finalize"):
-        match = re.search(
-            rf'GpuParticleCullShaderSources::{name}\(\).*?BuildShader\("([^"]+)", R"glsl\((.*?)\)glsl"\)',
-            source, re.S,
-        )
+        match = re.search(rf'GpuParticleCullShaderSources::{name}\(\).*?BuildShader\(R"slang\((.*?)\)slang"', source, re.S)
         assert match is not None
-        sources[name] = "#version 450\n" + match[1].replace(r"\n", "\n") + common + match[2]
-    compiled = _Infernux._compile_compute_glsl_batch(sources, "test-particle-cull-conservation")
+        arguments = "StructuredBuffer" if name == "Cull" else "RWStructuredBuffer"
+        shader = "#define INX_ROOT_CONSTANTS [[vk::push_constant]]\n#define INX_CULL_ARGUMENTS " + arguments + "\n" + common + match[1]
+        program = _Infernux._compile_shader_program(shader, "<test-particle-cull-" + name + ">", "particle_cull_" + name, targets=["spirv"])
+        compiled[name] = bytes(program["targets"][0]["entries"][0]["code"])
     host = engine._acquire_compute_host()
     kernels = {name: host.create_kernel(code, buffer_binding_count=9, push_constant_bytes=112)
                for name, code in compiled.items()}

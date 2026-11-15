@@ -15,7 +15,7 @@ _shader_properties_cache_generation = -1
 _shader_properties_cache: dict[tuple[str, ...], tuple[str, int, list | None]] = {}
 
 
-def _get_shader_properties_cached(reference, ext: str) -> list | None:
+def _get_shader_property_record(reference, ext: str):
     """Resolve the imported GUID; only name-only references use the catalog.
 
     None means an unavailable stage, distinct from a valid empty schema.
@@ -37,7 +37,7 @@ def _get_shader_properties_cached(reference, ext: str) -> list | None:
     cache_key = (get_project_root() or "", "guid" if guid else "name", guid or shader_id, ext)
     cached = _shader_properties_cache.get(cache_key)
     if cached is not None and registry.get_asset_version(cached[0]) == cached[1]:
-        return cached[2]
+        return cached
     database = registry.get_asset_database()
     if guid:
         shader_path = database.get_path_from_guid(guid) if database else None
@@ -46,8 +46,17 @@ def _get_shader_properties_cached(reference, ext: str) -> list | None:
     source_guid = guid or (database.get_guid_from_path(shader_path) if database and shader_path else "")
     props = (parse_shader_properties(shader_path)
              if shader_path and _matches_stage(shader_path, ext) else None)
-    _shader_properties_cache[cache_key] = (source_guid, registry.get_asset_version(source_guid), props)
-    return props
+    record = (source_guid, registry.get_asset_version(source_guid), props)
+    _shader_properties_cache[cache_key] = record
+    return record
+
+
+def _get_shader_properties_cached(reference, ext: str) -> list | None:
+    return _get_shader_property_record(reference, ext)[2]
+
+
+def get_shader_property_revision(reference, ext: str):
+    return _get_shader_property_record(reference, ext)[:2] if reference else ("", 0)
 
 
 def parse_shader_properties(filepath: str) -> list:
@@ -234,8 +243,7 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
     mat_data["_shader_property_order"] = ordered_names
 
     shader_prop_names: set[str] = set()
-    for raw_sp in all_props:
-        sp = _normalize_imported_property(raw_sp)
+    for sp in all_props:
         name = sp.get('name', '')
         ptype_str = sp.get('type', 'Float')
         default = sp.get('default')
@@ -312,7 +320,8 @@ def _merged_shader_properties(vertex, fragment) -> list[dict] | None:
     all_props = []
     has_stage = False
     for reference, ext in ((vertex, ".vert"), (fragment, ".frag")):
-        if not reference:
+        if not reference or (isinstance(reference, dict) and not any(
+                reference.get(key) for key in ("guid", "shader_id", "builtin"))):
             continue
         has_stage = True
         properties = _get_shader_properties_cached(reference, ext)

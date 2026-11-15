@@ -121,9 +121,8 @@ void TestNonGuidRenderEffectFieldsDoNotCreateDependenciesOnInitialRefresh()
             database->Initialize(infernux::FromFsPath(root));
             auto &registry = infernux::AssetRegistry::Instance();
             registry.Initialize(std::move(database));
-            registry.RegisterLoader(
-                infernux::ResourceType::RenderEffect,
-                std::make_unique<infernux::InxDefaultLoader>(infernux::ResourceType::RenderEffect));
+            registry.RegisterLoader(infernux::ResourceType::RenderEffect,
+                                    std::make_unique<infernux::InxDefaultLoader>(infernux::ResourceType::RenderEffect));
             registry.PopulateAssetDatabaseLoaders();
             auto *assetDatabase = registry.GetAssetDatabase();
             assetDatabase->Refresh();
@@ -675,6 +674,70 @@ void TestStartupCatalogSurvivesLiveIndexInvalidation()
             Require(restored.GetGuidFromPath(infernux::FromFsPath(script)) == scriptGuid,
                     "startup catalog did not preserve the committed asset identity");
         }
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+void TestStartupCatalogUsesRegisteredScanRoots()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-startup-roots";
+    std::filesystem::remove_all(root);
+    const auto first = root / "resources-a";
+    const auto second = root / "resources-b";
+    WriteText(first / "catalog.py", "VALUE = 1\n");
+    WriteText(second / "catalog.py", "VALUE = 2\n");
+    infernux::JobSystem::Initialize(2);
+    try {
+        const auto project = infernux::FromFsPath(root);
+        auto open = [&](const std::filesystem::path &resourceRoot) {
+            auto database = std::make_unique<infernux::AssetDatabase>();
+            database->Initialize(project);
+            database->AddReadOnlyScanRoot(infernux::FromFsPath(resourceRoot));
+            auto &registry = infernux::AssetRegistry::Instance();
+            registry.Initialize(std::move(database));
+            registry.RegisterLoader(infernux::ResourceType::Script,
+                                    std::make_unique<infernux::InxPythonScriptLoader>());
+            registry.PopulateAssetDatabaseLoaders();
+            return registry.GetAssetDatabase();
+        };
+        auto *database = open(first);
+        database->Refresh();
+        const std::string firstGuid = database->GetPackagedResourceGuid("catalog.py");
+        Require(!firstGuid.empty(), "initial resource root was not published");
+        infernux::AssetRegistry::Instance().Shutdown();
+
+        database = open(first);
+        Require(database->RestoreCachedCatalog(), "unchanged resource roots did not reuse the startup catalog");
+        Require(database->GetPackagedResourceGuid("catalog.py") == firstGuid,
+                "restored catalog changed packaged resource identity");
+        infernux::AssetRegistry::Instance().Shutdown();
+
+        database = open(second);
+        Require(!database->RestoreCachedCatalog(), "startup restored a catalog from a different resource root");
+        database->Refresh();
+        const std::string secondGuid = database->GetPackagedResourceGuid("catalog.py");
+        Require(secondGuid == firstGuid, "resource relocation changed the packaged relative-path identity");
+        Require(database->GetPathFromGuid(secondGuid) ==
+                    infernux::ResolveFilesystemPath(infernux::FromFsPath(second / "catalog.py")),
+                "refresh did not publish the new resource root");
+        Require(database->GetGuidFromCatalogPath(infernux::FromFsPath(first / "catalog.py")).empty(),
+                "refresh retained the previous resource root");
+        infernux::AssetRegistry::Instance().Shutdown();
+
+        database = open(second);
+        Require(database->RestoreCachedCatalog(), "new resource root did not become the reusable startup catalog");
+        Require(database->GetPackagedResourceGuid("catalog.py") == secondGuid,
+                "new resource root cache lost packaged identity");
+        database->AddReadOnlyScanRoot(infernux::FromFsPath(root / "empty-resources"));
+        Require(!database->RestoreCachedCatalog(), "startup ignored an additional empty scan root");
+        infernux::AssetRegistry::Instance().Shutdown();
         infernux::JobSystem::Shutdown();
     } catch (...) {
         if (infernux::AssetRegistry::Instance().IsInitialized())
@@ -1478,6 +1541,7 @@ int main()
         for (const bool keepIndex : {true, false})
             TestCopiedAuthoredSidecarStillRejectsDuplicateGuid(keepIndex);
         TestStartupCatalogSurvivesLiveIndexInvalidation();
+        TestStartupCatalogUsesRegisteredScanRoots();
         TestPluginPageImagesAndCachedImportPolicy();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestCompositeModelPublishesExternalTextureGuidDependencies();
