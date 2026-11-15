@@ -80,7 +80,7 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | B | S | R | C | Bit(Patches) | Bit(Shapes),
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | Bit(States) | Bit(Forces),
-                                                 P | W | B | S | R | C | Bit(States),
+                                                 P | W | B | S | R | C | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | R | Bit(Joints),
                                                  P | B | S | R | Bit(States) | Bit(Bounds),
@@ -334,7 +334,8 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
                     (port == Sleeps &&
                      (op.entry == Wake || op.entry == ForceWake || op.entry == Update || op.entry == Commit ||
                       op.entry == BoundsWake || op.entry == PrescribedWake || op.entry == Initialize)) ||
-                    (port == States && op.entry == Commit) || (port == Joints && op.entry == RetireHinge);
+                    (port == Forces && op.entry == Update) || (port == States && op.entry == Commit) ||
+                    (port == Joints && op.entry == RetireHinge);
                 dispatch.bufferAccesses.push_back(complete ? rhi::ComputeBufferAccess::Write
                                                   : writer ? rhi::ComputeBufferAccess::ReadWrite
                                                            : rhi::ComputeBufferAccess::Read);

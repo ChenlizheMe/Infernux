@@ -591,6 +591,11 @@ class JoltGpuTick::Impl
     void Normalize(StageCursor &next) const
     {
         while (next.phase != Phase::Done) {
+            // CPU Jolt samples sleep history only at the final collision substep.
+            if (next.phase == Phase::UpdateSleep && next.substep + 1u < tickParameters.solve.y) {
+                NextSpan(next);
+                continue;
+            }
             if (ProducerPhase(next.phase))
                 return;
             const auto span = Span(next.phase);
