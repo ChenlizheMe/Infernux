@@ -20,6 +20,8 @@ struct PhysicsDomain final
     glm::vec3 gravity;
     bool retiring = false;
     bool gpuCancelled = false;
+    Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
+    bool reconcilingRagdolls = false;
     std::vector<PhysicsActorHandle> recreateActors;
     uint64_t surfaceRevision = 0;
     bool stepPending = false, stepCompleted = false, solverStarted = false;

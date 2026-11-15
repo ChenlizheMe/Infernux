@@ -25,6 +25,7 @@ enum Port : uint8_t
     States,
     Rows,
     Motion,
+    PoseDrive,
     PortCount
 };
 enum Stage : uint8_t
@@ -33,6 +34,7 @@ enum Stage : uint8_t
     ReadMotion,
     ReadStatus,
     UpdateState,
+    DrivePose,
     StageCount
 };
 struct PortLayout
@@ -57,9 +59,10 @@ constexpr PortLayout Ports[] = {
      true},
     {"joint_query_rows", sizeof(uint32_t), {}, true, true, true},
     {"joint_motion", sizeof(JointReadback), {"values", "orientation", "status"}, false, false, false},
+    {"joint_pose_drives", sizeof(JointPoseDrive), {"meta", "relative"}, false, false, true},
 };
-constexpr std::array<std::string_view, StageCount> Entries{"initialize_joints", "read_joint_motion",
-                                                           "read_joint_status", "update_joint_state"};
+constexpr std::array<std::string_view, StageCount> Entries{
+    "initialize_joints", "read_joint_motion", "read_joint_status", "update_joint_state", "drive_joint_pose"};
 constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
@@ -67,7 +70,7 @@ constexpr uint32_t Bit(Port port)
 constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Remap) | Bit(Previous) | Bit(Stream) | Bit(States),
     Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows) | Bit(Motion), Bit(Parameters) | Bit(Stream) | Bit(Motion),
-    Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows)};
+    Bit(Parameters) | Bit(Stream) | Bit(States) | Bit(Rows), Bit(Parameters) | Bit(Stream) | Bit(PoseDrive)};
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
     if (count > std::numeric_limits<size_t>::max() / sizeof(T))
@@ -118,8 +121,9 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
         const auto &field = value.fields[index];
         if (field.name != expected.fields[index] || field.offset != index * sizeof(UInt4) ||
             field.byteSize != sizeof(UInt4) || field.kind != ShaderValueKind::Vector ||
-            field.scalar != ((expected.integer || (port == Motion && index == 2)) ? ShaderScalarKind::UInt32
-                                                                                  : ShaderScalarKind::Float32) ||
+            field.scalar != ((expected.integer || (port == Motion && index == 2) || (port == PoseDrive && index == 0))
+                                 ? ShaderScalarKind::UInt32
+                                 : ShaderScalarKind::Float32) ||
             field.rows != 1 || field.columns != 4)
             throw std::invalid_argument("Jolt GPU joint target field differs from its shared device record");
     }
@@ -383,7 +387,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuJoints::PrepareUpdate(JoltGpuStorage 
             throw std::invalid_argument("Jolt GPU joint updates require unique rows within accepted topology");
         const auto &old = accepted[change.index];
         const auto &author = change.author;
-        uint32_t flags = 0;
+        uint32_t flags = change.runtimeIntent;
         if (author.bodies.z == JointSixDOF) {
             const auto changed = [](const Float4 &a, const Float4 &b) {
                 return std::memcmp(&a, &b, sizeof(Float4)) != 0;
@@ -684,6 +688,82 @@ JoltGpuJoints::PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication
     result->packet =
         rhi::PrepareComputeBatch(host, std::move(updates), {std::move(dispatch)}, {{buffers[Motion], 0, outputBytes}});
     return {result, JoltGpuControlWork{result->packet}};
+}
+
+JoltGpuControlWork JoltGpuJoints::PreparePoseDrive(JoltGpuStorage &storage, std::vector<JointPoseDrive> requests) const
+{
+    if (!m_host.SharesServicesWith(storage.GetHost()))
+        throw std::invalid_argument("Ragdoll drive belongs to a different compute owner");
+    const auto layout = storage.GetJointLayout();
+    for (const auto &request : requests) {
+        if (!layout || request.meta.x >= layout->Rows().size())
+            throw std::logic_error("Ragdoll drive precedes its accepted joint topology");
+        const auto &row = layout->Row(request.meta.x);
+        if (row.identity.x != request.meta.y || row.identity.y != request.meta.z ||
+            (row.bodies.z != JointHinge && row.bodies.z != JointSwingTwist && row.bodies.z != JointSixDOF) ||
+            request.meta.w > JointPoseDriveSet)
+            throw std::logic_error("Ragdoll drive differs from its captured joint lifetime");
+        if (request.meta.w == JointPoseDriveSet &&
+            !(std::isfinite(request.relative.x) && std::isfinite(request.relative.y) &&
+              std::isfinite(request.relative.z) && std::isfinite(request.relative.w)))
+            throw std::invalid_argument("Ragdoll drive requires finite relative targets");
+    }
+    return PreparePoseDriveChunk(storage, std::make_shared<const std::vector<JointPoseDrive>>(std::move(requests)), 0);
+}
+
+JoltGpuControlWork JoltGpuJoints::PreparePoseDriveChunk(JoltGpuStorage &storage,
+                                                        std::shared_ptr<const std::vector<JointPoseDrive>> requests,
+                                                        size_t first) const
+{
+    if (first == requests->size())
+        return {};
+    constexpr size_t RequestsPerPacket = 1024;
+    const auto count = std::min(RequestsPerPacket, requests->size() - first);
+    const auto &stream = storage.Get(Resource::Joints);
+    const auto layout = storage.GetJointLayout();
+    if (!stream || stream->IsFrozen() || !layout || stream->GetByteSize() != layout->ByteSize())
+        throw std::logic_error("Ragdoll drive requires the accepted writable joint stream");
+    rhi::ComputeHost host = m_host;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers{};
+    buffers[Stream] = stream;
+    std::vector<rhi::ComputeBufferUpdate> updates;
+    const auto upload = [&](Port port, std::vector<uint8_t> bytes) {
+        buffers[port] = Allocate(host, bytes.size());
+        updates.push_back({buffers[port], 0, std::move(bytes)});
+    };
+    const JointParams parameters{{static_cast<uint32_t>(layout->Rows().size()), 0, static_cast<uint32_t>(count), 0}};
+    upload(Parameters, Bytes(&parameters, 1));
+    upload(PoseDrive, Bytes(requests->data() + first, count));
+    const auto &program = m_programs[DrivePose];
+    rhi::ComputeDispatchDesc dispatch;
+    dispatch.kernel = program.kernel;
+    dispatch.groupCountX = Groups(host, count);
+    rhi::ComputeDispatchProof proof;
+    for (const auto port : program.ports) {
+        const auto binding = static_cast<uint32_t>(dispatch.buffers.size());
+        dispatch.buffers.push_back(buffers[port]);
+        dispatch.bufferAccesses.push_back(port == Stream ? rhi::ComputeBufferAccess::ReadWrite
+                                                         : rhi::ComputeBufferAccess::Read);
+        if (port != Stream) {
+            proof.reads.push_back({binding, 0, buffers[port]->GetByteSize()});
+            continue;
+        }
+        proof.reads.push_back({binding, 0, sizeof(UInt4)});
+        for (size_t index = first; index < first + count; ++index) {
+            const auto row = requests->at(index).meta.x;
+            const auto &entry = layout->Row(row);
+            proof.reads.push_back({binding, (1ull + uint64_t(row) * JointDirectoryWords) * 16, sizeof(JointDirectory)});
+            const rhi::ComputeBindingRange state{binding, uint64_t(entry.layout.y) * 16,
+                                                 uint64_t(JoltGpuJointLayout::StateWords(entry.bodies.z)) * 16};
+            proof.reads.push_back(state);
+            proof.writes.push_back(state);
+        }
+    }
+    dispatch.proof = std::move(proof);
+    auto packet = rhi::PrepareComputeBatch(host, std::move(updates), {std::move(dispatch)});
+    return {std::move(packet),
+            [this, &storage, requests, next = first + count] { return PreparePoseDriveChunk(storage, requests, next); },
+            JoltGpuControlWork::ResumeAfter::Acceptance};
 }
 
 JoltGpuControlWork JoltGpuJoints::PrepareStatus(std::shared_ptr<const JoltGpuScene::Publication> publication) const

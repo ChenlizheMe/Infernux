@@ -107,6 +107,12 @@ SemanticTypeDescriptor SwingTwistJoint::DescribeSemanticType()
     return type;
 }
 
+SwingTwistJointSettings SwingTwistJoint::PreparedSettings()
+{
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
+    return m_settings;
+}
+
 void SwingTwistJoint::ApplySettings(SwingTwistJointSettings settings, bool rebuild)
 {
     Validate(settings);
@@ -128,7 +134,7 @@ void SwingTwistJoint::SetFrame(const glm::vec3 &twistAxis, const glm::vec3 &plan
 {
     if (twistAxis == m_settings.twistAxis && planeAxis == m_settings.planeAxis && m_constraintId)
         return;
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.twistAxis = twistAxis;
     settings.planeAxis = planeAxis;
     ApplySettings(settings, true);
@@ -136,7 +142,7 @@ void SwingTwistJoint::SetFrame(const glm::vec3 &twistAxis, const glm::vec3 &plan
 
 void SwingTwistJoint::SetTwistLimits(float minimum, float maximum)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.minimumTwistAngle = minimum;
     settings.maximumTwistAngle = maximum;
     ApplySettings(settings);
@@ -146,7 +152,7 @@ void SwingTwistJoint::SetTwistAxis(glm::vec3 value)
 {
     if (value == m_settings.twistAxis && m_constraintId)
         return;
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.twistAxis = value;
     ApplySettings(settings, true);
 }
@@ -155,7 +161,7 @@ void SwingTwistJoint::SetPlaneAxis(glm::vec3 value)
 {
     if (value == m_settings.planeAxis && m_constraintId)
         return;
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.planeAxis = value;
     ApplySettings(settings, true);
 }
@@ -164,98 +170,98 @@ void SwingTwistJoint::SetSwingType(JointSwingType value)
 {
     if (value == m_settings.swingType && m_constraintId)
         return;
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.swingType = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetNormalHalfConeAngle(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.normalHalfConeAngle = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetPlaneHalfConeAngle(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.planeHalfConeAngle = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetMinimumTwistAngle(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.minimumTwistAngle = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetMaximumTwistAngle(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.maximumTwistAngle = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetFrictionTorque(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.frictionTorque = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetSwingMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.swingMotorMode = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetTwistMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.twistMotorMode = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetSwingMotorStiffness(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.swingMotorStiffness = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetSwingMotorDamping(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.swingMotorDamping = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetSwingMotorMaxTorque(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.swingMotorMaxTorque = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetTwistMotorStiffness(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.twistMotorStiffness = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetTwistMotorDamping(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.twistMotorDamping = value;
     ApplySettings(settings);
 }
 
 void SwingTwistJoint::SetTwistMotorMaxTorque(float value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.twistMotorMaxTorque = value;
     ApplySettings(settings);
 }
@@ -265,8 +271,13 @@ void SwingTwistJoint::SetTargetOrientation(glm::vec4 value)
     if (!std::isfinite(value[0]) || !std::isfinite(value[1]) || !std::isfinite(value[2]) || !std::isfinite(value[3]) ||
         glm::dot(value, value) < 1e-12f)
         throw std::invalid_argument("SwingTwistJoint.target_orientation must be finite and nonzero");
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
     m_settings.targetOrientation = glm::normalize(value);
-    UpdateConstraintSettings();
+    if (!m_constraintId)
+        RebuildConstraint();
+    else
+        PhysicsWorld::Instance().UpdateSwingTwistConstraint(m_constraintId, m_settings, m_enableCollision, true);
+    PhysicsWorld::Instance().ClaimRagdollTarget(*this);
 }
 
 void SwingTwistJoint::SetTargetAngularVelocity(glm::vec3 value)
@@ -288,6 +299,7 @@ uint64_t SwingTwistJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId,
 
 void SwingTwistJoint::UpdateConstraintSettings()
 {
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
     if (!m_constraintId)
         RebuildConstraint();
     else

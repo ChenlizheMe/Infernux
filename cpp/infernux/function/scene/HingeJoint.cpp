@@ -129,6 +129,7 @@ void HingeJoint::UpdateConstraintSettings()
 
 void HingeJoint::SetMotorEnabled(bool value)
 {
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
     m_motorEnabled = value;
     UpdateConstraintMotor();
 }
@@ -137,9 +138,11 @@ void HingeJoint::SetMotorTargetAngle(float degrees)
 {
     if (!std::isfinite(degrees))
         throw std::invalid_argument("hinge motor target angle must be finite");
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
     m_motorTargetAngle = degrees;
     if (m_constraintId != 0)
         PhysicsWorld::Instance().UpdateHingeConstraintTarget(m_constraintId, GetClampedMotorTargetRadians());
+    PhysicsWorld::Instance().ClaimRagdollTarget(*this);
 }
 
 void HingeJoint::SetMotorStiffness(float stiffness)
@@ -199,6 +202,7 @@ float HingeJoint::GetClampedMotorTargetRadians() const
 
 void HingeJoint::UpdateConstraintMotor()
 {
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
     if (m_constraintId != 0) {
         PhysicsWorld::Instance().UpdateHingeConstraintMotor(
             m_constraintId, m_motorEnabled, GetClampedMotorTargetRadians(), m_motorStiffness, m_motorDamping,

@@ -2,6 +2,7 @@
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
 #include "GameObject.h"
+#include "Ragdoll.h"
 #include "Rigidbody.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
@@ -133,6 +134,7 @@ void Joint::RebuildConstraint()
     m_boundBodyId = bodyId;
     m_boundConnectedBodyId = connectedBodyId;
     OnConstraintCreated();
+    Ragdoll::MarkPhysicsMembership(object);
 }
 
 void Joint::ReleaseConstraint()
@@ -146,6 +148,7 @@ void Joint::ReleaseConstraint()
 
 void Joint::OnPhysicsConstraintDestroyed() noexcept
 {
+    Ragdoll::MarkPhysicsMembership(GetGameObject());
     m_constraintId = 0;
     m_boundBodyId = m_boundConnectedBodyId = 0xFFFFFFFF;
     if (m_retryOnRetire)

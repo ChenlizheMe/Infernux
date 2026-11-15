@@ -51,6 +51,8 @@ struct JoltGpuQueryResult
     std::shared_ptr<const JoltGpuScene::Publication> publication;
     uint64_t numericalGeneration = 0;
     std::shared_ptr<rhi::ComputeBuffer> hits;
+    // QuerySpan[queryCount] is the byte-zero prefix; the retained backing
+    // control also owns private CA state. Metadata reads/export use the prefix.
     std::shared_ptr<rhi::ComputeBuffer> spans;
     std::shared_ptr<rhi::ComputeBuffer> summary;
     uint32_t queryCount = 0;

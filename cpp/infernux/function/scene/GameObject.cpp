@@ -5,6 +5,7 @@
 #include "ComponentRecord.h"
 #include "MeshRenderer.h"
 #include "PyComponentProxy.h"
+#include "Ragdoll.h"
 #include "RectTransformLayout.h"
 #include "Rigidbody.h"
 #include "Scene.h"
@@ -513,6 +514,9 @@ void GameObject::SetParentInternal(GameObject *newParent, bool worldPositionStay
     if (newParent && rectLayout && rectLayout->unitMode == ui::RectUnitMode::InheritUI)
         newParent->PrepareRectLayoutParent();
 
+    Ragdoll::MarkPhysicsMembership(this);
+    Ragdoll::MarkPhysicsMembership(m_parent);
+    Ragdoll::MarkPhysicsMembership(newParent);
     const bool crossesScenes = newParent && previousScene && newParent->m_scene && newParent->m_scene != previousScene;
     std::unique_ptr<GameObject> selfPtr;
     if (crossesScenes) {
@@ -569,6 +573,8 @@ void GameObject::SetParentInternal(GameObject *newParent, bool worldPositionStay
         m_scene->BumpStructureVersion();
     bool isActiveInHierarchy = IsActiveInHierarchy();
     PhysicsECSStore::Instance().RefreshHierarchy(this);
+    Ragdoll::MarkPhysicsMembership(this);
+    Ragdoll::MarkPhysicsMembership(m_parent);
     HandleActiveStateChanged(wasActiveInHierarchy, isActiveInHierarchy);
 }
 

@@ -113,18 +113,14 @@ class SwingTwistJoint final : public Joint
 
   private:
     friend class PhysicsWorld;
-    void RecordPoseDrive(glm::vec4 orientation, bool enableMotors = true)
-    {
-        if (enableMotors)
-            m_settings.swingMotorMode = m_settings.twistMotorMode = JointMotorMode::Position;
-        m_settings.targetOrientation = orientation;
-    }
+
     uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId) override;
     void UpdateConstraintSettings() override;
     void OnConstraintCreated() override
     {
         UpdateConstraintSettings();
     }
+    SwingTwistJointSettings PreparedSettings();
     void ApplySettings(SwingTwistJointSettings settings, bool rebuild = false);
     SwingTwistJointSettings m_settings;
 };

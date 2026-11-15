@@ -190,6 +190,12 @@ SemanticTypeDescriptor SixDOFJoint::DescribeSemanticType()
     return type;
 }
 
+SixDOFJointSettings SixDOFJoint::PreparedSettings()
+{
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
+    return m_settings;
+}
+
 void SixDOFJoint::ApplySettings(SixDOFJointSettings settings, bool frameChanged)
 {
     Validate(settings);
@@ -212,7 +218,7 @@ void SixDOFJoint::SetFrame(const glm::vec3 &axis, const glm::vec3 &secondaryAxis
 {
     if (axis == m_settings.axis && secondaryAxis == m_settings.secondaryAxis && m_constraintId)
         return;
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.axis = axis;
     settings.secondaryAxis = secondaryAxis;
     ApplySettings(settings, true);
@@ -220,7 +226,7 @@ void SixDOFJoint::SetFrame(const glm::vec3 &axis, const glm::vec3 &secondaryAxis
 
 void SixDOFJoint::SetLinearLimits(const glm::vec3 &minimum, const glm::vec3 &maximum)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearLimitMinimum = minimum;
     settings.linearLimitMaximum = maximum;
     ApplySettings(settings);
@@ -228,7 +234,7 @@ void SixDOFJoint::SetLinearLimits(const glm::vec3 &minimum, const glm::vec3 &max
 
 void SixDOFJoint::SetAngularLimits(const glm::vec3 &minimum, const glm::vec3 &maximum)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularLimitMinimum = minimum;
     settings.angularLimitMaximum = maximum;
     ApplySettings(settings);
@@ -238,7 +244,7 @@ void SixDOFJoint::SetAxis(glm::vec3 value)
 {
     if (value == m_settings.axis && m_constraintId)
         return;
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.axis = value;
     ApplySettings(settings, true);
 }
@@ -247,189 +253,189 @@ void SixDOFJoint::SetSecondaryAxis(glm::vec3 value)
 {
     if (value == m_settings.secondaryAxis && m_constraintId)
         return;
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.secondaryAxis = value;
     ApplySettings(settings, true);
 }
 
 void SixDOFJoint::SetXMotion(JointMotion value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.xMotion = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetYMotion(JointMotion value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.yMotion = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetZMotion(JointMotion value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.zMotion = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularXMotion(JointMotion value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularXMotion = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularYMotion(JointMotion value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularYMotion = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularZMotion(JointMotion value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularZMotion = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearLimitMinimum(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearLimitMinimum = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearLimitMaximum(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearLimitMaximum = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularLimitMinimum(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularLimitMinimum = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularLimitMaximum(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularLimitMaximum = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearLimitStiffness(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearLimitStiffness = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearLimitDamping(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearLimitDamping = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearFrictionForce(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearFrictionForce = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularFrictionTorque(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularFrictionTorque = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearMotorStiffness(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearMotorStiffness = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearMotorDamping(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearMotorDamping = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetLinearMotorMaxForce(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.linearMotorMaxForce = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularMotorStiffness(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularMotorStiffness = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularMotorDamping(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularMotorDamping = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularMotorMaxTorque(glm::vec3 value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularMotorMaxTorque = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetXMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.xMotorMode = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetYMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.yMotorMode = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetZMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.zMotorMode = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularXMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularXMotorMode = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularYMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularYMotorMode = value;
     ApplySettings(settings);
 }
 
 void SixDOFJoint::SetAngularZMotorMode(JointMotorMode value)
 {
-    auto settings = m_settings;
+    auto settings = PreparedSettings();
     settings.angularZMotorMode = value;
     ApplySettings(settings);
 }
@@ -447,8 +453,13 @@ void SixDOFJoint::SetTargetOrientation(glm::vec4 value)
     if (!std::isfinite(value[0]) || !std::isfinite(value[1]) || !std::isfinite(value[2]) || !std::isfinite(value[3]) ||
         glm::dot(value, value) < 1e-12f)
         throw std::invalid_argument("SixDOFJoint.target_orientation must be finite and nonzero");
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
     m_settings.targetOrientation = glm::normalize(value);
-    UpdateConstraintSettings();
+    if (!m_constraintId)
+        RebuildConstraint();
+    else
+        PhysicsWorld::Instance().UpdateSixDOFConstraint(m_constraintId, m_settings, m_enableCollision, true);
+    PhysicsWorld::Instance().ClaimRagdollTarget(*this);
 }
 
 void SixDOFJoint::SetTargetVelocity(glm::vec3 value)
@@ -477,6 +488,7 @@ uint64_t SixDOFJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uin
 
 void SixDOFJoint::UpdateConstraintSettings()
 {
+    PhysicsWorld::Instance().PrepareRagdollControl(*this);
     if (!m_constraintId)
         RebuildConstraint();
     else

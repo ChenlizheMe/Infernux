@@ -190,6 +190,7 @@ class SixDOFJoint final : public Joint
     {
         UpdateConstraintSettings();
     }
+    SixDOFJointSettings PreparedSettings();
     void ApplySettings(SixDOFJointSettings settings, bool frameChanged = false);
     SixDOFJointSettings m_settings;
 };

@@ -22,6 +22,7 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <map>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -67,6 +68,7 @@ class Collider;
 class BoxCollider;
 class Rigidbody;
 class Joint;
+class Ragdoll;
 struct RigidbodyMassProperties;
 struct SwingTwistJointSettings;
 struct SixDOFJointSettings;
@@ -478,12 +480,13 @@ class PhysicsWorld
                                         const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
                                         const SwingTwistJointSettings &settings, bool enableCollision);
     void UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
-                                    bool enableCollision);
+                                    bool enableCollision, bool claimTarget = false);
     glm::quat GetAngularConstraintOrientation(uint64_t constraintId) const;
     uint64_t CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                     const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
                                     const SixDOFJointSettings &settings, bool enableCollision);
-    void UpdateSixDOFConstraint(uint64_t constraintId, const SixDOFJointSettings &settings, bool enableCollision);
+    void UpdateSixDOFConstraint(uint64_t constraintId, const SixDOFJointSettings &settings, bool enableCollision,
+                                bool claimTarget = false);
     glm::vec3 GetSixDOFConstraintPosition(uint64_t constraintId) const;
     void UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
                                        bool enableCollision);
@@ -693,10 +696,7 @@ class PhysicsWorld
     Collider *FindColliderByBodyId(uint32_t bodyId) const;
     Rigidbody *FindRigidbodyByBodyId(uint32_t bodyId) const;
 
-    /// A Jolt Ragdoll view over the existing component-owned bodies and joints.
-    /// Returns zero while cooking/body/constraint publication is incomplete.
-    uint64_t CreateRagdollAssembly(const std::vector<Rigidbody *> &bodies, const std::vector<Joint *> &parentJoints,
-                                   const std::vector<int> &parents);
+    /// Identity view of ordinary component-owned GPU bodies and parent joints.
     void DestroyRagdollAssembly(uint64_t id);
     [[nodiscard]] bool HasRagdollAssembly(uint64_t id) const;
     void DriveRagdollPose(uint64_t id, const std::vector<glm::quat> &worldRotations, bool enableMotors = true);
@@ -730,6 +730,46 @@ class PhysicsWorld
     friend class Infernux;
     friend class SceneManager;
     friend class Ragdoll;
+    friend class Joint;
+    friend class PhysicsECSStore;
+    friend class HingeJoint;
+    friend class SwingTwistJoint;
+    friend class SixDOFJoint;
+    using RagdollToken = std::array<uint64_t, 2>;
+    struct RagdollMember
+    {
+        PhysicsTargetReference body, joint;
+        RagdollToken bodyIdentity{};
+        uint32_t bodyId = UINT32_MAX;
+        uint64_t jointId = 0;
+        uint32_t kind = JPH::GPU::JointFixed;
+        int parent = -1;
+        bool animationTarget = false;
+    };
+    struct RagdollAssembly
+    {
+        PhysicsDomain *domain = nullptr;
+        PhysicsTargetReference owner;
+        RagdollToken ownerIdentity{};
+        uint64_t epoch = 0;
+        std::vector<RagdollMember> members;
+        std::vector<PhysicsColliderPair> pairs;
+        bool ready = false;
+    };
+    void QueueRagdollRebuild(Ragdoll &owner) noexcept;
+    void CancelRagdollRebuild(Ragdoll &owner) noexcept;
+    void ReconcileRagdolls(PhysicsDomain &domain);
+    void SuspendRagdolls(PhysicsDomain &domain) noexcept;
+    void RetireRagdolls(PhysicsDomain &domain) noexcept;
+    void ClearRagdollDrive(uint64_t id);
+    void DriveRagdollPoseImpl(uint64_t id, const std::vector<glm::quat> &worldRotations, bool enableMotors,
+                              bool animationController, bool deferred);
+    void ClaimRagdollTarget(const Joint &joint) noexcept;
+    void PrepareRagdollControl(const Joint &joint);
+    uint32_t RagdollTargetReset(uint32_t bodyId) const;
+    uint64_t m_nextRagdollId = 1;
+    std::unordered_map<uint64_t, RagdollAssembly> m_ragdolls;
+    std::map<RagdollToken, uint64_t> m_ragdollBodyOwners;
     [[nodiscard]] std::shared_ptr<const PhysicsColliderPairs> CaptureColliderPairs(PhysicsDomain &domain,
                                                                                    bool userOnly = false) const;
     void QueueColliderPairs(PhysicsDomain &domain) const;

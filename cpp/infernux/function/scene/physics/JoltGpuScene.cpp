@@ -438,11 +438,11 @@ class JoltGpuScene::Impl
         return id;
     }
 
-    void UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update)
+    void UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update, uint32_t runtimeIntent)
     {
         auto author = GetAuthoredJoint(id).author;
         update(author);
-        UpdateJoints({{id, author}});
+        UpdateJoints({{id, author, runtimeIntent}});
     }
 
     void UpdateJoints(std::vector<JointUpdate> updates)
@@ -451,7 +451,12 @@ class JoltGpuScene::Impl
             return;
         auto &domain = BodyDomain(GetAuthoredJoint(updates.front().id).bodyIdA);
         auto &pending = domain.pending;
-        auto values = std::make_shared<std::vector<PublishedJoint>>();
+        struct CapturedUpdate
+        {
+            PublishedJoint value;
+            uint32_t runtimeIntent;
+        };
+        auto values = std::make_shared<std::vector<CapturedUpdate>>();
         values->reserve(updates.size());
         for (const auto &update : updates) {
             auto value = GetAuthoredJoint(update.id);
@@ -459,30 +464,31 @@ class JoltGpuScene::Impl
                 throw std::invalid_argument("GPU joint batch crosses RuntimeWorld domains");
             value.author = update.author;
             value.author.identity = GetAuthoredJoint(update.id).author.identity;
-            values->push_back(value);
+            values->push_back({value, update.runtimeIntent});
         }
         JoltGpuControlGroup group;
         group.prepareModel = [this, values] {
             std::vector<JoltGpuJointModelUpdate> changes;
             changes.reserve(values->size());
-            for (auto &value : *values) {
+            for (auto &captured : *values) {
+                auto &value = captured.value;
                 value.row = AcceptedJoint(value.id).row;
                 value.author.bodies.x =
                     value.bodyIdB == InvalidBodyId ? InvalidQueryBodySlot : Packed(byId.at(value.bodyIdB));
                 value.author.bodies.y = Packed(byId.at(value.bodyIdA));
                 value.author.identity.z = slots[byId.at(value.bodyIdA)].partition->row;
-                changes.push_back({value.row, value.author});
+                changes.push_back({value.row, value.author, captured.runtimeIntent});
             }
             return joints.PrepareUpdate(storage, std::move(changes));
         };
         group.modelAccepted = [this, values]() noexcept {
-            for (const auto &value : *values)
-                acceptedJoints[value.row].author = value.author;
+            for (const auto &captured : *values)
+                acceptedJoints[captured.value.row].author = captured.value.author;
             publicationDirectory.reset();
         };
         pending.push_back(std::move(group));
-        for (const auto &value : *values)
-            authoredJoints.at(value.id).value.author = value.author;
+        for (const auto &captured : *values)
+            authoredJoints.at(captured.value.id).value.author = captured.value.author;
     }
 
     void RefreshJointBody(uint32_t bodyId, const PublishedActor &actor)
@@ -1568,6 +1574,34 @@ PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand value, c
 {
     return m_impl->QueueCommand(id, value, author);
 }
+
+void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents)
+{
+    if (intents.empty())
+        return;
+    auto &domain = m_impl->Domain(world);
+    if (domain.closed || domain.retiring)
+        throw std::logic_error("Cannot submit ragdoll drive to a closed World");
+    auto captured = std::make_shared<const std::vector<PoseDriveIntent>>(std::move(intents));
+    JoltGpuControlGroup group;
+    group.prepareWork = [impl = m_impl.get(), &domain, captured] {
+        std::vector<JointPoseDrive> requests;
+        requests.reserve(captured->size());
+        for (const auto &intent : *captured) {
+            // The live author may already be retired; only this ordered accepted
+            // prefix can resolve the previously captured joint lifetime.
+            const auto &joint = impl->AcceptedJoint(intent.id);
+            if (joint.kind != intent.kind || joint.author.identity.z != domain.row)
+                throw std::logic_error("Captured ragdoll drive crosses joint kind or World identity");
+            requests.push_back({{joint.row, static_cast<uint32_t>(intent.id), static_cast<uint32_t>(intent.id >> 32),
+                                 intent.clear ? JointPoseDriveClear : JointPoseDriveSet},
+                                intent.relative});
+        }
+        return impl->joints.PreparePoseDrive(impl->storage, std::move(requests));
+    };
+    domain.pending.push_back(std::move(group));
+}
+
 void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs)
 {
     auto &domain = m_impl->Domain(world);
@@ -1596,9 +1630,9 @@ JPH::GPU::BodyModel JoltGpuScene::GetAcceptedBodyModel(uint32_t bodyId) const
     return slot.accepted->physicalModel;
 }
 
-void JoltGpuScene::UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update)
+void JoltGpuScene::UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update, uint32_t runtimeIntent)
 {
-    m_impl->UpdateJoint(id, update);
+    m_impl->UpdateJoint(id, update, runtimeIntent);
 }
 void JoltGpuScene::UpdateJoints(std::vector<JointUpdate> values)
 {

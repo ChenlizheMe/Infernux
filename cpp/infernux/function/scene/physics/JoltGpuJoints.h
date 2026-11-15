@@ -54,6 +54,9 @@ class JoltGpuJoints final
     [[nodiscard]] JoltGpuPreparedJointMotion
     PrepareReadMotion(std::shared_ptr<const JoltGpuScene::Publication> publication, const std::vector<uint32_t> &rows,
                       uint32_t kind) const;
+    /// Captured stable identities are resolved by the source before preparation.
+    [[nodiscard]] JoltGpuControlWork PreparePoseDrive(JoltGpuStorage &storage,
+                                                      std::vector<JPH::GPU::JointPoseDrive> requests) const;
     [[nodiscard]] JoltGpuControlWork PrepareStatus(std::shared_ptr<const JoltGpuScene::Publication> publication) const;
 
   private:
@@ -62,8 +65,11 @@ class JoltGpuJoints final
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<uint8_t> ports;
     };
+    [[nodiscard]] JoltGpuControlWork
+    PreparePoseDriveChunk(JoltGpuStorage &storage,
+                          std::shared_ptr<const std::vector<JPH::GPU::JointPoseDrive>> requests, size_t first) const;
     rhi::ComputeHost m_host;
-    std::array<Program, 4> m_programs;
+    std::array<Program, 5> m_programs;
 };
 
 } // namespace infernux

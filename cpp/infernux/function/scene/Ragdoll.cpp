@@ -2,11 +2,12 @@
 #include "ComponentDocumentValidation.h"
 #include "ComponentFactory.h"
 #include "GameObject.h"
-#include "Joint.h"
 #include "Rigidbody.h"
+#include "RuntimeWorld.h"
 #include "Scene.h"
 #include "SkeletonInstance.h"
 #include "Transform.h"
+#include "physics/PhysicsDomain.h"
 #include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <stdexcept>
@@ -50,6 +51,8 @@ Ragdoll::~Ragdoll()
 }
 void Ragdoll::OnHierarchyPublished()
 {
+    PhysicsWorld::Instance().QueueRagdollRebuild(*this);
+    MarkPhysicsMembership(GetGameObject()->GetParent());
     if (!ResolveOwnedComponent(m_skeletonComponentId))
         m_skeletonComponentId = 0;
     m_generatedComponentIds.erase(std::remove_if(m_generatedComponentIds.begin(), m_generatedComponentIds.end(),
@@ -57,13 +60,17 @@ void Ragdoll::OnHierarchyPublished()
                                   m_generatedComponentIds.end());
     if (auto *skeleton = GetSkeleton(); skeleton && skeleton->HasBoundHierarchy())
         OnSkeletonHierarchyReady(*skeleton);
+    if (m_driveAnimation) {
+        InitializeAnimationDrive();
+        Rebuild();
+    }
 }
 void Ragdoll::Awake()
 {
     // A newly inserted nested root takes ownership before its first fixed step.
     for (auto *parent = GetGameObject()->GetParent(); parent; parent = parent->GetParent())
         if (auto *outer = parent->GetComponent<Ragdoll>()) {
-            outer->Rebuild();
+            PhysicsWorld::Instance().QueueRagdollRebuild(*outer);
             break;
         }
     Rebuild();
@@ -79,6 +86,8 @@ void Ragdoll::OnDisable()
 void Ragdoll::OnDestroy()
 {
     Release();
+    if (auto *object = GetGameObject())
+        MarkPhysicsMembership(object->GetParent());
 }
 void Ragdoll::OnGameObjectDeactivated()
 {
@@ -106,6 +115,7 @@ size_t Ragdoll::GetConstraintCount() const
 
 void Ragdoll::Release()
 {
+    PhysicsWorld::Instance().CancelRagdollRebuild(*this);
     PhysicsWorld::Instance().DestroyRagdollAssembly(m_assemblyId);
     m_assemblyId = 0;
 }
@@ -117,8 +127,12 @@ std::vector<Rigidbody *> Ragdoll::GetConfiguredBodies() const
     if (!root)
         return bodies;
     const auto collect = [&](auto &&self, GameObject *object) -> void {
-        if (object != root && object->GetComponent<Ragdoll>())
+        if (object->IsDestroying())
             return;
+        if (object != root)
+            if (auto *nested = object->GetComponent<Ragdoll>();
+                nested && !nested->IsDestroyed() && !nested->IsBeingDestroyed())
+                return;
         if (auto *body = object->GetComponent<Rigidbody>())
             bodies.push_back(body);
         for (size_t index = 0; index < object->GetChildCount(); ++index)
@@ -135,107 +149,48 @@ std::vector<Rigidbody *> Ragdoll::GetConfiguredBodies() const
                 bodies.push_back(body);
     } else
         collect(collect, root);
-    const std::unordered_set<Rigidbody *> members(bodies.begin(), bodies.end());
-    std::unordered_map<Rigidbody *, bool> visited;
-    std::vector<Rigidbody *> ordered;
-    const auto append = [&](auto &&self, Rigidbody *body) -> void {
-        if (const auto found = visited.find(body); found != visited.end()) {
-            if (!found->second)
-                throw std::invalid_argument("ragdoll parent joints must form an acyclic skeleton");
-            return;
-        }
-        visited.emplace(body, false);
-        if (auto *joint = body->GetGameObject()->GetComponent<Joint>(); joint && joint->IsEnabled()) {
-            auto *parent = joint->GetConnectedBody();
-            if (!parent || !members.count(parent))
-                throw std::invalid_argument("ragdoll parent joint must connect a Rigidbody inside this root");
-            self(self, parent);
-        }
-        visited.at(body) = true;
-        ordered.push_back(body);
-    };
-    for (auto *body : bodies)
-        append(append, body);
-    return ordered;
+    return bodies;
+}
+
+Ragdoll *Ragdoll::FindOwner(GameObject *object) noexcept
+{
+    for (; object; object = object->GetParent())
+        if (auto *owner = object->GetComponent<Ragdoll>(); owner && !owner->IsDestroyed() && !owner->IsBeingDestroyed())
+            return owner;
+    return nullptr;
+}
+
+void Ragdoll::MarkPhysicsMembership(GameObject *object) noexcept
+{
+    if (auto *owner = FindOwner(object))
+        PhysicsWorld::Instance().QueueRagdollRebuild(*owner);
 }
 
 bool Ragdoll::Rebuild()
 {
     auto *root = GetGameObject();
-    if (!root || !root->GetScene() || !root->IsActiveInHierarchy() || !IsEnabled()) {
+    if (!root || !root->GetScene() || !root->GetScene()->GetRuntimeWorld() || !root->IsActiveInHierarchy() ||
+        !IsEnabled() || IsDestroyed() || IsBeingDestroyed()) {
         Release();
         return false;
     }
-    const auto configured = GetConfiguredBodies();
-    std::vector<Rigidbody *> bodies;
-    m_poseInputCount = configured.size();
-    m_activePoseInputs.clear();
-    for (size_t index = 0; index < configured.size(); ++index) {
-        auto *body = configured[index];
-        if (body->IsEnabled() && body->GetGameObject()->IsActiveInHierarchy()) {
-            bodies.push_back(body);
-            m_activePoseInputs.push_back(index);
-        }
-    }
-    std::unordered_map<Rigidbody *, int> indices;
-    for (auto *body : bodies)
-        indices.emplace(body, -1);
-    std::vector<Rigidbody *> ordered;
-    std::vector<Joint *> joints;
-    std::vector<int> parents;
-    bool ready = true;
-    for (auto *body : bodies) {
-        auto *joint = body->GetGameObject()->GetComponent<Joint>();
-        if (joint && !joint->IsEnabled())
-            joint = nullptr;
-        auto *parent = joint ? joint->GetConnectedBody() : nullptr;
-        if (parent && !indices.count(parent)) {
-            ready = false; // An internal endpoint is temporarily disabled.
-            break;
-        }
-        indices.at(body) = static_cast<int>(ordered.size());
-        ordered.push_back(body);
-        joints.push_back(joint);
-        parents.push_back(parent ? indices.at(parent) : -1);
-    }
-    m_structureVersion = root->GetScene()->GetStructureVersion();
-    if (!ready) {
-        Release();
-        m_bodies.clear();
-        m_joints.clear();
-        m_parents.clear();
-        return false;
-    }
-
-    bool unchanged = IsBound() && m_bodies.size() == ordered.size() && m_parents == parents;
-    for (size_t index = 0; unchanged && index < ordered.size(); ++index)
-        unchanged = m_bodies[index].GetComponent() == ordered[index] && m_joints[index].GetComponent() == joints[index];
-    if (unchanged)
-        return true;
-    Release();
-    m_bodies.clear();
-    m_joints.clear();
-    m_parents = std::move(parents);
-    for (size_t index = 0; index < ordered.size(); ++index) {
-        m_bodies.emplace_back(ordered[index]);
-        m_joints.emplace_back(joints[index]);
-    }
-    m_assemblyId = PhysicsWorld::Instance().CreateRagdollAssembly(ordered, joints, m_parents);
+    auto &world = PhysicsWorld::Instance();
+    world.QueueRagdollRebuild(*this);
+    world.ReconcileRagdolls(*root->GetScene()->GetRuntimeWorld()->physics);
     return IsBound();
 }
 
 void Ragdoll::FixedUpdate(float)
 {
-    auto *root = GetGameObject();
-    if (!IsBound() || m_structureVersion != root->GetScene()->GetStructureVersion())
+    if (m_membershipDirty)
         Rebuild();
-    if (m_driveAnimation)
-        UpdateAnimationDrive();
+    if (m_driveAnimation && IsBound() && UpdateAnimationDrive())
+        m_animationTargetPending = false;
 }
 
 void Ragdoll::DrivePose(const std::vector<glm::quat> &worldRotations)
 {
-    if ((!IsBound() || m_structureVersion != GetGameObject()->GetScene()->GetStructureVersion()) && !Rebuild())
+    if ((!IsBound() || m_membershipDirty) && !Rebuild())
         throw std::runtime_error("ragdoll bodies or parent joints have not been published");
     if (worldRotations.size() != m_poseInputCount)
         throw std::invalid_argument("ragdoll pose must match its public bodies array");
@@ -285,6 +240,7 @@ bool Ragdoll::DeserializeDocument(const nlohmann::json &document)
         return false;
     m_skeletonComponentId = document.value("skeleton_component_id", uint64_t{0});
     m_driveAnimation = document.value("drive_animation", false);
+    m_animationTargetPending = m_driveAnimation;
     m_generatedComponentIds = document.value("generated_component_ids", std::vector<uint64_t>{});
     return true;
 }
@@ -295,6 +251,7 @@ std::unique_ptr<Component> Ragdoll::Clone() const
     copy->m_executionOrder = m_executionOrder;
     copy->m_skeletonComponentId = m_skeletonComponentId;
     copy->m_driveAnimation = m_driveAnimation;
+    copy->m_animationTargetPending = m_driveAnimation;
     copy->m_generatedComponentIds = m_generatedComponentIds;
     return copy;
 }

@@ -452,6 +452,7 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         return false;
     domain.recreateActors.reserve(m_gpuScene->GetCapacity(domain.owner));
     m_domains.insert(&domain);
+    ReconcileRagdolls(domain);
     QueueColliderPairs(domain);
     auto &store = PhysicsECSStore::Instance();
     for (const auto handle : domain.recreateActors)
@@ -468,6 +469,7 @@ void PhysicsWorld::RequireGpu(PhysicsDomain &domain) const
 void PhysicsWorld::Shutdown()
 {
     for (auto *domain : m_domains) {
+        RetireRagdolls(*domain);
         if (m_gpuScene)
             m_gpuScene->Cancel(domain->owner);
         domain->rendering.bindings.Clear();
@@ -809,10 +811,10 @@ bool PhysicsWorld::HasDomainControl(PhysicsDomain &domain) const
 {
     const auto &world = domain.owner;
     const auto &store = PhysicsECSStore::Instance();
-    return domain.controlPending || (m_gpuScene && m_gpuScene->HasPendingControl(domain.owner)) ||
-           store.HasDirtyColliders(world) || store.HasPendingBodyCreations(world) ||
-           store.HasPendingBroadphaseAdds(world) || store.HasPendingBroadphaseRemoves(world) ||
-           store.HasPendingJointDependencies(world) ||
+    return domain.pendingRagdollHead || domain.controlPending ||
+           (m_gpuScene && m_gpuScene->HasPendingControl(domain.owner)) || store.HasDirtyColliders(world) ||
+           store.HasPendingBodyCreations(world) || store.HasPendingBroadphaseAdds(world) ||
+           store.HasPendingBroadphaseRemoves(world) || store.HasPendingJointDependencies(world) ||
            (m_gpuScene && !domain.gpuCancelled && PhysicMaterial::GetSurfaceRevision() != domain.surfaceRevision);
 }
 void PhysicsWorld::DrainGpuSource(PhysicsDomain &domain) const
@@ -948,6 +950,7 @@ void PhysicsWorld::RefreshRenderPoses()
 void PhysicsWorld::CancelPendingStep() noexcept
 {
     auto &domain = CurrentDomain();
+    SuspendRagdolls(domain);
     domain.contacts.Close();
     auto &world = domain.owner;
     if (m_gpuRenderProgram) {
@@ -2116,10 +2119,6 @@ const std::vector<uint32_t> &PhysicsWorld::GetPoseReadbackBodyIds() const
     static const std::vector<uint32_t> empty;
     return empty;
 }
-bool PhysicsWorld::HasRagdollAssembly(uint64_t) const
-{
-    return false;
-}
 void PhysicsWorld::SetContactEventStreamEnabled(bool enabled, bool includeTriggers)
 {
     RequireOwnerThread();
@@ -2922,6 +2921,7 @@ void PhysicsWorld::BeginRetireDomain(RuntimeWorld &world) noexcept
     CancelPendingStep();
     domain.recreateActors.clear();
     domain.retiring = true;
+    RetireRagdolls(domain);
     if (m_gpuScene)
         m_gpuScene->RetirePartition(world);
     domain.rendering.bindings.Clear();
@@ -2933,6 +2933,7 @@ bool PhysicsWorld::CanRetireDomain(const RuntimeWorld &world) const noexcept
 }
 void PhysicsWorld::RetireDomain(PhysicsDomain &domain) noexcept
 {
+    RetireRagdolls(domain);
     m_domains.erase(&domain);
 }
 } // namespace infernux

@@ -5,6 +5,7 @@
 #include "Light.h"
 #include "MeshRenderer.h"
 #include "PyComponentProxy.h"
+#include "Ragdoll.h"
 #include "RuntimeWorld.h"
 #include "SceneManager.h"
 #include "SkeletonInstance.h"
@@ -648,6 +649,9 @@ bool Scene::TransferObjectTo(GameObject *gameObject, Scene &destination, GameObj
         }
     }
 
+    Ragdoll::MarkPhysicsMembership(gameObject);
+    Ragdoll::MarkPhysicsMembership(gameObject->GetParent());
+    Ragdoll::MarkPhysicsMembership(destinationParent);
     std::unique_ptr<GameObject> owned = std::move(*sourceIt);
     sourceSiblings.erase(sourceIt);
     for (GameObject *object : objects)
@@ -668,6 +672,8 @@ bool Scene::TransferObjectTo(GameObject *gameObject, Scene &destination, GameObj
     ++destination.m_structureVersion;
 
     PhysicsECSStore::Instance().RefreshHierarchy(gameObject);
+    Ragdoll::MarkPhysicsMembership(gameObject);
+    Ragdoll::MarkPhysicsMembership(gameObject->GetParent());
 
     // Component and GameObject handles include the owning Scene world ID.
     // Rebind the existing Python object to the same native proxy so the move

@@ -334,9 +334,11 @@ void PhysicsWorld::UpdateHingeConstraintTarget(uint64_t constraintId, float targ
     if (!std::isfinite(targetAngle))
         throw std::invalid_argument("Hinge motor target must be finite radians");
     RequireGpu(domain);
-    RequireHinge(m_gpuScene->GetAuthoredJoint(constraintId));
-    m_gpuScene->UpdateJoint(constraintId,
-                            [=](JointAuthor &author) { author.motor().x = ClampHingeTarget(author, targetAngle); });
+    const auto &joint = m_gpuScene->GetAuthoredJoint(constraintId);
+    RequireHinge(joint);
+    m_gpuScene->UpdateJoint(
+        constraintId, [=](JointAuthor &author) { author.motor().x = ClampHingeTarget(author, targetAngle); },
+        RagdollTargetReset(joint.bodyIdA));
 }
 
 void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets)
@@ -369,7 +371,7 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
         author.motor().x =
             glm::radians(joint.m_useLimits ? std::clamp(degrees, joint.m_minimumAngle, joint.m_maximumAngle) : degrees);
         prepared.push_back({&joint, degrees});
-        updates.push_back({id, author});
+        updates.push_back({id, author, RagdollTargetReset(identity.bodyIdA)});
     }
     std::vector<std::vector<JoltGpuScene::JointUpdate>> groups;
     std::unordered_map<PhysicsDomain *, size_t> owners;
@@ -382,8 +384,10 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
     }
     for (auto &group : groups)
         m_gpuScene->UpdateJoints(std::move(group));
-    for (const auto &target : prepared)
+    for (const auto &target : prepared) {
         target.joint->m_motorTargetAngle = target.degrees;
+        ClaimRagdollTarget(*target.joint);
+    }
 }
 
 void PhysicsWorld::ReadHingeMotion(const std::vector<HingeJoint *> &joints, float *output) const
@@ -537,7 +541,7 @@ uint64_t PhysicsWorld::CreateSwingTwistConstraint(PhysicsConstraintOwner &owner,
 }
 
 void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
-                                              bool enableCollision)
+                                              bool enableCollision, bool claimTarget)
 {
     RequireOwnerThread();
     const auto &joint = m_gpuScene->GetAuthoredJoint(constraintId);
@@ -551,15 +555,18 @@ void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t constraintId, const Swing
     if (before.x != after.x || before.y != after.y || before.z != after.z || before.w != after.w)
         throw std::logic_error("SwingTwist frame changes require rebuilding the constraint");
     SetJointFlag(updated, JPH::GPU::JointCollisionEnabled, enableCollision);
-    m_gpuScene->UpdateJoint(constraintId, [=](JointAuthor &author) {
-        author.angularLimits() = updated.angularLimits();
-        author.angularModes() = updated.angularModes();
-        author.angularSpring() = updated.angularSpring();
-        author.angularTorque() = updated.angularTorque();
-        author.angularTarget() = updated.angularTarget();
-        author.angularVelocity() = updated.angularVelocity();
-        SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enableCollision);
-    });
+    m_gpuScene->UpdateJoint(
+        constraintId,
+        [=](JointAuthor &author) {
+            author.angularLimits() = updated.angularLimits();
+            author.angularModes() = updated.angularModes();
+            author.angularSpring() = updated.angularSpring();
+            author.angularTorque() = updated.angularTorque();
+            author.angularTarget() = updated.angularTarget();
+            author.angularVelocity() = updated.angularVelocity();
+            SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enableCollision);
+        },
+        claimTarget ? RagdollTargetReset(joint.bodyIdA) : 0u);
 }
 
 glm::quat PhysicsWorld::GetAngularConstraintOrientation(uint64_t id) const
@@ -592,7 +599,8 @@ uint64_t PhysicsWorld::CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uin
     RequireGpu(domain);
     return m_gpuScene->CreateJoint(owner, ownerBody, connectedBody, std::move(author));
 }
-void PhysicsWorld::UpdateSixDOFConstraint(uint64_t id, const SixDOFJointSettings &settings, bool collision)
+void PhysicsWorld::UpdateSixDOFConstraint(uint64_t id, const SixDOFJointSettings &settings, bool collision,
+                                          bool claimTarget)
 {
     RequireOwnerThread();
     const auto &joint = m_gpuScene->GetAuthoredJoint(id);
@@ -604,7 +612,9 @@ void PhysicsWorld::UpdateSixDOFConstraint(uint64_t id, const SixDOFJointSettings
         throw std::logic_error("SixDOF frame changes require rebuilding the constraint");
     SetJointFlag(updated, JPH::GPU::JointCollisionEnabled, collision);
     RequireGpu(DomainForBody(joint.bodyIdA));
-    m_gpuScene->UpdateJoint(id, [updated = std::move(updated)](JointAuthor &author) { author = updated; });
+    m_gpuScene->UpdateJoint(
+        id, [updated = std::move(updated)](JointAuthor &author) { author = updated; },
+        claimTarget ? RagdollTargetReset(joint.bodyIdA) : 0u);
 }
 glm::vec3 PhysicsWorld::GetSixDOFConstraintPosition(uint64_t id) const
 {

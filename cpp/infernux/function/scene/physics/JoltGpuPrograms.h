@@ -63,6 +63,7 @@ struct JoltGpuJointModelUpdate
 {
     uint32_t index;
     JPH::GPU::JointAuthor author;
+    uint32_t runtimeIntent = 0;
 };
 
 /// One bounded unit of the shared stage recipe. Parallel items use global

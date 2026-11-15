@@ -11,6 +11,7 @@ class Rigidbody;
 class Joint;
 class SkeletonInstance;
 class InxSkinnedMesh;
+struct PhysicsDomain;
 struct SemanticTypeDescriptor;
 
 /// Root controller over real child Rigidbody/Collider/Joint components.
@@ -77,19 +78,31 @@ class Ragdoll final : public Component
 
   private:
     void Release();
-    void UpdateAnimationDrive();
+    bool UpdateAnimationDrive(bool deferred = false);
+    void InitializeAnimationDrive();
+    static Ragdoll *FindOwner(GameObject *object) noexcept;
+    static void MarkPhysicsMembership(GameObject *object) noexcept;
+    friend class PhysicsWorld;
+    friend class PhysicsECSStore;
+    friend class Joint;
+    friend class GameObject;
+    friend class Scene;
+    Ragdoll *m_pendingPrevious = nullptr, *m_pendingNext = nullptr;
+    PhysicsDomain *m_pendingDomain = nullptr;
+    bool m_membershipDirty = false;
+    std::vector<PhysicsTargetReference> m_initializedAnimationJoints;
+    std::vector<size_t> m_animationPoseInputs;
     std::vector<Rigidbody *> GetConfiguredBodies() const;
     Component *ResolveOwnedComponent(uint64_t id) const;
     bool OwnsObject(const GameObject *object) const;
     uint64_t m_skeletonComponentId = 0;
     std::vector<uint64_t> m_generatedComponentIds;
     uint64_t m_assemblyId = 0;
-    uint64_t m_structureVersion = 0;
-    std::vector<PhysicsTargetReference> m_bodies;
     std::vector<PhysicsTargetReference> m_joints;
-    std::vector<int> m_parents;
     size_t m_poseInputCount = 0;
     std::vector<size_t> m_activePoseInputs;
     bool m_driveAnimation = false;
+    bool m_animationTargetPending = false;
+    bool m_initializingAnimationDrive = false;
 };
 } // namespace infernux

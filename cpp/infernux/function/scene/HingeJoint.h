@@ -91,11 +91,7 @@ class HingeJoint final : public Joint
 
   private:
     friend class PhysicsWorld;
-    void RecordPoseDrive(float angle)
-    {
-        m_motorEnabled = true;
-        m_motorTargetAngle = angle;
-    }
+
     uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId) override;
     void UpdateConstraintSettings() override;
     void UpdateConstraintMotor();

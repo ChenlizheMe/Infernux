@@ -4,12 +4,13 @@
 #include "Rigidbody.h"
 #include "SixDOFJoint.h"
 #include "SkeletonInstance.h"
+#include "SkeletonPhysicsPoseRead.h"
 #include "SwingTwistJoint.h"
 #include "Transform.h"
 #include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <stdexcept>
-#include <unordered_map>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -42,14 +43,22 @@ void Ragdoll::SetActive(bool active)
     if (handBack)
         skeleton->GetBones(); // Resolve the complete target before changing any member mode.
     auto *anchor = bodies.front()->GetGameObject()->GetTransform();
-    const auto anchorPosition = anchor->GetPosition();
-    const auto anchorRotation = anchor->GetWorldRotation();
+    std::vector<Transform *> dependencies{anchor};
+    for (auto *body : changed)
+        dependencies.push_back(body->GetGameObject()->GetTransform());
+    glm::vec3 anchorPosition;
+    glm::quat anchorRotation;
     // Snapshot the displayed poses before any parent changes mode. These may
     // be newer than Jolt on a render frame without a fixed step.
     std::vector<std::pair<glm::vec3, glm::quat>> poses;
-    for (auto *body : changed) {
-        auto *transform = body->GetGameObject()->GetTransform();
-        poses.emplace_back(transform->GetPosition(), transform->GetWorldRotation());
+    {
+        SkeletonPhysicsPoseRead reading(dependencies, SkeletonPhysicsPoseRead::Space::World);
+        anchorPosition = anchor->GetPosition();
+        anchorRotation = anchor->GetWorldRotation();
+        for (auto *body : changed) {
+            auto *transform = body->GetGameObject()->GetTransform();
+            poses.emplace_back(transform->GetPosition(), transform->GetWorldRotation());
+        }
     }
     for (auto *body : changed)
         body->SetIsKinematic(!active);
@@ -82,27 +91,82 @@ void Ragdoll::SetDriveAnimation(bool enabled)
             throw std::logic_error("Animation drive requires a bound SkeletonInstance");
         if (!skeleton->HasAnimationPose())
             skeleton->CaptureAnimationPose();
-        for (auto *body : GetConfiguredBodies()) {
-            auto *object = body->GetGameObject();
-            if (auto *hinge = object->GetComponent<HingeJoint>())
-                hinge->SetMotorEnabled(true);
-            else if (auto *swing = object->GetComponent<SwingTwistJoint>()) {
-                swing->SetSwingMotorMode(JointMotorMode::Position);
-                swing->SetTwistMotorMode(JointMotorMode::Position);
-            }
-        }
     }
     m_driveAnimation = enabled;
-    if (enabled && IsBound())
-        UpdateAnimationDrive();
+    m_animationTargetPending = enabled;
+    m_initializedAnimationJoints.clear();
+    if (enabled) {
+        InitializeAnimationDrive();
+        Rebuild();
+    }
+}
+
+void Ragdoll::InitializeAnimationDrive()
+{
+    if (!m_driveAnimation || m_initializingAnimationDrive)
+        return;
+    struct Initializing
+    {
+        bool &active;
+        explicit Initializing(bool &value) : active(value)
+        {
+            active = true;
+        }
+        ~Initializing()
+        {
+            active = false;
+        }
+    } initializing(m_initializingAnimationDrive);
+    auto *skeleton = GetSkeleton();
+    if (!skeleton)
+        throw std::logic_error("Animation drive requires a SkeletonInstance");
+    if (!skeleton->HasBoundHierarchy())
+        return;
+    if (!skeleton->HasAnimationPose()) {
+        // A saved controller with no sampled target starts from authored locals.
+        // Settling an author setter must never demand numerical bone poses.
+        TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+        skeleton->CaptureAnimationPose();
+    }
+    std::unordered_set<Component *> initialized;
+    for (const auto &reference : m_initializedAnimationJoints)
+        if (auto *joint = reference.GetComponent())
+            initialized.insert(joint);
+    const auto configured = GetConfiguredBodies();
+    const std::unordered_set<Rigidbody *> members(configured.begin(), configured.end());
+    for (auto *body : configured) {
+        auto *joint = body->GetGameObject()->GetComponent<Joint>();
+        if (!joint || !members.count(joint->GetConnectedBody()) || joint->IsDestroyed() || joint->IsBeingDestroyed() ||
+            !initialized.insert(joint).second)
+            continue;
+        m_initializedAnimationJoints.emplace_back(joint);
+        if (auto *hinge = dynamic_cast<HingeJoint *>(joint))
+            hinge->SetMotorEnabled(true);
+        else if (auto *swing = dynamic_cast<SwingTwistJoint *>(joint)) {
+            swing->SetSwingMotorMode(JointMotorMode::Position);
+            swing->SetTwistMotorMode(JointMotorMode::Position);
+        } else if (auto *six = dynamic_cast<SixDOFJoint *>(joint)) {
+            six->SetAngularXMotorMode(JointMotorMode::Position);
+            six->SetAngularYMotorMode(JointMotorMode::Position);
+            six->SetAngularZMotorMode(JointMotorMode::Position);
+        }
+    }
 }
 
 void Ragdoll::SetPassive()
 {
     PhysicsWorld::Instance().RequireOwnerThread();
     m_driveAnimation = false;
-    for (auto *body : GetConfiguredBodies()) {
+    m_animationTargetPending = false;
+    m_initializedAnimationJoints.clear();
+    PhysicsWorld::Instance().ClearRagdollDrive(m_assemblyId);
+    const auto configured = GetConfiguredBodies();
+    const std::unordered_set<Rigidbody *> members(configured.begin(), configured.end());
+    for (auto *body : configured) {
         auto *object = body->GetGameObject();
+        auto *joint = object->GetComponent<Joint>();
+        if (!joint || !members.count(joint->GetConnectedBody()))
+            continue;
         if (auto *hinge = object->GetComponent<HingeJoint>())
             hinge->SetMotorEnabled(false);
         else if (auto *swing = object->GetComponent<SwingTwistJoint>()) {
@@ -119,22 +183,21 @@ void Ragdoll::SetPassive()
     }
 }
 
-void Ragdoll::UpdateAnimationDrive()
+bool Ragdoll::UpdateAnimationDrive(bool deferred)
 {
     auto *skeleton = GetSkeleton();
     if (!IsBound() || !skeleton || !skeleton->HasAnimationPose())
-        return;
-    const auto bones = skeleton->GetBones();
+        return false;
+    // Only the saved animation target is needed. Its common world-root factor
+    // cancels in parent-relative D, so no numerical pose demand belongs here.
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto rotations = skeleton->GetAnimationWorldRotations();
-    std::unordered_map<Transform *, size_t> indices;
-    for (size_t index = 0; index < bones.size(); ++index)
-        indices.emplace(bones[index], index);
     std::vector<glm::quat> targets;
-    targets.reserve(m_bodies.size());
-    for (const auto &reference : m_bodies) {
-        auto *transform = reference.GetComponent()->GetGameObject()->GetTransform();
-        targets.push_back(rotations.at(indices.at(transform)));
-    }
-    PhysicsWorld::Instance().DriveRagdollPose(m_assemblyId, targets, false);
+    targets.reserve(m_animationPoseInputs.size());
+    for (const auto index : m_animationPoseInputs)
+        targets.push_back(rotations.at(index));
+    PhysicsWorld::Instance().DriveRagdollPoseImpl(m_assemblyId, targets, false, true, deferred);
+    return true;
 }
+
 } // namespace infernux

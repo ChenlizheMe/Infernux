@@ -5,6 +5,7 @@
 #include "SkeletonInstance.h"
 #include "SwingTwistJoint.h"
 #include "Transform.h"
+#include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -20,9 +21,12 @@ bool Ragdoll::OwnsObject(const GameObject *object) const
 {
     const auto *root = GetGameObject();
     for (; object; object = object->GetParent()) {
+        if (object->IsDestroying())
+            return false;
         if (object == root)
             return true;
-        if (object->GetComponent<Ragdoll>())
+        if (auto *nested = object->GetComponent<Ragdoll>();
+            nested && !nested->IsDestroyed() && !nested->IsBeingDestroyed())
             return false;
     }
     return false;
@@ -44,8 +48,10 @@ SkeletonInstance *Ragdoll::GetSkeleton() const
         return nullptr;
     SkeletonInstance *found = nullptr;
     const auto visit = [&](auto &&self, GameObject *object) -> void {
-        if (object != root && object->GetComponent<Ragdoll>())
-            return;
+        if (object != root)
+            if (auto *nested = object->GetComponent<Ragdoll>();
+                nested && !nested->IsDestroyed() && !nested->IsBeingDestroyed())
+                return;
         if (auto *skeleton = object->GetComponent<SkeletonInstance>()) {
             if (found)
                 throw std::invalid_argument(
@@ -65,6 +71,7 @@ void Ragdoll::OnSkeletonHierarchyReady(SkeletonInstance &skeleton)
     if (GetSkeleton() != &skeleton)
         return;
     m_skeletonComponentId = skeleton.GetComponentID();
+    PhysicsWorld::Instance().QueueRagdollRebuild(*this);
     for (auto *bone : skeleton.GetBones())
         if (bone->GetGameObject()->GetComponent<Rigidbody>())
             return; // Existing authoring values are authoritative.
@@ -75,6 +82,7 @@ void Ragdoll::OnSkeletonDefinitionChanging(SkeletonInstance &skeleton, const Inx
 {
     if (m_skeletonComponentId != skeleton.GetComponentID())
         return;
+    PhysicsWorld::Instance().QueueRagdollRebuild(*this);
     std::set<std::vector<std::string>> retained;
     if (definition) {
         const auto paths = definition->skeleton.GetNodePaths();

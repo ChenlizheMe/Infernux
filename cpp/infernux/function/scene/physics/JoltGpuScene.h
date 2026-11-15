@@ -103,6 +103,7 @@ class JoltGpuScene final
     {
         uint64_t id;
         JPH::GPU::JointAuthor author;
+        uint32_t runtimeIntent = 0;
     };
 
     /// Immutable accepted author directory, shared by numerical publications.
@@ -183,8 +184,17 @@ class JoltGpuScene final
     void StageRetire(uint32_t bodyId);
     uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
                          JPH::GPU::JointAuthor author);
-    void UpdateJoint(uint64_t id, const std::function<void(JPH::GPU::JointAuthor &)> &update);
+    void UpdateJoint(uint64_t id, const std::function<void(JPH::GPU::JointAuthor &)> &update,
+                     uint32_t runtimeIntent = 0);
     void UpdateJoints(std::vector<JointUpdate> updates);
+    struct PoseDriveIntent
+    {
+        uint64_t id;
+        uint32_t kind;
+        JPH::GPU::Float4 relative;
+        bool clear = false;
+    };
+    void QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents);
     void DestroyJoint(uint64_t id);
     void SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs);
     void DestroyJointsForBody(uint32_t bodyId);

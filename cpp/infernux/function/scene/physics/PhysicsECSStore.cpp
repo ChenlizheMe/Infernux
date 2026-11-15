@@ -19,6 +19,7 @@
 #include "../Collider.h"
 #include "../GameObject.h"
 #include "../Joint.h"
+#include "../Ragdoll.h"
 #include "../Rigidbody.h"
 #include "../RuntimeWorld.h"
 #include "../Scene.h"
@@ -207,9 +208,11 @@ void PhysicsECSStore::AdoptActorOwner(GameObject *stagedOwner, GameObject *owner
 
 void PhysicsECSStore::ReleaseActor(ActorHandle handle, Collider *collider)
 {
+    Ragdoll::MarkPhysicsMembership(collider->GetGameObject());
     if (!m_actorPool.IsAlive(handle))
         return;
     auto &actor = m_actorPool.Get(handle);
+    Ragdoll::MarkPhysicsMembership(actor.owner);
     actor.colliders.erase(std::remove(actor.colliders.begin(), actor.colliders.end(), collider), actor.colliders.end());
     if (actor.rigidbody || !actor.colliders.empty()) {
         if (!actor.owner->IsDestroying())
@@ -246,6 +249,7 @@ PhysicsECSStore::ActorHandle PhysicsECSStore::FindActor(const GameObject *owner)
 
 void PhysicsECSStore::AttachRigidbody(Rigidbody *body)
 {
+    Ragdoll::MarkPhysicsMembership(body->GetGameObject());
     BindRigidbodyActor(body);
     RefreshHierarchy(body->GetGameObject());
 }
@@ -285,6 +289,10 @@ void PhysicsECSStore::MigrateCollider(Collider *collider, const Rigidbody *exclu
     if (target == previous)
         return;
     // Acquiring the target can grow the actor pool: re-read by handle below.
+    if (IsValid(previous))
+        Ragdoll::MarkPhysicsMembership(GetActor(previous).owner);
+    Ragdoll::MarkPhysicsMembership(GetActor(target).owner);
+    Ragdoll::MarkPhysicsMembership(collider->GetGameObject());
     GetCollider(colliderHandle).actorHandle = target;
     GetActor(target).colliders.push_back(collider);
     changed.push_back(target);
@@ -338,6 +346,7 @@ void PhysicsECSStore::RefreshHierarchy(GameObject *root, const Rigidbody *exclud
 
 void PhysicsECSStore::DetachRigidbody(Rigidbody *body)
 {
+    Ragdoll::MarkPhysicsMembership(body->GetGameObject());
     const auto bodyHandle = body->GetECSHandle();
     const auto handle = GetRigidbody(bodyHandle).actorHandle;
     if (!IsValid(handle)) {
@@ -853,6 +862,7 @@ void PhysicsECSStore::UpdateJointEndpointReadiness(PhysicsActorData &actor) noex
                                   ? actor.bodyId
                                   : UINT32_MAX;
     if (endpoint != actor.jointEndpointBodyId) {
+        Ragdoll::MarkPhysicsMembership(actor.owner);
         actor.jointEndpointBodyId = endpoint;
         if (actor.runtimeWorld)
             if (auto *queues = FindQueues(*actor.runtimeWorld))
@@ -905,8 +915,12 @@ void PhysicsECSStore::CancelPendingJoint(Joint &joint) noexcept
 void PhysicsECSStore::DrainPendingJoints(RuntimeWorld &world)
 {
     auto &queues = RequireQueues(world);
-    if (!queues.pendingJointsDirty || queues.drainingPendingJoints)
+    if (queues.drainingPendingJoints)
         return;
+    if (!queues.pendingJointsDirty) {
+        PhysicsWorld::Instance().ReconcileRagdolls(*world.physics);
+        return;
+    }
     const WorldExecutionScope worldScope(&world);
     queues.pendingJointsDirty = false;
     queues.drainingPendingJoints = true;
@@ -927,6 +941,7 @@ void PhysicsECSStore::DrainPendingJoints(RuntimeWorld &world)
         throw;
     }
     queues.drainingPendingJoints = false;
+    PhysicsWorld::Instance().ReconcileRagdolls(*world.physics);
 }
 
 void PhysicsECSStore::ClearPendingJoints(const RuntimeWorld &world) noexcept

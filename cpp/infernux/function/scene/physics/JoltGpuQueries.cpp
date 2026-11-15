@@ -25,7 +25,7 @@ enum Port : uint8_t
     Shapes,
     States,
     Candidates,
-    Spans,
+    Control,
     Summary,
     Hits,
     ExportParameters,
@@ -39,7 +39,6 @@ enum Port : uint8_t
     ParticleIndices,
     ParticleStatus,
     CastParameters,
-    CastStates,
     PortCount
 };
 enum Stage : uint8_t
@@ -79,7 +78,7 @@ constexpr PortLayout Ports[] = {
      97},
     {"body_states", sizeof(BodyState), {"positionCOM", "rotation", "linearVelocity", "angularVelocity"}, 0},
     {"query_candidates", sizeof(QueryRecordWord), {"value"}, 1},
-    {"query_spans", sizeof(QuerySpan), {"range"}, 1},
+    {"query_control", sizeof(QueryRecordWord), {"value"}, 1},
     {"query_summary", sizeof(QuerySummary), {"counts"}, 1},
     {"query_hits", sizeof(QueryRecordWord), {"value"}, 1},
     {"query_export_params", sizeof(QueryExportParams), {"output", "sizes", "selection"}, 7},
@@ -93,7 +92,6 @@ constexpr PortLayout Ports[] = {
     {"particle_export_indices", sizeof(uint32_t), {}, 0},
     {"particle_export_status", sizeof(uint32_t), {}, 0},
     {"query_cast_params", sizeof(QueryCastParams), {"controls"}, 1},
-    {"query_cast_states", sizeof(QueryCastState), {"cursor", "progress", "normal", "iteration"}, 9},
 };
 constexpr std::array<std::string_view, StageCount> Entries{"query_evaluate",
                                                            "query_scan",
@@ -109,17 +107,17 @@ constexpr uint32_t Bit(Port port)
 }
 constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
-        Bit(Spans) | Bit(CastParameters) | Bit(CastStates),
-    Bit(Parameters) | Bit(Spans) | Bit(Summary),
-    Bit(Parameters) | Bit(Candidates) | Bit(Spans) | Bit(Summary) | Bit(Hits),
-    Bit(ExportParameters) | Bit(Hits) | Bit(Spans) | Bit(Summary) | Bit(ExportValues),
+        Bit(Control) | Bit(CastParameters),
+    Bit(Parameters) | Bit(Control) | Bit(Summary),
+    Bit(Parameters) | Bit(Candidates) | Bit(Control) | Bit(Summary) | Bit(Hits),
+    Bit(ExportParameters) | Bit(Hits) | Bit(Control) | Bit(Summary) | Bit(ExportValues),
     Bit(ParticleParameters) | Bit(ParticleRows) | Bit(ParticlePrevious) | Bit(Hits) | Bit(ParticleRecords) |
         Bit(ParticleStatus),
     Bit(ParticleParameters) | Bit(ParticleRecords) | Bit(ParticleHeader) | Bit(ParticleOffsets) | Bit(ParticleStatus),
     Bit(ParticleParameters) | Bit(ParticleRecords) | Bit(ParticleHeader) | Bit(ParticleOffsets) | Bit(ParticleIndices) |
         Bit(ParticleStatus),
     Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
-        Bit(Spans) | Bit(CastParameters) | Bit(CastStates)};
+        Bit(Control) | Bit(CastParameters)};
 
 uint64_t CheckedBytes(uint64_t count, uint64_t stride)
 {
@@ -292,11 +290,11 @@ rhi::ComputeBufferAccess Access(uint8_t stage, uint8_t port)
             return rhi::ComputeBufferAccess::Write;
         return rhi::ComputeBufferAccess::Read;
     }
-    if (stage == Evaluate && (port == Candidates || port == Spans || port == CastStates))
+    if (stage == Evaluate && (port == Candidates || port == Control))
         return rhi::ComputeBufferAccess::Write;
-    if (stage == ResumeCasts && (port == Candidates || port == Spans || port == CastStates))
+    if (stage == ResumeCasts && (port == Candidates || port == Control))
         return rhi::ComputeBufferAccess::ReadWrite;
-    if (stage == Scan && port == Spans)
+    if (stage == Scan && port == Control)
         return rhi::ComputeBufferAccess::ReadWrite;
     if ((stage == Scan && port == Summary) || (stage == Compact && port == Hits) ||
         (stage == Export && port == ExportValues))
@@ -561,6 +559,14 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     const auto words = recordBytes / sizeof(QueryRecordWord);
     if (capacity > std::numeric_limits<uint32_t>::max() / words)
         throw JoltGpuQueryRequestError("Jolt GPU query record words exceed device indexing");
+    // Span/CA control fits within the already required per-request input.
+    // Keep this dominance proof independent of the input's current ABI size.
+    static_assert(sizeof(QuerySpan) == sizeof(QueryRecordWord));
+    static_assert(sizeof(QueryCastState) == 4 * sizeof(QueryRecordWord));
+    static_assert(sizeof(QueryInput) >= sizeof(QuerySpan) + sizeof(QueryCastState));
+    const uint64_t controlBytes = CheckedBytes(queries.size(), sizeof(QuerySpan) + sizeof(QueryCastState));
+    const uint64_t controlWords = controlBytes / sizeof(QueryRecordWord);
+    const uint64_t spanBytes = CheckedBytes(queries.size(), sizeof(QuerySpan));
     auto result = std::make_shared<JoltGpuQueryResult>();
     result->publication = std::move(publication);
     result->numericalGeneration = numericalGeneration;
@@ -660,10 +666,9 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         std::memcpy(requestData.data() + inputBytes, primitives.data(), static_cast<size_t>(primitiveBytes));
     upload(Inputs, std::move(requestData));
     allocate(Candidates, uint64_t(capacity) * words);
-    allocate(Spans, result->queryCount);
+    allocate(Control, controlWords);
     allocate(Summary, 1);
     allocate(Hits, uint64_t(capacity) * words);
-    allocate(CastStates, result->queryCount);
     const auto dispatch = [&](uint8_t stage) {
         const auto &program = m_programs[stage];
         rhi::ComputeDispatchDesc dispatch;
@@ -676,7 +681,11 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
             const auto access = Access(stage, port);
             dispatch.buffers.push_back(buffers[port]);
             dispatch.bufferAccesses.push_back(access);
-            const rhi::ComputeBindingRange range{binding, 0, buffers[port]->GetByteSize()};
+            // Scan and compact address only the span prefix. Evaluate writes
+            // the complete control; resume retains both spans and CA state.
+            const uint64_t bytes =
+                port == Control && (stage == Scan || stage == Compact) ? spanBytes : buffers[port]->GetByteSize();
+            const rhi::ComputeBindingRange range{binding, 0, bytes};
             if (static_cast<uint8_t>(access) & static_cast<uint8_t>(rhi::ComputeBufferAccess::Read))
                 proof.reads.push_back(range);
             if (static_cast<uint8_t>(access) & static_cast<uint8_t>(rhi::ComputeBufferAccess::Write))
@@ -687,7 +696,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
     };
     std::vector<rhi::ComputeDispatchDesc> dispatches{dispatch(Evaluate), dispatch(Scan), dispatch(Compact)};
     result->hits = buffers[Hits];
-    result->spans = buffers[Spans];
+    result->spans = buffers[Control];
     result->summary = buffers[Summary];
     std::vector<rhi::ComputeBufferRead> reads{{result->summary, 0, sizeof(QuerySummary)}};
     if (knownCount || readback == JoltGpuQueryReadback::Device) {
@@ -835,7 +844,7 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
         std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
         buffers[ExportParameters] = uniform;
         buffers[Hits] = source->hits;
-        buffers[Spans] = source->spans;
+        buffers[Control] = source->spans;
         buffers[Summary] = source->summary;
         buffers[ExportValues] = target.buffer;
         rhi::ComputeDispatchDesc dispatch;
@@ -849,7 +858,9 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
             if (port == ExportValues)
                 proof.writes.push_back({local, target.offset, target.bytes});
             else
-                proof.reads.push_back({local, 0, buffers[port]->GetByteSize()});
+                proof.reads.push_back({local, 0,
+                                       port == Control ? CheckedBytes(source->queryCount, sizeof(QuerySpan))
+                                                       : buffers[port]->GetByteSize()});
         }
         dispatch.proof = std::move(proof);
         dispatches.push_back(std::move(dispatch));
