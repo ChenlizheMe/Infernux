@@ -423,5 +423,12 @@ def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_mode
     )
     assert expected_error in result.error
     assert Path(str(source) + ".meta").read_bytes() == original_meta
-    assert renderer.serialize_document() == original_scene
+    current_scene = renderer.serialize_document()
+    # Bounds reflect runtime availability. Failed current imports withdraw the
+    # mesh, while the authored identity and material assignments stay intact.
+    for key in ("boundsMin", "boundsMax"):
+        current_scene.pop(key)
+        original_scene.pop(key)
+    assert current_scene == original_scene
+    assert database.get_import_error(mesh.guid)
     assert mesh.generation == original_generation

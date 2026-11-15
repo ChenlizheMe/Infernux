@@ -428,6 +428,7 @@ def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, m
     manager = SceneFileManager()
     database = SimpleNamespace(
         get_path_from_guid=lambda guid: inner_path if guid == "inner-guid" else path if guid == "outer-guid" else "",
+        get_import_error=lambda _guid: "",
         dependency_graph=engine.get_asset_database().dependency_graph,
         get_guid_from_path=lambda candidate: (
             "inner-guid"

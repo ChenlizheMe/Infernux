@@ -36,6 +36,7 @@ class EngineSourceScopes(FileSystemEventHandler):
         self.paths = {}
         self.restart_paths = set()
         self._pending = {}
+        self._write_states = {}
         self._lock = Lock()
         self._views = {}
         for name in (*PANEL_MODULES, *CORE_MODULES):
@@ -44,6 +45,7 @@ class EngineSourceScopes(FileSystemEventHandler):
             restart = name in CORE_MODULES
             self.coordinator.register_source_scope(path, name, restart_only=restart, loaded_module=module)
             self.paths[path_key(path)] = path
+            self._write_states[path] = self._write_state(path)
             if restart:
                 self.restart_paths.add(path)
         self.coordinator.adapter.add(self)
@@ -52,6 +54,15 @@ class EngineSourceScopes(FileSystemEventHandler):
     @property
     def watch_directories(self):
         return tuple(sorted({str(Path(path).parent) for path in self.paths.values()}))
+
+    @staticmethod
+    def _write_state(path):
+        try:
+            info = Path(path).stat()
+            return info.st_mtime_ns, info.st_size
+        except OSError:
+            # Let the coordinator report a deleted or unreadable source.
+            return None
 
     def on_any_event(self, event):
         if event.is_directory or event.event_type not in {"created", "modified", "deleted", "moved"}:
@@ -69,6 +80,15 @@ class EngineSourceScopes(FileSystemEventHandler):
     def submit_pending(self):
         with self._lock:
             pending, self._pending = tuple(self._pending), {}
+        changed = []
+        for path in pending:
+            state = self._write_state(path)
+            # Windows also reports access/security/attribute notifications as
+            # modified. Reading a loaded core file must not retire its code.
+            if state != self._write_states[path]:
+                self._write_states[path] = state
+                changed.append(path)
+        pending = tuple(changed)
         if not pending:
             return 0
         removed = tuple(path for path in pending if not Path(path).is_file())

@@ -168,7 +168,9 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
             nonlocal frame, changed, ticket, initial_batch, initial_views
             try:
                 frame += 1
-                assert frame < 250, results
+                assert frame < 250, dict(results=results, diagnostics=component.runtime_diagnostics(),
+                                        presentation=engine.game_presentation_ready,
+                                        execution=engine.renderer_frame_snapshot)
                 execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
                 if ticket is None and engine.game_presentation_ready and execution >= changed + 16:
                     ticket = engine.request_render_target_readback(True)

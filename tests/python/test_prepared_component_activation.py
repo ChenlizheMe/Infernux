@@ -153,5 +153,9 @@ def test_publication_keeps_lifecycle_decisions(scene, script, drive, decision, a
     for _ in range(2):
         manager.step(1.0 / 60.0)
     assert component.events.count('awake') == 1
+    if decision == 'error':
+        assert component.events == ['awake']
+        assert not component.enabled and not component._cpp_component.enabled
+        return
     assert component.events.count('start') == 1
     assert component.events.count('update') == (4 if expected_enabled and decision != 'owner_disable' else 2)

@@ -330,6 +330,10 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         if self._is_destroyed:
             return
         value = bool(value)
+        if value and self.__dict__.get('_initialization_error') is not None:
+            # Repairing the source reconstructs a fresh component. Toggling a
+            # failed instance cannot bypass its incomplete initialization.
+            return
         previous = bool(self._enabled)
         if self._enabled == value and getattr(self, '_cpp_component', None) is None:
             return

@@ -1970,6 +1970,10 @@ struct ParticleGpuSystemManager::Impl
             if (!asset || !database || asset->GetGuid().empty())
                 return true;
             const auto guid = asset->GetGuid();
+            // Engine primitives have explicit built-in identities, not catalog
+            // entries. Keep their immutable geometry outside source refresh.
+            if (type == ResourceType::Mesh && IsBuiltinMeshGuid(guid))
+                return true;
             if (!database->GetImportError(guid).empty())
                 return false;
             using Asset = typename std::decay_t<decltype(asset)>::element_type;
