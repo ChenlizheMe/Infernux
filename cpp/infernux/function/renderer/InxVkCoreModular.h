@@ -653,16 +653,23 @@ class InxVkCoreModular
 
     /// Preserve each producer identity across Scene/Game views. The backend
     /// merges actual waits only after resolving their native semaphore.
-    void RegisterFrameBufferReadDependency(rhi::SubmissionTicket ticket, rhi::PipelineStage stages)
+    [[nodiscard]] rhi::SubmissionTicket GetLastFrameSubmission() const noexcept
+    {
+        return m_previousFrameCompletion;
+    }
+
+    void RegisterFrameBufferReadDependency(rhi::SubmissionTicket ticket, rhi::PipelineStage stages,
+                                           rhi::QueueRole consumer = rhi::QueueRole::Graphics)
     {
         if (!ticket.IsValid())
             return;
         if (ticket.device != m_backend.Device().GetDeviceId())
             throw std::invalid_argument("Frame storage-buffer dependency belongs to another device");
-        const auto found = std::find_if(m_frameBufferReadDependencies.begin(), m_frameBufferReadDependencies.end(),
-                                        [&](const auto &read) { return read.producer == ticket; });
+        const auto found =
+            std::find_if(m_frameBufferReadDependencies.begin(), m_frameBufferReadDependencies.end(),
+                         [&](const auto &read) { return read.producer == ticket && read.consumer == consumer; });
         if (found == m_frameBufferReadDependencies.end())
-            m_frameBufferReadDependencies.push_back({ticket, stages});
+            m_frameBufferReadDependencies.push_back({ticket, stages, consumer});
         else
             found->stages = found->stages | stages;
     }

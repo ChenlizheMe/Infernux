@@ -2476,11 +2476,16 @@ std::vector<PassCompileInfo> RenderGraph::GetPassCompileInfos() const
     return infos;
 }
 
-rhi::PipelineStage RenderGraph::GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept
+rhi::PipelineStage RenderGraph::GetImportedBufferAccessStages(rhi::BufferHandle buffer,
+                                                              rhi::QueueRole queue) const noexcept
 {
     const auto nativeBuffer = m_rhiDevice ? m_rhiDevice->Resolve(buffer) : VK_NULL_HANDLE;
     const auto found = m_importedBuffers.find(nativeBuffer);
-    return found == m_importedBuffers.end() ? rhi::PipelineStage::None : m_resources[found->second].bufferAccessStages;
+    if (found == m_importedBuffers.end())
+        return rhi::PipelineStage::None;
+    const auto &resource = m_resources[found->second];
+    return queue == rhi::QueueRole::Count ? resource.bufferAccessStages
+                                          : resource.bufferQueueAccessStages[static_cast<size_t>(queue)];
 }
 
 bool RenderGraph::HasLiveWriteToImage(VkImage image) const noexcept

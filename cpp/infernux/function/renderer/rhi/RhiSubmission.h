@@ -58,6 +58,7 @@ struct SubmissionDependency
 {
     SubmissionTicket producer;
     PipelineStage stages = PipelineStage::AllCommands;
+    QueueRole consumer = QueueRole::Graphics;
 };
 
 /// Observed work in the original frame and compute pools, not differences

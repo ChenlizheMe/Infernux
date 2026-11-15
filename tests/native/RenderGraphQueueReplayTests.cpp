@@ -329,6 +329,14 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
            (rhi::PipelineStage::ComputeShader | rhi::PipelineStage::FragmentShader));
     assert(graph.GetImportedBufferAccessStages(readback) == rhi::PipelineStage::Transfer);
     assert(graph.GetImportedBufferAccessStages({}) == rhi::PipelineStage::None);
+    assert(graph.GetImportedBufferAccessStages(parameters->GetBuffer(), rhi::QueueRole::Compute) ==
+           rhi::PipelineStage::ComputeShader);
+    assert(graph.GetImportedBufferAccessStages(parameters->GetBuffer(), rhi::QueueRole::Graphics) ==
+           rhi::PipelineStage::FragmentShader);
+    assert(graph.GetImportedBufferAccessStages(parameters->GetBuffer(), rhi::QueueRole::Transfer) ==
+           rhi::PipelineStage::None);
+    assert(graph.GetImportedBufferAccessStages(readback, rhi::QueueRole::Graphics) == rhi::PipelineStage::Transfer);
+    assert(graph.GetImportedBufferAccessStages(readback, rhi::QueueRole::Transfer) == rhi::PipelineStage::None);
 
     const auto &graphPlan = graph.GetSubmissionPlan();
     assert(graphPlan.batches.size() >= 2);

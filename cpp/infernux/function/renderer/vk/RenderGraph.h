@@ -648,6 +648,7 @@ struct ResourceData
     rhi::BufferHandle rhiBuffer;
     uint32_t bufferImportCount = 0;
     rhi::PipelineStage bufferAccessStages = rhi::PipelineStage::None;
+    std::array<rhi::PipelineStage, static_cast<size_t>(rhi::QueueRole::Count)> bufferQueueAccessStages{};
     const RendererList *externalRendererList = nullptr;
     // Imported persistent allocations stay alive for the compiled graph.
     // Reset releases the borrow through the owning RHI retirement path.
@@ -1124,7 +1125,8 @@ class RenderGraph
     /// Actual access stages of live passes for an imported buffer. The compiler
     /// excludes culled passes and graph-only version dependencies.
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::PipelineStage
-    GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept;
+    GetImportedBufferAccessStages(rhi::BufferHandle buffer,
+                                  rhi::QueueRole queue = rhi::QueueRole::Count) const noexcept;
 
     [[nodiscard]] const std::vector<QueueOwnershipTransferInfo> &GetQueueOwnershipTransfers() const noexcept
     {

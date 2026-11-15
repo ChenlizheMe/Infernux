@@ -789,7 +789,7 @@ void InxRenderer::PreparePipeline()
                 graph->SetDrawViewMatrix(view);
                 vk::RenderGraph *compiled = graph->GetCompiledRenderGraph();
                 for (const auto &read : graph->GetBufferReadDependencies())
-                    m_vkCore->RegisterFrameBufferReadDependency(read.producer, read.stages);
+                    m_vkCore->RegisterFrameBufferReadDependency(read.producer, read.stages, read.consumer);
                 m_vkCore->CaptureResidentGeometryReads(graph->GetCachedDrawCalls(), graph->GetCachedShadowDrawCalls());
                 const auto &viewContext = graph->GetRenderViewContext();
                 submission.Retain(graph->AcquireComputeReadValues());

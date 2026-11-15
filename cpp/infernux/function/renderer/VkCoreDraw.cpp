@@ -333,20 +333,14 @@ try {
         m_backend.Compute().LastSubmission().completionTicket.serial;
     m_frameSubmissionTelemetry.residentComputeWriteSerial = 0;
     m_frameSubmissionTelemetry.residentComputeWaitPending = false;
-    VkPipelineStageFlags residentReadStages = 0;
-    VkAccessFlags residentReadAccess = 0;
+    std::array<VkPipelineStageFlags, static_cast<size_t>(rhi::QueueRole::Count)> residentReadStages{};
     for (const auto &read : m_frameBufferReadDependencies) {
-        const auto point = m_backend.Queues().DependencyFor(read.producer, rhi::QueueRole::Graphics);
+        const auto point = m_backend.Queues().DependencyFor(read.producer, read.consumer);
         if (point.semaphore != VK_NULL_HANDLE)
             externalSync.producers.push_back(
-                {point.semaphore, point.value, rhi::ToVkPipelineStages(read.stages), rhi::QueueRole::Graphics});
+                {point.semaphore, point.value, rhi::ToVkPipelineStages(read.stages), read.consumer});
         else {
-            residentReadStages |= rhi::ToVkPipelineStages(
-                read.stages & (rhi::PipelineStage::VertexInput | rhi::PipelineStage::VertexShader));
-            if ((read.stages & rhi::PipelineStage::VertexInput) != rhi::PipelineStage::None)
-                residentReadAccess |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-            if ((read.stages & rhi::PipelineStage::VertexShader) != rhi::PipelineStage::None)
-                residentReadAccess |= VK_ACCESS_SHADER_READ_BIT;
+            residentReadStages[static_cast<size_t>(read.consumer)] |= rhi::ToVkPipelineStages(read.stages);
         }
         // Compute-only diagnostics are not a device-wide resource version.
         if (read.producer.queue == rhi::QueueRole::Compute) {
@@ -373,20 +367,20 @@ try {
         m_backend.Queues().ReserveWorkCompletions(m_frameSubmission.WorkPublicationCount());
         executeResult = m_submissionExecutor.Execute(
             frameSlot, submissionPlan,
-            [this, &submissionPlan, &residentReadStages, &residentReadAccess](uint32_t batchIndex,
-                                                                              VkCommandBuffer commandBuffer) {
+            [this, &submissionPlan, &residentReadStages](uint32_t batchIndex, VkCommandBuffer commandBuffer) {
                 if (batchIndex >= submissionPlan.batches.size())
                     return false;
                 const auto queue = submissionPlan.batches[batchIndex].queue;
-                if (residentReadStages && queue == rhi::QueueRole::Graphics) {
-                    // The native lane can alias Compute. Make prior writes visible
-                    // to direct vertex reads outside RenderGraph's buffer barriers.
+                auto &readStages = residentReadStages[static_cast<size_t>(queue)];
+                if (readStages) {
+                    // Same native lane: explicit memory visibility is still
+                    // needed for compute, indirect and transfer consumers too.
                     VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
                     barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-                    barrier.dstAccessMask = residentReadAccess;
-                    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, residentReadStages, 0, 1,
-                                         &barrier, 0, nullptr, 0, nullptr);
-                    residentReadStages = 0;
+                    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, readStages, 0, 1, &barrier,
+                                         0, nullptr, 0, nullptr);
+                    readStages = 0;
                 }
                 return m_frameSubmission.RecordBatch(submissionPlan, batchIndex, commandBuffer);
             },

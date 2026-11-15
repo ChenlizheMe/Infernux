@@ -500,8 +500,10 @@ bool RenderGraph::ValidateComputeRegionOwnership() const
 
 bool RenderGraph::CompileSubmissionPlan()
 {
-    for (auto &resource : m_resources)
+    for (auto &resource : m_resources) {
         resource.bufferAccessStages = rhi::PipelineStage::None;
+        resource.bufferQueueAccessStages.fill(rhi::PipelineStage::None);
+    }
     std::vector<rhi::SubmissionWorkItem> workItems;
     workItems.reserve(m_executionOrder.size());
     std::unordered_set<uint32_t> regionBoundaries;
@@ -515,17 +517,6 @@ bool RenderGraph::CompileSubmissionPlan()
         if (passIndex >= m_passes.size() || m_passes[passIndex].culled)
             continue;
         const auto &pass = m_passes[passIndex];
-        const auto collectImportedBufferAccess = [&](const ResourceAccess &access) {
-            auto &resource = m_resources[access.handle.id];
-            if (resource.type == ResourceType::Buffer && resource.isExternal && resource.rhiBuffer.IsValid() &&
-                access.access != rhi::Access::None) {
-                resource.bufferAccessStages = resource.bufferAccessStages | access.stages;
-            }
-        };
-        for (const auto &read : pass.reads)
-            collectImportedBufferAccess(read);
-        for (const auto &write : pass.writes)
-            collectImportedBufferAccess(write);
         rhi::PipelineStage waitStages = rhi::PipelineStage::None;
         for (const auto &read : pass.reads)
             waitStages = waitStages | read.stages;
@@ -554,6 +545,26 @@ bool RenderGraph::CompileSubmissionPlan()
     if (!rhi::BuildSubmissionPlan(workItems, m_submissionPlan, error)) {
         INXLOG_ERROR("RenderGraph::CompileSubmissionPlan - ", error);
         return false;
+    }
+    // Validated compiled batches are the frame composer's recording authority.
+    // Collect after queue validation, never index a role from an invalid pass.
+    for (const auto &batch : m_submissionPlan.batches) {
+        for (const auto passId : batch.workItems) {
+            const auto &pass = m_passes[passId];
+            const auto collect = [&](const ResourceAccess &access) {
+                auto &resource = m_resources[access.handle.id];
+                if (resource.type == ResourceType::Buffer && resource.isExternal && resource.rhiBuffer.IsValid() &&
+                    access.access != rhi::Access::None) {
+                    resource.bufferAccessStages = resource.bufferAccessStages | access.stages;
+                    auto &stages = resource.bufferQueueAccessStages[static_cast<size_t>(batch.queue)];
+                    stages = stages | access.stages;
+                }
+            };
+            for (const auto &read : pass.reads)
+                collect(read);
+            for (const auto &write : pass.writes)
+                collect(write);
+        }
     }
     for (auto &region : m_computeRegions)
         for (const auto &batch : m_submissionPlan.batches) {

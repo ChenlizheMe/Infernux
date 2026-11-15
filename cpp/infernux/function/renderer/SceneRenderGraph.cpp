@@ -2365,10 +2365,14 @@ std::vector<rhi::SubmissionDependency> SceneRenderGraph::GetBufferReadDependenci
     if (!m_graphBuilt || !m_renderGraph || (m_hasPythonGraph && !m_pythonGraphValid))
         return dependencies;
     for (const auto &[owner, allocation] : m_computeBufferReads) {
-        const auto stages = m_renderGraph->GetImportedBufferAccessStages(allocation->GetBuffer());
         const auto ticket = allocation->GetLastWriteSubmission();
-        if (ticket.IsValid() && stages != rhi::PipelineStage::None)
-            dependencies.push_back({ticket, stages});
+        if (!ticket.IsValid())
+            continue;
+        for (const auto queue : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
+            const auto stages = m_renderGraph->GetImportedBufferAccessStages(allocation->GetBuffer(), queue);
+            if (stages != rhi::PipelineStage::None)
+                dependencies.push_back({ticket, stages, queue});
+        }
     }
     return dependencies;
 }
