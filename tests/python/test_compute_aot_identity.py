@@ -253,3 +253,30 @@ def test_nested_closure_free_kernel_preserves_qualified_source_in_player(tmp_pat
     with using_project_root(data):
         loaded = frontend.compile_kernel(module.factory().function, (_gpu_buffer_descriptor((4,), np.int32),))
     assert loaded.tasks == compiled.tasks
+
+
+@pytest.mark.parametrize('failed_import', [False, True])
+def test_aot_component_import_never_publishes_editor_types(tmp_path, failed_import):
+    from infernux.components._component_registration import candidate_component_registration_scope
+    from infernux.components.registry import snapshot_component_registry_state
+    from infernux.engine.runtime_dispatch import current_runtime_epoch
+
+    path = tmp_path / "Assets/Scripts/Work.py"
+    text = source_text(2) + "\nclass BuildOnlyController(inx.InxComponent):\n    speed: float = 1.0\n"
+    with candidate_component_registration_scope():
+        module = load_source(path, text)
+        expected = warm(tmp_path, module.solve)
+    before_types = snapshot_component_registry_state()
+    before_epoch = current_runtime_epoch()
+    if failed_import:
+        path.write_text(text + "\nraise RuntimeError('candidate import failed')\n", encoding='utf-8')
+        with pytest.raises(RuntimeError, match='candidate import failed'):
+            stage_compute_artifacts(tmp_path, (path,), tmp_path / "build/Data")
+    else:
+        data = tmp_path / "build/Data"
+        stage_compute_artifacts(tmp_path, (path,), data)
+        row, = project_records(data)
+        selected = frontend._decode_artifact(data / "Library/Artifacts/Compute" / row['artifact'])
+        assert selected.tasks == expected.tasks
+    assert snapshot_component_registry_state() == before_types
+    assert current_runtime_epoch() is before_epoch

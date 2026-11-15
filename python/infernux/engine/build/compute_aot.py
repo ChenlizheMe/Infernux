@@ -339,6 +339,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
     from infernux._compiler.gpu_artifact import ArtifactAbiMismatchError, _specialization_identity
     from infernux._compiler.work_item import _parse_function_source
     from infernux.engine.candidate_import import CandidateImportTransaction
+    from infernux.components._component_registration import candidate_component_registration_scope
     from infernux.engine.project_context import using_project_root
 
     class BuildSourceImports(CandidateImportTransaction):
@@ -380,7 +381,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
         manifest.append({"function": name, "specialization": specialization, "artifact": path.name})
         return True
 
-    with using_project_root(root):
+    with using_project_root(root), candidate_component_registration_scope():
         broker = BuildSourceImports()
         try:
             modules = {}
