@@ -588,9 +588,10 @@ def test_engine_resource_release_cancels_unconsumed_native_readbacks():
 def test_native_readback_abandonment_and_source_release_preserve_gpu_data(engine):
     host = engine._acquire_compute_host()
     expected = np.arange(1024, dtype=np.int32).tobytes()
+    assert host.dispatch_batch_and_read([], [], []) == []
     for _ in range(12):
         source = host.create_buffer(1024, "int32")
-        source.set_bytes(expected)
+        assert host.dispatch_batch_and_read([], [(source, expected, 0)], []) == []
         packet = host.prepare_batch([], [], [(source, 0, len(expected))])
         assert not packet.has_pending_write(source)
         abandoned = packet.readback(0)

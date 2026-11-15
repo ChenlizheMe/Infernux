@@ -102,6 +102,8 @@ INFERNUX_RENDER_CORE_API SubmissionTicket SubmitComputeBatch(ComputeHost &host,
 /// Record uploads, dependent compute dispatches, and their requested
 /// readbacks into one queue submission, then wait once and return the host
 /// bytes. This is the synchronization boundary for compact CPU consumers.
+/// An empty readback list still submits and completes uploads and dispatches;
+/// a batch with no work is a no-op.
 INFERNUX_RENDER_CORE_API std::vector<std::vector<uint8_t>>
 SubmitComputeBatchAndRead(ComputeHost &host, std::vector<ComputeBufferUpdate> updates,
                           std::vector<ComputeDispatchDesc> dispatches, std::vector<ComputeBufferRead> reads);

@@ -1121,11 +1121,12 @@ std::vector<std::vector<uint8_t>> SubmitComputeBatchAndRead(ComputeHost &host, s
                                                             std::vector<ComputeDispatchDesc> dispatches,
                                                             std::vector<ComputeBufferRead> reads)
 {
-    if (reads.empty())
+    if (updates.empty() && dispatches.empty() && reads.empty())
         return {};
     const auto readCount = reads.size();
     auto batch = PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
     (void)batch->Submit();
+    batch->GetCompletion().Wait();
     std::vector<std::vector<uint8_t>> result;
     result.reserve(readCount);
     for (size_t index = 0; index < readCount; ++index)
