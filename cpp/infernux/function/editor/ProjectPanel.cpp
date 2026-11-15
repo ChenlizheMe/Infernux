@@ -3109,9 +3109,9 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                         const ImVec2 dmax(cx + dW * 0.5f, cy + dH * 0.5f);
                         drawList->AddImage(ImTextureRef(static_cast<ImTextureID>(expandTex)), dmin, dmax);
                     } else {
-                        ImGui::PushStyleColor(ImGuiCol_Button, EditorTheme::PROJECT_EXPAND_STRIP_BG);
-                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorTheme::PROJECT_EXPAND_STRIP_HOVER);
-                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorTheme::PROJECT_EXPAND_STRIP_HOVER);
+                        ImGui::PushStyleColor(ImGuiCol_Button, EditorThemeRegistry::Color("PROJECT_EXPAND_STRIP_BG"));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorThemeRegistry::Color("PROJECT_EXPAND_STRIP_HOVER"));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorThemeRegistry::Color("PROJECT_EXPAND_STRIP_HOVER"));
                         expandClicked = ImGui::Button(ex ? "v" : ">", ImVec2(stripW, iconSize));
                         ImGui::PopStyleColor(3);
                     }

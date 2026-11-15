@@ -490,6 +490,7 @@ class InxRenderer
                                           uint64_t cameraComponentId = 0);
     [[nodiscard]] CaptureSnapshot QueryCapture(uint64_t captureId) const;
     [[nodiscard]] bool CancelCapture(uint64_t captureId);
+    void SetCaptureCompletionCallback(std::function<void(uint64_t)> callback);
     [[nodiscard]] uint64_t RequestScenePick(float x, float y, float viewportWidth, float viewportHeight);
     [[nodiscard]] ScenePickSnapshot QueryScenePick(uint64_t requestId) const;
 

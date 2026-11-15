@@ -23,6 +23,7 @@
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/gui/InxTextGeometry.h>
 #include <memory>
+#include <array>
 #include <optional>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -236,10 +237,41 @@ py::dict EncodePropertyChanges(const std::vector<PropertyChange> &changes)
     return result;
 }
 
+EditorThemeRegistry::Definition DecodeThemeDefinition(const std::string &name, const py::dict &colors,
+                                                       const py::dict &vec2s,
+                                                       const std::unordered_map<std::string, float> &floats)
+{
+    EditorThemeRegistry::Definition result;
+    result.name = name;
+    result.floats = floats;
+    for (auto item : colors) {
+        const auto value = py::cast<std::array<float, 4>>(item.second);
+        result.colors.emplace(py::cast<std::string>(item.first), ImVec4(value[0], value[1], value[2], value[3]));
+    }
+    for (auto item : vec2s) {
+        const auto value = py::cast<std::array<float, 2>>(item.second);
+        result.vec2s.emplace(py::cast<std::string>(item.first), ImVec2(value[0], value[1]));
+    }
+    return result;
+}
+
 } // anonymous namespace
 
 void RegisterGUIBindings(py::module_ &m)
 {
+    // Registry publications, including C++ callers and owner replacement,
+    // update the mirror through the same path. No Python object is retained.
+    EditorThemeRegistry::SetChangeCallback([] {
+        if (!Py_IsInitialized())
+            return;
+        py::gil_scoped_acquire gil;
+        py::dict modules = py::module_::import("sys").attr("modules");
+        if (modules.contains("infernux.engine.ui.theme")) {
+            py::object mirror = modules["infernux.engine.ui.theme"];
+            if (py::hasattr(mirror, "_apply_native_theme_overrides"))
+                mirror.attr("_apply_native_theme_overrides")();
+        }
+    });
     // Use the compiled ImGui constants as the sole numeric authority. Export
     // ordinary Python integers through IntEnum so all existing style APIs work.
     constexpr std::pair<const char *, int> styleVars[] = {
@@ -428,13 +460,27 @@ void RegisterGUIBindings(py::module_ &m)
         "Monotonic counter bumped on every theme switch (cheap change detection)");
     m.def(
         "set_editor_theme",
-        [](const std::string &name) {
-            bool ok = EditorThemeRegistry::SetActiveTheme(name);
-            if (ok)
-                EditorThemeRegistry::ApplyImGuiColors(); // re-skin all built-in widgets at once
-            return ok;
-        },
+        [](const std::string &name) { return EditorThemeRegistry::SetActiveTheme(name); },
         py::arg("name"), "Switch the active editor theme and re-apply the ImGui palette; returns False if unknown");
+    m.def("register_editor_theme", [](const std::string &name, const std::string &owner, const py::dict &colors,
+                                       const py::dict &vec2s, const std::unordered_map<std::string, float> &floats) {
+        const auto theme = DecodeThemeDefinition(name, colors, vec2s, floats);
+        EditorThemeRegistry::Register(name, owner, theme.colors, theme.vec2s, theme.floats);
+    }, py::arg("name"), py::arg("owner"), py::arg("colors"), py::arg("vec2s"), py::arg("floats"));
+    m.def("remove_editor_themes", [](const std::string &owner) {
+        EditorThemeRegistry::RemoveOwner(owner);
+    }, py::arg("owner"));
+    m.def("replace_editor_themes", [](const std::string &owner, const py::list &definitions, const std::string &preferred) {
+        std::vector<EditorThemeRegistry::Definition> themes;
+        for (auto value : definitions) {
+            const auto item = py::cast<py::dict>(value);
+            themes.push_back(DecodeThemeDefinition(py::cast<std::string>(item["name"]),
+                                                  py::cast<py::dict>(item["colors"]),
+                                                  py::cast<py::dict>(item["vec2s"]),
+                                                  py::cast<std::unordered_map<std::string, float>>(item["floats"])));
+        }
+        EditorThemeRegistry::ReplaceOwner(owner, themes, preferred);
+    }, py::arg("owner"), py::arg("definitions"), py::arg("preferred") = "");
 
     py::class_<PropertyBatchPlan, std::shared_ptr<PropertyBatchPlan>>(m, "PropertyBatchPlan")
         .def_property_readonly("size",

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from threading import RLock
 from typing import Any, Callable, Literal, get_args
+from contextlib import nullcontext
 from infernux.execution import capture_execution_scope, component_execution, execution_phase, simulation_state
 
 _lock = RLock()
 _services: dict[str, Any] = {}
+_service_owners: dict[str, Any] = {}
 UpdatePhase = Literal["update", "late_update", "fixed_update", "editor_update",
                       "physics_pre_step", "physics_post_step", "service_update", "render_submitted",
                       "render_presented"]
@@ -19,21 +21,18 @@ _update_callbacks: dict[str, tuple[UpdateRegistration, ...]] = {
 class UpdateRegistration:
     """One frame callback; disable it when idle and close it when its owner unloads."""
 
-    __slots__ = ("_callback", "_phase", "_unscaled", "_enabled", "_closed", "_scope")
+    __slots__ = ("_callback", "_phase", "_unscaled", "_enabled", "_closed", "_scope", "_reload_owner")
 
     def __init__(self, callback: Callable[[float], None], phase: UpdatePhase, unscaled: bool) -> None:
-        from infernux.engine.runtime_dispatch import (
-            _apply_partial_arguments, _partial_callback_target, _PublishedPythonCallback,
-        )
+        from infernux.engine.runtime_dispatch import _partial_callback_target
 
-        target, arguments = _partial_callback_target(callback)
-        binding = _PublishedPythonCallback.bind(target)
-        self._callback = (callback if binding is None else
-                          _apply_partial_arguments(binding.invoke_if_available, arguments))
+        target, _arguments = _partial_callback_target(callback)
+        self._callback = callback
         self._phase = phase
         self._unscaled = unscaled
         self._enabled = False
         self._closed = False
+        self._reload_owner = None
         candidate = getattr(target, '__self__', None)
         from infernux.components import InxComponent
         self._scope = capture_execution_scope(candidate if isinstance(candidate, InxComponent) else None)
@@ -93,6 +92,8 @@ def register_update(
     if not callable(callback):
         raise TypeError("Update callback must be callable")
     registration = UpdateRegistration(callback, phase, bool(unscaled))
+    from infernux.engine.reload.owners import own_cleanup
+    registration._reload_owner = own_cleanup(callback, registration.close)
     registration.enabled = enabled
     return registration
 
@@ -114,6 +115,8 @@ def _invoke_updates(callbacks, delta, unscaled_delta, gameplay_phase):
             break
         if not registration._enabled:
             continue
+        if registration._reload_owner is not None and not registration._reload_owner.active:
+            continue
         scope = registration._scope
         if scope is not None and scope.state == 'closed':
             registration.close()
@@ -121,7 +124,8 @@ def _invoke_updates(callbacks, delta, unscaled_delta, gameplay_phase):
         if scope is not None and scope.state == 'paused':
             continue
         try:
-            with component_execution(scope):
+            owner = registration._reload_owner
+            with (owner.enter() if owner is not None else nullcontext()), component_execution(scope):
                 registration._callback(unscaled_delta if registration._unscaled else delta)
         except Exception as exc:
             from infernux.debug import Debug
@@ -142,11 +146,18 @@ class Signal:
 
     def _add_receiver(self, callback):
         # Infrastructure receipts collect occurrences even during Pause.
-        self._receivers.append(callback)
+        from infernux.engine.reload.owners import owner_for
+        owner = owner_for(callback)
+        self._receivers.append((callback, owner))
+        if owner is not None:
+            owner.add_cleanup(lambda: self._remove_receiver(callback))
         return callback
 
     def _remove_receiver(self, callback):
-        self._receivers.remove(callback)
+        for index, (receiver, _owner) in enumerate(self._receivers):
+            if receiver is callback or receiver == callback:
+                del self._receivers[index]
+                break
 
     def add_listener(self, callback):
         from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
@@ -162,9 +173,12 @@ class Signal:
         from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
         assert_runtime_owner_thread()
         with execution_phase():
-            for receiver in tuple(self._receivers):
-                if receiver in self._receivers:
-                    receiver(*values)
+            for receiver, owner in tuple(self._receivers):
+                if (receiver, owner) in self._receivers:
+                    if owner is not None and not owner.active:
+                        continue
+                    with owner.enter() if owner is not None else nullcontext():
+                        receiver(*values)
             return self._listeners.invoke(*values, propagate_exceptions=True)
 
 
@@ -172,11 +186,18 @@ def install_runtime_service(name: str, service: Any) -> None:
     identity = str(name).strip().casefold()
     if not identity or service is None:
         raise ValueError("runtime service name and implementation are required")
+    from infernux.engine.reload.owners import owner_for
+    owner = owner_for()
     with _lock:
         existing = _services.get(identity)
         if existing is not None and existing is not service:
             raise RuntimeError(f"runtime service is already installed: {identity}")
+        if existing is service:
+            return
         _services[identity] = service
+        _service_owners[identity] = owner
+    if owner is not None:
+        owner.add_cleanup(lambda: remove_runtime_service(identity, service))
 
 
 def get_runtime_service(name: str) -> Any | None:
@@ -184,7 +205,17 @@ def get_runtime_service(name: str) -> Any | None:
     if not identity:
         return None
     with _lock:
-        return _services.get(identity)
+        service = _services.get(identity)
+        provider = _service_owners.get(identity)
+    if provider is not None:
+        from infernux.engine.reload.owners import current_owner
+        consumer = current_owner()
+        if not provider.active and (provider.coordinator is None or not
+                provider.coordinator.admits_candidate_service(consumer, provider)):
+            return None
+        if consumer is not None and consumer.coordinator is provider.coordinator and consumer is not provider:
+            consumer.coordinator.record_owner_dependency(consumer, provider)
+    return service
 
 
 def remove_runtime_service(name: str, service: Any | None = None) -> bool:
@@ -196,6 +227,7 @@ def remove_runtime_service(name: str, service: Any | None = None) -> bool:
         if existing is None or (service is not None and existing is not service):
             return False
         del _services[identity]
+        _service_owners.pop(identity, None)
         return True
 
 

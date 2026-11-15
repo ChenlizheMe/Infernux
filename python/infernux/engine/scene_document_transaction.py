@@ -18,6 +18,17 @@ from .runtime_scene_transaction import (
 class SceneDocumentTransaction(_RuntimeSceneDocumentTransaction):
     """Complete an editor scene transaction and refresh editor Gizmos."""
 
+    def __init__(self, scene, *, prepare_content=None, after_publish=None, **kwargs):
+        self.content_reconciliation_count = 0
+
+        def finish_content():
+            if after_publish is not None:
+                after_publish()
+            if prepare_content is not None:
+                self.content_reconciliation_count = int(bool(prepare_content()))
+
+        super().__init__(scene, after_publish=finish_content, **kwargs)
+
     def poll(self, *, admit_assets: bool = False) -> bool:
         if (
             admit_assets
@@ -41,23 +52,12 @@ class SceneDocumentTransaction(_RuntimeSceneDocumentTransaction):
         if resources is None:
             return super().poll(admit_assets=admit_assets)
         try:
-            scripts = resources.prepare_disk_scene_scripts(self._scene, self._document)
+            resources.prepare_disk_scene_scripts(self._scene, self._document)
         except Exception as exc:
             self._fail(exc)
             self._error = f"script preflight: {self._error}"
             return True
-        if scripts is None:
-            return super().poll(admit_assets=admit_assets)
-
-        # Keep the temporarily published schema and the world swap in the
-        # same editor safe point. A failed scene restores the old script state.
-        try:
-            complete = super().poll(admit_assets=admit_assets)
-            if self.state is SceneDocumentTransactionState.READY_TO_COMMIT:
-                complete = super().poll(admit_assets=admit_assets)
-            return complete
-        finally:
-            resources.finish_disk_scene_scripts(scripts, published=self.succeeded)
+        return super().poll(admit_assets=admit_assets)
 
     def _rebuild_python_registries(self) -> None:
         # Rollback restores the retained native world and its Python owners.

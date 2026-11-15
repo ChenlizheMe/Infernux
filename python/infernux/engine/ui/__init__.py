@@ -28,6 +28,7 @@ _EXPORTS = {
     "EngineStatus": (".engine_status", "EngineStatus"),
     "BuildSettingsPanel": (".build_settings_panel", "BuildSettingsPanel"),
     "PreferencesPanel": (".preferences_panel", "PreferencesPanel"),
+    "ThemePanel": (".theme_panel", "ThemePanel"),
     "HistoryPanel": (".history_panel", "HistoryPanel"),
     "PluginPanel": (".plugin_panel", "PluginPanel"),
     "InxPackageImportPanel": (".plugin_panel", "InxPackageImportPanel"),

@@ -295,6 +295,9 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] std::string GetImportError(const std::string &guid) const;
     [[nodiscard]] std::vector<AssetCatalogEntry> GetImportFailures() const;
     void ReportAssetLoadFailure(const std::string &guid, const std::string &error);
+    void ReportRuntimeLoadFailure(const std::string &guid, const std::string &error);
+    bool ClearRuntimeLoadFailure(const std::string &guid);
+    void ClearRuntimeLoadFailuresForDependents(const std::string &guid);
 
     /// @brief Published query snapshot generation and asset count.
     [[nodiscard]] uint64_t GetQueryGeneration() const;
@@ -600,6 +603,7 @@ class AssetDatabase : public NativeLifetimeOwner
 
     struct WorkerMetadataPrepare
     {
+        bool sidecarRepaired = false;
         PathWriteScope writeScope;
         AssetScanFile file;
         ResourceType resourceType = ResourceType::DefaultText;
@@ -1004,7 +1008,8 @@ class AssetDatabase : public NativeLifetimeOwner
                                      bool persistMetadata, const std::string &identityKey,
                                      std::optional<AtomicFileState> *expectedMetadata = nullptr,
                                      const PathWriteScope &writeScope = {},
-                                     TextureSourceSnapshot *textureSource = nullptr);
+                                     TextureSourceSnapshot *textureSource = nullptr,
+                                     std::string *failure = nullptr);
     void DeleteMetadata(const std::string &filePath);
     void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath, const PathWriteScope &writeScope,
                       const InxResourceMeta *replacement = nullptr);
@@ -1054,6 +1059,7 @@ class AssetDatabase : public NativeLifetimeOwner
     std::string m_assetStartupCachePath;
     std::string m_assetTransactionJournalPath;
     std::unordered_map<std::string, ImportResultState> m_importResults;
+    std::unordered_map<std::string, std::string> m_runtimeLoadFailures;
     size_t m_lastRefreshReusedCount = 0;
     size_t m_lastRefreshImportedCount = 0;
     std::vector<std::string> m_lastRefreshImportedPaths;

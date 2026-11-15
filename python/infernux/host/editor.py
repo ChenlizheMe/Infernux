@@ -155,11 +155,20 @@ class EditorAutomationHost:
 
     def runtime_transition(self, method: str) -> dict[str, object]:
         manager = self._play_mode_manager()
+        target_step = None
+        if method == "step_frame":
+            if not manager.is_paused:
+                return {"accepted": False, "runtime": self._runtime_status_value(manager)}
+            target_step = (int(manager.step_sequence) + int(manager.pending_step_requests)
+                           + int(manager._step_completion is not None) + 1)
         result = getattr(manager, str(method))()
-        return {
+        value = {
             "accepted": True if result is None else bool(result),
             "runtime": self._runtime_status_value(manager),
         }
+        if target_step is not None:
+            value["target_step_sequence"] = target_step
+        return value
 
     def set_time_scale(self, value: float) -> dict[str, object]:
         manager = self._play_mode_manager()
@@ -1523,6 +1532,8 @@ class EditorAutomationHost:
             "delta_time": float(manager.delta_time),
             "total_play_time": float(manager.total_play_time),
             "step_sequence": int(manager.step_sequence),
+            "pending_step_requests": int(manager.pending_step_requests),
+            "step_in_flight": manager._step_completion is not None,
             "transition_timings_ms": dict(manager.last_transition_timings_ms),
             "transition_pending": transition_task in {
                 "Enter Play Mode",

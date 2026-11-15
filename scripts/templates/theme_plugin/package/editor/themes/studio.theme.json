@@ -1,0 +1,22 @@
+{
+  "id": "studio",
+  "name": "Studio",
+  "author": "Your studio",
+  "description": "A quiet graphite theme with a blue accent.",
+  "colors": {
+    "ROLE_ACCENT": [0.30, 0.56, 0.86, 1.0],
+    "ROLE_BG_BASE": [0.075, 0.082, 0.095, 1.0],
+    "ROLE_BG_SURFACE": [0.11, 0.12, 0.14, 1.0],
+    "ROLE_BG_RAISED": [0.15, 0.16, 0.18, 1.0],
+    "ROLE_TEXT": [0.88, 0.90, 0.93, 1.0],
+    "ROLE_TEXT_DIM": [0.53, 0.57, 0.62, 1.0],
+    "ROLE_BORDER": [0.20, 0.22, 0.25, 1.0]
+  },
+  "vec2s": {
+    "GLOBAL_FRAME_PAD": [6.0, 4.0],
+    "GLOBAL_ITEM_SPC": [8.0, 6.0]
+  },
+  "floats": {
+    "GLOBAL_FRAME_ROUNDING": 2.0
+  }
+}

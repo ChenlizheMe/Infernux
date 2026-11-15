@@ -80,24 +80,28 @@ class ExecutionScope:
         self._component_state = None
         self._requests = weakref.WeakSet()
         self._resources = weakref.WeakSet()
+        from infernux.engine.reload.owners import own_cleanup
+        self._reload_owner = own_cleanup(None, self.close)
 
     @property
     def state(self):
-        if self._component_state is not None:
-            return self._component_state.state(self, _active_step.get())
         if self._closed:
             return 'closed'
+        if self._reload_owner is not None:
+            if self._reload_owner.closed:
+                return 'closed'
+            if not self._reload_owner.active:
+                return 'paused'
+        if self._component_state is not None:
+            return self._component_state.state(self, _active_step.get())
         return 'paused' if self._paused else 'active'
 
     @contextmanager
     def activate(self):
         if self.state == 'closed':
             raise RuntimeError('execution scope has closed')
-        token = _current_owner.set(self)
-        try:
+        with component_execution(self):
             yield self
-        finally:
-            _current_owner.reset(token)
 
     def pause(self):
         self._paused = True
@@ -129,11 +133,14 @@ class ExecutionScope:
 
 @contextmanager
 def component_execution(component):
-    token = _current_owner.set(component)
-    try:
-        yield
-    finally:
-        _current_owner.reset(token)
+    from contextlib import nullcontext
+    reload_owner = getattr(component, "_reload_owner", None)
+    with reload_owner.enter() if reload_owner is not None else nullcontext():
+        token = _current_owner.set(component)
+        try:
+            yield
+        finally:
+            _current_owner.reset(token)
 
 
 def component_scope(component):
@@ -163,6 +170,16 @@ def capture_execution_scope(default_owner=None):
     if owner is not None and not explicit and phase is not None and phase != simulation_state():
         raise RuntimeError('the calling component phase has ended')
     scope = owner if owner is None or isinstance(owner, ExecutionScope) else component_scope(owner)
+    if scope is None:
+        from infernux.engine.reload.owners import current_owner
+
+        source = current_owner()
+        if source is not None:
+            scope = getattr(source, '_execution_scope', None)
+            if scope is None:
+                # Preloads and ordinary service callbacks have the same work
+                # lifetime as components, without inheriting simulation Pause.
+                scope = source._execution_scope = ExecutionScope()
     if scope is not None and scope.state == 'closed':
         raise RuntimeError('the calling execution owner has retired')
     return scope
@@ -296,7 +313,8 @@ class ResultConsumer:
             frame.begin_scope()
         try:
             if self._epoch != int(manager.simulation_epoch) or self._playing != bool(manager.is_playing()) or (
-                    self._scope is not None and self._scope.state == 'closed'):
+                    self._scope is not None and (self._scope.state == 'closed' or (
+                        self._scope._reload_owner is not None and not self._scope._reload_owner.active))):
                 self.cancel()
                 return None
             if self._input is not None:
@@ -421,6 +439,13 @@ def close_component_execution(component):
     stored = component.__dict__.pop('_runtime_execution_scope', None)
     if stored is not None:
         stored[1].close()
+    owner = component.__dict__.get('_reload_owner')
+    if owner is not None:
+        try:
+            owner.close()
+        except Exception as exc:
+            from infernux.debug import Debug
+            Debug.log_exception(exc)
 
 
 def simulation_state():

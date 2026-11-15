@@ -1,0 +1,28 @@
+name: Package theme
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python package.py build dist/theme.inxpkg
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: python package.py release-manifest dist/theme.inxpkg --output dist/infernux-plugin-release.json --tag "$GITHUB_REF_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: theme-package
+          path: dist/
+      - if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/theme.inxpkg dist/infernux-plugin-release.json --generate-notes

@@ -4,6 +4,7 @@
 #include <core/types/ColorSpace.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -560,6 +561,9 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
     for (size_t index = 0; index < candidate.size(); ++index) {
         auto &binding = candidate[index];
         const std::string textureGuid = ResolveMaterialTextureGuid(binding);
+        const auto *database = AssetRegistry::Instance().GetAssetDatabase();
+        if (!textureGuid.empty() && database && !database->GetImportError(textureGuid).empty())
+            return false;
         GpuBillboardTextureLease lease;
         bool usingFallback = false;
         if (!force && (!binding.pending || !binding.fallback) && textureGuid == binding.requestedGuid &&
@@ -582,6 +586,8 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
         if (lease.status != GpuBillboardTextureStatus::Ready)
             lease = m_textureResolver(textureGuid, binding.name, GpuParticleTextureRequest::Poll);
         const bool pending = lease.status == GpuBillboardTextureStatus::Pending;
+        if (!textureGuid.empty() && lease.status != GpuBillboardTextureStatus::Ready)
+            return false;
         if (pending && textureGuid == binding.requestedGuid && binding.gpuView && binding.gpuView->IsValid() &&
             binding.texture.IsValid() && binding.sampler.IsValid()) {
             binding.pending = true;

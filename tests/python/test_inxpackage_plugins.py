@@ -22,7 +22,6 @@ from infernux.engine.project_context import (
 from infernux.plugins import (
     InxPackage,
     SharedPackageCache,
-    PackageUpdateConflict,
     PluginManager,
     PluginRegistry,
     player_file_exported,
@@ -315,131 +314,6 @@ def test_selective_reimport_rollback_retains_previous_files_and_registry(tmp_pat
     assert not (project / "Assets/Plugins/third.txt").exists()
 
 
-def test_runtime_script_publication_tracks_install_and_live_topology_lifetime(tmp_path, monkeypatch, request):
-    source = _source(tmp_path / "source", "vendor/mutable-component")
-    (source / "runtime").mkdir()
-    (source / "runtime/component.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (source / "seed.txt").write_text("initial non-script selection", encoding="utf-8")
-    package = _export(source, tmp_path / "MutableComponent.inxpkg")
-    project = _project(tmp_path / "project")
-    events = []
-
-    class Resources:
-        _project_path = str(project.resolve())
-
-        def begin_script_transaction(self, paths):
-            events.append(("begin", tuple(Path(path) for path in paths)))
-            return "mutable-component"
-
-        def submit_script_change(self, path, **kwargs):
-            events.append((Path(path), kwargs))
-            return object()
-
-        def process_pending_reloads(self, *, force=False):
-            events.append(("drain", force))
-            return 0
-
-        def retire_script_paths(self, paths):
-            events.append(("retire", tuple(Path(path) for path in paths)))
-
-    monkeypatch.setattr(
-        "infernux.engine.resources_manager.ResourcesManager.instance", classmethod(lambda _cls: Resources())
-    )
-    manager = PluginManager(str(project))
-    request.addfinalizer(manager.preloads.unload_all)
-    reference = "vendor/mutable-component"
-    root = project / "Packages" / reference
-    runtime = root / "runtime/component.py"
-    manager.install_package(str(package), selected=("seed.txt",), install_dependencies=False)
-    assert events == []
-    manager.install_package(str(package), install_dependencies=False)
-    assert events[0] == ("begin", (runtime,))
-    assert events[1][0] == runtime
-    assert events[1][1]["force"] is True
-    assert events[1][1]["transaction_id"] == "mutable-component"
-    assert events[2] == ("drain", True)
-    assert not (project / "Library/InxPackageStaging").exists()
-    before = manager.registry.installed_record(reference)["files"]
-    events.clear()
-    manager.set_enabled(reference, False)
-    assert set(events[0][1]) == {runtime}
-    manager.set_enabled(reference, True)
-
-    source_bytes = runtime.read_bytes()
-    meta_bytes = runtime.with_suffix(".py.meta").read_bytes()
-    runtime.unlink()
-    runtime.with_suffix(".py.meta").unlink()
-    events.clear()
-    manager.set_enabled(reference, False)
-    assert events[0] == ("retire", (runtime,))
-    events.clear()
-    manager.set_enabled(reference, True)
-    assert events == []
-    manager.set_enabled(reference, False)
-    runtime.write_bytes(source_bytes)
-    runtime.with_suffix(".py.meta").write_bytes(meta_bytes)
-    events.clear()
-    manager.set_enabled(reference, True)
-    assert events[0] == ("begin", (runtime,))
-
-    added = runtime.with_name("added.py")
-    added.write_text("ADDED = True\n", encoding="utf-8")
-    added.with_suffix(".py.meta").write_text(_meta("c" * 32), encoding="utf-8")
-    editor = root / "editor/panel.py"
-    editor.parent.mkdir()
-    editor.write_text("EDITOR = True\n", encoding="utf-8")
-    editor.with_suffix(".py.meta").write_text(_meta("d" * 32), encoding="utf-8")
-    events.clear()
-    manager.set_enabled(reference, False)
-    assert events[0][0] == "retire"
-    assert set(events[0][1]) == {runtime, added}
-    events.clear()
-    manager.set_enabled(reference, True)
-    assert events[0][0] == "begin"
-    assert set(events[0][1]) == {runtime, added}
-
-    renamed = runtime.with_name("renamed.py")
-    runtime.rename(renamed)
-    runtime.with_suffix(".py.meta").rename(renamed.with_suffix(".py.meta"))
-    events.clear()
-    manager.set_enabled(reference, False)
-    assert set(events[0][1]) == {runtime, renamed, added}
-    events.clear()
-    manager.set_enabled(reference, True)
-    assert set(events[0][1]) == {renamed, added}
-
-    events.clear()
-    manager.set_enabled(reference, False)
-    assert set(events[0][1]) == {runtime, renamed, added}
-    renamed.rename(runtime)
-    renamed.with_suffix(".py.meta").rename(runtime.with_suffix(".py.meta"))
-    events.clear()
-    manager.set_enabled(reference, True)
-    assert set(events[0][1]) == {runtime, added}
-    moved_editor = root / "editor/component.py"
-    runtime.rename(moved_editor)
-    runtime.with_suffix(".py.meta").rename(moved_editor.with_suffix(".py.meta"))
-    events.clear()
-    manager.set_enabled(reference, False)
-    assert set(events[0][1]) == {runtime, added}
-    events.clear()
-    manager.set_enabled(reference, True)
-    assert events[0] == ("begin", (added,))
-
-    assert manager.registry.installed_record(reference)["files"] == before
-    author = root / "runtime/author.py"
-    author.write_text("AUTHOR = True\n", encoding="utf-8")
-    author.with_suffix(".py.meta").write_text(_meta("e" * 32), encoding="utf-8")
-    events.clear()
-    manager.uninstall(reference)
-    assert events[0][0] == "retire"
-    assert set(events[0][1]) == {runtime, added, author}
-    assert author.is_file() and added.is_file() and editor.is_file()
-    events.clear()
-    manager.install_package(str(package), install_dependencies=False)
-    assert events[0][0] == "begin"
-    assert set(events[0][1]) == {runtime, added, author}
-    assert runtime.is_file()
 
 
 def test_guid_reuse_transfers_ownership_on_uninstall(tmp_path):
@@ -535,7 +409,10 @@ def test_bundled_package_startup_idempotence_and_successive_releases(tmp_path, m
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _export(source, package)
     states = install_bundled_packages(str(project), resources_root=str(resources), manager=manager)
-    assert [state.reference for state in states] == ["infernux/platform-fixture"]
+    assert states == ()
+    assert manager.registry.installed_record("infernux/platform-fixture")["version"] == "1.0.0"
+    assert (installed / "runtime/fixture.py").read_text(encoding="utf-8") == "RELEASE = 'bundled'\n"
+    manager.install_reference("infernux/platform-fixture", install_dependencies=False)
     assert (installed / "runtime/fixture.py").read_text(encoding="utf-8") == "RELEASE = 'second'\n"
     record = manager.registry.installed_record("infernux/platform-fixture")
     cached = Path(manager._installed_archive_path(record))
@@ -546,19 +423,21 @@ def test_bundled_package_startup_idempotence_and_successive_releases(tmp_path, m
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _export(source, package)
     states = install_bundled_packages(str(project), resources_root=str(resources), manager=manager)
-    assert [state.reference for state in states] == ["infernux/platform-fixture"]
+    assert states == ()
+    assert manager.registry.installed_record("infernux/platform-fixture")["version"] == "1.0.1"
+    manager.install_reference("infernux/platform-fixture", install_dependencies=False)
     assert json.loads((installed / "inx_package.json").read_text(encoding="utf-8"))["intro"] == manifest["intro"]
     assert install_bundled_packages(str(project), resources_root=str(resources), manager=manager) == ()
 
 
-def test_startup_never_force_overwrites_an_edited_builtin_package(tmp_path):
+def test_startup_preserves_edits_until_an_explicit_builtin_update(tmp_path):
     source = _source(tmp_path / "source", "infernux/platform-fixture")
     runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "fixture.py").write_text("VALUE = 'engine'\n", encoding="utf-8")
     resources = tmp_path / "resources"
     resources.mkdir()
-    _export(source, resources / "infernux.platform-fixture.inxpkg")
+    package = _export(source, resources / "infernux.platform-fixture.inxpkg")
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project), runtime=False)
     install_bundled_packages(str(project), resources_root=str(resources), manager=manager)
@@ -567,9 +446,11 @@ def test_startup_never_force_overwrites_an_edited_builtin_package(tmp_path):
     edited = b"VALUE = 'team edit'\n"
     authored.write_bytes(edited)
 
-    with pytest.raises(PackageUpdateConflict):
-        install_bundled_packages(str(project), resources_root=str(resources), manager=manager)
+    install_bundled_packages(str(project), resources_root=str(resources), manager=manager)
     assert authored.read_bytes() == edited
+    assert Path(str(authored) + ".meta").read_bytes() == original_meta
+    manager.install_package(str(package), update=True, install_dependencies=False)
+    assert authored.read_text(encoding="utf-8") == "VALUE = 'engine'\n"
     assert Path(str(authored) + ".meta").read_bytes() == original_meta
 
 
@@ -1375,12 +1256,8 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
 
     assert script.is_file()
     assert manager.registry.installed_record("vendor/stubborn") is not None
-    failed_state = next(iter(manager.preloads.states.values()))
-    assert failed_state.loaded is True
-    assert failed_state.restart_required is True
-    assert "service still running" in failed_state.error
+    assert not manager.preloads.states
 
-    failed_state.instance.unload = lambda: None
     manager.uninstall("vendor/stubborn")
     assert not script.exists()
 

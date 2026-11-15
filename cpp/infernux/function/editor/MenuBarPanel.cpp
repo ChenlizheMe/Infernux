@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "MenuBarPanel.h"
 #include <function/renderer/gui/EditorMenuItem.h>
 #include <function/renderer/gui/InxGUISemantics.h>
@@ -91,13 +92,13 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
     // These authored overrides replace the already-scaled global style.
     const float dpi = ctx->GetDpiScale();
     const auto scaled = [dpi](ImVec2 size) { return ImVec2(size.x * dpi, size.y * dpi); };
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorTheme::TOOLBAR_FRAME_PAD));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorTheme::TOOLBAR_ITEM_SPC));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorTheme::TOOLBAR_WIN_PAD));
-    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, EditorTheme::MENU_BAR_BG);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, EditorTheme::POPUP_BG);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorTheme::HEADER_HOVERED);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorTheme::HEADER_ACTIVE);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_FRAME_PAD")));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorThemeRegistry::Vec2("TOOLBAR_ITEM_SPC")));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_WIN_PAD")));
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, EditorThemeRegistry::Color("MENU_BAR_BG"));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, EditorThemeRegistry::Color("POPUP_BG"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("HEADER_HOVERED"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("HEADER_ACTIVE"));
 
     if (ImGui::BeginMainMenuBar()) {
         if (InxGUISemantics::IsCaptureEnabled())
@@ -196,6 +197,11 @@ void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
     if (SemanticMenuItem(ctx, T("menu.command_palette"), "Ctrl+Shift+P", false, canOpenPalette,
                          "menu.edit.command_palette"))
         ExecuteCommand("command_palette.open", "menu");
+
+    ImGui::Separator();
+    if (SemanticMenuItem(ctx, T("themes.title"), "", IsCommandChecked("window.open.themes"),
+                         CanExecuteCommand("window.open.themes"), "menu.edit.themes"))
+        ExecuteCommand("window.open.themes", "menu");
 
     ImGui::EndMenu();
 }

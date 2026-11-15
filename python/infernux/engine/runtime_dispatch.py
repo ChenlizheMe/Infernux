@@ -2,7 +2,7 @@
 
 The editor and Player publish one :class:`RuntimeRevisionEpoch` at an owner
 safe point.  A frame keeps a strong reference to the epoch it captured, so a
-body reload cannot change fixed/physics/update phases halfway through a
+source reload cannot change fixed/physics/update phases halfway through a
 frame.  This module is intentionally independent from the component lifecycle
 mixins; it is the single owner of revision-aware dispatch state.
 """
@@ -10,6 +10,7 @@ mixins; it is the single owner of revision-aware dispatch state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from functools import partial
 from types import FunctionType, MappingProxyType, MethodType
 import inspect
@@ -256,78 +257,6 @@ class CallbackInvocation:
     message: str = ""
 
 
-@dataclass(frozen=True, eq=False)
-class _PublishedPythonCallback:
-    """Look up a named project callback from its owner or published module."""
-
-    module_name: str
-    name: str
-    owner: object = None
-
-    @classmethod
-    def bind(cls, callback):
-        owner = getattr(callback, "__self__", None)
-        if owner is None:
-            if type(callback) is not FunctionType or callback.__qualname__ != callback.__name__:
-                return None
-            declaration = callback
-            name = callback.__name__
-        else:
-            function = getattr(callback, "__func__", None)
-            if type(function) is not FunctionType:
-                return None
-            declaration = owner if isinstance(owner, type) else type(owner)
-            if declaration.__qualname__ != declaration.__name__:
-                return None
-            name = function.__name__
-            attribute = inspect.getattr_static(owner, name, None)
-            if isinstance(attribute, classmethod):
-                attribute = attribute.__func__
-            if attribute is not function:
-                return None
-
-        module = sys.modules.get(declaration.__module__)
-        if module is None or vars(module).get(declaration.__name__) is not declaration:
-            return None
-        from infernux.engine.project_context import is_project_component_script
-
-        path = getattr(module, "__file__", None)
-        if path and is_project_component_script(path):
-            return cls(module.__name__, name, owner)
-        return None
-
-    def resolve(self):
-        module = sys.modules.get(self.module_name)
-        if self.owner is None:
-            return getattr(module, self.name, None)
-        declaration = self.owner if isinstance(self.owner, type) else type(self.owner)
-        if module is None or vars(module).get(declaration.__name__) is not declaration:
-            return None
-        return getattr(self.owner, self.name, None)
-
-    def matches(self, callback) -> bool:
-        if self.owner is None:
-            return (
-                type(callback) is FunctionType
-                and callback.__module__ == self.module_name
-                and callback.__qualname__ == self.name
-            )
-        return (
-            getattr(callback, "__self__", None) is self.owner
-            and getattr(getattr(callback, "__func__", None), "__name__", None) == self.name
-        )
-
-    def invoke_if_available(self, *args, **kwargs):
-        callback = self.resolve()
-        if callable(callback):
-            return callback(*args, **kwargs)
-        return None
-
-    def __call__(self, *args, **kwargs):
-        callback = self.resolve()
-        if not callable(callback):
-            raise RuntimeError(f"Registered script callback '{self.module_name}.{self.name}' is unavailable")
-        return callback(*args, **kwargs)
 
 
 _PartialArguments = tuple[tuple[tuple, dict], ...]
@@ -353,10 +282,9 @@ def _apply_partial_arguments(callback, arguments: _PartialArguments):
 class ReloadableCallbackRef:
     """A persistent reference to a registered callback.
 
-    Component methods resolve through the current epoch. Named project functions
-    and project helper methods follow their published definitions, including
-    calls with arguments bound by functools.partial. Closures,
-    lambdas and external callables keep their original identity.
+    Component methods resolve through the admitted epoch. Other callables keep
+    their registration identity. Source retirement removes the registration;
+    reconstructed code registers its own current callbacks.
     """
 
     owner_ref: Optional[weakref.ReferenceType[Any]]
@@ -367,9 +295,9 @@ class ReloadableCallbackRef:
     registration_epoch: int
     direct_callable: Optional[Callable[..., Any]] = None
     execution_scope: Any = None
-    python_binding: _PublishedPythonCallback | None = None
     partial_source: weakref.ReferenceType | None = None
     partial_arguments: _PartialArguments = ()
+    reload_owner: Any = None
 
     @property
     def is_direct(self) -> bool:
@@ -386,6 +314,8 @@ class ReloadableCallbackRef:
         if not callable(callback):
             raise TypeError("callback must be callable")
         original = callback
+        from infernux.engine.reload.owners import owner_for
+        reload_owner = owner_for(callback)
         callback, partial_arguments = _partial_callback_target(callback)
         partial_source = weakref.ref(original) if partial_arguments else None
         selected_epoch = current_runtime_epoch() if epoch is None else epoch
@@ -399,7 +329,6 @@ class ReloadableCallbackRef:
         except (ImportError, TypeError):
             reloadable_owner = False
         if not reloadable_owner:
-            binding = _PublishedPythonCallback.bind(callback)
             return cls(
                 owner_ref=None,
                 owner_identity=None,
@@ -407,11 +336,9 @@ class ReloadableCallbackRef:
                 method_name=str(getattr(function, "__name__", "") or ""),
                 expected_signature=str(expected_signature or _safe_signature(original)),
                 registration_epoch=registration_epoch,
-                direct_callable=original if binding is None else None,
-                python_binding=binding,
+                direct_callable=original,
                 execution_scope=capture_execution_scope(),
-                partial_source=partial_source if binding is not None else None,
-                partial_arguments=partial_arguments if binding is not None else (),
+                reload_owner=reload_owner,
             )
 
         try:
@@ -445,18 +372,14 @@ class ReloadableCallbackRef:
             execution_scope=capture_execution_scope(owner),
             partial_source=partial_source,
             partial_arguments=partial_arguments,
+            reload_owner=reload_owner,
         )
 
     def resolve(self, epoch: Optional[RuntimeRevisionEpoch] = None) -> CallbackResolution:
+        if self.reload_owner is not None and not self.reload_owner.active:
+            return CallbackResolution("owner_invalid" if self.reload_owner.closed else "owner_pending")
         if self.is_direct:
             return CallbackResolution("direct", self.direct_callable)
-        if self.python_binding is not None:
-            callback = self.python_binding.resolve()
-            if callable(callback):
-                if self.partial_arguments:
-                    callback = _apply_partial_arguments(callback, self.partial_arguments)
-                return CallbackResolution("resolved", callback)
-            return CallbackResolution("method_missing", message=f"callback '{self.python_binding.name}' is unavailable")
         owner = self.owner_ref() if self.owner_ref is not None else None
         if owner is None:
             return CallbackResolution("owner_unavailable", message="callback owner was collected")
@@ -506,7 +429,8 @@ class ReloadableCallbackRef:
             if state == 'paused':
                 return CallbackInvocation(self, 'owner_paused', 'callback execution scope is paused')
         try:
-            with component_execution(self.execution_scope):
+            owner = self.reload_owner
+            with (owner.enter() if owner is not None else nullcontext()), component_execution(self.execution_scope):
                 resolution.callback(*args)
         except Exception as exc:
             if propagate_exceptions:
@@ -519,8 +443,6 @@ class ReloadableCallbackRef:
             return self.direct_callable is callback or self.direct_callable == callback
         if self.partial_source is not None:
             return self.partial_source() is callback
-        if self.python_binding is not None:
-            return self.python_binding.matches(callback)
         owner = getattr(callback, "__self__", None)
         function = getattr(callback, "__func__", None)
         return (
@@ -533,8 +455,6 @@ class ReloadableCallbackRef:
     def matches_owner_method(self, owner: Any, method_name: str) -> bool:
         """Match a persistent owner/path without inspecting the current body."""
         method_name = str(method_name or "")
-        if self.python_binding is not None:
-            return self.python_binding.owner is owner and self.python_binding.name == method_name
         if self.is_direct:
             callback = getattr(owner, method_name, None)
             return callable(callback) and (
@@ -571,6 +491,8 @@ class ReloadableCallbackRegistry:
             if existing.matches(callback):
                 return existing
         self._callbacks.append(reference)
+        from infernux.engine.reload.owners import own_cleanup
+        own_cleanup(callback, lambda: self.remove_listener(reference))
         return reference
 
     def remove_listener(self, callback: Callable[..., Any] | ReloadableCallbackRef) -> None:

@@ -359,6 +359,8 @@ void AudioSource::SetTrackClip(int trackIndex, std::shared_ptr<AudioClip> clip)
     }
 
     const std::string guid = clip ? clip->GetGuid() : std::string{};
+    if (!guid.empty())
+        clip = AssetRegistry::Instance().LoadAsset<AudioClip>(guid, ResourceType::Audio);
     AssignTrackClipReference(trackIndex, guid, std::move(clip));
 }
 

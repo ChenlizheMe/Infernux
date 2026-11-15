@@ -1,10 +1,8 @@
-"""Explicit version selection and local-edit consent for installed packages."""
+"""Compatible version selection for installed packages."""
 
 from __future__ import annotations
 
 from infernux.engine.i18n import t
-from infernux.debug import Debug
-from infernux.plugins import PackageUpdateConflict
 
 from .plugin_install_progress import PluginInstallProgressService
 
@@ -14,7 +12,6 @@ class PluginVersionsView:
         self.releases: dict[str, tuple[dict[str, object], ...]] = {}
         self.selection: dict[str, int] = {}
         self.messages: dict[str, str] = {}
-        self.pending: dict[str, dict[str, object]] = {}
 
     def render(self, ctx, manager, row) -> None:
         reference = str(row["reference"])
@@ -30,7 +27,6 @@ class PluginVersionsView:
             index = ctx.combo("##plugin_release_version", self.selection.get(reference, 0),
                               [str(item["version"]) for item in versions])
             if index != self.selection.get(reference, 0):
-                self.pending.pop(reference, None)
                 self.messages.pop(reference, None)
             self.selection[reference] = index
             selected = versions[index]
@@ -42,20 +38,10 @@ class PluginVersionsView:
             ctx.end_disabled()
         elif reference in self.releases:
             ctx.text_wrapped(t("plugins.versions.none"))
-        if reference in self.pending:
-            ctx.separator()
-            ctx.text_wrapped(t("plugins.versions.conflict"))
-            if ctx.button(t("plugins.versions.overwrite") + "##plugin_update_overwrite"):
-                self.publish(manager, reference, overwrite=True)
-            ctx.same_line()
-            if ctx.button(t("plugins.versions.cancel") + "##plugin_update_cancel"):
-                self.pending.pop(reference, None)
-                self.messages.pop(reference, None)
         if self.messages.get(reference):
             ctx.text_wrapped(self.messages[reference])
 
     def check(self, manager, reference: str) -> None:
-        self.pending.pop(reference, None)
         def complete(ok, result, message):
             if ok:
                 self.releases[reference] = tuple(result)
@@ -67,33 +53,13 @@ class PluginVersionsView:
         self._begin(reference, lambda report: manager.available_releases(reference), complete)
 
     def download(self, manager, reference: str, tag: str) -> None:
-        self.pending.pop(reference, None)
+        def observe(installed_reference, message):
+            self.messages[reference] = message
 
-        def complete(ok, result, message):
-            if not ok:
-                self.messages[reference] = message
-                return
-            self.pending[reference] = result
-            # Progress completion runs on the editor thread. Lifecycle publication
-            # must not happen in the network worker or while an old preload runs.
-            self.publish(manager, reference)
-
-        self._begin(reference, lambda report: manager.download_update(reference, tag, progress=report), complete)
-
-    def publish(self, manager, reference: str, *, overwrite: bool = False) -> None:
-        release = self.pending[reference]
-        try:
-            manager.install_package(str(release["path"]), source=release["source"],
-                                    update=True, overwrite_modified=overwrite)
-        except PackageUpdateConflict as exc:
-            self.messages[reference] = "\n".join(exc.paths)
-        except Exception as exc:
-            self.pending.pop(reference, None)
-            self.messages[reference] = f"{type(exc).__name__}: {exc}"
-            Debug.log_error(f"Plugin update failed for {reference}: {self.messages[reference]}")
-        else:
-            self.pending.pop(reference, None)
-            self.messages[reference] = t("plugins.versions.updated")
+        if not PluginInstallProgressService.instance().begin_package(
+            manager=manager, label=reference, action="release", release_tag=tag, observer=observe,
+        ):
+            self.messages[reference] = t("plugins.install_progress.busy")
 
     def _begin(self, reference, work, complete) -> None:
         if not PluginInstallProgressService.instance().begin(

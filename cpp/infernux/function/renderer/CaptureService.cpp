@@ -294,6 +294,7 @@ struct CaptureService::Impl
         std::shared_ptr<DocumentWriteTicket> writeTicket;
         Clock::time_point phaseStartedAt;
         double bytesPerNanosecond = 0;
+        bool completionNotified = false;
     };
 
     struct EncodeRange
@@ -466,8 +467,11 @@ CaptureService::CaptureService(FrameWorkOwner &owner, std::chrono::milliseconds 
     work.describe = [this] {
         FrameWorkFacts facts;
         facts.pending = HasPending();
-        facts.observe = m_impl->active.job.IsValid();
-        facts.workerBusy = facts.observe && !m_impl->active.job.IsComplete();
+        facts.observe = m_impl->active.job.IsValid() || (m_completion && std::any_of(
+            m_impl->records.begin(), m_impl->records.end(), [](const auto &entry) {
+                return IsTerminal(entry.second.snapshot.status) && !entry.second.completionNotified;
+            }));
+        facts.workerBusy = m_impl->active.job.IsValid() && !m_impl->active.job.IsComplete();
         if (!facts.observe) {
             if (const auto ready = m_impl->ReadyEncode())
                 facts.host = {ready, 0, true, false};
@@ -667,13 +671,30 @@ void CaptureService::Poll()
             record.writeTicket.reset();
         }
     }
+    if (m_completion) {
+        std::vector<uint64_t> completed;
+        for (auto &[id, record] : m_impl->records) {
+            if (IsTerminal(record.snapshot.status) && !record.completionNotified) {
+                record.completionNotified = true;
+                completed.push_back(id);
+            }
+        }
+        for (auto id : completed)
+            m_completion(id);
+    }
+}
+
+void CaptureService::SetCompletionCallback(std::function<void(uint64_t)> callback)
+{
+    m_completion = std::move(callback);
 }
 
 bool CaptureService::HasPending() const noexcept
 {
     return m_impl->active.job.IsValid() ||
            std::any_of(m_impl->records.begin(), m_impl->records.end(),
-                       [](const auto &entry) { return !IsTerminal(entry.second.snapshot.status); });
+                       [this](const auto &entry) { return !IsTerminal(entry.second.snapshot.status) ||
+                           (m_completion && !entry.second.completionNotified); });
 }
 
 } // namespace infernux

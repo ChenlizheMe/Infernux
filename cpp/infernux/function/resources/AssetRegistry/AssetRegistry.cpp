@@ -145,18 +145,22 @@ RuntimeAssetPayload AssetRegistry::LoadAssetInternal(const std::string &filePath
         m_assetDb->CompleteRuntimeArtifactPublication();
         if (m_assetDb->GetPathFromGuid(guid).empty())
             return {};
-        auto ticket = BeginLoadAsset(guid, type);
-        ticket->Wait();
-        TryCommitAssetLoad(ticket);
-        return ticket->m_payload;
     }
-    if (type == ResourceType::Mesh) {
-        if (auto pending = GetPendingMeshReload(guid)) {
-            if (m_frameWork->IsActive())
-                return {};
-            pending->Wait();
-            TryCommitAssetLoad(pending);
-            return pending->m_payload;
+    if (type == ResourceType::Mesh && GetPendingMeshReload(guid) && m_frameWork && m_frameWork->IsActive())
+        return {};
+    if ((!m_frameWork || !m_frameWork->IsActive()) &&
+        (type == ResourceType::Mesh || type == ResourceType::Texture || type == ResourceType::RenderTexture)) {
+        try {
+            auto ticket = BeginLoadAsset(guid, type);
+            ticket->Wait();
+            TryCommitAssetLoad(ticket);
+            return ticket->m_payload;
+        } catch (const AssetLoadSuperseded &) {
+            return {};
+        } catch (const std::exception &error) {
+            if (m_assetDb->GetImportError(guid).empty())
+                m_assetDb->ReportRuntimeLoadFailure(guid, std::string("Runtime load failed: ") + error.what());
+            return {};
         }
     }
     auto loaderIt = m_loaders.find(type);
@@ -165,17 +169,19 @@ RuntimeAssetPayload AssetRegistry::LoadAssetInternal(const std::string &filePath
         return nullptr;
     }
 
-    auto payload = loaderIt->second->Load(filePath, guid, m_assetDb.get());
-    if (!payload) {
-        INXLOG_WARN("AssetRegistry: loader returned nullptr for '", filePath, "' (GUID: ", guid, ")");
-        return nullptr;
+    try {
+        auto payload = loaderIt->second->Load(filePath, guid, m_assetDb.get());
+        if (!payload)
+            throw std::runtime_error("Runtime loader returned an empty payload: " + filePath);
+        InsertEntry(guid, payload, type);
+        loaderIt->second->OnPublished(payload, guid, m_assetDb.get());
+        ++m_assetMutationGenerations[guid];
+        (void)TrimCpuBudget();
+        return payload;
+    } catch (const std::exception &error) {
+        m_assetDb->ReportRuntimeLoadFailure(guid, std::string("Runtime load failed: ") + error.what());
+        return {};
     }
-
-    InsertEntry(guid, payload, type);
-    loaderIt->second->OnPublished(payload, guid, m_assetDb.get());
-    ++m_assetMutationGenerations[guid];
-    (void)TrimCpuBudget();
-    return payload;
 }
 
 uint64_t AssetRegistry::NextRuntimeVersion(const std::string &guid)
@@ -316,15 +322,22 @@ void AssetRegistry::RefreshEntryBytes(AssetEntry &entry)
 bool AssetRegistry::NotifySourceImported(const std::string &guid, ResourceType type,
                                          const std::shared_ptr<AssetLoadTicket> &repairTicket)
 {
+    const auto entry = m_loadedAssets.find(guid);
+    if (type != ResourceType::Mesh && entry != m_loadedAssets.end() &&
+        m_loaders.at(entry->second.type)->GetReloadMode() == AssetReloadMode::InPlace) {
+        ReloadAsset(guid);
+        return false;
+    }
     const bool repairIsCurrent = repairTicket && IsAssetLoadContentCurrent(repairTicket);
     ++m_assetContentGenerations[guid];
     ++m_assetMutationGenerations[guid];
-    const auto entry = m_loadedAssets.find(guid);
+    if (repairIsCurrent) {
+        repairTicket->m_expectedContentGeneration = m_assetContentGenerations[guid];
+        repairTicket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
+    }
     if (type == ResourceType::Mesh) {
         m_meshReloads.erase(guid);
         if (repairIsCurrent) {
-            repairTicket->m_expectedContentGeneration = m_assetContentGenerations[guid];
-            repairTicket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
             repairTicket->m_replaceMesh = true;
             m_meshReloads.emplace(guid, repairTicket);
             return true;
@@ -335,13 +348,17 @@ bool AssetRegistry::NotifySourceImported(const std::string &guid, ResourceType t
         if (m_frameWork && m_frameWork->IsActive()) {
             m_meshReloads.emplace(guid, std::move(ticket));
         } else {
-            ticket->Wait();
-            TryCommitAssetLoad(ticket);
+            try {
+                ticket->Wait();
+                TryCommitAssetLoad(ticket);
+            } catch (const std::exception &error) {
+                if (m_assetDb->GetImportError(guid).empty())
+                    m_assetDb->ReportRuntimeLoadFailure(guid, std::string("Mesh publication failed: ") + error.what());
+            }
         }
         return true;
     }
-    if (entry != m_loadedAssets.end() &&
-        m_loaders.at(entry->second.type)->GetReloadMode() == AssetReloadMode::Invalidate)
+    if (entry != m_loadedAssets.end())
         RemoveEntry(entry);
     return false;
 }
@@ -357,6 +374,8 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::GetPendingMeshReload(const std::
 
 bool AssetRegistry::ReloadAsset(const std::string &guid)
 {
+    if (m_assetDb && !m_assetDb->GetImportError(guid).empty())
+        return false;
     if (auto pending = GetPendingMeshReload(guid)) {
         if (!m_frameWork->IsActive()) {
             pending->Wait();
@@ -389,14 +408,19 @@ bool AssetRegistry::ReloadAsset(const std::string &guid)
         RemoveEntry(it);
         return true;
     }
-    if (!loaderIt->second->Reload(it->second.payload, path, guid, m_assetDb.get()))
+    try {
+        if (!loaderIt->second->Reload(it->second.payload, path, guid, m_assetDb.get()))
+            throw std::runtime_error("Runtime loader rejected the current source: " + path);
+        RefreshEntryBytes(it->second);
+        it->second.lastAccessSerial = ++m_accessSerial;
+        it->second.version = NextRuntimeVersion(guid);
+        loaderIt->second->OnPublished(it->second.payload, guid, m_assetDb.get());
+        (void)TrimCpuBudget();
+        return true;
+    } catch (const std::exception &error) {
+        m_assetDb->ReportRuntimeLoadFailure(guid, std::string("Runtime reload failed: ") + error.what());
         return false;
-    RefreshEntryBytes(it->second);
-    it->second.lastAccessSerial = ++m_accessSerial;
-    it->second.version = NextRuntimeVersion(guid);
-    loaderIt->second->OnPublished(it->second.payload, guid, m_assetDb.get());
-    (void)TrimCpuBudget();
-    return true;
+    }
 }
 
 void AssetRegistry::PublishShader(const std::string &guid, std::shared_ptr<ShaderAsset> candidate)
@@ -591,6 +615,13 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::BeginAssetLoad(const std::string
     ticket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
     ticket->m_expectedContentGeneration = m_assetContentGenerations[guid];
 
+    if (const auto error = m_assetDb->GetImportError(guid); !error.empty()) {
+        ticket->m_sourcePath = m_assetDb->GetPathFromGuid(guid);
+        ticket->m_failure = std::make_exception_ptr(std::runtime_error(error));
+        ticket->m_rejected = true;
+        return ticket;
+    }
+
     const auto cached = m_loadedAssets.find(guid);
     if (!replaceMesh && cached != m_loadedAssets.end()) {
         if (cached->second.type != type)
@@ -691,6 +722,10 @@ void AssetRegistry::ObserveAssetLoad()
     }
     if ((completed->m_workerPlan.advance || completed->m_repairNeeded) && !completed->m_payload &&
         !completed->m_failure && !completed->m_rejected) {
+        if (completed->m_repairNeeded) {
+            completed->m_workerPlan = {};
+            completed->m_storageClaim.reset();
+        }
         completed->m_job = {};
         return;
     }
@@ -710,6 +745,7 @@ bool AssetRegistry::AdvanceMeshArtifactRepair(const std::shared_ptr<AssetLoadTic
                                               bool &progressed)
 {
     if (ticket->m_repairNeeded) {
+        ticket->m_artifactRepairAttempted = true;
         if (synchronous) {
             if (m_assetDb->IsRefreshPending())
                 m_assetDb->CompletePendingRefresh();
@@ -823,7 +859,21 @@ bool AssetRegistry::SubmitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
                     if (!ticket->m_payload && !ticket->m_workerPlan.advance && !ticket->m_repairNeeded)
                         throw std::runtime_error("AssetRegistry worker loader returned an empty payload");
                 } catch (...) {
-                    ticket->m_failure = std::current_exception();
+                    const bool importedArtifact = ticket->m_resourceType == ResourceType::Mesh ||
+                                                  ticket->m_resourceType == ResourceType::Texture ||
+                                                  ticket->m_resourceType == ResourceType::RenderTexture;
+                    const auto meta = ticket->m_database->GetMetaByGuid(ticket->m_guid);
+                    if (importedArtifact && !ticket->m_artifactRepairAttempted &&
+                        !ticket->m_database->m_cookedRuntimeCatalogInstalled &&
+                        !ticket->m_database->IsReadOnlyPath(FilesystemPathKey(ticket->m_sourcePath)) &&
+                        meta && !meta->HasKey("import_owner_guid")) {
+                        // Library products are reproducible. Rebuild once from
+                        // current source through the existing import queue.
+                        ticket->m_workerPlan = {};
+                        ticket->m_repairNeeded = true;
+                    } else {
+                        ticket->m_failure = std::current_exception();
+                    }
                 }
                 ticket->m_executionNanoseconds = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started)
@@ -998,6 +1048,16 @@ bool AssetRegistry::CommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
     const bool contentCurrent = IsAssetLoadContentCurrent(ticket);
     if (contentCurrent && ticket->m_failure) {
         ticket->m_rejected = true;
+        ticket->m_payload = {};
+        ticket->m_workerPlan = {};
+        ticket->m_storageClaim.reset();
+        try {
+            std::rethrow_exception(ticket->m_failure);
+        } catch (const std::exception &error) {
+            if (m_assetDb->GetImportError(ticket->m_guid).empty())
+                m_assetDb->ReportRuntimeLoadFailure(ticket->m_guid,
+                                                 std::string("Runtime load failed: ") + error.what());
+        }
         std::rethrow_exception(ticket->m_failure);
     }
     if (contentCurrent && ticket->m_rejected)
@@ -1048,6 +1108,8 @@ bool AssetRegistry::CommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
     }
     ticket->m_committed = true;
     (void)TrimCpuBudget();
+    if (ticket->m_replaceMesh)
+        m_assetDb->ClearRuntimeLoadFailuresForDependents(ticket->m_guid);
     if (ticket->m_replaceMesh)
         m_assetDb->GetDependencyGraph()->NotifyEvent(ticket->m_guid, ResourceType::Mesh, AssetEvent::Modified);
     return true;

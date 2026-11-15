@@ -35,6 +35,11 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, Asset
     // A GUID-less shader_id denotes a symbolic built-in shader program and
     // deliberately contributes no AssetDatabase dependency edge.
     const std::string resolvedPath = reference.guid.empty() ? std::string{} : database->GetPathFromGuid(reference.guid);
+    if (!reference.guid.empty() && resolvedPath.empty())
+        throw std::runtime_error("Material shader GUID is unavailable: " + reference.guid);
+    if (!reference.guid.empty())
+        if (const auto error = database->GetImportError(reference.guid); !error.empty())
+            throw std::runtime_error("Material shader dependency failed: " + reference.guid + ": " + error);
 
     if (!resolvedPath.empty()) {
         reference.pathHint = resolvedPath;
@@ -59,18 +64,13 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, Asset
 
 bool MaterialLoader::PrepareDocument(InxMaterial &staged, const std::string &filePath, AssetDatabase *adb)
 {
-    try {
-        if (!staged.ApplyDocument(ReadAssetDocument(filePath)))
-            return false;
-        // Resolve on the unpublished candidate. Public shader setters would
-        // notify routing and reset authorship before the complete edit is valid.
-        staged.m_vertexShader = EnrichShaderReference(staged.m_vertexShader, adb, "vertex");
-        staged.m_fragmentShader = EnrichShaderReference(staged.m_fragmentShader, adb, "fragment");
-        return true;
-    } catch (const std::exception &error) {
-        INXLOG_ERROR("MaterialLoader: invalid document '", filePath, "': ", error.what());
-        return false;
-    }
+    if (!staged.ApplyDocument(ReadAssetDocument(filePath)))
+        throw std::runtime_error("Material document was rejected: " + filePath);
+    // Resolve on the unpublished candidate. Public shader setters would
+    // notify routing and reset authorship before the complete edit is valid.
+    staged.m_vertexShader = EnrichShaderReference(staged.m_vertexShader, adb, "vertex");
+    staged.m_fragmentShader = EnrichShaderReference(staged.m_fragmentShader, adb, "fragment");
+    return true;
 }
 
 // =============================================================================
@@ -79,10 +79,8 @@ bool MaterialLoader::PrepareDocument(InxMaterial &staged, const std::string &fil
 
 RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
 {
-    if (filePath.empty() || guid.empty()) {
-        INXLOG_WARN("MaterialLoader::Load: empty filePath or guid");
-        return nullptr;
-    }
+    if (filePath.empty() || guid.empty())
+        throw std::invalid_argument("MaterialLoader requires a file path and GUID");
 
     auto material = std::make_shared<InxMaterial>();
     // Disk identity is known before publication, including on a worker. It must

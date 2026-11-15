@@ -829,11 +829,12 @@ void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
     const uint64_t runtimeVersion = AssetRegistry::Instance().GetAssetVersion(textureGuid);
     const uint64_t requestedRevision =
         runtimeVersion == 0 || runtimeVersion == std::numeric_limits<uint64_t>::max() ? 0 : runtimeVersion + 1;
-    // Preserve every resident variant as last-known-good. The stable slot tells
-    // particle consumers to resolve the requested revision, while material
-    // descriptors immediately enter their existing pending-refresh path.
+    // Retained frame leases own the old image until completion. New requests
+    // must resolve the current source instead of acquiring a previous slot.
     const size_t requestedSlots =
         requestedRevision == 0 ? 0 : m_textureCache.RequestAssetRevision(textureGuid, requestedRevision);
+    (void)requestedSlots;
+    m_textureCache.EvictByPrefix(textureGuid);
     const uint32_t refreshedMaterials =
         m_materialPipelineManagerInitialized ? m_materialPipelineManager.RefreshMaterialsUsingTexture(textureGuid) : 0;
 

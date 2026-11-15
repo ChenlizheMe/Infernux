@@ -56,7 +56,7 @@ def sources(prefix):
     return name, good, bad, restored
 
 
-def test_standalone_dependency_failure_preserves_every_published_generation(engine, dependency_sources):
+def test_standalone_dependency_failure_retires_old_gpu_stages_until_repair(engine, dependency_sources):
     prefix, create, registry = dependency_sources
     library_name, good, bad, restored = sources(prefix)
     library, _ = create("Library", ".glsl", good)
@@ -81,14 +81,41 @@ def test_standalone_dependency_failure_preserves_every_published_generation(engi
     assert "optionalColor" in rejected.error
     # The valid A candidate must wait for the rejected B candidate.
     assert [registry.get_asset_version(guid) for guid, _ in stages] == versions
-    assert all(engine.is_shader_loaded(name, "fragment") for _, name in stages)
+    assert all(not engine.is_shader_loaded(name, "fragment") for _, name in stages)
+    assert all(not registry.is_loaded(guid) for guid, _ in stages)
     library.write_text(restored, encoding="utf-8")
     accepted = AssetManager.reimport_asset(str(library))
     assert accepted, accepted.error
     assert [registry.get_asset_version(guid) for guid, _ in stages] == [v + 1 for v in versions]
 
 
-def test_linked_dependency_failure_does_not_retire_a_successful_sibling_program(engine, dependency_sources):
+def test_standalone_source_import_failure_retires_gpu_without_a_material_consumer(engine, dependency_sources):
+    prefix, create, registry = dependency_sources
+    name = prefix + " Standalone"
+    source = (f'#version 450\nShaderInfo {{ Name "{name}" Capabilities [Fullscreen] '
+              'Outputs { Float4 outColor } }\nvoid main(){outColor=vec4(1);}\n')
+    path, guid = create("Standalone", ".frag", source)
+    assert Shader.reload(str(path))
+    assert engine.is_shader_loaded(name, "fragment")
+    database = engine.get_asset_database()
+    database.report_asset_load_failure(guid, "Current standalone shader source could not be read")
+    assert not registry.is_loaded(guid)
+    assert not engine.is_shader_loaded(name, "fragment")
+    restored = AssetManager.reimport_asset(str(path))
+    assert restored, restored.error
+    assert engine.is_shader_loaded(name, "fragment")
+    path.write_text('#version 450\nShaderInfo { Name [ broken\n', encoding="utf-8")
+    rejected = AssetManager.reimport_asset(str(path))
+    assert not rejected
+    assert not registry.is_loaded(guid)
+    assert not engine.is_shader_loaded(name, "fragment")
+    path.write_text(source, encoding="utf-8")
+    restored = AssetManager.reimport_asset(str(path))
+    assert restored, restored.error
+    assert engine.is_shader_loaded(name, "fragment")
+
+
+def test_linked_dependency_failure_retires_current_source_group_without_repeated_submission(engine, dependency_sources):
     prefix, create, registry = dependency_sources
     library_name, good, bad, restored = sources(prefix)
     library, _ = create("Library", ".glsl", good)
@@ -118,11 +145,12 @@ def test_linked_dependency_failure_does_not_retire_a_successful_sibling_program(
     library.write_text(bad, encoding="utf-8")
     rejected = AssetManager.reimport_asset(str(library))
     assert not rejected and "optionalColor" in rejected.error
-    assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == retired
-    for material in materials:
-        assert engine.refresh_material_pipeline(material._native)
-
-    assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == retired
+    failed_retired = engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"]
+    assert failed_retired > retired
+    for _ in range(2):
+        for material in materials:
+            assert not engine.refresh_material_pipeline(material._native)
+    assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == failed_retired
     library.write_text(restored, encoding="utf-8")
     accepted = AssetManager.reimport_asset(str(library))
     assert accepted, accepted.error
@@ -167,7 +195,7 @@ def test_dependency_move_keeps_guid_and_reports_rejected_runtime_candidate(engin
     assert database.get_guid_from_path(str(library)) == library_guid
 
 
-def test_same_name_vertex_save_rejects_all_pairs_before_retiring_any_program(engine, dependency_sources):
+def test_same_name_vertex_failure_retires_pairs_and_preserves_authored_material_data(engine, dependency_sources):
     prefix, create, _ = dependency_sources
     name = prefix + " Vertex"
     original = (
@@ -203,7 +231,7 @@ def test_same_name_vertex_save_rejects_all_pairs_before_retiring_any_program(eng
     vertex.write_text(changed, encoding="utf-8")
     rejected = AssetManager.reimport_asset(str(vertex))
     assert not rejected and rejected.database_committed and "signal" in rejected.error
-    assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == retired
+    assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] > retired
     assert [material._native.serialize_document() for material in materials] == before
     vertex.write_text(original, encoding="utf-8")
     restored = AssetManager.reimport_asset(str(vertex))

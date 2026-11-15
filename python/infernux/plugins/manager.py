@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import importlib.metadata
 import importlib.machinery
 import json
@@ -14,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import uuid
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -32,6 +30,7 @@ from infernux.debug import Debug
 from infernux.engine.path_utils import (
     process_executable_path,
     is_path_within,
+    lexical_path_key,
     path_key,
     portable_path,
     relative_path,
@@ -51,6 +50,11 @@ from .content import (
     split_markdown_images,
 )
 from .cache import SharedPackageCache
+from .file_transaction import (
+    InstallTransaction as _InstallTransaction,
+    prune_package_directories,
+    script_bytecode_paths as _script_bytecode_paths,
+)
 from .package import (
     InxPackage,
     InxPackagePreview,
@@ -67,7 +71,6 @@ from .package import (
 from .preload import PreloadManager
 from .project_index import _asset_database, project_guid_paths
 from .registry import PluginRegistry
-from .source_content import same_source_content
 
 if TYPE_CHECKING:
     from .preload import PreloadState
@@ -146,14 +149,6 @@ class PackageConflictError(RuntimeError):
     """Raised when installation would overwrite a different durable asset."""
 
 
-class PackageUpdateConflict(PackageConflictError):
-    """Local edits requiring explicit consent before package replacement."""
-
-    def __init__(self, paths: Iterable[str]) -> None:
-        self.paths = tuple(sorted(set(paths)))
-        super().__init__("Plugin update would replace local edits: " + ", ".join(self.paths))
-
-
 class _DependencyInUse(RuntimeError):
     def __init__(self, names: Iterable[str]) -> None:
         self.names = tuple(names)
@@ -170,6 +165,8 @@ class PluginState:
     resources: dict[str, str] = field(default_factory=dict)
     lifecycle: tuple[dict[str, object], ...] = ()
     restart_required: bool = False
+    theme_errors: tuple[str, ...] = ()
+    asset_errors: tuple[dict[str, str], ...] = ()
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -178,6 +175,8 @@ class PluginState:
             "enabled": self.enabled,
             "loaded": self.loaded,
             "error": self.error,
+            "theme_errors": list(self.theme_errors),
+            "asset_errors": [dict(item) for item in self.asset_errors],
             "resources": sorted(self.resources),
             "preload_instances": sum(
                 1 for item in self.lifecycle if bool(item.get("loaded"))
@@ -271,6 +270,7 @@ class PluginManager:
         )
         self.states: dict[str, PluginState] = {}
         self._resource_manager = None
+        self._asset_error_presenter = None
         self._installing: set[str] = set()
         self._dependency_plans: dict[str, tuple[str, ...]] = {}
         self._deferred_catalog_changes: set[str] = set()
@@ -280,6 +280,11 @@ class PluginManager:
         self._content_reads = FileReadCache()
         self._content_asset_reads = FileReadCache()
         self._archive_reads = FileReadCache()
+        self.themes = None
+        if not runtime and not installation_only:
+            from infernux.engine.editor_themes import EditorThemes
+            self.themes = EditorThemes(self.project_root, self.registry, guid_paths=self._guid_index)
+        self.preloads.on_failure = self._rebuild_states
 
     def _package_cache(self) -> SharedPackageCache:
         if self._shared_package_cache is None:
@@ -341,6 +346,8 @@ class PluginManager:
         # synchronized.  Catch up the remaining project/plugin declarations
         # without unloading those live instances and importing them again.
         manager.preloads.catch_up()
+        if manager.themes is not None:
+            manager.themes.refresh_all()
         manager._rebuild_states()
         if runtime:
             missing = [state.error for state in manager.states.values()
@@ -353,6 +360,8 @@ class PluginManager:
         return manager
 
     def shutdown(self) -> None:
+        if self.themes is not None:
+            self.themes.close()
         self._content_reads.clear()
         self._archive_reads.clear()
         self._page_workspaces.close()
@@ -362,7 +371,10 @@ class PluginManager:
                 self._on_script_catalog_changed
             )
         self._resource_manager = None
-        failures = self.preloads.unload_all()
+        if self._asset_error_presenter is not None:
+            self._asset_error_presenter.remove_listener(self._on_asset_errors_changed)
+            self._asset_error_presenter = None
+        failures = self.preloads.close()
         if failures:
             raise RuntimeError(
                 "Plugin lifecycle shutdown failed; process restart required: "
@@ -374,16 +386,28 @@ class PluginManager:
 
     def reload_all(self) -> tuple[PluginState, ...]:
         self.preloads.reload_all()
+        if self.themes is not None:
+            self.themes.refresh_all()
+        ranks = self.preloads._package_ranks()
+        for record in sorted(self.registry.installed(), key=lambda item: ranks.get(str(item["reference"]).casefold(), -1)):
+            self._publish_current_package_runtime(str(record["reference"]))
         return self._rebuild_states()
 
     def _rebuild_states(self) -> tuple[PluginState, ...]:
         snapshots = self.preloads.snapshots()
         installed = self.registry.installed()
         guid_index = self._guid_index() if installed else {}
+        asset_failures = self._current_asset_failures() if installed else {}
         self.states.clear()
         for record in installed:
-            state = self._state_for_record(record, snapshots, guid_index)
+            state = self._state_for_record(record, snapshots, guid_index, asset_failures)
             self.states[state.reference.casefold()] = state
+        published = (tuple(state.snapshot() for state in self.states.values()),
+                     tuple((item["reference"], item.get("version", "")) for item in installed))
+        if published != getattr(self, "_published_plugin_state", None):
+            self._published_plugin_state = published
+            from infernux.host.queries import emit_signal
+            emit_signal("plugins.changed")
         return tuple(self.states.values())
 
     def reload(self, reference: str) -> PluginState:
@@ -393,10 +417,34 @@ class PluginManager:
         if self.installation_only:
             return PluginState(reference, package_control_root(self.project_root, reference))
         self.preloads.reload_package(reference)
+        if self.themes is not None:
+            self.themes.refresh_package(reference)
+        self._publish_current_package_runtime(reference)
         self._rebuild_states()
-        if self.states[reference.casefold()].loaded:
-            self._publish_package_runtime_scripts(reference)
         return self.states[reference.casefold()]
+
+    def _publish_current_package_runtime(self, reference):
+        """A reload request evaluates current code, independently of old errors."""
+        record = self.registry.installed_record(reference)
+        if record is None or not bool(record.get("enabled", True)):
+            return
+        if self.preloads.package_readiness_errors(reference):
+            return
+        lifecycle_paths = {path_key(item.path)
+                           for item in self.preloads._candidate_declarations(self.preloads._catalog_declarations())
+                           if self.preloads._path_belongs_to_package(item.path, reference)}
+        if any(self.preloads.failures.get(path) for path in lifecycle_paths):
+            return
+        source = path_key(os.path.join(package_control_root(self.project_root, reference), PACKAGE_MANIFEST))
+        self.preloads.failures.pop(source, None)
+        try:
+            self._publish_package_runtime_scripts(reference)
+        except Exception as exc:
+            # The coordinator normally supplies exact source diagnostics. A
+            # failure before it owns a source still belongs to this package.
+            if not self.preloads.package_errors(reference):
+                self.preloads.failures[source] = f"{type(exc).__name__}: {exc}"
+                Debug.log_error(f"Package runtime is unavailable [{reference}]: {exc}")
 
     def catch_up_preloads(self) -> tuple[PreloadState, ...]:
         """Load lifecycles that entered the GUID catalog after startup preload.
@@ -550,7 +598,6 @@ class PluginManager:
         source: Mapping[str, object] | None = None,
         progress: _InstallProgress | None = None,
         update: bool = False,
-        overwrite_modified: bool = False,
         expected_reference: str = "",
         expected_version: str = "",
     ) -> PluginState:
@@ -600,12 +647,12 @@ class PluginManager:
         if update:
             if selected is not None:
                 raise ValueError("An update preserves the existing package selection")
-            previous_path = self._prepare_update_baseline(
-                current, progress=_scaled_progress(progress, 0.36, 0.40),
-            )
-            planned, control, removed = self._plan_update(
-                current, preview, previous_path=previous_path, overwrite_modified=overwrite_modified,
-            )
+            planned, control, removed = self._plan_update(current, preview)
+        native_modules = ()
+        if update and not self.installation_only:
+            from infernux.engine.reload.modules import loaded_native_modules
+            native_modules = loaded_native_modules(
+                [item.destination for item in planned if item.owned] + removed)
         requirements = self._plan_requirements(preview)
         dependencies = list(requirements.references)
         enabled = bool(current.get("enabled", True)) if update else True
@@ -615,11 +662,14 @@ class PluginManager:
             reference, dependencies, enabled=enabled,
             require_installed=not install_dependencies,
         )
-        if install_dependencies and not self.installation_only and not self._installing:
+        if (install_dependencies or native_modules) and not self.installation_only and not self._installing:
             if self._defer_package_python(
                 preview, current, selected=selected, source=source, update=update,
-                overwrite_modified=overwrite_modified,
+                native_modules=native_modules, install_dependencies=install_dependencies,
             ):
+                if native_modules:
+                    self._retire_pending_native(reference, current, native_modules)
+                    return self.states[reference.casefold()]
                 return PluginState(reference, package_control_root(self.project_root, reference), restart_required=True)
         installed_before = {
             str(item.get("reference", "")).casefold()
@@ -649,6 +699,8 @@ class PluginManager:
                 self.preloads.catch_up()
                 self._rebuild_states()
             if update and not self.installation_only:
+                if self.themes is not None:
+                    self.themes.remove_package(reference)
                 failures = self.preloads.unload_package(reference)
                 if failures:
                     raise RuntimeError("Plugin lifecycle could not be stopped; restart required: "
@@ -815,13 +867,11 @@ class PluginManager:
                     f"Plugin install failed and dependency rollback was incomplete for "
                     f"{reference}: {'; '.join(rollback_errors)}"
                 ) from install_error
-            if stopped:
-                self.reload(reference)
+            # A failed installation never reactivates the retired implementation.
             if isinstance(install_error, _DependencyInUse) and len(self._installing) == 1:
                 if self._defer_package_python(
                     preview, current, selected=selected, source=source, update=update,
-                    overwrite_modified=overwrite_modified,
-                ):
+                    ):
                     return PluginState(reference, package_control_root(self.project_root, reference), restart_required=True)
             raise
         finally:
@@ -1075,7 +1125,6 @@ class PluginManager:
         from .github_releases import resolve_github_release
 
         with self._package_cache().workspace("update") as workspace:
-            self._prepare_update_baseline(current, progress=_scaled_progress(progress, 0.0, 0.35))
             release = resolve_github_release(
                 repository, workspace, expected_reference=reference,
                 release_tag=release_tag, progress=_scaled_progress(progress, 0.35, 1.0),
@@ -1089,13 +1138,13 @@ class PluginManager:
             return {"reference": reference, "path": path, "source": source}
 
     def update_reference(
-        self, reference: str, release_tag: str, *, overwrite_modified: bool = False,
+        self, reference: str, release_tag: str, *,
         progress: _InstallProgress | None = None,
     ) -> PluginState:
         release = self.download_update(reference, release_tag, progress=progress)
         return self.install_package(
             str(release["path"]), source=release["source"], update=True,
-            overwrite_modified=overwrite_modified, progress=progress,
+            progress=progress,
         )
 
     def cached_reference_path(self, reference: str) -> str:
@@ -1124,34 +1173,6 @@ class PluginManager:
     def _installed_archive_path(self, record: Mapping[str, object]) -> str:
         location = SharedPackageCache.validate_location(str(record["source"]["cache_location"]))
         return resolved_path(os.path.join(self._package_cache().root, *location.split("/")))
-
-    def _prepare_update_baseline(
-        self, record: Mapping[str, object], *, progress: _InstallProgress | None = None,
-    ) -> str:
-        path = self._installed_archive_path(record)
-        if os.path.isfile(path):
-            return path
-        source = self._source_descriptor(record["source"])
-        if source["type"] == "local" and source.get("builtin"):
-            from .official import official_release_source
-
-            published = official_release_source(str(record["reference"]), str(record["version"]))
-            if published is not None:
-                source = published
-        source["reference"] = str(record["reference"])
-        if source["type"] in {"git", "github"}:
-            if source["type"] == "git" or source.get("source_snapshot"):
-                if not source.get("commit"):
-                    raise ValueError("Restoring a pinned Git package requires its exact commit")
-            elif not source.get("release_tag"):
-                raise ValueError("Restoring a pinned GitHub package requires its exact release tag")
-        with self._package_cache().workspace("update-baseline") as workspace:
-            acquired, _source = self._materialize_source(source, workspace, progress=progress)
-            preview = InxPackage.inspect(acquired)
-            reference, version = str(record["reference"]), str(record["version"])
-            _require_package_identity(preview.metadata, expected_reference=reference, expected_version=version)
-            path, _relative = self._cache_package(acquired, reference, version)
-            return path
 
     def download_reference(
         self,
@@ -1220,7 +1241,7 @@ class PluginManager:
                 intro=str(preview.metadata.get("intro", record.get("intro", ""))),
                 intros=preview.metadata.get("intros", record.get("intros", {})),
                 pages=preview.metadata.get("pages", record.get("pages", ())),
-                category=str(record.get("category", "Other")),
+                category=str(preview.metadata.get("category", record.get("category", "other"))),
                 targets=record.get("targets", ()),
                 source=cached_source,
             )
@@ -1248,7 +1269,6 @@ class PluginManager:
                 current = self.registry.installed_record(reference)
                 if current is None:
                     raise KeyError(f"Plugin is not installed: {reference}")
-                self._prepare_update_baseline(current, progress=_scaled_progress(progress, 0.36, 0.40))
             return {"reference": reference, "path": path, "source": acquired_source}
 
     def install_source(
@@ -1466,7 +1486,7 @@ class PluginManager:
     def _defer_package_python(
         self, preview: InxPackagePreview, current: Mapping[str, object] | None,
         *, selected: Iterable[str] | None, source: Mapping[str, object] | None,
-        update: bool, overwrite_modified: bool,
+        update: bool, native_modules=(), install_dependencies=True,
     ) -> bool:
         python_lines: list[str] = []
         visiting: set[str] = set()
@@ -1501,22 +1521,25 @@ class PluginManager:
                     collect(child)
             visiting.remove(reference)
 
-        collect(preview)
+        if install_dependencies:
+            collect(preview)
+        else:
+            incoming.add(str(preview.metadata["reference"]))
         keep = {item["name"] for item in _pip_requirement_targets(self._plan_requirements(preview).python_lines)}
-        restore, uninstall = self._python_dependency_release(str(preview.metadata["reference"]), keep_names=keep) if current else ([], [])
+        restore, uninstall = self._python_dependency_release(str(preview.metadata["reference"]), keep_names=keep) if current and install_dependencies else ([], [])
         python_lines.extend(restore)
-        if not uninstall and not any(line.strip() and not line.lstrip().startswith("#") for line in python_lines):
+        if not uninstall and not any(line.strip() and not line.lstrip().startswith("#") for line in python_lines) and not native_modules:
             return False
-        before = self._python_environment_snapshot()
+        before = self._python_environment_snapshot() if python_lines or uninstall else {}
         install: list[dict] = []
         requested = tuple(item["requirement"] for item in _pip_requirement_targets(python_lines))
         if python_lines and (not requested or not _requirements_satisfied(requested, before)):
             with self._pip_requirement_file(python_lines) as path:
                 install = self._resolve_python_install(["-r", path], replacing=incoming)
-        if not install and not uninstall:
+        if not install and not uninstall and not native_modules:
             return False
         changed = ({canonicalize_name(item["metadata"]["name"]) for item in install} & before.keys()) | set(uninstall)
-        loaded = self._python_dependencies_in_use(changed)
+        loaded = (*self._python_dependencies_in_use(changed), *(module.__name__ for module in native_modules))
         if not loaded:
             return False
         reference = str(preview.metadata["reference"])
@@ -1525,12 +1548,23 @@ class PluginManager:
             "request": {"kind": "package", "path": path, "options": {
                 "selected": list(selected) if selected is not None else None,
                 "source": dict(source or (current.get("source", {}) if current else {})),
-                "update": update, "overwrite_modified": overwrite_modified,
+                "update": update,
+                "install_dependencies": install_dependencies,
                 "expected_reference": reference, "expected_version": str(preview.metadata["version"]),
             }},
             "before": before, "install": install, "uninstall": uninstall, "loaded": loaded,
+            "native_modules": [module.__name__ for module in native_modules],
         })
         return True
+
+    def _retire_pending_native(self, reference, record, modules):
+        if self.themes is not None:
+            self.themes.remove_package(reference)
+        self.preloads.unload_package(reference)
+        self._retire_package_runtime_scripts(record)
+        coordinator = self.preloads._coordinator()
+        coordinator.retire_native_sources(tuple(module.__file__ for module in modules), force=True)
+        self._rebuild_states()
 
     def _complete_pending_install(self) -> None:
         from infernux_editor import read_pending
@@ -1576,6 +1610,9 @@ class PluginManager:
         normalized = validate_reference(reference)
         self._refresh_editor_assets()
         self.preloads.catch_up()
+        if self.themes is not None:
+            # A background install can also commit theme-bearing dependencies.
+            self.themes.refresh_all()
         self._deferred_catalog_changes.clear()
         self._rebuild_states()
         if self.states[normalized.casefold()].loaded:
@@ -1887,20 +1924,21 @@ class PluginManager:
                 raise
         return baseline
 
-    def _defer_uninstall_python(self, reference: str) -> bool:
+    def _defer_uninstall_python(self, reference: str, *, native_modules=()) -> bool:
         requirements, uninstall = self._python_dependency_release(reference)
-        if not requirements and not uninstall:
+        if not requirements and not uninstall and not native_modules:
             return False
-        before = self._python_environment_snapshot()
+        before = self._python_environment_snapshot() if requirements or uninstall else {}
         install = self._resolve_python_install(requirements, replacing=(reference,)) if requirements and not _requirements_satisfied(requirements, before) else []
         uninstall = [name for name in uninstall if name in before]
         changed = ({canonicalize_name(item["metadata"]["name"]) for item in install} & before.keys()) | set(uninstall)
-        loaded = self._python_dependencies_in_use(changed)
+        loaded = (*self._python_dependencies_in_use(changed), *(module.__name__ for module in native_modules))
         if not loaded:
             return False
         self._stage_python_install({
             "request": {"kind": "uninstall", "reference": reference},
             "before": before, "install": install, "uninstall": uninstall, "loaded": loaded,
+            "native_modules": [module.__name__ for module in native_modules],
         })
         return True
 
@@ -1939,19 +1977,16 @@ class PluginManager:
                     f"Plugin {reference} is required by enabled plugins: "
                     + ", ".join(sorted(blockers))
                 )
+            if self.themes is not None:
+                self.themes.remove_package(reference)
             failures = self.preloads.unload_package(reference)
             if failures:
                 raise RuntimeError(
                     "Plugin lifecycle could not be stopped; restart required: "
                     + "; ".join(state.error for state in failures)
                 )
-            try:
-                self.registry.set_enabled(reference, False)
-                self._retire_package_runtime_scripts(record)
-            except BaseException:
-                self.registry.set_enabled(reference, True)
-                self.reload(reference)
-                raise
+            self.registry.set_enabled(reference, False)
+            self._retire_package_runtime_scripts(record)
             self._rebuild_states()
             return self.states[reference_key]
         self._validate_dependency_plan(
@@ -1980,8 +2015,19 @@ class PluginManager:
             raise RuntimeError(
                 f"Plugin {reference} is required by: {', '.join(sorted(blockers))}"
             )
-        if not self.installation_only and self._defer_uninstall_python(reference):
-            return {"reference": reference, "restart_required": True}
+        if not self.installation_only:
+            from infernux.engine.reload.modules import loaded_native_modules
+            index = self._guid_index()
+            native_modules = loaded_native_modules(
+                index.get(str(item["guid"]).casefold(), os.path.join(self.project_root, str(item["path_hint"])))
+                for item in record["files"] if item.get("owned", True)
+                and not self.registry.users_for_guid(str(item["guid"]), excluding=reference))
+            if self._defer_uninstall_python(reference, native_modules=native_modules):
+                if native_modules:
+                    self._retire_pending_native(reference, record, native_modules)
+                return {"reference": reference, "restart_required": True}
+        if self.themes is not None:
+            self.themes.remove_package(reference)
         failures = self.preloads.unload_package(reference) if not self.installation_only else ()
         if failures:
             raise RuntimeError(
@@ -2321,6 +2367,31 @@ class PluginManager:
         text = read_entry(
             preview.package_path, str(requirement_record["archive_path"])
         ).decode("utf-8")
+        return self._parse_requirements(
+            text, reference=str(preview.metadata["reference"]),
+            nested=lambda requirement: self._nested_requirement(preview, requirement_name, requirement),
+        )
+
+    def local_package_requirements(self, reference: str) -> _PackageRequirements:
+        """Read an author's current package through the install requirement parser."""
+        root = package_control_root(self.project_root, reference)
+        path = Path(root, "requirements.txt")
+        if not path.is_file():
+            return _PackageRequirements()
+
+        def nested(requirement):
+            if requirement.startswith(("-e ", "--editable ")) or not requirement.casefold().endswith(PACKAGE_EXTENSION):
+                return None
+            candidate = resolved_path(Path(root, requirement))
+            if not is_path_within(candidate, root, allow_root=False):
+                raise ValueError(f"Nested InxPackage requirement escapes package: {requirement}")
+            return Path(candidate).read_bytes()
+
+        return self._parse_requirements(path.read_text(encoding="utf-8"), reference=reference, nested=nested)
+
+    def _parse_requirements(
+        self, text: str, *, reference: str, nested: Callable[[str], bytes | None],
+    ) -> _PackageRequirements:
         plugins: list[_PluginRequirement] = []
         pip_lines: list[str] = []
         for line in text.splitlines(keepends=True):
@@ -2328,21 +2399,20 @@ class PluginManager:
             if not stripped or stripped.startswith("#"):
                 pip_lines.append(line)
                 continue
-            nested = self._nested_requirement(preview, requirement_name, stripped)
-            if nested is not None:
+            archive = nested(stripped)
+            if archive is not None:
                 with self._package_cache().workspace("nested") as workspace:
                     path = os.path.join(workspace, "nested.inxpkg")
-                    Path(path).write_bytes(nested)
+                    Path(path).write_bytes(archive)
                     child = InxPackage.inspect(path)
-                    reference = _require_package_identity(child.metadata)
-                    plugins.append(_PluginRequirement(reference, nested, child))
+                    child_reference = _require_package_identity(child.metadata)
+                    plugins.append(_PluginRequirement(child_reference, archive, child))
                 continue
-            reference = self._registry_reference_for_requirement(stripped)
-            own_reference = str(preview.metadata["reference"])
-            if stripped.removeprefix("inx:").strip().casefold() == own_reference.casefold():
-                reference = own_reference
-            if reference is not None:
-                plugins.append(_PluginRequirement(reference))
+            dependency = self._registry_reference_for_requirement(stripped)
+            if stripped.removeprefix("inx:").strip().casefold() == reference.casefold():
+                dependency = reference
+            if dependency is not None:
+                plugins.append(_PluginRequirement(dependency))
             else:
                 pip_lines.append(line)
         return _PackageRequirements(tuple(plugins), tuple(pip_lines))
@@ -2398,6 +2468,8 @@ class PluginManager:
 
     def _registry_reference_for_requirement(self, requirement: str) -> str | None:
         candidate = requirement.removeprefix("inx:").strip()
+        if requirement.startswith("inx:"):
+            return validate_reference(candidate)
         if candidate.casefold() in self._dependency_plans:
             return validate_reference(candidate)
         try:
@@ -2436,137 +2508,58 @@ class PluginManager:
         return str(matched["reference"]) if matched is not None else None
 
     def _plan_update(
-        self, current: Mapping[str, object], preview: InxPackagePreview, *,
-        previous_path: str,
-        overwrite_modified: bool,
+        self, current: Mapping[str, object], preview: InxPackagePreview,
     ) -> tuple[list[_PlannedFile], dict[str, object], list[str]]:
-        """Compare only at the update boundary; reuse the normal GUID routing."""
+        """Overwrite publisher members; keep files the user added independently."""
         reference = str(current["reference"])
-        previous = InxPackage.inspect(previous_path)
         old_files = {str(item["guid"]).casefold(): item for item in current["files"]}
-        old_contents = {
-            str(item["guid"]).casefold(): item for item in previous.file_records
-        }
-        old_logical = {str(item["logical_path"]): str(item["guid"]).casefold()
-                       for item in current["files"]}
-        for item in preview.file_records:
-            logical = str(item["logical_path"])
-            if logical in old_logical and old_logical[logical] != str(item["guid"]).casefold():
-                raise PackageConflictError(f"Updated asset must retain its GUID: {logical}")
-        # A selective import stays selective; newly introduced members are included.
-        omitted = set(old_contents) - set(old_files)
+        known = set(current.get("available_files", old_files))
+        omitted = known - set(old_files)
         selected = [str(item["logical_path"]) for item in preview.file_records
                     if str(item["guid"]).casefold() not in omitted]
         planned, control = self._plan_install(preview, selected)
         if str(control["guid"]).casefold() != str(current["control"]["guid"]).casefold():
             raise PackageConflictError("An update must preserve the package control GUID")
-        conflicts: list[str] = []
-
-        def check_edit(path: str, baseline: bytes | None, incoming: bytes | None) -> None:
-            actual = Path(path).read_bytes() if os.path.isfile(path) else None
-            if not same_source_content(path, actual, incoming) and (
-                baseline is None or not same_source_content(path, actual, baseline)
-            ):
-                conflicts.append(portable_path(relative_path(path, self.project_root)))
-
-        def baseline_payload(guid: str) -> bytes | None:
-            record = old_contents.get(guid)
-            return read_entry(previous_path, str(record["archive_path"])) if record else None
-
-        def settings(payload: bytes) -> dict[str, object]:
-            document = json.loads(payload)
-            keep_readable = document["metadata"].get("resource_type", {}).get("value") == "Mesh"
-            # InxResourceMeta and the default file loaders regenerate these
-            # observations on import. They are not authored importer settings.
-            for key in (
-                "content_hash", "file_path", "last_modified", "resource_type",
-                "file_type", "file_extension", "file_size",
-                "line_count", "character_count", "encoding", "binary_type",
-                "size_category", "language",
-            ):
-                document["metadata"].pop(key, None)
-            if not keep_readable:
-                document["metadata"].pop("is_readable", None)
-            return document
-
-        def local_meta(path: str, guid: str) -> tuple[bytes | None, bool]:
-            meta_path = Path(path + ".meta")
-            if not meta_path.is_file():
-                return None, False
-            payload = meta_path.read_bytes()
-            record = old_contents.get(guid)
-            baseline = read_entry(previous_path, str(record["meta_archive_path"])) if record else None
-            return payload, baseline is None or settings(payload) != settings(baseline)
-
-        replacements: list[_PlannedFile] = []
-        removed: list[str] = []
-        for item in planned:
-            guid = item.guid.casefold()
-            old = old_files.get(guid)
-            if old is None:
-                if not item.owned and not same_source_content(
-                    item.destination, Path(item.destination).read_bytes(), item.payload,
-                ):
-                    raise PackageConflictError(f"Shared asset has different content: {item.destination}")
-                replacements.append(item)
-                continue
-            shared = self.registry.users_for_guid(guid, excluding=reference)
-            owned = bool(old.get("owned", True))
-            if shared or not owned:
-                if not os.path.isfile(item.destination) or not same_source_content(
-                    item.destination, Path(item.destination).read_bytes(), item.payload,
-                ):
-                    raise PackageConflictError(f"Cannot replace a shared asset: {item.destination}")
-                # Retain ownership without writing through another package's asset.
-                replacements.append(replace(item, owned=owned,
-                    meta_payload=Path(item.destination + ".meta").read_bytes()))
-                continue
-            check_edit(item.destination, baseline_payload(guid), item.payload)
-            existing_meta, modified_meta = local_meta(item.destination, guid)
-            meta_payload = current_meta_bytes(
-                item.guid,
-                existing=existing_meta if modified_meta else item.meta_payload,
-            )
-            old_destination = os.path.join(self.project_root, package_destination(
-                reference, str(old["logical_path"]), project_root=self.project_root,
-            ))
-            if str(old["logical_path"]) != item.logical_path and same_path(item.destination, old_destination):
-                # Follow publisher renames unless the user already moved this GUID.
-                destination_relative = package_destination(
-                    reference, item.logical_path, project_root=self.project_root,
-                )
-                destination = resolved_path(os.path.join(self.project_root, destination_relative))
-                if os.path.exists(destination):
-                    raise PackageConflictError(f"Updated destination is occupied: {destination}")
-                removed.append(item.destination)
-                item = replace(item, destination=destination,
-                               destination_relative=portable_path(destination_relative))
-            replacements.append(replace(item, owned=True, meta_payload=meta_payload))
-
-        new_guids = {item.guid.casefold() for item in replacements}
-        guid_index = self._guid_index()
-        for guid, old in old_files.items():
-            if guid in new_guids or not bool(old.get("owned", True)):
-                continue
-            if self.registry.users_for_guid(guid, excluding=reference):
-                # The other package must inherit ownership when we stop using it.
-                continue
-            path = guid_index.get(guid)
-            if path:
-                check_edit(path, baseline_payload(guid), None)
-                if local_meta(path, guid)[1]:
-                    conflicts.append(portable_path(relative_path(path + ".meta", self.project_root)))
-                removed.append(path)
-        control_path = str(control["absolute_path"])
-        old_control = (json.dumps(previous.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        new_control = (json.dumps(preview.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        check_edit(control_path, old_control, new_control)
         if not bool(current["control"].get("owned", True)):
-            raise PackageConflictError("Cannot replace a shared package control file")
+            raise PackageConflictError("Cannot replace another package's control file")
+        replacements = []
+        relocated = []
+        for item in planned:
+            previous = old_files.get(item.guid.casefold())
+            shared = self.registry.users_for_guid(item.guid.casefold(), excluding=reference)
+            if shared or (previous is not None and not bool(previous.get("owned", True))):
+                # Shared assets must already have the incoming bytes. Never write
+                # through another package's/user's resource identity.
+                if Path(item.destination).read_bytes() != item.payload:
+                    raise PackageConflictError(f"Cannot replace a shared asset: {item.destination}")
+                replacements.append(replace(item, owned=False))
+            elif previous is not None:
+                old_default = resolved_path(Path(self.project_root, package_destination(reference, str(previous["logical_path"]), project_root=self.project_root)))
+                if item.logical_path != previous["logical_path"] and same_path(item.destination, old_default):
+                    new_relative = package_destination(reference, item.logical_path, project_root=self.project_root)
+                    new_destination = resolved_path(Path(self.project_root, new_relative))
+                    if Path(new_destination).exists():
+                        raise PackageConflictError(f"Updated destination is occupied: {new_destination}")
+                    relocated.append(item.destination)
+                    item = replace(item, destination=new_destination, destination_relative=portable_path(new_relative))
+                replacements.append(replace(item, owned=True))
+            elif not item.owned:
+                raise PackageConflictError(f"New package member is occupied: {item.destination}")
+            else:
+                replacements.append(item)
+        new_guids = {item.guid.casefold() for item in replacements}
+        index = self._guid_index()
+        removed = []
+        for guid, old in old_files.items():
+            if guid in new_guids or not bool(old.get("owned", True)) or self.registry.users_for_guid(guid, excluding=reference):
+                continue
+            path = index.get(guid) or resolved_path(Path(self.project_root, old["path_hint"]))
+            identity = _meta_guid(path).casefold()
+            if identity and identity != guid:
+                raise PackageConflictError(f"Removed package member is occupied by another GUID: {path}")
+            removed.append(path)
         control["owned"] = True
-        if conflicts and not overwrite_modified:
-            raise PackageUpdateConflict(conflicts)
-        return replacements, control, removed
+        return replacements, control, removed + relocated
 
     def _plan_install(
         self, preview: InxPackagePreview, selected: Iterable[str] | None
@@ -2694,6 +2687,7 @@ class PluginManager:
         record: Mapping[str, object],
         lifecycle: tuple[dict[str, object], ...],
         guid_index: Mapping[str, str],
+        asset_failures: Mapping[str, list[dict[str, str]]],
     ) -> PluginState:
         reference = str(record.get("reference", ""))
         package_lifecycle = tuple(
@@ -2704,8 +2698,19 @@ class PluginManager:
         )
         errors = [str(item.get("error", "")) for item in package_lifecycle if item.get("error")]
         errors.extend(self.preloads.package_errors(reference))
+        errors.extend(self.preloads.package_readiness_errors(reference))
+        pending = self.pending_install or {}
+        request = pending.get("request", {})
+        pending_reference = str(request.get("reference") or request.get("options", {}).get("expected_reference", ""))
+        native_pending = bool(pending.get("native_modules") and pending_reference.casefold() == reference.casefold())
+        if native_pending:
+            errors.append("Loaded native extension members require an editor restart: "
+                          + ", ".join(pending["native_modules"]))
+        theme_errors = self.themes.package_errors(reference) if self.themes is not None else ()
         enabled = bool(record.get("enabled", True))
         resources = {}
+        asset_errors = []
+        native_restart = False
         files = list(record.get("files", []))
         if not self.runtime:
             files.append(record.get("control"))
@@ -2714,6 +2719,16 @@ class PluginManager:
                 continue
             guid = str(item.get("guid", "")).casefold()
             path = guid_index.get(guid)
+            target = path or os.path.join(self.project_root, str(item.get("path_hint", "")))
+            coordinator = self.preloads._reload
+            state = coordinator.states.get(resolved_path(target)) if coordinator is not None else None
+            native_restart |= state is not None and state.status == "restart_required"
+            failures = (*asset_failures.get("guid:" + guid, ()),
+                        *asset_failures.get("path:" + lexical_path_key(target), ()))
+            for failure in failures:
+                error = {"logical_path": str(item.get("logical_path", "")), **failure}
+                if error not in asset_errors:
+                    asset_errors.append(error)
             if not path:
                 errors.append(f"Missing package asset {reference}: {item.get('logical_path', '')} ({guid})")
             elif item.get("role") != "control":
@@ -2723,50 +2738,73 @@ class PluginManager:
             f"Packages/{reference}",
             enabled,
             loaded=enabled and not errors,
-            error="; ".join(errors),
+            error="; ".join([*errors, *theme_errors,
+                             *(f"{item['logical_path']}: {item['error']}" for item in asset_errors)]),
             resources=resources,
             lifecycle=package_lifecycle,
-            restart_required=any(
+            restart_required=native_pending or native_restart or any(
                 bool(item.get("restart_required")) for item in package_lifecycle
             ),
+            theme_errors=theme_errors,
+            asset_errors=tuple(asset_errors),
         )
+
+    def _current_asset_failures(self):
+        """Read published resource results once at a package/status boundary."""
+        database = _asset_database(self.engine)
+        if database is None or not same_path(database.project_root, self.project_root):
+            return {}
+        entries = list(database.get_import_failures())
+        if self._asset_error_presenter is not None:
+            entries.extend(entry for entry in self._asset_error_presenter.errors.values()
+                           if not entry.get("guid"))
+        failures = {}
+        for entry in entries:
+            failure = {key: str(entry.get(key, "")) for key in ("guid", "path", "error")}
+            if not failure["error"]:
+                continue
+            keys = ("guid:" + failure["guid"].casefold(),
+                    "path:" + lexical_path_key(failure["path"].partition("::")[0]))
+            for key in keys:
+                failures.setdefault(key, []).append(failure)
+        return failures
 
     def _attach_resource_events(self) -> None:
         from infernux.engine.resources_manager import ResourcesManager
+        from infernux.engine.ui.asset_load_errors import AssetLoadErrors
 
         manager = ResourcesManager.instance()
         if manager is not None:
             manager.register_script_catalog_callback(self._on_script_catalog_changed)
             self._resource_manager = manager
+        presenter = AssetLoadErrors.instance()
+        if (presenter is not None and presenter.database is not None
+                and same_path(presenter.database.project_root, self.project_root)):
+            presenter.add_listener(self._on_asset_errors_changed)
+            self._asset_error_presenter = presenter
+
+    def _on_asset_errors_changed(self) -> None:
+        if not self._installing:
+            self._rebuild_states()
 
     def _on_script_catalog_changed(self, file_path: str, event_type: str) -> None:
         if self._installing:
             self._deferred_catalog_changes.add(resolved_path(file_path))
             return
         normalized = portable_path(str(file_path)).casefold()
-        reloaded = ()
+        if normalized.endswith(".theme.json"):
+            if self.themes is not None:
+                self.themes.resource_changed(resolved_path(file_path))
+                self._rebuild_states()
+            return
         if normalized.endswith("/editor/translations.json"):
             reference = self.preloads.package_reference_for_path(file_path)
-            if not reference:
-                return
-            self.preloads.reload_package_translations(reference)
-        elif normalized.endswith(".py"):
-            reloaded = self.preloads.reload_path(file_path)
-        else:
+            if reference:
+                self.preloads.reload_package_translations(reference)
+        elif not normalized.endswith(".py"):
             return
+        # The resource coordinator already constructed and activated this source.
         self._rebuild_states()
-        references = sorted({state.package_reference for state in reloaded
-                             if state.loaded and state.package_reference}, key=str.casefold)
-        if references:
-            from infernux.engine.resources_manager import ResourcesManager
-
-            manager = ResourcesManager.instance()
-            if manager is not None:
-                for reference in references:
-                    if self.states[reference.casefold()].loaded:
-                        manager.defer_script_catalog_publication(
-                            self._publish_package_runtime_scripts, reference,
-                        )
 
     def _publish_package_runtime_scripts(self, reference: str) -> None:
         """Publish installed Runtime components through the resource authority."""
@@ -2786,39 +2824,15 @@ class PluginManager:
                 "Active ResourcesManager belongs to a different project during plugin install"
             )
 
-        from infernux.engine.project_context import is_preload_python_library, is_project_component_script
-
-        runtime_paths = [
-            path for path in self._package_runtime_script_paths(record)
-            if is_project_component_script(path, self.project_root)
-        ]
-        root = package_control_root(self.project_root, reference)
-        library_names = tuple(
-            name for name, module in tuple(sys.modules.items())
-            if (source := getattr(module, "__file__", ""))
-            and is_path_within(source, root, allow_root=False)
-            and is_preload_python_library(source)
-        )
-        if library_names:
-            runtime_paths = sorted(set(runtime_paths).union(
-                manager.script_library_dependents(library_names)), key=path_key)
-        if not runtime_paths:
-            return
-
-        transaction_id = manager.begin_script_transaction(runtime_paths)
-        submitted = False
-        for path in runtime_paths:
-            change = manager.submit_script_change(
-                path,
-                origin="editor",
-                catalog_event=None,
-                change_kind="created",
-                transaction_id=transaction_id,
-                force=True,
-            )
-            submitted = submitted or change is not None
-        if submitted:
-            manager.process_pending_reloads(force=True)
+        from infernux.engine.project_context import is_project_component_script
+        handler = manager._ensure_event_handler()
+        graph = handler.reload.graph
+        runtime_paths = {path for path in self._package_runtime_script_paths(record)
+                         if is_project_component_script(path, self.project_root)}
+        for source in graph.affected_closure(self.preloads._package_source_paths(reference)):
+            runtime_paths.add(graph.module_for_path(source.path_key).source_path)
+        if runtime_paths:
+            handler.reload.ensure_ready(runtime_paths)
 
     def _retire_package_runtime_scripts(self, record: Mapping[str, object]) -> None:
         """Remove package gameplay types and modules from the active runtime."""
@@ -2881,33 +2895,7 @@ class PluginManager:
             database.refresh()
 
     def _prune_package_directories(self, removed_paths: Iterable[str]) -> None:
-        boundaries = (
-            os.path.join(self.project_root, "Packages"),
-            os.path.join(self.project_root, "Assets", "Plugins"),
-        )
-        roots = {
-            resolved_path(os.path.dirname(path))
-            for path in removed_paths
-            if path
-        }
-        for root in sorted(roots, key=lambda path: len(Path(path).parts), reverse=True):
-            boundary = next(
-                (
-                    candidate
-                    for candidate in boundaries
-                    if is_path_within(root, candidate, allow_root=False)
-                ),
-                "",
-            )
-            if not boundary:
-                continue
-            current = root
-            while is_path_within(current, boundary, allow_root=False):
-                try:
-                    os.rmdir(current)
-                except OSError:
-                    break
-                current = os.path.dirname(current)
+        prune_package_directories(self.project_root, removed_paths)
 
     def _project_python_executable(self) -> str:
         candidates = (
@@ -3060,78 +3048,6 @@ class PluginManager:
         if return_code:
             raise RuntimeError(f"Command failed ({return_code}): {combined[-4000:]}")
         return subprocess.CompletedProcess(command, return_code, combined, "")
-
-
-def _script_bytecode_paths(source: str) -> tuple[str, ...]:
-    """Derived caches of this owned source, never other author files."""
-
-    if not source.endswith(".py"):
-        return ()
-    directory = os.path.join(os.path.dirname(source), "__pycache__")
-    if not os.path.isdir(directory) or os.path.islink(directory):
-        return ()
-    result = []
-    for entry in os.scandir(directory):
-        if entry.is_symlink() or not entry.is_file() or not entry.name.endswith(".pyc"):
-            continue
-        try:
-            cached_source = importlib.util.source_from_cache(entry.path)
-        except ValueError:
-            continue
-        if same_path(cached_source, source):
-            result.append(entry.path)
-    return tuple(sorted(result))
-
-
-class _InstallTransaction:
-    def __init__(self, project_root: str) -> None:
-        self.project_root = project_root
-        self.id = uuid.uuid4().hex
-        self.root = os.path.join(
-            project_root, "Cache", "Plugins", ".transactions", self.id
-        )
-        self.backups: list[tuple[str, str | None]] = []
-        self.committed = False
-        os.makedirs(self.root, exist_ok=True)
-
-    def write(self, destination: str, payload: bytes) -> None:
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
-        backup = None
-        if os.path.exists(destination):
-            backup = os.path.join(self.root, f"backup-{len(self.backups)}")
-            shutil.copy2(destination, backup)
-        temporary = os.path.join(self.root, f"write-{len(self.backups)}")
-        with open(temporary, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, destination)
-        self.backups.append((destination, backup))
-
-    def remove(self, destination: str) -> None:
-        if not os.path.exists(destination):
-            return
-        backup = os.path.join(self.root, f"backup-{len(self.backups)}")
-        shutil.copy2(destination, backup)
-        self.backups.append((destination, backup))
-        os.remove(destination)
-
-    def commit(self) -> None:
-        self.committed = True
-        shutil.rmtree(self.root, ignore_errors=True)
-
-    def rollback(self) -> None:
-        if self.committed:
-            return
-        for destination, backup in reversed(self.backups):
-            if backup and os.path.isfile(backup):
-                os.replace(backup, destination)
-            else:
-                try:
-                    os.remove(destination)
-                except FileNotFoundError:
-                    pass
-        shutil.rmtree(self.root, ignore_errors=True)
 
 
 def _python_environment_changes(

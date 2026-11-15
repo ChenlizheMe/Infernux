@@ -31,11 +31,11 @@ The current API and file formats are authoritative; historical migrations do not
 need a parallel test suite.
 
 For publication, recovery and batch correctness changes, these focused suites
-cover finalized reload history collection and runtime imports, retryable editor
-rollback, Scene-bound batch identity, and final world poses across hierarchies:
+cover current-source reload and runtime imports, editor transactions,
+Scene-bound batch identity, and final world poses across hierarchies:
 
 ```sh
-python -m pytest tests/python/test_candidate_import_transaction.py tests/python/test_play_mode_component_body_reload.py tests/python/test_editor_transactions.py tests/python/test_transform_batch_boundaries.py tests/python/test_inxpack_compression.py -q -ra
+python -m pytest tests/python/test_reload_coordinator.py tests/python/test_reload_runtime_ownership.py tests/python/test_editor_transactions.py tests/python/test_transform_batch_boundaries.py tests/python/test_inxpack_compression.py -q -ra
 ctest --preset windows-msvc-release -R "inxpack|runtime_frame_barrier|ui_transform_dependencies" --output-on-failure
 ```
 

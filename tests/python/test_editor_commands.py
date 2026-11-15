@@ -52,7 +52,7 @@ expected = {
     "animclip2d_editor": "Animation", "animfsm_editor": "Animation",
     "animtimeline_editor": "Animation", "particle_graph_editor": "Rendering",
     "plugins": "Extensions", "build_settings": "", "environment_settings": "",
-    "inxpackage_import": "", "preferences": "", "physics_settings": "",
+    "inxpackage_import": "", "preferences": "", "themes": "", "physics_settings": "",
     "toolbar": "", "console": "Window", "game_view": "Window",
     "hierarchy": "Window", "history": "Window", "inspector": "Window",
     "project": "Window", "scene_view": "Window", "tag_layer_settings": "Window",

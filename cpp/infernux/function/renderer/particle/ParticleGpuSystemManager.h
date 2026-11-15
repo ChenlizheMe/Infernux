@@ -424,6 +424,7 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
                                               std::shared_ptr<const ShaderProgramArtifact> shaderProgram,
                                               std::string *error = nullptr);
+    void InvalidateMaterialProgram(const ShaderStagePair &stages);
     /// Notify resident output materials even when a failed texture has never
     /// published a GPU slot and the output uses a transient material instance.
     void InvalidateTextureAssets(const std::string &textureGuid);

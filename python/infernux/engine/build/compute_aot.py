@@ -331,19 +331,12 @@ def _specialization_parameters(specialization: str) -> tuple:
 def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: tuple[str, ...]):
     """Select only artifacts prepared from this build's current source closure.
 
-    Candidate imports are private and never borrow the editor's published
-    project modules. A same-named LKG function is not a valid build input.
+    Build imports are private and use only the current source snapshots.
+    The editor's live function objects are not build inputs.
     """
     from infernux._compiler.taichi import frontend
-    from infernux.engine.candidate_import import CandidateImportTransaction
+    from infernux.engine.build.source_imports import BuildSourceImports
     from infernux.engine.project_context import using_project_root
-
-    class BuildSourceImports(CandidateImportTransaction):
-        def _reuse_project_lkg(self, name):
-            return None
-
-        def _has_lkg_descendant(self, name):
-            return False
 
     cache = root / "Library/Artifacts/Compute"
     specializations: dict[str, set[str]] = {name: set() for name in expected}
@@ -433,7 +426,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                 if not select(declaration.function, params):
                     missing.add(f"{declaration.function.__module__}.{declaration.function.__qualname__}")
         finally:
-            broker.rollback()
+            broker.close()
     if missing:
         ordered = tuple(sorted(missing))
         raise ComputeAotBuildError(

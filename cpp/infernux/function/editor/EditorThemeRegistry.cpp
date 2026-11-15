@@ -1,6 +1,8 @@
 #include "EditorThemeRegistry.h"
 
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
 
 namespace infernux
 {
@@ -27,30 +29,100 @@ ThemeData BuildBaseTheme()
     return t;
 }
 
-// A theme is fully described by a small set of semantic ROLE_* colors; the
-// ImGui global palette is composed from them (see ApplyImGuiColors). Switching
-// themes therefore only needs to override these roles.
+inline ImVec4 Mix(const ImVec4 &a, const ImVec4 &b, float t)
+{
+    return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
+}
+
+inline ImVec4 Alpha(const ImVec4 &c, float a) { return ImVec4(c.x, c.y, c.z, a); }
+
+// Explicit role derivation precedes component overrides. Functional colors
+// (Play/Pause, node types and game UI defaults) retain their own semantics.
+void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4> &overrides)
+{
+    const auto derive = [&](const char *role, std::initializer_list<const char *> tokens) {
+        if (!overrides.count(role))
+            return;
+        for (const auto *token : tokens)
+            theme.colors.at(token) = Alpha(theme.colors.at(role), theme.colors.at(token).w);
+    };
+    derive("ROLE_BG_BASE", {"WINDOW_BG", "MENU_BAR_BG", "STATUS_BAR_BG", "STATUS_PROGRESS_BG", "LOG_DIM"});
+    derive("ROLE_BG_SURFACE", {"FRAME_BG", "BTN_IDLE", "BTN_NORMAL", "BTN_DISABLED", "INSPECTOR_INLINE_BTN_IDLE",
+                               "INSPECTOR_LIST_BODY_BG", "CURVE_EDITOR_BG", "UI_EDITOR_CANVAS_BG",
+                               "SCENE_OVERLAY_COMBO_BG", "STATUS_ACTIVITY_BG", "CONSOLE_SEGMENT_ACTIVE"});
+    derive("ROLE_BG_RAISED", {"POPUP_BG", "HEADER", "INSPECTOR_HEADER_PRIMARY", "INSPECTOR_HEADER_SECONDARY",
+                              "INSPECTOR_HEADER_TERTIARY", "INSPECTOR_HEADER_LIST", "PREFAB_HEADER_BG",
+                              "PROJECT_EXPAND_STRIP_BG", "PROJECT_SUBASSET_CELL_BG", "UI_EDITOR_CANVAS_HEADER_BG"});
+    derive("ROLE_BG_HOVER", {"HIERARCHY_ROW_HOVER", "BTN_SUBTLE_HOVER", "FRAME_BG_HOVERED"});
+    derive("ROLE_TEXT", {"TEXT", "LOG_INFO", "META_TEXT", "UI_EDITOR_CANVAS_HEADER_TEXT", "CURVE_EDITOR_KEY"});
+    derive("ROLE_TEXT_DIM", {"TEXT_DISABLED", "TEXT_DIM", "TEXT_DIM2", "LOG_TRACE", "LOG_BADGE",
+                             "STATUS_PROGRESS_LABEL_CLR", "UI_EDITOR_LABEL_COLOR", "UI_EDITOR_FALLBACK_TEXT"});
+    derive("ROLE_BORDER", {"BORDER", "STATUS_BAR_BORDER", "INSPECTOR_LIST_BODY_BORDER", "UI_EDITOR_CANVAS_BORDER",
+                           "CURVE_EDITOR_GRID", "CURVE_EDITOR_AXIS", "COLOR_SWATCH_BORDER"});
+    derive("ROLE_ERROR", {"ERROR_TEXT", "LOG_ERROR"});
+    derive("ROLE_WARNING", {"WARNING_TEXT", "LOG_WARNING"});
+    derive("ROLE_SUCCESS", {"SUCCESS_TEXT"});
+    derive("ROLE_ACCENT", {"APPLY_BUTTON", "PREFAB_TEXT", "PREFAB_TEXT2", "STATUS_PROGRESS_CLR", "SELECTION_BG",
+                           "BTN_SELECTED", "HIERARCHY_ROW_SELECTED", "INSPECTOR_INLINE_BTN_ACTIVE", "INSPECTOR_INLINE_BTN_ON",
+                           "PREFAB_BTN_NORMAL", "TREE_DND_LINE_CLR", "UI_EDITOR_ALIGN_GUIDE", "UI_EDITOR_ALIGN_GUIDE_FAINT",
+                           "UI_EDITOR_ELEMENT_HOVER", "UI_EDITOR_ELEMENT_SELECT", "CURVE_EDITOR_LINE", "CURVE_EDITOR_KEY_SELECTED"});
+    const bool accent = overrides.count("ROLE_ACCENT") != 0;
+    if (accent) {
+        theme.colors["PROJECT_SUBASSET_ACCENT"] = Alpha(Mix(ImVec4(0, 0, 0, 1), theme.colors.at("ROLE_ACCENT"), 0.7f),
+                                                       theme.colors.at("PROJECT_SUBASSET_ACCENT").w);
+    }
+    if (accent || overrides.count("ROLE_TEXT") || overrides.count("ROLE_BG_BASE")) {
+        theme.colors["PREFAB_BTN_HOVERED"] = Mix(theme.colors.at("ROLE_ACCENT"), theme.colors.at("ROLE_TEXT"), 0.18f);
+        theme.colors["PREFAB_BTN_ACTIVE"] = Mix(theme.colors.at("ROLE_ACCENT"), theme.colors.at("ROLE_BG_BASE"), 0.12f);
+    }
+    if (accent || overrides.count("ROLE_BG_SURFACE") || overrides.count("ROLE_BG_HOVER") || overrides.count("ROLE_BG_RAISED")) {
+        const auto tint = [&](std::initializer_list<const char *> tokens, const char *surface, float strength) {
+            for (const auto *token : tokens)
+                theme.colors.at(token) = Alpha(Mix(theme.colors.at(surface), theme.colors.at("ROLE_ACCENT"), strength),
+                                                theme.colors.at(token).w);
+        };
+        tint({"BTN_HOVERED", "BTN_SUBTLE_HOVER", "INSPECTOR_INLINE_BTN_HOVER", "FRAME_BG_HOVERED",
+              "HEADER_HOVERED", "INSPECTOR_HEADER_PRIMARY_HOVERED", "INSPECTOR_HEADER_SECONDARY_HOVERED",
+              "INSPECTOR_HEADER_TERTIARY_HOVERED", "INSPECTOR_HEADER_LIST_HOVERED", "SPLITTER_HOVER",
+              "PROJECT_EXPAND_STRIP_HOVER", "SCENE_OVERLAY_COMBO_HOVER"}, "ROLE_BG_HOVER", 0.18f);
+        tint({"BTN_ACTIVE", "FRAME_BG_ACTIVE", "HEADER_ACTIVE", "INSPECTOR_HEADER_PRIMARY_ACTIVE",
+              "INSPECTOR_HEADER_SECONDARY_ACTIVE", "INSPECTOR_HEADER_TERTIARY_ACTIVE", "INSPECTOR_HEADER_LIST_ACTIVE",
+              "SPLITTER_ACTIVE", "SCENE_OVERLAY_COMBO_ACTIVE", "UI_EDITOR_CANVAS_HEADER_BG_FOC",
+              "CURVE_EDITOR_TANGENT"}, "ROLE_BG_SURFACE", 0.32f);
+        tint({"INSPECTOR_HEADER_SELECTED"}, "ROLE_BG_RAISED", 0.35f);
+        tint({"INSPECTOR_HEADER_SELECTED_HOVERED"}, "ROLE_BG_RAISED", 0.45f);
+        tint({"INSPECTOR_HEADER_SELECTED_ACTIVE"}, "ROLE_BG_RAISED", 0.55f);
+    }
+}
+
 ThemeData MakeAccentVariant(const ThemeData &base, const ImVec4 &accent)
 {
-    ThemeData v = base;
-    v.colors["ROLE_ACCENT"] = accent;
-    v.colors["APPLY_BUTTON"] = accent; // keep custom-drawn accent in sync
-    v.colors["LOG_ERROR"] = accent;
-    v.colors["PREFAB_TEXT"] = accent;
-    v.colors["STATUS_PROGRESS_CLR"] = accent;
-    return v;
+    ThemeData theme = base;
+    theme.colors["ROLE_ACCENT"] = accent;
+    DeriveRoles(theme, {{"ROLE_ACCENT", accent}});
+    return theme;
+}
+
+ThemeData CanonicalBaseTheme()
+{
+    auto theme = BuildBaseTheme();
+    DeriveRoles(theme, theme.colors);
+    return theme;
 }
 
 struct Registry
 {
     std::unordered_map<std::string, ThemeData> themes;
+    std::unordered_map<std::string, std::string> owners;
     std::vector<std::string> order;
     std::string active;
     unsigned long generation = 1;
+    float displayScale = 1.0f;
+    std::function<void()> changed;
 
     Registry()
     {
-        ThemeData base = BuildBaseTheme();
+        ThemeData base = CanonicalBaseTheme();
         Add("infernux", base);                                                       // theme red (default)
         Add("graphite", MakeAccentVariant(base, ImVec4(0.30f, 0.56f, 0.86f, 1.0f))); // steel blue
         Add("amber", MakeAccentVariant(base, ImVec4(0.92f, 0.62f, 0.22f, 1.0f)));    // instrument amber
@@ -77,14 +149,37 @@ Registry &Reg()
     return *r;
 }
 
-inline ImVec4 Mix(const ImVec4 &a, const ImVec4 &b, float t)
+bool Same(const ImVec4 &a, const ImVec4 &b) { return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w; }
+bool Same(const ImVec2 &a, const ImVec2 &b) { return a.x == b.x && a.y == b.y; }
+bool Same(float a, float b) { return a == b; }
+
+template <typename T> bool SameMap(const std::unordered_map<std::string, T> &a, const std::unordered_map<std::string, T> &b)
 {
-    return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
+    if (a.size() != b.size())
+        return false;
+    for (const auto &[key, value] : a) {
+        const auto found = b.find(key);
+        if (found == b.end() || !Same(value, found->second))
+            return false;
+    }
+    return true;
 }
 
-inline ImVec4 Alpha(const ImVec4 &c, float a)
+bool SameTheme(const ThemeData &a, const ThemeData &b)
 {
-    return ImVec4(c.x, c.y, c.z, a);
+    return SameMap(a.colors, b.colors) && SameMap(a.vec2s, b.vec2s) && SameMap(a.floats, b.floats);
+}
+
+void PublishActiveChange()
+{
+    auto &registry = Reg();
+    ++registry.generation;
+    if (ImGui::GetCurrentContext()) {
+        EditorThemeRegistry::ApplyImGuiColors();
+        EditorThemeRegistry::ConfigureImGuiDimensions(ImGui::GetStyle(), registry.displayScale);
+    }
+    if (registry.changed)
+        registry.changed();
 }
 
 } // namespace
@@ -102,7 +197,7 @@ const std::unordered_map<std::string, float> &EditorThemeRegistry::Floats()
     return Reg().Active().floats;
 }
 
-ImVec4 EditorThemeRegistry::Color(const std::string &name)
+const ImVec4 &EditorThemeRegistry::Color(const std::string &name)
 {
     const auto &m = Reg().Active().colors;
     const auto it = m.find(name);
@@ -111,7 +206,7 @@ ImVec4 EditorThemeRegistry::Color(const std::string &name)
     return it->second;
 }
 
-ImVec2 EditorThemeRegistry::Vec2(const std::string &name)
+const ImVec2 &EditorThemeRegistry::Vec2(const std::string &name)
 {
     const auto &m = Reg().Active().vec2s;
     const auto it = m.find(name);
@@ -145,7 +240,7 @@ bool EditorThemeRegistry::SetActiveTheme(const std::string &name)
         return false;
     if (r.active != name) {
         r.active = name;
-        ++r.generation;
+        PublishActiveChange();
     }
     return true;
 }
@@ -155,31 +250,141 @@ unsigned long EditorThemeRegistry::Generation()
     return Reg().generation;
 }
 
-void EditorThemeRegistry::ConfigureImGuiDimensions(ImGuiStyle &style)
+static ThemeData BuildDeclaredTheme(const std::unordered_map<std::string, ImVec4> &colors,
+                                    const std::unordered_map<std::string, ImVec2> &vec2s,
+                                    const std::unordered_map<std::string, float> &floats)
 {
-    style.WindowPadding = ImVec2(10.0f, 10.0f);
-    style.FramePadding = ImVec2(8.0f, 3.0f);
-    style.CellPadding = ImVec2(4.0f, 4.0f);
-    style.ItemSpacing = ImVec2(8.0f, 6.0f);
-    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
-    style.IndentSpacing = 18.0f;
-    style.ScrollbarSize = 8.0f;
-    style.GrabMinSize = 6.0f;
+    auto base = CanonicalBaseTheme();
+    for (const auto &[key, value] : colors) {
+        if ((key.rfind("UI_DEFAULT_", 0) == 0) || !base.colors.count(key))
+            throw std::invalid_argument("Unknown editor color token: " + key);
+        for (const float channel : {value.x, value.y, value.z, value.w})
+            if (!std::isfinite(channel) || channel < 0.0f || channel > 1.0f)
+                throw std::invalid_argument("Editor color must contain finite RGBA values in [0, 1]: " + key);
+        base.colors[key] = value;
+    }
+    DeriveRoles(base, colors);
+    for (const auto &[key, value] : colors)
+        base.colors[key] = value;
+    for (const auto &[key, value] : vec2s) {
+        if (key.rfind("UI_DEFAULT_", 0) == 0 || !base.vec2s.count(key))
+            throw std::invalid_argument("Unknown editor dimension token: " + key);
+        if (!std::isfinite(value.x) || !std::isfinite(value.y))
+            throw std::invalid_argument("Editor dimensions must be finite: " + key);
+        if (key.rfind("GLOBAL_", 0) == 0 && (value.x < 0.0f || value.y < 0.0f))
+            throw std::invalid_argument("Global editor spacing must be non-negative: " + key);
+        base.vec2s[key] = value;
+    }
+    for (const auto &[key, value] : floats) {
+        if (key.rfind("UI_DEFAULT_", 0) == 0 || !base.floats.count(key))
+            throw std::invalid_argument("Unknown editor dimension token: " + key);
+        if (!std::isfinite(value))
+            throw std::invalid_argument("Editor dimensions must be finite: " + key);
+        if (key.rfind("GLOBAL_", 0) == 0 && value < 0.0f)
+            throw std::invalid_argument("Global editor dimensions must be non-negative: " + key);
+        base.floats[key] = value;
+    }
+    return base;
+}
 
-    style.WindowBorderSize = 1.0f;
-    style.ChildBorderSize = 1.0f;
-    style.PopupBorderSize = 1.0f;
-    style.FrameBorderSize = 1.0f;
-    style.TabBorderSize = 0.0f;
-    style.TabBarBorderSize = 1.0f;
+static void ValidateIdentity(const std::string &name, const std::string &owner)
+{
+    auto &registry = Reg();
+    const auto existing = registry.owners.find(name);
+    if (name.empty() || owner.empty() || (registry.themes.count(name) &&
+        (existing == registry.owners.end() || existing->second != owner)))
+        throw std::invalid_argument("Theme identity is already owned or empty: " + name);
+}
 
-    style.WindowRounding = 0.0f;
-    style.ChildRounding = 0.0f;
-    style.FrameRounding = 0.0f;
-    style.PopupRounding = 0.0f;
-    style.ScrollbarRounding = 0.0f;
-    style.GrabRounding = 0.0f;
-    style.TabRounding = 0.0f;
+void EditorThemeRegistry::Register(const std::string &name, const std::string &owner,
+                                  const std::unordered_map<std::string, ImVec4> &colors,
+                                  const std::unordered_map<std::string, ImVec2> &vec2s,
+                                  const std::unordered_map<std::string, float> &floats)
+{
+    ValidateIdentity(name, owner);
+    const auto declared = BuildDeclaredTheme(colors, vec2s, floats);
+    auto &registry = Reg();
+    const bool changed = registry.active == name && !SameTheme(registry.Active(), declared);
+    registry.Add(name, declared);
+    registry.owners[name] = owner;
+    if (changed)
+        PublishActiveChange();
+}
+
+void EditorThemeRegistry::ReplaceOwner(const std::string &owner, const std::vector<Definition> &themes,
+                                       const std::string &preferred)
+{
+    if (owner.empty())
+        throw std::invalid_argument("Theme owner must not be empty");
+    std::unordered_map<std::string, ThemeData> replacements;
+    for (const auto &theme : themes) {
+        ValidateIdentity(theme.name, owner);
+        if (!replacements.emplace(theme.name, BuildDeclaredTheme(theme.colors, theme.vec2s, theme.floats)).second)
+            throw std::invalid_argument("Duplicate theme identity: " + theme.name);
+    }
+    auto &registry = Reg();
+    const auto oldName = registry.active;
+    const auto oldData = registry.Active();
+    for (auto iterator = registry.owners.begin(); iterator != registry.owners.end();) {
+        if (iterator->second != owner || replacements.count(iterator->first)) {
+            ++iterator;
+            continue;
+        }
+        const auto name = iterator->first;
+        registry.themes.erase(name);
+        registry.order.erase(std::remove(registry.order.begin(), registry.order.end(), name), registry.order.end());
+        iterator = registry.owners.erase(iterator);
+    }
+    for (const auto &theme : themes) {
+        registry.Add(theme.name, replacements.at(theme.name));
+        registry.owners[theme.name] = owner;
+    }
+    if (!preferred.empty())
+        registry.active = registry.themes.count(preferred) ? preferred : "infernux";
+    else if (!registry.themes.count(registry.active))
+        registry.active = "infernux";
+    if (oldName != registry.active || !SameTheme(oldData, registry.Active()))
+        PublishActiveChange();
+}
+
+void EditorThemeRegistry::RemoveOwner(const std::string &owner) { ReplaceOwner(owner, {}, ""); }
+
+void EditorThemeRegistry::SetChangeCallback(std::function<void()> callback) { Reg().changed = std::move(callback); }
+
+void EditorThemeRegistry::SetDisplayScale(float scale)
+{
+    if (!std::isfinite(scale) || scale <= 0.0f)
+        throw std::invalid_argument("Editor display scale must be positive and finite");
+    Reg().displayScale = scale;
+}
+
+void EditorThemeRegistry::ConfigureImGuiDimensions(ImGuiStyle &style, float scale)
+{
+    const auto vec = [scale](const char *name) { const auto v = Vec2(name); return ImVec2(v.x * scale, v.y * scale); };
+    const auto scalar = [scale](const char *name) { return Float(name) * scale; };
+    style.WindowPadding = vec("GLOBAL_WINDOW_PAD");
+    style.FramePadding = vec("GLOBAL_FRAME_PAD");
+    style.CellPadding = vec("GLOBAL_CELL_PAD");
+    style.ItemSpacing = vec("GLOBAL_ITEM_SPC");
+    style.ItemInnerSpacing = vec("GLOBAL_INNER_SPC");
+    style.IndentSpacing = scalar("GLOBAL_INDENT");
+    style.ScrollbarSize = scalar("GLOBAL_SCROLLBAR_SIZE");
+    style.GrabMinSize = scalar("GLOBAL_GRAB_MIN_SIZE");
+
+    style.WindowBorderSize = scalar("GLOBAL_WINDOW_BORDER");
+    style.ChildBorderSize = scalar("GLOBAL_CHILD_BORDER");
+    style.PopupBorderSize = scalar("GLOBAL_POPUP_BORDER");
+    style.FrameBorderSize = scalar("GLOBAL_FRAME_BORDER");
+    style.TabBorderSize = scalar("GLOBAL_TAB_BORDER");
+    style.TabBarBorderSize = scalar("GLOBAL_TAB_BAR_BORDER");
+
+    style.WindowRounding = scalar("GLOBAL_WINDOW_ROUNDING");
+    style.ChildRounding = scalar("GLOBAL_CHILD_ROUNDING");
+    style.FrameRounding = scalar("GLOBAL_FRAME_ROUNDING");
+    style.PopupRounding = scalar("GLOBAL_POPUP_ROUNDING");
+    style.ScrollbarRounding = scalar("GLOBAL_SCROLLBAR_ROUNDING");
+    style.GrabRounding = scalar("GLOBAL_GRAB_ROUNDING");
+    style.TabRounding = scalar("GLOBAL_TAB_ROUNDING");
 
     style.AntiAliasedLines = true;
     style.AntiAliasedFill = true;
@@ -191,35 +396,38 @@ void EditorThemeRegistry::ApplyImGuiColors()
     ImVec4 *c = style.Colors;
 
     const ImVec4 accent = Color("ROLE_ACCENT");
-    const ImVec4 bg = Color("ROLE_BG_BASE");
-    const ImVec4 surf = Color("ROLE_BG_SURFACE");
-    const ImVec4 raised = Color("ROLE_BG_RAISED");
+    const ImVec4 bg = Color("WINDOW_BG");
+    const ImVec4 surf = Color("FRAME_BG");
     const ImVec4 hover = Color("ROLE_BG_HOVER");
-    const ImVec4 text = Color("ROLE_TEXT");
-    const ImVec4 dim = Color("ROLE_TEXT_DIM");
-    const ImVec4 border = Color("ROLE_BORDER");
+    const ImVec4 text = Color("TEXT");
+    const ImVec4 dim = Color("TEXT_DISABLED");
+    const ImVec4 border = Color("BORDER");
     const ImVec4 panelFocus = Color("SELECTION_BG");
 
     const ImVec4 transparent(0.0f, 0.0f, 0.0f, 0.0f);
 
     // Text
     c[ImGuiCol_Text] = text;
-    c[ImGuiCol_TextDisabled] = Mix(text, bg, 0.62f);
+    c[ImGuiCol_TextDisabled] = dim;
     c[ImGuiCol_TextSelectedBg] = Alpha(accent, 0.35f);
+    c[ImGuiCol_InputTextCursor] = text;
+    c[ImGuiCol_TextLink] = accent;
+    c[ImGuiCol_UnsavedMarker] = accent;
+    c[ImGuiCol_TreeLines] = border;
 
     // Backgrounds
     c[ImGuiCol_WindowBg] = bg;
     c[ImGuiCol_ChildBg] = surf;
-    c[ImGuiCol_PopupBg] = Alpha(raised, 0.98f);
+    c[ImGuiCol_PopupBg] = Color("POPUP_BG");
     c[ImGuiCol_FrameBg] = surf;
-    c[ImGuiCol_FrameBgHovered] = Mix(hover, accent, 0.12f);
-    c[ImGuiCol_FrameBgActive] = Mix(surf, accent, 0.22f);
+    c[ImGuiCol_FrameBgHovered] = Color("FRAME_BG_HOVERED");
+    c[ImGuiCol_FrameBgActive] = Color("FRAME_BG_ACTIVE");
 
     // Title / menu
     c[ImGuiCol_TitleBg] = bg;
     c[ImGuiCol_TitleBgActive] = bg;
     c[ImGuiCol_TitleBgCollapsed] = Alpha(bg, 0.75f);
-    c[ImGuiCol_MenuBarBg] = bg;
+    c[ImGuiCol_MenuBarBg] = Color("MENU_BAR_BG");
 
     // Scrollbar
     c[ImGuiCol_ScrollbarBg] = transparent;
@@ -232,17 +440,19 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_SliderGrab] = Alpha(accent, 0.88f);
     c[ImGuiCol_SliderGrabActive] = accent;
     c[ImGuiCol_NavHighlight] = transparent;
+    c[ImGuiCol_NavWindowingHighlight] = Alpha(accent, 0.70f);
+    c[ImGuiCol_NavWindowingDimBg] = Alpha(bg, 0.20f);
 
     // Buttons — surface with an accent-tinted hover/active for clear feedback.
-    c[ImGuiCol_Button] = surf;
-    c[ImGuiCol_ButtonHovered] = Mix(surf, accent, 0.26f);
-    c[ImGuiCol_ButtonActive] = Mix(surf, accent, 0.40f);
+    c[ImGuiCol_Button] = Color("BTN_NORMAL");
+    c[ImGuiCol_ButtonHovered] = Color("BTN_HOVERED");
+    c[ImGuiCol_ButtonActive] = Color("BTN_ACTIVE");
 
     // Headers / selectables — the primary "pick an item" feedback across the
     // editor (Hierarchy tree, Inspector headers, lists), so keep it clearly read.
-    c[ImGuiCol_Header] = hover;
-    c[ImGuiCol_HeaderHovered] = Mix(hover, accent, 0.28f);
-    c[ImGuiCol_HeaderActive] = Mix(hover, accent, 0.42f);
+    c[ImGuiCol_Header] = Color("HEADER");
+    c[ImGuiCol_HeaderHovered] = Color("HEADER_HOVERED");
+    c[ImGuiCol_HeaderActive] = Color("HEADER_ACTIVE");
 
     // Borders / separators
     c[ImGuiCol_Border] = border;
@@ -274,7 +484,9 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     // Plots
     c[ImGuiCol_PlotLines] = Mix(surf, text, 0.45f);
+    c[ImGuiCol_PlotLinesHovered] = accent;
     c[ImGuiCol_PlotHistogram] = text;
+    c[ImGuiCol_PlotHistogramHovered] = accent;
 
     // Drag-drop
     c[ImGuiCol_DragDropTarget] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);

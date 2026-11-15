@@ -201,39 +201,6 @@ def test_script_move_publishes_new_type_and_retires_old_type_as_one_epoch():
         restore_component_registry_state(registry_before)
 
 
-def test_script_delete_transaction_retires_only_at_commit():
-    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
-    from infernux.engine.play_mode import ScriptDeleteBatch
-
-    class _Manager:
-        @staticmethod
-        def _get_active_scene_for_script_reload():
-            return None
-
-    initial = _publish_initial(_RetirementProbe)
-    before = current_runtime_epoch()
-    batch = ScriptDeleteBatch(
-        _Manager(),
-        (),
-        retired_types=(_RetirementProbe,),
-    )
-    try:
-        scheduler = RuntimeExecutionScheduler()
-        frame = scheduler.begin_frame()
-        try:
-            with pytest.raises(RuntimeError, match="safe point"):
-                batch.commit()
-            assert not batch.committed and not batch.rolled_back
-            assert current_runtime_epoch() is before
-        finally:
-            frame.close()
-        batch.commit()
-        assert current_runtime_epoch().descriptor_for(_RetirementProbe) is None
-        batch.rollback()
-        assert current_runtime_epoch() is before
-        assert current_runtime_epoch().descriptor_for(_RetirementProbe) is not None
-    finally:
-        initial.rollback()
 
 
 def test_retired_type_phase_fallback_cannot_reenter_scheduler_plan():

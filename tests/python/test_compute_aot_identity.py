@@ -191,7 +191,7 @@ def test_new_signature_does_not_publish_or_require_historical_arities(tmp_path):
 
 
 def test_imported_helper_edit_is_read_from_current_private_closure(tmp_path, monkeypatch):
-    from infernux.engine.candidate_import import CandidateImportTransaction
+    from infernux.engine.build.source_imports import BuildSourceImports
 
     path = tmp_path / "Assets/Scripts/Work.py"
     source = ("import infernux as inx\nfrom Scripts.Shared import gain\n"
@@ -206,7 +206,7 @@ def test_imported_helper_edit_is_read_from_current_private_closure(tmp_path, mon
                          f"def gain(value):\n    return value + {value}\n")
         helper.write_text(helper_source, encoding="utf-8")
         with using_project_root(tmp_path):
-            broker = CandidateImportTransaction()
+            broker = BuildSourceImports()
             try:
                 broker.register("Scripts.Shared", str(helper), source=embed_compute_sources(helper_source))
                 broker.register("Scripts.Work", str(path), source=embed_compute_sources(source))
@@ -215,9 +215,9 @@ def test_imported_helper_edit_is_read_from_current_private_closure(tmp_path, mon
                 if value == 1:
                     original = compiled
                     # Keep the editor's old helper published while disk advances.
-                    monkeypatch.setitem(sys.modules, "Scripts.Shared", broker.module_for("Scripts.Shared"))
+                    monkeypatch.setitem(sys.modules, "Scripts.Shared", broker.load("Scripts.Shared"))
             finally:
-                broker.rollback()
+                broker.close()
     data = tmp_path / "build/Data"
     stage_compute_artifacts(tmp_path, (path, helper), data)
     row, = project_records(data)

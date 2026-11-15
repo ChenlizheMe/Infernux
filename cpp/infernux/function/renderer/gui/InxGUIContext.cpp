@@ -123,10 +123,10 @@ bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *dat
     ImDrawList *drawList = window->DrawList;
     const ImGuiStyle &style = g.Style;
     const float centerY = (frame.Min.y + frame.Max.y) * 0.5f;
-    const float trackY = centerY + EditorTheme::INSPECTOR_SLIDER_TRACK_Y_OFFSET * dpi;
-    const float linePad = EditorTheme::INSPECTOR_SLIDER_LINE_PAD * dpi;
+    const float trackY = centerY + EditorThemeRegistry::Float("INSPECTOR_SLIDER_TRACK_Y_OFFSET") * dpi;
+    const float linePad = EditorThemeRegistry::Float("INSPECTOR_SLIDER_LINE_PAD") * dpi;
     const ImU32 trackColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const float halfTrack = EditorTheme::INSPECTOR_SLIDER_TRACK_HEIGHT * dpi * 0.5f;
+    const float halfTrack = EditorThemeRegistry::Float("INSPECTOR_SLIDER_TRACK_HEIGHT") * dpi * 0.5f;
     drawList->AddRectFilled(ImVec2(frame.Min.x + linePad, trackY - halfTrack),
                             ImVec2(frame.Max.x - linePad, trackY + halfTrack), trackColor, halfTrack);
 
@@ -147,7 +147,7 @@ bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max
     const ImGuiStyle &style = ImGui::GetStyle();
     const float spacing = style.ItemInnerSpacing.x;
     const float totalW = ImGui::CalcItemWidth();
-    const float inputW = EditorTheme::INSPECTOR_RANGED_INPUT_WIDTH * dpi;
+    const float inputW = EditorThemeRegistry::Float("INSPECTOR_RANGED_INPUT_WIDTH") * dpi;
     const float sliderW = std::max(24.0f * dpi, totalW - inputW - spacing);
 
     ImGui::PushID(baseId);
@@ -168,7 +168,7 @@ bool DrawUnityRangedInt(const char *baseId, Integer *value, Integer min, Integer
     const ImGuiStyle &style = ImGui::GetStyle();
     const float spacing = style.ItemInnerSpacing.x;
     const float totalW = ImGui::CalcItemWidth();
-    const float inputW = EditorTheme::INSPECTOR_RANGED_INPUT_WIDTH * dpi;
+    const float inputW = EditorThemeRegistry::Float("INSPECTOR_RANGED_INPUT_WIDTH") * dpi;
     const float sliderW = std::max(24.0f * dpi, totalW - inputW - spacing);
 
     ImGui::PushID(baseId);
@@ -320,7 +320,7 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
 
     // One fixed square size everywhere. The square and its optional label are
     // submitted as one item so ImGui advances the row exactly once.
-    const float boxSize = EditorTheme::INSPECTOR_CHECKBOX_BOX_PX * dpi;
+    const float boxSize = EditorThemeRegistry::Float("INSPECTOR_CHECKBOX_BOX_PX") * dpi;
     const float textHeight = ImGui::GetTextLineHeight();
     const float rowHeight = (std::max)(boxSize, framedRow ? ImGui::GetFrameHeight() : textHeight);
     const float labelWidth = visible.empty() ? 0.0f : ImGui::CalcTextSize(visible.c_str()).x;
@@ -2784,9 +2784,9 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     constexpr ImVec4 borderIdleColor{0.22f, 0.22f, 0.22f, 1.0f};
     constexpr ImVec4 borderHoverColor{0.42f, 0.36f, 0.36f, 1.0f};
     constexpr ImVec4 borderActiveColor{0.55f, 0.38f, 0.38f, 1.0f};
-    const ImVec4 buttonIdleColor = EditorTheme::INSPECTOR_INLINE_BTN_IDLE;
-    const ImVec4 buttonHoverColor = EditorTheme::INSPECTOR_INLINE_BTN_HOVER;
-    const ImVec4 buttonActiveColor = EditorTheme::INSPECTOR_INLINE_BTN_ACTIVE;
+    const ImVec4 buttonIdleColor = EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_IDLE");
+    const ImVec4 buttonHoverColor = EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_HOVER");
+    const ImVec4 buttonActiveColor = EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_ACTIVE");
     const float textInsetX = EditorThemeRegistry::Float("OBJECT_FIELD_TEXT_INSET_X") * dpi;
 
     if (fieldId.empty())

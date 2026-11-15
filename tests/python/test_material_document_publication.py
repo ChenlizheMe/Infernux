@@ -84,7 +84,11 @@ def test_document_reconciles_texture_publication(engine, imported_target, tmp_pa
         if api == "registry":
             material_path.write_text(json.dumps(document), encoding="utf-8")
             accepted = registry.reload_asset(material_guid)
-            assert registry.load_material_by_guid(material_guid) is material
+            if accepted:
+                assert registry.load_material_by_guid(material_guid) is material
+            else:
+                assert registry.load_material_by_guid(material_guid) is None
+                assert database.get_import_error(material_guid)
         else:
             accepted = (
                 material.deserialize_document(document)
@@ -132,7 +136,6 @@ def test_registry_shader_resolution_precedes_publication(rename_assets, stage, e
     material = registry.load_material_by_guid(guid)
     before = material.serialize_document()
     version = material.get_version()
-    residency = registry.get_asset_residency(guid).runtime_version
     document = copy.deepcopy(before)
     document["properties"]["metallic"]["value"] = 0.75
     reference = document["shaders"][stage]
@@ -148,13 +151,17 @@ def test_registry_shader_resolution_precedes_publication(rename_assets, stage, e
         document["renderState"]["lineWidth"] = 0
     assets["material_path"].write_text(json.dumps(document), encoding="utf-8")
     accepted = registry.reload_asset(guid)
-    assert accepted == (edit in ("stale_label", "missing_guid"))
+    assert accepted == (edit == "stale_label")
     if not accepted:
         assert material.serialize_document() == before
         assert material.get_version() == version
-        assert registry.get_asset_residency(guid).runtime_version == residency
+        assert not registry.is_loaded(guid)
+        assert registry.load_material_by_guid(guid) is None
+        assert assets["database"].get_import_error(guid)
         assets["material_path"].write_text(json.dumps(before), encoding="utf-8")
-        assert registry.reload_asset(guid)
+        assert assets["database"].reimport_asset(str(assets["material_path"]))
+        material = registry.load_material_by_guid(guid)
+        assert material is not None and material.serialize_document() == before
     else:
         assert material.get_float("metallic") == 0.75
         expected = before["shaders"][stage] if edit == "stale_label" else reference
@@ -185,5 +192,5 @@ def test_first_load_validates_resolved_shader_identity(rename_assets, stage, edi
     else:
         assert material is None
         assets["material_path"].write_text(original, encoding="utf-8")
-        registry.invalidate_asset(guid)
+        assert assets["database"].reimport_asset(str(assets["material_path"]))
         assert registry.load_material_by_guid(guid) is not None

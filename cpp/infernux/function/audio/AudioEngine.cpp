@@ -7,6 +7,7 @@
 #include "AudioStreamBuffer.h"
 
 #include <core/log/InxLog.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/Transform.h>
 
@@ -479,6 +480,15 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource *source, AudioClip *clip, 
     if (!m_initialized || !clip || !clip->IsLoaded()) {
         return nullptr;
     }
+    // Admission resolves the current catalog payload. Existing voices keep
+    // their immutable PCM/stream lease after the source becomes unavailable.
+    std::shared_ptr<AudioClip> current;
+    if (!clip->GetGuid().empty()) {
+        current = AssetRegistry::Instance().LoadAsset<AudioClip>(clip->GetGuid(), ResourceType::Audio);
+        if (!current)
+            return nullptr;
+        clip = current.get();
+    }
 
     SDL_AudioSpec playbackSpec = {};
     playbackSpec.format = SDL_AUDIO_F32;
@@ -502,6 +512,8 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource *source, AudioClip *clip, 
             voiceState->streaming = clip->CreateStream(static_cast<uint64_t>(voiceState->cursor));
         } catch (const std::exception &e) {
             INXLOG_ERROR("Cannot prepare streaming voice: ", e.what());
+            if (auto *database = AssetRegistry::Instance().GetAssetDatabase(); database && !clip->GetGuid().empty())
+                database->ReportRuntimeLoadFailure(clip->GetGuid(), std::string("Audio streaming voice failed: ") + e.what());
             return nullptr;
         }
     }
@@ -765,8 +777,17 @@ bool AudioEngine::PlayPreview(const std::string &filePath)
         return false;
 
     StopPreview();
-    auto clip = std::make_shared<AudioClip>();
-    if (!clip->LoadFromFile(filePath))
+    auto &registry = AssetRegistry::Instance();
+    auto *database = registry.GetAssetDatabase();
+    std::shared_ptr<AudioClip> clip;
+    if (database && !database->GetGuidFromPath(filePath).empty()) {
+        clip = registry.LoadAssetByPath<AudioClip>(filePath, ResourceType::Audio);
+    } else {
+        clip = std::make_shared<AudioClip>();
+        if (!clip->LoadFromFile(filePath))
+            return false;
+    }
+    if (!clip)
         return false;
     SDL_AudioStream *stream = CreateVoice(nullptr, clip.get());
     if (!stream)

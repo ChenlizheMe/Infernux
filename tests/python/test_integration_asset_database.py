@@ -30,6 +30,44 @@ def _enable_mesh_read_write(database, source: Path) -> None:
     assert result, result.error
 
 
+@pytest.mark.parametrize("damage", ["missing", "invalid_json", "wrong_guid", "invalid_field"])
+def test_reimport_repairs_metadata_and_keeps_registered_identity(engine, tmp_path, damage):
+    database = engine.get_asset_database()
+    source = tmp_path / "repair.txt"
+    source.write_text("source remains unchanged", encoding="utf-8")
+    first = database.import_asset(str(source))
+    assert first, first.error
+    sidecar = Path(str(source) + ".meta")
+    if damage == "missing":
+        sidecar.unlink()
+    elif damage == "invalid_json":
+        sidecar.write_text("{ broken metadata", encoding="utf-8")
+    else:
+        document = json.loads(sidecar.read_text(encoding="utf-8"))
+        if damage == "wrong_guid":
+            document["metadata"]["guid"]["value"] = "f" * 32
+        else:
+            document["metadata"]["broken"] = {"type": "unknown", "value": 1}
+        sidecar.write_text(json.dumps(document), encoding="utf-8")
+    result = database.reimport_asset(str(source))
+    assert result, result.error
+    assert result.guid == first.guid
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["metadata"]["guid"]["value"] == first.guid
+    assert source.read_text(encoding="utf-8") == "source remains unchanged"
+
+
+def test_first_import_can_rebuild_unreadable_metadata(engine, tmp_path):
+    source = tmp_path / "new-meta-repair.txt"
+    source.write_text("current source", encoding="utf-8")
+    sidecar = Path(str(source) + ".meta")
+    sidecar.write_text("{ broken metadata", encoding="utf-8")
+    result = engine.get_asset_database().import_asset(str(source))
+    assert result, result.error
+    assert len(result.guid) == 32
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["metadata"]["guid"]["value"] == result.guid
+    assert source.read_text(encoding="utf-8") == "current source"
+
+
 @pytest.mark.parametrize("suffix,damaged", [
     (".mat", b"{ damaged document"), (".scene", b"{ damaged document"),
     (".ppm", b"P3\ninvalid image"), (".mat", b"\x89PNG\r\n\x1a\n\xff\x00\x80"),
@@ -116,8 +154,6 @@ def test_new_invalid_assets_remain_visible_as_failed_catalog_entries(engine, tmp
 
 
 def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_path: Path):
-    from infernux.lib import AssetLoadSuperseded
-
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
     source = tmp_path / "editable.obj"
@@ -128,6 +164,7 @@ def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_pat
         _enable_mesh_read_write(database, source)
         pending = registry.begin_load_mesh_by_guid(guid)
         mesh = registry.load_mesh_by_guid(guid)
+        assert pending.committed  # The cold consumer shares and accepts this ticket.
         original = mesh._particle_sampling_data()
         version = registry.get_asset_residency(guid).runtime_version
         positions = original["positions"][1:2].copy()
@@ -147,8 +184,8 @@ def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_pat
             engine.tick(.016)
             time.sleep(0.001)
         assert pending.complete
-        with pytest.raises(AssetLoadSuperseded):
-            registry.try_commit_asset_load(pending)
+        assert registry.try_commit_asset_load(pending)
+        np.testing.assert_array_equal(mesh._particle_sampling_data()["positions"], expected)
         registry.update_mesh_positions(guid, mesh.vertex_count, np.empty((0, 3), np.float32))
         for first, values, message in (
             (mesh.vertex_count, np.zeros((1, 3), np.float32), "exceeds"),
@@ -595,7 +632,7 @@ class SparksGraph(ParticleScript):
         ParticleArtifactRegistry.clear()
 
 
-def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engine, tmp_path: Path):
+def test_particle_graph_reimport_retires_failed_current_artifact_and_recovers(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "StableSmoke.particlegraph"
     valid = ParticleGraphAsset(stable_id="stable-smoke")
@@ -617,8 +654,16 @@ def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engin
         assert not result
         assert result.database_committed is True
         assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
-        assert "keeping last-known-good" in result.error
-        assert ParticleArtifactRegistry.get(str(source), guid=imported.guid) == published
+        assert "particle compile failed" in result.error
+        assert ParticleArtifactRegistry.get(str(source), guid=imported.guid) is None
+        assert ParticleArtifactRegistry.error(str(source), guid=imported.guid)
+        assert asset_db.get_import_error(imported.guid) == result.error
+        source.write_text(json.dumps(valid.to_dict()), encoding="utf-8")
+        repaired = AssetManager.reimport_asset(str(source), database=asset_db)
+        assert repaired, repaired.error
+        assert ParticleArtifactRegistry.get(str(source), guid=imported.guid) is not None
+        assert not ParticleArtifactRegistry.error(str(source), guid=imported.guid)
+        assert not asset_db.get_import_error(imported.guid)
     finally:
         if asset_db.contains_path(str(source)):
             asset_db.delete_asset(str(source))
@@ -1575,7 +1620,7 @@ def test_asset_database_restarts_async_scan_after_owner_mutation(engine):
         asset_db.refresh()
 
 
-def test_refresh_rejects_invalid_metadata_without_rewriting_it(engine):
+def test_refresh_repairs_invalid_metadata_and_keeps_source_identity(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "prepare-rollback-fixture"
     fixture.mkdir(parents=True, exist_ok=True)
@@ -1586,15 +1631,14 @@ def test_refresh_rejects_invalid_metadata_without_rewriting_it(engine):
         asset_db.refresh()
         guid = asset_db.get_guid_from_path(str(source))
         meta_path = Path(f"{source}.meta")
-        current_metadata = meta_path.read_text(encoding="utf-8")
         invalid_metadata = "{ broken metadata"
         meta_path.write_text(invalid_metadata, encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="parse error"):
-            asset_db.refresh()
+        asset_db.refresh()
         assert asset_db.get_guid_from_path(str(source)) == guid
-        assert meta_path.read_text(encoding="utf-8") == invalid_metadata
-        meta_path.write_text(current_metadata, encoding="utf-8")
+        repaired = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert repaired["metadata"]["guid"]["value"] == guid
+        assert source.read_text(encoding="utf-8") == "stable"
     finally:
         if asset_db.refresh_pending:
             deadline = time.monotonic() + 10.0

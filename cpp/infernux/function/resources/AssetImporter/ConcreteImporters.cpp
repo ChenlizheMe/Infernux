@@ -13,6 +13,7 @@
 #include <function/resources/InxTexture/TextureArtifact.h>
 #include <function/resources/InxTexture/TextureDecoder.h>
 #include <function/resources/RenderTexture/RenderTextureArtifact.h>
+#include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <function/scene/SerializedResourceReferences.h>
 #include <platform/filesystem/AssetDocument.h>
 #include <platform/filesystem/InxPath.h>
@@ -346,6 +347,13 @@ ImportArtifact RenderTextureImporter::Import(const ImportRequest &request) const
         {ImportArtifact::RuntimeArtifactKind::Primary, ResourceType::RenderTexture,
          RenderTextureArtifact::Encode(description, request.metadata.GetDataAs<std::string>("content_hash"))});
     return result;
+}
+
+ImportArtifact PhysicMaterialImporter::Import(const ImportRequest &request) const
+{
+    PhysicMaterial material;
+    material.DeserializeDocument(ReadAssetDocument(request.sourcePath));
+    return ImportArtifact(request.metadata);
 }
 
 ImportArtifact TextureImporter::Import(const ImportRequest &request) const

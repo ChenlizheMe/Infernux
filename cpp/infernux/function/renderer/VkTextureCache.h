@@ -66,7 +66,7 @@ class VkTextureCache
     void AdvanceFrame(uint64_t frame);
 
     /// Mark every resident variant of an asset as awaiting a newer runtime
-    /// revision while preserving its last-known-good publication.
+    /// revision. Existing frame leases remain valid until their work retires.
     [[nodiscard]] size_t RequestAssetRevision(const std::string &assetGuid, uint64_t runtimeVersion);
 
     /// Remove all cache entries whose key starts with @p prefix (thread-safe).

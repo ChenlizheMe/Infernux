@@ -783,8 +783,10 @@ class RuntimeExecutionScheduler:
                     break
                 # The cursor names both the receiver and its coroutine tail.
                 # Pause after a callback resumes that tail, never the callback.
+                reload_owner = getattr(component, '_reload_owner', None)
                 if component._is_destroyed or not component._runtime_active_in_hierarchy or (
-                        editor_only and not component._execute_in_edit_mode):
+                        editor_only and not component._execute_in_edit_mode) or (
+                        reload_owner is not None and not reload_owner.active):
                     counters["phase_skips"] += 1
                     cursor[0] += 1
                     cursor[1] = 0
@@ -1242,11 +1244,14 @@ class ComponentLifecycleMixin:
     ) -> bool:
         """Call a lifecycle method from the selected published epoch.
 
-        Lifecycle entry points are not cached on the instance.  Resolving the
-        immutable descriptor creates only the short-lived bound method needed
-        for this call, so a body publication is visible to the next safe-point
-        callback without retaining the previous Python function.
+        Lifecycle entry points resolve through the current published type.
+        The source coordinator reconstructs types and instances at a safe point;
+        this lookup never retains a previous Python implementation.
         """
+        owner = self.__dict__.get('_reload_owner')
+        if (owner is not None and not owner.active
+                and method_name not in ("on_disable", "on_destroy", "on_before_serialize")):
+            return False
         try:
             if epoch is None:
                 from infernux.engine.runtime_dispatch import current_runtime_epoch
@@ -1262,6 +1267,9 @@ class ComponentLifecycleMixin:
                 callback(*args)
             return True
         except Exception as exc:
+            if method_name in ("awake", "start", "on_enable"):
+                self._initialization_error = exc
+                self._disable_after_initialization_exception()
             try:
                 from infernux.debug import Debug
                 Debug.report_script_error(
@@ -1284,33 +1292,46 @@ class ComponentLifecycleMixin:
             import traceback
             traceback.print_exc()
 
-    def _disable_after_awake_exception(self):
-        """Unity disables a script component if its Awake throws."""
+    def _disable_after_initialization_exception(self):
+        """Close component admission immediately; retire its source at a safe point."""
+        self.__dict__.setdefault('_reload_enabled', self.enabled)
         self._enabled = False
 
         cpp_component = getattr(self, '_cpp_component', None)
-        if cpp_component is None:
-            return
-
+        if cpp_component is not None:
+            try:
+                cpp_component.enabled = False
+            except RuntimeError:
+                self._invalidate_native_binding()
         try:
-            cpp_component.enabled = False
-        except RuntimeError:
-            self._invalidate_native_binding()
+            self.stop_all_coroutines()
+        except Exception as cleanup_error:
+            from infernux.debug import Debug
+            Debug.log_exception(cleanup_error)
+        finally:
+            close_component_execution(self)
+        owner = self.__dict__.get('_reload_owner')
+        path = getattr(self, '_script_path', '')
+        if owner is not None and owner.coordinator is not None and path:
+            owner.coordinator.queue_initialization_failure(path, self._initialization_error)
 
     def _call_awake(self):
         """Internal: Trigger awake lifecycle."""
         if self._awake_called:
-            return
-        self._awake_called = True
+            return True
         if not self._safe_lifecycle_call("awake"):
-            self._disable_after_awake_exception()
+            return False
+        self._awake_called = True
+        return True
 
     def _call_start(self):
         """Internal: Trigger start lifecycle if not already called."""
         if self._has_started:
-            return
+            return True
+        if not self._safe_lifecycle_call("start"):
+            return False
         self._has_started = True
-        self._safe_lifecycle_call("start")
+        return True
 
     def _call_update(self, delta_time: float):
         """Internal: Trigger update lifecycle."""
@@ -1319,7 +1340,8 @@ class ComponentLifecycleMixin:
         # scene/handle lookup for every component and every frame.  The mirror
         # is updated by bind/enable/disable transitions, so this is sufficient
         # for direct Python callers as well.
-        if not self._enabled:
+        owner = self.__dict__.get('_reload_owner')
+        if not self._enabled or (owner is not None and not owner.active):
             return
         try:
             invokers = _runtime_phase_invokers(self)
@@ -1335,7 +1357,8 @@ class ComponentLifecycleMixin:
 
     def _call_fixed_update(self, fixed_delta_time: float):
         """Internal: Trigger fixed_update lifecycle."""
-        if not self._enabled:
+        owner = self.__dict__.get('_reload_owner')
+        if not self._enabled or (owner is not None and not owner.active):
             return
         try:
             invokers = _runtime_phase_invokers(self)
@@ -1348,7 +1371,8 @@ class ComponentLifecycleMixin:
 
     def _call_late_update(self, delta_time: float):
         """Internal: Trigger late_update lifecycle."""
-        if not self._enabled:
+        owner = self.__dict__.get('_reload_owner')
+        if not self._enabled or (owner is not None and not owner.active):
             return
         try:
             invokers = _runtime_phase_invokers(self)

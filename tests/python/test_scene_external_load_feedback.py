@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from uuid import uuid4
 from types import SimpleNamespace
 
@@ -19,11 +20,126 @@ from infernux.engine.scene_authoring import encode_scene_document
 from infernux.host import EditorAutomationHost, OperationError
 
 
+def test_scene_completion_failure_retains_authored_world_and_dirty_documents(engine, scene, tmp_path, monkeypatch):
+    from infernux.lib import SceneManager
+    from infernux.engine.project_context import using_project_root
+
+    database = engine.get_asset_database()
+    root = Path(database.assets_root) / tmp_path.name
+    root.mkdir(parents=True)
+    source = root / "Candidate.scene"
+    owner = scene.create_game_object("Unsaved local owner")
+    original = scene.serialize_document()
+    disk = encode_scene_document(original)
+    disk["objects"][0]["name"] = "New disk owner"
+    source.write_text(json.dumps(disk), encoding="utf-8")
+    before_source = source.read_bytes()
+    imported = database.import_asset(str(source))
+    assert imported, imported.error
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    manager = SceneFileManager()
+    manager.set_engine(engine)
+    manager.set_asset_database(database)
+    monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: pytest.fail("failed completion persisted navigation"))
+    monkeypatch.setattr(manager, "_restore_camera_state", lambda _path: None)
+    documents = DocumentRegistry.instance()
+    document = documents.require(manager.document_id)
+    documents.mark_changed(document.document_id)
+    revision = document.revision
+    previous_path = manager.current_scene_path
+    extra = SceneManager.instance().create_scene("Unsaved additive world")
+    extra.create_game_object("Additive local owner")
+    manager.register_loaded_scene(extra, "", dirty=True)
+    SceneManager.instance().set_active_scene(scene)
+    count_before = SceneManager.instance().scene_count
+
+    def invalid_prefab(_scene):
+        raise ValueError("prefab dependency failed during scene completion")
+
+    monkeypatch.setattr(manager, "sync_all_prefab_instances", invalid_prefab)
+    try:
+        with using_project_root(database.project_root):
+            assert not manager._do_open_scene(str(source), record_navigation=False)
+        assert manager.last_scene_load["status"] == "failed"
+        assert "prefab dependency failed" in manager.last_scene_load["error"]
+        assert manager.document_id == document.document_id
+        assert manager.current_scene_path == previous_path
+        assert documents.require(document.document_id).revision == revision
+        assert document.is_dirty
+        assert scene.serialize_document() == original
+        assert scene.find("Unsaved local owner") is owner
+        assert extra.find("Additive local owner") is not None
+        assert SceneManager.instance().scene_count == count_before
+        assert source.read_bytes() == before_source
+        # Fixing the dependency and reimporting the same source can complete the open.
+        monkeypatch.setattr(manager, "sync_all_prefab_instances", lambda _scene: None)
+        monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: None)
+        assert database.reimport_asset(str(source))
+        with using_project_root(database.project_root):
+            assert manager._do_open_scene(str(source), record_navigation=False)
+        assert manager.last_scene_load["status"] == "loaded"
+        assert scene.find("New disk owner") is not None
+        assert source.read_bytes() == before_source
+    finally:
+        database.delete_asset(str(source))
+        source.unlink(missing_ok=True)
+        root.rmdir()
+
+
+def test_clean_external_scene_reloads_automatically_and_dirty_scene_keeps_draft(engine, scene, tmp_path, monkeypatch):
+    from pathlib import Path
+    from infernux.engine.project_context import using_project_root
+
+    database = engine.get_asset_database()
+    root = Path(database.assets_root) / tmp_path.name
+    root.mkdir(parents=True)
+    source = root / "External.scene"
+    scene.create_game_object("Initial disk owner")
+    disk = encode_scene_document(scene.serialize_document())
+    source.write_text(json.dumps(disk), encoding="utf-8")
+    imported = database.import_asset(str(source))
+    assert imported, imported.error
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
+    manager = SceneFileManager()
+    manager.set_engine(engine)
+    manager.set_asset_database(database)
+    monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: None)
+    monkeypatch.setattr(manager, "_restore_camera_state", lambda _path: None)
+    registry = DocumentRegistry.instance()
+    try:
+        with using_project_root(database.project_root):
+            assert manager._do_open_scene(str(source), record_navigation=False)
+            document = registry.require(manager.document_id)
+            assert not document.is_dirty
+            disk["objects"][0]["name"] = "Automatically reloaded owner"
+            source.write_text(json.dumps(disk), encoding="utf-8")
+            assert registry.preflight_external_resource_change(str(source), guid=imported.guid)
+            assert database.reimport_asset(str(source))
+            registry.publish_external_resource_change(str(source), guid=imported.guid)
+            assert scene.find("Automatically reloaded owner") is not None
+            assert document.state is DocumentState.READY and not document.is_dirty
+            scene.create_game_object("Unsaved local edit")
+            registry.mark_changed(document.document_id)
+            before = scene.serialize_document()
+            disk["objects"][0]["name"] = "Conflicting disk owner"
+            source.write_text(json.dumps(disk), encoding="utf-8")
+            assert registry.preflight_external_resource_change(str(source), guid=imported.guid) is False
+            assert document.state is DocumentState.CONFLICT and document.is_dirty
+            assert scene.serialize_document() == before
+            assert scene.find("Unsaved local edit") is not None
+    finally:
+        database.delete_asset(str(source))
+        source.unlink(missing_ok=True)
+        root.rmdir()
+
+
 @pytest.mark.parametrize("entry,field", [("startup", "__type_name__"), ("conflict", "__component_id__")])
 def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
+    engine,
     scene,
     tmp_path,
     monkeypatch,
+    request,
     field,
     entry,
 ):
@@ -42,9 +158,14 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
     invalid["objects"][0]["components"].append(record)
     path = tmp_path / "TankBattle.scene"
     path.write_text(json.dumps(invalid), encoding="utf-8")
+    database = engine.get_asset_database()
+    imported = database.import_asset(str(path))
+    assert imported, imported.error
+    request.addfinalizer(lambda: database.delete_asset(str(path)))
 
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
+    manager.set_asset_database(database)
     monkeypatch.setattr(manager, "_is_under_assets", lambda _path: True)
     monkeypatch.setattr(manager, "_is_play_mode", lambda: False)
     monkeypatch.setattr(manager, "_remember_last_scene", lambda _path: None)
@@ -58,10 +179,9 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
             scene_files,
             "_load_editor_settings",
             lambda: {
-                scene_files.LAST_OPENED_SCENE_GUID_KEY: "scene-guid",
+                scene_files.LAST_OPENED_SCENE_GUID_KEY: imported.guid,
             },
         )
-        manager._asset_database = SimpleNamespace(get_path_from_guid=lambda _guid: str(path))
         defaults = []
         monkeypatch.setattr(manager, "_do_new_scene", lambda: defaults.append(True))
         manager.load_last_scene_or_default()
@@ -75,16 +195,10 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
             time.sleep(0.001)
         assert not manager.is_loading
     else:
-        manager.set_asset_database(
-            SimpleNamespace(
-                get_guid_from_path=lambda candidate: "scene-guid" if str(candidate) == str(path.resolve()) else "",
-                get_path_from_guid=lambda guid: str(path.resolve()) if guid == "scene-guid" else "",
-            )
-        )
         manager._current_scene_path = str(path.resolve())
         registry.rekey(
             document.document_id,
-            DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
+            DocumentKey.asset(DocumentKind.SCENE, imported.guid),
             resource_path=str(path.resolve()),
         )
         registry.update_metadata(document.document_id, resource_path=str(path.resolve()))

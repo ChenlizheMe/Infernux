@@ -1,4 +1,4 @@
-"""Rejected pipeline generations retain their graph without becoming a retry loop."""
+"""Rejected current pipelines stop submitting and wait for a real change."""
 from datetime import datetime
 import inspect
 
@@ -73,17 +73,17 @@ def publication(monkeypatch):
         DebugConsole._instance = previous_console
 
 
-def retain_graph(stack, samples=0):
+def seed_current_graph(stack, samples=0):
     stack._select_graph_state(samples)
     state = stack._graph_state
-    state.last_valid_description = description("previous", 1)
+    state.description = description("previous", 1)
     state.artifact_generation = 9
     return state
 
 
 def test_rejected_effect_generation_waits_for_an_actual_change(publication, monkeypatch):
     stack, generation, console, panel = publication
-    state = retain_graph(stack)
+    state = seed_current_graph(stack)
     calls = []
 
     def rejected(**kwargs):
@@ -95,7 +95,8 @@ def test_rejected_effect_generation_waits_for_an_actual_change(publication, monk
     for _ in range(6):
         stack.render(context, object())
     assert len(calls) == 1
-    assert state.description is state.last_valid_description
+    assert state.description is None
+    assert context.applied == [] and context.submitted == 0
     assert "route_probe" in " ".join(stack.effect_compile_errors)
     assert panel.get_error_count() == 1
 
@@ -120,15 +121,14 @@ def test_initial_rejection_recovers_when_the_effect_generation_changes(publicati
 
     monkeypatch.setattr(stack, "build_graph", build)
     context = PublicationContext()
-    with pytest.raises(RuntimeError, match="could not build"):
-        stack.render(context, object())
+    stack.render(context, object())
     stack.render(context, object())
     assert len(calls) == 1
-    assert stack._graph_state.last_valid_description is None
+    assert stack._graph_state.description is None
     generation[0] += 1
     stack.render(context, object())
     assert len(calls) == 2
-    assert stack._graph_state.last_valid_description is candidate
+    assert stack._graph_state.description is candidate
     assert stack.effect_compile_errors == ()
 
 
@@ -136,9 +136,9 @@ def test_runtime_failure_is_deduplicated_and_clears_after_all_views_publish(publ
     stack, generation, console, panel = publication
     source = inspect.getsourcefile(type(stack.pipeline))
     console.log(LogEntry("authored runtime error", LogType.ERROR, datetime.now(), source_file=source))
-    valid_probe = stack._build_full_topology_probe()
-    retain_graph(stack, 0)
-    retain_graph(stack, 4)
+    stack._build_full_topology_probe()
+    seed_current_graph(stack, 0)
+    seed_current_graph(stack, 4)
 
     def rejected(**kwargs):
         raise ValueError("duplicate stage declaration")
@@ -146,7 +146,8 @@ def test_runtime_failure_is_deduplicated_and_clears_after_all_views_publish(publ
     monkeypatch.setattr(stack, "build_graph", rejected)
     monkeypatch.setattr(stack.pipeline, "define_topology", lambda graph: (_ for _ in ()).throw(ValueError("duplicate stage declaration")))
     stack.invalidate_graph()
-    assert stack._build_full_topology_probe() is valid_probe
+    with pytest.raises(ValueError, match="duplicate stage declaration"):
+        stack._build_full_topology_probe()
     for samples in (0, 4):
         stack.render(PublicationContext(samples), object())
     diagnostics = [entry for entry in console.get_entries() if "duplicate stage declaration" in entry.message]
@@ -179,8 +180,7 @@ def test_runtime_failure_is_deduplicated_and_clears_after_all_views_publish(publ
 
 def test_valid_probe_does_not_hide_native_publication_rejection(publication, monkeypatch):
     stack, generation, console, panel = publication
-    state = retain_graph(stack)
-    previous = state.last_valid_description
+    state = seed_current_graph(stack)
     candidate = description("candidate", 2)
     builds = []
 
@@ -193,8 +193,7 @@ def test_valid_probe_does_not_hide_native_publication_rejection(publication, mon
     context = PublicationContext()
     context.reject = candidate
     stack.render(context, object())
-    assert state.description is candidate
-    assert state.last_valid_description is previous
+    assert state.description is None
     assert context.submitted == 0
     stack._build_full_topology_probe()
     assert "native graph rejected" in " ".join(stack.effect_compile_errors)
@@ -202,11 +201,11 @@ def test_valid_probe_does_not_hide_native_publication_rejection(publication, mon
     for _ in range(3):
         stack.render(context, object())
     assert len(builds) == 1
-    assert all(graph is candidate for graph in context.applied)
+    assert context.applied == [candidate]
     assert context.submitted == 0
     context.reject = None
     stack.invalidate_graph()
     stack.render(context, object())
-    assert state.last_valid_description is candidate
+    assert state.description is candidate
     assert stack.effect_compile_errors == ()
     assert panel.get_error_count() == 0

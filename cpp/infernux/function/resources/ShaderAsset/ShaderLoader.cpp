@@ -29,26 +29,18 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     // hot reload. Publication into AssetRegistry still occurs on the owner
     // thread through AssetLoadTicket.
     const InxShaderLoader::CompilationGuard compileGuard;
-    if (filePath.empty() || guid.empty()) {
-        INXLOG_WARN("ShaderLoader: empty filePath or guid");
-        return nullptr;
-    }
+    if (filePath.empty() || guid.empty())
+        throw std::invalid_argument("ShaderLoader requires a file path and GUID");
 
-    if (!adb) {
-        INXLOG_ERROR("ShaderLoader: no AssetDatabase");
-        return nullptr;
-    }
+    if (!adb)
+        throw std::invalid_argument("ShaderLoader requires an AssetDatabase");
 
     // Read shader source
     std::vector<char> content;
-    if (!adb->ReadFile(filePath, content)) {
-        INXLOG_ERROR("ShaderLoader: failed to read '", filePath, "'");
-        return nullptr;
-    }
-    if (content.empty()) {
-        INXLOG_ERROR("ShaderLoader: empty file '", filePath, "'");
-        return nullptr;
-    }
+    if (!adb->ReadFile(filePath, content))
+        throw std::runtime_error("Shader source could not be read: " + filePath);
+    if (content.empty())
+        throw std::runtime_error("Shader source is empty: " + filePath);
 
     // Runtime shader metadata remains authoritative; the source extension is
     // a fallback for loose Editor files and packed Player GLSL alike.
@@ -75,8 +67,7 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     }
 
     if (shaderType != "vertex" && shaderType != "fragment") {
-        INXLOG_ERROR("ShaderLoader: shader stage metadata is invalid for '", filePath, "'");
-        return nullptr;
+        throw std::runtime_error("Shader stage metadata is invalid: " + filePath);
     }
 
     // Ensure null-terminated for the GLSL compiler.
@@ -104,9 +95,8 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
 
     auto compiledPtr = compiler.Compile(content.data(), content.size(), loadMeta);
     if (!compiledPtr || compiledPtr->empty()) {
-        if (!InxShaderLoader::AreSourceDiagnosticsCaptured())
-            INXLOG_ERROR("ShaderLoader: compilation failed for '", filePath, "'");
-        return nullptr;
+        throw std::runtime_error("Shader compilation failed for '" + filePath + "': " +
+                                 InxShaderLoader::s_lastCompileError);
     }
 
     // Build ShaderAsset
@@ -116,8 +106,7 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     asset->filePath = filePath;
     asset->descriptor = compiler.ParseShaderSource(std::string(content.data(), content.size() - 1), compilePath);
     if (!asset->SetVariant(ShaderCompileTarget::Forward, std::move(*compiledPtr))) {
-        INXLOG_ERROR("ShaderLoader: compiler returned invalid Forward SPIR-V for '", filePath, "'");
-        return nullptr;
+        throw std::runtime_error("Shader compiler returned invalid Forward SPIR-V: " + filePath);
     }
 
     // Extract variant SPIR-V from InxShaderLoader's static caches

@@ -64,7 +64,6 @@ if TYPE_CHECKING:
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
 _DEFAULT_DEBOUNCE_SEC: float = 0.35  # seconds
-_RUNTIME_VOLUME_TEXTURE_EXTENSIONS = frozenset({".inxvfield", ".inxsdf"})
 
 
 @dataclass(slots=True)
@@ -370,6 +369,9 @@ class AssetManager:
         Returns:
             The loaded asset wrapper, or None.
         """
+        if cls._current_asset_error(guid):
+            cls.invalidate(guid)
+            return None
         # Check cache
         cached = cls._get_cached(guid)
         if cached is not None:
@@ -395,12 +397,16 @@ class AssetManager:
 
         resolved_type = asset_type or (AnimationClip3D if "::subanim:" in path else cls._type_from_extension(ext))
 
-        if resolved_type is Texture:
-            asset = Texture._load_asset(guid)
-        elif resolved_type is AnimationClip3D and "::subanim:" in path:
-            asset = AnimationClip3D._load_imported_guid(guid, path, cls.require_asset_database())
-        else:
-            asset = cls._load_by_type(path, resolved_type)
+        try:
+            if resolved_type is Texture:
+                asset = Texture._load_asset(guid)
+            elif resolved_type is AnimationClip3D and "::subanim:" in path:
+                asset = AnimationClip3D._load_imported_guid(guid, path, cls.require_asset_database())
+            else:
+                asset = cls._load_by_type(path, resolved_type)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            cls._reject_current_asset(path, guid, f"Runtime load failed: {exc}", runtime=True)
+            return None
         if asset is not None:
             if hasattr(asset, "_guid"):
                 try:
@@ -780,7 +786,7 @@ class AssetManager:
         *,
         catalog_event: str | None,
     ) -> None:
-        """Feed successful internal Python mutations into the shared collector.
+        """Feed successful internal Python mutations into the reload coordinator.
 
         Asset mutations suppress their matching watchdog echo, so ordinary
         Python files need an explicit ingress here.  ParticleScript source is
@@ -791,40 +797,11 @@ class AssetManager:
             return
         # A lost script-change event silently breaks component/script refresh;
         # failures here must surface instead of being suppressed.
-        from infernux.engine.interaction import current_action_origin
         from infernux.engine.resources_manager import ResourcesManager
 
-        action_origin = current_action_origin()
-        origin_value = getattr(action_origin, "value", str(action_origin))
-        collector_origin = {
-            "automation": "automation",
-            "external": "watchdog",
-        }.get(origin_value, "editor")
         manager = ResourcesManager.instance()
         if manager is not None:
-            from infernux.engine.project_context import package_script_role
-
-            project_root = (
-                manager.project_path
-                if isinstance(manager, ResourcesManager)
-                else None
-            )
-            if project_root and package_script_role(path, project_root) == "editor":
-                # Editor package code belongs to the package preload lifetime.
-                # Sending it through the gameplay component frontend rejects
-                # legitimate lifecycle declarations (threads, sockets, and
-                # process-owned services) before the package manager can
-                # publish the new generation.
-                manager.notify_script_catalog_changed(
-                    path, catalog_event or "modified"
-                )
-                return
-            manager.submit_script_change(
-                path,
-                origin=collector_origin,
-                catalog_event=catalog_event,
-                change_kind=catalog_event or "modified",
-            )
+            manager.submit_script_change(path)
 
     @classmethod
     def import_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True, write_scope=None):
@@ -835,14 +812,20 @@ class AssetManager:
         cls._suppress_meta_watcher(path)
         result = asset_database.import_asset(path, write_scope=write_scope or PathWriteScope())
         if not result:
+            cls._reject_current_asset(path, result.guid, result.error, database=asset_database)
             if not result.database_committed:
                 cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
-        return cls._publish_import_result(
+        published = cls._publish_import_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
             write_scope=write_scope,
         )
+        if published:
+            from infernux.engine.ui.asset_load_errors import clear_asset_load_error
+
+            clear_asset_load_error(path)
+        return published
 
     @classmethod
     def _publish_import_result(cls, path, result, *, database, suppress_watcher_echo, write_scope=None):
@@ -854,7 +837,7 @@ class AssetManager:
             result.error = dependency_error
             return result
 
-        effect_error = cls._compile_render_effect_runtime(path, result.guid)
+        effect_error = cls._compile_render_effect_runtime(path, result.guid, database=database)
         if effect_error:
             from infernux.lib import AssetMutationErrorCode
 
@@ -913,15 +896,21 @@ class AssetManager:
                   else asset_database.reimport_asset(path, settings=import_settings))
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
+            cls._reject_current_asset(path, result.guid or guid, result.error, database=asset_database)
             return result
 
         if "::subtex:" in path:
             path = result.path
             cls._suppress_meta_watcher(path)
-        return cls._publish_reimport_result(
+        published = cls._publish_reimport_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
             model_baseline=model_baseline, source_unchanged=import_settings is not None, **runtime,
         )
+        if published:
+            from infernux.engine.ui.asset_load_errors import clear_asset_load_error
+
+            clear_asset_load_error(path)
+        return published
 
     @classmethod
     def _reimport_shader_runtime(cls, path, metadata):
@@ -944,21 +933,16 @@ class AssetManager:
         is_mesh = result.resource_type == ResourceType.Mesh
         is_ordinary_script = ext == ".py" and not str(path).lower().endswith(".particle.py")
         if is_ordinary_script:
-            # Ordinary scripts have their own validated collector and atomic
-            # class-publication transaction. Broadcasting the same edit to
-            # every generic asset/preview listener first made source saves pay
-            # for two independent invalidation graphs on the main thread.
-            # Their exact bytes and SHA-256 revision are already captured by
-            # ScriptChangeCollector; the asset revision ledger exists for
-            # persisted document/preview products and would hash the same
-            # Python source a second time.
+            # The reload coordinator owns the exact source and execution
+            # publication. Do not dispatch the same save through a second
+            # generic asset/preview invalidation graph.
             cls.invalidate(guid)
             if suppress_watcher_echo:
                 cls._suppress_watcher_echo("modified", path)
                 cls._submit_internal_script_change(path, catalog_event="modified")
             return result
 
-        effect_error = cls._compile_render_effect_runtime(path, guid)
+        effect_error = cls._compile_render_effect_runtime(path, guid, database=database)
         if effect_error:
             from infernux.lib import AssetMutationErrorCode
 
@@ -987,28 +971,8 @@ class AssetManager:
                 result.succeeded = False
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
                 result.error = error
+                cls._reject_current_asset(path, guid, error, database=database, runtime=True)
                 return result
-        elif ext == ".py" and not str(path).lower().endswith(".particle.py"):
-            # Ordinary project scripts are published by the unified script
-            # collector below.  AssetManager owns the catalog/cache mutation,
-            # but must never execute a script or reload the registry before
-            # the collector has produced a validated revision.
-            pass
-        elif not is_mesh and (
-            ext not in IMAGE_EXTENSIONS or ext in _RUNTIME_VOLUME_TEXTURE_EXTENSIONS
-        ) and not cls._is_compiled_authoring_source(path):
-            # Textures have one authoritative runtime publication path below:
-            # native reload_texture(). Runtime vector fields/SDFs are the
-            # exception: their immutable volume generation is owned by the
-            # loaded registry object and must advance in place on reimport.
-            registry = cls._get_registry()
-            if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
-                from infernux.lib import AssetMutationErrorCode
-                result.succeeded = False
-                result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
-                result.error = "loaded asset registry rejected reload"
-                return result
-
         if ext == ".prefab" and suppress_watcher_echo:
             from infernux.engine.prefab_manager import _published_prefab_sources_for
             from infernux.engine.scene_manager import SceneFileManager
@@ -1077,7 +1041,25 @@ class AssetManager:
                 cls._shader_diagnostic_roots[owner] = (source, remaining)
 
     @classmethod
-    def _compile_render_effect_runtime(cls, path: str, guid: str) -> str:
+    def _reject_current_asset(cls, path: str, guid: str, error: str, *, database=None, runtime=False) -> None:
+        """Retire consumers of a failed current source without changing authored files."""
+        if guid:
+            cls.invalidate(guid)
+            active_database = database if database is not None else cls._asset_database
+            if active_database is not None:
+                report = (active_database.report_runtime_load_failure if runtime
+                          else active_database.report_asset_load_failure)
+                report(guid, error)
+        cls._invalidate_font_ui_cache(path)
+        from infernux.engine.ui.asset_resource_preview import invalidate_resource_preview
+
+        invalidate_resource_preview(path)
+        from infernux.engine.ui.asset_load_errors import report_asset_load_error
+
+        report_asset_load_error(path, error)
+
+    @classmethod
+    def _compile_render_effect_runtime(cls, path: str, guid: str, *, database=None) -> str:
         """Compile and publish an effect artifact before notifying live users."""
         if os.path.splitext(path)[1].lower() not in RENDER_EFFECT_EXTENSIONS:
             return ""
@@ -1103,7 +1085,9 @@ class AssetManager:
             cls._publish_compile_diagnostic(path)
             return ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            error = f"render effect compile failed; keeping last-known-good: {exc}"
+            error = f"render effect compile failed: {exc}"
+            RenderEffectArtifactRegistry.invalidate(path, guid=guid, error=error)
+            cls._reject_current_asset(path, guid, error, database=database, runtime=True)
             cls._publish_compile_diagnostic(path, error)
             return error
 
@@ -1147,7 +1131,8 @@ class AssetManager:
             cls._publish_compile_diagnostic(path)
             return ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            error = f"particle compile failed; keeping last-known-good: {exc}"
+            error = f"particle compile failed: {exc}"
+            cls._reject_current_asset(path, guid, error, database=database, runtime=True)
             cls._publish_compile_diagnostic(path, error)
             return error
 
@@ -2169,7 +2154,16 @@ class AssetManager:
         return path if path else None
 
     @classmethod
+    def _current_asset_error(cls, guid: str) -> str:
+        database = cls._asset_database
+        read_error = getattr(database, "get_import_error", None)
+        return str(read_error(guid) or "") if callable(read_error) else ""
+
+    @classmethod
     def _get_cached(cls, guid: str) -> Optional[Any]:
+        if cls._current_asset_error(guid):
+            cls.invalidate(guid)
+            return None
         play_cache = cls._play_data_asset_cache
         if play_cache is not None:
             isolated = play_cache.get(guid)
@@ -2333,7 +2327,8 @@ class AssetManager:
                         guid=guid,
                     )
                 return None
-            except (OSError, RuntimeError, TypeError, ValueError):
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                cls._reject_current_asset(path, cls._get_guid_from_path(path) or "", f"Effect load failed: {exc}", runtime=True)
                 return None
         from infernux.particle.asset import ParticleGraphAsset
         if asset_type is ParticleGraphAsset or (
@@ -2346,7 +2341,8 @@ class AssetManager:
                 ParticleArtifactRegistry.compile_path(path, guid=guid)
                 cls._publish_compile_diagnostic(path)
                 return ParticleGraphAsset.load(path)
-            except (OSError, RuntimeError, TypeError, ValueError):
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                cls._reject_current_asset(path, cls._get_guid_from_path(path) or "", f"Particle load failed: {exc}", runtime=True)
                 return None
         from infernux.core.data_asset import DataAsset
         if asset_type is DataAsset or (

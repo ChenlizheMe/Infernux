@@ -306,12 +306,15 @@ def test_texture_cpu_artifact_prepares_on_worker_and_validates_cache(engine):
         registry.invalidate_asset(guid)
         source.write_bytes(source_bytes)
         artifact.write_bytes(b"corrupt texture artifact")
-        rejected = registry.begin_load_texture_by_guid(guid)
+        repaired = registry.begin_load_texture_by_guid(guid)
         deadline = time.monotonic() + 10.0
-        with pytest.raises((RuntimeError, ValueError), match="texture artifact"):
-            while time.monotonic() < deadline and not registry.try_commit_asset_load(rejected):
-                engine.tick(.016)
-                time.sleep(0.001)
+        while time.monotonic() < deadline and not registry.try_commit_asset_load(repaired):
+            engine.tick(.016)
+            time.sleep(0.001)
+        assert repaired.committed and repaired.produced_on_worker
+        assert registry.get_texture_asset(guid).pixel_width == 4
+        assert artifact.read_bytes().startswith(b"INXTEX")
+        assert source.read_bytes() == source_bytes
     finally:
         registry.invalidate_asset(guid)
         if asset_database.contains_path(str(source)):

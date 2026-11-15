@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #pragma once
 
 #include <function/editor/EditorPanel.h>
@@ -216,7 +217,7 @@ class InspectorPanel : public EditorPanel
     std::unordered_set<uint64_t> m_selectedComponentIds;
 
     // ── Splitter state ───────────────────────────────────────────────
-    float m_propertiesRatio = EditorTheme::INSPECTOR_DEFAULT_RATIO;
+    float m_propertiesRatio = EditorThemeRegistry::Float("INSPECTOR_DEFAULT_RATIO");
 
     // ── Tag/Layer cache ──────────────────────────────────────────────
     float m_tagLayerCacheTime = 0.0f;

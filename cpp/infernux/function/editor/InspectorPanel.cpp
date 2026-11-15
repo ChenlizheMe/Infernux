@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include <core/log/InxLog.h>
 #include <function/editor/InspectorPanel.h>
 #include <function/renderer/ProfileConfig.h>
@@ -346,19 +347,19 @@ void InspectorPanel::OnRenderContent(InxGUIContext *ctx)
         // Full-height file view (asset inspector or generic preview)
         RenderRawDataModule(ctx, 0.0f);
     } else if (hasDetailContent &&
-               totalHeight > (EditorTheme::INSPECTOR_MIN_PROPS_H + EditorTheme::INSPECTOR_MIN_RAWDATA_H +
-                              EditorTheme::INSPECTOR_SPLITTER_H) *
+               totalHeight > (EditorThemeRegistry::Float("INSPECTOR_MIN_PROPS_H") + EditorThemeRegistry::Float("INSPECTOR_MIN_RAWDATA_H") +
+                              EditorThemeRegistry::Float("INSPECTOR_SPLITTER_H")) *
                                  dpi) {
-        float usableHeight = totalHeight - EditorTheme::INSPECTOR_SPLITTER_H * dpi;
+        float usableHeight = totalHeight - EditorThemeRegistry::Float("INSPECTOR_SPLITTER_H") * dpi;
         float propsHeight = usableHeight * m_propertiesRatio;
         float rawDataHeight = usableHeight - propsHeight;
 
-        if (propsHeight < EditorTheme::INSPECTOR_MIN_PROPS_H * dpi) {
-            propsHeight = EditorTheme::INSPECTOR_MIN_PROPS_H * dpi;
+        if (propsHeight < EditorThemeRegistry::Float("INSPECTOR_MIN_PROPS_H") * dpi) {
+            propsHeight = EditorThemeRegistry::Float("INSPECTOR_MIN_PROPS_H") * dpi;
             rawDataHeight = usableHeight - propsHeight;
         }
-        if (rawDataHeight < EditorTheme::INSPECTOR_MIN_RAWDATA_H * dpi) {
-            rawDataHeight = EditorTheme::INSPECTOR_MIN_RAWDATA_H * dpi;
+        if (rawDataHeight < EditorThemeRegistry::Float("INSPECTOR_MIN_RAWDATA_H") * dpi) {
+            rawDataHeight = EditorThemeRegistry::Float("INSPECTOR_MIN_RAWDATA_H") * dpi;
             propsHeight = usableHeight - rawDataHeight;
         }
 
@@ -382,10 +383,10 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
                                               ImGuiWindowFlags_AlwaysVerticalScrollbar);
         auto childGuard = MakeInspectorScopeExit([] { ImGui::EndChild(); });
         if (childVisible) {
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(EditorTheme::INSPECTOR_FRAME_PAD.x * dpi,
-                                                                   EditorTheme::INSPECTOR_FRAME_PAD.y * dpi));
-            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(EditorTheme::INSPECTOR_ITEM_SPC.x * dpi,
-                                                                  EditorTheme::INSPECTOR_ITEM_SPC.y * dpi));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(EditorThemeRegistry::Vec2("INSPECTOR_FRAME_PAD").x * dpi,
+                                                                   EditorThemeRegistry::Vec2("INSPECTOR_FRAME_PAD").y * dpi));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(EditorThemeRegistry::Vec2("INSPECTOR_ITEM_SPC").x * dpi,
+                                                                  EditorThemeRegistry::Vec2("INSPECTOR_ITEM_SPC").y * dpi));
             auto styleGuard = MakeInspectorScopeExit([] { ImGui::PopStyleVar(2); });
 
             bool multi = isMultiSelection && isMultiSelection();
@@ -454,7 +455,7 @@ float InspectorPanel::RenderSplitter(InxGUIContext *ctx, float totalHeight)
     ImGui::Separator();
 
     float availWidth = ImGui::GetContentRegionAvail().x;
-    ImGui::InvisibleButton("##InspectorSplitter", ImVec2(availWidth, EditorTheme::INSPECTOR_SPLITTER_H * dpi));
+    ImGui::InvisibleButton("##InspectorSplitter", ImVec2(availWidth, EditorThemeRegistry::Float("INSPECTOR_SPLITTER_H") * dpi));
 
     bool hovered = ImGui::IsItemHovered();
     bool active = ImGui::IsItemActive();
@@ -465,12 +466,12 @@ float InspectorPanel::RenderSplitter(InxGUIContext *ctx, float totalHeight)
     if (active) {
         float deltaY = ImGui::GetMouseDragDelta(0).y;
         if (std::abs(deltaY) > 1.0f) {
-            float usableHeight = totalHeight - EditorTheme::INSPECTOR_SPLITTER_H * dpi;
+            float usableHeight = totalHeight - EditorThemeRegistry::Float("INSPECTOR_SPLITTER_H") * dpi;
             if (usableHeight > 0.0f) {
                 float newPropsHeight = m_propertiesRatio * usableHeight + deltaY;
                 float newRatio = newPropsHeight / usableHeight;
-                float minRatio = EditorTheme::INSPECTOR_MIN_PROPS_H * dpi / usableHeight;
-                float maxRatio = 1.0f - (EditorTheme::INSPECTOR_MIN_RAWDATA_H * dpi / usableHeight);
+                float minRatio = EditorThemeRegistry::Float("INSPECTOR_MIN_PROPS_H") * dpi / usableHeight;
+                float maxRatio = 1.0f - (EditorThemeRegistry::Float("INSPECTOR_MIN_RAWDATA_H") * dpi / usableHeight);
                 m_propertiesRatio = std::clamp(newRatio, minRatio, maxRatio);
             }
             ImGui::ResetMouseDragDelta(0);
@@ -550,9 +551,9 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
     ImGui::Dummy(ImVec2(0.0f, 3.0f * dpi));
     RenderTagLayerRow(ctx, objId, info);
 
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP * dpi));
+    ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_TITLE_GAP") * dpi));
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
+    ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_SECTION_GAP") * dpi));
 
     // ── Sub-timing: Transform ────────────────────────────────────────
 #if INFERNUX_FRAME_PROFILE
@@ -679,7 +680,7 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
             // Component body
             if (header.open) {
                 if (comp.isBroken && !comp.brokenError.empty()) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
+                    ImGui::PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("ERROR_TEXT"));
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());
                     ImGui::PopStyleColor();
                 } else if (renderComponentBody) {
@@ -701,9 +702,9 @@ void InspectorPanel::RenderSingleObject(InxGUIContext *ctx, uint64_t objId)
 
     // Add Component button + popup
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
+    ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_SECTION_GAP") * dpi));
     RenderAddComponentButton(ctx);
-    ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
+    ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_SECTION_GAP") * dpi));
     RenderAddComponentPopup(ctx);
 
 #if INFERNUX_FRAME_PROFILE
@@ -861,9 +862,9 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
     ImGui::Text("%d objects selected", n);
 
     if (!ids.empty()) {
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_TITLE_GAP * dpi));
+        ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_TITLE_GAP") * dpi));
         ImGui::Separator();
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
+        ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_SECTION_GAP") * dpi));
 
         // Transform header
         uint64_t transformIcon = getComponentIconId ? getComponentIconId("Transform", false) : 0;
@@ -952,7 +953,7 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
 
             if (!componentRemoved && componentHeader.open) {
                 if (comp.isBroken && !comp.brokenError.empty()) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::ERROR_TEXT);
+                    ImGui::PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("ERROR_TEXT"));
                     ImGui::TextWrapped("%s", comp.brokenError.c_str());
                     ImGui::PopStyleColor();
                 } else if (renderMultiComponentBody)
@@ -971,9 +972,9 @@ void InspectorPanel::RenderMultiEdit(InxGUIContext *ctx, const std::vector<uint6
 
         // Add Component
         ImGui::Separator();
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
+        ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_SECTION_GAP") * dpi));
         RenderAddComponentButton(ctx);
-        ImGui::Dummy(ImVec2(0, EditorTheme::INSPECTOR_SECTION_GAP * dpi));
+        ImGui::Dummy(ImVec2(0, EditorThemeRegistry::Float("INSPECTOR_SECTION_GAP") * dpi));
         RenderAddComponentPopup(ctx);
     }
 
@@ -1149,7 +1150,7 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hi
         m_cachedTransformValueRevision = m_frameRevisions.value;
     }
     TransformData td = m_cachedTransformData;
-    float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH * ctx->GetDpiScale();
+    float labelW = EditorThemeRegistry::Float("INSPECTOR_MIN_LABEL_WIDTH") * ctx->GetDpiScale();
 
     // Vector3Control modifies the array in-place
     float pos[3] = {td.px, td.py, td.pz};
@@ -1243,7 +1244,7 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
         mixed[axisIndex] = snapshot.mixed[axisIndex];
 
     const float dpi = ctx->GetDpiScale();
-    float labelW = EditorTheme::INSPECTOR_MIN_LABEL_WIDTH * dpi;
+    float labelW = EditorThemeRegistry::Float("INSPECTOR_MIN_LABEL_WIDTH") * dpi;
     float pos[3] = {first.px, first.py, first.pz};
     float rot[3] = {first.rx, first.ry, first.rz};
     float scl[3] = {first.sx, first.sy, first.sz};
@@ -1376,20 +1377,20 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
         captureSemantics ? "inspector.object." + std::to_string(objId) + ".prefab" : std::string{};
     ImGui::Dummy(ImVec2(0, 4.0f * dpi));
 
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, EditorTheme::PREFAB_HEADER_BG);
-    ImGui::BeginChild("##prefab_header_bar", ImVec2(0, EditorTheme::PREFAB_HEADER_H * dpi), ImGuiChildFlags_Borders);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, EditorThemeRegistry::Color("PREFAB_HEADER_BG"));
+    ImGui::BeginChild("##prefab_header_bar", ImVec2(0, EditorThemeRegistry::Float("PREFAB_HEADER_H") * dpi), ImGuiChildFlags_Borders);
 
-    ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT);
+    ImGui::PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("PREFAB_TEXT"));
     ImGui::TextUnformatted(Tr("inspector.prefab_label").c_str());
     if (captureSemantics)
         ctx->RecordSemanticItem("prefab_header", Tr("inspector.prefab_label"), true, semanticBase, std::nullopt,
                                 static_cast<double>(pinfo.overrideCount));
     ImGui::PopStyleColor();
 
-    float gap = EditorTheme::PREFAB_HEADER_BTN_GAP * dpi;
+    float gap = EditorThemeRegistry::Float("PREFAB_HEADER_BTN_GAP") * dpi;
 
     ImGui::SameLine(0, gap * 2);
-    EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
+    EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_IDLE"));
     const std::string selectLabel = Tr("inspector.prefab_select");
     if (ImGui::Button(selectLabel.c_str())) {
         ExecuteEditorCommand("prefab.select_asset", std::to_string(objId));
@@ -1399,7 +1400,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
     ImGui::PopStyleColor(3);
 
     ImGui::SameLine(0, gap);
-    EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
+    EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_IDLE"));
     const std::string openLabel = Tr("inspector.prefab_open");
     if (ImGui::Button(openLabel.c_str())) {
         ExecuteEditorCommand("prefab.open", std::to_string(objId));
@@ -1411,7 +1412,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
     ImGui::SameLine(0, gap * 3);
 
     if (pinfo.overrideCount > 0) {
-        ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::WARNING_TEXT);
+        ImGui::PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("WARNING_TEXT"));
         ImGui::Text("%d %s", pinfo.overrideCount, Tr("inspector.overrides").c_str());
         if (captureSemantics)
             ctx->RecordSemanticItem("prefab_override_count", Tr("inspector.overrides"), false,
@@ -1420,7 +1421,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
         ImGui::PopStyleColor();
 
         ImGui::SameLine(0, gap * 2);
-        EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_IDLE"));
         const std::string applyLabel = Tr("inspector.prefab_apply");
         if (ImGui::Button(applyLabel.c_str())) {
             ExecuteEditorCommand("prefab.apply", std::to_string(objId));
@@ -1430,7 +1431,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
         ImGui::PopStyleColor(3);
 
         ImGui::SameLine(0, gap);
-        EditorTheme::PushFlatButtonStyle(EditorTheme::INSPECTOR_INLINE_BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("INSPECTOR_INLINE_BTN_IDLE"));
         const std::string revertLabel = Tr("inspector.prefab_revert");
         if (ImGui::Button(revertLabel.c_str())) {
             ExecuteEditorCommand("prefab.revert", std::to_string(objId));
@@ -1439,7 +1440,7 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
             ctx->RecordSemanticItem("prefab_action", revertLabel, true, semanticBase + ".revert");
         ImGui::PopStyleColor(3);
     } else {
-        ImGui::PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DIM2);
+        ImGui::PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("TEXT_DIM2"));
         ImGui::TextUnformatted(Tr("inspector.no_overrides").c_str());
         if (captureSemantics)
             ctx->RecordSemanticItem("prefab_override_count", Tr("inspector.no_overrides"), false,
@@ -1511,17 +1512,17 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
 
     // Styling
     ImGui::PushStyleColor(ImGuiCol_Header,
-                          selected ? EditorTheme::INSPECTOR_HEADER_SELECTED : EditorTheme::INSPECTOR_HEADER_PRIMARY);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_HOVERED
-                                                           : EditorTheme::INSPECTOR_HEADER_PRIMARY_HOVERED);
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, selected ? EditorTheme::INSPECTOR_HEADER_SELECTED_ACTIVE
-                                                          : EditorTheme::INSPECTOR_HEADER_PRIMARY_ACTIVE);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.x * dpi,
-                                                           EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi,
-                                                          EditorTheme::INSPECTOR_HEADER_ITEM_SPC.y * dpi));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE * dpi);
-    ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
+                          selected ? EditorThemeRegistry::Color("INSPECTOR_HEADER_SELECTED") : EditorThemeRegistry::Color("INSPECTOR_HEADER_PRIMARY"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, selected ? EditorThemeRegistry::Color("INSPECTOR_HEADER_SELECTED_HOVERED")
+                                                           : EditorThemeRegistry::Color("INSPECTOR_HEADER_PRIMARY_HOVERED"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, selected ? EditorThemeRegistry::Color("INSPECTOR_HEADER_SELECTED_ACTIVE")
+                                                          : EditorThemeRegistry::Color("INSPECTOR_HEADER_PRIMARY_ACTIVE"));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").x * dpi,
+                                                           EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").x * dpi,
+                                                          EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorThemeRegistry::Float("INSPECTOR_HEADER_BORDER_SIZE") * dpi);
+    ImGui::SetWindowFontScale(EditorThemeRegistry::Float("INSPECTOR_HEADER_PRIMARY_FONT_SCALE"));
 
     // Full-width collapsing header
     if (defaultOpen)
@@ -1531,7 +1532,7 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     std::string headerKey = "##comp_" + headerId;
     {
         float clipMaxX = ImGui::GetWindowPos().x + ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x -
-                         EditorTheme::INSPECTOR_HEADER_RIGHT_MARGIN * dpi;
+                         EditorThemeRegistry::Float("INSPECTOR_HEADER_RIGHT_MARGIN") * dpi;
         ImGui::GetWindowDrawList()->PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(clipMaxX, 1e7f), true);
     }
     bool headerOpen = ImGui::CollapsingHeader(headerKey.c_str());
@@ -1635,12 +1636,12 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     // Overlay: icon + checkbox + label on the same row. The header rectangle
     // already contains ImGui's scrolling transform, so keep every overlay item
     // in that same screen-space coordinate system.
-    const float indent = EditorTheme::INSPECTOR_HEADER_CONTENT_INDENT * dpi;
+    const float indent = EditorThemeRegistry::Float("INSPECTOR_HEADER_CONTENT_INDENT") * dpi;
     const float overlayX = ImGui::GetWindowPos().x + indent;
     ImGui::SetCursorScreenPos(ImVec2(overlayX, headerMin.y));
 
-    const float iconSize = EditorTheme::COMPONENT_ICON_SIZE * dpi;
-    const float headerItemSpacing = EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi;
+    const float iconSize = EditorThemeRegistry::Float("COMPONENT_ICON_SIZE") * dpi;
+    const float headerItemSpacing = EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").x * dpi;
     // Reserve this slot even while the texture upload is pending. Header
     // geometry must not depend on asynchronous descriptor publication.
     ImGui::Dummy(ImVec2(iconSize, (std::max)(headerHeight, iconSize)));
@@ -1666,7 +1667,7 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
     bool enabledClicked = false;
     if (showEnabled) {
         const float checkboxRowHeight =
-            (std::max)(EditorTheme::INSPECTOR_CHECKBOX_BOX_PX * dpi, ImGui::GetTextLineHeight());
+            (std::max)(EditorThemeRegistry::Float("INSPECTOR_CHECKBOX_BOX_PX") * dpi, ImGui::GetTextLineHeight());
         ImGui::SetCursorScreenPos(ImVec2(controlsX, headerMin.y + (headerHeight - checkboxRowHeight) * 0.5f));
         ctx->CheckboxInspector("##hdr_en", &newEnabled);
         enabledClicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
@@ -1745,8 +1746,8 @@ void InspectorPanel::RenderAddComponentButton(InxGUIContext *ctx)
 {
     const float dpi = ctx->GetDpiScale();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(EditorTheme::ADD_COMP_FRAME_PAD.x * dpi, EditorTheme::ADD_COMP_FRAME_PAD.y * dpi));
-    ImGui::SetCursorPosX(EditorTheme::INSPECTOR_ACTION_ALIGN_X * dpi);
+                        ImVec2(EditorThemeRegistry::Vec2("ADD_COMP_FRAME_PAD").x * dpi, EditorThemeRegistry::Vec2("ADD_COMP_FRAME_PAD").y * dpi));
+    ImGui::SetCursorPosX(EditorThemeRegistry::Float("INSPECTOR_ACTION_ALIGN_X") * dpi);
     const std::string label = Tr("inspector.add_component");
     const bool clicked = ImGui::Button(label.c_str(), ImVec2(-1, 0));
     if (ctx && InxGUISemantics::IsCaptureEnabled())
@@ -1785,7 +1786,7 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
         // Search field
         if (m_addCompNeedsFocus)
             ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(std::max(EditorTheme::ADD_COMP_SEARCH_W * dpi, ImGui::GetContentRegionAvail().x));
+        ImGui::SetNextItemWidth(std::max(EditorThemeRegistry::Float("ADD_COMP_SEARCH_W") * dpi, ImGui::GetContentRegionAvail().x));
         const bool submitFirst =
             ImGui::InputTextWithHint("##comp_search", Tr("inspector.search_components").c_str(), m_addCompSearch,
                                      sizeof(m_addCompSearch), ImGuiInputTextFlags_EnterReturnsTrue);

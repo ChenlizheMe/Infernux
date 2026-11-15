@@ -100,6 +100,10 @@ class PanelRegistry:
 
     @classmethod
     def _register(cls, reg: _PanelRegistration) -> None:
+        from infernux.engine.reload.owners import current_owner
+        source_owner = current_owner()
+        if source_owner is not None:
+            reg.panel_class._reload_source_owner = source_owner.source_owner
         if not reg.owner:
             reg.owner = cls._owner.get()
         if cls._live_window_manager is not None and any(
@@ -212,7 +216,7 @@ class PanelRegistry:
         manager = cls._live_window_manager
         if manager is not None:
             for reg in reversed(registrations):
-                if not manager.unregister_window_type(reg.type_id):
+                if not manager.unregister_window_type(reg.type_id, force=True):
                     return False
         interaction_registry = cls._live_interaction_registry
         if interaction_registry is not None:

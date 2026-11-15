@@ -189,61 +189,49 @@ def test_project_delete_confirmation_rejects_reentrant_double_submit(tmp_path):
     assert ctx.closed is True
 
 
-def test_asset_error_cancel_does_not_repeat_until_user_reopens(monkeypatch, tmp_path):
+def test_asset_errors_are_non_destructive_and_never_request_deletion(monkeypatch, tmp_path):
     from types import SimpleNamespace
     from infernux.engine.ui.asset_load_errors import AssetLoadErrors
-    from infernux.engine.path_utils import lexical_path_key
 
     asset = tmp_path / "Damaged.mat"
     damaged = b"{ invalid material"
     asset.write_bytes(damaged)
-    failure = {"guid": "damaged", "path": str(asset), "error": "Invalid material document",
-               "modified_ns": asset.stat().st_mtime_ns, "size": len(damaged)}
+    failure = {"guid": "damaged", "path": str(asset), "error": "Invalid material document"}
     failures = [failure]
-    database = SimpleNamespace(project_root=str(tmp_path), query_generation=1,
-                               get_import_failures=lambda: failures,
-                               get_import_error=lambda guid: failure["error"] if failures else "",
+    database = SimpleNamespace(query_generation=1, get_import_failures=lambda: failures,
                                get_guid_from_path=lambda path: "damaged",
                                report_asset_load_failure=lambda guid, error: None)
     coordinator = _project_delete_confirmation()
     monkeypatch.setattr(ProjectDeleteConfirmationCoordinator, "instance", classmethod(lambda cls: coordinator))
     monkeypatch.setattr(AssetLoadErrors, "_instance", None)
     deleted = []
-    errors = AssetLoadErrors(database, SimpleNamespace(delete=lambda paths: deleted.extend(paths) or True))
+    errors = AssetLoadErrors(database, SimpleNamespace(delete=lambda paths: deleted.extend(paths)))
     errors.poll()
-    assert coordinator.is_active
-    assert coordinator._load_error == "Damaged.mat\nInvalid material document"
-    ctx = _ProjectDeleteSemanticContext()
-    coordinator.render(ctx)
-    next(callback for label, callback in ctx.buttons.items() if label.endswith("##cancel"))()
+    errors.report(str(asset), failure["error"])
+    errors.show(str(asset))
     errors.poll()
     assert not coordinator.is_active
-    assert asset.read_bytes() == damaged
-    assert deleted == []
-    with monkeypatch.context() as lookup:
-        lookup.setattr(__import__("os").path, "realpath", lambda *_: pytest.fail("Inspector lookup touched disk"))
-        assert errors.error(str(asset)) == failure["error"]
-    assert errors.errors[lexical_path_key(str(asset))]["error"] == failure["error"]
-
-    errors.report(str(asset), failure["error"])
-    errors.poll()
-    assert coordinator.is_active
+    assert errors.error(str(asset)) == failure["error"]
+    assert asset.read_bytes() == damaged and not deleted
     failures.clear()
     database.query_generation += 1
     errors.poll()
-    ctx = _ProjectDeleteSemanticContext()
-    coordinator.render(ctx)
-    assert not coordinator.is_active and ctx.closed
-    assert asset.read_bytes() == damaged and not deleted
+    assert not errors.error(str(asset))
 
-    failures.append(failure)
-    database.query_generation += 1
+
+def test_asset_failure_without_guid_is_visible_until_successful_reimport(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from infernux.engine.ui.asset_load_errors import AssetLoadErrors
+    database = SimpleNamespace(query_generation=1, get_import_failures=lambda: [],
+                               get_guid_from_path=lambda path: "")
+    monkeypatch.setattr(AssetLoadErrors, "_instance", None)
+    errors = AssetLoadErrors(database, None)
+    path = str(tmp_path / "NewTexture.png")
+    errors.report(path, "Unable to decode current source")
     errors.poll()
-    ctx = _ProjectDeleteSemanticContext()
-    coordinator.render(ctx)
-    next(callback for label, callback in ctx.buttons.items() if label.endswith("##confirm"))()
-    assert deleted == [str(asset.resolve())]
-    assert not coordinator.is_active
+    assert errors.error(path) == "Unable to decode current source"
+    errors.clear(path)
+    assert not errors.error(path)
 
 
 def test_project_script_delete_uses_meta_guid_when_database_path_lookup_misses(monkeypatch, tmp_path):

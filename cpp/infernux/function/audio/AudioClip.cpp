@@ -22,7 +22,7 @@ size_t AudioClip::GetRuntimeMemoryBytes() const
 {
     std::lock_guard<std::mutex> lock(m_playbackMutex);
     const size_t playbackBytes = m_playbackPcm ? m_playbackPcm->stereoFrames.capacity() * sizeof(float) : 0;
-    return sizeof(*this) + m_filePath.capacity() + m_name.capacity() + m_guid.capacity() + m_data.capacity() +
+    return sizeof(*this) + m_filePath.capacity() + m_name.capacity() + m_guid.capacity() + m_loadError.capacity() + m_data.capacity() +
            playbackBytes;
 }
 
@@ -34,7 +34,7 @@ AudioClip::~AudioClip()
 AudioClip::AudioClip(AudioClip &&other) noexcept
     : m_loaded(other.m_loaded), m_streaming(other.m_streaming), m_forceMono(other.m_forceMono),
       m_frameCount(other.m_frameCount), m_filePath(std::move(other.m_filePath)), m_name(std::move(other.m_name)),
-      m_guid(std::move(other.m_guid)), m_spec(other.m_spec), m_data(std::move(other.m_data)),
+      m_guid(std::move(other.m_guid)), m_loadError(std::move(other.m_loadError)), m_spec(other.m_spec), m_data(std::move(other.m_data)),
       m_dataLength(other.m_dataLength), m_playbackPcm(std::move(other.m_playbackPcm))
 {
     other.m_loaded = false;
@@ -53,6 +53,7 @@ AudioClip &AudioClip::operator=(AudioClip &&other) noexcept
         m_filePath = std::move(other.m_filePath);
         m_name = std::move(other.m_name);
         m_guid = std::move(other.m_guid);
+        m_loadError = std::move(other.m_loadError);
         m_spec = other.m_spec;
         m_data = std::move(other.m_data);
         m_dataLength = other.m_dataLength;
@@ -68,6 +69,7 @@ AudioClip &AudioClip::operator=(AudioClip &&other) noexcept
 bool AudioClip::LoadFromFile(const std::string &filePath, const InxResourceMeta *metadata)
 {
     Unload();
+    m_loadError.clear();
     try {
         InxResourceMeta sidecar;
         if (!metadata) {
@@ -115,6 +117,7 @@ bool AudioClip::LoadFromFile(const std::string &filePath, const InxResourceMeta 
     } catch (const std::exception &e) {
         INXLOG_ERROR("Failed to load audio '", filePath, "': ", e.what());
         Unload();
+        m_loadError = e.what();
         return false;
     }
 }

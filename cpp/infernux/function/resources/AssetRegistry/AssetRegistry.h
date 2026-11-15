@@ -100,6 +100,7 @@ class AssetLoadTicket final : public std::enable_shared_from_this<AssetLoadTicke
     uint64_t m_token = 0;
     bool m_repairNeeded = false;
     bool m_repairPending = false;
+    bool m_artifactRepairAttempted = false;
     std::shared_ptr<FrameCpuStorageClaim> m_storageClaim;
     WorkerAssetLoadPlan m_workerPlan;
     JobHandle m_job;
@@ -406,6 +407,8 @@ class AssetRegistry
 
 template <typename T> std::shared_ptr<T> AssetRegistry::GetAsset(const std::string &guid) const
 {
+    if (m_assetDb && !m_assetDb->GetImportError(guid).empty())
+        return nullptr;
     auto it = m_loadedAssets.find(guid);
     if (it != m_loadedAssets.end()) {
         it->second.lastAccessSerial = ++m_accessSerial;
@@ -416,6 +419,8 @@ template <typename T> std::shared_ptr<T> AssetRegistry::GetAsset(const std::stri
 
 template <typename T> std::shared_ptr<T> AssetRegistry::LoadAsset(const std::string &guid, ResourceType type)
 {
+    if (m_assetDb && !m_assetDb->GetImportError(guid).empty())
+        return nullptr;
     // 1. Cache hit with strict resource and C++ type validation.
     const auto cached = m_loadedAssets.find(guid);
     if (cached != m_loadedAssets.end()) {
@@ -444,23 +449,17 @@ template <typename T> std::shared_ptr<T> AssetRegistry::LoadAssetByPath(const st
     std::string guid = m_assetDb->GetGuidFromPath(path);
     if (guid.empty())
         return nullptr;
-
-    const auto cached = m_loadedAssets.find(guid);
-    if (cached != m_loadedAssets.end()) {
-        if (cached->second.type != type)
-            throw std::invalid_argument("AssetRegistry resource type mismatch for GUID: " + guid);
-        cached->second.lastAccessSerial = ++m_accessSerial;
-        return cached->second.payload.Get<T>();
-    }
-
-    auto payload = LoadAssetInternal(path, guid, type);
-    return payload ? payload.Get<T>() : nullptr;
+    return LoadAsset<T>(guid, type);
 }
 
 template <typename T> bool AssetRegistry::Resolve(AssetRef<T> &ref, ResourceType type)
 {
     if (!ref.HasGuid())
         return false;
+    if (m_assetDb && !m_assetDb->GetImportError(ref.GetGuid()).empty()) {
+        ref.Invalidate();
+        return false;
+    }
     const bool resident = IsLoaded(ref.GetGuid());
     const uint64_t loadedVersion = GetAssetVersion(ref.GetGuid());
     if (ref.Get() && resident && ref.GetCachedVersion() == loadedVersion)

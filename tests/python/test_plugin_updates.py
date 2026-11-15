@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from infernux.plugins import InxPackage, PackageConflictError, PackageUpdateConflict, PluginManager
+from infernux.plugins import InxPackage, PackageConflictError, PluginManager
 from test_inxpackage_plugins import _fake_inxpack as _fake_inxpack, _project, _source
 
 
@@ -94,17 +94,11 @@ def test_source_update_is_explicit_and_preserves_guid_and_local_edits(installed,
         (root / "runtime/note.txt").write_text("local change", encoding="utf-8")
     with pytest.raises(RuntimeError, match="explicit package update"):
         manager.install_source(package, install_dependencies=False)
-    if modified:
-        with pytest.raises(PackageUpdateConflict, match="local edits"):
-            manager.install_source(package, update=True, install_dependencies=False)
-        assert manager.registry.installed_record("vendor/plugin") == before
-        assert (root / "runtime/note.txt").read_text() == "local change"
-    else:
-        manager.install_source(package, update=True, install_dependencies=False)
-        after = manager.registry.installed_record("vendor/plugin")
-        assert after["version"] == "2.0.0"
-        assert after["control"]["guid"] == before["control"]["guid"]
-        assert (root / "runtime/note.txt").read_text() == "second"
+    manager.install_source(package, update=True, install_dependencies=False)
+    after = manager.registry.installed_record("vendor/plugin")
+    assert after["version"] == "2.0.0"
+    assert after["control"]["guid"] == before["control"]["guid"]
+    assert (root / "runtime/note.txt").read_text() == "second"
 
 
 def test_successive_updates_preserve_disabled_identity_author_files_and_guid_locations(installed):
@@ -138,7 +132,7 @@ def test_successive_updates_preserve_disabled_identity_author_files_and_guid_loc
     assert next(item["guid"] for item in after["files"] if item["logical_path"] == "runtime/note.txt") == original_guid
     assert (root / "runtime/note.txt").read_text() == "second"
     assert (root / "runtime/new.txt").read_text() == "new"
-    assert json.loads(meta.read_bytes())["importer_settings"] == {"custom": True}
+    assert "importer_settings" not in json.loads(meta.read_bytes())
     assert not (root / "runtime/retired.txt").exists()
     assert not (root / "runtime/retired.txt.meta").exists()
     assert not owned_bytecode.exists()
@@ -177,19 +171,15 @@ def test_successive_updates_preserve_disabled_identity_author_files_and_guid_loc
     assert extra.read_text(encoding="utf-8") == "value = 1\n"
 
 
-def test_local_edits_require_explicit_overwrite_and_leave_pin_unchanged(installed):
+def test_update_overwrites_vendor_edits_without_a_merge_step(installed):
     manager, source, root = installed
     note = root / "runtime/note.txt"
     note.write_text("local change", encoding="utf-8")
-    package = next_package(source)
-    registry_before = Path(manager.registry.path).read_bytes()
-    with pytest.raises(PackageUpdateConflict) as caught:
-        manager.install_package(package, update=True, install_dependencies=False)
-    assert "Packages/vendor/plugin/runtime/note.txt" in caught.value.paths
-    assert Path(manager.registry.path).read_bytes() == registry_before
-    assert note.read_text() == "local change"
-    manager.install_package(package, update=True, overwrite_modified=True, install_dependencies=False)
+    added = root / "runtime/custom.txt"
+    added.write_text("user file", encoding="utf-8")
+    manager.install_package(next_package(source), update=True, install_dependencies=False)
     assert note.read_text() == "second"
+    assert added.read_text() == "user file"
 
 
 def test_regenerated_guid_is_rejected_even_with_overwrite_consent(installed):
@@ -198,9 +188,24 @@ def test_regenerated_guid_is_rejected_even_with_overwrite_consent(installed):
     document = json.loads((root / "runtime/note.txt.meta").read_bytes())
     document["metadata"]["guid"]["value"] = "a" * 32
     meta.write_text(json.dumps(document), encoding="utf-8")
-    with pytest.raises(PackageConflictError, match="retain its GUID"):
-        manager.install_package(next_package(source), update=True, overwrite_modified=True, install_dependencies=False)
+    with pytest.raises(PackageConflictError, match="occupied by another GUID"):
+        manager.install_package(next_package(source), update=True, install_dependencies=False)
     assert (root / "runtime/note.txt").read_text() == "first"
+
+
+def test_removed_member_cannot_delete_a_replacement_with_another_identity(installed):
+    manager, source, root = installed
+    replaced = root / "runtime/retired.txt"
+    replaced.write_text("independently replaced resource", encoding="utf-8")
+    meta = Path(str(replaced) + ".meta")
+    document = json.loads(meta.read_bytes())
+    document["metadata"]["guid"]["value"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    meta.write_text(json.dumps(document), encoding="utf-8")
+    before = manager.registry.installed_record("vendor/plugin")
+    with pytest.raises(PackageConflictError, match="Removed package member is occupied by another GUID"):
+        manager.install_package(next_package(source), update=True, install_dependencies=False)
+    assert replaced.read_text() == "independently replaced resource"
+    assert manager.registry.installed_record("vendor/plugin") == before
 
 
 def test_update_registry_failure_restores_previous_files_and_pin(installed, monkeypatch):
@@ -221,15 +226,12 @@ def test_update_registry_failure_restores_previous_files_and_pin(installed, monk
     assert Path(manager.registry.path).read_bytes() == registry_before
 
 
-def test_missing_local_original_cache_requires_the_pinned_archive(installed):
+def test_update_does_not_require_the_old_archive(installed):
     manager, source, root = installed
     record = manager.registry.installed_record("vendor/plugin")
     Path(manager._installed_archive_path(record)).unlink()
-    package = next_package(source)
-    for overwrite in (False, True):
-        with pytest.raises(FileNotFoundError, match="pinned local package archive"):
-            manager.install_package(package, update=True, overwrite_modified=overwrite, install_dependencies=False)
-    assert (root / "runtime/note.txt").read_text() == "first"
+    manager.install_package(next_package(source), update=True, install_dependencies=False)
+    assert (root / "runtime/note.txt").read_text() == "second"
 
 
 @pytest.mark.parametrize("modified", [False, True])
@@ -281,20 +283,14 @@ def test_cloned_project_updates_using_the_new_users_cache(installed, tmp_path, m
     with ThreadPoolExecutor(max_workers=1) as executor:
         worker = executor.submit(threading.get_ident).result(timeout=30)
         acquired = executor.submit(cloned_manager.download_source, package, update=True).result(timeout=30)
-    assert downloads == [(pinned_url, worker)] and worker != threading.get_ident()
+    assert downloads == [] and worker != threading.get_ident()
     assert cloned_manager.registry.installed_record("vendor/plugin") == before
     monkeypatch.setattr(cloned_manager, "_materialize_source", lambda *args, **kwargs: pytest.fail("download during publication"))
-    if modified:
-        with pytest.raises(PackageUpdateConflict, match="runtime/note.txt"):
-            cloned_manager.install_package(acquired["path"], source=acquired["source"], update=True, install_dependencies=False)
-        assert cloned_manager.registry.installed_record("vendor/plugin") == before
-        assert note.read_text() == "local change"
-    else:
-        cloned_manager.install_package(acquired["path"], source=acquired["source"], update=True, install_dependencies=False)
-        assert note.read_text() == "second"
+    cloned_manager.install_package(acquired["path"], source=acquired["source"], update=True, install_dependencies=False)
+    assert note.read_text() == "second"
     assert (root / "runtime/note.txt").read_text() == "first"
     assert cloned_manager.registry.installed_record("vendor/plugin")["control"]["guid"] == record["control"]["guid"]
-    assert new_archive.is_file()
+    assert not new_archive.exists()
 
 
 def test_missing_synced_package_file_blocks_player_startup(installed):

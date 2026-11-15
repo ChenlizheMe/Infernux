@@ -254,6 +254,31 @@ template <typename Visit> void VisitModelSubAssets(const InxResourceMeta &owner,
     }
 }
 
+void PublishUnavailableAssetBindings(AssetDatabase &database, AssetRegistry *registry, const std::string &guid)
+{
+    std::vector<std::pair<std::string, ResourceType>> unavailable;
+    const auto metadata = database.GetMetaByGuid(guid);
+    if (!metadata)
+        return;
+    unavailable.emplace_back(guid, metadata->GetResourceType());
+    VisitModelSubAssets(*metadata, [&](const nlohmann::json &record) {
+        const auto child = record.at("guid").get<std::string>();
+        if (const auto childMetadata = database.GetMetaByGuid(child))
+            unavailable.emplace_back(child, childMetadata->GetResourceType());
+    });
+    for (const auto &[identity, type] : unavailable)
+        if (registry)
+            registry->InvalidateAsset(identity);
+    for (const auto &[identity, type] : unavailable) {
+        try {
+            database.GetDependencyGraph()->NotifyEvent(identity, type, AssetEvent::Deleted);
+        } catch (const std::exception &error) {
+            INXLOG_ERROR("Asset unavailable notification failed for '", database.GetPathFromGuid(identity),
+                         "': ", error.what());
+        }
+    }
+}
+
 std::shared_ptr<InxResourceMeta> ModelSubAssetMetadata(const nlohmann::json &record, const std::string &owner,
                                                        const std::string &sourcePath)
 {
@@ -272,7 +297,8 @@ std::shared_ptr<InxResourceMeta> ModelSubAssetMetadata(const nlohmann::json &rec
 // Full scans rebuild all derived entries once; individual imports update only
 // their owner through UpdateModelSubAssets.
 template <typename Paths, typename Metas, typename States, typename Results>
-void ExpandModelSubAssets(Paths &guidToPath, Paths &pathToGuid, Metas &metas, States &fileStates, Results &results)
+void ExpandModelSubAssets(Paths &guidToPath, Paths &pathToGuid, Metas &metas, States &fileStates, Results &results,
+                          const std::unordered_map<std::string, std::string> *runtimeFailures = nullptr)
 {
     std::vector<std::string> owners;
     for (auto it = metas.begin(); it != metas.end();) {
@@ -310,6 +336,9 @@ void ExpandModelSubAssets(Paths &guidToPath, Paths &pathToGuid, Metas &metas, St
             fileStates.emplace(key, childState);
             if (const auto result = results.find(owner); result != results.end())
                 results.emplace(guid, result->second);
+            if (runtimeFailures && (!results.count(guid) || results.at(guid).succeeded))
+                if (const auto failure = runtimeFailures->find(guid); failure != runtimeFailures->end())
+                    results[guid] = {false, failure->second};
         });
     }
 }
@@ -690,7 +719,7 @@ bool SameMetadataValue(const nlohmann::json &left, const nlohmann::json &right)
     return true;
 }
 
-InxResourceMeta DecodeMetadataDocument(const nlohmann::json &document, const std::string &path, MetadataMatch *match)
+InxResourceMeta DecodeStrictMetadataDocument(const nlohmann::json &document, const std::string &path, MetadataMatch *match)
 {
     if (document.is_discarded())
         throw std::invalid_argument("metadata JSON parse error: " + path);
@@ -701,9 +730,50 @@ InxResourceMeta DecodeMetadataDocument(const nlohmann::json &document, const std
     return metadata;
 }
 
+InxResourceMeta DecodeMetadataDocument(const nlohmann::json &document, const std::string &path, MetadataMatch *match,
+                                       bool repairInvalid = false, const std::string &knownGuid = {}, bool *repaired = nullptr)
+{
+    const auto repair = [&](const std::string &reason) {
+        if (!repairInvalid)
+            throw std::invalid_argument(reason);
+        if (repaired)
+            *repaired = true;
+        InxResourceMeta metadata;
+        std::string guid = knownGuid;
+        if (guid.empty() && document.is_object()) {
+            const auto fields = document.find("metadata");
+            if (fields != document.end() && fields->is_object()) {
+                const auto entry = fields->find("guid");
+                if (entry != fields->end() && entry->is_object()) {
+                    const auto value = entry->find("value");
+                    if (value != entry->end() && value->is_string() && IsCanonicalAssetGuid(value->get<std::string>()))
+                        guid = value->get<std::string>();
+                }
+            }
+        }
+        if (!guid.empty())
+            metadata.AddMetadata("guid", guid);
+        INXLOG_WARN("Reimporting invalid metadata '", path, "': ", reason);
+        return metadata;
+    };
+    try {
+        auto metadata = DecodeStrictMetadataDocument(document, path, match);
+        if (!IsCanonicalAssetGuid(metadata.GetGuid()))
+            return repair("metadata has no valid asset GUID");
+        if (!knownGuid.empty() && metadata.GetGuid() != knownGuid)
+            return repair("metadata changed the registered asset GUID");
+        return metadata;
+    } catch (const std::invalid_argument &exception) {
+        return repair(exception.what());
+    } catch (const nlohmann::json::exception &exception) {
+        return repair(exception.what());
+    }
+}
+
 InxResourceMeta LoadMetadataDocument(const std::string &path, AtomicFileState *consumedState = nullptr,
                                      const FileInput::Revision *expected = nullptr, uint64_t admittedBytes = 0,
-                                     MetadataMatch *match = nullptr)
+                                     MetadataMatch *match = nullptr, bool repairInvalid = false,
+                                     const std::string &knownGuid = {}, bool *repaired = nullptr)
 {
     const auto target = NativeFilePath(ToFsPath(path));
     FileInput input(target, FileInput::Sharing::Snapshot);
@@ -714,13 +784,17 @@ InxResourceMeta LoadMetadataDocument(const std::string &path, AtomicFileState *c
     MetadataInput buffer(input, revision.data.size, &fingerprint, admittedBytes);
     std::istream stream(&buffer);
     stream.exceptions(std::ios::badbit);
-    auto metadata = DecodeMetadataDocument(nlohmann::json::parse(stream, nullptr, false), path, match);
+    const auto document = nlohmann::json::parse(stream, nullptr, false);
+    // A malformed document may stop the parser early. Consume the selected
+    // snapshot before replacing this exact sidecar through DocumentStore.
+    stream.clear();
+    stream.ignore((std::numeric_limits<std::streamsize>::max)());
     const auto modified = std::filesystem::last_write_time(target).time_since_epoch().count();
     if (!(input.InspectRevision() == revision) || !IsFileRevisionCurrent(target, revision))
         throw std::runtime_error("metadata source changed while reading: " + path);
     if (consumedState)
         *consumedState = {true, revision.data.size, static_cast<int64_t>(modified), fingerprint.Value()};
-    return metadata;
+    return DecodeMetadataDocument(document, path, match, repairInvalid, knownGuid, repaired);
 }
 
 bool MatchesConsumedDocument(std::string_view content, const AtomicFileState &state)
@@ -1449,7 +1523,7 @@ std::shared_ptr<const AssetDatabase::QuerySnapshot> AssetDatabase::LoadQuerySnap
 
 void AssetDatabase::PublishQuerySnapshot(bool includeCatalog)
 {
-    ExpandModelSubAssets(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults);
+    ExpandModelSubAssets(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults, &m_runtimeLoadFailures);
     InstallQuerySnapshot(BuildQuerySnapshotArtifact(m_guidToPath, m_pathToGuid, m_metas, m_fileStates, m_importResults,
                                                     m_queryGeneration + 1, includeCatalog));
 }
@@ -1477,6 +1551,22 @@ void AssetDatabase::PublishModelSubAssetEvents(const std::shared_ptr<const Query
         const auto &metadata = old->second;
         if (!metadata->HasKey("import_owner_guid"))
             return;
+        if (current != m_metas.end()) {
+            const auto beforeError = previous->importErrors.find(guid);
+            const auto error = GetImportError(guid);
+            if (!error.empty()) {
+                if (beforeError == previous->importErrors.end() || beforeError->second != error)
+                    PublishUnavailableAssetBindings(*this, registry, guid);
+                return;
+            }
+            if (beforeError != previous->importErrors.end()) {
+                if (registry)
+                    registry->InvalidateAsset(guid);
+                ClearRuntimeLoadFailuresForDependents(guid);
+                graph.NotifyEvent(guid, current->second->GetResourceType(), AssetEvent::Modified);
+                return;
+            }
+        }
         if (current == m_metas.end()) {
             if (registry)
                 registry->RemoveAsset(guid);
@@ -1550,8 +1640,10 @@ void AssetDatabase::UpdateModelSubAssets(const std::string &owner, const QuerySn
                 m_guidToPath.erase(guid);
                 m_metas.erase(guid);
                 m_importResults.erase(guid);
+                m_runtimeLoadFailures.erase(guid);
                 snapshot.guidToPath.erase(guid);
                 snapshot.metas.erase(guid);
+                snapshot.importErrors.erase(guid);
             }
             changedGuids.insert(guid);
         });
@@ -1569,15 +1661,27 @@ void AssetDatabase::UpdateModelSubAssets(const std::string &owner, const QuerySn
         m_fileStates[key] = state;
         if (const auto result = m_importResults.find(owner); result != m_importResults.end())
             m_importResults[guid] = result->second;
+        if (!m_importResults.count(guid) || m_importResults.at(guid).succeeded)
+            if (const auto failure = m_runtimeLoadFailures.find(guid); failure != m_runtimeLoadFailures.end())
+                m_importResults[guid] = {false, failure->second};
         snapshot.guidToPath[guid] = path;
         snapshot.pathToGuid[key] = guid;
         snapshot.metas[guid] = metadata;
+        snapshot.importErrors.erase(guid);
+        if (const auto result = m_importResults.find(guid);
+            result != m_importResults.end() && !result->second.succeeded)
+            snapshot.importErrors[guid] = result->second.error;
         changedGuids.insert(guid);
     }
 }
 
 void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
 {
+    for (auto failure = m_runtimeLoadFailures.begin(); failure != m_runtimeLoadFailures.end();)
+        if (GetImportError(failure->first).empty())
+            failure = m_runtimeLoadFailures.erase(failure);
+        else
+            ++failure;
     struct Change
     {
         std::string guid;
@@ -1594,8 +1698,15 @@ void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
         if (metadata->HasKey("import_owner_guid"))
             continue; // Model-owned resources have their own publication below.
         const auto result = m_importResults.find(guid);
-        if (result != m_importResults.end() && !result->second.succeeded)
-            continue; // An unsuccessful import does not replace the last valid runtime payload.
+        if (result != m_importResults.end() && !result->second.succeeded) {
+            // The catalog retains author identity; current runtime availability
+            // ends even when a previous frame still owns an older payload.
+            const auto oldResult = previous.importResults.find(guid);
+            if (oldResult == previous.importResults.end() || oldResult->second.succeeded ||
+                oldResult->second.error != result->second.error)
+                PublishUnavailableAssetBindings(*this, BoundRegistry(), guid);
+            continue;
+        }
         const auto old = previous.metas.find(guid);
         if (old == previous.metas.end()) {
             changes.push_back({guid, metadata->GetResourceType(), AssetEvent::Modified});
@@ -1630,6 +1741,9 @@ void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
     // Install every CPU cache change before notifying consumers, which may load
     // other changed assets through the already-published catalog.
     if (registry) {
+        for (const auto &change : changes)
+            if (change.event == AssetEvent::Modified)
+                ClearRuntimeLoadFailuresForDependents(change.guid);
         for (const auto &change : changes) {
             if (change.event == AssetEvent::Deleted) {
                 registry->RemoveAsset(change.guid);
@@ -1638,9 +1752,9 @@ void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
             if (change.moved)
                 registry->UpdateLoadedAssetPath(change.guid, m_guidToPath.at(change.guid));
             if (change.event == AssetEvent::Modified && change.type != ResourceType::Mesh) {
-                const bool loaded = registry->IsLoaded(change.guid);
-                if (!registry->ReloadAsset(change.guid) && loaded)
-                    throw std::runtime_error("Could not publish refreshed runtime asset: " + change.guid);
+                // Reload records a failure on its own asset and retires its
+                // payload; an unrelated resource must still publish.
+                registry->ReloadAsset(change.guid);
             }
         }
     }
@@ -2476,7 +2590,7 @@ void AssetDatabase::QueueMetadataPreparationStep(CatalogWork &work, std::shared_
                 const auto *begin = capture->normalized.get();
                 auto metadata =
                     DecodeMetadataDocument(nlohmann::json::parse(begin, begin + capture->written, nullptr, false), path,
-                                           match ? &*match : nullptr);
+                                           match ? &*match : nullptr, true, item->fallbackGuid, &item->sidecarRepaired);
                 item->expectedMetadata = capture->state;
                 item->skipSidecarChange = match && match->equal;
                 if (!item->skipSidecarChange)
@@ -3109,17 +3223,18 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
                 if (item.publishedSidecar)
                     match.emplace(MetadataMatch{*item.publishedSidecar, *item.sidecarProjectRoot});
                 previousMetadata = LoadMetadataDocument(metaPath, &*item.expectedMetadata, revision,
-                                                        item.sidecarWorkingBytes, match ? &*match : nullptr);
+                                                        item.sidecarWorkingBytes, match ? &*match : nullptr,
+                                                        true, item.fallbackGuid, &item.sidecarRepaired);
                 if (match && match->equal) {
                     item.skipSidecarChange = true;
                     return;
                 }
             }
-            previousMetadataLoaded = true;
+            previousMetadataLoaded = !item.sidecarRepaired;
             preservedGuid = previousMetadata.GetGuid();
-            if (preservedGuid.empty())
+            if (preservedGuid.empty() && !item.sidecarRepaired)
                 throw std::runtime_error("asset metadata sidecar has no GUID: " + metaPath);
-            if (item.fallbackGuid.empty())
+            if (item.fallbackGuid.empty() && !preservedGuid.empty())
                 item.authoredGuid = preservedGuid;
         }
         ApplyBuiltinSceneIconMetadata(previousMetadata, item.file.path, item.file.readOnly);
@@ -4509,10 +4624,11 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &requestedPath,
     const auto writeScope = PathWriteScope::BeginWrite({path, InxResourceMeta::GetMetaFilePath(path)}, parentScope);
     const auto &authorization = parentScope.IsOpen() ? parentScope : writeScope;
     std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath, &expectedMetadata,
-                                            authorization, textureSource);
+                                            authorization, textureSource, &result.error);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = capture.error.empty() ? "asset metadata could not be created or loaded" : capture.error;
+        if (result.error.empty())
+            result.error = capture.error.empty() ? "asset metadata could not be created or loaded" : capture.error;
         return result;
     }
     result.guid = guid;
@@ -4558,11 +4674,21 @@ void AssetDatabase::FinishImport(AssetMutationResult &result, bool imported, con
     // catalog and importer outputs have committed. Existing runtime references
     // can then resolve their cache without any Project-panel-specific repair.
     if (imported && notify) {
+        m_runtimeLoadFailures.erase(result.guid);
+        ClearRuntimeLoadFailuresForDependents(result.guid);
         PublishModelSubAssetEvents(previous, &changedSubAssets);
         auto *registry = BoundRegistry();
         if (!registry || !registry->NotifySourceImported(result.guid, result.resourceType))
             m_dependencyGraph->NotifyEvent(result.guid, result.resourceType, AssetEvent::Modified);
+    } else if (!imported) {
+        PublishUnavailableAssetBindings(*this, BoundRegistry(), result.guid);
     }
+    if (imported)
+        if (const auto error = GetImportError(result.guid); !error.empty()) {
+            result.succeeded = false;
+            result.errorCode = AssetMutationErrorCode::RuntimeApplyFailed;
+            result.error = error;
+        }
 }
 
 AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const nlohmann::json &settings,
@@ -4596,8 +4722,10 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
     capture.boundedProjectRoot = m_frameWork ? &m_projectRoot : nullptr;
     auto *textureSource = result.resourceType == ResourceType::Texture ? &capture : nullptr;
     if (const auto metadataStorage = ReserveMetadataRead(candidate);
-        !PrepareReimportMetadata(candidate, ownedTexture ? nlohmann::json{} : settings, result, textureSource))
+        !PrepareReimportMetadata(candidate, ownedTexture ? nlohmann::json{} : settings, result, textureSource)) {
+        ReportAssetLoadFailure(result.guid, result.error);
         return result;
+    }
     if (textureSource && !textureSource->Reserve(m_frameWork)) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = textureSource->error;
@@ -4699,6 +4827,8 @@ void AssetDatabase::FinishReimport(AssetMutationResult &result, const CachedFile
     const auto previous = LoadQuerySnapshot();
     const auto changedSubAssets = PublishQuerySnapshotForPaths({result.path});
     if (notify) {
+        m_runtimeLoadFailures.erase(result.guid);
+        ClearRuntimeLoadFailuresForDependents(result.guid);
         PublishModelSubAssetEvents(previous, &changedSubAssets);
         auto *registry = BoundRegistry();
         const bool meshPublication =
@@ -4711,6 +4841,11 @@ void AssetDatabase::FinishReimport(AssetMutationResult &result, const CachedFile
     result.databaseCommitted = true;
     result.changed = true;
     result.queryGeneration = GetQueryGeneration();
+    if (const auto error = GetImportError(result.guid); !error.empty()) {
+        result.succeeded = false;
+        result.errorCode = AssetMutationErrorCode::RuntimeApplyFailed;
+        result.error = error;
+    }
 }
 
 bool AssetDatabase::IsWatcherImportPending() const noexcept
@@ -5232,8 +5367,9 @@ void AssetDatabase::BeginMeshArtifactRepair(const std::shared_ptr<AssetLoadTicke
 {
     const auto path = GetPathFromGuid(ticket->GetGuid());
     if (!m_importerRegistry.GetImporterForExtension(FromFsPath(ToFsPath(path).extension())))
-        throw std::runtime_error("Cooked mesh artifacts are unavailable for " + path);
-    StartModelReimport(path, {}, nlohmann::json::object(), {}, ticket);
+        throw std::runtime_error("Imported runtime artifact is unavailable for " + path);
+    const auto settings = ticket->GetResourceType() == ResourceType::Mesh ? nlohmann::json::object() : nlohmann::json{};
+    StartModelReimport(path, {}, settings, {}, ticket);
 }
 
 void AssetDatabase::StartModelReimport(const std::string &sourcePath, const std::string &textureGuid,
@@ -5673,6 +5809,7 @@ AssetMutationResult AssetDatabase::DeleteAsset(const std::string &requestedPath,
     }
     if (!guid.empty())
         m_importResults.erase(guid);
+        m_runtimeLoadFailures.erase(guid);
     m_fileStates.erase(FilesystemPathKey(path));
     m_assetIndexDirty = true;
     if (!guid.empty()) {
@@ -6028,11 +6165,30 @@ std::vector<AssetCatalogEntry> AssetDatabase::GetImportFailures() const
     std::vector<AssetCatalogEntry> failures;
     if (snapshot->importErrors.empty())
         return failures;
+    std::unordered_set<std::string> listed;
     for (const auto &[directory, entries] : snapshot->catalog->GetDirectories()) {
         (void)directory;
         for (const auto &entry : entries)
-            if (!entry.importError.empty())
+            if (!entry.importError.empty()) {
                 failures.push_back(entry);
+                listed.insert(entry.guid);
+            }
+    }
+    // Owned resources are nested under their source in Project, but their
+    // current loader/GPU failure must remain available to Inspector/Console.
+    for (const auto &[guid, error] : snapshot->importErrors) {
+        if (listed.count(guid))
+            continue;
+        const auto path = snapshot->guidToPath.find(guid);
+        const auto metadata = snapshot->metas.find(guid);
+        if (path == snapshot->guidToPath.end() || metadata == snapshot->metas.end())
+            continue;
+        AssetCatalogEntry entry;
+        entry.guid = guid;
+        entry.path = path->second;
+        entry.resourceType = metadata->second->GetResourceType();
+        entry.importError = error;
+        failures.push_back(std::move(entry));
     }
     std::sort(failures.begin(), failures.end(),
               [](const auto &left, const auto &right) { return left.path < right.path; });
@@ -6047,6 +6203,9 @@ void AssetDatabase::ReportAssetLoadFailure(const std::string &guid, const std::s
         return;
     if (GetImportError(guid) == error)
         return;
+    if (const auto runtime = m_runtimeLoadFailures.find(guid);
+        runtime != m_runtimeLoadFailures.end() && runtime->second != error)
+        m_runtimeLoadFailures.erase(runtime);
     m_importResults[guid] = {false, error};
     if (const auto indexed = m_assetIndex.Find(FilesystemPathKey(path->second))) {
         auto entry = *indexed;
@@ -6056,6 +6215,57 @@ void AssetDatabase::ReportAssetLoadFailure(const std::string &guid, const std::s
         m_assetIndexDirty = true;
     }
     PublishQuerySnapshot();
+    // Author identities and dependency edges stay intact, including Model-owned resources.
+    PublishUnavailableAssetBindings(*this, BoundRegistry(), guid);
+}
+
+void AssetDatabase::ReportRuntimeLoadFailure(const std::string &guid, const std::string &error)
+{
+    AssertMutationThread("ReportRuntimeLoadFailure");
+    m_runtimeLoadFailures[guid] = error;
+    ReportAssetLoadFailure(guid, error);
+    if (error.empty() || GetImportError(guid) != error)
+        m_runtimeLoadFailures.erase(guid);
+}
+
+bool AssetDatabase::ClearRuntimeLoadFailure(const std::string &guid)
+{
+    AssertMutationThread("ClearRuntimeLoadFailure");
+    const auto failure = m_runtimeLoadFailures.find(guid);
+    if (failure == m_runtimeLoadFailures.end())
+        return false;
+    const bool matches = GetImportError(guid) == failure->second;
+    m_runtimeLoadFailures.erase(failure);
+    if (!matches)
+        return false;
+    m_importResults[guid] = {true, {}};
+    if (const auto path = m_guidToPath.find(guid); path != m_guidToPath.end())
+        if (const auto indexed = m_assetIndex.Find(FilesystemPathKey(path->second))) {
+            auto entry = *indexed;
+            entry.importSucceeded = true;
+            entry.importError.clear();
+            m_assetIndex.Upsert(std::move(entry));
+            m_assetIndexDirty = true;
+        }
+    PublishQuerySnapshot();
+    return true;
+}
+
+void AssetDatabase::ClearRuntimeLoadFailuresForDependents(const std::string &guid)
+{
+    AssertMutationThread("ClearRuntimeLoadFailuresForDependents");
+    std::vector<std::string> pending{guid};
+    std::unordered_set<std::string> visited{guid};
+    while (!pending.empty()) {
+        auto current = std::move(pending.back());
+        pending.pop_back();
+        for (const auto &dependent : m_dependencyGraph->GetDependents(current)) {
+            if (!visited.insert(dependent).second)
+                continue;
+            ClearRuntimeLoadFailure(dependent);
+            pending.push_back(dependent);
+        }
+    }
 }
 
 uint64_t AssetDatabase::GetQueryGeneration() const
@@ -6340,7 +6550,20 @@ AssetDatabase::PersistImportWrites(const ImportRequest &request, std::vector<Doc
         {m_assetIndexPath}, writeScope.Covers(m_assetIndexPath) ? writeScope : PathWriteScope{}));
     std::vector<DocumentTransactionFileState> files;
     files.reserve(writes.size());
-    for (auto &write : writes) {
+    for (size_t index = 0; index < writes.size(); ++index) {
+        auto &write = writes[index];
+        if (write.staged) {
+            // Stage already transferred the payload out of content. Adopt
+            // its completed project sibling through the ordinary transaction;
+            // submitting the empty string here would erase the cooked product.
+            std::vector<DocumentTransactionEntry> staged;
+            staged.push_back(std::move(write));
+            auto committed = DocumentTransaction::Commit(m_projectRoot, m_assetTransactionJournalPath,
+                                                         std::move(staged), {}, outputScopes[index]);
+            for (auto &file : committed.committedFileStates)
+                files.push_back(std::move(file));
+            continue;
+        }
         const std::filesystem::path parent = ToFsPath(write.path).parent_path();
         if (!parent.empty()) {
             std::error_code directoryError;
@@ -6368,6 +6591,10 @@ AssetDatabase::PersistImportWrites(const ImportRequest &request, std::vector<Doc
 
 void AssetDatabase::InstallImportArtifact(const std::string &guid, ImportArtifact artifact)
 {
+    m_runtimeLoadFailures.erase(guid);
+    VisitModelSubAssets(artifact.metadata, [&](const nlohmann::json &record) {
+        m_runtimeLoadFailures.erase(record.at("guid").get<std::string>());
+    });
     if (artifact.dependenciesAuthoritative) {
         const std::unordered_set<std::string> dependencies(artifact.dependencies.begin(), artifact.dependencies.end());
         m_dependencyGraph->SetAssetDependencies(guid, dependencies);
@@ -6485,7 +6712,8 @@ ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                                 bool persistMetadata, const std::string &identityKey,
                                                 std::optional<AtomicFileState> *expectedMetadata,
-                                                const PathWriteScope &writeScope, TextureSourceSnapshot *textureSource)
+                                                const PathWriteScope &writeScope, TextureSourceSnapshot *textureSource,
+                                                std::string *failure)
 {
     if (filePath.empty()) {
         INXLOG_ERROR("Received empty filePath!");
@@ -6508,6 +6736,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     candidate.loader = loader->second;
     candidate.fallbackGuid = GetGuidFromPath(filePath);
     if (!ReadFingerprint(ToFsPath(filePath), candidate.file.source)) {
+        if (failure)
+            *failure = "Metadata preparation could not inspect source: " + filePath;
         INXLOG_ERROR("Failed to inspect source for resource registration: ", filePath);
         return "";
     }
@@ -6516,6 +6746,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         PrepareMetadata(candidate, textureSource);
     }
     if (!candidate.error.empty()) {
+        if (failure)
+            *failure = "Metadata preparation failed: " + candidate.error;
         INXLOG_ERROR("Failed to prepare resource metadata: ", filePath, ": ", candidate.error);
         return "";
     }
@@ -6540,6 +6772,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
             FinishMetadataAdoption(candidate, textureSource);
         }
         if (!candidate.error.empty()) {
+            if (failure)
+                *failure = "Metadata publication failed: " + candidate.error;
             INXLOG_ERROR("Failed to publish resource metadata: ", filePath, ": ", candidate.error);
             return "";
         }

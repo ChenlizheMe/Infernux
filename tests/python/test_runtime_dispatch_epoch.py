@@ -10,11 +10,6 @@ from infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
 )
-from infernux.components.script_loader import (
-    ComponentBodyReloadRequest,
-    ComponentBodyReloadTransaction,
-    _plan_component_class_body_patch,
-)
 from infernux.components.registry import snapshot_component_registry_state
 from infernux.engine.runtime_dispatch import (
     build_type_dispatch_descriptor,
@@ -318,54 +313,6 @@ def test_helper_lookup_can_use_old_or_current_epoch():
         _publish(_EpochProbe, probe)
 
 
-def test_active_frame_rejects_transaction_before_class_mutation():
-    class ActiveTarget(ComponentLifecycleMixin):
-        def update(self, _delta_time):
-            return self.helper()
-
-        def helper(self):
-            return "old"
-
-    class ActiveCandidate(ComponentLifecycleMixin):
-        def update(self, _delta_time):
-            return self.helper()
-
-        def helper(self):
-            return "new"
-
-    ActiveCandidate.__name__ = ActiveTarget.__name__
-    ActiveCandidate.__qualname__ = ActiveTarget.__qualname__
-    probe = ActiveTarget()
-    scheduler = RuntimeExecutionScheduler()
-    scheduler.register_component(probe)
-    frame = scheduler.begin_frame()
-    before = current_runtime_epoch()
-    request = ComponentBodyReloadRequest(
-        file_path="active_target.py",
-        target_types=(ActiveTarget,),
-        instances_by_type={ActiveTarget: (probe,)},
-    )
-    transaction = ComponentBodyReloadTransaction(
-        (request,),
-        ((ActiveTarget, _plan_component_class_body_patch(ActiveTarget, ActiveCandidate)),),
-        registry_entries=(),
-        registry_snapshot=snapshot_component_registry_state(),
-        module_snapshot={},
-        diagnostic_snapshot=({}, 0),
-        had_live_targets=True,
-        member_status=(),
-    )
-    try:
-        with pytest.raises(RuntimeError, match="safe point"):
-            transaction.commit()
-    finally:
-        frame.close()
-    assert not transaction.committed and not transaction.rolled_back
-    assert current_runtime_epoch() is before
-    assert ActiveTarget.helper(probe) == "old"
-    transaction.commit()
-    assert transaction.committed
-    assert ActiveTarget.helper(probe) == "new"
 
 
 def test_publication_validation_failure_does_not_advance_epoch(monkeypatch):

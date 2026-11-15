@@ -662,7 +662,7 @@ class WindowManager:
         )
         self._notify_type_changed()
 
-    def unregister_window_type(self, type_id: str) -> bool:
+    def unregister_window_type(self, type_id: str, *, force: bool = False) -> bool:
         """Remove one dynamic window type and close all of its live views."""
 
         identifier = str(type_id or "").strip()
@@ -683,7 +683,7 @@ class WindowManager:
             if (
                 self._window_states.get(window_id, WindowState.CLOSED)
                 not in {WindowState.CLOSED, WindowState.CLOSING}
-                and not self.close_window(window_id)
+                and not self.close_window(window_id, force=force)
             ):
                 return False
         self._registered_types.pop(identifier, None)
@@ -914,7 +914,7 @@ class WindowManager:
             presentation_before_view_id=presentation_before_view_id,
         )
     
-    def close_window(self, window_id: str) -> bool:
+    def close_window(self, window_id: str, *, force: bool = False) -> bool:
         """Close a window by its ID."""
         if window_id not in self._window_states:
             raise KeyError(f"Unknown window id: {window_id}")
@@ -925,7 +925,7 @@ class WindowManager:
         if instance is None:
             raise RuntimeError(f"Window '{window_id}' has no instance to close")
         request_close = getattr(instance, "request_close", None)
-        if callable(request_close) and not bool(request_close()):
+        if not force and callable(request_close) and not bool(request_close()):
             return False
         from infernux.engine.interaction import EditorInteractionCore
 

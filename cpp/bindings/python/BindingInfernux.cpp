@@ -2244,6 +2244,21 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             py::arg("source"), py::arg("output_path"), py::arg("camera_component_id") = 0,
             "Capture an engine-owned Scene, Game, or complete Editor render target without reading desktop pixels")
         .def(
+            "set_capture_completion_callback",
+            [](Infernux &self, py::object callback) {
+                auto *renderer = self.GetRenderer();
+                if (!renderer)
+                    throw std::runtime_error("Capture callbacks require a renderer");
+                if (callback.is_none()) {
+                    renderer->SetCaptureCompletionCallback({});
+                } else {
+                    renderer->SetCaptureCompletionCallback([callback = py::function(callback)](uint64_t id) {
+                        py::gil_scoped_acquire gil;
+                        callback(id);
+                    });
+                }
+            }, py::arg("callback"))
+        .def(
             "query_capture",
             [](Infernux &self, uint64_t captureId) {
                 auto *renderer = self.GetRenderer();

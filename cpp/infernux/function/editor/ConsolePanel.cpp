@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "ConsolePanel.h"
 
 #include <function/scene/GameObject.h>
@@ -852,10 +853,10 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
 {
     const float dpi = ctx->GetDpiScale();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(EditorTheme::CONSOLE_FRAME_PAD_X * dpi, EditorTheme::CONSOLE_FRAME_PAD_Y * dpi));
+                        ImVec2(EditorThemeRegistry::Float("CONSOLE_FRAME_PAD_X") * dpi, EditorThemeRegistry::Float("CONSOLE_FRAME_PAD_Y") * dpi));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2(EditorTheme::CONSOLE_ITEM_SPC_X * dpi, EditorTheme::CONSOLE_ITEM_SPC_Y * dpi));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD * dpi);
+                        ImVec2(EditorThemeRegistry::Float("CONSOLE_ITEM_SPC_X") * dpi, EditorThemeRegistry::Float("CONSOLE_ITEM_SPC_Y") * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorThemeRegistry::Float("TOOLBAR_FRAME_BRD") * dpi);
 
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const bool wrapOptions = availableWidth < 500.0f * dpi;
@@ -932,10 +933,10 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
         else
             snprintf(label, sizeof(label), "%s %d###%s", name, count, id);
 
-        ImGui::PushStyleColor(ImGuiCol_Text, enabled ? color : EditorTheme::LOG_DIM);
-        ImGui::PushStyleColor(ImGuiCol_Button, enabled ? EditorTheme::CONSOLE_SEGMENT_ACTIVE : EditorTheme::BTN_GHOST);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorTheme::BTN_GHOST_HOVERED);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorTheme::BTN_GHOST_ACTIVE);
+        ImGui::PushStyleColor(ImGuiCol_Text, enabled ? color : EditorThemeRegistry::Color("LOG_DIM"));
+        ImGui::PushStyleColor(ImGuiCol_Button, enabled ? EditorThemeRegistry::Color("CONSOLE_SEGMENT_ACTIVE") : EditorThemeRegistry::Color("BTN_GHOST"));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorThemeRegistry::Color("BTN_GHOST_HOVERED"));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorThemeRegistry::Color("BTN_GHOST_ACTIVE"));
         if (ImGui::Button(label, ImVec2(segmentWidth, 0.0f)))
             ExecuteEditorCommand("console.set_option", "pointer", std::string(option) + "\t" + (!enabled ? "1" : "0"));
         ctx->RecordSemanticItem("console_filter", name, true, std::string("console.filter.") + id,
@@ -945,11 +946,11 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
 
     if (!stackSeverity)
         ImGui::SameLine(0.0f, 6.0f * dpi);
-    severitySegment("ConsoleFilterInfo", "Log", "show_info", m_cachedInfoCount, EditorTheme::LOG_INFO);
+    severitySegment("ConsoleFilterInfo", "Log", "show_info", m_cachedInfoCount, EditorThemeRegistry::Color("LOG_INFO"));
     ImGui::SameLine(0.0f, segmentGap);
-    severitySegment("ConsoleFilterWarn", "Warn", "show_warnings", m_cachedWarnCount, EditorTheme::LOG_WARNING);
+    severitySegment("ConsoleFilterWarn", "Warn", "show_warnings", m_cachedWarnCount, EditorThemeRegistry::Color("LOG_WARNING"));
     ImGui::SameLine(0.0f, segmentGap);
-    severitySegment("ConsoleFilterError", "Error", "show_errors", m_cachedErrorCount, EditorTheme::LOG_ERROR);
+    severitySegment("ConsoleFilterError", "Error", "show_errors", m_cachedErrorCount, EditorThemeRegistry::Color("LOG_ERROR"));
 
     ImGui::PopStyleVar(3);
 }
@@ -980,7 +981,7 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
     float rowH = m_rowHeight;
 
     // ── Log list (virtual-scrolled) ──
-    ImGui::PushStyleColor(ImGuiCol_Border, EditorTheme::BORDER_TRANSPARENT);
+    ImGui::PushStyleColor(ImGuiCol_Border, EditorThemeRegistry::Color("BORDER_TRANSPARENT"));
     if (ImGui::BeginChild("##ConsoleLogList", ImVec2(0, listH), ImGuiChildFlags_Borders)) {
         float scrollY = ImGui::GetScrollY();
         if (m_resetScrollToTop) {
@@ -1069,9 +1070,9 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
     // ── Draggable splitter ──
     if (hasDetail) {
         float availW = ImGui::GetContentRegionAvail().x;
-        ImGui::PushStyleColor(ImGuiCol_Button, EditorTheme::BTN_GHOST);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorTheme::SPLITTER_HOVER);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorTheme::SPLITTER_ACTIVE);
+        ImGui::PushStyleColor(ImGuiCol_Button, EditorThemeRegistry::Color("BTN_GHOST"));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, EditorThemeRegistry::Color("SPLITTER_HOVER"));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, EditorThemeRegistry::Color("SPLITTER_ACTIVE"));
         ImGui::InvisibleButton("##ConsoleSplitter", ImVec2(availW, splitterH));
         if (ImGui::IsItemActivated())
             m_detailResizeStart = m_detailHeight;
@@ -1120,8 +1121,8 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
         const ImVec4 &clr = LevelColor(strongestLevel);
 
         ImGui::PushStyleColor(ImGuiCol_Text, clr);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorTheme::ROW_NONE);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, EditorTheme::ROW_NONE);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorThemeRegistry::Color("ROW_NONE"));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, EditorThemeRegistry::Color("ROW_NONE"));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 
         // Read-only multiline input — supports text selection & Ctrl+C
@@ -1151,9 +1152,9 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
     if (isSel)
         ImGui::PushStyleColor(ImGuiCol_Header, selectedRow);
     else if (visIdx % 2 == 1)
-        ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::ROW_ALT);
+        ImGui::PushStyleColor(ImGuiCol_Header, EditorThemeRegistry::Color("ROW_ALT"));
     else
-        ImGui::PushStyleColor(ImGuiCol_Header, EditorTheme::ROW_NONE);
+        ImGui::PushStyleColor(ImGuiCol_Header, EditorThemeRegistry::Color("ROW_NONE"));
 
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, selectedRow);
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, selectedRow);
@@ -1211,7 +1212,7 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
     if (ve.count > 1) {
         const std::string countText = std::to_string(ve.count);
         const float countX = rowMax.x - ImGui::GetStyle().FramePadding.x - countWidth;
-        drawList->AddText(ImVec2(countX, textY), ImGui::ColorConvertFloat4ToU32(EditorTheme::LOG_BADGE),
+        drawList->AddText(ImVec2(countX, textY), ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("LOG_BADGE")),
                           countText.c_str());
     }
 
@@ -1227,11 +1228,11 @@ const ImVec4 &ConsolePanel::LevelColor(LogLevel lv) const
     switch (lv) {
     case LOG_ERROR:
     case LOG_FATAL:
-        return EditorTheme::LOG_ERROR;
+        return EditorThemeRegistry::Color("LOG_ERROR");
     case LOG_WARN:
-        return EditorTheme::LOG_WARNING;
+        return EditorThemeRegistry::Color("LOG_WARNING");
     default:
-        return EditorTheme::LOG_INFO;
+        return EditorThemeRegistry::Color("LOG_INFO");
     }
 }
 

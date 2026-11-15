@@ -11,10 +11,11 @@ from infernux import editor
 from infernux.components.ref_wrappers import ComponentRef
 from infernux.core.assets import AssetManager
 from infernux.engine import project_context
-from infernux.engine.interaction import EditorInteractionCore
+from infernux.engine.interaction import EditorInteractionCore, DocumentRegistry
 from infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
 from infernux.engine.resources_manager import ResourceChangeHandler
 from infernux.engine.scene_manager import SceneFileManager
+from infernux.engine.scene_authoring import encode_scene_document
 from infernux.engine.undo import UndoManager
 from infernux.lib import SceneManager
 
@@ -146,6 +147,66 @@ def test_invalid_restored_prefab_preserves_worlds_until_valid_source_arrives(pre
     base.write_text(json.dumps(valid), encoding="utf-8")
     _publish_external_event(handler, "modified", base)
     assert [obj.get_child(0).layer for obj in instances] == [12, 12]
+
+
+@pytest.mark.parametrize("depth", [0, 1])
+def test_failed_cached_prefab_is_unavailable_to_new_instances_and_scene_open(prefab_project, scene, engine, depth,
+                                                                           monkeypatch):
+    from infernux.engine.ui.asset_load_errors import AssetLoadErrors
+
+    database, folder, files, handler = prefab_project
+    files.set_engine(engine)
+    monkeypatch.setattr(AssetLoadErrors, "_instance", None)
+    errors = AssetLoadErrors(database, None)
+    base, source_path, instances, _refs, _identities, _variants = _linked_worlds(scene, prefab_project, depth)
+    source_guid = database.get_guid_from_path(str(source_path))
+    before_source = base.read_bytes()
+    metadata = Path(str(base) + ".meta").read_bytes()
+    before_scene = scene.serialize_document()
+    before_instances = [obj.serialize_document() for obj in instances]
+    target = folder / "Candidate.scene"
+    disk = encode_scene_document(before_scene)
+    disk["objects"][0]["name"] = "Different disk scene"
+    target.write_text(json.dumps(disk), encoding="utf-8")
+    before_target = target.read_bytes()
+    imported_scene = database.import_asset(str(target))
+    assert imported_scene, imported_scene.error
+    documents = DocumentRegistry.instance()
+    document = documents.require(files.document_id_for_scene(scene.world_id))
+    documents.mark_changed(document.document_id)
+    revision = document.revision
+
+    base.write_bytes(b"{ damaged current Prefab source")
+    rejected = AssetManager.reimport_asset(str(base), database=database)
+    assert not rejected and database.get_import_error(database.get_guid_from_path(str(base)))
+    assert source_guid in files._published_prefab_sources
+    assert instantiate_prefab(guid=source_guid, scene=scene, asset_database=database) is None
+    with pytest.raises(ValueError, match="Prefab source.*unavailable"):
+        files.sync_all_prefab_instances(scene)
+    assert not files._do_open_scene(str(target), record_navigation=False)
+    assert files.last_scene_load["status"] == "failed"
+    assert database.get_import_error(imported_scene.guid)
+    assert errors.error(str(target))
+    assert scene.serialize_document() == before_scene
+    assert [obj.serialize_document() for obj in instances] == before_instances
+    assert document.is_dirty and document.revision == revision
+    assert base.read_bytes() == b"{ damaged current Prefab source"
+    assert Path(str(base) + ".meta").read_bytes() == metadata
+    assert target.read_bytes() == before_target
+
+    repaired_source = json.loads(before_source)
+    repaired_source["root_object"]["children"][0]["layer"] = 12
+    base.write_text(json.dumps(repaired_source), encoding="utf-8")
+    assert AssetManager.reimport_asset(str(base), database=database)
+    files.sync_prefab_dependents(database.get_guid_from_path(str(base)))
+    repaired = instantiate_prefab(guid=source_guid, scene=scene, asset_database=database)
+    assert repaired is not None and repaired.get_child(0).layer == 12
+    assert files._do_open_scene(str(target), record_navigation=False)
+    assert files.last_scene_load["status"] == "loaded"
+    assert not database.get_import_error(imported_scene.guid)
+    assert not errors.error(str(target))
+    assert scene.find("Different disk scene") is not None
+    assert target.read_bytes() == before_target
 
 
 def test_different_guid_at_old_path_does_not_replace_instance_source(prefab_project, scene):

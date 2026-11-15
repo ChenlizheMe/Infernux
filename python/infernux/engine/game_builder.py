@@ -1402,6 +1402,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         )
         from infernux.plugins.registry import PluginRegistry
         from infernux.engine.project_context import is_editor_asset_path, package_script_reference
+        from infernux.version import ENGINE_COMPATIBILITY_VERSION
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
 
         registry = PluginRegistry(self.project_path)
         document = registry.load()
@@ -1556,6 +1559,16 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     shutil.copy2(meta, destination + ".meta")
             if not runtime_files:
                 continue
+            engine_range = str(record.get("engine", ""))
+            try:
+                compatible = Version(ENGINE_COMPATIBILITY_VERSION) in SpecifierSet(engine_range)
+            except ValueError as error:
+                raise RuntimeError(f"Player plugin {record['reference']} has an invalid engine range: {engine_range}") from error
+            if not compatible:
+                raise RuntimeError(
+                    f"Player plugin {record['reference']} requires Infernux {engine_range}; "
+                    f"current engine is {ENGINE_COMPATIBILITY_VERSION}"
+                )
             dependency_constraints.update(
                 str(item["requirement"]) for item in record.get("python_requirements", ())
             )
@@ -1567,7 +1580,17 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 packages_root, *str(record["reference"]).split("/"), "requirements.txt"
             )
             if os.path.isfile(package_requirements):
-                dependency_constraints.update(spec for spec, _module in _parse_requirements(package_requirements))
+                from infernux.plugins.manager import PluginManager
+
+                requirements = PluginManager(self.project_path, runtime=True, installation_only=True)
+                try:
+                    plan = requirements.local_package_requirements(str(record["reference"]))
+                    record["dependencies"] = sorted(set(record.get("dependencies", ())) | set(plan.references))
+                    if any(line.strip() and not line.lstrip().startswith("#") for line in plan.python_lines):
+                        with requirements._pip_requirement_file(plan.python_lines) as python_requirements:
+                            dependency_constraints.update(spec for spec, _module in _parse_requirements(python_requirements))
+                finally:
+                    requirements.shutdown()
             control = record.get("control")
             if not isinstance(control, dict):
                 raise RuntimeError(
@@ -1596,6 +1619,34 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     },
                 }
             )
+
+        runtime_by_reference = {str(record["reference"]).casefold(): record for record in runtime_records}
+        package_by_reference = {str(record["reference"]).casefold(): record for record in package_records
+                                if isinstance(record, dict)}
+        for record in runtime_records:
+            for dependency in record["dependencies"]:
+                key = str(dependency).casefold()
+                if key in runtime_by_reference:
+                    continue
+                target = package_by_reference.get(key)
+                reason = ("is not installed" if target is None else "is disabled"
+                          if not bool(target.get("enabled", True)) else "has no exported Runtime content")
+                raise RuntimeError(f"Player plugin dependency {record['reference']} -> {dependency}: {reason}")
+        checked, checking = set(), []
+
+        def check_dependencies(key):
+            if key in checking:
+                raise RuntimeError("Circular Player plugin dependency: " + " -> ".join(checking + [key]))
+            if key in checked:
+                return
+            checking.append(key)
+            for dependency in runtime_by_reference[key]["dependencies"]:
+                check_dependencies(str(dependency).casefold())
+            checking.pop()
+            checked.add(key)
+
+        for key in runtime_by_reference:
+            check_dependencies(key)
 
         runtime_registry = {
             "$schema": document.get("$schema", "infernux.plugin_registry"),

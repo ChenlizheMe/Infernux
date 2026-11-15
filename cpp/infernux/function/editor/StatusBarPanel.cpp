@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "StatusBarPanel.h"
 #include "ConsolePanel.h"
 #include <function/renderer/gui/InxGUISemantics.h>
@@ -46,20 +47,20 @@ void StatusBarPanel::OnRender(InxGUIContext *ctx)
         syncFromEngine();
 
     float dpi = ctx->GetDpiScale();
-    float height = EditorTheme::STATUS_BAR_BASE_HEIGHT * dpi;
+    float height = EditorThemeRegistry::Float("STATUS_BAR_BASE_HEIGHT") * dpi;
 
     ctx->SetNextWindowPos(x0, y0 + dispH - height, ImGuiCond_Always, 0.0f, 0.0f);
     ctx->SetNextWindowSize(dispW, height, ImGuiCond_Always);
 
     // Style overrides (before Begin)
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorTheme::STATUS_BAR_BG);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorThemeRegistry::Color("STATUS_BAR_BG"));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                        ImVec2(EditorTheme::STATUS_BAR_WIN_PAD.x * dpi, EditorTheme::STATUS_BAR_WIN_PAD.y * dpi));
+                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").y * dpi));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2(EditorTheme::STATUS_BAR_ITEM_SPC.x * dpi, EditorTheme::STATUS_BAR_ITEM_SPC.y * dpi));
+                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").y * dpi));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(EditorTheme::STATUS_BAR_FRAME_PAD.x * dpi, EditorTheme::STATUS_BAR_FRAME_PAD.y * dpi));
+                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").y * dpi));
 
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
@@ -82,7 +83,7 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
 {
     const bool statusActive = !m_statusText.empty();
     const float dpi = ctx->GetDpiScale();
-    const float barHeight = (EditorTheme::STATUS_BAR_BASE_HEIGHT - 8.0f) * dpi;
+    const float barHeight = (EditorThemeRegistry::Float("STATUS_BAR_BASE_HEIGHT") - 8.0f) * dpi;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float availableWidth = (std::max)(0.0f, ImGui::GetContentRegionAvail().x);
     const float preferredStatusWidth = (std::min)((std::max)(210.0f * dpi, availableWidth * 0.36f), 430.0f * dpi);
@@ -112,10 +113,10 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     const float consoleRight = origin.x + consoleWidth;
     const float textY = origin.y + (barHeight - ImGui::GetTextLineHeight()) * 0.5f;
     draw->AddLine(ImVec2(origin.x, origin.y - 4.0f * dpi), ImVec2(right, origin.y - 4.0f * dpi),
-                  ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_BAR_BORDER));
+                  ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_BAR_BORDER")));
     if (consoleHovered)
         draw->AddRectFilled(origin, ImVec2(consoleRight, origin.y + barHeight),
-                            ImGui::ColorConvertFloat4ToU32(EditorTheme::BTN_SB_HOVERED));
+                            ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("BTN_SB_HOVERED")));
 
     char infoText[48];
     char warningText[48];
@@ -145,15 +146,15 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
 
     float x = countX;
     draw->AddText(ImVec2(x, textY),
-                  ImGui::ColorConvertFloat4ToU32(m_infoCount > 0 ? EditorTheme::LOG_INFO : EditorTheme::LOG_DIM),
+                  ImGui::ColorConvertFloat4ToU32(m_infoCount > 0 ? EditorThemeRegistry::Color("LOG_INFO") : EditorThemeRegistry::Color("LOG_DIM")),
                   infoText);
     x += infoWidth + countGap;
     draw->AddText(ImVec2(x, textY),
-                  ImGui::ColorConvertFloat4ToU32(m_warningCount > 0 ? EditorTheme::LOG_WARNING : EditorTheme::LOG_DIM),
+                  ImGui::ColorConvertFloat4ToU32(m_warningCount > 0 ? EditorThemeRegistry::Color("LOG_WARNING") : EditorThemeRegistry::Color("LOG_DIM")),
                   warningText);
     x += warningWidth + countGap;
     draw->AddText(ImVec2(x, textY),
-                  ImGui::ColorConvertFloat4ToU32(m_errorCount > 0 ? EditorTheme::LOG_ERROR : EditorTheme::LOG_DIM),
+                  ImGui::ColorConvertFloat4ToU32(m_errorCount > 0 ? EditorThemeRegistry::Color("LOG_ERROR") : EditorThemeRegistry::Color("LOG_DIM")),
                   errorText);
 
     if (statusActive)
@@ -170,16 +171,16 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
                                         float progress, const std::string &kind)
 {
     const bool determinate = kind == "progress" && progress >= 0.0f && progress < 1.0f;
-    ImVec4 statusColor = EditorTheme::STATUS_PROGRESS_LABEL_CLR;
+    ImVec4 statusColor = EditorThemeRegistry::Color("STATUS_PROGRESS_LABEL_CLR");
     const char *statusIcon = "";
     if (kind == "success") {
         statusColor = ImVec4(0.42f, 0.78f, 0.48f, 1.0f);
         statusIcon = "OK";
     } else if (kind == "warning") {
-        statusColor = EditorTheme::LOG_WARNING;
+        statusColor = EditorThemeRegistry::Color("LOG_WARNING");
         statusIcon = "!";
     } else if (kind == "error") {
-        statusColor = EditorTheme::LOG_ERROR;
+        statusColor = EditorThemeRegistry::Color("LOG_ERROR");
         statusIcon = "!";
     } else if (kind == "activity") {
         const float pulse = 0.68f + 0.22f * static_cast<float>(std::sin(ImGui::GetTime() * 4.0));
@@ -188,9 +189,9 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
     }
 
     ImDrawList *draw = ImGui::GetWindowDrawList();
-    draw->AddLine(ImVec2(x, y), ImVec2(x, y + height), ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_BAR_BORDER));
+    draw->AddLine(ImVec2(x, y), ImVec2(x, y + height), ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_BAR_BORDER")));
     draw->AddRectFilled(ImVec2(x + 1.0f * dpi, y), ImVec2(x + width, y + height),
-                        ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_ACTIVITY_BG));
+                        ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_ACTIVITY_BG")));
 
     const float textY = y + (height - ImGui::GetTextLineHeight()) * 0.5f;
     float textX = x + 11.0f * dpi;
@@ -206,7 +207,7 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
                  static_cast<int>(std::round((std::min)((std::max)(progress, 0.0f), 1.0f) * 100.0f)));
         percentageWidth = ImGui::CalcTextSize(percentage).x;
         draw->AddText(ImVec2(x + width - percentageWidth - 10.0f * dpi, textY),
-                      ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_PROGRESS_LABEL_CLR), percentage);
+                      ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_PROGRESS_LABEL_CLR")), percentage);
     }
 
     const float labelRight = x + width - (determinate ? percentageWidth + 20.0f * dpi : 9.0f * dpi);
@@ -219,10 +220,10 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
     if (determinate) {
         const float clamped = (std::min)((std::max)(progress, 0.0f), 1.0f);
         draw->AddRectFilled(ImVec2(x + 1.0f * dpi, lineY), ImVec2(x + width, y + height),
-                            ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_PROGRESS_BG));
+                            ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_PROGRESS_BG")));
         draw->AddRectFilled(ImVec2(x + 1.0f * dpi, lineY),
                             ImVec2(x + 1.0f * dpi + (width - 1.0f * dpi) * clamped, y + height),
-                            ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_PROGRESS_CLR));
+                            ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_PROGRESS_CLR")));
     } else if (kind == "activity") {
         const float trackWidth = (std::max)(40.0f * dpi, width * 0.28f);
         const float travel = (std::max)(1.0f * dpi, width - trackWidth - 2.0f * dpi);
@@ -236,10 +237,10 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
 const ImVec4 &StatusBarPanel::LevelColorForString(const std::string &level) const
 {
     if (level == "error")
-        return EditorTheme::LOG_ERROR;
+        return EditorThemeRegistry::Color("LOG_ERROR");
     if (level == "warning")
-        return EditorTheme::LOG_WARNING;
-    return EditorTheme::LOG_INFO;
+        return EditorThemeRegistry::Color("LOG_WARNING");
+    return EditorThemeRegistry::Color("LOG_INFO");
 }
 
 } // namespace infernux

@@ -48,6 +48,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -81,6 +82,21 @@ namespace infernux
 {
 namespace
 {
+
+void ValidateRenderTextureConsumers(const std::string &guid, const rhi::RenderTextureDesc &description)
+{
+    if (description.depthFormat != rhi::PixelFormat::Undefined)
+        return;
+    for (const auto &dependent : AssetDependencyGraph::Instance().GetDependents(guid)) {
+        uint64_t id = 0;
+        const auto parsed = std::from_chars(dependent.data(), dependent.data() + dependent.size(), id);
+        if (parsed.ec != std::errc{} || parsed.ptr != dependent.data() + dependent.size())
+            continue;
+        const auto *camera = dynamic_cast<Camera *>(Component::FindByComponentId(id));
+        if (camera && camera->GetTargetTextureGuid() == guid)
+            throw std::invalid_argument("Camera target_texture requires a RenderTexture with a depth attachment");
+    }
+}
 
 uint64_t ParticleCollisionStableHash(std::string_view value) noexcept
 {
@@ -466,10 +482,12 @@ struct InxRenderer::ImportedRenderTexture
 };
 
 std::shared_ptr<rhi::RenderTexture> InxRenderer::LoadRenderTexture(const std::string &guid)
+try
 {
     auto description = AssetRegistry::Instance().LoadAsset<rhi::RenderTextureDesc>(guid, ResourceType::RenderTexture);
     if (!description)
         throw std::invalid_argument("RenderTexture requires an imported asset GUID: " + guid);
+    ValidateRenderTextureConsumers(guid, *description);
     auto existing = m_assetRenderTextures.find(guid);
     if (existing != m_assetRenderTextures.end()) {
         if (auto owner = existing->second.lock()) {
@@ -496,9 +514,18 @@ std::shared_ptr<rhi::RenderTexture> InxRenderer::LoadRenderTexture(const std::st
     m_assetRenderTextures[guid] = owner;
     return {owner, texture.get()};
 }
+catch (const std::exception &error)
+{
+    m_assetRenderTextures.erase(guid);
+    auto *database = AssetRegistry::Instance().GetAssetDatabase();
+    if (database && database->GetImportError(guid).empty())
+        database->ReportRuntimeLoadFailure(guid, "RenderTexture GPU publication failed: " + std::string(error.what()));
+    return nullptr;
+}
 
 void InxRenderer::ReconfigureImportedRenderTexture(const std::string &guid, const rhi::RenderTextureDesc &description)
 {
+    ValidateRenderTextureConsumers(guid, description);
     auto entry = m_assetRenderTextures.find(guid);
     if (entry == m_assetRenderTextures.end())
         return; // Importing an unused description must not allocate a GPU target.
@@ -2691,6 +2718,8 @@ void InxRenderer::InvalidateUIMaterialProgram(const ShaderStagePair &stages)
 
 void InxRenderer::RetireShaderProgramArtifact(const ShaderProgramKey &key)
 {
+    if (m_particleGpuSystemManager)
+        m_particleGpuSystemManager->InvalidateMaterialProgram(key.stages);
     if (m_screenUIRenderer)
         m_screenUIRenderer->InvalidateMaterialProgram(key.stages);
     if (m_vkCore)
@@ -3008,6 +3037,9 @@ std::array<uint64_t, 3> InxRenderer::GetRenderTexturePreview(const std::shared_p
 
 std::array<uint64_t, 3> InxRenderer::GetImportedRenderTexturePreview(const std::string &guid)
 {
+    const auto *database = AssetRegistry::Instance().GetAssetDatabase();
+    if (database && !database->GetImportError(guid).empty())
+        return {};
     const auto found = m_assetRenderTextures.find(guid);
     if (found != m_assetRenderTextures.end())
         if (const auto owner = found->second.lock())
@@ -3933,6 +3965,11 @@ CaptureSnapshot InxRenderer::QueryCapture(uint64_t captureId) const
     return m_captureService->Query(captureId);
 }
 
+void InxRenderer::SetCaptureCompletionCallback(std::function<void(uint64_t)> callback)
+{
+    m_captureService->SetCompletionCallback(std::move(callback));
+}
+
 bool InxRenderer::CancelCapture(uint64_t captureId)
 {
     if (!m_captureService || !m_captureService->Cancel(captureId))
@@ -4313,7 +4350,16 @@ bool InxRenderer::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material)
         return false;
     }
 
-    const auto shaderProgram = ResolveShaderProgramArtifact(material, std::nullopt);
+    std::shared_ptr<const ShaderProgramArtifact> shaderProgram;
+    try {
+        shaderProgram = ResolveShaderProgramArtifact(material, std::nullopt);
+    } catch (const std::exception &error) {
+        RemoveMaterialPipeline(material->GetMaterialKey());
+        if (m_particleGpuSystemManager)
+            m_particleGpuSystemManager->InvalidateMaterialProgram({material->GetVertShaderName(), material->GetFragShaderName()});
+        INXLOG_ERROR("Current material program is unavailable: ", error.what());
+        return false;
+    }
 
     // Get shader names from material
     const std::string &vertName = material->GetVertShaderName();

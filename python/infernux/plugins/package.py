@@ -47,9 +47,8 @@ _IGNORED_PARTS = frozenset({".git", "__pycache__"})
 _CONTROL_NAMES = frozenset({"requirements.txt"})
 _CONTROL_DIRECTORIES = frozenset({"plugin_pages"})
 _SOURCE_FIELDS = frozenset(
-    {"$schema", "reference", "name", "version", "intro", "intros", "engine", "pages"}
+    {"$schema", "reference", "name", "version", "intro", "intros", "engine", "pages", "category"}
 )
-_PACKAGE_FIELDS = frozenset((*_SOURCE_FIELDS, "control_guid", "files"))
 
 
 def package_control_guid(reference: str) -> str:
@@ -175,6 +174,8 @@ class InxPackage:
             "control_guid": package_control_guid(reference),
             "files": records,
         }
+        if "category" in source_document:
+            document["category"] = source_document["category"]
         InxPackage.validate_metadata(document)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         with tempfile.TemporaryDirectory(
@@ -331,8 +332,11 @@ class InxPackage:
             "engine", "pages", "control_guid",
             "files",
         }
-        if value.get("$schema") != PACKAGE_SCHEMA or set(value) != expected_fields:
+        if (value.get("$schema") != PACKAGE_SCHEMA or not expected_fields.issubset(value)
+                or set(value) - expected_fields - {"category"}):
             raise ValueError("Unsupported InxPackage metadata schema")
+        if "category" in value and not isinstance(value["category"], str):
+            raise ValueError("InxPackage category must be a string")
         reference = validate_reference(str(value.get("reference", "")))
         control_guid = str(value.get("control_guid", ""))
         _validate_guid(control_guid, "control_guid")
@@ -436,7 +440,7 @@ class InxPackage:
                 loaded = json.load(stream)
             if not isinstance(loaded, dict):
                 raise ValueError("inx_package.json must contain an object")
-            if set(loaded) == _PACKAGE_FIELDS:
+            if loaded.get("$schema") == PACKAGE_SCHEMA and {"control_guid", "files"} <= loaded.keys():
                 # Installed packages carry the canonical generated manifest so
                 # the AssetDatabase and Player cook share the same GUID/file
                 # ledger. File Manager export treats that exact schema as an

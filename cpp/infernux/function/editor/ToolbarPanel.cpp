@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "ToolbarPanel.h"
 #include <function/renderer/gui/InxGUISemantics.h>
 
@@ -59,11 +60,11 @@ void ToolbarPanel::PreRender(InxGUIContext *ctx)
     // These authored overrides replace the already-scaled global style.
     const float dpi = ctx->GetDpiScale();
     const auto scaled = [dpi](ImVec2 size) { return ImVec2(size.x * dpi, size.y * dpi); };
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorTheme::TOOLBAR_WIN_PAD));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorTheme::TOOLBAR_FRAME_PAD));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorTheme::TOOLBAR_ITEM_SPC));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorTheme::TOOLBAR_FRAME_RND * dpi);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD * dpi);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_WIN_PAD")));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_FRAME_PAD")));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorThemeRegistry::Vec2("TOOLBAR_ITEM_SPC")));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorThemeRegistry::Float("TOOLBAR_FRAME_RND") * dpi);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorThemeRegistry::Float("TOOLBAR_FRAME_BRD") * dpi);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -106,9 +107,9 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
     // ── Play / Stop ──────────────────────────────────────────────
     if (isPlaying && !isPaused)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::PLAY_ACTIVE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("PLAY_ACTIVE"));
     else
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_IDLE"));
 
     std::string playLabel = isPlaying ? T("toolbar.stop") : T("toolbar.play");
     const bool playClicked = ImGui::Button(playLabel.c_str());
@@ -122,11 +123,11 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
     // ── Pause / Resume ───────────────────────────────────────────
     if (!isPlaying)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_DISABLED);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_DISABLED"));
     else if (isPaused)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::PAUSE_ACTIVE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("PAUSE_ACTIVE"));
     else
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_IDLE"));
 
     std::string pauseLabel = isPaused ? T("toolbar.resume") : T("toolbar.pause");
     const bool pauseClicked = ImGui::Button(pauseLabel.c_str());
@@ -140,9 +141,9 @@ void ToolbarPanel::RenderPlayControls(InxGUIContext *ctx, float winW)
 
     // ── Step ─────────────────────────────────────────────────────
     if (isPaused)
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_IDLE);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_IDLE"));
     else
-        EditorTheme::PushFlatButtonStyle(EditorTheme::BTN_DISABLED);
+        EditorTheme::PushFlatButtonStyle(EditorThemeRegistry::Color("BTN_DISABLED"));
 
     std::string stepLabel = T("toolbar.step");
     const bool stepClicked = ImGui::Button(stepLabel.c_str());

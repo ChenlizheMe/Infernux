@@ -20,6 +20,7 @@ from infernux.plugins import (
 
 from .asset_resource_preview import render_document_image
 from .dpi import scaled_editor_metric
+from .catalog_browser import CatalogBrowserPanel
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import ImGuiCol, ImGuiStyleVar, Theme
@@ -37,7 +38,7 @@ def _metric(ctx, value: float) -> float:
     menu_path_keys=("menu.extensions",),
     interaction=PanelInteractionDescriptor(),
 )
-class PluginPanel(EditorPanel):
+class PluginPanel(CatalogBrowserPanel):
     """Infernux-native package browser for the project InxPackage registry."""
 
     def __init__(self) -> None:
@@ -56,9 +57,6 @@ class PluginPanel(EditorPanel):
 
         self._versions = PluginVersionsView()
 
-    def _initial_size(self) -> tuple[float, float]:
-        return 1180.0, 740.0
-
     def select_reference(self, reference: str) -> bool:
         """Reveal one package after navigation from another editor surface."""
 
@@ -71,20 +69,11 @@ class PluginPanel(EditorPanel):
         self._selected_reference = value
         return True
 
-    def _push_window_style(self, ctx) -> None:
-        ctx.push_style_var_vec2(
-            ImGuiStyleVar.WindowPadding,
-            _metric(ctx, Theme.PROJECT_PANEL_PAD[0]),
-            _metric(ctx, Theme.PROJECT_PANEL_PAD[1]),
-        )
-        ctx.push_style_var_vec2(
-            ImGuiStyleVar.ItemSpacing,
-            _metric(ctx, Theme.TOOLBAR_ITEM_SPC[0]),
-            _metric(ctx, Theme.TOOLBAR_ITEM_SPC[1]),
-        )
-
-    def _pop_window_style(self, ctx) -> None:
-        ctx.pop_style_var(2)
+    def select_category(self, category: str) -> None:
+        """Reveal a package category when navigating from a related tool."""
+        self._scope_index = 0
+        self._category_index = OFFICIAL_PLUGIN_CATEGORIES.index(category) + 1
+        self._search = ""
 
     def on_render_content(self, ctx) -> None:
         manager = PluginManager.instance()
@@ -110,29 +99,9 @@ class PluginPanel(EditorPanel):
             )
             self._selected_reference = str(preferred.get("reference", "")) if preferred else ""
 
-        ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
-        ctx.separator()
-        ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
-        available_w = max(_metric(ctx, 520.0), ctx.get_content_region_avail_width())
-        available_h = max(_metric(ctx, 260.0), ctx.get_content_region_avail_height())
-        column_gap = _metric(ctx, Theme.INSPECTOR_TITLE_GAP)
-        left_w = min(_metric(ctx, 360.0), max(_metric(ctx, 260.0), available_w * 0.31))
-        right_w = max(_metric(ctx, 240.0), available_w - left_w - column_gap)
-
-        if ctx.begin_child("##plugins_package_list", left_w, available_h, True, Theme.WINDOW_FLAGS_NO_SCROLL):
-            self._render_package_list(ctx, manager, rows)
-        ctx.end_child()
-        ctx.same_line(0.0, column_gap)
-        if ctx.begin_child("##plugins_package_details", right_w, available_h, False, Theme.WINDOW_FLAGS_NO_SCROLL):
-            selected = next(
-                (
-                    row for row in rows
-                    if str(row.get("reference", "")).casefold() == self._selected_reference.casefold()
-                ),
-                None,
-            )
-            self._render_package_details(ctx, manager, selected)
-        ctx.end_child()
+        selected = next((row for row in rows if str(row.get("reference", "")).casefold()
+                         == self._selected_reference.casefold()), None)
+        self._render_catalog_columns(ctx, manager, rows, selected)
 
     def _render_toolbar(self, ctx, manager: PluginManager) -> None:
         if ctx.button(t("plugins.add") + "##plugins_add", width=_metric(ctx, 112.0)):
@@ -262,7 +231,7 @@ class PluginPanel(EditorPanel):
                 merged["_installed"] = True
                 merged["_installed_version"] = installed_version
                 merged["_official"] = row["_official"]
-                merged["_category_key"] = row["_category_key"]
+                merged["_category_key"] = normalize_plugin_category(merged.get("category", "other"))
                 merged["_cached"] = row["_cached"]
                 row = merged
             rows.append(row)
@@ -328,7 +297,7 @@ class PluginPanel(EditorPanel):
             filtered.sort(key=lambda row: category_order[row["_category_key"]])
         return filtered
 
-    def _render_package_list(self, ctx, manager: PluginManager, rows: list[dict[str, object]]) -> None:
+    def _render_catalog_list(self, ctx, manager: PluginManager, rows: list[dict[str, object]]) -> None:
         ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
         ctx.label(t("plugins.packages_count").format(count=len(rows)))
         ctx.pop_style_color()
@@ -414,7 +383,7 @@ class PluginPanel(EditorPanel):
         ctx.end_child()
         ctx.pop_style_color()
 
-    def _render_package_details(
+    def _render_catalog_details(
         self,
         ctx,
         manager: PluginManager,
@@ -668,11 +637,6 @@ class PluginPanel(EditorPanel):
                         self._begin_install(
                             manager,
                             label=reference,
-                            work=lambda report, ref=reference: manager.download_reference(
-                                ref,
-                                force=True,
-                                progress=report,
-                            ),
                             action="download",
                         )
                     if blocked:
@@ -685,9 +649,6 @@ class PluginPanel(EditorPanel):
                     self._begin_install(
                         manager,
                         label=reference,
-                        work=lambda report, ref=reference: manager.install_reference(
-                            ref, progress=report,
-                        ),
                         action="install",
                     )
                 ctx.end_disabled()
@@ -774,20 +735,6 @@ class PluginPanel(EditorPanel):
         ctx.pop_style_color(3)
         return clicked
 
-    @staticmethod
-    def _fit_text(ctx, value: str, max_width: float) -> str:
-        if ctx.calc_text_width(value) <= max_width:
-            return value
-        low, high = 0, len(value)
-        while low < high:
-            middle = (low + high + 1) // 2
-            candidate = f"{value[:middle]}..."
-            if ctx.calc_text_width(candidate) <= max_width:
-                low = middle
-            else:
-                high = middle - 1
-        return f"{value[:low]}..."
-
     @classmethod
     def _status_rank(cls, state, row: Mapping[str, object]) -> int:
         label, _color = cls._state_visual(state, row)
@@ -857,78 +804,24 @@ class PluginPanel(EditorPanel):
         if not syntax:
             self._message = t("plugins.install_confirm.empty")
             return
-        from .plugin_install_confirmation import (
-            PluginInstallConfirmationCoordinator,
-        )
-
         if update:
             if kind != "source":
                 raise ValueError("Only an InxPackage source can be updated")
-            work = lambda report: manager.download_source(syntax, progress=report, update=True)
-        elif kind == "source":
-            work = lambda report: manager.install_source(syntax, progress=report)
-        else:
-            work = lambda report: manager.install_pip(syntax, progress=report)
+        self._begin_install(manager, label=syntax,
+                            action="update" if update else kind)
 
-        requested = PluginInstallConfirmationCoordinator.instance().request(
-            kind,
-            syntax,
-            lambda: self._begin_install(
-                manager,
-                label=syntax,
-                work=work,
-                action="update" if update else kind,
-            ),
-        )
-        if not requested:
-            self._message = t("plugins.install_progress.busy")
-
-    def _begin_install(self, manager: PluginManager, *, label: str, work, action: str) -> None:
+    def _begin_install(self, manager: PluginManager, *, label: str, action: str) -> None:
         from .plugin_install_progress import PluginInstallProgressService
 
-        def complete(ok: bool, result: object | None, message: str) -> None:
-            if not ok:
-                self._message = message or t("plugins.install_progress.failed")
-                return
-            if action == "update":
-                # Completion runs after presentation on the Editor owner
-                # thread. Only acquisition belongs to the background worker;
-                # replacing live scripts and preloads must publish here.
-                try:
-                    result = manager.install_package(
-                        str(result["path"]), source=result["source"], update=True,
-                    )
-                except Exception as exc:
-                    self._message = f"{type(exc).__name__}: {exc}"
-                    Debug.log_error(f"Plugin update failed for {label}: {self._message}")
-                    return
-            if manager.pending_install is not None:
-                self._message = t("plugins.dependencies_pending")
-                from .plugin_install_confirmation import PluginInstallConfirmationCoordinator
-
-                PluginInstallConfirmationCoordinator.instance().request_restart(manager)
-                return
-            reference = str(getattr(result, "reference", ""))
-            if reference:
-                try:
-                    if action != "update":
-                        result = manager.finalize_background_install(reference)
-                except Exception as exc:
-                    self._message = f"{type(exc).__name__}: {exc}"
-                    Debug.log_error(f"Plugin activation failed for {reference}: {self._message}")
-                    return
-                self._selected_reference = reference
-            self._message = t("plugins.action_ok").format(
-                action=action,
-                reference=reference,
-            )
-
-        if not PluginInstallProgressService.instance().begin(
-            label=label,
-            work=work,
-            complete=complete,
+        if not PluginInstallProgressService.instance().begin_package(
+            manager=manager, label=label, action=action, observer=self._on_install_finished,
         ):
             self._message = t("plugins.install_progress.busy")
+
+    def _on_install_finished(self, reference, message):
+        if reference:
+            self._selected_reference = reference
+        self._message = message
 
     def _run(self, callback, action: str) -> None:
         """Run a package mutation after the native UI frame has retired.
@@ -965,7 +858,8 @@ class PluginPanel(EditorPanel):
                 self._selected_reference = str(reference)
             elif action == "uninstall":
                 self._selected_reference = ""
-            self._message = t("plugins.action_ok").format(action=action, reference=reference)
+            self._message = str(getattr(result, "error", "")) or t("plugins.action_ok").format(
+                action=action, reference=reference)
         except Exception as exc:
             self._message = f"{type(exc).__name__}: {exc}"
             Debug.log_error(f"Plugin {action} failed: {self._message}")

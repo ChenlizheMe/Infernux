@@ -7,8 +7,8 @@ import pytest
 from pathlib import Path
 
 from infernux.host import EditorAutomationHost, MainThreadCommandQueue
-from infernux_mcp import session
-from infernux_mcp.operations import build_operations
+from infernux.host import context as session
+from infernux.host.editor_operations import build_editor_operations as build_operations
 
 
 def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
@@ -64,7 +64,7 @@ def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
 
 
 def test_runtime_compute_operations_use_host_and_editor_boundary(monkeypatch):
-    from infernux_mcp import runtime_operations
+    from infernux.host import runtime_operations
     from infernux.host import OperationKind
 
     calls = []
@@ -130,7 +130,7 @@ def test_ui_input_query_distinguishes_filtered_clicks_without_dispatch(editor_pr
     from infernux.engine.bootstrap import EditorBootstrap
     from infernux.engine.ui import game_view_panel
     from infernux.host import OperationKind
-    from infernux_mcp import runtime_operations
+    from infernux.host import runtime_operations
 
     panel = game_view_panel.GameViewPanel()
     panel._last_game_width, panel._last_game_height = 480, 270
@@ -285,12 +285,7 @@ class _AutomationHost(EditorAutomationHost):
 
 
 def _operations(tmp_path):
-    session.configure(
-        str(tmp_path),
-        {
-            "session": {"build_profile": "debug_feedback"},
-        },
-    )
+    session.configure(str(tmp_path))
     queue = MainThreadCommandQueue()
     queue._main_thread_id = threading.get_ident()
     MainThreadCommandQueue._instance = queue
@@ -301,7 +296,7 @@ def _operations(tmp_path):
 
 
 def test_pointer_click_publishes_one_native_gesture_batch(tmp_path, monkeypatch):
-    from infernux_mcp import input_operations
+    from infernux.host import input_operations
 
     operations, host = _operations(tmp_path)
     original = input_operations.on_editor
@@ -354,16 +349,7 @@ def test_runtime_stop_waits_for_scene_restore_after_state_becomes_edit(tmp_path)
 
 
 def test_capture_surface_cannot_fall_back_to_operating_system_pixels():
-    plugin = (
-        Path(__file__).parents[2]
-        / "external"
-        / "plugins"
-        / "infernux_mcp"
-        / "package"
-        / "editor"
-        / "infernux_mcp"
-        / "capture_operations.py"
-    )
+    plugin = Path(__file__).parents[2] / "python/infernux/host/capture_operations.py"
     tree = ast.parse(plugin.read_text(encoding="utf-8"), filename=str(plugin))
     forbidden_roots = {"PIL", "pyautogui", "mss", "ImageGrab", "win32gui", "win32ui"}
     imported = set()

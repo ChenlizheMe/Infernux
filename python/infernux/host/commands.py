@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Callable
 from weakref import WeakSet
@@ -132,7 +132,7 @@ class MainThreadCommandQueue:
     _instance: "MainThreadCommandQueue | None" = None
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[tuple[str, Callable[[], Any], CommandFuture]] = (
+        self._queue: queue.Queue[tuple[str, Callable[[], Any], CommandFuture, Any, Any]] = (
             queue.Queue()
         )
         self._main_thread_id: int | None = None
@@ -149,27 +149,41 @@ class MainThreadCommandQueue:
         self, name: str, fn: Callable[[], Any], *, timeout_ms: int = 30000
     ) -> CommandFuture:
         future = CommandFuture(name, timeout_ms=timeout_ms)
+        from infernux.engine.reload.owners import owner_for
+        reload_owner = owner_for(fn)
+        lifetime = reload_owner.child() if reload_owner is not None else None
+        if lifetime is not None:
+            lifetime.add_cleanup(lambda: future.cancel("Current source was retired."))
         command_owner = _COMMAND_OWNER.get()
         if command_owner is not None and not command_owner._accept(future):
+            if lifetime is not None:
+                lifetime.close()
             return future
         with self._owner_lock:
             owner_thread_id = self._main_thread_id
             wake_callback = self._wake_callback
         if owner_thread_id == threading.get_ident():
-            if not future._begin_execute():
-                return future
-            try:
-                future.set_result(fn())
-            except BaseException as exc:
-                future.set_error(exc)
+            self._execute(fn, future, reload_owner, lifetime)
             return future
-        self._queue.put((name, fn, future))
+        self._queue.put((name, fn, future, reload_owner, lifetime))
         if wake_callback is not None:
             try:
                 wake_callback()
             except BaseException as exc:
                 future.cancel(f"Host command could not wake its owner thread: {exc}")
         return future
+
+    @staticmethod
+    def _execute(fn, future, reload_owner, lifetime):
+        try:
+            if future._begin_execute():
+                with reload_owner.enter() if reload_owner is not None else nullcontext():
+                    future.set_result(fn())
+        except BaseException as exc:
+            future.set_error(exc)
+        finally:
+            if lifetime is not None:
+                lifetime.close()
 
     def set_wake_callback(self, callback: Callable[[], None] | None) -> None:
         """Set the owner-loop wake edge used after background submissions."""
@@ -194,14 +208,10 @@ class MainThreadCommandQueue:
         processed = 0
         for _ in range(max(int(max_commands), 0)):
             try:
-                _name, fn, future = self._queue.get_nowait()
+                _name, fn, future, reload_owner, lifetime = self._queue.get_nowait()
             except queue.Empty:
                 break
-            if future._begin_execute():
-                try:
-                    future.set_result(fn())
-                except BaseException as exc:
-                    future.set_error(exc)
+            self._execute(fn, future, reload_owner, lifetime)
             processed += 1
         return processed
 
@@ -209,10 +219,12 @@ class MainThreadCommandQueue:
         cancelled = 0
         while True:
             try:
-                _name, _fn, future = self._queue.get_nowait()
+                _name, _fn, future, _reload_owner, lifetime = self._queue.get_nowait()
             except queue.Empty:
                 break
             cancelled += int(future.cancel(reason))
+            if lifetime is not None:
+                lifetime.close()
         return cancelled
 
     def wait_until_ready(self, timeout: float = 5.0) -> bool:

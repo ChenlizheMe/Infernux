@@ -79,6 +79,8 @@ def test_texture_reimport_publishes_only_complete_source(engine, case, payload):
     guid = initial.guid
     artifact = Path(database.get_runtime_artifact_path(guid, native.ResourceType.Texture))
     before = artifact.read_bytes()
+    retained = registry.load_texture_by_guid(guid)
+    assert retained is not None
     try:
         source.write_bytes(payload)
         result = database.reimport_asset(str(source))
@@ -87,6 +89,9 @@ def test_texture_reimport_publishes_only_complete_source(engine, case, payload):
         after_path = Path(database.get_runtime_artifact_path(guid, native.ResourceType.Texture))
         if not result:
             assert result.error
+            assert not registry.is_loaded(guid)
+            assert registry.get_texture_asset(guid) is None
+            assert registry.load_texture_by_guid(guid) is None
             assert after_path == artifact
             assert after_path.read_bytes() == before
             # A corrected save is accepted on the same asset without deleting its meta.
@@ -94,6 +99,7 @@ def test_texture_reimport_publishes_only_complete_source(engine, case, payload):
             corrected = database.reimport_asset(str(source))
             assert corrected, corrected.error
             assert corrected.guid == guid
+            assert registry.load_texture_by_guid(guid) is not None
         else:
             assert after_path.read_bytes() != before
     finally:

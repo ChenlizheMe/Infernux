@@ -132,6 +132,25 @@ def publish(source, document, database):
     assert result.succeeded, result.error
 
 
+def test_failed_target_stops_current_preview_but_keeps_retained_gpu_lease(imported_target, engine):
+    source, guid, document, database = imported_target
+    target = RenderTexture.load_by_guid(guid)
+    preview = engine._get_render_texture_preview(guid)
+    assert preview[0] and tuple(preview[1:]) == (53, 29)
+    source.write_text('{"$type":"render_texture","size": "broken current target"}', encoding="utf-8")
+    failed = database.reimport_asset(str(source))
+    assert not failed and database.get_import_error(guid)
+    assert target.width == 53 and target.height == 29
+    assert tuple(engine._get_render_texture_preview(guid)) == (0, 0, 0)
+    assert engine._load_render_texture(guid) is None
+    document["size"] = {"width": 61, "height": 31}
+    publish(source, document, database)
+    repaired = RenderTexture.load_by_guid(guid)
+    assert repaired.width == 61 and repaired.height == 31
+    preview = engine._get_render_texture_preview(guid)
+    assert preview[0] and tuple(preview[1:]) == (61, 31)
+
+
 def test_material_target_reimport_delete_restore_includes_runtime_clones(imported_target, engine):
     source, guid, document, database = imported_target
     meta_path = Path(str(source) + ".meta")
@@ -447,14 +466,17 @@ def test_device_rejection_does_not_publish_cpu_or_gpu_generation(imported_target
     document["size"] = {"width": 2**32 - 1, "height": 29}
     # This is a valid portable description, but cannot be allocated on this GPU.
     source.write_text(json.dumps(document), encoding="utf-8")
-    assert database.reimport_asset(str(source)).succeeded
+    failed = database.reimport_asset(str(source))
+    assert not failed and failed.database_committed and "limits" in failed.error
+    assert not registry.is_loaded(guid)
     with pytest.raises(ValueError, match="limits"):
-        registry.reload_asset(guid)
+        RenderTexture.load_by_guid(guid)
     assert (registry.get_asset_version(guid), target.revision) == previous
     assert (target.width, target.height) == (53, 29)
     document["size"] = {"width": 57, "height": 31}
     publish(source, document, database)
-    assert (target.width, target.height) == (57, 31)
+    repaired = RenderTexture.load_by_guid(guid)
+    assert (repaired.width, repaired.height) == (57, 31)
 
 
 def test_camera_depth_requirement_survives_disable_clone_and_owner_removal(imported_target, scene):
@@ -466,21 +488,22 @@ def test_camera_depth_requirement_survives_disable_clone_and_owner_removal(impor
     clone, _ = scene._clone_game_object(owner)
     clone_camera = clone.get_component("Camera")
     camera.enabled = clone_camera.enabled = False
-    document["depth_format"] = "undefined"
-    source.write_text(json.dumps(document), encoding="utf-8")
-    assert database.reimport_asset(str(source)).succeeded
     registry = AssetRegistry.instance()
     before = registry.get_asset_version(guid), target.revision
-    with pytest.raises(ValueError, match="depth attachment"):
-        registry.reload_asset(guid)
+    document["depth_format"] = "undefined"
+    source.write_text(json.dumps(document), encoding="utf-8")
+    failed = database.reimport_asset(str(source))
+    assert not failed and failed.database_committed and "depth attachment" in failed.error
+    assert not registry.is_loaded(guid)
     assert (registry.get_asset_version(guid), target.revision) == before
     owner.remove_component(camera)
-    with pytest.raises(ValueError, match="depth attachment"):
-        registry.reload_asset(guid)
+    rejected = database.reimport_asset(str(source))
+    assert not rejected and "depth attachment" in rejected.error
     scene.destroy_game_object(clone)
     scene.process_pending_destroys()
-    assert registry.reload_asset(guid)
-    assert target.depth_format == PixelFormat.UNDEFINED
+    accepted = database.reimport_asset(str(source))
+    assert accepted, accepted.error
+    assert RenderTexture.load_by_guid(guid).depth_format == PixelFormat.UNDEFINED
 
 
 def test_graphics_lease_pins_cpu_identity_until_last_owner_released(imported_target):
@@ -517,8 +540,8 @@ def test_removed_asset_is_not_resurrected_by_native_or_reference_cache(imported_
     Path(str(source) + ".meta").write_bytes(metadata)
     assert database.import_asset(str(source)).guid == guid
     restored = ref.resolve()
-    assert restored._native is lease._native
-    assert (lease.width, lease.height) == (79, 47)
+    assert restored.guid == lease.guid == guid
+    assert (restored.width, restored.height) == (79, 47)
 
 
 def test_asset_document_save_undo_redo_reconfigures_same_graphics_owner(imported_target):

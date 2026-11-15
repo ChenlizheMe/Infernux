@@ -2,6 +2,7 @@
 #include "JsonPyBridge.h"
 #include "ResourceMetaPyView.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/audio/AudioClip.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
@@ -608,6 +609,13 @@ void RegisterAssetRegistryBindings(py::module_ &m)
              "Get a built-in material by key (e.g. 'DefaultLit', 'ErrorMaterial')")
         .def("load_builtin_material_from_file", &AssetRegistry::LoadBuiltinMaterialFromFile, py::arg("key"),
              py::arg("mat_file_path"), "Load/replace a builtin material from a .mat file (e.g. key='DefaultLit')")
+
+        .def("load_audio_by_guid", [](AssetRegistry &self, const std::string &guid) {
+            return self.LoadAsset<AudioClip>(guid, ResourceType::Audio);
+        }, py::arg("guid"), "Load the current imported audio source through its registry identity")
+        .def("get_audio", [](AssetRegistry &self, const std::string &guid) {
+            return self.GetAsset<AudioClip>(guid);
+        }, py::arg("guid"))
 
         .def(
             "load_physic_material",

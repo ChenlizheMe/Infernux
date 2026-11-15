@@ -159,6 +159,32 @@ _MINIMAP_SIZE = 120.0
 _MINIMAP_PAD = 8.0
 _MINIMAP_BG = (0.06, 0.06, 0.07, 0.75)
 _MINIMAP_NODE = (0.38, 0.38, 0.40, 0.65)
+def _refresh_canvas_theme():
+    from .theme import Theme
+    globals()['_GRID_COLOR'] = Theme.ROLE_BORDER
+    globals()['_GRID_COLOR2'] = tuple(Theme.ROLE_BORDER[i] + (Theme.ROLE_TEXT_DIM[i] - Theme.ROLE_BORDER[i]) * 0.25
+                                      for i in range(4))
+    globals()['_BG_COLOR'] = Theme.ROLE_BG_BASE
+    globals()['_NODE_BODY_COLOR'] = Theme.ROLE_BG_SURFACE
+    globals()['_GRAPH_NODE_BODY_COLOR'] = Theme.ROLE_BG_SURFACE
+    globals()['_GRAPH_NODE_HEADER_COLOR'] = Theme.ROLE_BG_RAISED
+    globals()['_GRAPH_NODE_CONTEXT_BODY'] = Theme.ROLE_BG_BASE
+    globals()['_GRAPH_NODE_CONTEXT_SLOT'] = Theme.ROLE_BG_SURFACE
+    globals()['_NODE_BORDER_COLOR'] = Theme.ROLE_BORDER
+    globals()['_TEXT_COLOR'] = Theme.ROLE_TEXT
+    globals()['_TEXT_DIM_COLOR'] = Theme.ROLE_TEXT_DIM
+    globals()['_TEXT_BODY_COLOR'] = Theme.ROLE_TEXT_DIM
+    globals()['_MINIMAP_BG'] = Theme.ROLE_BG_BASE
+    globals()['_MINIMAP_NODE'] = Theme.ROLE_TEXT_DIM
+    globals()['_PIN_HOVER_COLOR'] = Theme.ROLE_TEXT
+    globals()['_LINK_DEFAULT_COLOR'] = Theme.ROLE_TEXT_DIM
+    globals()['_LINK_HOVER_COLOR'] = Theme.ROLE_TEXT
+    globals()['_PENDING_LINK_COLOR'] = (*Theme.ROLE_TEXT_DIM[:3], 0.5)
+
+from .theme import on_theme_changed as _on_theme_changed
+_on_theme_changed(_refresh_canvas_theme)
+_refresh_canvas_theme()
+
 # ImGuiKey constants (see imgui_keys.py)
 # ═══════════════════════════════════════════════════════════════════════════
 # Bezier helper

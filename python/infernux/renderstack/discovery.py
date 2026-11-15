@@ -15,7 +15,6 @@ Discovery strategies:
 from __future__ import annotations
 
 import ast
-import importlib.util
 import os
 from infernux.engine.path_utils import is_path_within, path_key
 import sys
@@ -25,7 +24,6 @@ from typing import Dict, Optional, Set
 from infernux.engine.project_context import (
     get_assets_root,
     get_project_root,
-    temporary_script_import_paths,
 )
 
 
@@ -406,11 +404,14 @@ def _known_project_sources(search_root: str) -> list[str]:
 
 
 def _import_source_paths(paths) -> None:
-    """Import explicit project source paths through the shared discovery cache."""
+    """Discover current declarations through the existing script authority."""
+    from infernux.components.script_loader import load_all_components_from_file, get_script_error_by_path
+    from infernux.engine.project_context import get_script_module_name
+    from infernux.engine.reload.modules import coordinator_for_path
+    from infernux.engine.path_utils import resolved_path
+
     _prune_deleted_loaded_scripts()
     for full in paths:
-        fn = os.path.basename(full)
-        is_pyc = fn.endswith(".pyc")
         norm = path_key(full)
         if norm in _loading_script_paths:
             continue
@@ -423,50 +424,33 @@ def _import_source_paths(paths) -> None:
         if norm in _loaded_scripts and _loaded_script_stamps.get(norm) == stamp:
             continue
 
-        mod_name = _loaded_script_modules.get(norm)
-        if not mod_name:
-            # A reversible path encoding is stable and collision-free; neither
-            # process addresses nor truncated hashes are source identities.
-            mod_name = "_infernux_disc_" + norm.encode("utf-8").hex()
-        spec = importlib.util.spec_from_file_location(mod_name, full)
-        if spec and spec.loader:
-            mod = importlib.util.module_from_spec(spec)
-            previous = sys.modules.get(mod_name)
-            _loading_script_paths.add(norm)
-            try:
-                from infernux.renderstack.render_effect_compiler import _stage_source_effect_features
-
-                # Python decorators (including dataclasses) require the module
-                # namespace during execution. Catalog collection excludes this
-                # in-flight namespace; failed candidates restore the old one.
-                sys.modules[mod_name] = mod
-                with _stage_source_effect_features(full), temporary_script_import_paths(full):
-                    if is_pyc:
-                        spec.loader.exec_module(mod)
-                    else:
-                        # Source is authoritative in the Editor. SourceFileLoader
-                        # may accept a stale .pyc for same-second, same-size saves.
-                        with open(full, "rb") as stream:
-                            code = compile(stream.read(), full, "exec", dont_inherit=True)
-                        exec(code, mod.__dict__)
-            except Exception as exc:
-                if previous is None:
-                    sys.modules.pop(mod_name, None)
-                else:
-                    sys.modules[mod_name] = previous
-                _loaded_scripts.discard(norm)
-                _script_import_failures[norm] = f"{type(exc).__name__}: {exc}"
-                continue
-            finally:
-                _loading_script_paths.discard(norm)
-                # A module may query discovery while executing. Those views
-                # exclude the in-flight source and cannot outlive acceptance
-                # or restoration of its previous published namespace.
-                invalidate_discovery_cache()
+        _loading_script_paths.add(norm)
+        try:
+            coordinator = coordinator_for_path(full)
+            state = coordinator.states.get(resolved_path(full)) if coordinator is not None else None
+            if state is not None:
+                if state.status != "active":
+                    raise ImportError(state.error or f"Current source is {state.status}: {full}")
+                record = coordinator.graph.module_for_path(full)
+                mod_name = record.id.module_name
+            else:
+                load_all_components_from_file(full, register=False)
+                error = get_script_error_by_path(full)
+                if error:
+                    raise ImportError(error)
+                mod_name = get_script_module_name(full)
+            if mod_name not in sys.modules:
+                raise ImportError(f"Current source has no published module: {full}")
             _loaded_scripts.add(norm)
             _loaded_script_modules[norm] = mod_name
             _loaded_script_stamps[norm] = stamp
             _script_import_failures.pop(norm, None)
+        except Exception as exc:
+            _loaded_scripts.discard(norm)
+            _script_import_failures[norm] = f"{type(exc).__name__}: {exc}"
+        finally:
+            _loading_script_paths.discard(norm)
+            invalidate_discovery_cache()
 
 
 def _prune_deleted_loaded_scripts() -> None:
@@ -530,6 +514,9 @@ def _is_live_class(cls: type) -> bool:
     """
     mod = sys.modules.get(getattr(cls, "__module__", ""))
     if mod is None:
+        return False
+    owner = getattr(mod, "__infernux_reload_owner__", None)
+    if owner is not None and not owner.active:
         return False
     src = getattr(mod, "__file__", "")
     source_key = path_key(src) if src else ""

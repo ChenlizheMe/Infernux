@@ -17,12 +17,14 @@
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <type_traits>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -393,6 +395,8 @@ struct ParticleGpuSystemManager::Impl
         uint32_t lastSpawnCount = 0;
         bool lastSimulate = false;
         bool lastRender = false;
+        bool resourcesAvailable = true;
+        bool resourcesPending = false;
         std::vector<GpuParticleFrameRequest> queuedFrameRequests;
         GpuParticleOffscreenPolicy lastOffscreenPolicy = GpuParticleOffscreenPolicy::AlwaysSimulate;
         GpuParticleBoundsMode lastBoundsMode = GpuParticleBoundsMode::Automatic;
@@ -1949,11 +1953,51 @@ struct ParticleGpuSystemManager::Impl
 
     [[nodiscard]] bool RefreshResources(Emitter &emitter)
     {
+        const auto suspend = [&]() {
+            if (!emitter.resourcesAvailable)
+                return;
+            emitter.resourcesAvailable = false;
+            emitter.lastRender = false;
+            emitter.lastSimulate = false;
+            emitter.queuedFrameRequests.clear();
+            if (drawRegistry)
+                (void)drawRegistry->Replace(BuildDrawEntries(emitters));
+        };
+        bool referencesChanged = false;
+        auto &registry = AssetRegistry::Instance();
+        auto *database = registry.GetAssetDatabase();
+        const auto refresh = [&](auto &asset, ResourceType type) {
+            if (!asset || !database || asset->GetGuid().empty())
+                return true;
+            const auto guid = asset->GetGuid();
+            if (!database->GetImportError(guid).empty())
+                return false;
+            using Asset = typename std::decay_t<decltype(asset)>::element_type;
+            auto current = registry.LoadAsset<Asset>(guid, type);
+            if (!current)
+                return false;
+            if (current != asset) {
+                asset = std::move(current);
+                referencesChanged = true;
+            }
+            return true;
+        };
+        for (auto &mesh : emitter.sourceProgram.meshInterfaces)
+            if (!refresh(mesh.mesh, ResourceType::Mesh)) { suspend(); return false; }
+        for (auto &output : emitter.sourceProgram.outputs)
+            if (!refresh(output.mesh, ResourceType::Mesh)) { suspend(); return false; }
+        for (auto &output : emitter.outputs)
+            if (!refresh(output.mesh, ResourceType::Mesh)) { suspend(); return false; }
+        for (auto &field : emitter.sourceProgram.vectorFields.vectorFields)
+            if (!refresh(field.texture, ResourceType::Texture)) { suspend(); return false; }
+        for (auto &parameter : emitter.sourceProgram.vectorFields.textureParameters)
+            if (!refresh(parameter.texture, ResourceType::Texture)) { suspend(); return false; }
         if (emitter.vectorFields.empty() && emitter.meshes.empty())
             return true;
         std::vector<uint64_t> currentVectorFieldGenerations;
         currentVectorFieldGenerations.reserve(emitter.vectorFields.size());
-        bool textureChanged = emitter.vectorFields.size() != emitter.observedVectorFieldGenerations.size();
+        bool textureChanged = referencesChanged || emitter.resourcesPending ||
+                              emitter.vectorFields.size() != emitter.observedVectorFieldGenerations.size();
         for (size_t index = 0; index < emitter.vectorFields.size(); ++index) {
             const uint64_t generation = emitter.vectorFields[index] ? emitter.vectorFields[index]->GetGeneration() : 0;
             currentVectorFieldGenerations.push_back(generation);
@@ -1962,7 +2006,8 @@ struct ParticleGpuSystemManager::Impl
         }
         std::vector<uint64_t> currentMeshGenerations;
         currentMeshGenerations.reserve(emitter.meshes.size());
-        bool meshChanged = emitter.meshes.size() != emitter.observedMeshGenerations.size();
+        bool meshChanged = referencesChanged || emitter.resourcesPending ||
+                           emitter.meshes.size() != emitter.observedMeshGenerations.size();
         for (size_t index = 0; index < emitter.meshes.size(); ++index) {
             const uint64_t generation = emitter.meshes[index] ? emitter.meshes[index]->GetGeneration() : 0;
             currentMeshGenerations.push_back(generation);
@@ -1970,7 +2015,7 @@ struct ParticleGpuSystemManager::Impl
                           generation != emitter.observedMeshGenerations[index];
         }
         if (!textureChanged && !meshChanged)
-            return true;
+            return emitter.resourcesAvailable;
 
         std::string error;
         GpuEmitterDesc runtimeDesc;
@@ -1988,13 +2033,16 @@ struct ParticleGpuSystemManager::Impl
         const auto rememberHardFailure = [&]() {
             emitter.observedVectorFieldGenerations = currentVectorFieldGenerations;
             emitter.observedMeshGenerations = currentMeshGenerations;
+            emitter.resourcesPending = false;
+            suspend();
         };
         if (!replacementCreated || !deletionQueue) {
             if (!uploadPending) {
                 rememberHardFailure();
-                INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
+                INXLOG_WARN("GPU particle resource refresh stopped emitter '", emitter.stableId,
                             "': ", error.empty() ? "failed to create a compatible RHI revision" : error);
             }
+            else { emitter.resourcesPending = true; suspend(); }
             return false;
         }
 
@@ -2027,9 +2075,10 @@ struct ParticleGpuSystemManager::Impl
                 if (!next) {
                     if (!uploadPending) {
                         rememberHardFailure();
-                        INXLOG_WARN("GPU particle Mesh output refresh kept last-known-good emitter '", emitter.stableId,
+                        INXLOG_WARN("GPU particle Mesh output refresh stopped emitter '", emitter.stableId,
                                     "': ", error.empty() ? "renderer creation failed" : error);
                     }
+                    else { emitter.resourcesPending = true; suspend(); }
                     return false;
                 }
                 renderers.push_back({index, output.renderer, std::move(next)});
@@ -2038,7 +2087,7 @@ struct ParticleGpuSystemManager::Impl
 
         if (!emitter.runtime->AdoptCompatibleRevision(*replacement)) {
             rememberHardFailure();
-            INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
+            INXLOG_WARN("GPU particle resource refresh stopped emitter '", emitter.stableId,
                         "': compatible runtime adoption failed");
             return false;
         }
@@ -2050,7 +2099,7 @@ struct ParticleGpuSystemManager::Impl
                 emitter.outputs[renderer.outputIndex].renderer = renderer.previous;
             const bool restored = emitter.runtime->AdoptCompatibleRevision(*replacement);
             rememberHardFailure();
-            INXLOG_WARN("GPU particle resource refresh kept last-known-good emitter '", emitter.stableId,
+            INXLOG_WARN("GPU particle resource refresh stopped emitter '", emitter.stableId,
                         "': draw registry publication failed", restored ? "" : " and runtime rollback failed");
             return false;
         }
@@ -2059,6 +2108,11 @@ struct ParticleGpuSystemManager::Impl
         emitter.vectorFieldGenerations = vectorFieldGenerations;
         emitter.observedVectorFieldGenerations = std::move(vectorFieldGenerations);
         CaptureMeshRevisions(emitter.sourceProgram, emitter.meshes, emitter.observedMeshGenerations);
+        const bool restoring = !emitter.resourcesAvailable;
+        emitter.resourcesAvailable = true;
+        emitter.resourcesPending = false;
+        if (restoring && drawRegistry)
+            (void)drawRegistry->Replace(BuildDrawEntries(emitters));
 
         std::vector<std::shared_ptr<ParticleGpuOutputRenderer>> retiredRenderers;
         retiredRenderers.reserve(renderers.size());
@@ -2228,7 +2282,11 @@ struct ParticleGpuSystemManager::Impl
         entries.reserve(outputCount);
         for (const auto &[id, emitter] : candidateEmitters) {
             (void)id;
+            if (!emitter->resourcesAvailable)
+                continue;
             for (const auto &output : emitter->outputs) {
+                if (!output.renderer)
+                    continue;
                 GpuParticleDrawEntry entry;
                 entry.id = output.id;
                 entry.emitterId = emitter->id;
@@ -2796,6 +2854,30 @@ void ParticleGpuSystemManager::InvalidateTextureAssets(const std::string &textur
     }
 }
 
+void ParticleGpuSystemManager::InvalidateMaterialProgram(const ShaderStagePair &stages)
+{
+    if (!m_impl || !m_impl->drawRegistry)
+        return;
+    std::vector<std::shared_ptr<ParticleGpuOutputRenderer>> retired;
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)id;
+        for (auto &output : emitter->outputs) {
+            const bool matches = (output.shaderProgram && output.shaderProgram->key.stages == stages) ||
+                                 (output.material &&
+                                  ShaderStagePair{output.material->GetVertShaderName(), output.material->GetFragShaderName()} == stages);
+            if (matches && output.renderer) {
+                retired.push_back(std::move(output.renderer));
+                output.shaderProgram.reset();
+            }
+        }
+    }
+    if (retired.empty())
+        return;
+    if (!m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(m_impl->emitters)))
+        throw std::runtime_error("Failed to retire unavailable particle material draws");
+    m_impl->deletionQueue->Retire([retired = std::move(retired)]() mutable { retired.clear(); });
+}
+
 bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,
                                                       std::shared_ptr<const ShaderProgramArtifact> shaderProgram,
                                                       std::string *error)
@@ -2816,6 +2898,14 @@ bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxM
     });
     if (!referenced)
         return true;
+    const bool changed = std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(), [&](const auto &entry) {
+        return std::any_of(entry.second->outputs.begin(), entry.second->outputs.end(), [&](const auto &output) {
+            return output.material.get() == material.get() &&
+                   (!shaderProgram || !output.shaderProgram || output.shaderProgram->key != shaderProgram->key);
+        });
+    });
+    if (changed)
+        InvalidateMaterialProgram({material->GetVertShaderName(), material->GetFragShaderName()});
     if (shaderProgram && (!shaderProgram->IsValid() || shaderProgram->domain != ShaderProgramDomain::ParticleSprite)) {
         SetError(error, "GPU particle material must resolve to a valid linked ParticleSprite shader program");
         return false;
@@ -3000,7 +3090,8 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     }
 
     for (const auto &entry : prepared)
-        (void)m_impl->RefreshResources(*entry.emitter);
+        if (!m_impl->RefreshResources(*entry.emitter))
+            return false;
 
     // This is the transaction boundary for the batch: all schedulers are
     // preflighted before any one of them is armed, and the graph-level spawn

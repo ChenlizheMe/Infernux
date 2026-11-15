@@ -409,6 +409,10 @@ def _prepare_python_component_records(
                     fields=fields,
                     error=error,
                 )
+                # A failed current script remains associated with its asset
+                # after Play restores an authored snapshot. A later repair
+                # must bind that same source without retaining an old type.
+                instance._script_path = script_path or resolve_script_from_guid(script_guid, asset_database) or ""
                 from infernux.debug import Debug
                 if construct_error:
                     Debug.log_error(instance._broken_error)

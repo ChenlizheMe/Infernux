@@ -82,6 +82,22 @@ class PluginInstallProgressService:
         work: Callable[[Callable[[str, float, str], None]], object],
         complete: Callable[[bool, object | None, str], None],
     ) -> bool:
+        from contextlib import nullcontext
+        from infernux.engine.reload.owners import owner_for
+        from infernux.engine.runtime_dispatch import ReloadableCallbackRef
+
+        source = owner_for(work)
+        completion = ReloadableCallbackRef.normalize(complete)
+
+        def owned_work(report):
+            if source is not None and not source.active:
+                raise ReferenceError("Plugin operation source was retired before its worker started")
+            with source.enter() if source is not None else nullcontext():
+                return work(report)
+
+        return self._begin(label=label, work=owned_work, complete=completion.invoke)
+
+    def _begin(self, *, label, work, complete):
         if self._transaction is not None:
             return False
         modals = self._ensure_registered()
@@ -99,6 +115,59 @@ class PluginInstallProgressService:
             self._transaction = None
             return False
         return True
+
+    def begin_package(self, *, manager, label, action, observer, release_tag=""):
+        """Own package publication independently of the originating view.
+
+        Closing or reloading the view retires only its feedback callback. An
+        accepted filesystem operation still completes on the editor thread.
+        """
+        from infernux.engine.reload.owners import owner_for
+        owner = owner_for(observer)
+
+        def work(report):
+            if action == "download":
+                return manager.download_reference(label, force=True, progress=report)
+            if action == "install":
+                return manager.install_reference(label, progress=report)
+            if action == "source":
+                return manager.install_source(label, progress=report)
+            if action == "update":
+                return manager.download_source(label, progress=report, update=True)
+            if action == "release":
+                return manager.download_update(label, release_tag, progress=report)
+            if action == "pip":
+                return manager.install_pip(label, progress=report)
+            raise ValueError(f"Unknown plugin action: {action}")
+
+        def complete(ok, result, message):
+            reference = ""
+            if ok:
+                try:
+                    if action in {"update", "release"}:
+                        result = manager.install_package(str(result["path"]), source=result["source"], update=True)
+                    if manager.pending_install is not None:
+                        message = t("plugins.dependencies_pending")
+                        from .plugin_install_confirmation import PluginInstallConfirmationCoordinator
+                        PluginInstallConfirmationCoordinator.instance().request_restart(manager)
+                    else:
+                        reference = str(getattr(result, "reference", ""))
+                        if reference and action not in {"update", "release"}:
+                            result = manager.finalize_background_install(reference)
+                        message = str(getattr(result, "error", "")) or t("plugins.action_ok").format(
+                            action=action, reference=reference)
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"
+                    Debug.log_error(f"Plugin {action} failed for {label}: {message}")
+            if not message:
+                message = t("plugins.install_progress.failed")
+            if owner is None:
+                observer(reference, message)
+            elif owner.active:
+                with owner.enter():
+                    observer(reference, message)
+
+        return self._begin(label=label, work=work, complete=complete)
 
     def cancel(self) -> bool:
         """Only an unstarted install can be cancelled without a disk transaction.

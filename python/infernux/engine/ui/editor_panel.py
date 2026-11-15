@@ -42,6 +42,7 @@ Creating a custom panel::
 from __future__ import annotations
 
 from typing import List, Optional, TYPE_CHECKING
+from contextlib import nullcontext
 
 from infernux.core.file_read_cache import read_model_frame
 from infernux.engine.interaction import PanelViewStateSchema
@@ -81,6 +82,16 @@ class EditorPanel(ClosablePanel):
         self._content_visible_previous_frame = False
         self._content_hovered = False
         self._persisted_view_state_loaded = False
+        from infernux.engine.reload.owners import owner_for
+        self._reload_source_owner = (
+            getattr(type(self), "_reload_source_owner", None)
+            or owner_for(type(self).on_render_content)
+        )
+        self._reload_owner = (
+            self._reload_source_owner.child()
+            if self._reload_source_owner is not None and self._reload_source_owner.active else None
+        )
+        self._reload_failed = False
 
     def set_window_manager(self, window_manager):
         super().set_window_manager(window_manager)
@@ -430,6 +441,33 @@ class EditorPanel(ClosablePanel):
         if not self._is_open:
             self._content_hovered = False
             return
+        if self._reload_source_owner is None:
+            from infernux.engine.reload.owners import owner_for
+            self._reload_source_owner = (
+                getattr(type(self), "_reload_source_owner", None)
+                or owner_for(type(self).on_render_content)
+            )
+        source = self._reload_source_owner
+        if source is not None and not source.active:
+            self._finalize_close_lifecycle()
+            self._content_hovered = False
+            return
+        if self._reload_failed:
+            return
+        if source is not None and (self._reload_owner is None or self._reload_owner.closed):
+            self._reload_owner = source.child()
+        owner = self._reload_owner
+        try:
+            with owner.enter() if owner is not None else nullcontext():
+                self._render_owned_frame(ctx)
+        except Exception as exc:
+            self._reload_failed = True
+            self._finalize_close_lifecycle()
+            from infernux.debug import Debug
+            Debug.report_internal_error(exc, f"Panel '{self.panel_type_id}'", self)
+
+    def _render_owned_frame(self, ctx) -> None:
+        """The admitted panel lifetime owns enable, paint and derived work."""
 
         # Trigger on_enable once.
         if not self._enable_called:
@@ -518,17 +556,31 @@ class EditorPanel(ClosablePanel):
         from its deferred close action so both paths observe exactly one
         ``on_disable`` callback.
         """
+        owner = self._reload_owner
+        if owner is not None:
+            try:
+                owner.close()
+            except Exception as exc:
+                from infernux.debug import Debug
+                Debug.log_exception(exc)
         if not self._enable_called:
             return
         from infernux.engine.interaction.previews import close_editor_previews
 
-        close_editor_previews(self.window_id)
         self._enable_called = False
         self._content_visible_previous_frame = bool(self._content_was_visible)
         self._content_was_visible = None
         self._content_hovered = False
-        self.on_disable()
-        self._dirty_registry_snapshot = None
+        try:
+            close_editor_previews(self.window_id)
+        finally:
+            try:
+                with owner.enter() if owner is not None else nullcontext():
+                    self.on_disable()
+            except Exception as exc:
+                from infernux.debug import Debug
+                Debug.log_exception(exc)
+            self._dirty_registry_snapshot = None
 
 
 class FloatingEditorPanel(EditorPanel):

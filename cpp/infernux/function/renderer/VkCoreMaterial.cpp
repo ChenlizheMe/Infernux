@@ -320,7 +320,7 @@ void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMater
         // shader must not change blending, depth or routing on the retained
         // valid pipeline before ResolveMeshMaterial reports the bad selection.
         (void)ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
-    } catch (const ShaderProgramDomainMismatch &) {
+    } catch (const std::exception &) {
         return;
     }
     const std::string &fragment = stages.fragmentShaderId;
@@ -375,7 +375,7 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
         try {
             m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
             requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
-        } catch (const ShaderProgramDomainMismatch &) {
+        } catch (const std::exception &) {
             domainRejected = true;
         }
         forward = m_materialPipelineManager.GetRenderData(materialKey);
@@ -383,8 +383,8 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
     if (domainRejected || (requestedArtifact && requestedArtifact->domain != ShaderProgramDomain::Mesh)) {
         if (m_rejectedGeometryMaterialPrograms.insert(rejectionKey).second)
             RefreshMaterialPipeline(material, requestedStages.vertexShaderId, requestedStages.fragmentShaderId);
-        // A rejected edit cannot replace an already committed geometry ABI.
-        material->ClearPipelineDirty();
+        m_materialPipelineManager.RemoveRenderData(materialKey);
+        return nullptr;
     } else if (!forward || material->IsPipelineDirty()) {
         if (requestedStages.fragmentShaderId.empty() ||
             !RefreshMaterialPipeline(material, requestedStages.vertexShaderId, requestedStages.fragmentShaderId))
@@ -416,37 +416,11 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         if (m_shaderCache.FindProgramArtifact(stages) && m_shaderProgramArtifactResolver)
             m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
         artifact = ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
-    } catch (const ShaderProgramDomainMismatch &error) {
-        if (reportDomainMismatch)
-            m_rejectedGeometryMaterialPrograms.insert(material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh");
-        MaterialRenderData *previous = m_materialPipelineManager.GetRenderData(material->GetMaterialKey());
-        const bool hasLastKnownGood = previous && previous->isValid && previous->pipeline != VK_NULL_HANDLE &&
-                                      previous->pipelineLayout != VK_NULL_HANDLE &&
-                                      previous->descriptorSet != VK_NULL_HANDLE &&
-                                      m_materialPipelineManager.IsDescriptorSetLive(previous->descriptorSet);
-
-        if (reportDomainMismatch) {
-            static std::unordered_set<std::string> reportedDomainMismatches;
-            const std::string materialName =
-                material->GetName().empty() ? material->GetMaterialKey() : material->GetName();
-            const std::string failureKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
-            if (reportedDomainMismatches.insert(failureKey).second) {
-                INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses domain '",
-                             ShaderProgramDomainName(error.actual),
-                             "', but MeshRenderer geometry requires domain 'Mesh'. Use a Mesh-domain vertex/fragment "
-                             "shader pair. ",
-                             hasLastKnownGood ? "The rejected rebuild did not replace the previous valid GPU pipeline."
-                                              : "This material cannot be rendered by MeshRenderer.");
-            }
-        }
-
-        // Shader selection dirties the material before its domain is known. A
-        // previous geometry generation remains valid and is intentionally kept
-        // active until the user selects another shader pair.
-        if (hasLastKnownGood) {
-            material->ClearPipelineDirty();
-            return true;
-        }
+    } catch (const std::exception &error) {
+        const auto rejection = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
+        if (reportDomainMismatch && m_rejectedGeometryMaterialPrograms.insert(rejection).second)
+            INXLOG_ERROR("Current material shader is unavailable: ", error.what());
+        m_materialPipelineManager.RemoveRenderData(material->GetMaterialKey());
         return false;
     }
 

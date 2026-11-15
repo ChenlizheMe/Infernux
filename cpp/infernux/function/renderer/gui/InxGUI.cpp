@@ -111,6 +111,7 @@ void InxGUI::Init(SDL_Window *window)
     // window -> framebuffer conversion, for both drawing and font rasterization.
     m_dpiScale = RequireDisplayScale(window);
     InxGUIContext::s_dpiScale = m_dpiScale;
+    EditorThemeRegistry::SetDisplayScale(m_dpiScale);
     INXLOG_DEBUG("Display scale: ", m_dpiScale);
 
     IMGUI_CHECKVERSION();
@@ -305,10 +306,14 @@ void InxGUI::RefreshDisplayScale()
     const float previousScale = m_dpiScale;
     m_dpiScale = nextScale;
     InxGUIContext::s_dpiScale = nextScale;
+    EditorThemeRegistry::SetDisplayScale(nextScale);
 
     ImGuiStyle &style = ImGui::GetStyle();
     ImVec4 activeColors[ImGuiCol_COUNT];
     std::copy_n(style.Colors, ImGuiCol_COUNT, activeColors);
+    // The logical theme may have changed since startup. Refresh that base
+    // before scaling it, preserving the current font loading path.
+    EditorThemeRegistry::ConfigureImGuiDimensions(GetEditorDpiState().baseStyle);
     style = GetEditorDpiState().baseStyle;
     std::copy_n(activeColors, ImGuiCol_COUNT, style.Colors);
     style.ScaleAllSizes(nextScale);
@@ -713,7 +718,7 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
         // the user's layout or touching floating/merged toolbar windows.
         const float toolbarHeight =
             ImGui::GetFontSize() +
-            2.0f * ((EditorTheme::TOOLBAR_FRAME_PAD.y + EditorTheme::TOOLBAR_WIN_PAD.y) * m_dpiScale +
+            2.0f * ((EditorThemeRegistry::Vec2("TOOLBAR_FRAME_PAD").y + EditorThemeRegistry::Vec2("TOOLBAR_WIN_PAD").y) * m_dpiScale +
                     ImGui::GetStyle().WindowBorderSize);
         if (ImGuiWindow *toolbarWindow = ImGui::FindWindowByName("###toolbar")) {
             ImGuiDockNode *node = ImGui::DockBuilderGetNode(toolbarWindow->DockId);

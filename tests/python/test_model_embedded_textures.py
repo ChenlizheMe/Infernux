@@ -13,7 +13,7 @@ from PIL import Image
 
 from infernux.core.assets import AssetManager
 from infernux.core.asset_types import read_mesh_import_settings
-from infernux.lib import AssetRegistry, AssetDependencyGraph
+from infernux.lib import AssetRegistry, AssetDependencyGraph, ResourceType
 
 
 def embed(document, color=(200, 60, 30), *, name="Embedded Color"):
@@ -135,6 +135,78 @@ def test_failed_embedded_decode_does_not_publish_partial_children(imported_model
     result = AssetManager.reimport_asset(str(source), database=database)
     assert not result
     assert records(database, source) == before
+
+
+def test_owned_texture_failure_retires_gpu_binding_and_same_content_repair_restores_it(imported_model, engine):
+    renderer, document, source, database, _ = imported_model
+    registry = AssetRegistry.instance()
+    embed(document)
+    source.write_text(json.dumps(document), encoding="utf-8")
+    imported = AssetManager.reimport_asset(str(source), database=database)
+    assert imported, imported.error
+    (child,) = records(database, source)
+    child_guid = child["guid"]
+    mesh = registry.load_mesh(str(source))
+    target = source.with_suffix(".mat")
+    target.write_text(json.dumps(mesh.create_material_copy(0).serialize_document()), encoding="utf-8")
+    material_result = AssetManager.import_asset(str(target), database=database)
+    assert material_result, material_result.error
+    material = registry.load_material_by_guid(material_result.guid)
+    renderer.set_material(0, material_result.guid)
+    before_source, before_meta = source.read_bytes(), Path(str(source) + ".meta").read_bytes()
+    before_material = target.read_bytes()
+    key = "owned-texture-failure-consumer"
+
+    def prepare_gpu():
+        deadline = time.monotonic() + 10
+        while True:
+            ready = engine.refresh_material_pipeline(material)
+            texture_id = engine._get_imported_texture_ui_texture_id(key, child_guid)
+            if ready and texture_id:
+                return texture_id
+            assert time.monotonic() < deadline, database.get_import_error(child_guid)
+            engine.tick(0.016)
+
+    prepare_gpu()
+    evictions = engine.texture_gpu_eviction_count
+    document["images"][0]["uri"] = "data:image/png;base64," + base64.b64encode(b"not an image").decode()
+    source.write_text(json.dumps(document), encoding="utf-8")
+    rejected = AssetManager.reimport_asset(str(source), database=database)
+    assert not rejected
+    assert database.get_import_error(imported.guid)
+    assert database.get_import_error(child_guid)
+    assert registry.get_texture_asset(child_guid) is None
+    assert registry.load_texture_by_guid(child_guid) is None
+    assert engine._get_imported_texture_ui_texture_id(key, child_guid) == 0
+    assert engine.texture_gpu_eviction_count > evictions
+    assert Path(str(source) + ".meta").read_bytes() == before_meta
+    assert target.read_bytes() == before_material
+    assert any(entry["guid"] == child_guid for entry in database.get_import_failures())
+
+    # The repaired source and child's authored metadata are identical to the
+    # previous accepted revision; availability alone must notify consumers.
+    source.write_bytes(before_source)
+    repaired = AssetManager.reimport_asset(str(source), database=database)
+    assert repaired, repaired.error
+    assert records(database, source)[0]["metadata"] == child["metadata"]
+    assert not database.get_import_error(child_guid)
+    assert prepare_gpu()
+
+    # An owned child's independent Library error survives catalog expansion.
+    artifact = Path(database.get_runtime_artifact_path(child_guid, ResourceType.Texture))
+    artifact.write_bytes(b"broken child artifact")
+    registry.invalidate_asset(child_guid)
+    assert registry.load_texture_by_guid(child_guid) is None
+    assert database.get_import_error(child_guid)
+    assert not database.get_import_error(imported.guid)
+    assert any(entry["guid"] == child_guid for entry in database.get_import_failures())
+    assert engine._get_imported_texture_ui_texture_id(key, child_guid) == 0
+    database.refresh()
+    assert not database.get_import_error(child_guid)
+    assert registry.load_texture_by_guid(child_guid) is not None
+    assert prepare_gpu()
+    assert source.read_bytes() == before_source
+    assert target.read_bytes() == before_material
 
 
 def test_removing_owner_unregisters_children_without_erasing_material_reference(imported_model):

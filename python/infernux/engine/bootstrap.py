@@ -26,7 +26,6 @@ from infernux.engine.ui import (
 )
 from infernux.engine.ui import panel_state as _panel_state
 
-_TOTAL_STEPS = 14
 
 
 def _signal_progress(current_step: int, total: int, message: str) -> None:
@@ -59,6 +58,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         # Managers
         self.engine: Optional[Engine] = None
+        self.plugin_manager = None
         self.undo_manager = None
         self.scene_file_manager: Optional[SceneFileManager] = None
         self.window_manager: Optional[WindowManager] = None
@@ -93,70 +93,54 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
     # ── Public entry point ─────────────────────────────────────────────
 
     def run(self):
-        """Execute all bootstrap steps and start the main loop."""
-        self._report_progress("Checking project requirements\u2026")
-        self._ensure_project_requirements()
-
-        self._report_progress("Initializing renderer\u2026")
-        self._init_engine()
-
-        self._report_progress("Publishing asset catalog\u2026")
-        self._complete_initial_asset_catalog()
-
-        self._report_progress("Creating managers\u2026")
-        self._create_managers()
-
-        # Authoring operations are engine Host capabilities. Transports such
-        # as MCP discover and invoke this registry but do not own its lifetime.
-        from infernux.host import install_editor_operations
-
-        install_editor_operations(self.project_path)
-
-        self._report_progress("Preloading project plugins\u2026")
-        self._load_plugins()
-
-        self._report_progress("Loading layout\u2026")
-        self._setup_layout_persistence()
-
-        self._report_progress("Registering window types\u2026")
-        self._register_window_types()
-
-        self._report_progress("Creating editor panels\u2026")
-        self._create_panels()
-
-        self._report_progress("Wiring selection system\u2026")
-        self._wire_selection_system()
-
-        self._report_progress("Setting up UI editor\u2026")
-        self._wire_ui_editor()
-
-        self._report_progress("Preparing scene system\u2026")
-        self._setup_scene_change_cleanup()
-
-        self._report_progress("Loading scene\u2026")
-        self._load_initial_scene()
-
-        self._report_progress("Compiling builtin shaders\u2026")
-        self._prewarm_builtin_pipelines()
-
-        self._report_progress("Refreshing project resources\u2026")
-        if self.engine:
-            self.engine.prepare_startup_refresh()
-            # Lifecycle scripts created without a .meta sidecar only enter the
-            # GUID catalog with this refresh commit; load them now instead of
-            # on the next editor restart.
-            if self.plugin_manager is not None:
-                self.plugin_manager.catch_up_preloads()
-
+        """Build the editor before loading fallible project content."""
+        steps = (
+            ("Initializing renderer", self._init_engine, False),
+            ("Creating managers", self._create_managers, False),
+            ("Installing editor operations", self._install_editor_operations, False),
+            ("Loading layout", self._setup_layout_persistence, False),
+            ("Registering window types", self._register_window_types, False),
+            ("Creating editor panels", self._create_panels, False),
+            ("Wiring selection system", self._wire_selection_system, False),
+            ("Setting up UI editor", self._wire_ui_editor, False),
+            ("Preparing scene system", self._setup_scene_change_cleanup, False),
+            ("Checking project requirements", self._ensure_project_requirements, True),
+            ("Publishing asset catalog", self._complete_initial_asset_catalog, True),
+            ("Preloading project plugins", self._load_plugins, True),
+            ("Refreshing project resources", self._refresh_project_resources, True),
+            ("Loading scene", self._load_initial_scene, True),
+            ("Connecting automation signals", self._attach_automation_signals, False),
+            ("Compiling builtin shaders", self._prewarm_builtin_pipelines, False),
+        )
+        self._progress_total = len(steps)
+        for label, operation, project_content in steps:
+            self._report_progress(label)
+            if project_content:
+                try:
+                    operation()
+                except Exception as exc:
+                    Debug.log_error(f"{label} failed: {exc}")
+                    Debug.log_exception(exc)
+            else:
+                operation()
         self._finish_progress()
-
-        if self.engine is None:
-            raise RuntimeError("Editor startup completed without an Engine")
         self.engine.set_game_camera_enabled(True)
-        native = self.engine.get_native_engine()
-        if native is None:
-            raise RuntimeError("Editor startup completed without a native Engine")
-        native.request_full_speed_frame()
+        self.engine.get_native_engine().request_full_speed_frame()
+
+    def _install_editor_operations(self):
+        from infernux.host import install_editor_operations
+        install_editor_operations(self.project_path)
+        from infernux.host.bridge import start
+        self.automation_bridge = start(self.project_path)
+
+    def _attach_automation_signals(self):
+        self.automation_bridge.attach_editor_signals()
+
+    def _refresh_project_resources(self):
+        self.engine._resources_manager.watch_engine_sources()
+        self.engine.prepare_startup_refresh()
+        if self.plugin_manager is not None:
+            self.plugin_manager.catch_up_preloads()
 
     def _report_progress(self, message: str):
         """Notify the launcher splash of the current bootstrap step."""
@@ -170,7 +154,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._progress_step += 1
         self._progress_phase_started_at = now
         self._progress_phase_message = message
-        _signal_progress(self._progress_step, _TOTAL_STEPS, message)
+        _signal_progress(self._progress_step, self._progress_total, message)
 
     def _finish_progress(self) -> None:
         now = time.perf_counter()
@@ -195,7 +179,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         ParticleArtifactRegistry.ensure_project_compiled(
             self.project_path,
-            raise_on_error=True,
+            raise_on_error=False,
         )
 
     def _ensure_project_requirements(self):

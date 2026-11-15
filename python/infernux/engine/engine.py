@@ -1,6 +1,7 @@
 import gc
 import math
 import os
+import sys
 import time
 import weakref
 from typing import TYPE_CHECKING
@@ -1062,7 +1063,6 @@ class Engine():
         """
         if self._engine is None:
             return
-
         from infernux.application import Application
 
         if Application._current_engine() is not self:
@@ -1084,6 +1084,13 @@ class Engine():
             and not self._confirm_dirty_panels_before_exit()
         ):
             return
+
+        automation = sys.modules.get("infernux.host.bridge")
+        if automation is not None:
+            try:
+                automation.stop()
+            except Exception as exc:
+                Debug.log_error(f"Automation stopped with cleanup errors: {exc}")
 
         if not _PLAYER_MODE:
             from infernux.engine.ui.plugin_install_progress import PluginInstallProgressService

@@ -6,6 +6,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <platform/filesystem/InxPath.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/FontSourceValidation.h>
 
 #ifdef DrawText
 #undef DrawText
@@ -16,6 +18,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -312,6 +315,11 @@ inline ImFont *ResolveFont(const std::string &fontPath)
     const std::string requestKey = LexicalFilesystemPathKey(fontPath);
     auto &fontCache = GetFontCache();
     auto &missingFonts = GetMissingFonts();
+    if (auto *database = AssetRegistry::Instance().GetAssetDatabase()) {
+        const auto guid = database->GetGuidFromCatalogPath(fontPath);
+        if (!guid.empty() && !database->GetImportError(guid).empty())
+            return nullptr;
+    }
     if (auto it = fontCache.find(requestKey); it != fontCache.end())
         return it->second;
     if (missingFonts.find(requestKey) != missingFonts.end())
@@ -350,7 +358,25 @@ inline ImFont *ResolveFont(const std::string &fontPath)
     // glyph raster.
     config.OversampleH = 2;
     config.OversampleV = 2;
-    ImFont *font = ImGui::GetIO().Fonts->AddFontFromFileTTF(normalizedPath.c_str(), 18.0f, &config);
+    std::string source;
+    try {
+        source = AssetSource(normalizedPath).TakeBytes();
+        ValidateFontSource(source);
+    } catch (const std::exception &error) {
+        missingFonts.insert(pathKey);
+        missingFonts.insert(requestKey);
+        auto *database = AssetRegistry::Instance().GetAssetDatabase();
+        const auto guid = database ? database->GetGuidFromPath(normalizedPath) : std::string{};
+        if (!guid.empty())
+            database->ReportRuntimeLoadFailure(guid, std::string("Font load failed: ") + error.what());
+        INXLOG_ERROR("UIText explicit font asset rejected: '", normalizedPath, "': ", error.what());
+        return nullptr;
+    }
+    // Publish exactly the validated bytes; a concurrent save cannot replace
+    // the file between validation and the atlas loader's separate read.
+    void *data = IM_ALLOC(source.size());
+    std::memcpy(data, source.data(), source.size());
+    ImFont *font = ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data, static_cast<int>(source.size()), 18.0f, &config);
     if (font == nullptr) {
         missingFonts.insert(pathKey);
         missingFonts.insert(requestKey);

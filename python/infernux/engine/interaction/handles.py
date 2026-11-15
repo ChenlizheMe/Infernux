@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
@@ -73,6 +74,7 @@ class _FrameHandle:
     on_commit: Optional[HandleCallback]
     on_cancel: Optional[HandleCallback]
     extent: float = 1.0
+    reload_owner: Any = None
 
     def snapshot(self) -> EditorHandleSnapshot:
         return EditorHandleSnapshot(
@@ -113,6 +115,7 @@ class _RegistrationState:
     provider: EditorHandleProvider
     owner: str
     serial: int
+    reload_owner: Any = None
 
 
 class HandleRegistration:
@@ -149,9 +152,10 @@ class EditorHandleContext:
     __slots__ = (
         "engine", "selection", "provider_id", "_registry", "_owner",
         "_staged", "_labels", "_ids", "_sealed",
+        "_reload_owner",
     )
 
-    def __init__(self, registry, provider_id: str, owner: str, engine, selection) -> None:
+    def __init__(self, registry, provider_id: str, owner: str, engine, selection, reload_owner=None) -> None:
         self.engine = engine
         self.selection = selection
         self.provider_id = provider_id
@@ -161,6 +165,7 @@ class EditorHandleContext:
         self._labels: list[_FrameLabel] = []
         self._ids: set[str] = set()
         self._sealed = False
+        self._reload_owner = reload_owner
 
     def position(
         self,
@@ -330,6 +335,7 @@ class EditorHandleContext:
             f"{self.provider_id}:{local}", self.provider_id, self._owner, kind,
             value, position, direction, _positive(size, "handle size"),
             on_changed, on_begin, on_commit, on_cancel,
+            reload_owner=self._reload_owner,
         )
         self._staged.append(descriptor)
         return descriptor
@@ -420,6 +426,8 @@ class EditorHandleRegistry:
         return self._hovered
 
     def register(self, provider: EditorHandleProvider, *, replace: bool = False) -> HandleRegistration:
+        from infernux.engine.reload.owners import owner_for
+        reload_owner = owner_for(provider.draw)
         existing = self._providers.get(provider.provider_id)
         owner = current_owner.get()
         if existing is not None and not replace:
@@ -433,10 +441,13 @@ class EditorHandleRegistry:
             self._revision += 1
             self._retire_state(existing)
         self._serial += 1
-        state = _RegistrationState(provider, owner, self._serial)
+        state = _RegistrationState(provider, owner, self._serial, reload_owner)
         self._providers[provider.provider_id] = state
         self._revision += 1
-        return HandleRegistration(self, provider.provider_id, state.serial)
+        registration = HandleRegistration(self, provider.provider_id, state.serial)
+        if reload_owner is not None:
+            reload_owner.add_cleanup(registration.close)
+        return registration
 
     def unregister(self, provider_id: str) -> bool:
         identifier = _identifier(provider_id, "handle provider_id")
@@ -492,17 +503,25 @@ class EditorHandleRegistry:
         try:
             for state in tuple(self._providers.values()):
                 provider = state.provider
-                if provider.enabled is not None and not bool(provider.enabled()):
+                owner = state.reload_owner
+                if owner is not None and not owner.active:
+                    continue
+                with owner.enter() if owner is not None else nullcontext():
+                    enabled = provider.enabled is None or bool(provider.enabled())
+                if not enabled:
                     if self._capture is not None and self._capture.descriptor.provider_id == provider.provider_id:
                         self.cancel_capture()
                     continue
                 context = EditorHandleContext(
-                    self, provider.provider_id, state.owner, engine, selection,
+                    self, provider.provider_id, state.owner, engine, selection, owner,
                 )
                 try:
-                    provider.draw(context)
+                    with owner.enter() if owner is not None else nullcontext():
+                        provider.draw(context)
                 finally:
                     context._sealed = True
+                if self._providers.get(provider.provider_id) is not state or owner is not None and not owner.active:
+                    continue
                 for descriptor in context._staged:
                     if descriptor.handle_id in published:
                         raise ValueError(f"duplicate editor handle identity: {descriptor.handle_id}")
@@ -585,6 +604,8 @@ class EditorHandleRegistry:
         descriptor = self._frame.get(identifier)
         if descriptor is None:
             return False
+        if descriptor.reload_owner is not None and not descriptor.reload_owner.active:
+            return False
         if self._capture is not None:
             raise RuntimeError("another editor handle already owns pointer capture")
         origin = _vec3(ray_origin, "handle capture ray origin")
@@ -602,7 +623,8 @@ class EditorHandleRegistry:
         self._hovered = identifier
         if descriptor.on_begin is not None:
             try:
-                descriptor.on_begin(descriptor.value)
+                with descriptor.reload_owner.enter() if descriptor.reload_owner is not None else nullcontext():
+                    descriptor.on_begin(descriptor.value)
             except BaseException:
                 self._capture = None
                 raise
@@ -628,10 +650,14 @@ class EditorHandleRegistry:
         if capture is None:
             return False
         descriptor = capture.descriptor
+        if descriptor.reload_owner is not None and not descriptor.reload_owner.active:
+            self.cancel_capture()
+            return False
         origin = _vec3(ray_origin, "handle capture ray origin")
         direction = _normalized(_vec3(ray_direction, "handle capture ray direction"), "handle capture ray direction")
         value = self._capture_value(capture, origin, direction)
-        descriptor.on_changed(value)
+        with descriptor.reload_owner.enter() if descriptor.reload_owner is not None else nullcontext():
+            descriptor.on_changed(value)
         descriptor.value = value
         capture.changed = capture.changed or value != capture.initial_value
         return True
@@ -642,6 +668,8 @@ class EditorHandleRegistry:
             return False
         self._capture = None
         descriptor = capture.descriptor
+        if descriptor.reload_owner is not None and not descriptor.reload_owner.active:
+            commit = False
         if capture.transient_token:
             from .transient_interactions import TransientInteractionService
 
@@ -649,12 +677,14 @@ class EditorHandleRegistry:
         if not commit:
             failures: list[Exception] = []
             try:
-                descriptor.on_changed(capture.initial_value)
+                with descriptor.reload_owner.enter() if descriptor.reload_owner is not None else nullcontext():
+                    descriptor.on_changed(capture.initial_value)
             except Exception as exc:
                 failures.append(exc)
             if descriptor.on_cancel is not None:
                 try:
-                    descriptor.on_cancel(capture.initial_value)
+                    with descriptor.reload_owner.enter() if descriptor.reload_owner is not None else nullcontext():
+                        descriptor.on_cancel(capture.initial_value)
                 except Exception as exc:
                     failures.append(exc)
             _raise_callback_failures(
@@ -663,7 +693,8 @@ class EditorHandleRegistry:
             )
             return True
         if descriptor.on_commit is not None:
-            descriptor.on_commit(descriptor.value)
+            with descriptor.reload_owner.enter() if descriptor.reload_owner is not None else nullcontext():
+                descriptor.on_commit(descriptor.value)
         return True
 
     def cancel_capture(self) -> bool:
@@ -713,7 +744,8 @@ class EditorHandleRegistry:
         callback = state.provider.on_retire
         if callback is not None:
             try:
-                callback()
+                with state.reload_owner.enter() if state.reload_owner is not None else nullcontext():
+                    callback()
             except Exception as exc:
                 failures.append(exc)
         _raise_callback_failures(

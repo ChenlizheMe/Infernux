@@ -205,13 +205,14 @@ class RenderEffectArtifact:
 
 
 class RenderEffectArtifactRegistry:
-    """Compile-then-publish registry with persistent last-known-good artifacts."""
+    """Publish current effect products; failed sources have no live artifact."""
 
     _artifacts: dict[str, RenderEffectArtifact] = {}
     _compiling: set[str] = set()
     _revision = 0
     _topology_generation = 0
     _invalidated_sources: set[str] = set()
+    _failed_sources: dict[str, str] = {}
 
     @classmethod
     def topology_generation(cls) -> int:
@@ -228,8 +229,24 @@ class RenderEffectArtifactRegistry:
         cls._revision = 0
         cls._topology_generation = 0
         cls._invalidated_sources.clear()
+        cls._failed_sources.clear()
         _LIVE_EFFECT_GROUP_DOCUMENTS.clear()
         _clear_effect_group_expansions()
+
+    @classmethod
+    def invalidate(cls, path: str, *, guid: str = "", error: str) -> None:
+        for key in {cls._source_key(path, guid), cls._source_key(path, "")}:
+            cls._artifacts.pop(key, None)
+            cls._failed_sources[key] = error
+        _LIVE_EFFECT_GROUP_DOCUMENTS.pop(path_key(path), None)
+        _clear_effect_group_expansions()
+        cls._topology_generation += 1
+
+    @classmethod
+    def error(cls, path: str = "", guid: str = "") -> str:
+        return cls._failed_sources.get(cls._source_key(path, guid), "") or cls._failed_sources.get(
+            cls._source_key(path, ""), ""
+        )
 
     @classmethod
     def invalidate_feature(cls, type_id: str) -> None:
@@ -253,12 +270,13 @@ class RenderEffectArtifactRegistry:
                 f"render effect compile cycle detected at {source_path!r}"
             )
         cls._compiling.add(key)
-        expansion_snapshot = dict(_EFFECT_GROUP_EXPANSIONS)
         try:
-            return cls._compile_and_publish_unchecked(source_path, guid=guid)
-        except Exception:
-            _EFFECT_GROUP_EXPANSIONS.clear()
-            _EFFECT_GROUP_EXPANSIONS.update(expansion_snapshot)
+            result = cls._compile_and_publish_unchecked(source_path, guid=guid)
+            cls._failed_sources.pop(key, None)
+            cls._failed_sources.pop(cls._source_key(source_path, ""), None)
+            return result
+        except Exception as exc:
+            cls.invalidate(source_path, guid=guid, error=str(exc))
             raise
         finally:
             cls._compiling.discard(key)
@@ -899,6 +917,8 @@ class CompiledEffectBinding:
 
     def collect_updates(self):
         """Return ``(requires_rebuild, native_updates)`` for current values."""
+        if RenderEffectArtifactRegistry.error(self.source.file_path, self.source.guid):
+            return True, []
         if self.source.feature_type != self.feature.type_id:
             return True, []
         if self.feature.topology_signature(self.source) != self.topology_signature:
@@ -1012,7 +1032,13 @@ def expand_render_effect_reference(
     _trail: tuple[str, ...] = (),
 ) -> list[RenderEffect]:
     """Resolve one effect or recursively flatten an ordered effect group."""
-    cached = getattr(reference, "_cached", None)
+    from infernux.core.assets import AssetManager
+
+    error = (AssetManager._current_asset_error(reference.guid)
+             or RenderEffectArtifactRegistry.error(guid=reference.guid))
+    if error:
+        raise RenderEffectCompileError(error)
+    cached = reference.resolve()
     if isinstance(cached, RenderEffect):
         return [cached]
 

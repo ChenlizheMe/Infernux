@@ -108,7 +108,7 @@ def test_catch_up_publishes_failure_even_when_no_lifecycle_was_created(package_p
     assert state.loaded and not state.error and len(state.lifecycle) == 1
 
 
-def test_failed_reload_preserves_live_service_but_reports_rejected_source(package_project):
+def test_failed_reload_retires_live_service_and_reports_current_source(package_project):
     root, manager, install = package_project
     state = install('test/live-service', {'runtime/startup.py': GOOD_SOURCE})
     identity = state.lifecycle[0]['identity']
@@ -118,8 +118,8 @@ def test_failed_reload_preserves_live_service_but_reports_rejected_source(packag
     for _ in range(2):
         state = manager.reload('test/live-service')
         assert not state.loaded and 'SyntaxError' in state.error
-        assert manager.preloads.states[identity].instance is original
-        assert state.lifecycle[0]['loaded']
+        assert identity not in manager.preloads.states
+        assert not state.lifecycle
     source.write_text(GOOD_SOURCE, encoding='utf-8')
     state = manager.reload('test/live-service')
     assert state.loaded and not state.error

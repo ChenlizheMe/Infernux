@@ -1,4 +1,4 @@
-"""Editor-owned confirmation for external plugin and pip sources."""
+"""Restart prompt for a loaded native dependency changed by installation."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ class PluginInstallConfirmationCoordinator:
 
     def __init__(self, modal_service: ModalService) -> None:
         self._modals = modal_service
-        self._kind = ""
         self._value = ""
         self._callback: Optional[Callable[[], None]] = None
         self._requested = False
@@ -46,24 +45,12 @@ class PluginInstallConfirmationCoordinator:
 
     @property
     def is_active(self) -> bool:
-        return bool(self._kind and self._value and self._callback)
-
-    def request(self, kind: str, value: str, callback: Callable[[], None]) -> bool:
-        normalized_kind = str(kind or "").strip().casefold()
-        normalized_value = str(value or "").strip()
-        if self.is_active or normalized_kind not in {"source", "pip", "restart"}:
-            return False
-        if not normalized_value or not callable(callback):
-            return False
-        if not self._modals.activate(self.MODAL_ID, owner_id="plugins"):
-            return False
-        self._kind = normalized_kind
-        self._value = normalized_value
-        self._callback = callback
-        self._requested = True
-        return True
+        return self._callback is not None
 
     def request_restart(self, manager) -> bool:
+        if self.is_active or not self._modals.activate(self.MODAL_ID, owner_id="plugins"):
+            return False
+
         def restart() -> None:
             from infernux.engine.scene_manager import SceneFileManager
             from infernux_editor import restart_after_exit
@@ -72,13 +59,15 @@ class PluginInstallConfirmationCoordinator:
                 on_confirmed=lambda: restart_after_exit(manager.project_root),
             )
 
-        return self.request("restart", ", ".join(manager.pending_install["loaded"]), restart)
+        self._value = ", ".join(manager.pending_install["loaded"])
+        self._callback = restart
+        self._requested = True
+        return True
 
     def render(self, ctx) -> bool:
         if not self.is_active:
             return False
-        restarting = self._kind == "restart"
-        title = t("plugins.restart.title" if restarting else "plugins.install_confirm.title")
+        title = t("plugins.restart.title")
         request_open = self._requested
         self._requested = False
         if not begin_editor_modal(
@@ -91,22 +80,20 @@ class PluginInstallConfirmationCoordinator:
             height=230.0,
         ):
             return False
-        ctx.text_wrapped(t("plugins.restart.message" if restarting else f"plugins.install_confirm.{self._kind}"))
+        ctx.text_wrapped(t("plugins.restart.message"))
         ctx.spacing()
         ctx.text_wrapped(self._value)
         ctx.spacing()
-        if not restarting:
-            ctx.text_wrapped(t("plugins.install_confirm.side_effects"))
         render_editor_modal_actions(
             ctx,
             (
                 EditorModalAction(
-                    t("plugins.restart.now" if restarting else "plugins.install_confirm.install"),
+                    t("plugins.restart.now"),
                     "confirm",
                     lambda: self._confirm(ctx),
                 ),
                 EditorModalAction(
-                    t("plugins.restart.later" if restarting else "editor.modal.cancel"),
+                    t("plugins.restart.later"),
                     "cancel",
                     lambda: self._cancel(ctx),
                 ),
@@ -131,7 +118,6 @@ class PluginInstallConfirmationCoordinator:
         self._clear()
 
     def _clear(self) -> None:
-        self._kind = ""
         self._value = ""
         self._callback = None
         self._requested = False

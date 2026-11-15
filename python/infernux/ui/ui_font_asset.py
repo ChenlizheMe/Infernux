@@ -10,11 +10,28 @@ from __future__ import annotations
 
 
 _font_asset_revision = 1
+_reported_font_errors = set()
+
+
+class FontAssetUnavailable(FileNotFoundError):
+    def __init__(self, path: str, guid: str, message: str):
+        super().__init__(message)
+        self.path, self.guid = path, guid
+
+
+def report_font_asset_error(error: FontAssetUnavailable) -> None:
+    key = (_font_asset_revision, error.guid, str(error))
+    if key not in _reported_font_errors:
+        _reported_font_errors.add(key)
+        from infernux.engine.ui.asset_load_errors import report_asset_load_error
+
+        report_asset_load_error(error.path or f"Font GUID {error.guid}", str(error))
 
 
 def invalidate_ui_font_asset(path: str, native) -> None:
     """Publish a committed Font change without probing files during rendering."""
     global _font_asset_revision
+    _reported_font_errors.clear()
     if native is not None and native.has_renderer:
         native.invalidate_ui_font_asset(path)
     _font_asset_revision += 1
@@ -51,8 +68,8 @@ def ui_font_reference_path(reference) -> str:
 
         cooked_path = str(resolve_runtime_asset_guid(guid) or "")
         if not cooked_path:
-            raise FileNotFoundError(
-                f"Font asset GUID is absent from the Player catalog: {guid}"
+            raise FontAssetUnavailable(
+                "", guid, f"Font asset GUID is absent from the Player catalog: {guid}"
             )
         return cooked_path
 
@@ -61,10 +78,10 @@ def ui_font_reference_path(reference) -> str:
     database = AssetManager.require_asset_database()
     authored_path = str(database.get_path_from_guid(guid) or "").strip()
     if not authored_path:
-        raise FileNotFoundError(f"Font asset GUID is unavailable: {guid}")
+        raise FontAssetUnavailable("", guid, f"Font asset GUID is unavailable: {guid}")
     import os
     if not os.path.isfile(authored_path):
-        raise FileNotFoundError(f"Font asset GUID is unavailable: {guid}")
+        raise FontAssetUnavailable(authored_path, guid, f"Font asset GUID is unavailable: {guid}")
     return authored_path
 
 

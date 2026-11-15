@@ -21,23 +21,17 @@ void AudioClipLoader::OnRelocated(const RuntimeAssetPayload &payload, const std:
 
 RuntimeAssetPayload AudioClipLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
 {
-    if (filePath.empty() || guid.empty()) {
-        INXLOG_WARN("AudioClipLoader::Load: empty filePath or guid");
-        return nullptr;
-    }
+    if (filePath.empty() || guid.empty())
+        throw std::invalid_argument("AudioClipLoader requires a file path and GUID");
 
     auto fsPath = ToFsPath(filePath);
-    if (!std::filesystem::exists(fsPath)) {
-        INXLOG_ERROR("AudioClipLoader::Load: file not found: ", filePath);
-        return nullptr;
-    }
+    if (!std::filesystem::is_regular_file(fsPath))
+        throw std::runtime_error("Audio source file is unavailable: " + filePath);
 
     auto clip = std::make_shared<AudioClip>();
     const auto metadata = adb ? adb->GetMetaByGuid(guid) : nullptr;
-    if (!clip->LoadFromFile(filePath, metadata.get())) {
-        INXLOG_ERROR("AudioClipLoader::Load: failed to decode: ", filePath);
-        return nullptr;
-    }
+    if (!clip->LoadFromFile(filePath, metadata.get()))
+        throw std::runtime_error("Audio decode failed for '" + filePath + "': " + clip->GetLoadError());
 
     clip->SetGuid(guid);
 
@@ -59,10 +53,8 @@ bool AudioClipLoader::Reload(const RuntimeAssetPayload &existing, const std::str
 
     const auto metadata = adb ? adb->GetMetaByGuid(guid) : nullptr;
     AudioClip candidate;
-    if (!candidate.LoadFromFile(filePath, metadata.get())) {
-        INXLOG_ERROR("AudioClipLoader::Reload: failed to decode: ", filePath);
-        return false;
-    }
+    if (!candidate.LoadFromFile(filePath, metadata.get()))
+        throw std::runtime_error("Audio decode failed for '" + filePath + "': " + candidate.GetLoadError());
 
     candidate.SetGuid(guid);
     *clip = std::move(candidate);

@@ -178,12 +178,14 @@ PyComponentProxy::~PyComponentProxy()
     m_pyComponent = py::object();
 }
 
-void CallCachedLifecycleNoArg(py::object callable, std::string typeName, const char *displayName)
+bool CallCachedLifecycleNoArg(py::object callable, std::string typeName, const char *displayName)
 {
     try {
-        callable();
+        const py::object result = callable();
+        return !py::isinstance<py::bool_>(result) || result.cast<bool>();
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
+        return false;
     }
 }
 
@@ -422,10 +424,13 @@ void PyComponentProxy::Awake()
 
         // Call Python awake
         const ObjectHandle identity = GetHandle();
-        CallCachedLifecycleNoArg(m_callAwake, m_typeName, "awake");
+        const bool initialized = CallCachedLifecycleNoArg(m_callAwake, m_typeName, "awake");
         auto *current = Component::FindByComponentId(identity.id);
-        if (current == this && current->GetLifetimeGeneration() == identity.generation)
+        if (current == this && current->GetLifetimeGeneration() == identity.generation) {
+            if (!initialized)
+                m_hasAwake = false;
             SyncPythonMirror();
+        }
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", m_typeName, ".awake setup: ", e.what());
     }
@@ -448,10 +453,13 @@ void PyComponentProxy::Start()
         return;
 
     const ObjectHandle identity = GetHandle();
-    CallCachedLifecycleNoArg(m_callStart, m_typeName, "start");
+    const bool initialized = CallCachedLifecycleNoArg(m_callStart, m_typeName, "start");
     auto *current = Component::FindByComponentId(identity.id);
-    if (current == this && current->GetLifetimeGeneration() == identity.generation)
+    if (current == this && current->GetLifetimeGeneration() == identity.generation) {
+        if (!initialized)
+            m_hasStarted = false;
         SyncPythonMirror();
+    }
 }
 
 void PyComponentProxy::OnDisable()

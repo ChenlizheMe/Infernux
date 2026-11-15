@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -73,6 +74,7 @@ class EditorCommand:
     palette_visible: bool = True
     palette_keywords: tuple[str, ...] = ()
     creates_user_action: bool = True
+    _reload_owner: Any = field(default=None, init=False, repr=False)
 
     @property
     def localized_name(self) -> str:
@@ -129,6 +131,8 @@ class EditorCommandRegistry:
         return tuple(self._commands.values())
 
     def register(self, command: EditorCommand, *, replace: bool = False) -> None:
+        from infernux.engine.reload.owners import owner_for
+        reload_owner = owner_for(command.execute)
         existing = self._commands.get(command.command_id)
         if existing is not None and not replace:
             raise ValueError(f"editor command already registered: {command.command_id}")
@@ -137,7 +141,11 @@ class EditorCommandRegistry:
             raise ValueError(f"editor command belongs to another contributor: {command.command_id}")
         self._commands[command.command_id] = command
         self._owners[command.command_id] = owner
+        command._reload_owner = reload_owner
         self._revision += 1
+        if reload_owner is not None:
+            reload_owner.add_cleanup(lambda: self.unregister(command.command_id)
+                                     if self._commands.get(command.command_id) is command else None)
 
     def unregister(self, command_id: str) -> bool:
         if self._commands.pop(str(command_id or "").strip(), None) is None:
@@ -181,9 +189,13 @@ class EditorCommandRegistry:
         command = self.get(command_id)
         if command is None:
             return False
+        owner = command._reload_owner
+        if owner is not None and not owner.active:
+            return False
         if command.can_execute is None:
             return True
-        return bool(command.can_execute(context or self.context()))
+        with owner.enter() if owner is not None else nullcontext():
+            return bool(command.can_execute(context or self.context()))
 
     def is_checked(
         self,
@@ -193,7 +205,11 @@ class EditorCommandRegistry:
         command = self.get(command_id)
         if command is None or command.is_checked is None:
             return False
-        return bool(command.is_checked(context or self.context()))
+        owner = command._reload_owner
+        if owner is not None and not owner.active:
+            return False
+        with owner.enter() if owner is not None else nullcontext():
+            return bool(command.is_checked(context or self.context()))
 
     def disabled_reason(
         self,
@@ -208,7 +224,12 @@ class EditorCommandRegistry:
             return ""
         if command.disabled_reason is None:
             return "Command is unavailable in the current context"
-        return str(command.disabled_reason(resolved_context) or "").strip() or (
+        owner = command._reload_owner
+        if owner is not None and not owner.active:
+            return "Command source is unavailable"
+        with owner.enter() if owner is not None else nullcontext():
+            reason = command.disabled_reason(resolved_context)
+        return str(reason or "").strip() or (
             "Command is unavailable in the current context"
         )
 
@@ -254,7 +275,8 @@ class EditorCommandRegistry:
                 or identifier in {"edit.undo", "edit.redo"}
                 or not command.creates_user_action
             ):
-                value = command.execute(context)
+                with command._reload_owner.enter() if command._reload_owner is not None else nullcontext():
+                    value = command.execute(context)
             else:
                 from .action_journal import ActionOrigin
 
@@ -268,7 +290,8 @@ class EditorCommandRegistry:
                     origin=origin,
                     command_id=identifier,
                 ):
-                    value = command.execute(context)
+                    with command._reload_owner.enter() if command._reload_owner is not None else nullcontext():
+                        value = command.execute(context)
         except Exception as exc:
             return CommandResult(identifier, CommandStatus.FAILED, str(exc))
         if isinstance(value, CommandResult):

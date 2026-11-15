@@ -1783,6 +1783,8 @@ class ParticleSystem(InxComponent):
             return False
         self._ensure_runtime_state(playing=bool(self._playing))
         graph_ref = get_raw_field_value(self, "graph")
+        if ParticleArtifactRegistry.error(guid=str(getattr(graph_ref, "guid", "") or "")):
+            return False
         now = time.monotonic()
         if not force and now < self._compile_retry_at:
             guid = str(getattr(graph_ref, "guid", "") or "").strip()
@@ -2620,6 +2622,10 @@ class ParticleSystem(InxComponent):
         artifact = ParticleArtifactRegistry.get(
             guid=getattr(graph_ref, "guid", ""),
         )
+        if artifact is None and ParticleArtifactRegistry.error(guid=getattr(graph_ref, "guid", "")):
+            self._remove_gpu_emitters()
+            self._clear_runtime_state()
+            return
         materials = self._output_materials.values()
         schema_changed = shader_revision != self._shader_runtime_revision and any(
             Shader._surface_schemas.get(material.frag_shader_name, ((), 0))[1] > self._shader_runtime_revision

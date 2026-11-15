@@ -239,6 +239,8 @@ class ComponentNativeMixin:
 
     def _invalidate_native_binding(self, *, release_fields: bool = True):
         """Invalidate native references after scene rebuild/destruction."""
+        from infernux.execution import close_component_execution
+        close_component_execution(self)
         self.__dict__.pop("_transform_cache", None)
         if release_fields:
             self._release_component_data_slot()

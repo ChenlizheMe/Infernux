@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "HierarchyPanel.h"
 
 #include <function/renderer/gui/InxGUISemantics.h>
@@ -904,19 +905,19 @@ void HierarchyPanel::RenderReorderSep(InxGUIContext *ctx, const char *sepId, std
     }
     ctx->SetNextItemAllowOverlap();
     const float dpi = ctx->GetDpiScale();
-    ctx->SetCursorPosY(savedY - EditorTheme::DND_REORDER_HIT_ABOVE * dpi);
-    ctx->InvisibleButton(sepId, availW, EditorTheme::DND_REORDER_SEPARATOR_H * dpi);
+    ctx->SetCursorPosY(savedY - EditorThemeRegistry::Float("DND_REORDER_HIT_ABOVE") * dpi);
+    ctx->InvisibleButton(sepId, availW, EditorThemeRegistry::Float("DND_REORDER_SEPARATOR_H") * dpi);
     ctx->PushStyleColor(ImGuiCol_DragDropTarget, 0.0f, 0.0f, 0.0f, 0.0f);
     if (ctx->BeginDragDropTarget()) {
         // A filled rectangle produces one exact solid-white line. AddLine is
         // anti-aliased and creates the gray fringe visible around thin lines.
-        const float lineY = ctx->GetItemRectMinY() + EditorTheme::DND_REORDER_HIT_ABOVE * dpi;
+        const float lineY = ctx->GetItemRectMinY() + EditorThemeRegistry::Float("DND_REORDER_HIT_ABOVE") * dpi;
         float x1 = ctx->GetItemRectMinX();
         float x2 = x1 + availW;
-        const float lineH = EditorTheme::DND_REORDER_LINE_THICKNESS * dpi;
-        ctx->DrawFilledRect(x1, std::floor(lineY), x2, std::floor(lineY) + lineH, EditorTheme::DND_REORDER_LINE.x,
-                            EditorTheme::DND_REORDER_LINE.y, EditorTheme::DND_REORDER_LINE.z,
-                            EditorTheme::DND_REORDER_LINE.w, 0.0f);
+        const float lineH = EditorThemeRegistry::Float("DND_REORDER_LINE_THICKNESS") * dpi;
+        ctx->DrawFilledRect(x1, std::floor(lineY), x2, std::floor(lineY) + lineH, EditorThemeRegistry::Color("DND_REORDER_LINE").x,
+                            EditorThemeRegistry::Color("DND_REORDER_LINE").y, EditorThemeRegistry::Color("DND_REORDER_LINE").z,
+                            EditorThemeRegistry::Color("DND_REORDER_LINE").w, 0.0f);
         uint64_t payload = 0;
         if (ctx->AcceptDragDropPayload(DRAG_DROP_TYPE, &payload)) {
             if (onDrop)
@@ -1034,25 +1035,25 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     const bool dragged = m_draggedSceneWorldId == worldId;
     const bool selectedOrDragged = m_selectedSceneWorldId == worldId || dragged;
     const ImVec2 sceneRowMin = ImGui::GetCursorScreenPos();
-    const float sceneRowHeight = ImGui::GetFontSize() * EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE +
-                                 2.0f * EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi;
+    const float sceneRowHeight = ImGui::GetFontSize() * EditorThemeRegistry::Float("INSPECTOR_HEADER_PRIMARY_FONT_SCALE") +
+                                 2.0f * EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").y * dpi;
     const ImVec2 sceneRowMax{sceneRowMin.x + ImGui::GetContentRegionAvail().x, sceneRowMin.y + sceneRowHeight};
     const bool dragTargetHovered =
         ImGui::GetDragDropPayload() != nullptr && ImGui::IsMouseHoveringRect(sceneRowMin, sceneRowMax, false);
-    const ImVec4 &header = selectedOrDragged   ? EditorTheme::HIERARCHY_ROW_SELECTED
-                           : dragTargetHovered ? EditorTheme::HIERARCHY_ROW_HOVER
-                                               : EditorTheme::INSPECTOR_HEADER_PRIMARY;
-    const ImVec4 &hovered = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED : EditorTheme::HIERARCHY_ROW_HOVER;
-    const ImVec4 &pressed = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED : EditorTheme::HIERARCHY_ROW_HOVER;
+    const ImVec4 &header = selectedOrDragged   ? EditorThemeRegistry::Color("HIERARCHY_ROW_SELECTED")
+                           : dragTargetHovered ? EditorThemeRegistry::Color("HIERARCHY_ROW_HOVER")
+                                               : EditorThemeRegistry::Color("INSPECTOR_HEADER_PRIMARY");
+    const ImVec4 &hovered = selectedOrDragged ? EditorThemeRegistry::Color("HIERARCHY_ROW_SELECTED") : EditorThemeRegistry::Color("HIERARCHY_ROW_HOVER");
+    const ImVec4 &pressed = selectedOrDragged ? EditorThemeRegistry::Color("HIERARCHY_ROW_SELECTED") : EditorThemeRegistry::Color("HIERARCHY_ROW_HOVER");
     ctx->PushStyleColor(ImGuiCol_Header, header.x, header.y, header.z, header.w);
     ctx->PushStyleColor(ImGuiCol_HeaderHovered, hovered.x, hovered.y, hovered.z, hovered.w);
     ctx->PushStyleColor(ImGuiCol_HeaderActive, pressed.x, pressed.y, pressed.z, pressed.w);
-    ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.x * dpi,
-                          EditorTheme::INSPECTOR_HEADER_PRIMARY_FRAME_PAD.y * dpi);
-    ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorTheme::INSPECTOR_HEADER_ITEM_SPC.x * dpi,
-                          EditorTheme::INSPECTOR_HEADER_ITEM_SPC.y * dpi);
-    ctx->PushStyleVarFloat(ImGuiStyleVar_FrameBorderSize, EditorTheme::INSPECTOR_HEADER_BORDER_SIZE * dpi);
-    ImGui::SetWindowFontScale(EditorTheme::INSPECTOR_HEADER_PRIMARY_FONT_SCALE);
+    ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").x * dpi,
+                          EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").y * dpi);
+    ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").x * dpi,
+                          EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").y * dpi);
+    ctx->PushStyleVarFloat(ImGuiStyleVar_FrameBorderSize, EditorThemeRegistry::Float("INSPECTOR_HEADER_BORDER_SIZE") * dpi);
+    ImGui::SetWindowFontScale(EditorThemeRegistry::Float("INSPECTOR_HEADER_PRIMARY_FONT_SCALE"));
 
     const bool wasOpen = m_collapsedSceneWorldIds.count(worldId) == 0;
     ctx->SetNextItemOpen(wasOpen, ImGuiCond_Always);
@@ -1092,9 +1093,9 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
             const bool after = ImGui::GetMousePos().y >= (ctx->GetItemRectMinY() + ctx->GetItemRectMaxY()) * 0.5f;
             const float lineY = after ? ctx->GetItemRectMaxY() : ctx->GetItemRectMinY();
             ctx->DrawFilledRect(ctx->GetItemRectMinX(), std::floor(lineY), ctx->GetItemRectMaxX(),
-                                std::floor(lineY) + EditorTheme::DND_REORDER_LINE_THICKNESS * dpi,
-                                EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
-                                EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w, 0.0f);
+                                std::floor(lineY) + EditorThemeRegistry::Float("DND_REORDER_LINE_THICKNESS") * dpi,
+                                EditorThemeRegistry::Color("DND_REORDER_LINE").x, EditorThemeRegistry::Color("DND_REORDER_LINE").y,
+                                EditorThemeRegistry::Color("DND_REORDER_LINE").z, EditorThemeRegistry::Color("DND_REORDER_LINE").w, 0.0f);
             uint64_t draggedWorldId = 0;
             if (ctx->AcceptDragDropPayload(SCENE_DRAG_DROP_TYPE, &draggedWorldId))
                 MoveSceneAdjacent(draggedWorldId, worldId, after);
@@ -1184,12 +1185,12 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
     const bool inactiveDimmed = !obj->IsActiveInHierarchy();
     int textColorPushed = 0;
     if (inactiveDimmed) {
-        ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
-                            EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
+        ctx->PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("TEXT_DISABLED").x, EditorThemeRegistry::Color("TEXT_DISABLED").y,
+                            EditorThemeRegistry::Color("TEXT_DISABLED").z, EditorThemeRegistry::Color("TEXT_DISABLED").w);
         textColorPushed = 1;
     } else if (isPrefab) {
-        ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT.x, EditorTheme::PREFAB_TEXT.y,
-                            EditorTheme::PREFAB_TEXT.z, EditorTheme::PREFAB_TEXT.w);
+        ctx->PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("PREFAB_TEXT").x, EditorThemeRegistry::Color("PREFAB_TEXT").y,
+                            EditorThemeRegistry::Color("PREFAB_TEXT").z, EditorThemeRegistry::Color("PREFAB_TEXT").w);
         textColorPushed = 1;
     }
 
@@ -1213,10 +1214,10 @@ void HierarchyPanel::RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, fl
         ImGui::GetDragDropPayload() != nullptr && ImGui::IsMouseHoveringRect(rowMin, rowMax, false);
     if (dragBodyHovered && !selectedOrDragged)
         nodeFlags |= ImGuiTreeNodeFlags_Selected;
-    const ImVec4 &rowBase = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED
-                            : dragBodyHovered ? EditorTheme::HIERARCHY_ROW_HOVER
-                                              : EditorTheme::ROW_NONE;
-    const ImVec4 &rowHover = selectedOrDragged ? EditorTheme::HIERARCHY_ROW_SELECTED : EditorTheme::HIERARCHY_ROW_HOVER;
+    const ImVec4 &rowBase = selectedOrDragged ? EditorThemeRegistry::Color("HIERARCHY_ROW_SELECTED")
+                            : dragBodyHovered ? EditorThemeRegistry::Color("HIERARCHY_ROW_HOVER")
+                                              : EditorThemeRegistry::Color("ROW_NONE");
+    const ImVec4 &rowHover = selectedOrDragged ? EditorThemeRegistry::Color("HIERARCHY_ROW_SELECTED") : EditorThemeRegistry::Color("HIERARCHY_ROW_HOVER");
     ctx->PushStyleColor(ImGuiCol_Header, rowBase.x, rowBase.y, rowBase.z, rowBase.w);
     ctx->PushStyleColor(ImGuiCol_HeaderHovered, rowHover.x, rowHover.y, rowHover.z, rowHover.w);
     ctx->PushStyleColor(ImGuiCol_HeaderActive, rowHover.x, rowHover.y, rowHover.z, rowHover.w);
@@ -1420,8 +1421,8 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     auto headerStart = Clock::now();
     if (IsPrefabModeActive()) {
         std::string prefabName = PrefabDisplayName();
-        ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::PREFAB_TEXT.x, EditorTheme::PREFAB_TEXT.y,
-                            EditorTheme::PREFAB_TEXT.z, EditorTheme::PREFAB_TEXT.w);
+        ctx->PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("PREFAB_TEXT").x, EditorThemeRegistry::Color("PREFAB_TEXT").y,
+                            EditorThemeRegistry::Color("PREFAB_TEXT").z, EditorThemeRegistry::Color("PREFAB_TEXT").w);
         ctx->Label(prefabName);
         ctx->PopStyleColor(1);
     }
@@ -1446,11 +1447,11 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
     // ── Scene tree ──────────────────────────────────────────────
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (scene) {
-        ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorTheme::TREE_ITEM_SPC.x * dpi,
-                              EditorTheme::TREE_ITEM_SPC.y * dpi);
-        ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorTheme::TREE_FRAME_PAD.x * dpi,
-                              EditorTheme::TREE_FRAME_PAD.y * dpi);
-        ctx->PushStyleVarFloat(ImGuiStyleVar_IndentSpacing, EditorTheme::TREE_INDENT * dpi);
+        ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorThemeRegistry::Vec2("TREE_ITEM_SPC").x * dpi,
+                              EditorThemeRegistry::Vec2("TREE_ITEM_SPC").y * dpi);
+        ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorThemeRegistry::Vec2("TREE_FRAME_PAD").x * dpi,
+                              EditorThemeRegistry::Vec2("TREE_FRAME_PAD").y * dpi);
+        ctx->PushStyleVarFloat(ImGuiStyleVar_IndentSpacing, EditorThemeRegistry::Float("TREE_INDENT") * dpi);
 
         bool allowStale =
             !m_forceRootRefresh && !ctx->IsWindowFocused(0) && !ctx->IsWindowHovered() && !m_cachedRoots.empty();
@@ -1517,7 +1518,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                 viewportH = 400.0f * dpi;
             float startY = ctx->GetCursorPosY();
             float itemH = m_cachedItemHeight;
-            float indentStep = EditorTheme::TREE_INDENT * dpi;
+            float indentStep = EditorThemeRegistry::Float("TREE_INDENT") * dpi;
 
             // Selection can be changed by creation services, undo/redo, scene
             // picking, or another panel. Ensure a newly selected row is not
@@ -1650,13 +1651,13 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
         // after all authored Scene groups.
         if (!m_persistentFlatItems.empty()) {
             ctx->Separator();
-            ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
-                                EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
+            ctx->PushStyleColor(ImGuiCol_Text, EditorThemeRegistry::Color("TEXT_DISABLED").x, EditorThemeRegistry::Color("TEXT_DISABLED").y,
+                                EditorThemeRegistry::Color("TEXT_DISABLED").z, EditorThemeRegistry::Color("TEXT_DISABLED").w);
             ctx->Label("DontDestroyOnLoad");
             ctx->PopStyleColor(1);
             const float baseIndentX = ctx->GetCursorPosX();
             for (const FlatItem &item : m_persistentFlatItems)
-                RenderFlatItem(ctx, item, baseIndentX, EditorTheme::TREE_INDENT * dpi);
+                RenderFlatItem(ctx, item, baseIndentX, EditorThemeRegistry::Float("TREE_INDENT") * dpi);
         }
 
         auto popupStart = Clock::now();
@@ -1705,7 +1706,7 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                     const FlatItem &lastItem = m_flatItems.back();
                     const int rootDepth = IsPrefabModeActive() ? 0 : 1;
                     const int pointerDepth = static_cast<int>(
-                        std::floor((ImGui::GetMousePos().x - tailMinX) / (EditorTheme::TREE_INDENT * dpi) + 0.5f));
+                        std::floor((ImGui::GetMousePos().x - tailMinX) / (EditorThemeRegistry::Float("TREE_INDENT") * dpi) + 0.5f));
                     const int desiredDepth = (std::max)(rootDepth, (std::min)(lastItem.depth, pointerDepth));
                     tailAfterObject = lastItem.obj;
                     int afterDepth = lastItem.depth;
@@ -1713,12 +1714,12 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                         tailAfterObject = tailAfterObject->GetParent();
                         --afterDepth;
                     }
-                    lineX1 += static_cast<float>(desiredDepth) * EditorTheme::TREE_INDENT * dpi;
+                    lineX1 += static_cast<float>(desiredDepth) * EditorThemeRegistry::Float("TREE_INDENT") * dpi;
                 }
                 ctx->DrawFilledRect(lineX1, std::floor(lineY), lineX2,
-                                    std::floor(lineY) + EditorTheme::DND_REORDER_LINE_THICKNESS * dpi,
-                                    EditorTheme::DND_REORDER_LINE.x, EditorTheme::DND_REORDER_LINE.y,
-                                    EditorTheme::DND_REORDER_LINE.z, EditorTheme::DND_REORDER_LINE.w, 0.0f);
+                                    std::floor(lineY) + EditorThemeRegistry::Float("DND_REORDER_LINE_THICKNESS") * dpi,
+                                    EditorThemeRegistry::Color("DND_REORDER_LINE").x, EditorThemeRegistry::Color("DND_REORDER_LINE").y,
+                                    EditorThemeRegistry::Color("DND_REORDER_LINE").z, EditorThemeRegistry::Color("DND_REORDER_LINE").w, 0.0f);
                 // Accept uint64_t payload
                 uint64_t payload = 0;
                 bool accepted = false;

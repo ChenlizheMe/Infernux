@@ -267,7 +267,13 @@ def text_align_to_float(align_h, align_v) -> tuple[float, float]:
 def resolve_text_layout(elem, measure_text, scale: float = 1.0) -> bool:
     """Resolve a text element's intrinsic box through the shared layout path."""
     resolver = getattr(elem, "resolve_text_layout", None)
-    return bool(resolver(measure_text, scale)) if callable(resolver) else False
+    from .ui_font_asset import FontAssetUnavailable, report_font_asset_error
+
+    try:
+        return bool(resolver(measure_text, scale)) if callable(resolver) else False
+    except FontAssetUnavailable as error:
+        report_font_asset_error(error)
+        return False
 
 
 def resolve_text_layout_for_context(ctx, text_comp) -> bool:
@@ -571,7 +577,13 @@ def dispatch(elem, backend: str, *, defer_group_alpha=False, **kwargs):
         kwargs['base_sx'], kwargs['base_sy'] = rect[:2]
     if defer_group_alpha:
         kwargs["defer_group_alpha"] = True
-    fn(elem, **kwargs)
+    from .ui_font_asset import FontAssetUnavailable, report_font_asset_error
+
+    try:
+        fn(elem, **kwargs)
+    except FontAssetUnavailable as error:
+        report_font_asset_error(error)
+        return False
     return True
 
 

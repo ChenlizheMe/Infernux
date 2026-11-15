@@ -155,10 +155,7 @@ class PhysicMaterialImporter final : public AssetImporter
         return {".physicmaterial"};
     }
 
-    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override
-    {
-        return ImportArtifact(request.metadata);
-    }
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
 };
 
 // ==========================================================================

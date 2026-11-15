@@ -3,8 +3,6 @@ import stat
 import re
 import threading
 import time
-import types
-import uuid
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -21,13 +19,9 @@ from infernux.engine.path_utils import (
 from infernux.engine.project_context import (
     get_project_script_roots,
     is_project_component_script,
+    is_reloadable_script,
     package_script_role,
 )
-from infernux.engine.script_change_collector import (
-    ScriptChangeCollector,
-    ScriptChangeResult,
-)
-from infernux.engine.script_dependency_graph import ScriptDependencyGraph
 from infernux.engine.import_coordinator import (
     AssetFsEvent,
     AssetFsEventKind,
@@ -35,10 +29,6 @@ from infernux.engine.import_coordinator import (
     is_document_store_temporary_path,
 )
 from infernux.debug import Debug
-
-
-class _AssetImportNotReady(RuntimeError):
-    pass
 
 
 class _AssetImportRejected(RuntimeError):
@@ -58,7 +48,7 @@ def _reject_failed_asset_import(path, result) -> None:
         # source. An editor holding an exclusive write handle can release it
         # without sending another modification event.
         if result.error.startswith("failed to open source file:"):
-            raise _AssetImportNotReady(result.error)
+            raise RuntimeError(result.error)
         raise _AssetImportRejected(result.error)
     lower = path.lower()
     compiled_source = any(
@@ -70,14 +60,10 @@ def _reject_failed_asset_import(path, result) -> None:
         raise _AssetImportRejected(result.error, compiled=True)
 
 
-class _AssetLocalWritePending(_AssetImportNotReady):
+class _AssetLocalWritePending(RuntimeError):
     """A watcher echo is waiting for an editor-owned persistence ticket."""
 
     pass
-
-
-class _ScriptSourceChanged(RuntimeError):
-    """A newer disk revision superseded the compiled source snapshot."""
 
 
 def _is_plugin_editor_translation_catalog(path: str, project_root: str) -> bool:
@@ -86,98 +72,6 @@ def _is_plugin_editor_translation_catalog(path: str, project_root: str) -> bool:
         and os.path.basename(os.path.dirname(path)).casefold() == "editor"
         and package_script_role(path, project_root) == "editor"
     )
-
-
-class _ScriptPublicationTransaction:
-    """Owner-thread state for one dependency-aware script publication.
-
-    Frontend results are immutable and may arrive in any order.  This small
-    mutable record is deliberately owned by ``ResourceChangeHandler`` so no
-    worker can publish a partial dependency closure.
-    """
-
-    def __init__(
-        self,
-        transaction_id: str,
-        paths=(),
-        *,
-        retire_paths=(),
-        initial_scan: bool = False,
-    ) -> None:
-        self.transaction_id = transaction_id
-        self.expected_paths: list[str] = []
-        self._expected_keys: set[str] = set()
-        # Initial-scan members need their collector generation recorded at
-        # submission time.  A later revision may remove the old result before
-        # the owner drains it, leaving no result object to compare against.
-        self.expected_generations: dict[str, int] = {}
-        self.capture_incomplete = False
-        self.results: dict[str, ScriptChangeResult] = {}
-        self.failed = False
-        self.error = None
-        self.read_retry_at = 0.0
-        self.read_deadline = 0.0
-        self.initial_scan = bool(initial_scan)
-        self.closure_seeded = bool(initial_scan)
-        self.rebuild_helpers = False
-        self.graph_stage = None
-        # Once the collector has advanced LKG, live publication must never be
-        # replayed or rolled back.  Native CDS finalization is deliberately a
-        # retryable post-durable step so a transient owner/finalize failure
-        # cannot strand an active schema transaction or publish twice.
-        self.durable_token = None
-        self.durable_ordered: tuple[ScriptChangeResult, ...] = ()
-        self.durable_finalized = False
-        self.durable_move_finalized = False
-        self.retire_paths: tuple[str, ...] = tuple(
-            dict.fromkeys(os.fspath(path) for path in retire_paths if path)
-        )
-        self.add_paths(paths)
-
-    def add_paths(self, paths) -> None:
-        for value in paths:
-            display = os.fspath(value)
-            key = path_key(display)
-            if key in self._expected_keys:
-                continue
-            self._expected_keys.add(key)
-            self.expected_paths.append(display)
-
-    def add_retire_paths(self, paths) -> None:
-        """Record paths retired by this transaction without mutating live state."""
-        values = list(self.retire_paths)
-        seen = {path_key(path) for path in values}
-        for value in paths:
-            display = os.fspath(value)
-            key = path_key(display)
-            if not display or key in seen:
-                continue
-            seen.add(key)
-            values.append(display)
-        self.retire_paths = tuple(values)
-
-    def has_path(self, path: str) -> bool:
-        return path_key(path) in self._expected_keys
-
-    def complete(self) -> bool:
-        return all(path_key(path) in self.results for path in self.expected_paths)
-
-
-class _ScriptPublicationRollback:
-    """Rollback token retained by ``publish_ready_batch``."""
-
-    def __init__(
-        self,
-        *,
-        play_batch=None,
-        registry_snapshot=None,
-        graph_transaction=None,
-        graph_committed=False,
-    ):
-        self.play_batch = play_batch
-        self.registry_snapshot = registry_snapshot
-        self.graph_transaction = graph_transaction
-        self.graph_committed = bool(graph_committed)
 
 
 def _is_particle_script_path(file_path: str) -> bool:
@@ -210,25 +104,17 @@ class ResourceChangeHandler(FileSystemEventHandler):
         frontend_wake=None,
     ):
         self._engine = engine
-        self._script_change_collector = ScriptChangeCollector()
+        from infernux.engine.reload.coordinator import ReloadCoordinator
+        from infernux.engine.reload.components import ComponentAdapter
+        self.reload = ReloadCoordinator(
+            project_path or engine.get_asset_database().project_root,
+            adapter=ComponentAdapter(self._script_scenes), on_publish=self._on_script_published,
+        )
+        self._dependency_graph = self.reload.graph
+        self._last_dependency_affected = ()
         self._frontend_wake = frontend_wake
         self._frontend_worker_running = False
-        self._dependency_graph = (
-            ScriptDependencyGraph(project_path)
-            if project_path is not None
-            else None
-        )
-        self._last_dependency_affected = ()
-        self._stale_script_revisions = set()
-        self._rejected_compiled_assets: set[str] = set()
-        # Every entry is owner-thread state.  A frontend worker can only add
-        # immutable results to the collector; it can never mutate this map.
-        self._script_transactions: dict[str, _ScriptPublicationTransaction] = {}
-        # Frontend work already queued for a retired initial barrier may still
-        # finish after a deleted member was removed from the replacement
-        # barrier.  Consume such results without recreating the dead state.
-        self._retired_script_transactions: set[str] = set()
-        self._initial_scan_transaction_id: str | None = None
+        self._rejected_compiled_assets = set()
         self._coordinator = ImportCoordinator(max_attempts=8)
         self._active_watcher_import = None
         self._shader_cache_invalidation_callbacks = []
@@ -260,149 +146,22 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if callable(request_wake):
             request_wake()
 
-    def begin_script_transaction(
-        self,
-        paths=(),
-        *,
-        retire_paths=(),
-        transaction_id: str | None = None,
-        initial_scan: bool = False,
-    ) -> str:
-        """Register an owner-side batch before frontend work is submitted."""
-        transaction_id = transaction_id or uuid.uuid4().hex
-        if transaction_id in self._script_transactions:
-            state = self._script_transactions[transaction_id]
-            state.add_paths(paths)
-            state.add_retire_paths(retire_paths)
-            return transaction_id
-        self._script_transactions[transaction_id] = _ScriptPublicationTransaction(
-            transaction_id,
-            paths,
-            retire_paths=retire_paths,
-            initial_scan=initial_scan,
-        )
-        if initial_scan:
-            self._initial_scan_transaction_id = transaction_id
-        return transaction_id
 
-    def process_script_worker(self, max_items: int | None = None) -> int:
-        """Pump the collector frontend on the caller-owned worker thread.
-
-        This method never creates a thread and never publishes AssetDatabase,
-        registry, or live component state.  ``force=True`` callers may invoke
-        it on the owner thread when the watcher is unavailable.
-        """
-        processed = len(self._script_change_collector.process_worker_batch(max_items))
+    def process_script_worker(self, max_items=None):
+        processed = self.reload.compile_pending()
         if processed:
             self._wake_editor()
         return processed
 
-    def publish_script_sources(self, paths, *, snapshots=None, timeout=180.0, rebuild_helpers=False) -> dict[str, bytes]:
-        """Publish one owner-side source snapshot through the normal script barrier."""
-        if not paths:
-            return {}
-        if self._initial_scan_transaction_id is not None:
-            raise RuntimeError("Finish the initial script publication first")
-        transaction_id = self.begin_script_transaction(paths)
-        state = self._script_transactions[transaction_id]
-        state.rebuild_helpers = rebuild_helpers
-        if snapshots is not None:
-            # The caller staged the complete closure from these exact bytes.
-            state.closure_seeded = True
-        try:
-            changes = []
-            for path in paths:
-                change = self._check_script(
-                    path, catalog_event=None, origin="initial_scan",
-                    change_kind="initial_scan", transaction_id=transaction_id, force=True,
-                    source=snapshots[path] if snapshots is not None else None,
-                )
-                if change is None:
-                    raise RuntimeError(f"Could not capture script source: {path}")
-                changes.append(change)
-            deadline = time.monotonic() + timeout
-            while transaction_id in self._script_transactions:
-                self.process_pending_reloads(force=True)
-                if transaction_id not in self._script_transactions:
-                    break
-                now = time.monotonic()
-                if now >= deadline:
-                    raise RuntimeError("Script publication did not finish")
-                time.sleep(max(0., min(state.read_retry_at, deadline) - now))
-            if state.error is not None:
-                if isinstance(state.error, (OSError, _ScriptSourceChanged)):
-                    raise state.error
-                raise RuntimeError(f"Script publication failed: {state.error}") from state.error
-            from infernux.components.script_loader import get_script_error_by_path
 
-            unpublished = [change for change in changes
-                           if self._script_change_collector.last_known_good(change.path) != change.revision]
-            for change in unpublished:
-                if detail := get_script_error_by_path(change.path):
-                    raise RuntimeError(f"Script publication failed: {change.path}: {detail}")
-            if unpublished:
-                raise RuntimeError(f"Script revision was not published: {unpublished[0].path}")
-            return {change.path: change.source for change in changes}
+    def publish_script_sources(self, paths, *, snapshots=None):
+        self.reload.ensure_ready(paths, snapshots=snapshots)
+        return {path: self.reload.graph.published_source(path) for path in paths}
 
-        except BaseException:
-            state = self._script_transactions.get(transaction_id)
-            if state is not None and state.durable_token is None:
-                self._abort_initial_scan_transaction(state)
-            raise
 
-    def publish_saved_play_scripts(self, paths) -> None:
-        """Reconcile disk with the published script graph before entering Play."""
-        paths = tuple(paths)
-        deadline = time.monotonic() + 0.5
-        while True:
-            try:
-                self._publish_play_snapshot(paths)
-                return
-            except (PermissionError, _ScriptSourceChanged):
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.01)
+    def publish_saved_play_scripts(self, paths):
+        self.reload.ensure_ready(paths)
 
-    def _publish_play_snapshot(self, paths) -> None:
-        from infernux.components.script_loader import get_script_error_by_path
-
-        graph = self._dependency_graph
-        snapshots = {}
-        changed = {}
-        missing = {}
-        for path in paths:
-            key = path_key(path)
-            try:
-                with open(path, "rb") as stream:
-                    source = stream.read()
-            except FileNotFoundError:
-                missing[key] = path
-                continue
-            snapshots[key] = (path, source)
-            if graph.published_source(path) != source or get_script_error_by_path(path):
-                changed[path] = source
-        # A replacement may briefly remove the file while opening the snapshot.
-        for path in missing.values():
-            try:
-                os.stat(path)
-            except FileNotFoundError:
-                continue
-            raise _ScriptSourceChanged(f"Script source changed during publication: {path}")
-        for module in graph.snapshot().modules:
-            path = module.source_path
-            if (module.id.path_key not in snapshots and graph.owns_path(path)
-                    and (module.id.path_key in missing or not os.path.isfile(path))):
-                self._commit_deleted(path)
-                if graph.module_for_path(path) is not None:
-                    if module.id.path_key in missing and os.path.isfile(path):
-                        raise _ScriptSourceChanged(f"Script source changed during publication: {path}")
-                    raise RuntimeError(f"Deleted script is still published: {path}")
-        if changed:
-            affected = graph.stage_transaction(changed).affected
-            current_dependents = graph.affected_closure(changed)
-            keys = {path_key(path) for path in changed} | {module.path_key for module in (*affected, *current_dependents)}
-            batch = dict(snapshots[key] for key in sorted(keys & snapshots.keys()))
-            self.publish_script_sources(tuple(batch), snapshots=batch, timeout=10., rebuild_helpers=True)
 
     @staticmethod
     def _is_meta_sidecar_path(file_path: str) -> bool:
@@ -551,13 +310,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self._wake_editor()
 
     @property
-    def pending_count(self) -> int:
-        return (
-            self._coordinator.pending_count
-            + int(self._active_watcher_import is not None)
-            + self._script_change_collector.pending_count
-            + self._script_change_collector.completed_count
-        )
+    def pending_count(self):
+        return self._coordinator.pending_count + self.reload.pending_count
+
 
     def process_pending_reloads(self, *, force: bool = False) -> int:
         """Drain frontend results and commit events on the owner thread.
@@ -608,13 +363,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # the frontend worker, whose result may already be ready by the time
         # this frame reaches publication. This also avoids always charging a
         # full extra editor frame after every save.
-        processed = self._drain_script_results()
+        processed = self.reload.drain()
 
         # Asset dispatch may have submitted a script snapshot.  A forced or
         # worker-less call must be deterministic, so finish that same batch.
         if force or not self._frontend_worker_running:
             self.process_script_worker()
-            processed += self._drain_script_results()
+            processed += self.reload.drain()
         return processed + len(events)
 
     def _handle_asset_event_failure(self, event: AssetFsEvent, exc: Exception) -> None:
@@ -624,11 +379,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # Recompiling identical invalid source cannot make it valid.
             if exc.compiled:
                 self._rejected_compiled_assets.add(path_key(event.destination or event.path))
-        elif isinstance(exc, (_AssetImportNotReady, PermissionError)):
-            if not self._reschedule_asset_event(event, retry=True):
-                Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
-        else:
-            Debug.log_error(f"Asset event failed: {event}: {exc}")
+        if not isinstance(exc, _AssetLocalWritePending):
+            from infernux.engine.ui.asset_load_errors import report_asset_load_error
+            report_asset_load_error(event.destination or event.path, str(exc))
 
     def _reschedule_asset_event(self, event: AssetFsEvent, *, retry: bool, authored_guid: str = "") -> bool:
         # An importer can wait after its create/move catalog commit. The
@@ -644,817 +397,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         self._coordinator.defer(event, asset_published=published, authored_guid=authored_guid)
         return True
 
-    def _record_frontend_failure(self, result: ScriptChangeResult) -> None:
-        from infernux.components.script_loader import set_script_error
-
-        diagnostic = result.diagnostic
-        if diagnostic is None:
-            message = "script frontend rejected the source"
-            line = None
-        else:
-            location = ""
-            if diagnostic.line is not None:
-                location = f":{diagnostic.line}"
-            message = diagnostic.message
-            line = diagnostic.line
-            message = f"{os.path.basename(result.path)}{location}  {message}"
-        set_script_error(result.path, message)
-        Debug.log_error(
-            f"Script frontend failed for {result.path} "
-            f"(generation={result.generation}, hash={result.content_hash}): {message}",
-            source_file=result.path,
-            source_line=line,
-        )
-
-    @staticmethod
-    def _require_current_script_source(result: ScriptChangeResult) -> None:
-        try:
-            with open(result.path, "rb") as source_file:
-                if source_file.read() == result.source:
-                    return
-        except FileNotFoundError:
-            pass
-        raise _ScriptSourceChanged(f"Script source changed during publication: {result.path}")
-
-    @staticmethod
-    def _defer_locked_script(state: _ScriptPublicationTransaction, error: PermissionError) -> bool:
-        now = time.monotonic()
-        if not state.read_deadline:
-            state.read_deadline = now + 0.5
-        if now < state.read_deadline:
-            state.read_retry_at = now + 0.01
-            return True
-        state.error = error
-        state.failed = True
-        Debug.log_error(f"Could not read script for reload: {error}", source_file=error.filename or "")
-        return False
-
-    def _transaction_for_result(self, result: ScriptChangeResult):
-        transaction_id = result.change.transaction_id
-        state = self._script_transactions.get(transaction_id)
-        if state is None:
-            state = _ScriptPublicationTransaction(
-                transaction_id,
-                (result.path,),
-                initial_scan=result.change.change_kind == "initial_scan",
-            )
-            self._script_transactions[transaction_id] = state
-        elif not state.has_path(result.path):
-            # A transaction may discover additional members while its root is
-            # being processed.  The owner records them before publication.
-            state.add_paths((result.path,))
-        # The collector intentionally coalesces identical source snapshots and
-        # keeps the first transaction as their publication owner. Internal
-        # editor/MCP writes can therefore carry a later watchdog transaction
-        # ID as provenance. That is an echo, not a mixed publication batch:
-        # only the canonical transaction can claim or commit this revision.
-        # Rejecting the canonical owner here made every internally-created
-        # script fail as soon as its filesystem echo arrived.
-        return state
-
-    def _initial_scan_superseded(
-        self,
-        state: _ScriptPublicationTransaction,
-    ) -> bool:
-        """Return whether an initial member moved to a newer revision.
-
-        ``ScriptChangeCollector`` intentionally removes stale results when a
-        newer generation is submitted.  Therefore checking only
-        ``state.results`` cannot detect this race; the journal's latest
-        generation is the durable source of truth.
-        """
-        if state.capture_incomplete:
-            return True
-        for path in state.expected_paths:
-            expected_generation = state.expected_generations.get(path_key(path))
-            latest = self._script_change_collector.latest(path)
-            if latest is None:
-                # A deleted member is removed from the replacement barrier;
-                # it is not allowed to keep startup blocked forever.
-                continue
-            if (
-                expected_generation is not None
-                and latest.generation != expected_generation
-            ):
-                return True
-        return False
-
-    def _abort_initial_scan_transaction(
-        self,
-        state: _ScriptPublicationTransaction,
-    ) -> None:
-        """Atomically retire an obsolete initial barrier.
-
-        Only still-current old-generation results are passed to the collector;
-        superseded members have already been removed by the collector and
-        must not make cleanup fail.  The collector keeps diagnostics while
-        discarding pending/failed publication candidates.
-        """
-        self._retired_script_transactions.add(state.transaction_id)
-        surviving_paths: list[str] = []
-        for path in state.expected_paths:
-            result = state.results.get(path_key(path))
-            latest = self._script_change_collector.latest(path)
-            if (
-                result is not None
-                and latest is not None
-                and latest.generation == result.generation
-                and result.change.transaction_id == state.transaction_id
-            ):
-                surviving_paths.append(path)
-        if surviving_paths:
-            discarded = self._script_change_collector.abort_transaction(
-                surviving_paths,
-                transaction_id=state.transaction_id,
-            )
-            if not discarded:
-                Debug.log_error(
-                    "Failed to retire superseded initial script scan "
-                    f"(transaction={state.transaction_id})"
-                )
-        self._remove_script_transaction(state)
-
-    def _restart_initial_scan_transaction(
-        self,
-        state: _ScriptPublicationTransaction,
-    ) -> None:
-        """Restart one initial barrier from the current disk snapshot."""
-        paths = tuple(
-            path
-            for path in state.expected_paths
-            if os.path.isfile(path)
-        )
-        self._abort_initial_scan_transaction(state)
-        if not paths:
-            return
-        transaction_id = self.begin_script_transaction(
-            paths,
-            initial_scan=True,
-        )
-        submitted = 0
-        for path in paths:
-            # Force a fresh generation even if the journal still contains the
-            # superseded initial source.  _check_script reads the bytes at the
-            # point of restart, so the user's newest edit is in this barrier.
-            if self._check_script(
-                path,
-                catalog_event=None,
-                origin="initial_scan",
-                change_kind="initial_scan",
-                transaction_id=transaction_id,
-                force=True,
-            ) is not None:
-                submitted += 1
-        if not submitted:
-            self._remove_script_transaction(
-                self._script_transactions[transaction_id]
-            )
-            return
-
-    def _seed_script_dependency_closure(
-        self,
-        state: _ScriptPublicationTransaction,
-        result: ScriptChangeResult,
-    ) -> None:
-        """Stage the root graph and enqueue its complete affected closure."""
-        if (
-            self._dependency_graph is None
-            or state.initial_scan
-            or state.closure_seeded
-            or result.change.change_kind == "dependency"
-            or result.change.origin == "dependency"
-        ):
-            return
-        if state.read_retry_at and time.monotonic() < state.read_retry_at:
-            return
-        graph = self._dependency_graph
-        graph_upserts = {
-            result.path: result.source
-        } if graph.owns_path(result.path) else {}
-        graph_removals = tuple(
-            path
-            for path in state.retire_paths
-            if graph.module_for_path(path) is not None
-        )
-        if not graph_upserts and not graph_removals:
-            state.closure_seeded = True
-            return
-        try:
-            stage = graph.stage_transaction(
-                graph_upserts,
-                removals=graph_removals,
-            )
-        except Exception as exc:
-            state.error = exc
-            state.failed = True
-            Debug.log_error(
-                f"Script dependency transaction staging failed for {result.path}: {exc}"
-            )
-            return
-
-        retired_keys = {path_key(path) for path in state.retire_paths}
-        dependent_paths = []
-        for module_id in stage.affected:
-            record = self._dependency_graph.module_for_path(module_id.path_key)
-            if record is None:
-                continue
-            dependent_path = record.source_path
-            if (
-                path_key(dependent_path) == result.change.identity_key
-                or not dependent_path.lower().endswith(".py")
-                or _is_particle_script_path(dependent_path)
-                or path_key(dependent_path) in retired_keys
-            ):
-                continue
-            if not state.has_path(dependent_path):
-                dependent_paths.append(dependent_path)
-        sources = {}
-        for dependent_path in dependent_paths:
-            try:
-                with open(dependent_path, "rb") as stream:
-                    sources[dependent_path] = stream.read()
-            except PermissionError as exc:
-                self._defer_locked_script(state, exc)
-                return
-            except FileNotFoundError as exc:
-                state.error = exc
-                state.failed = True
-                Debug.log_error(
-                    f"Script dependency transaction member disappeared: {dependent_path}"
-                )
-                return
-        state.graph_stage = stage
-        state.closure_seeded = True
-        state.add_paths(dependent_paths)
-        for dependent_path, source in sources.items():
-            self._check_script(
-                dependent_path,
-                catalog_event=None,
-                origin="dependency",
-                change_kind="dependency",
-                transaction_id=state.transaction_id,
-                force=True,
-                source=source,
-            )
-
-    def _publish_script_registry_member(self, result: ScriptChangeResult) -> None:
-        """Publish the rollbackable component registry entry."""
-        from infernux.components.registry import register_component_script
-
-        register_component_script(result.path, source=result.source)
-
-    def _publish_script_post_commit_member(self, result: ScriptChangeResult) -> None:
-        """Publish diagnostics and callbacks after collector LKG commit."""
-        from infernux.components.script_loader import _clear_script_error
-
-        _clear_script_error(result.path)
-        Debug.clear_source_entries(result.path)
-        rm = ResourcesManager.instance()
-        if rm is not None:
-            # The initial project scan only registers the current source and
-            # must preserve a matching persisted warmup record.  Dependency
-            # members are likewise publication bookkeeping for the root edit;
-            # the root change owns invalidation and the warmup run.  Clearing
-            # the cache here made every fresh editor start compile all hooks
-            # again, even when the source hash was unchanged.
-            change = result.change
-            origins = (change.origin, *change.merged_origins)
-            kinds = (change.change_kind, *change.merged_change_kinds)
-            warmup_required = any(
-                value not in {"initial_scan", "dependency"}
-                for value in (*origins, *kinds)
-            )
-            if warmup_required:
-                from infernux.engine.startup_warmup import invalidate_source
-                invalidate_source(result.path, project_path=rm._project_path)
-            catalog_event = result.change.effective_catalog_event
-            if catalog_event is not None:
-                rm.notify_script_catalog_changed(result.path, catalog_event)
-            abs_path = path_key(result.path)
-            for callback in list(rm._script_reload_callbacks.get(abs_path, [])):
-                callback(result.path)
-            if warmup_required:
-                from infernux.engine.startup_warmup import run_script_warmup
-                run_script_warmup(
-                    result.path,
-                    project_path=rm._project_path,
-                    scope="script-save",
-                )
-
-    def _rollback_script_publication(self, token: _ScriptPublicationRollback) -> None:
-        rollback_errors: list[str] = []
-        if token.play_batch is not None:
-            play_mode = __import__(
-                "infernux.engine.play_mode",
-                fromlist=("PlayModeManager",),
-            ).PlayModeManager.instance()
-            if play_mode is not None:
-                try:
-                    play_mode.rollback_script_reload_batch(token.play_batch)
-                except Exception as exc:
-                    rollback_errors.append(f"live script rollback failed: {exc}")
-        if token.registry_snapshot is not None:
-            from infernux.components.registry import restore_component_registry_state
-            try:
-                restore_component_registry_state(token.registry_snapshot)
-            except Exception as exc:
-                rollback_errors.append(f"component registry rollback failed: {exc}")
-        graph = self._dependency_graph
-        rollback = getattr(graph, "rollback_transaction", None)
-        if (
-            graph is not None
-            and token.graph_transaction is not None
-            and token.graph_committed
-            and callable(rollback)
-        ):
-            try:
-                rollback(token.graph_transaction)
-            except Exception as exc:
-                rollback_errors.append(f"dependency graph rollback failed: {exc}")
-        if rollback_errors:
-            raise RuntimeError("; ".join(rollback_errors))
-
-    @staticmethod
-    def _finalize_script_publication(token: _ScriptPublicationRollback) -> None:
-        if token.play_batch is None:
-            return
-        play_mode = __import__(
-            "infernux.engine.play_mode",
-            fromlist=("PlayModeManager",),
-        ).PlayModeManager.instance()
-        if play_mode is None:
-            raise RuntimeError("script publication owner disappeared before finalization")
-        play_mode.finalize_script_reload_batch(token.play_batch)
-
-    def _complete_durable_script_publication(
-        self,
-        state: _ScriptPublicationTransaction,
-    ) -> bool:
-        """Finish irreversible work after collector LKG has advanced once."""
-        token = state.durable_token
-        if token is None:
-            return False
-        if not state.durable_finalized:
-            try:
-                self._finalize_script_publication(token)
-            except Exception as exc:
-                Debug.log_error(
-                    f"Script publication finalization failed and will retry "
-                    f"(transaction={state.transaction_id}): {exc}"
-                )
-                return False
-            state.durable_finalized = True
-        if state.retire_paths and not state.durable_move_finalized:
-            try:
-                self._finalize_script_move(state)
-            except Exception as exc:
-                Debug.log_error(
-                    f"Script move finalization failed and will retry "
-                    f"(transaction={state.transaction_id}): {exc}"
-                )
-                return False
-            state.durable_move_finalized = True
-        for result in state.durable_ordered:
-            try:
-                self._publish_script_post_commit_member(result)
-            except Exception as exc:
-                # Catalog/UI observers are post-commit notifications.  A bad
-                # observer must not roll back a durable script commit.
-                Debug.log_error(
-                    f"Script post-commit callback failed for {result.path}: {exc}"
-                )
-        self._remove_script_transaction(state)
-        return True
-
-    def _ordered_script_results(
-        self,
-        state: _ScriptPublicationTransaction,
-        stage,
-    ) -> tuple[ScriptChangeResult, ...]:
-        """Map final dependency-first graph order back to frontend results."""
-        by_key = {
-            path_key(result.path): result
-            for result in state.results.values()
-        }
-        ordered: list[ScriptChangeResult] = []
-        seen: set[str] = set()
-        if stage is not None:
-            for module_id in stage.ordered_modules:
-                key = module_id.path_key
-                result = by_key.get(key)
-                if result is not None and key not in seen:
-                    seen.add(key)
-                    ordered.append(result)
-        for path in state.expected_paths:
-            key = path_key(path)
-            result = by_key.get(key)
-            if result is not None and key not in seen:
-                seen.add(key)
-                ordered.append(result)
-        return tuple(ordered)
-
-    def _publish_script_transaction(
-        self,
-        state: _ScriptPublicationTransaction,
-        ready: tuple[ScriptChangeResult, ...],
-        *,
-        replacing_scene=None,
-    ):
-        """Publish one complete ready closure under the collector lock."""
-        from infernux.components.registry import (
-            snapshot_component_registry_state,
-        )
-        from infernux.components.script_loader import ScriptHelperLayoutChanged, ScriptLoadError, set_script_error
-        from infernux.engine.play_mode import (
-            PlayModeManager,
-            ScriptReloadBatchInput,
-        )
-
-        graph = self._dependency_graph
-        ready_stage = None
-        if graph is not None:
-            graph_upserts = {
-                result.path: result.source
-                for result in ready
-                if graph.owns_path(result.path)
-            }
-            graph_removals = tuple(
-                path
-                for path in state.retire_paths
-                if graph.module_for_path(path) is not None
-            )
-            if graph_upserts or graph_removals:
-                ready_stage = graph.stage_transaction(
-                    graph_upserts,
-                    removals=graph_removals,
-                )
-        registry_snapshot = snapshot_component_registry_state()
-        play_mode = PlayModeManager.instance()
-        play_batch = None
-        token = _ScriptPublicationRollback(
-            registry_snapshot=registry_snapshot,
-            graph_transaction=ready_stage,
-        )
-        try:
-            ordered = self._ordered_script_results(state, ready_stage)
-            move_owner_key = (
-                path_key(state.expected_paths[0])
-                if state.expected_paths
-                else ""
-            )
-            if play_mode is not None:
-                revisions = tuple(
-                    ScriptReloadBatchInput(
-                        file_path=result.path,
-                        script_guid=(
-                            self._asset_database.get_guid_from_path(result.path) or ""
-                        ),
-                        source=result.source,
-                        code=(
-                            result.artifact.code
-                            if result.artifact is not None
-                            else None
-                        ),
-                        retire_script_paths=(
-                            state.retire_paths
-                            if path_key(result.path) == move_owner_key
-                            else ()
-                        ),
-                    )
-                    for result in ordered
-                )
-                options = {"replacing_scene": replacing_scene} if replacing_scene is not None else {}
-                if state.rebuild_helpers:
-                    options["rebuild_helpers"] = True
-                play_batch = play_mode.prepare_script_reload_batch(revisions, **options)
-                token.play_batch = play_batch
-                outcome = play_mode.commit_script_reload_batch(play_batch)
-                if not outcome.success:
-                    raise ScriptLoadError(outcome.error or "Script publication rejected", source_file=ordered[0].path)
-                for result in ordered:
-                    self._publish_script_registry_member(result)
-            else:
-                for result in ordered:
-                    if not self._publish_valid_script(
-                        result.path,
-                        source=result.source,
-                        code=(
-                            result.artifact.code
-                            if result.artifact is not None
-                            else None
-                        ),
-                        catalog_event=result.change.effective_catalog_event,
-                        _defer_post_commit=True,
-                    ):
-                        raise RuntimeError(
-                            f"headless script publication rejected for {result.path}"
-                        )
-
-            if ready_stage is not None:
-                mutation = graph.commit_transaction(ready_stage)
-                token.graph_committed = True
-                self._last_dependency_affected = tuple(mutation.affected)
-            return token
-        except Exception as exc:
-            self._rollback_script_publication(token)
-            state.error = exc
-            if replacing_scene is not None:
-                raise
-            source_file = exc.source_file if isinstance(exc, ScriptLoadError) else ""
-            source_line = exc.source_line if isinstance(exc, ScriptLoadError) else 0
-            if isinstance(exc, ScriptHelperLayoutChanged) and not state.rebuild_helpers:
-                Debug.log_warning(f"{source_file}: {exc}")
-                return False
-            if source_file:
-                set_script_error(source_file, str(exc))
-            Debug.log_error(
-                f"Script transaction publication failed "
-                f"(transaction={state.transaction_id}): {exc}",
-                source_file=source_file,
-                source_line=source_line,
-            )
-            return False
-
-    def prepare_disk_scene_scripts(self, scene, document):
-        """Prepare the script revision needed to interpret a new disk scene."""
-        from infernux.engine.component_restore import (
-            _collect_scene_document_python_descriptors,
-            _decode_python_component_record,
-            resolve_script_from_guid,
-        )
-        from infernux.engine.play_mode import PlayModeManager
-
-        graph = self._dependency_graph
-        if graph is None or PlayModeManager.instance() is None:
-            return None
-        _, _, descriptors = _collect_scene_document_python_descriptors(document)
-        roots = set()
-        for _, location, descriptor in descriptors:
-            guid = _decode_python_component_record(descriptor, location)[0]
-            path = resolve_script_from_guid(guid, self._asset_database)
-            if path and graph.owns_path(path):
-                roots.add(path)
-        if not roots:
-            return None
-
-        # Reparse current files together: a component may start importing a
-        # helper in the same save, so the published edges alone are insufficient.
-        catalog = set(self._asset_database.get_all_asset_paths()) | roots
-        sources = {}
-        changed = {}
-        for path in sorted(catalog):
-            if not path.lower().endswith(".py") or _is_particle_script_path(path) or not graph.owns_path(path):
-                continue
-            try:
-                with open(path, "rb") as stream:
-                    source = stream.read()
-            except FileNotFoundError:
-                continue
-            sources[path_key(path)] = (path, source)
-            if graph.published_source(path) != source:
-                changed[path] = source
-        if not changed:
-            return None
-        candidate = graph.stage_transaction(changed)
-        dependencies = candidate.dependency_paths(roots)
-        relevant = {path: source for path, source in changed.items() if path_key(path) in dependencies}
-        if not relevant:
-            return None
-        affected = graph.stage_transaction(relevant).affected
-        paths = {path_key(path) for path in relevant} | {member.path_key for member in affected}
-        # Compile the disk snapshot independently of the watcher queue. The
-        # queue may be handling an earlier half of this same external write.
-        collector = ScriptChangeCollector()
-        state = _ScriptPublicationTransaction(uuid.uuid4().hex)
-        for key in sorted(paths & sources.keys()):
-            path, source = sources[key]
-            state.add_paths((path,))
-            collector.submit(path, source, origin="editor", transaction_id=state.transaction_id)
-        results = tuple(collector.process_worker_batch())
-        for result in results:
-            if not result.succeeded:
-                detail = result.diagnostic.message if result.diagnostic else "script source could not be compiled"
-                raise RuntimeError(f"{result.path}: {detail}")
-            self._require_current_script_source(result)
-            state.results[result.change.identity_key] = result
-        token = self._publish_script_transaction(state, results, replacing_scene=scene)
-        if not token:
-            raise RuntimeError("script source changed while the disk scene was loading")
-        state.durable_token = token
-        state.durable_ordered = self._ordered_script_results(state, token.graph_transaction)
-        return state
-
-    def finish_disk_scene_scripts(self, state, *, published: bool) -> None:
-        if not published:
-            self._rollback_script_publication(state.durable_token)
-            return
-        # Use the existing retryable finalization path after the scene commit.
-        self._script_transactions[state.transaction_id] = state
-        self._complete_durable_script_publication(state)
-
-    def _remove_script_transaction(self, state: _ScriptPublicationTransaction) -> None:
-        self._script_transactions.pop(state.transaction_id, None)
-        if self._initial_scan_transaction_id == state.transaction_id:
-            self._initial_scan_transaction_id = None
-
-    def _discard_failed_script_transaction(
-        self,
-        state: _ScriptPublicationTransaction,
-    ) -> bool:
-        if not state.complete():
-            return False
-        # A member can be superseded while another member of this transaction
-        # is still current.  Discard only the surviving old-generation subset;
-        # the collector owns the newer generation and must keep it pending.
-        surviving_paths = []
-        for path in state.expected_paths:
-            result = state.results.get(path_key(path))
-            current = self._script_change_collector.current_result(path)
-            if (
-                result is not None
-                and current is not None
-                and current.generation == result.generation
-                and result.change.transaction_id == state.transaction_id
-            ):
-                surviving_paths.append(path)
-        discarded = True
-        if surviving_paths:
-            discarded = self._script_change_collector.abort_transaction(
-                surviving_paths,
-                transaction_id=state.transaction_id,
-            )
-            if not discarded:
-                Debug.log_error(
-                    f"Failed to discard surviving script transaction members "
-                    f"(transaction={state.transaction_id})"
-                )
-        self._remove_script_transaction(state)
-        return discarded
-
-    def _try_publish_script_transaction(
-        self,
-        state: _ScriptPublicationTransaction,
-    ) -> bool:
-        if state.durable_token is not None:
-            return self._complete_durable_script_publication(state)
-        if state.failed:
-            return self._discard_failed_script_transaction(state)
-        if not state.complete() or (self._dependency_graph is not None and not state.closure_seeded):
-            return False
-        if state.read_retry_at and time.monotonic() < state.read_retry_at:
-            return False
-        if any(not result.succeeded for result in state.results.values()):
-            state.failed = True
-            return self._discard_failed_script_transaction(state)
-        try:
-            # Reading may need to wait for the writer. Keep the completed
-            # artifacts unclaimed until their disk snapshots can be checked.
-            for result in state.results.values():
-                self._require_current_script_source(result)
-            published = self._script_change_collector.publish_ready_batch(
-                state.expected_paths,
-                state.transaction_id,
-                lambda ready: self._publish_script_transaction(state, ready),
-                rollback=self._rollback_script_publication,
-            )
-        except PermissionError as exc:
-            if self._defer_locked_script(state, exc):
-                return False
-            return self._discard_failed_script_transaction(state)
-        except _ScriptSourceChanged as exc:
-            if state.initial_scan:
-                self._restart_initial_scan_transaction(state)
-                return False
-            state.error = exc
-            state.failed = True
-            return self._discard_failed_script_transaction(state)
-        except Exception as exc:
-            state.error = exc
-            state.failed = True
-            Debug.log_error(
-                f"Script transaction publication raised "
-                f"(transaction={state.transaction_id}): {exc}"
-            )
-            self._discard_failed_script_transaction(state)
-            return False
-        if published is False:
-            if state.initial_scan and state.capture_incomplete:
-                self._restart_initial_scan_transaction(state)
-                return False
-            state.failed = True
-            self._discard_failed_script_transaction(state)
-            return False
-        if isinstance(published, _ScriptPublicationRollback):
-            # publish_ready_batch has durably advanced LKG at this point.  It
-            # is now safe to close the native CDS rollback window.  Store the
-            # token first: finalization may be retried, but publication may
-            # never be replayed after this edge.
-            state.durable_token = published
-            state.durable_ordered = self._ordered_script_results(
-                state,
-                published.graph_transaction,
-            )
-            return self._complete_durable_script_publication(state)
-        self._remove_script_transaction(state)
-        return True
-
-    def _finalize_script_move(self, state: _ScriptPublicationTransaction) -> None:
-        """Retire old script identities only after the collector commit edge."""
-        from infernux.components.script_loader import (
-            clear_deleted_script_errors,
-            retire_script_module,
-        )
-
-        if not state.expected_paths:
-            return
-        new_path = state.expected_paths[0]
-        manager = ResourcesManager.instance()
-        callbacks = []
-        for old_path in state.retire_paths:
-            clear_deleted_script_errors(old_path)
-            Debug.clear_source_entries(old_path)
-            retire_script_module(old_path)
-            if manager is not None:
-                callbacks.extend(
-                    manager._script_reload_callbacks.pop(path_key(old_path), [])
-                )
-        if manager is not None and callbacks:
-            manager._script_reload_callbacks.setdefault(path_key(new_path), []).extend(
-                callback
-                for callback in callbacks
-                if callback not in manager._script_reload_callbacks.get(path_key(new_path), [])
-            )
-
-    def _drain_script_results(self) -> int:
-        """Consume frontend output and publish complete dependency closures."""
-        completed = self._script_change_collector.drain_completed()
-        initial_scan_count = 0
-        for result in completed:
-            if result.change.transaction_id in self._retired_script_transactions:
-                current = self._script_change_collector.current_result(result.path)
-                if (current is not None and current.generation == result.generation
-                        and current.change.transaction_id == result.change.transaction_id):
-                    self._script_change_collector.abort_transaction(
-                        (result.path,), transaction_id=result.change.transaction_id,
-                    )
-                continue
-            if result.change.change_kind == "initial_scan":
-                initial_scan_count += 1
-            state = self._transaction_for_result(result)
-            state.results[result.change.identity_key] = result
-            if not result.succeeded:
-                self._record_frontend_failure(result)
-                state.failed = True
-                continue
-            # An initial scan owns the dependency graph baseline.  Results
-            # arriving from the watcher during that window are retained but
-            # cannot calculate a closure against the empty graph.
-            if self._initial_scan_transaction_id is None:
-                self._seed_script_dependency_closure(state, result)
-
-        # A normal revision can supersede one member of the large startup
-        # barrier before that member's old frontend result is drained.  Retire
-        # and rebuild the barrier as one owner-thread operation, using the
-        # current bytes for every still-existing original member.  This is
-        # deliberately checked once per drain round so a burst of edits causes
-        # one restart rather than a restart storm.
-        initial_state = None
-        if self._initial_scan_transaction_id is not None:
-            initial_state = self._script_transactions.get(
-                self._initial_scan_transaction_id
-            )
-        if (
-            initial_state is not None
-            and self._initial_scan_superseded(initial_state)
-        ):
-            self._restart_initial_scan_transaction(initial_state)
-
-        # Finish the initial transaction first.  Once its graph/LKG barrier is
-        # gone, seed any ordinary transactions that arrived concurrently.
-        for state in tuple(self._script_transactions.values()):
-            if state.initial_scan:
-                self._try_publish_script_transaction(state)
-        if self._initial_scan_transaction_id is None:
-            for state in tuple(self._script_transactions.values()):
-                if state.initial_scan or state.failed or state.closure_seeded:
-                    continue
-                roots = tuple(
-                    result
-                    for result in state.results.values()
-                    if result.succeeded
-                    and result.change.change_kind != "dependency"
-                    and result.change.origin != "dependency"
-                )
-                if roots:
-                    self._seed_script_dependency_closure(state, roots[0])
-        # Ordinary transactions may accumulate while the startup barrier is
-        # active, but they cannot publish against a partially built baseline.
-        # They are revisited on the owner safe point after the barrier clears.
-        if self._initial_scan_transaction_id is None:
-            for state in tuple(self._script_transactions.values()):
-                if not state.initial_scan:
-                    self._try_publish_script_transaction(state)
-        return initial_scan_count
 
     @staticmethod
     def _is_source_watcher_echo(event: AssetFsEvent) -> bool:
@@ -1482,6 +424,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 return False
         elif event.kind is not AssetFsEventKind.META_MODIFIED and self._is_source_watcher_echo(event):
             return False
+        if event.kind not in (AssetFsEventKind.META_DELETED, AssetFsEventKind.META_MODIFIED):
+            # Accepting changed native bytes closes old admission even when
+            # this event's metadata or importer subsequently fails.
+            self.reload.retire_native_sources(tuple(path for path in (event.path, event.destination) if path))
         from infernux.engine.interaction import ActionOrigin, action_origin_scope
 
         with action_origin_scope(ActionOrigin.EXTERNAL):
@@ -1605,7 +551,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                             )
                     if not result:
                         _reject_failed_asset_import(path, result)
-                        raise _AssetImportNotReady(f"{result.operation} failed: {path}: {result.error}")
+                        raise RuntimeError(f"{result.operation} failed: {path}: {result.error}")
                     if created:
                         self._publish_created(path, result)
                     else:
@@ -1618,10 +564,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     self._coordinator.complete(event)
                     self._wake_editor()
 
-        try:
-            started = database._begin_watcher_import(path, ready, finished, metadata_only=metadata_only)
-        except RuntimeError as exc:
-            raise _AssetImportNotReady(str(exc)) from exc
+        started = database._begin_watcher_import(path, ready, finished, metadata_only=metadata_only)
         if not started:
             self._reschedule_asset_event(event, retry=False)
             return False
@@ -1637,21 +580,21 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # its vanished staging file. Only a registered path still owns work.
             if not self._asset_database.get_guid_from_path(path):
                 return False
-        except OSError as exc:
-            raise _AssetImportNotReady(f"asset file is not ready: {path}: {exc}") from exc
-        raise _AssetImportNotReady(f"asset file is not ready: {path}")
+        raise OSError(f"Asset is missing or is not a regular file: {path}")
 
     def _publish_created(self, path, result) -> None:
+        from infernux.host.queries import emit_signal
+        emit_signal("assets.changed", {"path": path})
         from infernux.core.assets import AssetManager
 
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
-            if is_project_component_script(path, self._dependency_graph.project_root):
-                self._check_script(path, catalog_event="created")
+            if is_reloadable_script(path, self._dependency_graph.project_root):
+                self._check_script(path)
             elif package_script_role(path, self._dependency_graph.project_root) == "editor":
                 manager = ResourcesManager.instance()
                 if manager is not None:
                     manager.notify_script_catalog_changed(path, "created")
-        elif self._is_editor_translation_change(path):
+        elif self._is_editor_translation_change(path) or path.lower().endswith(".theme.json"):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "created")
@@ -1668,7 +611,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 detail = str(
                     getattr(published, "error", "") or "unknown reimport error"
                 )
-                raise _AssetImportNotReady(f"shader publish failed: {path}: {detail}")
+                raise RuntimeError(f"shader publish failed: {path}: {detail}")
             self._notify_shader_reloaded(path)
         elif path.lower().endswith((".glsl", ".shadingmodel")):
             self._notify_shader_reloaded(path)
@@ -1681,6 +624,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if files is not None:
                 files.sync_prefab_dependents(str(result.guid))
         self._rejected_compiled_assets.discard(path_key(path))
+        from infernux.engine.ui.asset_load_errors import clear_asset_load_error
+        clear_asset_load_error(path)
 
     def _begin_watcher_metadata_import(self, event: AssetFsEvent) -> bool:
         # A sidecar can outlive a deleted/moved source, or arrive before the
@@ -1714,7 +659,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             metadata_file_state=metadata_file_state,
         )
         if accepted is None:
-            raise _AssetImportNotReady(
+            raise RuntimeError(
                 f"durable resource identity is not ready: {path}"
             )
         if accepted:
@@ -1744,7 +689,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     )
                     if metadata_only:
                         raise RuntimeError(f"metadata reimport rejected: {path}: {detail}")
-                    raise _AssetImportNotReady(
+                    raise RuntimeError(
                         f"reimport failed: {path}: {detail}"
                     )
             else:
@@ -1758,7 +703,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     detail = str(
                         getattr(result, "error", "") or "unknown import error"
                     )
-                    raise _AssetImportNotReady(
+                    raise RuntimeError(
                         f"import failed: {path}: {detail}"
                     )
         except Exception as exc:
@@ -1771,14 +716,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
         self._publish_modified(path, result, documents, asset_guid, metadata_only=metadata_only)
 
     def _publish_modified(self, path, result, documents, asset_guid, *, metadata_only=False) -> None:
+        from infernux.host.queries import emit_signal
+        emit_signal("assets.changed", {"path": path})
         # AssetMutationService normally consumes the approved preflight.
         published_guid = str(getattr(result, "guid", "") or asset_guid).strip()
         if documents.has_pending_external_change_preflight(path, guid=published_guid):
             documents.publish_external_resource_change(path, guid=published_guid)
         script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
         if script_change:
-            if is_project_component_script(path, self._dependency_graph.project_root):
-                self._check_script(path, catalog_event="modified")
+            if is_reloadable_script(path, self._dependency_graph.project_root):
+                self._check_script(path)
             elif (
                 not metadata_only
                 and package_script_role(path, self._dependency_graph.project_root) == "editor"
@@ -1790,7 +737,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 manager = ResourcesManager.instance()
                 if manager is not None:
                     manager.notify_script_catalog_changed(path, "modified")
-        elif self._is_editor_translation_change(path):
+        elif self._is_editor_translation_change(path) or path.lower().endswith(".theme.json"):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "modified")
@@ -1803,6 +750,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if files is not None:
                 files.sync_prefab_dependents(str(result.guid))
         self._rejected_compiled_assets.discard(path_key(path))
+        from infernux.engine.ui.asset_load_errors import clear_asset_load_error
+        clear_asset_load_error(path)
 
     def _commit_deleted(self, path: str, *, guid_hint: str = "") -> None:
         from infernux.core.assets import AssetManager
@@ -1822,7 +771,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             path, guid=asset_guid, deleted=True,
         )
         if accepted is None:
-            raise _AssetImportNotReady(
+            raise RuntimeError(
                 f"durable resource identity is not ready: {path}"
             )
         if not accepted:
@@ -1837,14 +786,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         self._rejected_compiled_assets.discard(path_key(path))
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
             self._retire_script_path(path)
-        elif self._is_editor_translation_change(path):
+        elif self._is_editor_translation_change(path) or path.lower().endswith(".theme.json"):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "deleted")
 
     def _commit_moved(self, old_path: str, new_path: str) -> None:
         if not os.path.isfile(new_path):
-            raise _AssetImportNotReady(f"moved file is not ready: {new_path}")
+            raise RuntimeError(f"moved file is not ready: {new_path}")
         source_guid = self._asset_database.get_guid_from_path(old_path)
         destination_guid = self._asset_database.get_guid_from_path(new_path)
         if destination_guid and destination_guid != source_guid:
@@ -1861,7 +810,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             new_path,
             database=self._asset_database,
             suppress_watcher_echo=False,
-            origin="external",
         )
         if not result and not result.database_committed:
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}: {result.error}")
@@ -1872,7 +820,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if not reload_destination:
             # The source has already left the script domain. Even a rejected
             # import of its new asset type must not keep the old code alive.
-            self._publish_script_path_move(old_path, new_path, origin="watchdog")
+            self._publish_script_path_move(old_path, new_path)
+        old_theme = old_path.lower().endswith(".theme.json")
+        if old_theme:
+            # The old source has already moved. Retire/resolve its contribution
+            # even if the destination importer cannot publish the new type.
+            manager = ResourcesManager.instance()
+            if manager is not None:
+                manager.notify_script_catalog_changed(old_path, "deleted")
         if not result:
             _reject_failed_asset_import(new_path, result)
             raise RuntimeError(f"moved asset runtime publication failed: {new_path}: {result.error}")
@@ -1886,16 +841,20 @@ class ResourceChangeHandler(FileSystemEventHandler):
             )
             if not result:
                 _reject_failed_asset_import(new_path, result)
-                raise _AssetImportNotReady(f"renamed asset reimport failed: {new_path}")
+                raise RuntimeError(f"renamed asset reimport failed: {new_path}")
             self._rejected_compiled_assets.discard(path_key(new_path))
         if reload_destination:
-            self._publish_script_path_move(old_path, new_path, origin="watchdog")
+            self._publish_script_path_move(old_path, new_path)
         if self._is_editor_translation_change(
             old_path
         ) or self._is_editor_translation_change(new_path):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(old_path, "deleted")
+                manager.notify_script_catalog_changed(new_path, "moved")
+        elif new_path.lower().endswith(".theme.json"):
+            manager = ResourcesManager.instance()
+            if manager is not None:
                 manager.notify_script_catalog_changed(new_path, "moved")
         elif new_path.lower().endswith((".vert", ".frag")):
             result = AssetManager.reimport_asset(
@@ -1912,28 +871,19 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self._notify_shader_reloaded(new_path)
             self._rejected_compiled_assets.discard(path_key(new_path))
 
-    def _retire_script_path(self, path: str) -> None:
-        """Retire a committed deletion or move out of the gameplay domain."""
-        from infernux.components.registry import unregister_component_script
-        from infernux.components.script_loader import clear_deleted_script_errors, retire_script_module
-
-        unregister_component_script(path)
-        retire_script_module(path)
-        clear_deleted_script_errors(path)
-        Debug.clear_source_entries(path)
-        if self._dependency_graph is not None and self._dependency_graph.module_for_path(path) is not None:
-            mutation = self._dependency_graph.remove(path)
-            self._last_dependency_affected = tuple(mutation.affected)
+    def _retire_script_path(self, path):
+        self.reload.request((), removed=(path,))
         manager = ResourcesManager.instance()
         if manager is not None:
             manager.notify_script_catalog_changed(path, "deleted")
 
-    def _publish_script_path_move(self, old_path: str, new_path: str, *, origin: str) -> None:
+
+    def _publish_script_path_move(self, old_path: str, new_path: str) -> None:
         """Apply one script-domain transition after the asset move commits."""
         old_script = old_path.lower().endswith(".py") and not _is_particle_script_path(old_path)
         new_script = new_path.lower().endswith(".py") and not _is_particle_script_path(new_path)
         if self._is_gameplay_script_source(new_path):
-            self._submit_moved_script(old_path, new_path, origin=origin)
+            self._submit_moved_script(old_path, new_path)
             return
         if old_script:
             self._retire_script_path(old_path)
@@ -1947,7 +897,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             path.lower().endswith(".py")
             and not _is_particle_script_path(path)
             and self._dependency_graph is not None
-            and is_project_component_script(path, self._dependency_graph.project_root)
+            and is_reloadable_script(path, self._dependency_graph.project_root)
         )
 
     def _process_meta_missing_rebuild(self, owner_path: str):
@@ -1986,138 +936,44 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 AssetManager.invalidate_project_panel_cache()
                 return
             detail = getattr(result, "error", "") or "asset mutation failed"
-            raise _AssetImportNotReady(
+            raise RuntimeError(
                 f"failed to rebuild missing metadata: {owner_path}: {detail}"
             )
         AssetManager.invalidate_project_panel_cache()
 
-    def _check_script(
-        self,
-        file_path: str,
-        *,
-        catalog_event: str | None = "modified",
-        origin: str = "watchdog",
-        change_kind: str | None = None,
-        transaction_id: str | None = None,
-        force: bool | None = None,
-        source: bytes | None = None,
-    ):
-        """Capture exact bytes and submit one immutable frontend revision."""
-        if source is None:
-            try:
-                with open(file_path, "rb") as source_file:
-                    source = source_file.read()
-            except FileNotFoundError:
-                state = self._script_transactions.get(transaction_id)
-                if state is not None and state.initial_scan:
-                    state.capture_incomplete = True
-                return None
-        if change_kind is None:
-            change_kind = catalog_event if catalog_event in {
-                "created",
-                "modified",
-                "deleted",
-                "moved",
-                "renamed",
-            } else "modified"
-        change = self._script_change_collector.submit(
-            file_path,
-            source,
-            origin=origin,
-            transaction_id=transaction_id,
-            catalog_event=catalog_event,
-            change_kind=change_kind,
-            force=force,
-        )
-        if change is not None and callable(self._frontend_wake):
+    def _check_script(self, file_path, *, source=None):
+        snapshots = {resolved_path(file_path): source} if source is not None else None
+        result = self.reload.request((file_path,), snapshots=snapshots)
+        if callable(self._frontend_wake):
             self._frontend_wake()
-        if change is not None and transaction_id is not None:
-            state = self._script_transactions.get(transaction_id)
-            if state is not None:
-                state.expected_generations[path_key(file_path)] = change.generation
-        return change
+        return result
 
-    def _submit_moved_script(
-        self,
-        old_path: str,
-        new_path: str,
-        *,
-        origin: str = "watchdog",
-    ):
-        """Queue a moved script as one candidate transaction.
+    @staticmethod
+    def _script_scenes():
+        from infernux.lib import SceneManager
+        manager = SceneManager.instance()
+        scenes = [manager.get_scene_at(index) for index in range(manager.scene_count)]
+        persistent = manager.get_runtime_persistent_scene()
+        if persistent is not None and persistent not in scenes:
+            scenes.append(persistent)
+        return scenes
 
-        The durable move has already succeeded when this method is called.
-        The old path is metadata only until the new candidate, dependency
-        graph, live reload, registry, and collector journal commit together.
-        """
-        transaction_id = self.begin_script_transaction(
-            (new_path,),
-            retire_paths=(old_path,),
-        )
-        change = self._check_script(
-            new_path,
-            origin=origin,
-            catalog_event="moved",
-            change_kind="moved",
-            transaction_id=transaction_id,
-            force=True,
-        )
-        if change is None:
-            state = self._script_transactions.get(transaction_id)
-            if state is not None:
-                self._remove_script_transaction(state)
-        return change
+    def _on_script_published(self, path):
+        from infernux.host.queries import emit_signal
+        emit_signal("scripts.changed", {"path": path})
+        manager = ResourcesManager.instance()
+        if manager is not None:
+            for callback in tuple(manager._script_reload_callbacks.get(path_key(path), ())):
+                callback(path)
+            manager.notify_script_catalog_changed(path, "modified")
 
-    def _publish_valid_script(
-        self,
-        file_path: str,
-        *,
-        source: bytes,
-        code: types.CodeType | None = None,
-        catalog_event: str | None,
-        _defer_post_commit: bool = False,
-    ) -> bool:
-        """Apply the existing registry/reload behavior for one LKG candidate."""
-        from infernux.components.script_loader import _clear_script_error
-        from infernux.components.registry import register_component_script
 
-        from infernux.engine.play_mode import PlayModeManager
-        play_mode = PlayModeManager.instance()
-        if play_mode:
-            outcome = play_mode.reload_components_from_script_result(
-                file_path,
-                source=source,
-                code=code,
-            )
-            if not outcome.success:
-                detail = outcome.error or "live component reload was rejected"
-                raise RuntimeError(
-                    f"Script reload did not publish for {os.path.basename(file_path)}: {detail}"
-                )
+    def _submit_moved_script(self, old_path, new_path):
+        result = self.reload.request((new_path,), removed=(old_path,))
+        if callable(self._frontend_wake):
+            self._frontend_wake()
+        return result
 
-        # Publish catalog/error state only after every live target accepted the
-        # candidate. A rejected body must leave the previous registry and
-        # diagnostic state intact alongside the previous runtime revision.
-        register_component_script(file_path, source=source)
-        if _defer_post_commit:
-            return True
-        _clear_script_error(file_path)
-        rm = ResourcesManager.instance()
-        if rm is not None:
-            from infernux.engine.startup_warmup import invalidate_source, run_script_warmup
-            invalidate_source(file_path, project_path=rm._project_path)
-            if catalog_event is not None:
-                rm.notify_script_catalog_changed(file_path, catalog_event)
-        abs_path = path_key(file_path)
-        if rm is not None:
-            for cb in list(rm._script_reload_callbacks.get(abs_path, [])):
-                cb(file_path)
-            run_script_warmup(
-                file_path,
-                project_path=rm._project_path,
-                scope="script-save",
-            )
-        return True
 
     def _notify_shader_reloaded(self, file_path: str):
         """Invalidate editor shader caches after the canonical reimport succeeds."""
@@ -2129,16 +985,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         """Register a callback to be called when shader cache should be invalidated."""
         if callback not in self._shader_cache_invalidation_callbacks:
             self._shader_cache_invalidation_callbacks.append(callback)
+            from infernux.engine.reload.owners import own_cleanup
+            own_cleanup(callback, lambda: self._shader_cache_invalidation_callbacks.remove(callback))
 
-    def cleanup(self) -> None:
-        """Release collector and event queues after the owner has drained them."""
+    def cleanup(self):
         self._frontend_worker_running = False
-        self._script_change_collector.shutdown()
+        self.reload.close()
         self._coordinator.clear()
-        self._stale_script_revisions.clear()
-        self._script_transactions.clear()
-        self._retired_script_transactions.clear()
-        self._initial_scan_transaction_id = None
+
 
 class ResourcesManager:
     _instance: 'ResourcesManager | None' = None
@@ -2170,10 +1024,8 @@ class ResourcesManager:
         self._script_reload_callbacks = {}  # file_path -> [callbacks]
         self._script_catalog_callbacks = []  # [callback(file_path, event_type)]
         self._script_catalog_publications = {}
-        self._initial_scan_lock = threading.Lock()
-        self._initial_scan_artifact = None
         self._startup_prepared = False
-        self._skip_initial_scan = False
+        self._engine_source_scopes = None
 
     @property
     def project_path(self) -> str:
@@ -2207,7 +1059,9 @@ class ResourcesManager:
         if self._thread and self._thread.is_alive():
             Debug.log_warning("ResourcesManager is already running")
             return
-        self._skip_initial_scan = bool(skip_initial_scan or self._startup_prepared)
+        self._ensure_event_handler()
+        if not skip_initial_scan and not self._startup_prepared:
+            self._initial_script_scan()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._scan_resources,
@@ -2225,20 +1079,9 @@ class ResourcesManager:
             )
         return self._event_handler
 
-    def _startup_work_pending(self) -> bool:
-        handler = self._event_handler
-        if handler is None:
-            return False
-        if getattr(handler, "_initial_scan_transaction_id", None):
-            return True
-        if handler.pending_count:
-            return True
-        collector = getattr(handler, "_script_change_collector", None)
-        if collector is not None and (
-            collector.pending_count or collector.completed_count
-        ):
-            return True
-        return False
+    def _startup_work_pending(self):
+        return self._event_handler is not None and bool(self._event_handler.pending_count)
+
 
     def _wait_for_startup_idle(self) -> None:
         deadline = time.monotonic() + 180.0
@@ -2313,7 +1156,7 @@ class ResourcesManager:
         if self._stop_event.is_set():
             return
 
-        handler = self._ensure_event_handler()
+        handler = self._event_handler
         self._frontend_worker_running = True
         handler.set_frontend_worker_running(True)
         observer = Observer()
@@ -2322,6 +1165,9 @@ class ResourcesManager:
         try:
             for root in existing_roots:
                 observer.schedule(handler, root, recursive=True)
+            if self._engine_source_scopes is not None:
+                for root in self._engine_source_scopes.watch_directories:
+                    observer.schedule(self._engine_source_scopes, root, recursive=False)
             with self._observer_lock:
                 if self._stop_event.is_set():
                     return
@@ -2331,12 +1177,6 @@ class ResourcesManager:
                 except Exception:
                     self._observer = None
                     raise
-
-            # Initial full scan submits exact snapshots to the same collector
-            # used by watchdog events.  The watcher owns the frontend budget
-            # unless prepare_startup() already published that barrier.
-            if not self._skip_initial_scan:
-                self._initial_script_scan()
 
             while not self._stop_event.is_set():
                 self._frontend_wake_event.wait(timeout=1.0)
@@ -2349,22 +1189,14 @@ class ResourcesManager:
             self._shutdown_observer(join_timeout=5.0)
 
     def _initial_script_scan(self):
-        """Walk project script roots and syntax-check every .py file.
-
-        ``prepare_startup()`` runs this on the owner thread before the
-        engine window is shown. The watcher thread only repeats it when
-        that barrier was not already published.
-        """
         self._ensure_event_handler()
-        script_paths = tuple(self._gameplay_script_paths())
-        if self._stop_event.is_set() or not script_paths or self._event_handler is None:
-            return
-        transaction_id = self._event_handler.begin_script_transaction(script_paths, initial_scan=True)
-        for path in script_paths:
-            self._event_handler._check_script(
-                path, catalog_event=None, origin="initial_scan", change_kind="initial_scan",
-                transaction_id=transaction_id, force=True,
-            )
+        paths = tuple(path for path in self._gameplay_script_paths()
+                      if (state := self._event_handler.reload.states.get(resolved_path(path))) is None
+                      or state.status != "active")
+        if paths:
+            self._event_handler.reload.request(paths)
+            self._frontend_wake_event.set()
+
 
     def _gameplay_script_paths(self):
         for script_root in self._script_roots:
@@ -2384,16 +1216,33 @@ class ResourcesManager:
     def prepare_play_scripts(self) -> None:
         """Drain observed edits, then publish any saved revisions the watcher missed."""
         self.process_pending_reloads(force=True)
+        if self._engine_source_scopes is not None:
+            restart = [state.path for path in self._engine_source_scopes.restart_paths
+                       if (state := self._event_handler.reload.states.get(path)) is not None
+                       and state.status == "restart_required"]
+            if restart:
+                raise RuntimeError("Engine core/native source changed; restart the editor before Play: " + ", ".join(restart))
         if self._event_handler is not None:
-            self._event_handler.publish_saved_play_scripts(self._gameplay_script_paths())
+            paths = {component._script_path
+                     for scene in self._event_handler._script_scenes()
+                     for obj in scene.get_all_objects()
+                     for component in obj.get_py_components()
+                     if getattr(component, '_script_path', '')}
+            self._event_handler.publish_saved_play_scripts(paths)
 
     def process_pending_reloads(self, *, force: bool = False) -> int:
         """Commit worker artifacts and asset events on the main thread."""
+        if self._engine_source_scopes is not None:
+            self._engine_source_scopes.submit_pending()
         asset_database = self._engine.get_asset_database()
         if self._startup_prepared and bool(
             getattr(asset_database, "refresh_pending", False)
         ):
-            asset_database.try_commit_refresh()
+            try:
+                asset_database.try_commit_refresh()
+            except Exception as exc:
+                from infernux.engine.ui.asset_load_errors import report_asset_load_error
+                report_asset_load_error(self._project_path, f"Asset catalog refresh failed: {exc}")
         processed = 0
         if self._event_handler is not None:
             if force or not self._frontend_worker_running:
@@ -2402,114 +1251,54 @@ class ResourcesManager:
         if self._script_catalog_publications:
             publications, self._script_catalog_publications = self._script_catalog_publications, {}
             for callback, args in publications:
-                callback(*args)
+                try:
+                    callback(*args)
+                except Exception as exc:
+                    Debug.log_exception(exc)
         return processed
+
+    def watch_engine_sources(self):
+        """Adopt the declared built-in views before starting the shared watcher."""
+        from infernux.engine.reload.engine_scopes import EngineSourceScopes
+
+        self._engine_source_scopes = EngineSourceScopes(self)
 
     def defer_script_catalog_publication(self, callback, *args) -> None:
         """Publish consumers after the notifying script transaction has retired."""
         self._script_catalog_publications[callback, args] = None
 
     def prepare_disk_scene_scripts(self, scene, document):
-        if self._event_handler is not None:
-            return self._event_handler.prepare_disk_scene_scripts(scene, document)
-        return None
-
-    def finish_disk_scene_scripts(self, state, *, published: bool) -> None:
-        self._event_handler.finish_disk_scene_scripts(state, published=published)
-
-    def begin_script_transaction(
-        self,
-        paths,
-        *,
-        retire_paths=(),
-    ) -> str:
-        """Create one atomic publication barrier for internal script writes."""
-
-        members = tuple(resolved_path(path) for path in paths)
-        retired = tuple(resolved_path(path) for path in retire_paths)
-        if not members:
-            raise ValueError("script transaction requires at least one path")
-        for path in (*members, *retired):
-            if not any(
-                is_path_within(path, root, allow_root=False)
-                for root in self._script_roots
-            ):
-                raise ValueError(f"script transaction path is outside the project: {path}")
-        handler = self._ensure_event_handler()
-        return handler.begin_script_transaction(
-            members,
-            retire_paths=retired,
+        from infernux.engine.component_restore import (
+            _collect_scene_document_python_descriptors, _decode_python_component_record, resolve_script_from_guid,
         )
-
-    def script_library_dependents(self, module_names) -> tuple[str, ...]:
-        """Find component consumers of a reloaded preload library in the live graph."""
-        if self._event_handler is None:
-            return ()
-        graph = self._event_handler._dependency_graph
-        names = frozenset(module_names)
-        seeds = {
-            edge.source for edge in graph.external_dependencies()
-            if any(edge.external_name == name or edge.external_name.startswith(name + ".")
-                   for name in names)
-        }
-        return tuple(graph.module_for_path(module.path_key).source_path
-                     for module in graph.affected_closure(seeds))
-
-    def retire_script_paths(self, paths) -> None:
-        """Retire package Runtime modules after a disable or uninstall commit."""
-
-        from infernux.components.registry import unregister_component_script
-        from infernux.components.script_loader import retire_script_module
-
         handler = self._ensure_event_handler()
-        for raw_path in paths:
-            path = resolved_path(raw_path)
-            if not any(
-                is_path_within(path, root, allow_root=False)
-                for root in self._script_roots
-            ):
-                raise ValueError(f"retired script path is outside the project: {path}")
-            unregister_component_script(path)
-            retire_script_module(path)
-            if handler.dependency_graph.module_for_path(path) is not None:
-                mutation = handler.dependency_graph.remove(path)
-                handler._last_dependency_affected = tuple(mutation.affected)
+        _, _, descriptors = _collect_scene_document_python_descriptors(document)
+        paths = set()
+        for _, location, descriptor in descriptors:
+            guid = _decode_python_component_record(descriptor, location)[0]
+            path = resolve_script_from_guid(guid, self._engine.get_asset_database())
+            if path and handler.dependency_graph.owns_path(path):
+                paths.add(path)
+        if paths:
+            handler.reload.ensure_ready(paths)
 
-    def submit_script_change(
-        self,
-        file_path: str,
-        *,
-        origin: str,
-        catalog_event: str | None = "modified",
-        change_kind: str | None = None,
-        transaction_id: str | None = None,
-        force: bool | None = None,
-    ):
-        """Submit an internal script ingress without bypassing the collector.
 
-        Internal asset mutations are project-scoped.  The manager wrapper
-        keeps callers from accidentally submitting a script outside Assets and
-        preserves the same owner/worker split as watchdog changes.
-        """
-        if not any(
-            is_path_within(file_path, root, allow_root=False)
-            for root in self._script_roots
-        ):
+    def submit_script_change(self, file_path):
+        """Publish internal source edits through the same coordinator as saves."""
+        if not is_reloadable_script(file_path, self._project_path):
             return None
-        if self._event_handler is None:
-            self._event_handler = ResourceChangeHandler(
-                self._engine,
-                project_path=self._project_path,
-                frontend_wake=self._frontend_wake_event.set,
-            )
-        return self._event_handler._check_script(
-            file_path,
-            origin=origin,
-            catalog_event=catalog_event,
-            change_kind=change_kind,
-            transaction_id=transaction_id,
-            force=force,
-        )
+        return self._ensure_event_handler()._check_script(file_path)
+
+    def retire_script_paths(self, paths):
+        """Retire current plugin/component sources through the shared coordinator."""
+        handler = self._ensure_event_handler()
+        affected = handler.reload.request((), removed=paths)
+        if self._frontend_worker_running:
+            self._frontend_wake_event.set()
+        else:
+            handler.reload.compile_pending()
+            handler.reload.drain()
+        return affected
 
     def drain_pending_events(self) -> int:
         """Commit native refresh work, then drain the stopped observer once."""
@@ -2535,6 +1324,8 @@ class ResourcesManager:
         cbs = self._script_reload_callbacks.setdefault(abs_path, [])
         if callback not in cbs:
             cbs.append(callback)
+            from infernux.engine.reload.owners import own_cleanup
+            own_cleanup(callback, lambda: self.unregister_script_reload_callback(callback))
 
     def unregister_script_reload_callback(self, callback) -> None:
         """Remove *callback* from all file-path subscriptions."""
@@ -2550,6 +1341,8 @@ class ResourcesManager:
         """
         if callback not in self._script_catalog_callbacks:
             self._script_catalog_callbacks.append(callback)
+            from infernux.engine.reload.owners import own_cleanup
+            own_cleanup(callback, lambda: self.unregister_script_catalog_callback(callback))
 
     def unregister_script_catalog_callback(self, callback) -> None:
         """Unsubscribe from global Python script catalog changes."""
@@ -2579,7 +1372,6 @@ class ResourcesManager:
         self._event_handler._publish_script_path_move(
             old_path,
             new_path,
-            origin="editor",
         )
 
     def register_shader_cache_callback(self, callback):
@@ -2636,7 +1428,6 @@ class ResourcesManager:
         self._event_handler = None
         self._frontend_worker_running = False
         self._startup_prepared = False
-        self._skip_initial_scan = False
         self._script_reload_callbacks.clear()
         self._script_catalog_callbacks.clear()
         self._script_catalog_publications.clear()

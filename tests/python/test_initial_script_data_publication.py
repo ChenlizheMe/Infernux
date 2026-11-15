@@ -8,7 +8,6 @@ from infernux.components import SerializableObject
 from infernux.components import registry, serializable_object
 from infernux.components.script_loader import (
     get_script_error_by_path, load_all_components_from_file, load_and_create_component,
-    _snapshot_script_diagnostics, _restore_script_diagnostics,
 )
 from infernux.engine.project_context import get_project_root, set_project_root
 
@@ -18,7 +17,6 @@ def project(tmp_path):
     previous_root = get_project_root()
     previous_types = dict(serializable_object._SERIALIZABLE_REGISTRY)
     previous_components = registry.snapshot_component_registry_state()
-    previous_diagnostics = _snapshot_script_diagnostics()
     names = ("initial_data_owner", "initial_data_other")
     previous_modules = {name:sys.modules.get(name) for name in names}
     assets = tmp_path / "Assets"
@@ -30,7 +28,6 @@ def project(tmp_path):
         serializable_object._SERIALIZABLE_REGISTRY.clear()
         serializable_object._SERIALIZABLE_REGISTRY.update(previous_types)
         registry.restore_component_registry_state(previous_components)
-        _restore_script_diagnostics(previous_diagnostics)
         for name,module in previous_modules.items():
             if module is None:
                 sys.modules.pop(name,None)
@@ -91,14 +88,12 @@ def test_failed_execution_publishes_neither_data_nor_component_prefix(project, e
         path.write_text(source("initial-test:payload"),encoding="utf-8")
         assert load(path,"all")
     old_module = sys.modules.get("initial_data_owner")
-    before_data = dict(serializable_object.get_registered_serializable_types())
-    before_components = registry.component_types_for_script_path(str(path))
     path.write_text(source("initial-test:payload",health=False,extra="raise RuntimeError('source execution failed')\n"),encoding="utf-8")
     assert not load(path,"all")
     assert "source execution failed" in get_script_error_by_path(str(path))
-    assert dict(serializable_object.get_registered_serializable_types()) == before_data
-    assert registry.component_types_for_script_path(str(path)) == before_components
-    assert sys.modules.get("initial_data_owner") is old_module
+    assert serializable_object.get_serializable_class("initial-test:payload") is None
+    assert registry.component_types_for_script_path(str(path)) == ()
+    assert "initial_data_owner" not in sys.modules
 
 
 def test_successful_revision_replaces_owned_types_and_retires_deleted_types(project):
@@ -153,7 +148,7 @@ def test_module_level_instances_keep_native_storage_and_dispatch(scene, project,
     assert instance._serialize_fields_document()["value"] == 44
 
 
-def test_failure_after_data_publication_restores_live_owner(scene, project, monkeypatch):
+def test_failure_after_data_publication_retires_incomplete_current_module(scene, project, monkeypatch):
     from contextlib import contextmanager
     from infernux.engine.runtime_dispatch import current_runtime_epoch
     from infernux.renderstack import render_effect_compiler
@@ -178,14 +173,9 @@ def test_failure_after_data_publication_restores_live_owner(scene, project, monk
     monkeypatch.setattr(render_effect_compiler,"_stage_source_effect_features",reject_effect_commit)
     assert load_all_components_from_file(str(path),source_only=True) == []
     assert "effect publication failure" in get_script_error_by_path(str(path))
-    assert sys.modules["initial_data_owner"] is old_module
-    assert serializable_object.get_serializable_class("initial-test:payload") is old_module.Payload
-    assert registry.component_types_for_script_path(str(path)) == (old_type,)
-    assert instance._serialize_fields_document() == before
-    assert type(instance) is old_type
-    assert current_runtime_epoch().descriptor_for(old_type) is not None
-    assert len(candidates) == 1
-    assert current_runtime_epoch().descriptor_for(candidates[0]) is None
+    assert "initial_data_owner" not in sys.modules
+    assert serializable_object.get_serializable_class("initial-test:payload") is None
+    assert registry.component_types_for_script_path(str(path)) == ()
 
 
 def test_failed_owner_keeps_successful_imported_module_publication(project):

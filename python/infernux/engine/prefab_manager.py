@@ -263,11 +263,11 @@ def _prefab_source_loader(asset_database, sources, published, *, refresh=()):
         path = asset_database.get_path_from_guid(guid)
         if not path:
             raise PrefabDocumentError(f"Prefab source cannot be resolved: {guid}")
+        error = asset_database.get_import_error(guid)
+        if error:
+            raise PrefabDocumentError(f"Prefab source is unavailable: {path}: {error}")
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
-        if guid in published and guid not in refresh:
-            sources[guid] = published[guid]
-            return sources[guid]
         if guid in loading:
             raise PrefabDocumentError(f"Variant source cycle at '{guid}'")
         loading.add(guid)
@@ -329,9 +329,13 @@ def _build_prefab_template_payload(prefab_data, resolved_guid, load_source):
 
 
 def _get_published_prefab_template(guid, asset_database, published):
+    from infernux.lib import AssetDependencyGraph
+
+    revision = AssetDependencyGraph.instance().get_content_revision(guid)
     cached = _PREFAB_TEMPLATE_CACHE.get(guid)
-    if cached and "sources" in cached and all(
-        published.get(identity) is document and os.path.isfile(asset_database.get_path_from_guid(identity) or "")
+    if cached and cached.get("content_revision") == revision and "sources" in cached and all(
+        published.get(identity) is document and not asset_database.get_import_error(identity)
+        and os.path.isfile(asset_database.get_path_from_guid(identity) or "")
         for identity, document in cached["sources"].items()
     ):
         return cached["document"]
@@ -346,7 +350,7 @@ def _get_published_prefab_template(guid, asset_database, published):
         return None
 
     published.update(sources)
-    _PREFAB_TEMPLATE_CACHE[guid] = {"sources": sources, "document": template}
+    _PREFAB_TEMPLATE_CACHE[guid] = {"sources": sources, "document": template, "content_revision": revision}
     return template
 
 
