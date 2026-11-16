@@ -78,9 +78,5 @@ def capture_buffer(name, *, camera=None, scene_view=False):
     engine = Application._current_engine()
     if engine is None:
         raise RuntimeError('buffer captures require an active Engine')
-    native = engine.get_native_engine()
-    graph = (native.get_scene_render_graph() if scene_view else
-             native.get_camera_render_graph(0 if camera is None else camera.component_id))
-    if graph is None:
-        raise RuntimeError('the selected view has not defined a render graph yet')
-    return BufferSource(_GraphBufferLease(graph.capture_buffer(str(name)), engine))
+    capture = engine._capture_graph_buffer(str(name), 0 if camera is None else camera.component_id, scene_view)
+    return BufferSource(_GraphBufferLease(capture, engine))

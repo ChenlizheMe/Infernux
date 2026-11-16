@@ -209,6 +209,25 @@ class RuntimeWorldHost(WorkRuntime):
     def _on_render_extraction(self):
         """Desktop authoring hosts append their gizmo publication here."""
 
+    def _capture_graph_buffer(self, name, camera_id, scene_view):
+        native = self.get_native_engine()
+        graph = native.get_scene_render_graph() if scene_view else native.get_camera_render_graph(camera_id)
+        if graph is None:
+            raise RuntimeError("the selected view has not defined a render graph yet")
+        return graph.capture_buffer(name)
+
+    def _watch_graph_events(self, label):
+        from infernux.lib import _Infernux
+        return _Infernux._watch_graph_events(self.get_native_engine(), label)
+
+    def _take_graph_events(self):
+        from infernux.lib import _Infernux
+        return _Infernux._take_graph_events(self.get_native_engine())
+
+    def _is_graph_submission_completed(self, submission):
+        from infernux.lib import _Infernux
+        return _Infernux._is_graph_submission_completed(self.get_native_engine(), submission)
+
     def _dispatch_runtime_input(self):
         """The platform consumes its captured input inside the native World scope."""
 

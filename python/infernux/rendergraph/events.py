@@ -47,11 +47,8 @@ class RenderEvent:
     @property
     def completed(self) -> bool:
         """Whether the engine has observed this occurrence's GPU completion, without waiting."""
-        from infernux.lib import _Infernux as native
-
         engine = self._engine()
-        host = None if engine is None else engine.get_native_engine()
-        return host is not None and native._is_graph_submission_completed(host, self.submission)
+        return engine is not None and engine._is_graph_submission_completed(self.submission)
 
     @property
     def metadata(self):
@@ -115,7 +112,6 @@ def events(label: str) -> Signal:
     """
     from infernux.application import Application
     from infernux.engine.runtime_dispatch import assert_runtime_owner_thread
-    from infernux.lib import _Infernux as native
 
     assert_runtime_owner_thread()
     if not isinstance(label, str) or not label:
@@ -128,21 +124,20 @@ def events(label: str) -> Signal:
     signals = engine._graph_event_signals
     signal = signals.get(label)
     if signal is None:
-        signal = _GraphSignal(native._watch_graph_events(engine.get_native_engine(), label))
+        signal = _GraphSignal(engine._watch_graph_events(label))
         signals[label] = signal
     return signal
 
 
 def _dispatch_graph_events(engine):
     from infernux.debug import Debug
-    from infernux.lib import _Infernux as native
 
     frame = engine._frame_work
     frame.begin_scope()
     try:
         host_frame = frame.opportunity
         engine_ref = ref(engine)
-        for record in native._take_graph_events(engine.get_native_engine()):
+        for record in engine._take_graph_events():
             signal = engine._graph_event_signals.get(record.label)
             if signal is None or signal._interest is not record.interest or not signal._interest.active:
                 continue

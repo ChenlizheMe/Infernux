@@ -28,6 +28,20 @@ class PlatformPlayerHost(RuntimeWorldHost):
         """The platform owns its device and event loop outside the desktop application."""
         return self._native_services
 
+    def _capture_graph_buffer(self, name, camera_id, scene_view):
+        if scene_view:
+            raise ValueError("Scene view captures are available only in the editor")
+        return self._native_services._capture_graph_buffer(camera_id, name)
+
+    def _watch_graph_events(self, label):
+        return self._native_services._watch_graph_events(label)
+
+    def _take_graph_events(self):
+        return self._native_services._take_graph_events()
+
+    def _is_graph_submission_completed(self, submission):
+        return self._native_services._is_graph_submission_completed(submission)
+
     def get_player_runtime(self):
         return self._player_runtime
 
