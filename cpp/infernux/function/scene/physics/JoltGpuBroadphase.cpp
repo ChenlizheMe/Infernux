@@ -1096,13 +1096,14 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             workset->maxPatchesPerWorld = result.w;
             requiredCapacity = result.x;
             // Grow only after a real GPU C>K result; never derive from B^2.
+            const uint64_t previousCapacity = capacity;
             const uint64_t grown =
-                std::max(uint64_t(std::max(1u, result.x)), uint64_t(capacity) + (capacity + 1ull) / 2ull);
+                std::max<uint64_t>(std::max(1u, result.x), previousCapacity + (previousCapacity + 1u) / 2u);
             const uint64_t binding = implementation->host.device.GetCapabilities().portable.maxStorageBufferBinding;
             const uint64_t contactLimit = binding / (uint64_t(MaxContactPointsPerPair) * sizeof(Contact));
             const uint64_t candidateLimit = binding < WordBytes ? 0u : (binding / WordBytes - 1u) / 2u;
-            const uint64_t maximum = std::min({uint64_t(UINT32_MAX / MaxContactPointsPerPair),
-                                               (uint64_t(UINT32_MAX) - 1ull) / 2ull, contactLimit, candidateLimit});
+            const uint64_t maximum = std::min<uint64_t>(
+                {UINT32_MAX / MaxContactPointsPerPair, (uint64_t(UINT32_MAX) - 1u) / 2u, contactLimit, candidateLimit});
             ConfigureCapacity(static_cast<uint32_t>(std::min(grown, maximum)));
             if (capacity < result.x)
                 throw std::length_error("Resident broadphase cannot admit required candidate capacity");
