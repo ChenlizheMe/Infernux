@@ -526,7 +526,7 @@ def logical_type_for_path(path: str) -> str:
         return "runtime_metadata"
     # Package runtime data is an explicit directory API (package_path), so
     # opaque files retain their relative layout. Shader sources are compiler
-    # inputs and must enter the same GUID cook path as project shaders.
+    # inputs and enter the same cooked source namespace as project shaders.
     if lower.startswith("assets/") or (
         lower.startswith("packages/") and is_static_program_source(normalized)
     ):

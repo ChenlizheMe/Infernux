@@ -38,7 +38,7 @@ from typing import Callable, Dict, List, Optional
 
 import infernux._jit_kernels as _jit_kernels
 import infernux.resources as _resources
-from infernux._source_kinds import is_host_python_source, source_extension
+from infernux._source_kinds import is_gpu_source, is_host_python_source, source_extension
 from infernux.core.asset_types import MESH_EXTENSIONS
 from infernux.debug import Debug
 from infernux.engine.build_cancellation import BuildCancelled
@@ -2240,15 +2240,15 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             else:
                 continue
 
-            # Static GPU author sources stay inside Content.inxpkg. Editor
-            # and Player prepare new combinations through the same resident
-            # Slang service and the packed dependency snapshots.
+            # GPU source modules retain their relative namespace inside the
+            # cooked tree so imports and shader.ref paths work after relocation.
+            # RuntimeAssetRecords still owns their GUID identity. Editor and
+            # Player use the same reader and resident Slang compiler.
             artifact_suffix = ".inxasset" if logical_type == "data_asset" else suffix
             if suffix in RUNTIME_BINARY_DOCUMENT_SUFFIXES:
                 artifact_suffix = ".inxdoc"
-            runtime_path = (
-                f"Library/Artifacts/{artifact_directory}/{guid}{artifact_suffix}"
-            )
+            artifact_name = source_relative if is_gpu_source(source_relative) else f"{guid}{artifact_suffix}"
+            runtime_path = f"Library/Artifacts/{artifact_directory}/{artifact_name}"
             destination = os.path.join(data_dir, *runtime_path.split("/"))
             os.makedirs(os.path.dirname(destination), exist_ok=True)
             if imported_document is not None and suffix != ".scene":

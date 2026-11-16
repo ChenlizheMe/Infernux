@@ -394,7 +394,7 @@ def test_player_cook_uses_asset_index_snapshot_after_live_index_invalidation(tmp
     assert builder._asset_index_entries() == expected
 
 
-def test_player_cooks_project_shader_as_guid_program_source(tmp_path):
+def test_player_cooks_project_shader_with_relative_source_namespace(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     shader = project / "Assets" / "Shaders" / "surface.frag.py"
@@ -418,10 +418,11 @@ class PackageFragment(shader.fullscreen):
     _stage_document_inputs(builder, data_dir)
     builder._stage_library_runtime_documents(str(data_dir))
 
-    artifact = data_dir / "Library" / "Artifacts" / "Blob" / "shader-guid.frag.py"
+    runtime_path = "Library/Artifacts/Blob/Assets/Shaders/surface.frag.py"
+    artifact = data_dir / runtime_path
     assert artifact.read_bytes() == shader.read_bytes()
     assert (
-        builder._runtime_artifact_bindings["Library/Artifacts/Blob/shader-guid.frag.py"]["source_path"]
+        builder._runtime_artifact_bindings[runtime_path]["source_path"]
         == "Assets/Shaders/surface.frag.py"
     )
 
