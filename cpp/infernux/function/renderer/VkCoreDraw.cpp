@@ -1189,6 +1189,7 @@ void InxVkCoreModular::DrawSceneFiltered(
                                              (previous ? kGPUInstanceAuxFlagValidHistory : 0u) |
                                                  (draw.receivesShadows ? 0u : kGPUInstanceAuxFlagNoReceiveShadows),
                                              draw.layerMask};
+                auxiliary.poseIndices.w = draw.surfaceId;
                 ApplyDevicePose(auxiliary, draw.devicePose, previous ? &previous->devicePose : nullptr);
                 instanceAuxiliaryWritten &=
                     WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), auxiliary);

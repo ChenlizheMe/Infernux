@@ -33,19 +33,26 @@ class ScalarConsumer(shader.fullscreen):
     albedo_tex = shader.input("gbuffer_albedo", shader.Color2D)
     material_tex = shader.input("gbuffer_material", shader.Color2D)
     emission_tex = shader.input("gbuffer_emission", shader.Color2D)
+    object_tex = shader.input("gbuffer_object", shader.UInt2D)
 
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
         pixel = shader.ivec2(ctx.position.xy)
+        surface_id = shader.load(self.object_tex, pixel, 0).w
         if shader.load(self.albedo_tex, pixel, 0).a < 0.9:
+            if surface_id != 0:
+                return shader.vec4(1, 0, 1, 1)
             return shader.vec4(0, 0, 0, 1)
+        if surface_id == 0 or surface_id > 255:
+            return shader.vec4(1, 0, 1, 1)
+        coverage_id = shader.float(surface_id) / 255.0
         scalar0 = shader.load(self.material_tex, pixel, 0).a
         scalar1 = shader.load(self.emission_tex, pixel, 0).a
         if scalar0 == 0.375 and scalar1 == 0.625:
-            return shader.vec4(0, 1, 0, 1)
+            return shader.vec4(0, 1, 0, coverage_id)
         if scalar0 == -2.25 and scalar1 == 4.5:
-            return shader.vec4(1, 0, 0, 1)
+            return shader.vec4(1, 0, 0, coverage_id)
         if scalar0 == 0.0 and scalar1 == 0.0:
-            return shader.vec4(0, 0, 1, 1)
+            return shader.vec4(0, 0, 1, coverage_id)
         return shader.vec4(1, 0, 1, 1)
 """
 
@@ -62,6 +69,7 @@ class ScalarPipeline(DefaultDeferredPipeline):
             albedo = g.get_texture('gbuffer_albedo')
             material = g.get_texture('gbuffer_material')
             emission = g.get_texture('gbuffer_emission')
+            metadata = g.get_texture('gbuffer_object')
         else:
             builder = PipelineBuilder()
             builder.frame(hdr=True, msaa=1)
@@ -71,9 +79,11 @@ class ScalarPipeline(DefaultDeferredPipeline):
             albedo = g.get_texture(lighting._input_bindings['albedo_tex'])
             material = g.get_texture(lighting._input_bindings['material_tex'])
             emission = g.get_texture(lighting._input_bindings['emission_tex'])
+            metadata = g.get_texture(lighting._input_bindings['object_tex'])
         target = g.get_texture('color')
         p=g.add_pass('CheckScalarStorage').write_color(target)
-        for key,texture in [('albedo_tex', albedo), ('material_tex', material), ('emission_tex', emission)]:p.set_texture(key,texture)
+        p.set_textures({'albedo_tex': albedo, 'material_tex': material,
+                        'emission_tex': emission, 'object_tex': metadata})
         p.fullscreen_quad('tests/gbuffer/scalar_consumer')
         g.set_output(target)
 
@@ -98,8 +108,17 @@ with tempfile.TemporaryDirectory(prefix='infernux-gbuffer-scalar-contract-') as 
         scene=SceneManager.instance().get_active_scene()
         for obj in scene.get_root_objects():scene.destroy_game_object(obj)
         camera=scene.create_game_object('Scalar Camera');camera.transform.position=Vector3(0,0,-5);camera.add_component('Camera')
-        obj=scene.create_game_object('Scalar Quad');renderer=obj.add_component('MeshRenderer');renderer.set_mesh_asset_guid(mesh_guid)
-        material=InxMaterial.create_default_lit();material.vert_shader_name='infernux/standard';material.frag_shader_name='tests/gbuffer/scalar_surface';renderer.set_material(0,material)
+        material=InxMaterial.create_default_lit();material.vert_shader_name='infernux/standard';material.frag_shader_name='tests/gbuffer/scalar_surface'
+        def create_quad(name, x):
+            obj = scene.create_game_object(name)
+            obj.transform.position = Vector3(x, 0, 0)
+            renderer = obj.add_component('MeshRenderer')
+            renderer.set_mesh_asset_guid(mesh_guid)
+            renderer.set_material(0, material)
+            return obj
+
+        left_quad = create_quad('Left Quad', -.7)
+        create_quad('Right Quad', .7)
         frontend.set_render_pipeline(pipeline);native.set_game_camera_enabled(True)
         frame=0;changed=0;phase=0;ticket=None;initial=None
         def after_draw():
@@ -109,19 +128,42 @@ with tempfile.TemporaryDirectory(prefix='infernux-gbuffer-scalar-contract-') as 
                 if ticket is None and frame>=changed+8:ticket=frontend.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
                     pixels=ticket.result_numpy().copy().astype(np.float32);rgb=pixels[...,:3]
-                    expected=((0,1,0),(1,0,0),(0,0,1),(0,1,0))[phase]
+                    expected=((0,1,0),(1,0,0),(0,0,1),(0,1,0),(0,1,0))[phase]
                     good=np.all(np.abs(rgb-np.asarray(expected))<.01,axis=-1);bad=(rgb[...,0]>.9)&(rgb[...,2]>.9)
-                    record={'phase':('default_scalars','signed_hdr_scalars','zero_scalars','restored')[phase],'covered':int(good.sum()),'mismatch':int(bad.sum()),'builds':pipeline.builds}
+                    record={'phase':('default_scalars','signed_hdr_scalars','zero_scalars','restored','recreated')[phase],'covered':int(good.sum()),'mismatch':int(bad.sum()),'builds':pipeline.builds}
                     assert good.sum()>100 and not bad.any() and pipeline.builds==1,record
+                    surface_ids = np.unique(np.rint(pixels[good, 3] * 255).astype(int))
+                    assert len(surface_ids) == 2 and surface_ids[0] > 0, surface_ids
+                    record['surfaces'] = surface_ids.tolist()
+                    if 0 < phase < 4:
+                        np.testing.assert_array_equal(pixels[..., 3], initial[..., 3])
+                    elif phase == 4:
+                        old_ids = set(proof['phases'][0]['surfaces'])
+                        new_ids = set(surface_ids)
+                        assert len(new_ids & old_ids) == 1 and min(new_ids - old_ids) > max(old_ids)
+                        np.testing.assert_array_equal(pixels[..., :3], initial[..., :3])
+                        retained_id, = new_ids & old_ids
+                        np.testing.assert_array_equal(
+                            np.rint(pixels[..., 3] * 255) == retained_id,
+                            np.rint(initial[..., 3] * 255) == retained_id,
+                        )
                     issues = [e for e in console._get_visible_log_snapshot(2000) if e['level'] in ('ERROR','FATAL')]
                     assert not issues, issues
                     if phase==0:initial=pixels
                     elif phase==3:np.testing.assert_array_equal(pixels,initial)
                     proof['phases'].append(record);print(record,flush=True)
-                    if phase==3:complete=True;proof['passed']=True;native.exit();return
+                    if phase == 4:
+                        complete = True
+                        proof['passed'] = True
+                        native.exit()
+                        return
+                    if phase == 3:
+                        scene.destroy_game_object(left_quad)
+                        create_quad('Left Quad', -.7)
+                    else:
+                        a,b=((-2.25,4.5),(0,0),(.375,.625))[phase]
+                        material.set_float('scalar0',a);material.set_float('scalar1',b)
                     phase+=1
-                    a,b=((-2.25,4.5),(0,0),(.375,.625))[phase-1]
-                    material.set_float('scalar0',a);material.set_float('scalar1',b)
                     changed=frame;ticket=None
                 if frame>110:raise AssertionError('GBuffer scalar GPU audit did not complete')
             except BaseException as exc:failures.append(exc);native.exit()

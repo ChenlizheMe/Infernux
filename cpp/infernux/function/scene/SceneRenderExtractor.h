@@ -73,7 +73,7 @@ class SceneRenderExtractor final
     void UpdateCachedRenderableTransforms(RenderWorldFrame &frame);
     void EmitDrawCallsForRenderable(DrawCallResult &result, const RenderProxy &renderable, SceneRenderSource &source,
                                     bool visible, bool bufferDirty) const;
-    void RebuildDrawCalls(RenderWorldFrame &frame);
+    void RebuildDrawCalls(RenderWorldFrame &frame, RenderWorldSnapshot &publication);
 
     Camera *m_activeCamera = nullptr;
     std::vector<SceneRenderSource> m_sceneSources;

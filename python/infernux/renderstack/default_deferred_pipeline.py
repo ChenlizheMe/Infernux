@@ -11,7 +11,7 @@ Private GBuffer layout (MRT)::
     Slot 1 — World Normals      (RGBA16_SFLOAT, alpha = smoothness)
     Slot 2 — Material Params    (RGBA16_SFLOAT, alpha = shadingParam0)
     Slot 3 — Emission           (RGBA16_SFLOAT)
-    Slot 4 — Object Metadata    (RGBA32_UINT: layer, model, receive shadows, reserved)
+    Slot 4 — Object Metadata    (RGBA32_UINT: layer, model, receive shadows, surface ID)
     Depth  — Scene depth        (D32_SFLOAT)
 
 The public ``normal`` PassResult is generated only when requested. Its RGB is

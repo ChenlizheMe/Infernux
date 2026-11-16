@@ -194,6 +194,7 @@ struct DrawCall
     uint64_t objectId = 0;        // Compatibility key for buffer lookup and picking
     uint64_t pickingObjectId = 0; // Optional scene owner exposed by picking passes
     uint32_t layerMask = 1u;      // Owning GameObject layer bit for per-light culling masks
+    uint32_t surfaceId = 0;       // Surface slot in this render world's publication; zero is background
     RenderDrawIdentity identity;  // Stable source identity across scene/component lifetimes
     bool frustumVisible = true;   // Whether object passed main-camera frustum culling
     bool castsShadows = true;     // Whether the source renderer participates in shadow passes

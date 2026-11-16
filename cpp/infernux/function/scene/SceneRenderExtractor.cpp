@@ -210,7 +210,7 @@ size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication
     } else {
         CollectRenderables(frame);
         SortRenderables(frame);
-        RebuildDrawCalls(frame);
+        RebuildDrawCalls(frame, publication);
     }
     const bool meshPublicationsChanged = CaptureMeshPublications(frame);
     CaptureMaterialPublications(frame);
@@ -995,7 +995,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
     }
 }
 
-void SceneRenderExtractor::RebuildDrawCalls(RenderWorldFrame &frame)
+void SceneRenderExtractor::RebuildDrawCalls(RenderWorldFrame &frame, RenderWorldSnapshot &publication)
 {
     DrawCallResult result;
     result.drawCalls.reserve(frame.m_drawCalls.drawCalls.empty() ? frame.m_proxies.size()
@@ -1011,6 +1011,11 @@ void SceneRenderExtractor::RebuildDrawCalls(RenderWorldFrame &frame)
         bool bufferDirty = renderer->ConsumeMeshBufferDirty();
         renderable.cache.drawCallStart = result.drawCalls.size();
         EmitDrawCallsForRenderable(result, renderable, source, renderable.frame.visible, bufferDirty);
+        const uint64_t lifetime = renderable.structural.identity.source.generation;
+        for (size_t drawIndex = renderable.cache.drawCallStart; drawIndex < result.drawCalls.size(); ++drawIndex) {
+            auto &draw = result.drawCalls[drawIndex];
+            draw.surfaceId = publication.SurfaceId(lifetime, draw.identity.primitiveIndex);
+        }
         renderable.cache.drawCallCount = result.drawCalls.size() - renderable.cache.drawCallStart;
     }
 

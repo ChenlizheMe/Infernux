@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -333,10 +334,37 @@ class RenderWorldSnapshot final
         SelectPublication(nullptr);
         m_writable.reset();
         m_recycled.clear();
+        SetSurfaceWorld(0);
     }
 
-    [[nodiscard]] RenderWorldFrame &BeginFrame(uint64_t, uint64_t)
+    void SetSurfaceWorld(uint64_t worldId)
     {
+        if (m_surfaceWorld == worldId)
+            return;
+        m_surfaceWorld = worldId;
+        m_surfaceIds.clear();
+        m_nextSurfaceId = 1;
+    }
+
+    [[nodiscard]] uint32_t SurfaceId(uint64_t rendererLifetime, uint32_t primitiveIndex)
+    {
+        // The lifetime generation is the original component identity, independent of sort order.
+        const RenderDrawIdentity key{rendererLifetime, primitiveIndex, RenderDomain::SceneGeometry};
+        const auto found = m_surfaceIds.find(key);
+        if (found != m_surfaceIds.end())
+            return found->second;
+        // A frozen frame can still refer to any previously assigned slot.
+        if (m_nextSurfaceId == 0)
+            throw std::overflow_error("Render world exhausted its surface identifiers");
+        const uint32_t id = m_nextSurfaceId;
+        m_surfaceIds.emplace(key, id);
+        ++m_nextSurfaceId;
+        return id;
+    }
+
+    [[nodiscard]] RenderWorldFrame &BeginFrame(uint64_t worldId, uint64_t)
+    {
+        SetSurfaceWorld(worldId);
         // A frame in the recycle list is writable only when this publisher is
         // its sole owner. Consumers may retain any older publication freely.
         for (auto it = m_recycled.begin(); it != m_recycled.end(); ++it) {
@@ -378,6 +406,9 @@ class RenderWorldSnapshot final
     std::shared_ptr<RenderWorldFrame> m_writable;
     std::vector<std::shared_ptr<RenderWorldFrame>> m_recycled;
     uint64_t m_frameRevision = 0;
+    uint64_t m_surfaceWorld = 0;
+    uint32_t m_nextSurfaceId = 1;
+    std::unordered_map<RenderDrawIdentity, uint32_t, RenderDrawIdentityHash> m_surfaceIds;
 };
 
 } // namespace infernux

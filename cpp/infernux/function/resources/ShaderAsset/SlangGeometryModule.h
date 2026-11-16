@@ -98,6 +98,7 @@ public struct InxMeshInput
     public nointerpolation uint object_flags : TEXCOORD9;
     public nointerpolation uint layer_mask : TEXCOORD10;
     public float2 motion_vector : TEXCOORD11;
+    public nointerpolation uint surface_id : TEXCOORD12;
 };
 public struct InxSurfaceData
 {
@@ -285,6 +286,7 @@ public InxMeshInput inx_transform_vertex(InxVertexInput input, float4x4 model, f
     result.object_id = instance.object_id;
     result.object_flags = instance.object_flags;
     result.layer_mask = instance.layer_mask;
+    result.surface_id = instance.pose_indices.w;
     result.motion_vector = float2(0.0);
     result.position = mul(projection, mul(view, world));
     // The existing shared camera buffer stores a Vulkan viewport projection.
@@ -324,7 +326,7 @@ public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput in
                              saturate(surface.specular_highlights), surface.shading_param0);
     result.emission = float4(surface.emission, surface.shading_param1);
     result.metadata = uint4(input.layer_mask, model_id,
-                            receives_shadows && (input.object_flags & 2u) == 0u ? 1u : 0u, 0u);
+                            receives_shadows && (input.object_flags & 2u) == 0u ? 1u : 0u, input.surface_id);
     return result;
 }
 // Keep color and coverage lanes independently eliminable in every entry.

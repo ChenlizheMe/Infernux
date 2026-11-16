@@ -59,7 +59,7 @@ class Compare(shader.fullscreen):
                 return shader.vec4(1.0, 0.25, 1.0, 1.0)
             if shader.any(shader.abs(material.rgb - shader.vec3(0.2, 0.8, 1.0)) > 0.002):
                 return shader.vec4(1.0, 0.3125, 1.0, 1.0)
-            if metadata.x != 1 or metadata.y == 0 or metadata.z != 1 or metadata.w != 0:
+            if metadata.x != 1 or metadata.y == 0 or metadata.z != 1 or metadata.w == 0:
                 return shader.vec4(1.0, 0.375, 1.0, 1.0)
         else:
             mismatch = mismatch or shader.any(picking.xy != shader.uvec2(0)) or shader.any(metadata != shader.uvec4(0))

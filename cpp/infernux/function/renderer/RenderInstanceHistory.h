@@ -27,7 +27,7 @@ struct alignas(16) GPUInstanceAuxData
     glm::uvec2 objectId{0u};
     uint32_t flags = 0;
     uint32_t layerMask = 1u;
-    // Current model, previous accepted-view model, world bounds, reserved.
+    // Current model, previous accepted-view model, world bounds, surface slot.
     glm::uvec4 poseIndices{0u};
 };
 
@@ -43,8 +43,9 @@ inline void ApplyDevicePose(GPUInstanceAuxData &auxiliary, const RenderPoseBindi
         return;
     const auto &history = previous && previous->value ? *previous : current;
     auxiliary.flags |= kGPUInstanceAuxFlagDevicePose;
-    auxiliary.poseIndices = {current.value->firstModel + current.element, history.value->firstModel + history.element,
-                             current.value->firstBounds + current.element, 0u};
+    auxiliary.poseIndices.x = current.value->firstModel + current.element;
+    auxiliary.poseIndices.y = history.value->firstModel + history.element;
+    auxiliary.poseIndices.z = current.value->firstBounds + current.element;
 }
 
 [[nodiscard]] constexpr glm::uvec2 PackGPUObjectId(uint64_t objectId) noexcept
