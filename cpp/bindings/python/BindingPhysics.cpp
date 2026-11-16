@@ -21,6 +21,7 @@
 #include "function/scene/GameObject.h"
 #include "function/scene/HingeJoint.h"
 #include "function/scene/MeshCollider.h"
+#include "function/scene/PhysicsBody.h"
 #include "function/scene/Ragdoll.h"
 #include "function/scene/Rigidbody.h"
 #include "function/scene/SceneManager.h"
@@ -1271,7 +1272,11 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // Rigidbody component (Unity: Rigidbody)
     // ====================================================================
-    NativeClass<Rigidbody, Component>(m, "Rigidbody")
+    NativeClass<PhysicsBody, Component>(m, "PhysicsBody")
+        .def_property("gpu", &PhysicsBody::IsGpuEnabled, &PhysicsBody::SetGpuEnabled,
+                      "Use GPU physics for this body. Defaults to CPU (False).");
+
+    NativeClass<Rigidbody, PhysicsBody>(m, "Rigidbody")
         .def(py::init<>())
         // ---- Serialized properties ----
         .def_property("mass", &Rigidbody::GetMass, &Rigidbody::SetMass, "Mass in kilograms (default 1)")
@@ -1298,8 +1303,6 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def_property("drag", &Rigidbody::GetDrag, &Rigidbody::SetDrag, "Linear drag (default 0)")
         .def_property("angular_drag", &Rigidbody::GetAngularDrag, &Rigidbody::SetAngularDrag,
                       "Angular drag (default 0.05)")
-        .def_property("gpu", &Rigidbody::IsGpuEnabled, &Rigidbody::SetGpuEnabled,
-                      "Use GPU physics for this body. Defaults to CPU (False).")
         .def_property("use_gravity", &Rigidbody::GetUseGravity, &Rigidbody::SetUseGravity,
                       "Use gravity? (default true)")
         .def_property("is_kinematic", &Rigidbody::IsKinematic, &Rigidbody::SetIsKinematic,

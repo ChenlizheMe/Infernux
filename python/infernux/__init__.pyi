@@ -124,6 +124,7 @@ from infernux.components import SphereCollider as SphereCollider
 from infernux.components import CapsuleCollider as CapsuleCollider
 from infernux.components import CylinderCollider as CylinderCollider
 from infernux.components import MeshCollider as MeshCollider
+from infernux.components import PhysicsBody as PhysicsBody
 from infernux.components import Rigidbody as Rigidbody
 from infernux.components import RigidbodyConstraints as RigidbodyConstraints
 from infernux.components import CollisionDetectionMode as CollisionDetectionMode

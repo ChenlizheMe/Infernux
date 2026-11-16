@@ -24,10 +24,12 @@ from __future__ import annotations
 
 from enum import IntEnum, IntFlag
 
-from infernux.components.builtin_component import BuiltinComponent, CppProperty
+from infernux.components.builtin_component import CppProperty
 from infernux.components.fields import FieldType
 from infernux.math.coerce import coerce_quat, coerce_vec3
 from infernux.lib import ForceMode as _ForceMode
+
+from .physics_body import PhysicsBody
 
 
 class RigidbodyConstraints(IntFlag):
@@ -68,10 +70,11 @@ class RigidbodyInterpolation(IntEnum):
     Interpolate = 1
 
 
-class Rigidbody(BuiltinComponent):
+class Rigidbody(PhysicsBody):
     """Python wrapper for the C++ Rigidbody component."""
 
     _cpp_type_name = "Rigidbody"
+    _component_user_addable_ = True
 
     _component_category_ = "Physics"
 

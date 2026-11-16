@@ -90,7 +90,6 @@ struct RigidbodyECSData
     PhysicsActorHandle actorHandle;
 
     // ---- Serialized properties ----
-    bool gpu = false;
     float mass = 1.0f;
     float drag = 0.0f;
     float angularDrag = 0.05f;

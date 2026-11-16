@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "Component.h"
+#include "PhysicsBody.h"
 #include "RigidbodyMassProperties.h"
 #include "physics/PhysicsECSStore.h"
 #include <cstdint>
@@ -87,7 +87,7 @@ enum class RigidbodyInterpolation : int
  * Owns one physics actor. Collider components supply its collision shapes;
  * a Rigidbody with no Collider still participates in dynamics and joints.
  */
-class Rigidbody : public Component
+class Rigidbody : public PhysicsBody
 {
   public:
     using ECSHandle = PhysicsECSStore::RigidbodyHandle;
@@ -116,14 +116,6 @@ class Rigidbody : public Component
     // ====================================================================
     // Properties (Unity-style)
     // ====================================================================
-
-    /// Device selection belongs to this component; worlds have no default backend.
-    [[nodiscard]] bool IsGpuEnabled() const
-    {
-        return Data().gpu;
-    }
-    void SetGpuEnabled(bool gpu);
-    void ValidateGpuSelection(bool gpu) const;
 
     /// @brief Mass in kilograms (Unity: Rigidbody.mass). Default 1.
     [[nodiscard]] float GetMass() const
@@ -371,6 +363,8 @@ class Rigidbody : public Component
     void ApplyBodyCommand(class PhysicsWorld &world, uint32_t bodyId, const BodyCommand &command);
 
     /// Notify all sibling Colliders to rebuild their Jolt body type.
+    [[nodiscard]] const RuntimeWorld *GetBoundPhysicsWorld() const override;
+    void OnGpuSelectionChanged() override;
     void NotifyCollidersBodyTypeChanged();
     void CacheActorPose(const glm::vec3 &position, const glm::quat &rotation);
     bool PublishPhysicsPose(const glm::vec3 &position, const glm::quat &rotation);
@@ -415,7 +409,6 @@ class Rigidbody : public Component
     }
 
     ECSHandle m_ecsHandle;
-    uint64_t m_resultEpoch = 0;
     std::optional<RigidbodyMassProperties> PrepareMass(float mass) const;
     std::optional<RigidbodyMassProperties> m_massProperties;
     std::vector<BodyCommand> m_pendingBodyCommands;

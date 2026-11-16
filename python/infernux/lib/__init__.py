@@ -8,6 +8,7 @@ import glob
 import importlib
 import importlib.machinery
 import importlib.util
+from inspect import isabstract
 import os
 import sys
 
@@ -737,11 +738,13 @@ def _find_python_components_by_name(game_object, type_name: str):
 def _wrap_builtin_component(game_object, wrapper_cls, cpp_component):
     if cpp_component is None:
         return None
+    if isabstract(wrapper_cls) or not wrapper_cls._cpp_type_name:
+        return _wrap_native_builtin_component(cpp_component)
     return wrapper_cls._get_or_create_wrapper(cpp_component, game_object)
 
 
 def _wrap_builtin_component_list(game_object, wrapper_cls, cpp_components):
-    return [wrapper_cls._get_or_create_wrapper(component, game_object) for component in cpp_components]
+    return [_wrap_builtin_component(game_object, wrapper_cls, component) for component in cpp_components]
 
 
 def _wrap_native_builtin_component(component):
@@ -864,7 +867,9 @@ def _game_object_add_component(self, component_type):
 
     builtin_wrapper_cls = _resolve_builtin_wrapper(component_type)
     if builtin_wrapper_cls is not None:
-        cpp_type_name = getattr(builtin_wrapper_cls, "_cpp_type_name", builtin_wrapper_cls.__name__)
+        cpp_type_name = builtin_wrapper_cls._cpp_type_name
+        if isabstract(builtin_wrapper_cls) or not cpp_type_name:
+            raise TypeError(f"Cannot add abstract component {builtin_wrapper_cls.__name__}")
         cpp_component = _call_native_game_object(
             "add_component", _native_game_object_add_component, self, cpp_type_name
         )
@@ -876,7 +881,7 @@ def _game_object_add_component(self, component_type):
 def _game_object_get_component(self, component_type):
     builtin_wrapper_cls = _resolve_builtin_wrapper(component_type)
     if builtin_wrapper_cls is not None:
-        cpp_type_name = getattr(builtin_wrapper_cls, "_cpp_type_name", builtin_wrapper_cls.__name__)
+        cpp_type_name = builtin_wrapper_cls._cpp_type_name or builtin_wrapper_cls.__name__
         cpp_component = self.get_cpp_component(cpp_type_name)
         return _wrap_builtin_component(self, builtin_wrapper_cls, cpp_component)
 
@@ -934,7 +939,7 @@ def _game_object_get_components(self, component_type=None):
 
     builtin_wrapper_cls = _resolve_builtin_wrapper(component_type)
     if builtin_wrapper_cls is not None:
-        cpp_type_name = getattr(builtin_wrapper_cls, "_cpp_type_name", builtin_wrapper_cls.__name__)
+        cpp_type_name = builtin_wrapper_cls._cpp_type_name or builtin_wrapper_cls.__name__
         cpp_components = self.get_cpp_components(cpp_type_name)
         return _wrap_builtin_component_list(self, builtin_wrapper_cls, cpp_components)
 

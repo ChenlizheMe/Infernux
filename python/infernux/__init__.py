@@ -198,6 +198,7 @@ __all__ = [
     "CapsuleCollider",
     "CylinderCollider",
     "MeshCollider",
+    "PhysicsBody",
     "Rigidbody",
     "RigidbodyConstraints",
     "CollisionDetectionMode",

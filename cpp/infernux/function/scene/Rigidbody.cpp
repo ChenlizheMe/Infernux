@@ -273,7 +273,7 @@ std::optional<std::tuple<uint32_t, uint32_t, uint64_t, uint64_t>> Rigidbody::Get
         return std::nullopt;
     // A Jolt body is created at most once for an actor. The actor handle is
     // already assigned when Start or FixedUpdate first registers a result.
-    return std::tuple{handle.index, handle.generation, store.GetActor(handle).shapeRevision, m_resultEpoch};
+    return std::tuple{handle.index, handle.generation, store.GetActor(handle).shapeRevision, GetPhysicsResultEpoch()};
 }
 
 void Rigidbody::Awake()
@@ -296,7 +296,7 @@ void Rigidbody::OnEnable()
 
 void Rigidbody::OnDisable()
 {
-    ++m_resultEpoch;
+    PhysicsBody::OnDisable();
     auto &store = PhysicsECSStore::Instance();
     const auto handle = Data().actorHandle;
     if (!store.IsValid(handle))
@@ -397,29 +397,16 @@ void Rigidbody::SetUseGravity(bool use)
     ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyGravityFactor(id, factor); });
 }
 
-void Rigidbody::ValidateGpuSelection(bool gpu) const
+const RuntimeWorld *Rigidbody::GetBoundPhysicsWorld() const
 {
-    if (gpu == Data().gpu || GetBodyId() == UINT32_MAX)
-        return;
-    const auto &store = PhysicsECSStore::Instance();
-    const auto *world = store.GetActor(Data().actorHandle).runtimeWorld;
-    if (world && world->simulation.isPlaying)
-        throw std::logic_error("Live CPU/GPU body migration is not implemented yet; change GPU while stopped");
+    if (GetBodyId() == UINT32_MAX)
+        return nullptr;
+    return PhysicsECSStore::Instance().GetActor(Data().actorHandle).runtimeWorld;
 }
 
-void Rigidbody::SetGpuEnabled(bool gpu)
+void Rigidbody::OnGpuSelectionChanged()
 {
-    if (gpu == Data().gpu)
-        return;
-    ValidateGpuSelection(gpu);
-    const bool previous = Data().gpu;
-    DataMut().gpu = gpu;
-    try {
-        NotifyCollidersBodyTypeChanged();
-    } catch (...) {
-        DataMut().gpu = previous;
-        throw;
-    }
+    NotifyCollidersBodyTypeChanged();
 }
 
 void Rigidbody::SetIsKinematic(bool kinematic)
@@ -748,7 +735,7 @@ void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::v
     for (size_t i = 0; i < bodies.size(); ++i) {
         auto &data = bodies[i]->DataMut();
         const auto &state = states[i];
-        ++bodies[i]->m_resultEpoch;
+        bodies[i]->InvalidatePhysicsResults();
         bodies[i]->m_pendingBodyCommands.clear();
         data.linearVelocity = state.linearVelocity;
         data.angularVelocity = state.angularVelocity;
@@ -1293,8 +1280,7 @@ void Rigidbody::ApplyVelocityLimits()
 nlohmann::json Rigidbody::SerializeDocument() const
 {
     const auto &d = Data();
-    auto j = Component::SerializeDocument();
-    j["gpu"] = d.gpu;
+    auto j = PhysicsBody::SerializeDocument();
     j["mass"] = d.mass;
     if (m_massProperties) {
         const auto &p = *m_massProperties;
@@ -1359,9 +1345,8 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
     try {
         ValidateSerializedDocument(j);
 
+        ValidateGpuSelection(j.value("gpu", false));
         RigidbodyECSData staged = Data();
-        staged.gpu = j.value("gpu", false);
-        ValidateGpuSelection(staged.gpu);
         staged.mass = j.at("mass").get<float>();
         const auto properties = ReadMassProperties(j);
         staged.drag = j.at("drag").get<float>();
@@ -1376,7 +1361,7 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
 
         PhysicsWorld::Instance().ValidateBodyMassProperties(*this, staged.mass, properties ? &*properties : nullptr);
 
-        if (!Component::DeserializeDocument(j))
+        if (!PhysicsBody::DeserializeDocument(j))
             return false;
         DataMut() = staged;
         m_massProperties = properties;
@@ -1394,11 +1379,9 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
 std::unique_ptr<Component> Rigidbody::Clone() const
 {
     auto clone = std::make_unique<Rigidbody>();
-    clone->m_enabled = m_enabled;
-    clone->m_executionOrder = m_executionOrder;
+    CopyPhysicsBodyAuthoringTo(*clone);
     const auto &src = Data();
     auto &dst = clone->DataMut();
-    dst.gpu = src.gpu;
     dst.mass = src.mass;
     clone->m_massProperties = m_massProperties;
     dst.drag = src.drag;

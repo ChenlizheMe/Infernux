@@ -5115,7 +5115,13 @@ class MeshCollider(Collider):
     def deserialize(self, json_str: str) -> bool: ...
 
 
-class Rigidbody(Component):
+class PhysicsBody(Component):
+    """Abstract native physics component."""
+
+    gpu: bool
+
+
+class Rigidbody(PhysicsBody):
     """Physics rigid body component."""
 
     mass: float
@@ -5126,7 +5132,6 @@ class Rigidbody(Component):
     drag: float
     angular_drag: float
     use_gravity: bool
-    gpu: bool
     is_kinematic: bool
     constraints: int
     freeze_rotation: bool

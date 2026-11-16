@@ -13,6 +13,7 @@ from .sphere_collider import SphereCollider as SphereCollider
 from .capsule_collider import CapsuleCollider as CapsuleCollider
 from .cylinder_collider import CylinderCollider as CylinderCollider
 from .mesh_collider import MeshCollider as MeshCollider
+from .physics_body import PhysicsBody as PhysicsBody
 from .rigidbody import (
     Rigidbody as Rigidbody,
     RigidbodyConstraints as RigidbodyConstraints,
@@ -47,6 +48,7 @@ __all__ = [
     "CapsuleCollider",
     "CylinderCollider",
     "MeshCollider",
+    "PhysicsBody",
     "Rigidbody",
     "RigidbodyConstraints",
     "CollisionDetectionMode",

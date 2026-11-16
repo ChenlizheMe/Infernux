@@ -5,7 +5,7 @@ from typing import Any, Optional, Tuple, Union
 from numpy import float32
 from numpy.typing import NDArray
 
-from infernux.components.builtin_component import BuiltinComponent
+from .physics_body import PhysicsBody
 
 class RigidbodyConstraints(IntFlag):
     """Flags to constrain rigidbody motion."""
@@ -31,7 +31,7 @@ class RigidbodyInterpolation(IntEnum):
     None_ = 0
     Interpolate = 1
 
-class Rigidbody(BuiltinComponent):
+class Rigidbody(PhysicsBody):
     """Controls physics simulation for the GameObject."""
 
     @property
