@@ -236,6 +236,9 @@ class PhysicsWorld
     void RetireDomain(PhysicsDomain &domain) noexcept;
 
     /// Initialise Jolt (call once after engine starts)
+    /// Native hosts supply device services before initialization. These are
+    /// host-owned facilities, not part of the Python Rigidbody interface.
+    void BindGpuServices(std::unique_ptr<rhi::ComputeHost> host, FrameWorkOwner *work);
     void Initialize();
 
     /// Shut down Jolt (call on engine cleanup).
@@ -759,8 +762,6 @@ class PhysicsWorld
                               const std::unordered_map<uint64_t, uint64_t> &remap);
     void AcquireColliderPairOwner(Collider *a, Collider *b, const Component &owner);
     void ReleaseColliderPairOwner(PhysicsDomain &domain, const std::array<uint64_t, 2> &ownerIdentity);
-    /// Engine-owned services, borrowed until Shutdown; no external host lease.
-    void BindGpuServices(std::unique_ptr<rhi::ComputeHost> host, FrameWorkOwner *work);
     friend class SkeletonPhysicsPoseRead;
     void PrepareCpuPoseReads(const std::vector<Transform *> &transforms, bool worldSpace);
     [[nodiscard]] const PhysicsBodyMotionState *FindCachedMotionState(PhysicsDomain &domain, uint32_t bodyId,
