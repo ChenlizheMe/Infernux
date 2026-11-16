@@ -106,6 +106,13 @@ JoltGpuScene::ContactObserver JoltGpuContactPublication::Prepare(JoltGpuContactR
         if (store.IsValid(handle))
             policy.CaptureActor(world, store.GetActor(handle));
     });
+    return Prepare(reports, publication, substeps, std::move(policy));
+}
+
+JoltGpuScene::ContactObserver JoltGpuContactPublication::Prepare(JoltGpuContactReports &reports,
+                                                                 const std::shared_ptr<const Publication> &publication,
+                                                                 uint32_t substeps, State::Policy policy)
+{
     if (!policy.Requested())
         return {};
     auto pending = std::make_shared<Pending>();
@@ -118,37 +125,64 @@ JoltGpuScene::ContactObserver JoltGpuContactPublication::Prepare(JoltGpuContactR
     return {std::move(capture.phase), std::move(capture.finish)};
 }
 
+void JoltGpuContactPublication::ValidateCompleted(const std::shared_ptr<const Publication> &publication,
+                                                  uint32_t substeps) const
+{
+    if (!publication || !publication->isFixedStep)
+        throw std::logic_error("GPU contact completion requires a Fixed publication");
+    if (!m_pending)
+        return;
+    const auto &report = *m_pending->report;
+    if (report.publication.get() != publication.get() || !report.complete || report.expectedSubsteps != substeps ||
+        report.frames.size() != substeps)
+        throw std::logic_error("GPU contact completion differs from its Fixed publication or substep count");
+}
+
+void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &destination) const
+{
+    if (!m_pending)
+        return;
+    const auto &report = *m_pending->report;
+    const auto &frame = report.frames.at(substep);
+    if (frame.substep != substep || !frame.finished || !frame.seeded)
+        throw std::logic_error("Contact frame sequence mismatch");
+    destination.manifolds.reserve(destination.manifolds.size() + frame.records.size());
+    destination.points.reserve(destination.points.size() + frame.records.size() * MaxPatchPoints);
+    for (const auto &record : frame.records) {
+        if (record.meta.w >= frame.capacity)
+            throw std::runtime_error("Contact source ordinal exceeds retained workset");
+        destination.manifolds.push_back(DecodeManifold(*report.publication, record, substep, destination.points));
+    }
+}
+
+void JoltGpuContactPublication::AcceptCompleted(std::shared_ptr<const Publication> publication) noexcept
+{
+    m_pending.reset();
+    m_publication = std::move(publication);
+}
+
 void JoltGpuContactPublication::Publish(PhysicsContactPublication &contacts,
                                         const std::shared_ptr<const Publication> &publication)
 {
+    const auto substeps = m_pending ? m_pending->report->expectedSubsteps : 0;
+    ValidateCompleted(publication, substeps);
     const ContactStreamIdentity identity{publication->worldId, publication->simulationEpoch,
                                          publication->fixedStepIndex};
-    if (!m_pending) {
-        contacts.PublishEmpty(identity);
-        m_publication = publication;
-        return;
-    }
-    if (m_pending->report->publication.get() != publication.get())
-        throw std::logic_error("Contact capture publication mismatch");
-    auto captured = std::move(m_pending);
-    const auto &report = *captured->report;
-    if (!report.complete || report.frames.size() != report.expectedSubsteps)
-        throw std::logic_error("Cannot publish partial contact Fixed");
-    contacts.Publish(identity, captured->policy, report.expectedSubsteps, [&](uint32_t substep) {
-        const auto &frame = report.frames[substep];
-        if (frame.substep != substep || !frame.finished || !frame.seeded)
-            throw std::logic_error("Contact frame sequence mismatch");
-        State::Frame decoded;
-        decoded.manifolds.reserve(frame.records.size());
-        decoded.points.reserve(frame.records.size() * MaxPatchPoints);
-        for (const auto &record : frame.records) {
-            if (record.meta.w >= frame.capacity)
-                throw std::runtime_error("Contact source ordinal exceeds retained workset");
-            decoded.manifolds.push_back(DecodeManifold(*publication, record, substep, decoded.points));
+    try {
+        if (m_pending) {
+            contacts.Publish(identity, m_pending->policy, substeps, [&](uint32_t substep) {
+                State::Frame decoded;
+                AppendFrame(substep, decoded);
+                return decoded;
+            });
+        } else {
+            contacts.PublishEmpty(identity);
         }
-        return decoded;
-    });
-    m_publication = publication;
+    } catch (...) {
+        CancelPending();
+        throw;
+    }
+    AcceptCompleted(publication);
 }
 
 void JoltGpuContactPublication::CancelPending() noexcept

@@ -878,28 +878,20 @@ void Rigidbody::Sleep()
 // Physics → Transform writeback (called after Jolt step)
 // ============================================================================
 
-void Rigidbody::SyncPhysicsToTransform()
+void Rigidbody::SyncPhysicsToTransform(const PhysicsBodyMotionState &state, bool sleeping)
 {
     auto &d = DataMut();
     auto *go = GetGameObject();
     if (!go)
         return;
 
-    uint32_t bid = GetBodyId();
-    if (bid == 0xFFFFFFFF)
-        return;
-
-    auto &pw = PhysicsWorld::Instance();
-
-    // Read once on the active -> sleeping edge so the final solver pose is not
-    // lost. Only bodies that were already sleeping can skip the Jolt reads.
-    const bool sleeping = pw.IsBodySleeping(bid);
-    if (sleeping && d.wasSleeping && d.hasPhysicsPose)
+    const auto bodyPos = state.position;
+    const auto bodyRot = state.rotation;
+    // Sleep does not prevent an explicit pose command between Fixed steps.
+    if (sleeping && d.wasSleeping && d.hasPhysicsPose && bodyPos == d.currentPhysicsPosition &&
+        !RotationChanged(bodyRot, d.currentPhysicsRotation))
         return;
     d.wasSleeping = sleeping;
-
-    glm::vec3 bodyPos = pw.GetBodyPosition(bid);
-    glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bid));
 
     Transform *tf = go->GetTransform();
     if (!tf)
@@ -908,7 +900,7 @@ void Rigidbody::SyncPhysicsToTransform()
     TransformECSStore::PhysicsPoseReadScope applying(TransformECSStore::Instance());
 
     const bool firstPose = !d.hasPhysicsPose;
-    if (firstPose) {
+    if (firstPose || sleeping) {
         d.previousPhysicsPosition = bodyPos;
         d.previousPhysicsRotation = bodyRot;
     } else {
@@ -919,7 +911,7 @@ void Rigidbody::SyncPhysicsToTransform()
     d.currentPhysicsRotation = bodyRot;
     d.hasPhysicsPose = true;
 
-    if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
+    if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose || sleeping)
         PublishPhysicsPose(bodyPos, bodyRot);
     else
         CacheActorPose(d.lastSyncedPosition, d.lastSyncedRotation);
@@ -1033,8 +1025,14 @@ void Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::qua
         return;
     TransformECSStore::PhysicsPoseReadScope applying(TransformECSStore::Instance());
 
-    const bool applyPosition = !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Position));
-    const bool applyRotation = !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Rotation));
+    const auto &physics = PhysicsECSStore::Instance();
+    if (physics.IsValid(d.actorHandle) && physics.GetActor(d.actorHandle).centerTransformDirty)
+        return;
+    const auto authored = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
+    const bool applyPosition = authored[0] == d.lastAuthoredPoseRevision[0] &&
+                               !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Position));
+    const bool applyRotation = authored[1] == d.lastAuthoredPoseRevision[1] &&
+                               !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Rotation));
     if (!applyPosition && !applyRotation)
         return;
     tf->ApplyWorldPoseFromPhysics(applyPosition ? presentedPos : tf->GetWorldPosition(),

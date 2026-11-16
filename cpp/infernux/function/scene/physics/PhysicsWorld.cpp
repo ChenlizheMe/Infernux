@@ -14,6 +14,7 @@
 #include "../TagLayerManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
+#include "JoltCpuControl.h"
 #include "JoltGpuContactReports.h"
 #include "JoltGpuJoints.h"
 #include "JoltGpuProgramSources.h"
@@ -22,6 +23,7 @@
 #include "JoltGpuRenderPoses.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsDomain.h"
+#include "PhysicsLayers.h"
 #include "PhysicsMass.h"
 #include "PhysicsShapeAuthoring.h"
 #include <algorithm>
@@ -313,9 +315,20 @@ struct PhysicsWorld::CompiledGpuPrograms
     ShaderTargetCode step, mutations, commands, broadphase, narrowphase, constraints, articulationCapture,
         articulationDynamics;
 };
+struct PhysicsWorld::CpuServices
+{
+    explicit CpuServices(const EngineConfig &config) : execution(config)
+    {
+    }
+    BPLayerInterface layers;
+    ObjectVsBPLayerFilter broadphaseFilter;
+    ObjectLayerPairFilter pairFilter;
+    JoltCpuExecution execution;
+};
 PhysicsDomain::PhysicsDomain(RuntimeWorld &world) : owner(world), gravity(EngineConfig::Get().physicsGravity)
 {
 }
+PhysicsDomain::~PhysicsDomain() = default;
 namespace
 {
 // Geometry cooking and mass authoring also run before Play and between engine
@@ -393,14 +406,33 @@ void PhysicsWorld::Initialize()
         return;
     m_ownerThreadId = std::this_thread::get_id();
     m_initialized = true;
-    if (m_gpuHost && m_gpuWork) {
-        try {
-            (void)EnsureGpuReady(CurrentDomain());
-        } catch (...) {
-            Shutdown();
-            throw;
-        }
+}
+void PhysicsWorld::RegisterDomain(PhysicsDomain &domain)
+{
+    m_domains.insert(&domain);
+    auto &store = PhysicsECSStore::Instance();
+    for (const auto handle : domain.recreateActors)
+        if (store.IsValid(handle) && store.GetActor(handle).bodyId == UINT32_MAX)
+            store.QueueBodyCreation(handle);
+    domain.recreateActors.clear();
+}
+void PhysicsWorld::EnsureCpuReady(PhysicsDomain &domain)
+{
+    RequireOwnerThread();
+    RequireHealthyStep(domain);
+    if (!m_initialized || domain.retiring)
+        throw std::logic_error("CPU physics requires a live initialized world");
+    if (!m_cpuServices)
+        m_cpuServices = std::make_unique<CpuServices>(EngineConfig::Get());
+    if (!domain.cpuScene) {
+        auto scene = std::make_unique<JoltCpuScene>(EngineConfig::Get(), m_cpuServices->layers,
+                                                    m_cpuServices->broadphaseFilter, m_cpuServices->pairFilter);
+        auto control = std::make_unique<JoltCpuControl>(*scene);
+        scene->SetIgnoredPairs(CaptureColliderPairs(domain));
+        domain.cpuScene = std::move(scene);
+        domain.cpuControl = std::move(control);
     }
+    RegisterDomain(domain);
 }
 bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
 {
@@ -459,15 +491,10 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
     }
     if (!m_gpuScene->RegisterPartition(domain.owner, InitialBodyCapacity))
         return false;
-    domain.recreateActors.reserve(m_gpuScene->GetCapacity(domain.owner));
-    m_domains.insert(&domain);
+    domain.gpuRegistered = true;
+    RegisterDomain(domain);
     ReconcileRagdolls(domain);
     QueueColliderPairs(domain);
-    auto &store = PhysicsECSStore::Instance();
-    for (const auto handle : domain.recreateActors)
-        if (store.IsValid(handle) && store.GetActor(handle).bodyId == UINT32_MAX)
-            store.QueueBodyCreation(handle);
-    domain.recreateActors.clear();
     return true;
 }
 void PhysicsWorld::RequireGpu(PhysicsDomain &domain) const
@@ -479,13 +506,16 @@ void PhysicsWorld::Shutdown()
 {
     for (auto *domain : m_domains) {
         RetireRagdolls(*domain);
-        if (m_gpuScene)
+        if (domain->gpuRegistered)
             m_gpuScene->Cancel(domain->owner);
         domain->rendering.bindings.Clear();
         domain->rendering.pending.reset();
         domain->rendering.ready.reset();
         domain->contacts.Close();
         domain->gpuContacts.Close();
+        domain->cpuContacts.Close();
+        domain->cpuControl.reset();
+        domain->cpuScene.reset();
         domain->lastPublication.reset();
         domain->queuedColliderPairs.reset();
         domain->requestedMotion.clear();
@@ -496,6 +526,8 @@ void PhysicsWorld::Shutdown()
         // The logical World can survive a complete engine shutdown/reinitialization.
         // Its cancelled writer belonged to the arena which has now been drained.
         domain->gpuCancelled = false;
+        domain->gpuRegistered = false;
+        domain->registeredBodyCount = 0;
         domain->recreateActors.clear();
         domain->shapeGeometry.clear();
         domain->rendering.checkedKeys.reset();
@@ -505,6 +537,7 @@ void PhysicsWorld::Shutdown()
     m_gpuQueries.reset();
     m_gpuJoints.reset();
     m_gpuPrograms.reset();
+    m_cpuServices.reset();
     m_domains.clear();
     m_gpuHost.reset();
     m_gpuWork = nullptr;
@@ -514,7 +547,7 @@ void PhysicsWorld::Shutdown()
 size_t PhysicsWorld::GetBodyCount() const
 {
     auto &domain = CurrentDomain();
-    return m_gpuScene ? m_gpuScene->GetBodyCount(domain.owner) : 0;
+    return domain.registeredBodyCount;
 }
 glm::vec3 PhysicsWorld::GetGravity() const
 {
@@ -579,7 +612,7 @@ bool PhysicsWorld::PublishRenderPoses() const
 {
     auto &domain = CurrentDomain();
     RequireOwnerThread();
-    if (!m_initialized || !m_gpuRenderProgram || domain.gpuCancelled ||
+    if (!m_initialized || !domain.gpuRegistered || !m_gpuRenderProgram || domain.gpuCancelled ||
         domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
         return false;
     auto &rendering = domain.rendering;
@@ -960,10 +993,12 @@ bool PhysicsWorld::HasDomainControl(PhysicsDomain &domain) const
     const auto &world = domain.owner;
     const auto &store = PhysicsECSStore::Instance();
     return domain.pendingRagdollHead || domain.controlPending ||
-           (m_gpuScene && m_gpuScene->HasPendingControl(domain.owner)) || store.HasDirtyColliders(world) ||
+           (domain.cpuControl && domain.cpuControl->HasPending()) ||
+           (domain.gpuRegistered && m_gpuScene->HasPendingControl(domain.owner)) || store.HasDirtyColliders(world) ||
            store.HasPendingBodyCreations(world) || store.HasPendingBroadphaseAdds(world) ||
            store.HasPendingBroadphaseRemoves(world) || store.HasPendingJointDependencies(world) ||
-           (m_gpuScene && !domain.gpuCancelled && PhysicMaterial::GetSurfaceRevision() != domain.surfaceRevision);
+           (domain.gpuRegistered && !domain.gpuCancelled &&
+            PhysicMaterial::GetSurfaceRevision() != domain.surfaceRevision);
 }
 void PhysicsWorld::DrainGpuSource(PhysicsDomain &domain) const
 {
@@ -1053,7 +1088,7 @@ void PhysicsWorld::ServiceGpuWork()
 {
     auto &domain = CurrentDomain();
     RequireOwnerThread();
-    if (!m_initialized || !m_gpuScene || domain.gpuCancelled ||
+    if (!m_initialized || !domain.gpuRegistered || domain.gpuCancelled ||
         domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
         return;
     try {
@@ -1071,7 +1106,7 @@ void PhysicsWorld::RefreshRenderPoses()
 {
     auto &domain = CurrentDomain();
     RequireOwnerThread();
-    if (!m_initialized || !m_gpuScene || !m_gpuRenderProgram || domain.gpuCancelled ||
+    if (!m_initialized || !domain.gpuRegistered || !m_gpuRenderProgram || domain.gpuCancelled ||
         domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
         return;
     ServiceGpuWork();
@@ -1104,15 +1139,22 @@ void PhysicsWorld::RefreshRenderPoses()
         throw;
     }
 }
+bool PhysicsWorld::IsFixedPublicationHeld(const PhysicsDomain &domain) const noexcept
+{
+    const auto &simulation = domain.owner.simulation;
+    return domain.stepEpoch == simulation.simulationEpoch && domain.stepIndex == simulation.fixedStepIndex &&
+           (domain.contacts.dispatching || (domain.stepPending && domain.stepCompleted) ||
+            (simulation.fixedHasPhysics && simulation.fixedPhase == RuntimeWorld::FixedPhase::Publication));
+}
 bool PhysicsWorld::ServicePausedAuthorPresentation()
 {
     auto &domain = CurrentDomain();
     RequireOwnerThread();
     RequireHealthyStep(domain);
-    if (!m_initialized)
+    if (IsFixedPublicationHeld(domain) || !m_initialized)
         return true;
-    if (!m_gpuScene || !m_gpuRenderProgram || domain.gpuCancelled || domain.retiring || !m_gpuWork->IsActive() ||
-        !m_gpuWork->IsAccepting() || m_gpuWork->ServiceRemaining() <= 0 ||
+    if (!domain.gpuRegistered || !m_gpuRenderProgram || domain.gpuCancelled || domain.retiring ||
+        !m_gpuWork->IsActive() || !m_gpuWork->IsAccepting() || m_gpuWork->ServiceRemaining() <= 0 ||
         !m_gpuWork->ResourceRemaining(FrameWorkResource::Cpu))
         return false;
     try {
@@ -1120,6 +1162,8 @@ bool PhysicsWorld::ServicePausedAuthorPresentation()
         // In particular do not call Step: its completed shortcut consumes the receipt.
         if (domain.stepPending && !domain.stepCompleted && !AdvanceFixedStep(domain, false))
             return false;
+        if (IsFixedPublicationHeld(domain))
+            return true;
         if (!AdvanceGpuControl(domain, false))
             return false;
         SceneManager::Instance().PublishPhysicsStateToRenderer();
@@ -1156,6 +1200,9 @@ void PhysicsWorld::CancelPendingStep() noexcept
     SuspendRagdolls(domain);
     domain.contacts.Close();
     domain.gpuContacts.Close();
+    domain.cpuContacts.Close();
+    domain.cpuControl.reset();
+    domain.cpuScene.reset();
     domain.presentationPoseReads.reset();
     auto &world = domain.owner;
     if (m_gpuRenderProgram) {
@@ -1164,32 +1211,27 @@ void PhysicsWorld::CancelPendingStep() noexcept
         domain.rendering.ready.reset();
         domain.rendering.checkedKeys.reset();
     }
-    if (m_gpuScene) {
-        if (!domain.gpuCancelled) {
-            domain.recreateActors.clear();
-            auto &store = PhysicsECSStore::Instance();
-            store.ForEachAliveActor([&](PhysicsActorData &actor) {
-                if (actor.runtimeWorld != &world || actor.bodyId == UINT32_MAX)
-                    return;
-                // A failed numerical step may already have closed its GPU
-                // partition. Public ownership survives until this boundary.
-                const auto handle = FindBodyActor(actor.bodyId);
-                if (!store.IsValid(handle) || &store.GetActor(handle) != &actor)
-                    return;
-                store.CancelBroadphaseAdd(world, actor.bodyId);
-                store.CancelBroadphaseRemove(world, actor.bodyId);
-                m_bodyActors.erase(actor.bodyId);
-                actor.bodyId = UINT32_MAX;
-                actor.bodyInBroadphase = false;
-                actor.jointEndpointBodyId = UINT32_MAX;
-                // Capacity was reserved before the GPU owner was constructed.
-                domain.recreateActors.push_back(handle);
-            });
-        }
+    auto &store = PhysicsECSStore::Instance();
+    store.ForEachAliveActor([&](PhysicsActorData &actor) {
+        if (actor.runtimeWorld != &world || actor.bodyId == UINT32_MAX)
+            return;
+        // A backend may already be closed. The public directory still owns
+        // these identities until this boundary.
+        const auto *registration = FindBodyRegistration(actor.bodyId);
+        if (!registration || &store.GetActor(registration->actor) != &actor)
+            return;
+        store.CancelBroadphaseAdd(world, actor.bodyId);
+        store.CancelBroadphaseRemove(world, actor.bodyId);
+        domain.recreateActors.push_back(registration->actor);
+        UnregisterBodyIdentity(domain, actor.bodyId);
+        actor.bodyId = UINT32_MAX;
+        actor.bodyInBroadphase = false;
+        actor.jointEndpointBodyId = UINT32_MAX;
+    });
+    if (domain.gpuRegistered) {
         m_gpuScene->Cancel(domain.owner);
         domain.gpuCancelled = true;
     }
-    auto &store = PhysicsECSStore::Instance();
     store.ForEachAliveRigidbody([&](RigidbodyECSData &body) {
         if (store.IsValid(body.actorHandle) && store.GetActor(body.actorHandle).runtimeWorld == &world)
             body.physicsTargetSources = {};
@@ -1211,7 +1253,7 @@ void PhysicsWorld::FlushAuthoring(PhysicsDomain &domain) const
     FlagScope flushing(domain.flushingAuthoring);
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     SceneManager::Instance().EnsurePhysicsQueriesCurrent();
-    if (m_gpuScene && !domain.gpuCancelled)
+    if (domain.gpuRegistered && !domain.gpuCancelled)
         const_cast<PhysicsWorld *>(this)->RefreshGpuSurfaces(domain);
 }
 void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead) const
@@ -1233,25 +1275,25 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
         }
         m_gpuScene->RunPublicationObservation(domain.owner, publication, std::move(prepared));
     };
-    if (domain.contacts.dispatching) {
-        // User commands stay in the next author FIFO. Queries observe exactly
-        // the complete publication responsible for this callback batch.
+    // Completing an admitted solver can establish the Fixed publication hold.
+    if (!IsFixedPublicationHeld(domain))
+        const_cast<PhysicsWorld *>(this)->CompleteDomainStep(domain);
+    if (IsFixedPublicationHeld(domain)) {
+        if (!consumer)
+            return;
         const auto publication = domain.gpuContacts.GetPublication();
-        if (!domain.contacts.batch || !publication ||
-            publication->simulationEpoch != domain.owner.simulation.simulationEpoch)
-            throw std::logic_error("Contact query has no current completed publication");
+        if (!publication || !publication->isFixedStep || publication->worldId != domain.owner.id ||
+            publication->simulationEpoch != domain.stepEpoch || publication->fixedStepIndex != domain.stepIndex)
+            throw std::logic_error("Physics query has no matching completed Fixed publication");
         if (publicationRead)
             observe(publication);
         else {
             FrameWorkOwner::Scope preparation(*m_gpuWork);
-            RunPreparedWork(domain, consumer ? consumer(publication) : JoltGpuControlWork{});
+            RunPreparedWork(domain, consumer(publication));
         }
         return;
     }
     try {
-        // This also completes an earlier managed render-control before a new
-        // query consumer or later author prefix can acquire the same tick.
-        const_cast<PhysicsWorld *>(this)->CompleteDomainStep(domain);
         {
             FrameWorkOwner::Scope preparation(*m_gpuWork);
             FlushAuthoring(domain);
@@ -1427,9 +1469,6 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
             std::max(uint64_t{InitialBodyCapacity}, uint64_t{2} * m_gpuScene->GetCapacity(domain.owner));
         if (capacity > UINT32_MAX)
             throw std::length_error("GPU physics world exceeds body indexing");
-        // CancelPendingStep is noexcept and must not allocate while rebuilding
-        // the complete planned set, including a growth not yet accepted.
-        domain.recreateActors.reserve(static_cast<size_t>(capacity));
         m_gpuScene->ReserveCapacity(domain.owner, static_cast<uint32_t>(capacity));
     }
     if (!m_gpuScene->CanReserve(domain.owner)) {
@@ -1442,13 +1481,15 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
     const auto allocation =
         m_gpuScene->Reserve(domain.owner, store.AllocateBodyIdentity(), handle,
                             {PhysicsTargetReference(actor.owner->GetTransform()), actor.owner->GetID()}, true);
-    actor.bodyId = allocation.bodyId;
     try {
-        m_bodyActors.emplace(allocation.bodyId, handle);
+        RegisterBodyIdentity(domain, allocation.bodyId, handle, Backend::Gpu);
+        actor.bodyId = allocation.bodyId;
         m_gpuScene->StageActor(allocation.bodyId, std::move(*prepared));
     } catch (...) {
-        m_bodyActors.erase(allocation.bodyId);
-        actor.bodyId = UINT32_MAX;
+        if (actor.bodyId == allocation.bodyId) {
+            UnregisterBodyIdentity(domain, allocation.bodyId);
+            actor.bodyId = UINT32_MAX;
+        }
         m_gpuScene->StageRetire(allocation.bodyId);
         throw;
     }
@@ -1457,16 +1498,23 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
 void PhysicsWorld::DestroyBody(uint32_t id)
 {
     RequireOwnerThread();
-    if (!PhysicsECSStore::Instance().IsValid(FindBodyActor(id)))
+    const auto *registration = FindBodyRegistration(id);
+    if (!registration)
         return;
-    auto &domain = DomainForBody(id);
-    // Closed partitions retire their numerical records as a batch. Only an
-    // open body can accept another per-body retirement command.
-    if (m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
-        m_gpuScene->StageRetire(id);
-    m_bodyActors.erase(id);
-    if (m_gpuRenderProgram)
-        domain.rendering.bindings.RetireBody(id);
+    auto &domain = DomainForActor(PhysicsECSStore::Instance().GetActor(registration->actor));
+    switch (registration->backend) {
+    case Backend::Gpu:
+        // Closed partitions retire their numerical records as a batch.
+        if (m_gpuScene && m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
+            m_gpuScene->StageRetire(id);
+        if (m_gpuRenderProgram)
+            domain.rendering.bindings.RetireBody(id);
+        break;
+    case Backend::Cpu:
+    case Backend::StaticBoundary:
+        throw std::logic_error("Physics backend body retirement is unavailable");
+    }
+    UnregisterBodyIdentity(domain, id);
     domain.requestedMotion.erase(id);
 }
 bool PhysicsWorld::CanQueueRigidbodyCommand(uint32_t id, const Rigidbody &body) const
@@ -2177,8 +2225,9 @@ bool PhysicsWorld::ServicePresentationPoseReads(const std::vector<Transform *> &
     RequireHealthyStep(domain);
     if (!m_initialized)
         return true;
-    if (!m_gpuScene || domain.gpuCancelled || domain.retiring || !m_gpuWork->IsActive() || !m_gpuWork->IsAccepting() ||
-        m_gpuWork->ServiceRemaining() <= 0 || !m_gpuWork->ResourceRemaining(FrameWorkResource::Cpu))
+    if (!domain.gpuRegistered || domain.gpuCancelled || domain.retiring || !m_gpuWork->IsActive() ||
+        !m_gpuWork->IsAccepting() || m_gpuWork->ServiceRemaining() <= 0 ||
+        !m_gpuWork->ResourceRemaining(FrameWorkResource::Cpu))
         return false;
     constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Position) |
                                                             static_cast<uint32_t>(PhysicsStateFields::Rotation));
@@ -2557,7 +2606,7 @@ std::shared_ptr<const PhysicsColliderPairs> PhysicsWorld::CaptureColliderPairs(P
 }
 void PhysicsWorld::QueueColliderPairs(PhysicsDomain &domain) const
 {
-    if (!m_gpuScene || !m_domains.count(&domain) || domain.gpuCancelled || domain.retiring)
+    if (!domain.gpuRegistered || domain.gpuCancelled || domain.retiring)
         return;
     const auto pairs = CaptureColliderPairs(domain);
     if (domain.queuedColliderPairs == pairs)
@@ -3309,14 +3358,37 @@ PhysicsDomain &PhysicsWorld::DomainForActor(const PhysicsActorData &actor) const
         throw std::logic_error("Physics actor has no published RuntimeWorld owner");
     return *actor.runtimeWorld->physics;
 }
-PhysicsActorHandle PhysicsWorld::FindBodyActor(uint32_t bodyId) const noexcept
+void PhysicsWorld::RegisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId, PhysicsActorHandle actor,
+                                        Backend backend)
+{
+    // Stop retains the handles for recreation and cannot allocate. Reserve
+    // for all registered bodies, including any earlier withdrawals still queued.
+    const size_t required = domain.recreateActors.size() + domain.registeredBodyCount + 1;
+    if (required > domain.recreateActors.capacity())
+        domain.recreateActors.reserve(std::max(required, 2 * domain.recreateActors.capacity()));
+    if (!m_bodyActors.emplace(bodyId, BodyRegistration{actor, backend}).second)
+        throw std::logic_error("Duplicate physics body identity");
+    ++domain.registeredBodyCount;
+}
+void PhysicsWorld::UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId) noexcept
+{
+    domain.registeredBodyCount -= m_bodyActors.erase(bodyId);
+}
+const PhysicsWorld::BodyRegistration *PhysicsWorld::FindBodyRegistration(uint32_t bodyId) const noexcept
 {
     const auto entry = m_bodyActors.find(bodyId);
     if (entry == m_bodyActors.end())
-        return {};
+        return nullptr;
     const auto &store = PhysicsECSStore::Instance();
-    const auto handle = entry->second;
-    return store.IsValid(handle) && store.GetActor(handle).bodyId == bodyId ? handle : PhysicsActorHandle{};
+    const auto handle = entry->second.actor;
+    if (!store.IsValid(handle) || store.GetActor(handle).bodyId != bodyId)
+        return nullptr;
+    return &entry->second;
+}
+PhysicsActorHandle PhysicsWorld::FindBodyActor(uint32_t bodyId) const noexcept
+{
+    const auto *registration = FindBodyRegistration(bodyId);
+    return registration ? registration->actor : PhysicsActorHandle{};
 }
 PhysicsActorData &PhysicsWorld::ActorForBody(uint32_t bodyId) const
 {
@@ -3369,14 +3441,14 @@ void PhysicsWorld::BeginRetireDomain(RuntimeWorld &world) noexcept
     domain.participants.clear();
     domain.participantPreparing.reset();
     RetireRagdolls(domain);
-    if (m_gpuScene)
+    if (domain.gpuRegistered)
         m_gpuScene->RetirePartition(world);
     domain.rendering.bindings.Clear();
     // Accepted continuations may still own pending jobs; WorldManager retains world.
 }
 bool PhysicsWorld::CanRetireDomain(const RuntimeWorld &world) const noexcept
 {
-    return !m_gpuScene || m_gpuScene->CanRetire(world);
+    return !world.physics->gpuRegistered || m_gpuScene->CanRetire(world);
 }
 void PhysicsWorld::RetireDomain(PhysicsDomain &domain) noexcept
 {

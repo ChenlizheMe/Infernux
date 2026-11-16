@@ -277,9 +277,9 @@ class Rigidbody : public Component
     // Internal — used by Collider and SceneManager
     // ====================================================================
 
-    /// @brief Sync physics → Transform after Jolt step.
-    ///        Called by SceneManager's post-step pass.
-    void SyncPhysicsToTransform();
+    /// Publish a completed body-origin sample in parent-first order. The
+    /// physics owner supplies the state once; this does not query a backend.
+    void SyncPhysicsToTransform(const PhysicsBodyMotionState &state, bool sleeping);
     /// Cache only a pose explicitly requested by a CPU consumer, after that
     /// consumer applied its author-channel protection to the Transform.
     /// The latest requested sample is retained; no fixed-step history is read.

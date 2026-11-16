@@ -101,6 +101,13 @@ std::unordered_map<CookingCacheKey, InflightCooking, CookingCacheKeyHash> g_infl
 std::mutex g_cookingCompletionMutex;
 std::deque<std::shared_ptr<const MeshCookingResult>> g_cookingCompletions;
 
+JPH::RefConst<JPH::Shape> OffsetMeshCenter(const JPH::RefConst<JPH::Shape> &shape, const glm::vec3 &center)
+{
+    if (center == glm::vec3(0.0f))
+        return shape;
+    return new JPH::RotatedTranslatedShape(JPH::Vec3(center.x, center.y, center.z), JPH::Quat::sIdentity(), shape);
+}
+
 CookingCacheKey HashGeometry(const std::vector<glm::vec3> &vertices, const std::vector<uint32_t> &indices, bool convex,
                              const glm::vec3 &worldScale)
 {
@@ -628,14 +635,16 @@ JPH::RefConst<JPH::Shape> MeshCollider::CreateJoltShape() const
         InvalidatePendingCooking();
     if (!m_cookingResult)
         m_cookingResult = std::make_shared<MeshCookingResult>(MeshCookingResult{cookingKey, cookedGeometry, {}});
-    const auto &shape = cookedGeometry->shape;
+    return OffsetMeshCenter(cookedGeometry->shape, GetCenterInRigidSpace());
+}
 
-    glm::vec3 center = GetCenterInRigidSpace();
-    if (center != glm::vec3(0.0f)) {
-        return new JPH::RotatedTranslatedShape(JPH::Vec3(center.x, center.y, center.z), JPH::Quat::sIdentity(), shape);
-    }
-
-    return shape;
+JPH::RefConst<JPH::Shape> MeshCollider::GetPublishedConvexQueryShape() const
+{
+    if (m_publishedGeometry && m_publishedGeometry->shape->GetType() == JPH::EShapeType::Convex)
+        return OffsetMeshCenter(m_publishedGeometry->shape, Data().publishedRigidCenter);
+    if (m_publishedGeometry || !IsConvex())
+        throw std::invalid_argument("Collider penetration requires MeshCollider.convex = true");
+    throw std::runtime_error("MeshCollider has no published convex geometry for a penetration query");
 }
 
 std::shared_ptr<const CookedGeometry> MeshCollider::CaptureCookedGeometry() const

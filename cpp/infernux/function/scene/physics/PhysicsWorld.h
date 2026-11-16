@@ -10,6 +10,7 @@
 
 #include "JoltGpuQueries.h"
 #include "JoltGpuScene.h"
+#include "PhysicsBodyState.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsParticipant.h"
@@ -52,7 +53,7 @@ class PreparedComputeBatch;
 } // namespace rhi
 } // namespace infernux
 
-// Immutable author geometry is retained; no native CPU Body/System is owned.
+// Author geometry is shared; native bodies remain private to their backend.
 namespace JPH
 {
 class Shape;
@@ -94,58 +95,6 @@ class PhysicsPresentationPoseReadScope final
 
   private:
     PhysicsDomain *m_domain = nullptr;
-};
-
-struct PhysicsBodyPoseUpdate
-{
-    uint32_t bodyId = 0xFFFFFFFF;
-    glm::vec3 position{0.0f};
-    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-};
-
-/// Requested solver fields. Body identity is read under the same Jolt lock;
-/// shape revision is actor metadata supplied by the owner-thread Rigidbody.
-enum class PhysicsStateFields : uint32_t
-{
-    None = 0,
-    Position = 1u << 0,
-    CenterOfMass = 1u << 1,
-    LinearVelocity = 1u << 2,
-    AngularVelocity = 1u << 3,
-    InverseMass = 1u << 4,
-    Rotation = 1u << 5,
-    InverseInertia = 1u << 6,
-    BodyId = 1u << 7,
-    ShapeRevision = 1u << 8,
-    All = (1u << 7) - 1,
-};
-
-constexpr bool HasPhysicsStateField(PhysicsStateFields fields, PhysicsStateFields field)
-{
-    return (static_cast<uint32_t>(fields) & static_cast<uint32_t>(field)) != 0;
-}
-
-/// Solver state read under one body lock. Translation locks are world-axis masks.
-struct PhysicsBodyMotionState
-{
-    uint32_t bodyId = 0xFFFFFFFF;
-    uint64_t shapeRevision = 0;
-    glm::vec3 position{0.0f};
-    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
-    glm::vec3 centerOfMass{0.0f};
-    glm::vec3 linearVelocity{0.0f};
-    glm::vec3 angularVelocity{0.0f};
-    glm::vec3 inverseMass{0.0f};
-    glm::mat3 inverseInertia{0.0f};
-    glm::mat3 inertia{0.0f};
-};
-
-struct PhysicsPenetrationResult
-{
-    glm::vec3 direction{0.0f}; ///< Unit direction that separates A from B.
-    float distance = 0.0f;
-    glm::vec3 pointA{0.0f};
-    glm::vec3 pointB{0.0f};
 };
 
 /// One Box leaf from the currently installed Jolt body shape, in solver space.
@@ -664,8 +613,8 @@ class PhysicsWorld
     bool RaycastCollider(const Collider &collider, const glm::vec3 &origin, const glm::vec3 &direction,
                          float maxDistance, RaycastHit &outHit) const;
 
-    /// Return the closest world-space point on one primitive Collider. A point
-    /// already inside the collider is returned unchanged.
+    /// Return the closest world-space point on an authored Collider. Convex
+    /// colliders preserve interior points. Non-convex meshes use triangle surfaces.
     [[nodiscard]] glm::vec3 ClosestPointOnCollider(const Collider &collider, const glm::vec3 &point) const;
 
     /// Cast a ray and return all hits.
@@ -826,7 +775,23 @@ class PhysicsWorld
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
     struct CompiledGpuPrograms;
+    struct CpuServices;
+    enum class Backend : uint8_t
+    {
+        Cpu,
+        Gpu,
+        StaticBoundary
+    };
+    struct BodyRegistration
+    {
+        PhysicsActorHandle actor;
+        const Backend backend;
+    };
+
     PhysicsDomain &CurrentDomain() const;
+    void RegisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId, PhysicsActorHandle actor, Backend backend);
+    void UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId) noexcept;
+    [[nodiscard]] const BodyRegistration *FindBodyRegistration(uint32_t bodyId) const noexcept;
     [[nodiscard]] PhysicsActorHandle FindBodyActor(uint32_t bodyId) const noexcept;
     PhysicsActorData &ActorForBody(uint32_t bodyId) const;
     PhysicsDomain &DomainForBody(uint32_t bodyId) const;
@@ -835,6 +800,8 @@ class PhysicsWorld
     bool HasDomainControl(PhysicsDomain &domain) const;
     void CompleteDomainStep(PhysicsDomain &domain);
     void RunPreparedWork(PhysicsDomain &domain, JoltGpuControlWork work) const;
+    void RegisterDomain(PhysicsDomain &domain);
+    void EnsureCpuReady(PhysicsDomain &domain);
     bool EnsureGpuReady(PhysicsDomain &domain);
     void RefreshGpuSurfaces(PhysicsDomain &domain);
     void RequireHealthyStep(PhysicsDomain &domain) const;
@@ -846,6 +813,7 @@ class PhysicsWorld
     bool AdvanceGpuControl(PhysicsDomain &domain, bool synchronous) const;
     void RetryCapacityBodyCreations(PhysicsDomain &domain);
     void RequireGpu(PhysicsDomain &domain) const;
+    [[nodiscard]] bool IsFixedPublicationHeld(const PhysicsDomain &domain) const noexcept;
     void FlushAuthoring(PhysicsDomain &domain) const;
     void DrainGpuSource(PhysicsDomain &domain) const;
     void ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const;
@@ -893,6 +861,7 @@ class PhysicsWorld
 
     bool m_initialized = false;
     std::thread::id m_ownerThreadId{};
+    std::unique_ptr<CpuServices> m_cpuServices;
     std::unique_ptr<rhi::ComputeHost> m_gpuHost;
     FrameWorkOwner *m_gpuWork = nullptr;
     std::unique_ptr<CompiledGpuPrograms> m_gpuPrograms;
@@ -903,7 +872,7 @@ class PhysicsWorld
     std::unique_ptr<JoltGpuContactReports> m_gpuContactReports;
     // Live component ownership is independent of a backend's numerical slots
     // and immutable publications, which may outlive a retired component.
-    std::unordered_map<uint32_t, PhysicsActorHandle> m_bodyActors;
+    std::unordered_map<uint32_t, BodyRegistration> m_bodyActors;
     std::unordered_set<PhysicsDomain *> m_domains;
 };
 

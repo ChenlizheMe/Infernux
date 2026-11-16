@@ -1254,8 +1254,11 @@ bool SceneManager::ServicePausedAuthorPresentation()
     auto &world = CurrentWorld();
     if (!world.pausedAuthor.Pending())
         return true;
-    if (!CanContinueRuntimeFrame() || !PhysicsWorld::Instance().ServicePausedAuthorPresentation())
+    auto &physics = PhysicsWorld::Instance();
+    if (!CanContinueRuntimeFrame() || !physics.ServicePausedAuthorPresentation())
         return false;
+    if (physics.IsFixedPublicationHeld(*world.physics))
+        return true; // Resume the held Fixed before consuming this author request.
     const auto serial = world.pausedAuthor.requested;
     const auto epoch = world.simulation.simulationEpoch;
     const auto publish = m_pausedAuthorPublication;

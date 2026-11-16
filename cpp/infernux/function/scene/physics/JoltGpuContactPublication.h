@@ -17,6 +17,14 @@ class JoltGpuContactPublication final
     [[nodiscard]] JoltGpuScene::ContactObserver Prepare(JoltGpuContactReports &, const JoltGpuScene &, RuntimeWorld &,
                                                         const std::shared_ptr<const Publication> &, uint32_t substeps,
                                                         PhysicsContactPublication::Policy);
+    [[nodiscard]] JoltGpuScene::ContactObserver Prepare(JoltGpuContactReports &,
+                                                        const std::shared_ptr<const Publication> &, uint32_t substeps,
+                                                        PhysicsContactPublication::Policy);
+    void ValidateCompleted(const std::shared_ptr<const Publication> &, uint32_t substeps) const;
+    /// Decode into this substep's existing ranges after ValidateCompleted.
+    void AppendFrame(uint32_t substep, PhysicsContactPublication::Frame &) const;
+    /// Retain the query lease for callbacks only after the common batch publishes successfully.
+    void AcceptCompleted(std::shared_ptr<const Publication>) noexcept;
     void Publish(PhysicsContactPublication &, const std::shared_ptr<const Publication> &);
     void CancelPending() noexcept;
     void Close() noexcept;

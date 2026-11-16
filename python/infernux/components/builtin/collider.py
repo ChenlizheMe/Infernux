@@ -148,5 +148,9 @@ class Collider(BuiltinComponent):
         return self._require_cpp_component().raycast(origin, direction, max_distance)
 
     def closest_point(self, point):
-        """Return the closest world-space point on this collider."""
+        """Return the closest world-space point on this collider.
+
+        Convex colliders preserve interior points. Non-convex meshes use
+        triangle surfaces.
+        """
         return self._require_cpp_component().closest_point(point)

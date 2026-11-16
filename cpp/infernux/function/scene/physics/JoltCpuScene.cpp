@@ -5,6 +5,7 @@
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Body/MotionProperties.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,7 @@
 #include <set>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -95,8 +97,84 @@ JPH::BodyID JoltCpuScene::CreateBody(uint32_t bodyId, const JPH::BodyCreationSet
     return entry->second.native;
 }
 
+void JoltCpuScene::AddBodiesBatch(const std::vector<uint32_t> &bodyIds)
+{
+    if (bodyIds.empty())
+        return;
+    auto &bodies = m_system.GetBodyInterface();
+    std::vector<JPH::BodyID> nativeIds;
+    nativeIds.reserve(bodyIds.size());
+    std::unordered_set<uint32_t> seen;
+    seen.reserve(bodyIds.size());
+    for (const auto id : bodyIds) {
+        const auto native = NativeBody(id);
+        if (seen.insert(id).second && !bodies.IsAdded(native))
+            nativeIds.push_back(native);
+    }
+    if (nativeIds.empty())
+        return;
+
+    const auto count = static_cast<int>(nativeIds.size());
+    const auto addState = bodies.AddBodiesPrepare(nativeIds.data(), count);
+    // A standard Add explicitly wakes even a body that was sleeping during suspension.
+    bodies.AddBodiesFinalize(nativeIds.data(), count, addState, JPH::EActivation::Activate);
+    for (const auto native : nativeIds) {
+        uint32_t id;
+        JPH::AABox bounds;
+        {
+            JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
+            const auto &body = lock.GetBody();
+            id = static_cast<uint32_t>(body.GetUserData());
+            bounds = body.GetWorldSpaceBounds();
+        }
+        m_constraints.OnBodyResidenceChanged(id);
+        WakeBodiesInBounds(bounds, native);
+    }
+}
+
+void JoltCpuScene::RemoveBodyFromBroadphase(uint32_t bodyId, bool preserveVelocity)
+{
+    const auto found = m_bodies.find(bodyId);
+    if (found == m_bodies.end())
+        return;
+    auto &record = found->second;
+    const auto native = record.native;
+    std::optional<JPH::AABox> bounds;
+    {
+        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), native);
+        auto &body = lock.GetBody();
+        if (body.IsInBroadPhase())
+            bounds = body.GetWorldSpaceBounds();
+        else if (preserveVelocity)
+            return;
+
+        if (!body.IsStatic()) {
+            record.awakeWhenDetached = !preserveVelocity || body.IsActive();
+            if (!preserveVelocity) {
+                body.SetLinearVelocityClamped(JPH::Vec3::sZero());
+                body.SetAngularVelocityClamped(JPH::Vec3::sZero());
+                body.ResetSleepTimer();
+            }
+        }
+    }
+    if (bounds) {
+        // Both suspension modes retain native continuous force and torque.
+        m_system.GetBodyInterface().RemoveBody(native, preserveVelocity);
+        m_constraints.OnBodyResidenceChanged(bodyId);
+        WakeBodiesInBounds(*bounds);
+    }
+}
+
+bool JoltCpuScene::IsBodyInBroadphase(uint32_t bodyId) const
+{
+    const auto found = m_bodies.find(bodyId);
+    return found != m_bodies.end() && m_system.GetBodyInterface().IsAdded(found->second.native);
+}
+
 void JoltCpuScene::DestroyBody(uint32_t bodyId)
 {
+    if (m_constraints.HasBodyConstraints(bodyId))
+        throw std::logic_error("Retire the CPU body's constraints before destroying it");
     const auto native = NativeBody(bodyId);
     auto &bodies = m_system.GetBodyInterface();
     const bool added = bodies.IsAdded(native);
@@ -113,15 +191,89 @@ void JoltCpuScene::DestroyBody(uint32_t bodyId)
         WakeBodiesInBounds(oldBounds);
 }
 
-void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds)
+void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude)
 {
     bounds.ExpandBy(JPH::Vec3::sReplicate(m_system.GetPhysicsSettings().mSpeculativeContactDistance));
-    m_system.GetBodyInterface().ActivateBodiesInAABox(bounds, JPH::BroadPhaseLayerFilter{}, JPH::ObjectLayerFilter{});
+    JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> collector;
+    m_system.GetBroadPhaseQuery().CollideAABox(bounds, collector);
+    auto &hits = collector.mHits;
+    hits.erase(std::remove_if(hits.begin(), hits.end(),
+                              [&](JPH::BodyID native) {
+                                  JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
+                                  if (native == exclude || !lock.SucceededAndIsInBroadPhase())
+                                      return true;
+                                  const auto id = static_cast<uint32_t>(lock.GetBody().GetUserData());
+                                  return !m_bodies.at(id).authoredDynamic;
+                              }),
+               hits.end());
+    m_system.GetBodyInterface().ActivateBodies(hits.data(), static_cast<int>(hits.size()));
 }
 
 JPH::BodyID JoltCpuScene::NativeBody(uint32_t bodyId) const
 {
     return m_bodies.at(bodyId).native;
+}
+
+bool JoltCpuScene::AcceptedAwake(const BodyRecord &record, const JPH::Body &body)
+{
+    return !body.IsStatic() && (body.IsInBroadPhase() ? body.IsActive() : record.awakeWhenDetached);
+}
+
+void JoltCpuScene::WakeBody(BodyRecord &record, JPH::Body &body)
+{
+    if (body.IsInBroadPhase()) {
+        m_system.GetBodyInterfaceNoLock().ActivateBody(record.native);
+    } else {
+        record.awakeWhenDetached = true;
+        body.ResetSleepTimer();
+    }
+}
+
+PhysicsBodyMotionState JoltCpuScene::ReadMotionState(uint32_t bodyId, PhysicsStateFields fields, bool *sleeping) const
+{
+    const auto &record = m_bodies.at(bodyId);
+    JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), record.native);
+    const auto &body = lock.GetBody();
+    const auto vector = [](const auto &value) {
+        return glm::vec3(float(value.GetX()), float(value.GetY()), float(value.GetZ()));
+    };
+    const auto matrix = [&](const JPH::Mat44 &value) {
+        return glm::mat3(vector(value.GetColumn3(0)), vector(value.GetColumn3(1)), vector(value.GetColumn3(2)));
+    };
+    PhysicsBodyMotionState state;
+    state.bodyId = bodyId;
+    state.shapeRevision = record.shapeRevision;
+    if (sleeping)
+        *sleeping = !AcceptedAwake(record, body);
+    if (HasPhysicsStateField(fields, PhysicsStateFields::Position))
+        state.position = vector(body.GetPosition());
+    if (HasPhysicsStateField(fields, PhysicsStateFields::Rotation)) {
+        const auto rotation = body.GetRotation();
+        state.rotation = {rotation.GetW(), rotation.GetX(), rotation.GetY(), rotation.GetZ()};
+    }
+    if (HasPhysicsStateField(fields, PhysicsStateFields::CenterOfMass))
+        state.centerOfMass = vector(body.GetCenterOfMassPosition());
+    if (HasPhysicsStateField(fields, PhysicsStateFields::LinearVelocity))
+        state.linearVelocity = vector(body.GetLinearVelocity());
+    if (HasPhysicsStateField(fields, PhysicsStateFields::AngularVelocity))
+        state.angularVelocity = vector(body.GetAngularVelocity());
+    if (body.IsDynamic()) {
+        const auto &motion = *body.GetMotionProperties();
+        if (HasPhysicsStateField(fields, PhysicsStateFields::InverseMass))
+            state.inverseMass = vector(motion.LockTranslation(JPH::Vec3::sReplicate(motion.GetInverseMass())));
+        if (HasPhysicsStateField(fields, PhysicsStateFields::InverseInertia))
+            state.inverseInertia =
+                matrix(motion.GetInverseInertiaForRotation(JPH::Mat44::sRotation(body.GetRotation())));
+    }
+    // A fully locked authored dynamic body uses native prescribed motion, but
+    // still has physical mass. Do not invert its singular response tensor.
+    if (record.authoredDynamic && HasPhysicsStateField(fields, PhysicsStateFields::InverseInertia)) {
+        const auto &mass = record.mass.value();
+        const auto axes = JPH::Mat44::sRotation(body.GetRotation() * mass.axes);
+        state.inertia = matrix(
+            axes.Multiply3x3(JPH::Mat44::sScale(JPH::Vec3::sOne() / mass.inverse)).Multiply3x3RightTransposed(axes));
+    }
+    return state;
 }
 
 void JoltCpuScene::ApplyBodyForce(uint32_t bodyId, ForceKind kind, ForceMode mode, JPH::Vec3Arg value,
@@ -131,48 +283,41 @@ void JoltCpuScene::ApplyBodyForce(uint32_t bodyId, ForceKind kind, ForceMode mod
     const bool massIndependent = mode == ForceMode::Acceleration || mode == ForceMode::VelocityChange;
     if (!continuous && mode != ForceMode::Impulse && mode != ForceMode::VelocityChange)
         throw std::invalid_argument("Invalid CPU physics force mode");
-    const auto &record = m_bodies.at(bodyId);
+    auto &record = m_bodies.at(bodyId);
     if (!record.authoredDynamic || value == JPH::Vec3::sZero())
         return;
 
-    bool wake = false;
-    {
-        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
-        auto &body = lock.GetBody();
-        // FreezeAll uses prescribed native motion. Pending continuous loads
-        // still belong to the authored dynamic body if it unlocks this Fixed.
-        if (!body.IsDynamic() && !continuous)
-            return;
-
-        auto force = JPH::Vec3::sZero(), torque = JPH::Vec3::sZero();
-        if (kind == ForceKind::Torque) {
-            torque = value;
-            if (massIndependent) {
-                const auto &mass = record.mass.value();
-                const auto axes = body.GetRotation() * mass.axes;
-                torque = axes * ((axes.Conjugated() * value) / mass.inverse);
-            }
-        } else {
-            force = massIndependent ? value * record.mass.value().mass : value;
-            if (kind == ForceKind::ForceAtPosition)
-                torque = JPH::Vec3(point - body.GetCenterOfMassPosition()).Cross(force);
+    JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+    auto &body = lock.GetBody();
+    if (continuous || !AcceptedAwake(record, body))
+        WakeBody(record, body);
+    // FreezeAll is prescribed motion but holds continuous loads for this Fixed.
+    if (!body.IsDynamic() && !continuous)
+        return;
+    auto force = JPH::Vec3::sZero(), torque = JPH::Vec3::sZero();
+    if (kind == ForceKind::Torque) {
+        torque = value;
+        if (massIndependent) {
+            const auto &mass = record.mass.value();
+            const auto axes = body.GetRotation() * mass.axes;
+            torque = axes * ((axes.Conjugated() * value) / mass.inverse);
         }
-
-        if (continuous) {
-            auto &motion = *body.GetMotionProperties();
-            motion.SetAccumulatedForceAndTorque(motion.GetAccumulatedForce() + force,
-                                                motion.GetAccumulatedTorque() + torque);
-        } else {
-            if (kind != ForceKind::Torque)
-                body.AddImpulse(force);
-            if (kind != ForceKind::Force)
-                body.AddAngularImpulse(torque);
-        }
-        // Native activation also resets an already-active body's sleep timer.
-        wake = body.IsInBroadPhase() && (continuous || !body.IsActive());
+    } else {
+        force = massIndependent ? value * record.mass.value().mass : value;
+        if (kind == ForceKind::ForceAtPosition)
+            torque = JPH::Vec3(point - body.GetCenterOfMassPosition()).Cross(force);
     }
-    if (wake)
-        m_system.GetBodyInterface().ActivateBody(record.native);
+
+    if (continuous) {
+        auto &motion = *body.GetMotionProperties();
+        motion.SetAccumulatedForceAndTorque(motion.GetAccumulatedForce() + force,
+                                            motion.GetAccumulatedTorque() + torque);
+    } else {
+        if (kind != ForceKind::Torque)
+            body.AddImpulse(force);
+        if (kind != ForceKind::Force)
+            body.AddAngularImpulse(torque);
+    }
 }
 
 void JoltCpuScene::SetBodyOriginPose(uint32_t bodyId, const std::optional<JPH::RVec3> &position,
@@ -204,46 +349,48 @@ void JoltCpuScene::SetBodyOriginPose(uint32_t bodyId, const std::optional<JPH::R
             JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
             newBounds = lock.GetBody().GetWorldSpaceBounds();
         }
-        WakeBodiesInBounds(oldBounds);
+        WakeBodiesInBounds(oldBounds, native);
         if (!(oldBounds == newBounds))
-            WakeBodiesInBounds(newBounds);
+            WakeBodiesInBounds(newBounds, native);
+    } else {
+        SetBodyAwake(bodyId, true);
     }
 }
 
 void JoltCpuScene::SetBodyVelocity(uint32_t bodyId, const std::optional<JPH::Vec3> &linear,
                                    const std::optional<JPH::Vec3> &angular)
 {
-    const auto native = NativeBody(bodyId);
-    bool wake = false;
-    {
-        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), native);
-        auto &body = lock.GetBody();
-        if (body.IsStatic())
-            return;
-        if (linear)
-            body.SetLinearVelocityClamped(*linear);
-        if (angular)
-            body.SetAngularVelocityClamped(*angular);
-        const auto zero = JPH::Vec3::sZero();
-        wake =
-            !body.IsActive() && body.IsInBroadPhase() && ((linear && *linear != zero) || (angular && *angular != zero));
-    }
-    if (wake)
-        m_system.GetBodyInterface().ActivateBody(native);
+    auto &record = m_bodies.at(bodyId);
+    JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+    auto &body = lock.GetBody();
+    if (body.IsStatic())
+        return;
+    if (linear)
+        body.SetLinearVelocityClamped(*linear);
+    if (angular)
+        body.SetAngularVelocityClamped(*angular);
+    const auto zero = JPH::Vec3::sZero();
+    if (!AcceptedAwake(record, body) && ((linear && *linear != zero) || (angular && *angular != zero)))
+        WakeBody(record, body);
 }
 
 void JoltCpuScene::SetBodyAwake(uint32_t bodyId, bool awake)
 {
-    const auto native = NativeBody(bodyId);
-    auto &bodies = m_system.GetBodyInterface();
-    if (!awake)
-        SetBodyVelocity(bodyId, JPH::Vec3::sZero(), JPH::Vec3::sZero());
-    if (!bodies.IsAdded(native))
+    auto &record = m_bodies.at(bodyId);
+    JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+    auto &body = lock.GetBody();
+    if (body.IsStatic())
         return;
-    if (awake)
-        bodies.ActivateBody(native);
-    else
-        bodies.DeactivateBody(native);
+    if (awake) {
+        WakeBody(record, body);
+    } else {
+        body.SetLinearVelocityClamped(JPH::Vec3::sZero());
+        body.SetAngularVelocityClamped(JPH::Vec3::sZero());
+        if (body.IsInBroadPhase())
+            m_system.GetBodyInterfaceNoLock().DeactivateBody(record.native);
+        else
+            record.awakeWhenDetached = false;
+    }
 }
 
 void JoltCpuScene::ResetBodyMotion(uint32_t bodyId)
@@ -376,8 +523,11 @@ void JoltCpuScene::SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> p
 JPH::ValidateResult JoltCpuScene::OnContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg,
                                                     const JPH::CollideShapeResult &hit)
 {
-    const auto &surfaceA = GetSurface(static_cast<uint32_t>(a.GetUserData()), hit.mSubShapeID1);
-    const auto &surfaceB = GetSurface(static_cast<uint32_t>(b.GetUserData()), hit.mSubShapeID2);
+    const auto idA = static_cast<uint32_t>(a.GetUserData()), idB = static_cast<uint32_t>(b.GetUserData());
+    if (m_constraints.SuppressesCollision(idA, idB))
+        return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
+    const auto &surfaceA = GetSurface(idA, hit.mSubShapeID1);
+    const auto &surfaceB = GetSurface(idB, hit.mSubShapeID2);
     // Acceptance is per leaf: accepting the whole body pair bypasses filters
     // on the other Colliders of a compound.
     return SurfacesCollide(surfaceA, surfaceB) ? JPH::ValidateResult::AcceptContact
@@ -405,6 +555,8 @@ bool JoltCpuScene::ShouldCollide(const JPH::Body &a, const JPH::Shape *shapeA, c
     if (shapeA->GetSubType() == JPH::EShapeSubType::Empty || shapeB->GetSubType() == JPH::EShapeSubType::Empty)
         return false;
     const auto idA = static_cast<uint32_t>(a.GetUserData()), idB = static_cast<uint32_t>(b.GetUserData());
+    if (m_constraints.SuppressesCollision(idA, idB))
+        return false;
     const auto container = [](const JPH::Shape &shape) {
         return shape.GetType() == JPH::EShapeType::Compound || shape.GetType() == JPH::EShapeType::Decorated;
     };

@@ -314,11 +314,31 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
             throw std::logic_error("Incomplete CPU contact Fixed");
     }
 
-    void Publish(Reports &publication, ContactStreamIdentity identity)
+    const Reports::Policy &Policy() const noexcept
     {
-        publication.Publish(identity, m_policy, static_cast<uint32_t>(m_frames.size()),
-                            [&](uint32_t substep) { return std::move(m_frames[substep]); });
+        return m_policy;
+    }
+
+    uint32_t FrameCount() const noexcept
+    {
+        return static_cast<uint32_t>(m_frames.size());
+    }
+
+    Reports::Frame TakeFrame(uint32_t substep)
+    {
+        return std::move(m_frames.at(substep));
+    }
+
+    void AcceptHistory() noexcept
+    {
         m_history = std::move(m_previous);
+        m_frames.clear();
+    }
+
+    void DiscardFrames() noexcept
+    {
+        m_previous.clear();
+        m_frames.clear();
     }
 
   private:
@@ -623,18 +643,51 @@ JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execu
     return result;
 }
 
+void JoltCpuContactPublication::ValidateCompleted(ContactStreamIdentity identity, uint32_t substeps) const
+{
+    if (!m_ready || m_ready->worldId != identity.worldId || m_ready->simulationEpoch != identity.simulationEpoch ||
+        m_ready->fixedStepIndex != identity.fixedStepIndex || (m_observing && m_capture->FrameCount() != substeps))
+        throw std::logic_error("CPU contact completion differs from its Fixed identity or substep count");
+}
+
+Reports::Frame JoltCpuContactPublication::TakeFrame(uint32_t substep)
+{
+    return m_observing ? m_capture->TakeFrame(substep) : Reports::Frame{};
+}
+
+void JoltCpuContactPublication::AcceptCompleted() noexcept
+{
+    if (m_observing)
+        m_capture->AcceptHistory();
+    else
+        m_capture.reset();
+    m_published = std::exchange(m_ready, std::nullopt);
+}
+
 void JoltCpuContactPublication::Publish(Reports &publication)
 {
     if (!m_ready)
         throw std::logic_error("CPU contact publication requires a completed Fixed");
-    const auto identity = *std::exchange(m_ready, std::nullopt);
-    if (m_observing) {
-        m_capture->Publish(publication, identity);
-    } else {
-        publication.PublishEmpty(identity);
-        m_capture.reset();
+    const auto identity = *m_ready;
+    try {
+        if (m_observing) {
+            publication.Publish(identity, m_capture->Policy(), m_capture->FrameCount(),
+                                [&](uint32_t substep) { return TakeFrame(substep); });
+        } else {
+            publication.PublishEmpty(identity);
+        }
+    } catch (...) {
+        CancelPending();
+        throw;
     }
-    m_published = identity;
+    AcceptCompleted();
+}
+
+void JoltCpuContactPublication::CancelPending() noexcept
+{
+    m_ready.reset();
+    if (m_capture)
+        m_capture->DiscardFrames();
 }
 
 void JoltCpuContactPublication::Close() noexcept

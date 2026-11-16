@@ -1,5 +1,6 @@
 #pragma once
 
+#include "JoltCpuContactPublication.h"
 #include "JoltGpuContactPublication.h"
 #include "JoltGpuRenderBindings.h"
 #include "JoltGpuRenderPoses.h"
@@ -12,14 +13,22 @@
 namespace infernux
 {
 class RuntimeWorld;
+class JoltCpuScene;
+class JoltCpuControl;
 
-/// RuntimeWorld owns this logical cursor. All physical services remain shared.
+/// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
+/// Worker services and GPU storage/submission remain shared between worlds.
 /// RuntimeWorld retirement retains this object until shared-source callbacks settle.
 struct PhysicsDomain final
 {
     explicit PhysicsDomain(RuntimeWorld &world);
+    ~PhysicsDomain();
     RuntimeWorld &owner;
     glm::vec3 gravity;
+    std::unique_ptr<JoltCpuScene> cpuScene;
+    std::unique_ptr<JoltCpuControl> cpuControl;
+    JoltCpuContactPublication cpuContacts;
+    bool gpuRegistered = false;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::weak_ptr<PhysicsParticipant> participantPreparing;
     bool participantOutputPending = false;
@@ -28,6 +37,7 @@ struct PhysicsDomain final
     bool gpuCancelled = false;
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
     bool reconcilingRagdolls = false;
+    size_t registeredBodyCount = 0;
     std::vector<PhysicsActorHandle> recreateActors;
     uint64_t surfaceRevision = 0;
     bool stepPending = false, stepCompleted = false, solverStarted = false;

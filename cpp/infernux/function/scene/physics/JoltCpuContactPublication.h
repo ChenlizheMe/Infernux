@@ -21,6 +21,12 @@ class JoltCpuContactPublication final
 
     JPH::EPhysicsUpdateError Step(JoltCpuExecution &, JoltCpuScene &, float deltaTime, uint32_t substeps,
                                   ContactStreamIdentity, PhysicsContactPublication::Policy);
+    /// Observe the previous prepared Fixed. Call Validate before taking frames.
+    void ValidateCompleted(ContactStreamIdentity, uint32_t substeps) const;
+    [[nodiscard]] PhysicsContactPublication::Frame TakeFrame(uint32_t substep);
+    /// Accept history only after the common contact batch publishes successfully.
+    void AcceptCompleted() noexcept;
+    void CancelPending() noexcept;
     void Publish(PhysicsContactPublication &);
     void Close() noexcept;
 

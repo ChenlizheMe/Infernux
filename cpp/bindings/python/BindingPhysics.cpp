@@ -1121,7 +1121,9 @@ void RegisterPhysicsBindings(py::module_ &m)
                 RequireFinite(point, "point");
                 return PhysicsWorld::Instance().ClosestPointOnCollider(collider, point);
             },
-            "point"_a, "Return the closest world-space point on this collider; an interior point is unchanged")
+            "point"_a,
+            "Return the closest world-space point on this collider. Convex colliders preserve interior "
+            "points. Non-convex meshes use triangle surfaces.")
         .def("serialize", &Collider::Serialize)
         .def("deserialize", &Collider::Deserialize, "json_str"_a);
 

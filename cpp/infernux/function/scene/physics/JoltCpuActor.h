@@ -27,6 +27,7 @@ struct PreparedCpuActor
         bool sensor;
     };
     JPH::BodyCreationSettings settings;
+    JPH::Vec3 rootScale = JPH::Vec3::sOne();
     std::optional<PreparedBodyMass> mass;
     std::vector<Surface> surfaces;
     int collisionDetectionMode = 0;

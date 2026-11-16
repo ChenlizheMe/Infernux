@@ -77,6 +77,7 @@ class MeshCollider : public Collider
 
   private:
     friend class PhysicsWorld;
+    friend class JoltCpuQueries;
     friend struct PhysicsActorPublication;
 
     void CaptureMeshGeometry() const;
@@ -84,6 +85,7 @@ class MeshCollider : public Collider
     void CompleteCooking(std::shared_ptr<const MeshCookingResult> result, uint64_t revision);
     [[nodiscard]] std::shared_ptr<const CookedGeometry> CaptureCookedGeometry() const;
     void PublishCookedGeometry(std::shared_ptr<const CookedGeometry> geometry) noexcept;
+    [[nodiscard]] JPH::RefConst<JPH::Shape> GetPublishedConvexQueryShape() const;
     void RequestShapeUpdate();
     void InvalidatePendingCooking() const;
 

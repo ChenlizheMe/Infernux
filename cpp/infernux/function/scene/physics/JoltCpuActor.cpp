@@ -15,6 +15,7 @@
 #include "PhysicsShapeAuthoring.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace infernux
@@ -30,6 +31,50 @@ JPH::ObjectLayer BodyLayer(const PhysicsActorData &actor, const std::vector<Coll
         if (member->GetGameObject()->GetLayer() != layer)
             return moving ? PhysicsObjectLayers::MIXED_MOVING : PhysicsObjectLayers::MIXED_NON_MOVING;
     return PhysicsObjectLayers::Encode(layer, moving);
+}
+JPH::BodyCreationSettings CreationSettings(const PreparedCpuActor &actor)
+{
+    auto settings = actor.settings;
+    // Jolt's constructor requires already-projected and clamped velocities.
+    settings.mLinearVelocity = settings.mAngularVelocity = JPH::Vec3::sZero();
+    return settings;
+}
+
+void InstallInitialVelocities(JPH::Body &body, const JPH::BodyCreationSettings &author)
+{
+    body.SetLinearVelocityClamped(author.mLinearVelocity);
+    body.SetAngularVelocityClamped(author.mAngularVelocity);
+}
+
+struct BodyMobility
+{
+    JPH::EMotionType motionType;
+    JPH::EAllowedDOFs allowedDOFs = JPH::EAllowedDOFs::None;
+    float inverseMass = 0.0f;
+    JPH::Vec3 inverseInertia = JPH::Vec3::sZero();
+    JPH::Quat inertiaRotation = JPH::Quat::sIdentity();
+
+    bool operator==(const BodyMobility &other) const
+    {
+        return motionType == other.motionType && allowedDOFs == other.allowedDOFs && inverseMass == other.inverseMass &&
+               inverseInertia == other.inverseInertia &&
+               (inertiaRotation == other.inertiaRotation || inertiaRotation == -other.inertiaRotation);
+    }
+};
+
+BodyMobility ReadMobility(const JPH::Body &body)
+{
+    BodyMobility result{body.GetMotionType()};
+    if (body.IsStatic())
+        return result;
+    const auto &motion = *body.GetMotionProperties();
+    result.allowedDOFs = motion.GetAllowedDOFs();
+    if (body.IsDynamic()) {
+        result.inverseMass = motion.GetInverseMass();
+        result.inverseInertia = motion.GetInverseInertiaDiagonal();
+        result.inertiaRotation = motion.GetInertiaRotation();
+    }
+    return result;
 }
 } // namespace
 
@@ -57,6 +102,8 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
     const auto *transform = actor.owner->GetTransform();
     const auto position = transform->GetPosition();
     const auto rotation = transform->GetWorldRotation();
+    const auto scale = transform->GetWorldScale();
+    prepared.rootScale = JPH::Vec3(scale.x, scale.y, scale.z);
     // Jolt cannot solve a dynamic body with all six axes locked. Such a body
     // is an immovable kinematic boundary internally; the component stays a
     // dynamic Rigidbody, with its real mass available when axes are unlocked.
@@ -86,8 +133,8 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
         // Prescribed non-convex motion needs DOFs and velocity, not invented
         // volume or inertia. A later dynamic conversion prepares real mass.
         if (!body->IsKinematic() || properties || !shape->MustBeStatic()) {
-            prepared.mass = PrepareBodyMass(shape.GetPtr(), body->GetMass(), properties ? &*properties : nullptr,
-                                            transform->GetWorldScale());
+            prepared.mass =
+                PrepareBodyMass(shape.GetPtr(), body->GetMass(), properties ? &*properties : nullptr, scale);
             const auto &mass = *prepared.mass;
             const auto axes = JPH::Mat44::sRotation(mass.axes);
             settings.mOverrideMassProperties = JPH::EOverrideMassProperties::MassAndInertiaProvided;
@@ -119,6 +166,10 @@ JoltCpuScene::BodyRecord JoltCpuScene::CaptureBodyRecord(const PreparedCpuActor 
 {
     BodyRecord record;
     record.shape = actor.settings.GetShape();
+    const auto scale = actor.rootScale;
+    if (!std::isfinite(scale.GetX()) || !std::isfinite(scale.GetY()) || !std::isfinite(scale.GetZ()))
+        throw std::invalid_argument("CPU body root scale must be finite");
+    record.rootScale = scale;
     if (actor.surfaces.size() > 1) {
         const auto *root = record.shape.GetPtr();
         if (root->GetSubType() == JPH::EShapeSubType::OffsetCenterOfMass)
@@ -135,17 +186,72 @@ JoltCpuScene::BodyRecord JoltCpuScene::CaptureBodyRecord(const PreparedCpuActor 
 
 JPH::BodyID JoltCpuScene::CreateBody(uint32_t bodyId, const PreparedCpuActor &actor)
 {
-    auto settings = actor.settings;
-    // Body creation's raw setters require already-clamped velocities. Install
-    // authored velocities through the same native constrained/clamped path as
-    // later commands, before the body is exposed to broadphase.
-    settings.mLinearVelocity = settings.mAngularVelocity = JPH::Vec3::sZero();
-    const auto native = CreateBody(bodyId, settings, CaptureBodyRecord(actor));
-    if (settings.HasMassProperties()) {
+    const auto settings = CreationSettings(actor);
+    auto record = CaptureBodyRecord(actor);
+    record.awakeWhenDetached = settings.mMotionType != JPH::EMotionType::Static;
+    const auto native = CreateBody(bodyId, settings, std::move(record));
+    if (settings.mMotionType != JPH::EMotionType::Static) {
         JPH::BodyLockWrite lock(m_system.GetBodyLockInterfaceNoLock(), native);
-        auto &motion = *lock.GetBody().GetMotionProperties();
-        motion.SetLinearVelocityClamped(actor.settings.mLinearVelocity);
-        motion.SetAngularVelocityClamped(actor.settings.mAngularVelocity);
+        InstallInitialVelocities(lock.GetBody(), actor.settings);
+    }
+    return native;
+}
+
+bool JoltCpuScene::NeedsBodyReplacement(uint32_t bodyId, const PreparedCpuActor &actor) const
+{
+    if (!actor.settings.HasMassProperties())
+        return false;
+    JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), NativeBody(bodyId));
+    return !lock.GetBody().CanBeKinematicOrDynamic();
+}
+
+JPH::BodyID JoltCpuScene::ReplaceBody(uint32_t bodyId, const PreparedCpuActor &actor)
+{
+    auto &current = m_bodies.at(bodyId);
+    if (m_constraints.HasBodyConstraints(bodyId))
+        throw std::logic_error("Retire the CPU body's constraints before replacing its allocation");
+    auto settings = CreationSettings(actor);
+    if (settings.mMotionType == JPH::EMotionType::Static)
+        throw std::logic_error("CPU body replacement requires a complete Rigidbody model");
+    auto next = CaptureBodyRecord(actor);
+    const auto previousId = current.native;
+    std::optional<JPH::AABox> previousBounds;
+    {
+        JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), previousId);
+        const auto &body = lock.GetBody();
+        if (!body.IsStatic() || body.CanBeKinematicOrDynamic())
+            throw std::logic_error("CPU replacement requires the original collider-only allocation");
+        settings.mPosition = body.GetPosition();
+        settings.mRotation = body.GetRotation();
+        if (body.IsInBroadPhase())
+            previousBounds = body.GetWorldSpaceBounds();
+    }
+
+    auto &bodies = m_system.GetBodyInterface();
+    // Allocate before changing the old actor. Assign the released slot after
+    // preparing the replacement, so a full scene does not need extra ID capacity.
+    auto *replacement = bodies.CreateBodyWithoutID(settings);
+    replacement->SetUserData(bodyId);
+    InstallInitialVelocities(*replacement, actor.settings);
+    const auto newBounds = replacement->GetWorldSpaceBounds();
+    if (previousBounds)
+        bodies.RemoveBody(previousId);
+    auto *previous = bodies.UnassignBodyID(previousId);
+    // This owner has just released an ID slot and the replacement has no ID.
+    const bool assigned = bodies.AssignBodyID(replacement);
+    JPH_ASSERT(assigned);
+    (void)assigned;
+    next.native = replacement->GetID();
+    next.awakeWhenDetached = true;
+    next.shapeRevision = current.shapeRevision + 1;
+    const auto native = next.native;
+    current = std::move(next);
+    bodies.DestroyBodyWithoutID(previous);
+    if (previousBounds) {
+        bodies.AddBody(native, JPH::EActivation::Activate);
+        WakeBodiesInBounds(*previousBounds, native);
+        if (!(*previousBounds == newBounds))
+            WakeBodiesInBounds(newBounds, native);
     }
     return native;
 }
@@ -160,6 +266,9 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
     auto &bodies = m_system.GetBodyInterface();
     const bool added = bodies.IsAdded(native);
     const bool retainLoads = record.authoredDynamic && actor.authoredDynamic;
+    const bool hasJoints = m_constraints.HasBodyConstraints(bodyId);
+    BodyMobility oldMobility{JPH::EMotionType::Static};
+    bool mobilityChanged = false;
     JPH::AABox oldBounds, newBounds;
     JPH::Vec3 force = JPH::Vec3::sZero(), torque = JPH::Vec3::sZero();
     {
@@ -168,6 +277,8 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
         if (settings.HasMassProperties() && !body.CanBeKinematicOrDynamic())
             throw std::logic_error("Adding a Rigidbody to a CPU static actor requires body allocation");
         oldBounds = body.GetWorldSpaceBounds();
+        if (hasJoints)
+            oldMobility = ReadMobility(body);
         if (retainLoads) {
             force = body.GetMotionProperties()->GetAccumulatedForce();
             torque = body.GetMotionProperties()->GetAccumulatedTorque();
@@ -208,19 +319,27 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
             motion.SetAccumulatedForceAndTorque(force, torque);
         }
         newBounds = body.GetWorldSpaceBounds();
+        mobilityChanged = hasJoints && !(oldMobility == ReadMobility(body));
     }
     if (settings.HasMassProperties())
         bodies.SetMotionQuality(native, settings.mMotionQuality);
     next.native = native;
+    next.shapeRevision = record.shapeRevision + 1;
+    const bool scaleChanged = next.rootScale != record.rootScale;
     record = std::move(next);
+    m_constraints.NotifyBodyShapeChanged(bodyId, deltaCOM, scaleChanged);
+    if (mobilityChanged)
+        m_constraints.ResetBodyWarmStart(bodyId);
     bodies.InvalidateContactCache(native);
+    // Accepting a nonstatic author model wakes it even while detached.
+    if (settings.mMotionType != JPH::EMotionType::Static)
+        SetBodyAwake(bodyId, true);
     if (added) {
-        bodies.ActivateBody(native);
         // Editing or removing a support must wake its sleeping neighbours too.
         // Keep the two queries local instead of spanning a distant COM change.
-        WakeBodiesInBounds(oldBounds);
+        WakeBodiesInBounds(oldBounds, native);
         if (!(oldBounds == newBounds))
-            WakeBodiesInBounds(newBounds);
+            WakeBodiesInBounds(newBounds, native);
     }
     return deltaCOM;
 }

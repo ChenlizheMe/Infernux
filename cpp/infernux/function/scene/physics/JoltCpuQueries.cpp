@@ -1,10 +1,17 @@
 #include "JoltCpuQueries.h"
 
 #include <Jolt/Jolt.h>
+#include <Jolt/Geometry/ConvexSupport.h>
+#include <Jolt/Geometry/GJKClosestPoint.h>
+#include <Jolt/Physics/Body/BodyFilter.h>
+#include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/CollidePointResult.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
@@ -14,7 +21,10 @@
 #include "PhysicsWorld.h"
 #include <algorithm>
 #include <cmath>
+#include <function/scene/BoxCollider.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/MeshCollider.h>
+#include <function/scene/TransformECSStore.h>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -116,6 +126,44 @@ template <typename Operation> auto WithShape(const JoltCpuQueries::Shape &shape,
 template <typename Vec> glm::vec3 Vector(const Vec &value)
 {
     return {float(value.GetX()), float(value.GetY()), float(value.GetZ())};
+}
+
+JPH::TransformedShape UnwrapDecorated(JPH::TransformedShape shape)
+{
+    while (shape.mShape->GetType() == JPH::EShapeType::Decorated) {
+        JPH::SubShapeID remainder;
+        shape = shape.GetSubShapeTransformedShape({}, remainder);
+    }
+    return shape;
+}
+
+std::optional<glm::vec3> ClosestPointOnShape(const JPH::TransformedShape &shape, JPH::RVec3Arg point)
+{
+    const JPH::Vec3 local(shape.GetInverseCenterOfMassTransform() * point);
+    const auto scale = shape.GetShapeScale();
+    JPH::Vec3 nearest;
+    if (shape.mShape->GetType() == JPH::EShapeType::Convex) {
+        const auto &convex = static_cast<const JPH::ConvexShape &>(*shape.mShape);
+        JPH::ConvexShape::SupportBuffer buffer;
+        const auto *support =
+            convex.GetSupportFunction(JPH::ConvexShape::ESupportMode::IncludeConvexRadius, buffer, scale);
+        JPH::GJKClosestPoint query;
+        JPH::Vec3 axis = JPH::Vec3::sAxisX(), queryWitness;
+        const float distanceSq =
+            query.GetClosestPoints(*support, JPH::PointConvexSupport{local}, JPH::cDefaultCollisionTolerance, FLT_MAX,
+                                   axis, nearest, queryWitness);
+        if (distanceSq == 0.0f)
+            return Vector(point);
+        if (distanceSq == FLT_MAX)
+            throw std::runtime_error("Closest-point query exceeds native numerical range");
+    } else if (shape.mShape->GetSubType() == JPH::EShapeSubType::Mesh) {
+        const auto &mesh = static_cast<const JPH::MeshShape &>(*shape.mShape);
+        if (!mesh.GetClosestSurfacePoint(local, scale, nearest))
+            return std::nullopt;
+    } else {
+        return std::nullopt;
+    }
+    return Vector(shape.GetCenterOfMassTransform() * nearest);
 }
 
 bool IncludeLayer(uint32_t mask, uint32_t layer)
@@ -222,12 +270,34 @@ void ResolveTarget(RaycastHit &hit)
         hit.gameObjectId = hit.gameObject->GetID();
 }
 
+struct SweepPolicy
+{
+    JPH::BodyID excludeBody;
+    uint64_t object;
+    JoltCpuQueries::ColliderIdentity collider;
+    const PhysicsColliderPairs *ignored;
+
+    bool Accepts(const JoltCpuScene::Surface &surface) const
+    {
+        if (const auto *owner = surface.target.GetGameObject(); owner && owner->GetID() == object)
+            return false;
+        if (!ignored)
+            return true;
+        auto a = std::pair(collider.id, collider.generation);
+        auto b = std::pair(surface.colliderId, surface.generation);
+        if (b < a)
+            std::swap(a, b);
+        const PhysicsColliderPair pair{a.first, a.second, b.first, b.second};
+        return !std::binary_search(ignored->begin(), ignored->end(), pair);
+    }
+};
+
 template <typename Collector> class CastCollector final : public SurfaceCollector<Collector>
 {
   public:
     CastCollector(const JoltCpuScene &scene, const JoltCpuQueries::Filter &filter, const JPH::RRayCast &ray,
-                  float maximum, bool all, float collisionTolerance = 0.0f)
-        : SurfaceCollector<Collector>(scene, filter), m_ray(ray), m_maximum(maximum), m_all(all),
+                  float maximum, bool all, float collisionTolerance = 0.0f, const SweepPolicy *sweep = nullptr)
+        : SurfaceCollector<Collector>(scene, filter), m_ray(ray), m_maximum(maximum), m_all(all), m_sweep(sweep),
           m_earlyOutSlack(std::numeric_limits<float>::epsilon() +
                           float(std::min(1.0, double(collisionTolerance) / maximum)))
     {
@@ -240,7 +310,7 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
         if (!(result.mFraction >= 0.0f && result.mFraction <= 1.0f) || (!m_all && order >= m_closestOrder))
             return;
         const auto *surface = this->AcceptedSurface(result.mSubShapeID2);
-        if (!surface)
+        if (!surface || (m_sweep && !m_sweep->Accepts(*surface)))
             return;
 
         RaycastHit hit;
@@ -251,6 +321,8 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
         hit.target = surface->target;
         const auto &target = *this->GetContext();
         SetHitGeometry(hit, result, target, m_ray);
+        if (m_sweep && glm::dot(hit.normal, Vector(m_ray.mDirection) / m_maximum) >= -1.0e-3f)
+            return;
         JPH::SubShapeID remainder;
         const auto *leaf = target.mShape->GetLeafShape(result.mSubShapeID2, remainder);
         if (leaf && leaf->GetSubType() == JPH::EShapeSubType::Mesh)
@@ -291,6 +363,7 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
     JPH::RRayCast m_ray;
     float m_maximum;
     bool m_all;
+    const SweepPolicy *m_sweep;
     float m_earlyOutSlack;
     RaycastHit m_closest;
     std::tuple<float, uint32_t, uint32_t> m_closestOrder{std::numeric_limits<float>::infinity(), UINT32_MAX,
@@ -298,14 +371,33 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
     std::vector<RaycastHit> m_hits;
 };
 
-CastCollector<JPH::CastRayCollector> CastRay(const JoltCpuScene &scene, const glm::vec3 &origin,
-                                             const glm::vec3 &direction, float maximum,
+CastCollector<JPH::CastRayCollector> CastRay(const JoltCpuScene &scene, const JPH::RRayCast &ray, float maximum,
                                              const JoltCpuQueries::Filter &filter, bool all)
 {
-    const JPH::RRayCast ray(Position(origin), CastDisplacement(direction, maximum));
     CastCollector<JPH::CastRayCollector> collector(scene, filter, ray, maximum, all);
     if (filter.layers != 0)
         scene.System().GetNarrowPhaseQuery().CastRay(ray, {}, collector, {}, QueryLayerFilter(filter.layers));
+    return collector;
+}
+
+CastCollector<JPH::CastShapeCollector> CastShape(const JoltCpuScene &scene, const JPH::Shape &native,
+                                                 JPH::RMat44Arg pose, JPH::Vec3Arg displacement, float maximum,
+                                                 const JoltCpuQueries::Filter &filter, bool all,
+                                                 const SweepPolicy *sweep = nullptr)
+{
+    const JPH::RRayCast ray(pose.GetTranslation(), displacement);
+    JPH::ShapeCastSettings settings;
+    settings.mReturnDeepestPoint = true;
+    settings.mUseShrunkenShapeAndConvexRadius = true;
+    settings.mBackFaceModeConvex = JPH::EBackFaceMode::CollideWithBackFaces;
+    CastCollector<JPH::CastShapeCollector> collector(scene, filter, ray, maximum, all, settings.mCollisionTolerance,
+                                                     sweep);
+    if (filter.layers != 0) {
+        const auto cast = JPH::RShapeCast::sFromWorldTransform(&native, JPH::Vec3::sOne(), pose, displacement);
+        const JPH::IgnoreSingleBodyFilter bodyFilter(sweep ? sweep->excludeBody : JPH::BodyID());
+        scene.System().GetNarrowPhaseQuery().CastShape(cast, settings, ray.mOrigin, collector, {},
+                                                       QueryLayerFilter(filter.layers), bodyFilter);
+    }
     return collector;
 }
 
@@ -315,19 +407,7 @@ CastCollector<JPH::CastShapeCollector> CastShape(const JoltCpuScene &scene, cons
 {
     const auto displacement = CastDisplacement(direction, maximum);
     return WithShape(shape, [&](const JPH::Shape &native, JPH::RMat44Arg pose) {
-        const JPH::RRayCast ray(pose.GetTranslation(), displacement);
-        JPH::ShapeCastSettings settings;
-        settings.mReturnDeepestPoint = true;
-        settings.mUseShrunkenShapeAndConvexRadius = true;
-        settings.mBackFaceModeConvex = JPH::EBackFaceMode::CollideWithBackFaces;
-        CastCollector<JPH::CastShapeCollector> collector(scene, filter, ray, maximum, all,
-                                                         settings.mCollisionTolerance);
-        if (filter.layers != 0) {
-            const auto cast = JPH::RShapeCast::sFromWorldTransform(&native, JPH::Vec3::sOne(), pose, displacement);
-            scene.System().GetNarrowPhaseQuery().CastShape(cast, settings, ray.mOrigin, collector, {},
-                                                           QueryLayerFilter(filter.layers));
-        }
-        return collector;
+        return CastShape(scene, native, pose, displacement, maximum, filter, all);
     });
 }
 } // namespace
@@ -335,13 +415,68 @@ CastCollector<JPH::CastShapeCollector> CastShape(const JoltCpuScene &scene, cons
 bool JoltCpuQueries::Raycast(const glm::vec3 &origin, const glm::vec3 &direction, float maximum, RaycastHit &hit,
                              const Filter &filter) const
 {
-    return CastRay(m_scene, origin, direction, maximum, filter, false).ClosestHit(hit);
+    const JPH::RRayCast ray(Position(origin), CastDisplacement(direction, maximum));
+    return CastRay(m_scene, ray, maximum, filter, false).ClosestHit(hit);
+}
+
+void JoltCpuQueries::RaycastBatch(const float *origins, const float *directions, size_t count, float maximum,
+                                  RaycastHit *hits, uint8_t *mask, const Filter &filter) const
+{
+    if (count == 0)
+        return;
+    if (!origins || !directions || !hits || !mask || count > UINT32_MAX)
+        throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
+    std::vector<JPH::RRayCast> rays;
+    rays.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const auto *p = origins + i * 3, *d = directions + i * 3;
+        rays.emplace_back(Position({p[0], p[1], p[2]}), CastDisplacement({d[0], d[1], d[2]}, maximum));
+    }
+    for (size_t i = 0; i < count; ++i)
+        mask[i] = CastRay(m_scene, rays[i], maximum, filter, false).ClosestHit(hits[i]) ? 1 : 0;
+}
+
+bool JoltCpuQueries::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
+                              const glm::vec3 &displacement, RaycastHit &hit) const
+{
+    const auto pose = JPH::RMat44::sRotationTranslation(Rotation(rotation), Position(position));
+    if (!Finite(displacement))
+        throw std::invalid_argument("BoxCollider sweep displacement must be finite");
+    const double distance = std::hypot(double(displacement.x), double(displacement.y), double(displacement.z));
+    hit = {};
+    const auto *object = box.GetGameObject();
+    if (distance == 0.0 || !object)
+        return false;
+    if (distance > std::numeric_limits<float>::max())
+        throw std::invalid_argument("BoxCollider sweep displacement exceeds native coordinates");
+    const TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    const auto shape = box.CreateJoltShape();
+    if (!shape)
+        throw std::runtime_error("Collider geometry is not ready for an explicit geometry query");
+    if (shape->GetSubType() == JPH::EShapeSubType::Empty)
+        return false;
+
+    const Filter filter{TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer()), false};
+    SweepPolicy sweep{JPH::BodyID(),
+                      object->GetID(),
+                      {box.GetComponentID(), box.GetLifetimeGeneration()},
+                      m_scene.m_ignoredPairs.get()};
+    const auto accepted = m_scene.m_bodies.find(box.GetBodyId());
+    if (accepted != m_scene.m_bodies.end() &&
+        std::any_of(accepted->second.surfaces.begin(), accepted->second.surfaces.end(), [&](const auto &surface) {
+            return surface.colliderId == sweep.collider.id && surface.generation == sweep.collider.generation;
+        }))
+        sweep.excludeBody = accepted->second.native;
+    return CastShape(m_scene, *shape, pose, JPH::Vec3(displacement.x, displacement.y, displacement.z),
+                     static_cast<float>(distance), filter, false, &sweep)
+        .ClosestHit(hit);
 }
 
 std::vector<RaycastHit> JoltCpuQueries::RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maximum,
                                                    const Filter &filter) const
 {
-    return CastRay(m_scene, origin, direction, maximum, filter, true).TakeHits();
+    const JPH::RRayCast ray(Position(origin), CastDisplacement(direction, maximum));
+    return CastRay(m_scene, ray, maximum, filter, true).TakeHits();
 }
 
 std::vector<Collider *> JoltCpuQueries::Overlap(const Shape &shape, const Filter &filter) const
@@ -368,5 +503,70 @@ std::vector<RaycastHit> JoltCpuQueries::CastAll(const Shape &shape, const glm::v
                                                 const Filter &filter) const
 {
     return CastShape(m_scene, shape, direction, maximum, filter, true).TakeHits();
+}
+
+std::optional<glm::vec3> JoltCpuQueries::ClosestPoint(uint32_t bodyId, ColliderIdentity target,
+                                                      const glm::vec3 &point) const
+{
+    const auto position = Position(point);
+    const auto actor = m_scene.m_bodies.find(bodyId);
+    if (actor == m_scene.m_bodies.end())
+        return std::nullopt;
+    const auto &record = actor->second;
+    const auto surface = std::find_if(record.surfaces.begin(), record.surfaces.end(), [&](const auto &entry) {
+        return entry.colliderId == target.id && entry.generation == target.generation;
+    });
+    if (surface == record.surfaces.end())
+        return std::nullopt;
+
+    JPH::TransformedShape shape;
+    {
+        const JPH::BodyLockRead lock(m_scene.System().GetBodyLockInterface(), record.native);
+        if (!lock.SucceededAndIsInBroadPhase())
+            return std::nullopt;
+        shape = lock.GetBody().GetTransformedShape();
+    }
+    shape = UnwrapDecorated(std::move(shape));
+    if (const auto *compound = record.memberCompound) {
+        const auto member = static_cast<uint32_t>(surface - record.surfaces.begin());
+        for (JPH::uint i = 0; i < compound->GetNumSubShapes(); ++i)
+            if (compound->GetCompoundUserData(i) == member) {
+                const auto id = compound->GetSubShapeIDFromIndex(static_cast<int>(i), {}).GetID();
+                JPH::SubShapeID remainder;
+                return ClosestPointOnShape(UnwrapDecorated(shape.GetSubShapeTransformedShape(id, remainder)), position);
+            }
+        return std::nullopt;
+    }
+    return ClosestPointOnShape(shape, position);
+}
+
+std::optional<PhysicsPenetrationResult>
+JoltCpuQueries::ComputePenetration(const Collider &a, const glm::vec3 &positionA, const glm::quat &rotationA,
+                                   const Collider &b, const glm::vec3 &positionB, const glm::quat &rotationB)
+{
+    const auto originA = Position(positionA), originB = Position(positionB);
+    const auto orientationA = Rotation(rotationA), orientationB = Rotation(rotationB);
+    const TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    const auto geometry = [](const Collider &collider) {
+        if (const auto *mesh = dynamic_cast<const MeshCollider *>(&collider))
+            return mesh->GetPublishedConvexQueryShape();
+        const auto shape = collider.CreateJoltShape();
+        if (!shape)
+            throw std::runtime_error("Collider geometry is not ready for an explicit geometry query");
+        return shape;
+    };
+    const auto first = geometry(a), second = geometry(b);
+    if (first->GetSubType() == JPH::EShapeSubType::Empty || second->GetSubType() == JPH::EShapeSubType::Empty)
+        return std::nullopt;
+    const auto comA = JPH::RMat44::sRotationTranslation(orientationA, originA).PreTranslated(first->GetCenterOfMass());
+    const JPH::TransformedShape target(originB + orientationB * second->GetCenterOfMass(), orientationB,
+                                       second.GetPtr(), JPH::BodyID());
+    JPH::ClosestHitCollisionCollector<JPH::CollideShapeCollector> hits;
+    target.CollideShape(first.GetPtr(), JPH::Vec3::sOne(), comA, {}, originA, hits);
+    if (!hits.HadHit() || hits.mHit.mPenetrationDepth <= 0.0f)
+        return std::nullopt;
+    const auto &hit = hits.mHit;
+    return PhysicsPenetrationResult{Vector(-hit.mPenetrationAxis.Normalized()), hit.mPenetrationDepth,
+                                    Vector(originA + hit.mContactPointOn1), Vector(originA + hit.mContactPointOn2)};
 }
 } // namespace infernux
