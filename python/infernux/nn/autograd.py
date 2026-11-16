@@ -7,10 +7,10 @@ def grad(outputs, inputs, grad_outputs=None, retain_graph=None, create_graph=Fal
          only_inputs=True, allow_unused=None, is_grads_batched=False, materialize_grads=False):
     """Return the summed VJP for the requested leaves, in input order.
 
-    Outputs must come from one model invocation, including its objectives.
-    The call consumes that forward execution and leaves existing .grad values
-    untouched. Disconnected leaves return None with allow_unused=True, or
-    zero Tensors with materialize_grads=True.
+    Outputs can come from several composed or independent invocations on the
+    same device and compute host. The call consumes the contributing forward
+    executions and leaves existing .grad values untouched. Disconnected leaves
+    return None with allow_unused=True, or zero Tensors with materialize_grads=True.
     """
     if retain_graph not in (None, False) or create_graph or is_grads_batched or only_inputs is not True:
         raise NotImplementedError("grad supports first-order, unbatched differentiation without retaining the graph")
@@ -39,12 +39,9 @@ def grad(outputs, inputs, grad_outputs=None, retain_graph=None, create_graph=Fal
     if len(outputs) != len(grad_outputs):
         raise ValueError("grad_outputs must provide one seed per output")
 
-    runs, cotangents = zip(*(value._backward_source(seed) for value, seed in zip(outputs, grad_outputs)))
-    run = runs[0]
-    if any(other is not run for other in runs):
-        raise ValueError("grad outputs must come from one model invocation")
-
-    gradients = run._reverse(cotangents, inputs=inputs, allow_unused=allow_unused)
+    from ._plan import _reverse_runs
+    sources = tuple(value._backward_source(seed) for value, seed in zip(outputs, grad_outputs))
+    gradients = _reverse_runs(sources, inputs=inputs, allow_unused=allow_unused)
     if materialize_grads:
         from .functional import zeros_like
         return tuple(zeros_like(value) if gradient is None else gradient for value, gradient in zip(inputs, gradients))

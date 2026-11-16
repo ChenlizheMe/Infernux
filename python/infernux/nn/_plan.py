@@ -1,7 +1,9 @@
-"""Fixed-shape dataflow over real WorkItems; no private executor or autograd tree."""
+"""Fixed-shape dataflow and invocation composition over the shared WorkItems."""
+from contextlib import ExitStack
 from contextvars import ContextVar
 from collections import Counter
 from dataclasses import asdict, dataclass, replace
+from graphlib import TopologicalSorter
 import json
 import math
 import hashlib
@@ -1538,17 +1540,19 @@ class Plan:
             p.retire((value for value in values if id(value) not in scratch), flush=False)
             raise
 
-    def _check_forward_inputs(self, inputs, *, state=None):
+    def _check_forward_inputs(self, inputs, *, state=None, managed=False):
         self._check_current()
         if (tuple(_InputSpec.from_value(x) for x in inputs) != self.inputs
                 or any(x.device != self.device for x in inputs)):
             raise ValueError("input shape/device/gradient requirements differ from capture; call recompile()")
-        if any(x._run is not None for x in inputs):
-            raise ValueError("chaining separately compiled models is not supported; use one Module tree")
+        if managed and any(x._run is not None or x._loss is not None for x in inputs):
+            raise ValueError("managed model inputs require leaf or detached Tensors")
         _check_storage((*(x._data for x in inputs), *(self.root._state if state is None else state)))
 
     def _bind_forward(self, inputs, *, state, retain_for_backward=True, managed=False, reuse_scratch=False):
-        self._check_forward_inputs(inputs, state=state)
+        self._check_forward_inputs(inputs, state=state, managed=managed)
+        if retain_for_backward and any(x.requires_grad and x._loss is not None for x in inputs):
+            raise NotImplementedError("loss-valued inputs require detach(); use nn.autograd.grad for multiple loss outputs")
         if reuse_scratch and self._forward_scratch_version != self.root.parameter_version:
             # Stable intermediates may cache native bindings, but must not pin
             # a succession of parameter publications behind a live model.
@@ -1687,20 +1691,33 @@ class Plan:
             p.retire((output, *scratch))
 
 
-def _backward_work(run, cotangents, facts, empty, *, clear_grad=False):
-    """One gradient recipe for real bindings and storage-free service analysis."""
-    plan, gradients, operations = run.plan, {}, []
-    previous = {id(destination): value for destination, value in facts}
-    parameters = tuple(parameter for _, parameter in plan.root._named)
-    requested_slots = tuple(slot for slot, parameter in enumerate(parameters) if id(parameter) in previous)
+def _combine_gradients(values, add, empty, operations):
+    total = values[0]
+    for value in values[1:]:
+        output = empty(total.shape)
+        operations.append(_Operation(add, (total, value, output)))
+        total = output
+    return total
 
-    def combine(values):
-        total = values[0]
-        for value in values[1:]:
-            output = empty(total.shape)
-            operations.append(_Operation(plan.add, (total, value, output)))
-            total = output
-        return total
+
+def _append_gradients(contributions, destination, values):
+    contributions.setdefault(id(destination), (destination, []))[1].extend(values)
+
+
+def _gradient_updates(contributions, previous, add, empty, operations):
+    for identity, (destination, values) in contributions.items():
+        value = _combine_gradients(values, add, empty, operations)
+        old = previous[identity]
+        if old is not None:
+            value = _combine_gradients((old._data, value), add, empty, operations)
+        yield destination, value
+
+
+def _pullback_work(run, cotangents, requested, empty, operations):
+    """Bind one Plan's VJP and return contributions at its input and parameter ports."""
+    plan, gradients = run.plan, {}
+    parameters = tuple(parameter for _, parameter in plan.root._named)
+    requested_slots = tuple(slot for slot, parameter in enumerate(parameters) if id(parameter) in requested)
 
     adjoints, grad_parameters = {}, set()
     for cotangent in cotangents:
@@ -1720,7 +1737,7 @@ def _backward_work(run, cotangents, facts, empty, *, clear_grad=False):
         layer, programs = plan.layers[index], plan.backward_operations[index]
         if index + plan.input_count not in adjoints or layer.kind in _STOP_GRADIENT:
             continue
-        gradient = combine(adjoints.pop(index + plan.input_count))
+        gradient = _combine_gradients(adjoints.pop(index + plan.input_count), plan.add, empty, operations)
         if layer.kind == "add":
             for source in layer.inputs:
                 adjoints.setdefault(source, []).append(gradient)
@@ -1753,25 +1770,142 @@ def _backward_work(run, cotangents, facts, empty, *, clear_grad=False):
             primal = run.values[index + plan.input_count] if _UNARY[layer.kind].output_gradient else before
             operations.append(_Operation(programs[0], (primal, gradient, dx)))
         adjoints.setdefault(source, []).append(dx)
-    destinations = [(parameters[slot], combine(values)) for slot, values in gradients.items()]
-    for index, value in enumerate(run.inputs):
-        if value.requires_grad and id(value) in previous and index in adjoints:
-            destinations.append((value, combine(adjoints[index])))
-    # Calling model(x, x) contributes twice to one leaf, not two independent
-    # gradient publications which would overwrite each other.
-    grouped = {}
-    for destination, value in destinations:
-        grouped.setdefault(id(destination), (destination, []))[1].append(value)
-    destinations = [(destination, combine(values)) for destination, values in grouped.values()]
-    updates = []
-    for destination, value in destinations:
-        old = None if clear_grad and all(destination is not value for value in run.inputs) else previous[id(destination)]
-        if old is not None:
-            total = empty(value.shape)
-            operations.append(_Operation(plan.add, (old._data, value, total)))
-            value = total
-        updates.append((destination, value))
+    return ([(parameters[slot], values) for slot, values in gradients.items()],
+            [(value, adjoints[index]) for index, value in enumerate(run.inputs)
+             if value.requires_grad and index in adjoints])
+
+
+def _backward_work(run, cotangents, facts, empty, *, clear_grad=False):
+    """One gradient recipe for managed bindings and storage-free service analysis."""
+    input_ids = {id(value) for value in run.inputs}
+    previous = {id(destination): value if not clear_grad or id(destination) in input_ids else None
+                for destination, value in facts}
+    operations, contributions = [], {}
+    parameters, inputs = _pullback_work(run, cotangents, previous, empty, operations)
+    for destination, values in (*parameters, *inputs):
+        if id(destination) in previous:
+            value = _combine_gradients(values, run.plan.add, empty, operations)
+            _append_gradients(contributions, destination, (value,))
+    updates = list(_gradient_updates(contributions, previous, run.plan.add, empty, operations))
     return operations, updates
+
+
+def _reverse_graph(sources):
+    """Identify the producer runs and leaf destinations reachable from these outputs."""
+    pending = [(run, cotangent.output_index) for run, cotangent in sources]
+    outputs, dependencies, leaves = {}, {}, {}
+    while pending:
+        run, output_index = pending.pop()
+        operands = run.inputs
+        if run.consumed or operands is None:
+            raise RuntimeError("backward execution is already consumed")
+        plan = run.plan
+        result = plan._result_spec(output_index)
+        visited = outputs.setdefault(run, {})
+        if result.index in visited:
+            continue
+        visited[result.index] = None
+        producers = dependencies.setdefault(run, {})
+        for index, (value, spec) in enumerate(zip(operands, plan.inputs)):
+            if not spec.requires_grad or index not in result.backward_values:
+                continue
+            if value._run is None:
+                leaves[id(value)] = value
+            else:
+                producers[value._run] = None
+                pending.append((value._run, value._value_index))
+        for (_, parameter), tracked in zip(plan.root._named, result.grad_parameters):
+            if tracked:
+                leaves[id(parameter)] = parameter
+    order = tuple(reversed(tuple(TopologicalSorter(dependencies).static_order())))
+    return order, outputs, leaves
+
+
+def _check_reverse_run(run):
+    plan = run.plan
+    plan._check_current()
+    if (run.consumed or plan.root._state is not run.state
+            or any(value.requires_grad != spec.requires_grad for value, spec in zip(run.inputs, plan.inputs))):
+        raise RuntimeError("backward execution is already consumed or its parameter state has changed")
+
+
+def _reverse_runs(sources, *, inputs=None, allow_unused=False):
+    """Collect cotangents at each invocation and submit their VJPs as one Work cursor."""
+    sources = tuple(sources)
+    order, outputs, leaves = _reverse_graph(sources)
+    roots = {id(run.plan.root): run.plan.root for run in order}
+    with ExitStack() as locks:
+        for identity in sorted(roots):
+            locks.enter_context(roots[identity]._lock)
+        for run in order:
+            _check_reverse_run(run)
+        _check_storage(tuple(run.values[index] for run, indices in outputs.items() for index in indices))
+        if inputs is None:
+            facts = _grad_facts(leaves.values())
+        else:
+            if not allow_unused and any(id(value) not in leaves for value in inputs):
+                raise RuntimeError("a requested input was unused in the outputs; set allow_unused=True to return its missing gradient")
+            facts = tuple((value, None) for value in inputs)
+        previous = {id(destination): value for destination, value in facts}
+        storage, seeds, operations = [], [], []
+        pending, contributions, updates = {}, {}, {}
+        completed = False
+        device = order[0].plan.device
+
+        def empty(shape):
+            value = _empty(shape, device)
+            storage.append(value)
+            return value
+
+        try:
+            for run, cotangent in sources:
+                if cotangent.seed is not None:
+                    seed = cotangent.seed.view(readonly=True)
+                    seeds.append(seed)
+                    cotangent = replace(cotangent, seed=seed)
+                pending.setdefault(run, []).append(cotangent)
+            for run in order:
+                cotangents = pending.pop(run)
+                plan = run.plan
+                for cotangent in cotangents:
+                    plan._prepare_backward(run.values, run.state, cotangent.target,
+                                           objective=cotangent.objective, output_index=cotangent.output_index)
+                parameters, operands = _pullback_work(run, cotangents, previous, empty, operations)
+                for destination, values in parameters:
+                    value = _combine_gradients(values, plan.add, empty, operations)
+                    _append_gradients(contributions, destination, (value,))
+                for operand, values in operands:
+                    producer = operand._run
+                    if producer is not None:
+                        pending.setdefault(producer, []).extend(
+                            _Cotangent(operand._value_index, seed=value) for value in values)
+                    elif id(operand) in previous:
+                        value = _combine_gradients(values, plan.add, empty, operations)
+                        _append_gradients(contributions, operand, (value,))
+            for destination, value in _gradient_updates(contributions, previous, order[0].plan.add, empty, operations):
+                updates[id(destination)] = (destination, Tensor._from_buffer(value, destination.shape))
+            values = (value for run in order for value in run.values[run.plan.input_count:])
+            cursor = _bind_cursor(operations, private=(*storage, *values),
+                                  retained=(value._data for _, value in updates.values()))
+            programs = tuple(dict.fromkeys(operation.program for operation in operations if operation.program is not None))
+            _execute_work(cursor, device, programs)
+            if inputs is None:
+                for run in order:
+                    _check_reverse_run(run)
+                if not _grads_current(facts):
+                    raise RuntimeError("backward gradient bindings changed before publication")
+                for destination, value in updates.values():
+                    destination._grad = value
+            completed = True
+            if inputs is not None:
+                return tuple(updates[id(value)][1] if id(value) in updates else None for value in inputs)
+        finally:
+            if not completed:
+                p.retire((value._data for _, value in updates.values()))
+            targets = (cotangent.target._data for _, cotangent in sources if cotangent.target is not None)
+            p.retire((*storage, *seeds, *targets))
+            for run in order:
+                run.retire()
 
 
 class _BackwardBindings:
@@ -1996,48 +2130,4 @@ class _Run:
         self._reverse((_Cotangent(output_index, target=target, objective=objective),))
 
     def _reverse(self, cotangents, *, inputs=None, allow_unused=False):
-        root, plan = self.plan.root, self.plan
-        with root._lock:
-            plan._check_current()
-            if (self.consumed or root._state is not self.state
-                    or any(value.requires_grad != spec.requires_grad for value, spec in zip(self.inputs, plan.inputs))):
-                raise RuntimeError("backward execution is already consumed or its parameter state has changed")
-            if inputs is None:
-                destinations = tuple(value for _, value in root._named) + tuple(x for x in self.inputs if x.requires_grad)
-                facts = _grad_facts(destinations)
-            else:
-                if not allow_unused:
-                    used = set()
-                    for cotangent in cotangents:
-                        spec = plan._result_spec(cotangent.output_index)
-                        used.update(id(value) for index, value in enumerate(self.inputs) if index in spec.backward_values)
-                        used.update(id(parameter) for (_, parameter), tracked in zip(root._named, spec.grad_parameters) if tracked)
-                    if any(id(value) not in used for value in inputs):
-                        raise RuntimeError("a requested input was unused in the outputs; set allow_unused=True to return its missing gradient")
-                facts = tuple((value, None) for value in inputs)
-            bindings, seeds, sources = None, [], []
-            try:
-                for cotangent in cotangents:
-                    if cotangent.seed is not None:
-                        seed = cotangent.seed.view(readonly=True)
-                        seeds.append(seed)
-                        cotangent = replace(cotangent, seed=seed)
-                    sources.append(cotangent)
-                    plan._prepare_backward(self.values, self.state, cotangent.target,
-                                           objective=cotangent.objective, output_index=cotangent.output_index)
-                bindings = _BackwardBindings(self, sources, facts)
-                _execute_work(bindings.cursor, plan.device, plan.programs)
-                if inputs is None:
-                    bindings.commit()
-                else:
-                    gradients = {id(destination): value for destination, value in bindings.updates}
-                    bindings.updates.clear()
-                    return tuple(gradients.get(id(value)) for value in inputs)
-            finally:
-                self.consumed = True
-                if bindings is not None:
-                    bindings.retire()
-                targets = (cotangent.target._data for cotangent in cotangents if cotangent.target is not None)
-                p.retire((*self.values, *targets, *seeds))
-                self.values = ()
-                self.state = self.inputs = self.cursor = None
+        return _reverse_runs(((self, cotangent) for cotangent in cotangents), inputs=inputs, allow_unused=allow_unused)

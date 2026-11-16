@@ -15,14 +15,14 @@
 | `Tensor.to(device=None, dtype=...)`、`cpu()`、`float()`、`int()`、`long()` | 取得目标设备或类型上的值 | 同设备同类型返回自身；传输保留原类型，类型转换运行共同原语；转为整数停止梯度；当前不支持跨设备反向边 |
 | `Tensor.as_buffer()` | 取得同一存储的只读平坦视图 | 不读回 GPU，不复制显存内容 |
 | `nn.Module` | 通过 `forward(self, observation, actions, ...)` 定义静态模型 | 一个或多个张量输入，返回单个张量或一组有序张量 `tuple`。输入的形状、类型、设备和梯度签名共同确定固定图，同一模型的图共享参数与优化器状态 |
-| `model(*inputs)`、`model.forward(*inputs)` | 执行同一已捕获模型 | 各浮点输入按 requires_grad 接收梯度；重复传入同一叶张量会合并贡献，未使用输入不产生梯度 |
+| `model(*inputs)`、`model.forward(*inputs)` | 执行已捕获模型 | 普通调用可直接接收同一设备及计算宿主上的模型输出，例如 `head(encoder(x))`。反向沿各次调用传播，并按叶张量和参数身份累积梯度。 |
 | `nn.Linear(in_features, out_features, bias=True, device=None, dtype=None)` | 仿射层 | float32 二维输入 `[batch, in_features]`；带偏置或不带偏置；整数特征先显式 `.float()` |
 | `nn.Conv2d(in_channels, out_channels, kernel_size, ...)` | 固定 NCHW 卷积与输入/权重/偏置反向 | 正整数 stride/dilation/groups、可选 bias、零填充；padding 支持整数/二元组、valid、单位 stride 下的 same（含非对称边界） |
 | `nn.PixelShuffle(upscale_factor)`、`nn.functional.pixel_shuffle` | 通道重排放大与反向 | 固定 NCHW，通道数须整除放大倍率的平方；无重采样近似 |
 | `nn.Sigmoid()` | 稳定 sigmoid 与反向 | 正负输入分别处理指数；CPU 原语与 GPU 局部 AD 共用图上的梯度约定 |
 | `nn.ReLU(inplace=False)`、`nn.SiLU(inplace=False)`、`nn.Tanh()` | 激活层与反向 | CPU/Vulkan 共用算子定义；GPU 使用原生局部 AD，当前不支持原地写入 |
 | `nn.Softmax(dim=None)`、`nn.LogSoftmax(dim=None)` | 指定轴归一化、对数概率与反向 | 减去轴最大值避免指数溢出；支持正负轴，跨元素梯度通过同一图上的显式 VJP 执行 |
-| `nn.functional.relu/silu/tanh/sigmoid/softmax/log_softmax` | 对应函数形式 | 可用于模型捕获和独立叶张量；当前不把两份已编译模型的结果自动拼接为新反向图 |
+| `nn.functional.relu/silu/tanh/sigmoid/softmax/log_softmax` | 对应函数形式 | 可用于模型捕获、普通模型输出和叶张量。 |
 | `nn.Sequential(*modules)` | 顺序组合 | 也支持 OrderedDict 定名和按下标读取 |
 | 编译区域内的 `+`、`-`、`*`、`/`、负号 | 逐元素算术、标量常数、广播 | 支持共享值与共享层的梯度合并；标量除数非零；不是任意 eager Tensor 运算 |
 | `nn.cat(tensors, dim=0)`、`nn.stack(tensors, dim=0)` | 捕获图中的拼接、堆叠与反向拆分 | 多个图值，正负轴；当前在 Module 捕获区内使用，不支持 out 写入 |
@@ -31,7 +31,7 @@
 | `nn.transpose`、`Tensor.transpose`、`nn.permute`、`Tensor.permute` | 交换或排列轴及反向逆排列 | 支持任意受控阶数与正负轴；首版物化连续输出，不承诺 stride 别名视图 |
 | `nn.sum/mean`、`Tensor.sum/mean` | 单轴、多轴或全部轴归约及反向扩展 | 支持 keepdim 和 float32；None 或空维度列表均归约全部轴 |
 | `nn.argmax`、`Tensor.argmax(dim=None, keepdim=False)` | 选择最大值的首个位置，输出 int64 | 支持整体或单轴、负轴、keepdim；并列取首项、NaN 取首个 NaN；不求导，扫描目前在完整输出行之间续行 |
-| `nn.sin/cos/square`、对应 Tensor 方法 | 常用数学运算与反向 | 在捕获图内组合，或独立叶张量调用；CPU/Vulkan使用同一原语定义与专用VJP |
+| `nn.sin/cos/square`、对应 Tensor 方法 | 常用数学运算与反向 | 支持捕获图、普通模型输出和叶张量。CPU 和 Vulkan 共用算子定义与 VJP。 |
 | `Tensor[...]` | 固定基本切片和梯度回填 | 整数、负整数、正步长 slice、None、ellipsis；不支持空结果、负步长或张量索引；结果物化连续存储 |
 | `nn.functional.interpolate(input, size=..., mode=...)` | NCHW nearest/bilinear 采样与反向 | 支持显式正整数 size、整数 scale_factor，或 recompute_scale_factor=True 的非整数比例；bilinear 支持 align_corners；暂不支持 antialias 或 bicubic |
 | `nn.functional.grid_sample(input, grid, mode=..., padding_mode=..., align_corners=...)` | 图像与位移场组合采样及两个输入的 VJP | 在 Module forward 中组合 NCHW 图像与 NHW2 网格；nearest/bilinear、zeros/border、两种 align_corners；暂不支持 reflection、bicubic、体采样或两个独立 eager Tensor 的自动反向图拼接 |
@@ -63,7 +63,7 @@ grid_sample 前向使用真实的邻点 gather。动态浮点地址只在显式�
 | `nn.functional.mse_loss(input, target, reduction="mean")` | 均方误差标量 | 可求导输入为模型输出，目标不可求导；无梯度评估也接受普通 Tensor；形状与设备相同 |
 | `nn.functional.cross_entropy(input, target, ignore_index=-100, reduction="mean")` | 稳定交叉熵与反向 | 支持 float32 概率目标或 int64 类别目标，mean/sum；类别轴为第 1 轴，单向量为第 0 轴；整数目标支持完整 int64 ignore_index；暂不支持 weight、reduction="none" 或平滑 |
 | `loss.backward()`、`output.backward(gradient)` | 反向传播并累积参数梯度 | MSE/交叉熵使用默认种子；普通输出可传同形、同设备的 detached 梯度，单元素可省略；不支持高阶梯度和保留反向图 |
-| `nn.autograd.grad(outputs, inputs, grad_outputs=None, allow_unused=...)` | 返回指定叶张量和参数的梯度，保留已有 `.grad` | 输入顺序决定返回 tuple 的顺序。一次 forward 的多个输出或损失可以共同反传，汇合处累加梯度。普通非标量输出需要匹配的 detached 种子，MSE/交叉熵保留单位种子。一次调用消耗对应反向记录。未用输入默认报错，`allow_unused=True` 返回 `None`，`materialize_grads=True` 返回零张量。 |
+| `nn.autograd.grad(outputs, inputs, grad_outputs=None, allow_unused=...)` | 返回指定叶张量和参数的梯度，保留已有 `.grad` | 多次普通调用的输出或损失可在同一设备与计算宿主上共同反传。共享前向只反传一次，贡献按叶张量和参数身份累积。输入顺序决定返回顺序。非标量输出需要匹配的 detached 种子，MSE 和交叉熵使用单位种子。调用消耗所用的反向记录。未用输入默认报错，`allow_unused=True` 返回 `None`，`materialize_grads=True` 返回零张量。 |
 | `nn.optim.SGD(model.parameters(), lr=...)` | 普通 SGD | 一个完整模型参数域、一个存活优化器；当前不支持动量、权重衰减、参数子组或 closure |
 | `nn.optim.Adam(model.parameters(), lr=..., betas=(.9,.999), eps=1e-8, weight_decay=0)` | Adam 与耦合 L2 衰减 | 参数、两组动量和逐参数计数一起提交；None 梯度跳过，零梯度正常更新；暂不支持 AMSGrad、foreach、fused 或 AdamW |
 | `optimizer.zero_grad(set_to_none=True)` | 清除或置零梯度 | `True` 释放梯度，`False` 执行已编译置零操作 |

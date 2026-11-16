@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 import numpy as np
 
@@ -71,6 +72,81 @@ def check_grad(device):
     print("Shared-output VJP passed on", device, flush=True)
 
 
+def check_composition(device):
+    from infernux.nn import _plan
+
+    weight = np.array([[.4, -.5], [.25, .75]], np.float32)
+    bias = np.array([.2, -.1], np.float32)
+    projection = np.array([[1.5, -.6]], np.float32)
+    shift = np.array([.15], np.float32)
+    encoder = nn.Sequential(nn.Linear(2, 2, device=device), nn.Sigmoid())
+    head = nn.Linear(2, 1, device=device)
+    encoder.load_state_dict({"0.weight": nn.tensor(weight), "0.bias": nn.tensor(bias)})
+    head.load_state_dict({"weight": nn.tensor(projection), "bias": nn.tensor(shift)})
+    xs = np.array([[.3, -.2], [-.4, .8]], np.float32)
+    x = nn.tensor(xs, device=device, requires_grad=True)
+    targets = tuple(np.array(values, np.float32) for values in ([[-.2], [.1]], [[.6], [-.4]], [[.3], [.7]]))
+    t0, t1, t2 = (nn.tensor(values, device=device) for values in targets)
+    leaves = (x, *encoder.parameters(), *head.parameters())
+
+    latent = 1. / (1. + np.exp(-(xs @ weight.T + bias)))
+    expected = latent @ projection.T + shift
+
+    def analytic(dy, direct=None):
+        dz = (dy @ projection) * latent * (1. - latent)
+        dx, dh, db = dz @ weight, dy.T @ latent, dy.sum(axis=0)
+        if direct is not None:
+            dx += direct @ projection
+            dh += direct.T @ xs
+            db += direct.sum(axis=0)
+        return dx, dz.T @ xs, dz.sum(axis=0), dh, db
+
+    def assert_gradients(actual, wanted):
+        for gradient, reference in zip(actual, wanted, strict=True):
+            assert gradient.device == device and not gradient.requires_grad
+            np.testing.assert_allclose(gradient.cpu().numpy(), reference, rtol=3e-4, atol=3e-6)
+
+    hidden = encoder(x)
+    prediction = head(hidden)
+    F.mse_loss(prediction, t0).backward()
+    old_gradients = tuple(value.grad for value in leaves)
+    dy0 = 2. * (expected - targets[0]) / expected.size
+    assert_gradients(old_gradients, analytic(dy0))
+    assert hidden.grad is prediction.grad is None
+
+    hidden = encoder(x)
+    losses = (F.mse_loss(head(hidden), t0), F.mse_loss(head(hidden), t1), F.mse_loss(head(x), t2))
+    dy1 = 2. * (expected - targets[1]) / expected.size
+    direct = 2. * (xs @ projection.T + shift - targets[2]) / expected.size
+    with patch.object(_plan, "_execute_work", wraps=_plan._execute_work) as execute, \
+         patch.object(_plan, "_pullback_work", wraps=_plan._pullback_work) as pullback:
+        gradients = nn.autograd.grad(losses, leaves)
+        assert execute.call_count == 1
+        assert pullback.call_count == len({id(call.args[0]) for call in pullback.call_args_list}) == 4
+    assert_gradients(gradients, analytic(dy0 + dy1, direct))
+    assert all(value.grad is previous for value, previous in zip(leaves, old_gradients, strict=True))
+    with np.testing.assert_raises_regex(RuntimeError, "consumed"):
+        losses[1].backward()
+
+    hidden = encoder(x)
+    detached = hidden.detach()
+    detached.requires_grad = True
+    loss = F.mse_loss(head(detached), t0)
+    dx, dh = nn.autograd.grad(loss, (x, detached), allow_unused=True)
+    assert dx is None
+    assert_gradients((dh,), (dy0 @ projection,))
+    assert nn.autograd.grad(hidden.sum(), x)[0] is not None
+
+    stale = F.mse_loss(head(encoder(x)), t0)
+    encoder.load_state_dict(encoder.state_dict())
+    with np.testing.assert_raises_regex(RuntimeError, "changed"):
+        stale.backward()
+    assert all(value.grad is previous for value, previous in zip(leaves, old_gradients, strict=True))
+    F.mse_loss(head(encoder(x)), t0).backward()
+    assert_gradients((value.grad for value in leaves), (2. * value for value in analytic(dy0)))
+    print("Composed-model and shared-invocation VJPs passed on", device, flush=True)
+
+
 def main():
     workspace = tempfile.TemporaryDirectory(prefix="infernux-slang-network-")
     project = Path(workspace.name)
@@ -124,6 +200,8 @@ def main():
         print("MLP forward/backward/SGD/export/bake/checkpoint passed", flush=True)
         check_grad("cpu")
         check_grad("gpu")
+        check_composition("cpu")
+        check_composition("gpu")
     finally:
         inx.compute._release_engine_resources()
         native.cleanup()
