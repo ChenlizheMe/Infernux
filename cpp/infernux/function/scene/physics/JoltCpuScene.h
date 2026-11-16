@@ -12,6 +12,7 @@
 #include "PhysicsContactTypes.h"
 
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 
 namespace JPH
@@ -22,6 +23,7 @@ class CompoundShape;
 namespace infernux
 {
 struct EngineConfig;
+enum class ForceMode;
 
 /// Shared scratch and worker access, not another pool for each RuntimeWorld.
 /// The owner advances CPU worlds serially; Jolt may parallelize a world's step
@@ -60,6 +62,28 @@ class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFi
     /// Caller has detached this body's constraints before destruction.
     void DestroyBody(uint32_t bodyId);
     [[nodiscard]] JPH::BodyID NativeBody(uint32_t bodyId) const;
+
+    /// The owner applies accepted author mutations and commands in order between native updates.
+    enum class ForceKind : uint8_t
+    {
+        Force,
+        Torque,
+        ForceAtPosition
+    };
+    void ApplyBodyForce(uint32_t bodyId, ForceKind kind, ForceMode mode, JPH::Vec3Arg value,
+                        JPH::RVec3Arg point = JPH::RVec3::sZero());
+    void SetBodyOriginPose(uint32_t bodyId, const std::optional<JPH::RVec3> &position,
+                           const std::optional<JPH::Quat> &rotation);
+    void SetBodyVelocity(uint32_t bodyId, const std::optional<JPH::Vec3> &linear,
+                         const std::optional<JPH::Vec3> &angular);
+    void SetBodyAwake(uint32_t bodyId, bool awake);
+    void ResetBodyMotion(uint32_t bodyId);
+
+    /// Called once per Fixed, with the complete composed target selected by
+    /// the owner. Velocity remains available in the completed physics state.
+    void StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
+                             float maxSpeed);
+
     /// Immutable, sorted canonical pairs from the common world policy.
     void SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> pairs);
 
@@ -87,6 +111,7 @@ class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFi
         JPH::RefConst<JPH::Shape> shape;
         const JPH::CompoundShape *memberCompound = nullptr;
         std::vector<Surface> surfaces;
+        std::optional<PreparedBodyMass> mass;
         int collisionDetectionMode = 0;
         bool authoredDynamic = false;
     };

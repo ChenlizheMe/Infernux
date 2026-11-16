@@ -2,13 +2,17 @@
 #include "../Rigidbody.h"
 
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Body/MotionProperties.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <algorithm>
+#include <cmath>
 #include <core/config/EngineConfig.h>
 #include <iterator>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace infernux
 {
@@ -118,6 +122,206 @@ void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds)
 JPH::BodyID JoltCpuScene::NativeBody(uint32_t bodyId) const
 {
     return m_bodies.at(bodyId).native;
+}
+
+void JoltCpuScene::ApplyBodyForce(uint32_t bodyId, ForceKind kind, ForceMode mode, JPH::Vec3Arg value,
+                                  JPH::RVec3Arg point)
+{
+    const bool continuous = mode == ForceMode::Force || mode == ForceMode::Acceleration;
+    const bool massIndependent = mode == ForceMode::Acceleration || mode == ForceMode::VelocityChange;
+    if (!continuous && mode != ForceMode::Impulse && mode != ForceMode::VelocityChange)
+        throw std::invalid_argument("Invalid CPU physics force mode");
+    const auto &record = m_bodies.at(bodyId);
+    if (!record.authoredDynamic || value == JPH::Vec3::sZero())
+        return;
+
+    bool wake = false;
+    {
+        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+        auto &body = lock.GetBody();
+        // FreezeAll uses prescribed native motion. Pending continuous loads
+        // still belong to the authored dynamic body if it unlocks this Fixed.
+        if (!body.IsDynamic() && !continuous)
+            return;
+
+        auto force = JPH::Vec3::sZero(), torque = JPH::Vec3::sZero();
+        if (kind == ForceKind::Torque) {
+            torque = value;
+            if (massIndependent) {
+                const auto &mass = record.mass.value();
+                const auto axes = body.GetRotation() * mass.axes;
+                torque = axes * ((axes.Conjugated() * value) / mass.inverse);
+            }
+        } else {
+            force = massIndependent ? value * record.mass.value().mass : value;
+            if (kind == ForceKind::ForceAtPosition)
+                torque = JPH::Vec3(point - body.GetCenterOfMassPosition()).Cross(force);
+        }
+
+        if (continuous) {
+            auto &motion = *body.GetMotionProperties();
+            motion.SetAccumulatedForceAndTorque(motion.GetAccumulatedForce() + force,
+                                                motion.GetAccumulatedTorque() + torque);
+        } else {
+            if (kind != ForceKind::Torque)
+                body.AddImpulse(force);
+            if (kind != ForceKind::Force)
+                body.AddAngularImpulse(torque);
+        }
+        // Native activation also resets an already-active body's sleep timer.
+        wake = body.IsInBroadPhase() && (continuous || !body.IsActive());
+    }
+    if (wake)
+        m_system.GetBodyInterface().ActivateBody(record.native);
+}
+
+void JoltCpuScene::SetBodyOriginPose(uint32_t bodyId, const std::optional<JPH::RVec3> &position,
+                                     const std::optional<JPH::Quat> &rotation)
+{
+    const auto native = NativeBody(bodyId);
+    auto &bodies = m_system.GetBodyInterface();
+    JPH::RVec3 origin;
+    JPH::Quat orientation;
+    JPH::AABox oldBounds;
+    bool added;
+    {
+        JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
+        const auto &body = lock.GetBody();
+        origin = position.value_or(body.GetPosition());
+        orientation = rotation.value_or(body.GetRotation());
+        if (origin == body.GetPosition() && (orientation == body.GetRotation() || orientation == -body.GetRotation()))
+            return;
+        added = body.IsInBroadPhase();
+        oldBounds = body.GetWorldSpaceBounds();
+    }
+
+    // Jolt sets the body origin and applies the currently accepted local COM.
+    bodies.SetPositionAndRotation(native, origin, orientation, JPH::EActivation::Activate);
+    bodies.InvalidateContactCache(native);
+    if (added) {
+        JPH::AABox newBounds;
+        {
+            JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
+            newBounds = lock.GetBody().GetWorldSpaceBounds();
+        }
+        WakeBodiesInBounds(oldBounds);
+        if (!(oldBounds == newBounds))
+            WakeBodiesInBounds(newBounds);
+    }
+}
+
+void JoltCpuScene::SetBodyVelocity(uint32_t bodyId, const std::optional<JPH::Vec3> &linear,
+                                   const std::optional<JPH::Vec3> &angular)
+{
+    const auto native = NativeBody(bodyId);
+    bool wake = false;
+    {
+        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), native);
+        auto &body = lock.GetBody();
+        if (body.IsStatic())
+            return;
+        if (linear)
+            body.SetLinearVelocityClamped(*linear);
+        if (angular)
+            body.SetAngularVelocityClamped(*angular);
+        const auto zero = JPH::Vec3::sZero();
+        wake =
+            !body.IsActive() && body.IsInBroadPhase() && ((linear && *linear != zero) || (angular && *angular != zero));
+    }
+    if (wake)
+        m_system.GetBodyInterface().ActivateBody(native);
+}
+
+void JoltCpuScene::SetBodyAwake(uint32_t bodyId, bool awake)
+{
+    const auto native = NativeBody(bodyId);
+    auto &bodies = m_system.GetBodyInterface();
+    if (!awake)
+        SetBodyVelocity(bodyId, JPH::Vec3::sZero(), JPH::Vec3::sZero());
+    if (!bodies.IsAdded(native))
+        return;
+    if (awake)
+        bodies.ActivateBody(native);
+    else
+        bodies.DeactivateBody(native);
+}
+
+void JoltCpuScene::ResetBodyMotion(uint32_t bodyId)
+{
+    const auto native = NativeBody(bodyId);
+    {
+        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), native);
+        auto &body = lock.GetBody();
+        if (!body.IsStatic())
+            body.GetMotionProperties()->ResetMotion();
+    }
+    m_system.ForgetBodyContacts(&native, 1);
+    SetBodyAwake(bodyId, true);
+}
+
+void JoltCpuScene::StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
+                                       float maxSpeed)
+{
+    if (!std::isfinite(duration) || duration <= 0.0f || !std::isfinite(maxSpeed) || maxSpeed < 0.0f)
+        throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
+
+    const auto &record = m_bodies.at(bodyId);
+    auto reachable = rotation;
+    JPH::Quat deltaRotation;
+    JPH::RVec3 cappedOrigin;
+    bool capped = false;
+    {
+        JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), record.native);
+        const auto &body = lock.GetBody();
+        if (!body.IsInBroadPhase() || !body.IsKinematic() || record.authoredDynamic)
+            throw std::logic_error("CPU kinematic drive requires a resident authored kinematic body");
+
+        const auto &motion = *body.GetMotionProperties();
+        const auto current = body.GetRotation();
+        deltaRotation = (rotation * current.Conjugated()).Normalized();
+        // At exactly pi, choose the same axis for q and -q.
+        if (deltaRotation.GetW() == 0.0f) {
+            if (std::tuple(deltaRotation.GetX(), deltaRotation.GetY(), deltaRotation.GetZ()) <
+                std::tuple(0.0f, 0.0f, 0.0f))
+                deltaRotation = -deltaRotation;
+            deltaRotation.SetW(0.0f);
+        }
+        constexpr auto rotationDOFs =
+            JPH::EAllowedDOFs::RotationX | JPH::EAllowedDOFs::RotationY | JPH::EAllowedDOFs::RotationZ;
+        if ((motion.GetAllowedDOFs() & rotationDOFs) != rotationDOFs) {
+            const auto step = motion.LockAngular(deltaRotation.GetAngularVelocity(duration)) * duration;
+            const auto angle = step.Length();
+            reachable = angle == 0.0f ? current : (JPH::Quat::sRotation(step / angle, angle) * current).Normalized();
+        }
+
+        const auto delta = JPH::Vec3(position - body.GetPosition());
+        const float distance = delta.Length(), maximum = maxSpeed * duration;
+        capped = maxSpeed > 0.0f && distance > maximum;
+        if (capped) {
+            const auto com = body.GetShape()->GetCenterOfMass();
+            const auto wanted = position - JPH::RVec3(delta * (maximum / distance)) + reachable * com;
+            cappedOrigin = body.GetCenterOfMassPosition() +
+                           motion.LockTranslation(JPH::Vec3(wanted - body.GetCenterOfMassPosition())) - reachable * com;
+            deltaRotation = JPH::Quat::sIdentity();
+        }
+    }
+
+    if (capped)
+        SetBodyOriginPose(bodyId, cappedOrigin, reachable);
+
+    bool wake = false;
+    {
+        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+        auto &body = lock.GetBody();
+        const auto targetCOM = position + reachable * body.GetShape()->GetCenterOfMass();
+        // Native MoveKinematic applies DOFs without imposing manual velocity clamps.
+        body.GetMotionProperties()->MoveKinematic(JPH::Vec3(targetCOM - body.GetCenterOfMassPosition()), deltaRotation,
+                                                  duration);
+        wake = !body.IsActive() && body.IsInBroadPhase() &&
+               (body.GetLinearVelocity() != JPH::Vec3::sZero() || body.GetAngularVelocity() != JPH::Vec3::sZero());
+    }
+    if (wake)
+        m_system.GetBodyInterface().ActivateBody(record.native);
 }
 
 const JoltCpuScene::Surface &JoltCpuScene::GetSurface(uint32_t bodyId, JPH::SubShapeID subshape) const

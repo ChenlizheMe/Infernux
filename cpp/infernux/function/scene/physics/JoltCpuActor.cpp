@@ -125,6 +125,7 @@ JoltCpuScene::BodyRecord JoltCpuScene::CaptureBodyRecord(const PreparedCpuActor 
         record.memberCompound = static_cast<const JPH::CompoundShape *>(root);
     }
     record.surfaces = actor.surfaces;
+    record.mass = actor.mass;
     record.collisionDetectionMode = actor.collisionDetectionMode;
     record.authoredDynamic = actor.authoredDynamic;
     return record;
@@ -195,10 +196,14 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
             motion.SetMaxLinearVelocity(settings.mMaxLinearVelocity);
             motion.SetMaxAngularVelocity(settings.mMaxAngularVelocity);
             motion.SetGravityFactor(settings.mGravityFactor);
-            motion.SetLinearVelocityClamped(actor.frozen ? JPH::Vec3::sZero() : motion.GetLinearVelocity());
-            motion.SetAngularVelocityClamped(actor.frozen ? JPH::Vec3::sZero() : motion.GetAngularVelocity());
-            if (retainLoads)
-                motion.SetAccumulatedForceAndTorque(force, torque);
+            if (body.IsKinematic()) {
+                // A completed drive can exceed the manual speed limits.
+                motion.ProjectVelocitiesToAllowedDOFs();
+            } else {
+                motion.SetLinearVelocityClamped(motion.GetLinearVelocity());
+                motion.SetAngularVelocityClamped(motion.GetAngularVelocity());
+            }
+            motion.SetAccumulatedForceAndTorque(force, torque);
         }
         newBounds = body.GetWorldSpaceBounds();
     }
