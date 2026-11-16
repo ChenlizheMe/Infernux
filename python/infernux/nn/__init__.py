@@ -15,7 +15,7 @@ from .functional import squeeze, unsqueeze, ones_like, zeros_like
 from .functional import clamp, minimum, maximum
 from ._grad import no_grad, is_grad_enabled
 from ._random import rand, manual_seed, get_rng_state, set_rng_state
-from . import functional, optim, distributions, utils
+from . import autograd, functional, optim, distributions, utils
 from .model import bake, export, load, save_checkpoint, load_checkpoint
 from .program import program, Program, Budget
 from .sources import Channel
@@ -27,5 +27,5 @@ __all__ = ["float32", "int32", "uint32", "int64", "Tensor", "Parameter", "tensor
            "squeeze", "unsqueeze", "ones_like", "zeros_like", "no_grad", "is_grad_enabled",
            "clamp", "minimum", "maximum",
            "rand", "manual_seed", "get_rng_state", "set_rng_state",
-           "Sequential", "functional", "optim", "distributions", "utils", "program", "Program", "Budget", "Channel", "Clock", "Signal",
+           "Sequential", "autograd", "functional", "optim", "distributions", "utils", "program", "Program", "Budget", "Channel", "Clock", "Signal",
            "bake", "export", "load", "save_checkpoint", "load_checkpoint"]

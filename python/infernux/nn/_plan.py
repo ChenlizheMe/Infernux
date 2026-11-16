@@ -1115,6 +1115,14 @@ class _ResultSpec:
         return math.prod(self.shape) * np.dtype(self.dtype).itemsize
 
 
+@dataclass(frozen=True)
+class _Cotangent:
+    output_index: int | None
+    target: Tensor | None = None
+    objective: str | _CrossEntropy = "mse"
+    seed: Buffer | None = None
+
+
 class Plan:
     @classmethod
     def capture(cls, entry, inputs, *, binding_precompiled=False):
@@ -1592,7 +1600,7 @@ class Plan:
         state = tuple(empty(value.shape) for value in self.root._state)
         values = (*(empty(spec.shape, spec.dtype) for spec in self.inputs),
                   *(empty(layer.output_shape, layer.dtype) for layer in self.layers))
-        run = SimpleNamespace(plan=self, state=state, values=values, output_index=output_index,
+        run = SimpleNamespace(plan=self, state=state, values=values,
                               random_keys={index:(0, 0, 0, 0) for index, _ in self.random_layers},
                               inputs=tuple(SimpleNamespace(shape=spec.shape, requires_grad=spec.requires_grad, _data=values[index])
                                            for index, spec in enumerate(self.inputs)))
@@ -1610,7 +1618,8 @@ class Plan:
                               zip(self.loss_programs[objective, "value", result.shape], recipes))
         gradients = tuple((parameter, None if old is None else SimpleNamespace(_data=empty(old.shape), device=self.device))
                           for parameter, old in facts)
-        backward, updates = _backward_work(run, target, gradients, empty, objective=objective, clear_grad=clear_grad)
+        cotangents = (_Cotangent(output_index, target=target, objective=objective),)
+        backward, updates = _backward_work(run, cotangents, gradients, empty, clear_grad=clear_grad)
         operations.extend(("backward", operation) for operation in backward)
         published = {id(parameter): SimpleNamespace(_data=value, device=self.device)
                      for parameter, value in updates}
@@ -1678,10 +1687,12 @@ class Plan:
             p.retire((output, *scratch))
 
 
-def _backward_work(run, target, facts, empty, *, objective="mse", seed=None, clear_grad=False):
+def _backward_work(run, cotangents, facts, empty, *, clear_grad=False):
     """One gradient recipe for real bindings and storage-free service analysis."""
     plan, gradients, operations = run.plan, {}, []
-    result = plan._result_spec(run.output_index)
+    previous = {id(destination): value for destination, value in facts}
+    parameters = tuple(parameter for _, parameter in plan.root._named)
+    requested_slots = tuple(slot for slot, parameter in enumerate(parameters) if id(parameter) in previous)
 
     def combine(values):
         total = values[0]
@@ -1691,15 +1702,20 @@ def _backward_work(run, target, facts, empty, *, objective="mse", seed=None, cle
             total = output
         return total
 
-    gradient = seed
-    if gradient is None:
-        prediction = run.values[result.index]
-        gradient = empty(prediction.shape)
-        recipes = _objective_gradients(objective, result.shape,
-            prediction, None if target is None else target._data, gradient, empty)
-        operations.extend(_Operation(program, params) for program, (_, params, _) in
-                          zip(plan.loss_programs[objective, "gradient", result.shape], recipes))
-    adjoints = {result.index: [gradient]}
+    adjoints, grad_parameters = {}, set()
+    for cotangent in cotangents:
+        result = plan._result_spec(cotangent.output_index)
+        grad_parameters.update(slot for slot in requested_slots if result.grad_parameters[slot])
+        gradient = cotangent.seed
+        if gradient is None:
+            prediction = run.values[result.index]
+            gradient = empty(prediction.shape)
+            target = None if cotangent.target is None else cotangent.target._data
+            objective = cotangent.objective
+            recipes = _objective_gradients(objective, result.shape, prediction, target, gradient, empty)
+            operations.extend(_Operation(program, params) for program, (_, params, _) in
+                              zip(plan.loss_programs[objective, "gradient", result.shape], recipes))
+        adjoints.setdefault(result.index, []).append(gradient)
     for index in reversed(range(len(plan.layers))):
         layer, programs = plan.layers[index], plan.backward_operations[index]
         if index + plan.input_count not in adjoints or layer.kind in _STOP_GRADIENT:
@@ -1720,11 +1736,11 @@ def _backward_work(run, target, facts, empty, *, objective="mse", seed=None, cle
         dx = empty(before.shape)
         if layer.kind in _PARAMETER_OPS:
             operations.append(_Operation(programs[0], (run.state[layer.weight], gradient, dx)))
-            if result.grad_parameters[layer.weight]:
+            if layer.weight in grad_parameters:
                 dw = empty(run.state[layer.weight].shape)
                 operations.append(_Operation(programs[1], (before, gradient, dw)))
                 gradients.setdefault(layer.weight, []).append(dw)
-            if layer.bias is not None and result.grad_parameters[layer.bias]:
+            if layer.bias in grad_parameters:
                 db = empty(run.state[layer.bias].shape)
                 operations.append(_Operation(programs[2], (gradient, db)))
                 gradients.setdefault(layer.bias, []).append(db)
@@ -1737,9 +1753,9 @@ def _backward_work(run, target, facts, empty, *, objective="mse", seed=None, cle
             primal = run.values[index + plan.input_count] if _UNARY[layer.kind].output_gradient else before
             operations.append(_Operation(programs[0], (primal, gradient, dx)))
         adjoints.setdefault(source, []).append(dx)
-    destinations = [(plan.root._named[slot][1], combine(values)) for slot, values in gradients.items()]
+    destinations = [(parameters[slot], combine(values)) for slot, values in gradients.items()]
     for index, value in enumerate(run.inputs):
-        if value.requires_grad and index in adjoints:
+        if value.requires_grad and id(value) in previous and index in adjoints:
             destinations.append((value, combine(adjoints[index])))
     # Calling model(x, x) contributes twice to one leaf, not two independent
     # gradient publications which would overwrite each other.
@@ -1747,7 +1763,6 @@ def _backward_work(run, target, facts, empty, *, objective="mse", seed=None, cle
     for destination, value in destinations:
         grouped.setdefault(id(destination), (destination, []))[1].append(value)
     destinations = [(destination, combine(values)) for destination, values in grouped.values()]
-    previous = {id(destination): value for destination, value in facts}
     updates = []
     for destination, value in destinations:
         old = None if clear_grad and all(destination is not value for value in run.inputs) else previous[id(destination)]
@@ -1761,7 +1776,7 @@ def _backward_work(run, target, facts, empty, *, objective="mse", seed=None, cle
 
 class _BackwardBindings:
     """One backward's private writes and frozen gradient publication domain."""
-    def __init__(self, run, target, facts, *, objective="mse", seed=None, clear_grad=False):
+    def __init__(self, run, cotangents, facts, *, clear_grad=False):
         self.run, self.facts = run, facts
         self.clear_grad = clear_grad
         self.storage, self.updates, operations = [], [], []
@@ -1772,7 +1787,7 @@ class _BackwardBindings:
             return value
 
         try:
-            operations, updates = _backward_work(run, target, facts, empty, objective=objective, seed=seed, clear_grad=clear_grad)
+            operations, updates = _backward_work(run, cotangents, facts, empty, clear_grad=clear_grad)
             self.updates = [(destination, Tensor._from_buffer(value, destination.shape))
                             for destination, value in updates]
             self.cursor = _bind_cursor(operations, private=(*self.storage, *run.values[run.plan.input_count:]),
@@ -1866,8 +1881,8 @@ class _Run:
     def _begin_backward(self):
         p.retire(self.loss_scratch, flush=False)
         self.loss_scratch.clear()
-        self.backward_bindings = _BackwardBindings(self, self.target, self.grad_facts,
-                                                   objective=self.objective, clear_grad=self.clear_grad)
+        cotangents = (_Cotangent(self.output_index, target=self.target, objective=self.objective),)
+        self.backward_bindings = _BackwardBindings(self, cotangents, self.grad_facts, clear_grad=self.clear_grad)
         self.cursor = self.backward_bindings.cursor
         self.phase = "backward"
 
@@ -1975,25 +1990,54 @@ class _Run:
         self.loss_scratch.clear()
         self.consumed = True
 
-    def backward(self, target=None, *, objective="mse", seed=None, output_index=None):
+    def backward(self, target=None, *, objective="mse", output_index=None):
+        if target is not None:
+            target = self.plan._target(target, objective, output_index=output_index)
+        self._reverse((_Cotangent(output_index, target=target, objective=objective),))
+
+    def _reverse(self, cotangents, *, inputs=None, allow_unused=False):
         root, plan = self.plan.root, self.plan
-        bindings = None
         with root._lock:
             plan._check_current()
             if (self.consumed or root._state is not self.state
                     or any(value.requires_grad != spec.requires_grad for value, spec in zip(self.inputs, plan.inputs))):
                 raise RuntimeError("backward execution is already consumed or its parameter state has changed")
-            try:
-                self.output_index = output_index
-                plan._prepare_backward(self.values, self.state, target, objective=objective, output_index=output_index)
+            if inputs is None:
                 destinations = tuple(value for _, value in root._named) + tuple(x for x in self.inputs if x.requires_grad)
-                bindings = _BackwardBindings(self, target, _grad_facts(destinations), objective=objective, seed=seed)
+                facts = _grad_facts(destinations)
+            else:
+                if not allow_unused:
+                    used = set()
+                    for cotangent in cotangents:
+                        spec = plan._result_spec(cotangent.output_index)
+                        used.update(id(value) for index, value in enumerate(self.inputs) if index in spec.backward_values)
+                        used.update(id(parameter) for (_, parameter), tracked in zip(root._named, spec.grad_parameters) if tracked)
+                    if any(id(value) not in used for value in inputs):
+                        raise RuntimeError("a requested input was unused in the outputs; set allow_unused=True to return its missing gradient")
+                facts = tuple((value, None) for value in inputs)
+            bindings, seeds, sources = None, [], []
+            try:
+                for cotangent in cotangents:
+                    if cotangent.seed is not None:
+                        seed = cotangent.seed.view(readonly=True)
+                        seeds.append(seed)
+                        cotangent = replace(cotangent, seed=seed)
+                    sources.append(cotangent)
+                    plan._prepare_backward(self.values, self.state, cotangent.target,
+                                           objective=cotangent.objective, output_index=cotangent.output_index)
+                bindings = _BackwardBindings(self, sources, facts)
                 _execute_work(bindings.cursor, plan.device, plan.programs)
-                bindings.commit()
+                if inputs is None:
+                    bindings.commit()
+                else:
+                    gradients = {id(destination): value for destination, value in bindings.updates}
+                    bindings.updates.clear()
+                    return tuple(gradients.get(id(value)) for value in inputs)
             finally:
                 self.consumed = True
                 if bindings is not None:
                     bindings.retire()
-                p.retire((*self.values, None if target is None else target._data, seed))
+                targets = (cotangent.target._data for cotangent in cotangents if cotangent.target is not None)
+                p.retire((*self.values, *targets, *seeds))
                 self.values = ()
                 self.state = self.inputs = self.cursor = None

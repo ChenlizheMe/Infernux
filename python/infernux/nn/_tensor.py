@@ -319,27 +319,31 @@ class Tensor:
     def backward(self, gradient=None, retain_graph=None, create_graph=False, inputs=None):
         if retain_graph not in (None, False) or create_graph or inputs is not None:
             raise NotImplementedError("higher derivatives, retained graphs and selective inputs are unsupported")
+        run, cotangent = self._backward_source(gradient)
+        run._reverse((cotangent,))
+
+    def _backward_source(self, gradient):
+        from ._plan import _Cotangent
+
         if not self.requires_grad or (self._loss is None and self._run is None):
             raise RuntimeError("backward requires a differentiable result from a static model")
         if self._loss is not None:
             if gradient is not None:
                 raise NotImplementedError("a scalar loss currently uses its default unit seed")
             run, target, objective, output_index = self._loss
-            run.backward(target, objective=objective, output_index=output_index)
-            return
+            return run, _Cotangent(output_index, target=target, objective=objective)
         if gradient is None:
             if self.numel() != 1:
                 raise ValueError("a non-scalar output requires an explicit gradient Tensor")
             if self.shape == ():
-                self._run.backward(objective="scalar", output_index=self._value_index)
-                return
+                return self._run, _Cotangent(self._value_index, objective="scalar")
             gradient = Tensor(np.ones(self.shape, np.float32), device=self.device)
         if (not isinstance(gradient, Tensor) or gradient.shape != self.shape or gradient.device != self.device
                 or gradient.dtype != self.dtype
                 or gradient.requires_grad or gradient._run is not None or gradient._loss is not None):
             raise ValueError("gradient must be a detached Tensor with the same output shape, dtype and device")
         _check_storage((self._data, gradient._data))
-        self._run.backward(seed=gradient._data.view(readonly=True), output_index=self._value_index)
+        return self._run, _Cotangent(self._value_index, seed=gradient._data)
 
 
 class Parameter(Tensor):

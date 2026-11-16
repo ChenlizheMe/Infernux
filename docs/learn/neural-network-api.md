@@ -63,6 +63,7 @@ grid_sample 前向使用真实的邻点 gather。动态浮点地址只在显式�
 | `nn.functional.mse_loss(input, target, reduction="mean")` | 均方误差标量 | 可求导输入为模型输出，目标不可求导；无梯度评估也接受普通 Tensor；形状与设备相同 |
 | `nn.functional.cross_entropy(input, target, ignore_index=-100, reduction="mean")` | 稳定交叉熵与反向 | 支持 float32 概率目标或 int64 类别目标，mean/sum；类别轴为第 1 轴，单向量为第 0 轴；整数目标支持完整 int64 ignore_index；暂不支持 weight、reduction="none" 或平滑 |
 | `loss.backward()`、`output.backward(gradient)` | 反向传播并累积参数梯度 | MSE/交叉熵使用默认种子；普通输出可传同形、同设备的 detached 梯度，单元素可省略；不支持高阶梯度和保留反向图 |
+| `nn.autograd.grad(outputs, inputs, grad_outputs=None, allow_unused=...)` | 返回指定叶张量和参数的梯度，保留已有 `.grad` | 输入顺序决定返回 tuple 的顺序。一次 forward 的多个输出或损失可以共同反传，汇合处累加梯度。普通非标量输出需要匹配的 detached 种子，MSE/交叉熵保留单位种子。一次调用消耗对应反向记录。未用输入默认报错，`allow_unused=True` 返回 `None`，`materialize_grads=True` 返回零张量。 |
 | `nn.optim.SGD(model.parameters(), lr=...)` | 普通 SGD | 一个完整模型参数域、一个存活优化器；当前不支持动量、权重衰减、参数子组或 closure |
 | `nn.optim.Adam(model.parameters(), lr=..., betas=(.9,.999), eps=1e-8, weight_decay=0)` | Adam 与耦合 L2 衰减 | 参数、两组动量和逐参数计数一起提交；None 梯度跳过，零梯度正常更新；暂不支持 AMSGrad、foreach、fused 或 AdamW |
 | `optimizer.zero_grad(set_to_none=True)` | 清除或置零梯度 | `True` 释放梯度，`False` 执行已编译置零操作 |
