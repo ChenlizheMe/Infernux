@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import ast
 import copy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import os
+from pathlib import Path
 from types import ModuleType
 
 import numpy as np
 
 from .slang_ast import SlangEmitter, common_type, qualified
+from .shader_library import LibraryGraph, typed_function_call
 from .value_types import SCALAR_STORAGE_TYPES
 from .work_item import WorkItem, normalize_work_item
 from .cache import compiler_cache_root, prune_cache_files
@@ -36,6 +38,8 @@ class KernelCompilationPlan:
     generated_source: str = ""
     lowering: object = None
     source_locations: tuple[dict, ...] = ()
+    libraries: tuple[tuple[str, str, str], ...] = ()
+    library_functions: dict = field(default_factory=dict)
 
 
 def _work_item_proof(work_item, params):
@@ -56,6 +60,8 @@ def _continuation_contract(work_item, params, *, autodiff_mode, gradient_paramet
     names = tuple(argument.arg for argument in (*work_item.definition.args.posonlyargs, *work_item.definition.args.args))
     proof = _work_item_proof(work_item, params) if proof is None else proof
     diagnostics = [item.format() for item in proof.diagnostics]
+    if work_item.library_calls:
+        diagnostics.append("ShaderLib calls require a proven operation bound for continuation")
     if autodiff_mode != "none" or gradient_parameters:
         diagnostics.append("local VJP parameters do not have a proven range ABI")
     inner = proof.inner_range
@@ -94,6 +100,11 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
         entry["function"] += "#" + continuation.inner_range.kind
     plan.source_locations = (entry, *(_source_location(item.helper_origins[helper.name], helper, role="helper")
                                      for helper in item.helpers))
+    if item.library_calls:
+        graph, plan.library_functions = _link_libraries(item, autodiff_mode)
+        plan.libraries = graph.sources()
+        plan.source_locations += tuple({"role": "library", "path": module.path, "line": 1, "column": 1}
+                                       for module in graph.ordered)
     plan.generated_source, plan.lowering = _source(plan, params)
     # Cache the exact compiler input, including its generated ABI and work
     # proof. Runtime scalar values and buffer identities are not specializations.
@@ -103,6 +114,9 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
         "parameters": parameter_key(params), "continuation": asdict(continuation),
         "autodiff": autodiff_mode, "gradients": gradients, "precise": True,
     }
+    if plan.libraries:
+        identity["libraries"] = plan.libraries
+        plan.lowering.source_ranges.extend(graph.ranges())
     plan.artifact_key = hashlib.blake2b(json.dumps(identity, sort_keys=True).encode(), digest_size=16).hexdigest()
     plan.lowering.plan = None
     return plan
@@ -111,6 +125,55 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
 def _source_location(origin, definition, *, role):
     return {"function": origin.function, "path": origin.path, "role": role,
             "line": origin.line_offset + definition.lineno, "column": definition.col_offset + 1}
+
+
+def _read_library_source(path):
+    from infernux.application import Application
+    from infernux.resources import resources_path
+
+    source = Path(path)
+    if Application.is_player() and not source.is_relative_to(Path(resources_path).resolve()):
+        # The cooked asset catalog maps the authored path to the shipped
+        # shader source. Keep the original path in Slang's source map and key.
+        root = Path(Application.data_path())
+        parts = source.relative_to(root).parts if source.is_relative_to(root) else source.parts
+        assets = next((index for index, part in enumerate(parts) if part.casefold() == "assets"), None)
+        if assets is not None:
+            source = Path(Application.asset_path("/".join(parts[assets:])))
+    return source.read_text(encoding="utf-8-sig")
+
+
+def _link_libraries(item, autodiff_mode):
+    from infernux.engine.project_context import get_project_root
+
+    graph = LibraryGraph(_read_library_source, numeric_only=True)
+    functions = {}
+    project_root = get_project_root()
+    definitions = ((item.definition, item.origin),
+                   *((helper, item.helper_origins[helper.name]) for helper in item.helpers))
+    for definition, origin in definitions:
+        owner = SlangEmitter(origin.source, origin.path)
+        owner.line_offset = origin.line_offset
+        for node in ast.walk(definition):
+            if not isinstance(node, ast.Call):
+                continue
+            name = qualified(node.func)
+            if name in functions or name not in item.library_calls:
+                continue
+            if autodiff_mode != "none":
+                owner.error(node, "ShaderLib calls are unavailable in local reverse-mode kernels",
+                            code="author.derivative")
+            reference, export = item.library_calls[name]
+            declaring_path = Path(reference.declaring_path)
+            if project_root and not declaring_path.is_absolute():
+                declaring_path = Path(project_root) / declaring_path
+            module = graph.load_reference(reference.module, reference.level, owner, node,
+                                          declaring_path=declaring_path)
+            if export not in module.functions:
+                owner.error(node, f"ShaderLib {reference.module!r} has no export {export!r}",
+                            code="author.reference")
+            functions[name] = module.functions[export]
+    return graph, functions
 
 
 _SCALAR_TYPES = SCALAR_STORAGE_TYPES
@@ -139,10 +202,11 @@ def _constant(value):
 
 class _NumericalEmitter(SlangEmitter):
     """Keep Python math's integer results in kernels and imported helpers."""
-    def __init__(self, *args, math_aliases=(), math_symbols=None, **kwargs):
+    def __init__(self, *args, math_aliases=(), math_symbols=None, library_functions=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.math_aliases = math_aliases
         self.math_symbols = dict(math_symbols or {})
+        self.library_functions = {} if library_functions is None else library_functions
 
     def symbol(self, name):
         return self.math_symbols.get(name, super().symbol(name))
@@ -157,12 +221,19 @@ class _NumericalEmitter(SlangEmitter):
         return matched
 
     def infer(self, node):
-        if isinstance(node, ast.Call) and self._integer_math_call(node):
-            kind = self.infer(node.args[0])
-            return kind if kind in {"int", "uint", "int64_t"} else "int"
+        if isinstance(node, ast.Call):
+            function = self.library_functions.get(qualified(node.func))
+            if function is not None:
+                return function.result
+            if self._integer_math_call(node):
+                kind = self.infer(node.args[0])
+                return kind if kind in {"int", "uint", "int64_t"} else "int"
         return super().infer(node)
 
     def visit_Call(self, node):
+        function = self.library_functions.get(qualified(node.func))
+        if function is not None:
+            return typed_function_call(self, node, function)
         if self._integer_math_call(node):
             if self.infer(node.args[0]) in {"int", "uint", "int64_t"}:
                 return self.visit(node.args[0])
@@ -190,7 +261,8 @@ class _KernelEmitter(_NumericalEmitter):
                          math_aliases=tuple(name for name, value in plan.globals_map.items()
                                             if isinstance(value, ModuleType) and value.__name__ == "math"),
                          math_symbols={name: value.__name__ for name, value in plan.globals_map.items()
-                                       if getattr(value, "__module__", None) == "math"})
+                                       if getattr(value, "__module__", None) == "math"},
+                         library_functions=plan.library_functions)
         from infernux.compute import Buffer
 
         self.plan = plan
@@ -395,7 +467,8 @@ class _HelperEmitter(_NumericalEmitter):
     def __init__(self, parent, function):
         origin = parent.plan.work_item.helper_origins[function.name]
         super().__init__(origin.source, origin.path, aliases=parent.aliases, types=parent.types,
-                         math_aliases=parent.math_aliases, math_symbols=parent.math_symbols)
+                         math_aliases=parent.math_aliases, math_symbols=parent.math_symbols,
+                         library_functions=parent.library_functions)
         self.line_offset = origin.line_offset
         self.parent = parent
 
@@ -550,7 +623,12 @@ void main(uint3 tid : SV_DispatchThreadID) {{
     if (tid.x >= uint(({last}) - ({first}))) return;
     int {index} = int(tid.x) + ({first});
 '''
-    code = "\n".join([*emitter.declarations(), _ARITHMETIC, *emitter.helper_sources.values(), derivative, entry, *emitter.lines, "}"])
+    imports = dict.fromkeys("import " + function.symbol.split("::", 1)[0] + ";"
+                            for function in plan.library_functions.values())
+    code = "\n".join([
+        *imports, *emitter.declarations(), _ARITHMETIC, *emitter.helper_sources.values(),
+        derivative, entry, *emitter.lines, "}",
+    ])
     return code, emitter
 
 
@@ -610,7 +688,8 @@ def compile_kernel(function, params, *, target="spirv", receiver_fields=None, au
     if cached is not None:
         return cached
     compiled = _Infernux._compile_shader_program(plan.generated_source, plan.work_item.origin.path, "inx_kernel",
-                                                targets=[target], precise=True, source_ranges=plan.lowering.source_ranges)
+                                                libraries=plan.libraries, targets=[target], precise=True,
+                                                source_ranges=plan.lowering.source_ranges)
     artifact = _artifact(compiled["targets"][0], plan.lowering, plan, params)
     root.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")

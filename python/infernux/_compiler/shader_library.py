@@ -6,6 +6,7 @@ import ast
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from infernux.shader._language import INTRINSICS, TYPES
 from .slang_ast import SlangEmitter, qualified
 from .shader_types import (
     BUFFER_ELEMENTS, BUFFER_TYPES, MULTISAMPLED_TYPES, RESOURCE_DIMENSIONS,
@@ -68,6 +69,13 @@ class Function:
 
 _FRAGMENT_EFFECTS = {"ddx": "derivatives", "ddy": "derivatives", "fwidth": "derivatives",
                      "sample": "implicit_lod", "sample_bias": "implicit_lod", "clip": "discard"}
+
+
+def typed_function_call(owner, node, function, *, lighting_mode="false"):
+    if node.keywords or len(node.args) != len(function.arguments):
+        owner.error(node, "Shader helper arguments must match its typed positional signature")
+    specialization = "<" + lighting_mode + ">" if function.lighting_specialization else ""
+    return function.symbol + specialization + "(" + ", ".join(owner.visit(arg) for arg in node.args) + ")"
 
 
 def function_effects(definitions, functions, owner, *, method=False):
@@ -244,10 +252,7 @@ class ShaderEmitter(SlangEmitter):
         function = self.functions.get(qualified(node.func))
         if function is None:
             return super().visit_Call(node)
-        if node.keywords or len(node.args) != len(function.arguments):
-            self.error(node, "Shader helper arguments must match its typed positional signature")
-        specialization = "<" + self.lighting_mode + ">" if function.lighting_specialization else ""
-        return function.symbol + specialization + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
+        return typed_function_call(self, node, function, lighting_mode=self.lighting_mode)
 
     def annotation(self, node):
         if isinstance(node, ast.Subscript):
@@ -311,6 +316,25 @@ class ShaderEmitter(SlangEmitter):
                 "{", *self.lines, "}"]
 
 
+class _ComputeLibraryEmitter(ShaderEmitter):
+    stage = "compute"
+
+    def annotation(self, node):
+        kind = super().annotation(node)
+        if kind not in TYPES.values():
+            self.error(node, "Compute ShaderLibs use scalar, vector or matrix value types", code="author.type")
+        return kind
+
+    def visit_Call(self, node):
+        name = qualified(node.func)
+        operation = self.symbol(name)
+        if (operation != name and operation not in TYPES and operation not in INTRINSICS
+                and operation not in _FRAGMENT_EFFECTS):
+            self.error(node, "Compute ShaderLibs receive their inputs as values; cannot use " + name,
+                       code="author.stage")
+        return super().visit_Call(node)
+
+
 def declarations(source, path):
     """Separate GPU declarations without importing or executing their Python module."""
     emitter = ShaderEmitter(source, path)
@@ -336,12 +360,13 @@ def declarations(source, path):
 
 
 class LibraryGraph:
-    def __init__(self, reader=None):
+    def __init__(self, reader=None, *, numeric_only=False):
         self.modules: dict[Path, Module] = {}
         self.ordered: list[Module] = []
         self.loading: set[Path] = set()
         self.lighting_registry: Module | None = None
         self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
+        self.numeric_only = numeric_only
 
     def reference(self, call, owner, *, stage, suffix):
         if (not isinstance(call, ast.Call) or owner.qualified(call.func) != owner.alias + ".ref"
@@ -362,34 +387,40 @@ class LibraryGraph:
             owner.error(call, "GPU asset ID is not registered: " + reference, code="author.reference")
         return Path(resolved)
 
+    def _import_base(self, module, level, owner, location, *, declaring_path=None):
+        if level:
+            base = Path(declaring_path or owner.path).parent
+            for _ in range(level - 1):
+                base = base.parent
+            return base.joinpath(*(module or "").split("."))
+        if module and module.startswith("infernux.shader.lib."):
+            from infernux.resources import resources_path
+
+            return Path(resources_path, "shaders", "lib", *module.split(".")[3:])
+        owner.error(location, "ShaderLib imports use a relative path or infernux.shader.lib")
+
+    def load_reference(self, module, level, owner, location, *, declaring_path=None):
+        base = self._import_base(module, level, owner, location, declaring_path=declaring_path)
+        return self.load(base.with_name(base.name + ".shaderlib.py"), owner, location)
+
     def imports(self, imports, owner: ShaderEmitter):
         functions, dependencies = {}, []
         for statement in imports:
             if any(item.name == "*" for item in statement.names):
                 owner.error(statement, "ShaderLib imports name explicit exports")
-            if statement.level:
-                base = Path(owner.path).parent
-                for _ in range(statement.level - 1):
-                    base = base.parent
-                base = base.joinpath(*(statement.module or "").split("."))
-            elif statement.module and statement.module.startswith("infernux.shader.lib."):
-                from infernux.resources import resources_path
-
-                base = Path(resources_path) / "shaders" / "lib"
-                base = base.joinpath(*statement.module.split(".")[3:])
-            else:
-                owner.error(statement, "ShaderLib imports use a relative path or infernux.shader.lib")
             if statement.module:
-                module = self.load(base.with_name(base.name + ".shaderlib.py"), owner, statement)
+                module = self.load_reference(statement.module, statement.level, owner, statement)
                 dependencies.append(module.name)
                 for alias in statement.names:
                     if alias.name not in module.functions:
-                        owner.error(statement, f"ShaderLib {base.name!r} has no export {alias.name!r}")
+                        name = statement.module.rsplit(".", 1)[-1]
+                        owner.error(statement, f"ShaderLib {name!r} has no export {alias.name!r}")
                     name = alias.asname or alias.name
                     if name in functions:
                         owner.error(statement, "Duplicate imported ShaderLib name: " + name)
                     functions[name] = module.functions[alias.name]
             else:
+                base = self._import_base(None, statement.level, owner, statement)
                 for alias in statement.names:
                     module = self.load(base / (alias.name + ".shaderlib.py"), owner, statement)
                     dependencies.append(module.name)
@@ -412,7 +443,8 @@ class LibraryGraph:
             owner.error(location, "ShaderLib source does not exist: " + str(path))
         source = source.removeprefix("\ufeff")
         alias, imports, body = declarations(source, str(path))
-        emitter = ShaderEmitter(source, str(path), aliases=(alias,))
+        emitter_type = _ComputeLibraryEmitter if self.numeric_only else ShaderEmitter
+        emitter = emitter_type(source, str(path), aliases=(alias,))
         module = Module("inx_library_" + str(len(self.modules)), str(path), "", {})
         self.modules[path] = module
         self.loading.add(path)
@@ -428,12 +460,13 @@ class LibraryGraph:
             module.functions[definition.name] = functions[definition.name] = function
         functions = function_effects(body, functions, emitter)
         module.functions = {definition.name: functions[definition.name] for definition in body}
-        code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias, graph=self, owner=emitter),
-                *("import " + name + ";" for name in dependencies),
-                "namespace " + module.name + " {"]
+        code = ["import inx_geometry;"] if self.numeric_only else [
+            "import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias, graph=self, owner=emitter)]
+        code.extend("import " + name + ";" for name in dependencies)
+        code.append("namespace " + module.name + " {")
         ranges = []
         for definition in body:
-            function_emitter = ShaderEmitter(source, str(path), aliases=(alias,), functions=functions)
+            function_emitter = emitter_type(source, str(path), aliases=(alias,), functions=functions)
             code.extend(function_emitter.emit_function(definition, module.functions[definition.name], public=True))
             ranges.extend(function_emitter.source_ranges)
         code.append("}")
@@ -444,7 +477,8 @@ class LibraryGraph:
         return module
 
     def sources(self):
-        return (RESOURCE_MODULE, *((module.name, module.path, module.source) for module in self.ordered))
+        builtins = () if self.numeric_only else (RESOURCE_MODULE,)
+        return (*builtins, *((module.name, module.path, module.source) for module in self.ordered))
 
     def ranges(self):
         return tuple(location for module in self.ordered for location in module.source_ranges)

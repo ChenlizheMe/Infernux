@@ -259,11 +259,12 @@ def receiver_bindings(function, receiver, fields: tuple[str, ...]) -> tuple[tupl
 
 def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict):
     """Freeze each declared helper in its own scope, then link unique symbols."""
-    from infernux.compute import Function
+    from infernux.compute import Function, _LibraryReference
 
     ordered: list[ast.FunctionDef] = []
     origins: dict[str, SourceOrigin] = {}
     symbols = {}
+    library_symbols = {}
     active = set()
     compile_values = {}
     reserved = set(globals_map)
@@ -304,6 +305,13 @@ def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict):
                 node.args = [self.visit(argument) for argument in node.args]
                 node.keywords = [self.visit(keyword) for keyword in node.keywords]
                 return node
+            if isinstance(node.func, ast.Attribute):
+                reference = self.resolve(node.func.value)
+                if isinstance(reference, _LibraryReference):
+                    key = reference, node.func.attr
+                    if key not in library_symbols:
+                        library_symbols[key] = reserve(f"_infernux_library_{len(library_symbols)}")
+                    node.func = ast.copy_location(ast.Name(id=library_symbols[key], ctx=ast.Load()), node.func)
             return self.generic_visit(node)
 
     class BindGlobals(ast.NodeTransformer):
@@ -355,7 +363,7 @@ def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict):
 
     try:
         BindCalls(kernel_definition, dict(globals_map)).visit(kernel_definition)
-        return ordered, origins, compile_values
+        return ordered, origins, compile_values, {symbol: key for key, symbol in library_symbols.items()}
     finally:
         # Recursive closures and temporary binder classes must release the
         # unfiltered project namespace immediately, including on failure.
@@ -374,6 +382,7 @@ class WorkItem:
     domain_parameter: int
     origin: SourceOrigin
     helper_origins: dict[str, SourceOrigin] = field(default_factory=dict)
+    library_calls: dict[str, tuple] = field(default_factory=dict)
 
     def loop_definition(self, definition=None, *, bounds: tuple[str, str] | None = None):
         """Wrap the one author body; backends never recover it independently."""
@@ -477,8 +486,8 @@ class WorkItem:
                           read_elements_per_iteration=(region.prefix_reads + region.term_reads * region.count
                               + (region.epilogue_reads if kind == "final" else 0) + (kind != "initial")),
                           write_elements_per_iteration=len(stores))
-        item = WorkItem(definition, copy.deepcopy(self.helpers), dict(self.globals_map), dict(self.compile_values),
-                        self.index_name, self.domain_name, self.domain_parameter, self.origin, dict(self.helper_origins))
+        item = replace(self, definition=definition, helpers=copy.deepcopy(self.helpers),
+                       globals_map=dict(self.globals_map), compile_values=dict(self.compile_values))
         return LoweredWorkItem(item, derived, (*parameter_kinds, "array_f32", "array_f32", "int32", "int32"))
 
 
@@ -549,7 +558,7 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
         position -= 1
     body.pop(position)
     definition.body = body
-    helpers, helper_origins, compile_values = _helper_definitions(definition, globals_map)
+    helpers, helper_origins, compile_values, library_calls = _helper_definitions(definition, globals_map)
     compile_values.update(snapshot_compilation_values([definition], globals_map))
     # Retained source plans own only actual dependencies, never an old snapshot
     # of unrelated worlds, models or a previous generation of declarations.
@@ -563,4 +572,4 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
         scopes.extend(scope.get_children())
     globals_map = {name: value for name, value in globals_map.items() if name in required}
     return WorkItem(definition, helpers, globals_map, compile_values, index_name, domain_name, domain_parameter,
-                    origin, helper_origins)
+                    origin, helper_origins, library_calls)

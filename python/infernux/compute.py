@@ -18,6 +18,7 @@ from functools import lru_cache, wraps
 from itertools import count
 from queue import Empty, SimpleQueue
 import math
+import sys
 import threading
 from time import perf_counter_ns
 from typing import Literal
@@ -3014,6 +3015,16 @@ class Function:
         raise RuntimeError("@inx.compute.function helpers are valid only inside a GPU kernel")
 
 
+@dataclass(frozen=True, slots=True)
+class _LibraryReference:
+    module: str
+    level: int
+    declaring_path: str
+
+    def __getattr__(self, name):
+        raise AttributeError(f"ShaderLib export '{name}' is callable inside a GPU kernel")
+
+
 def _release_engine_resources() -> None:
     """Release module-level GPU declarations before native renderer teardown."""
     assert_runtime_owner_thread()
@@ -3060,6 +3071,24 @@ def kernel(function) -> Kernel:
 def function(value) -> Function:
     """Declare a reusable numeric helper for :func:`kernel` functions."""
     return Function(value)
+
+
+def library(module: str) -> _LibraryReference:
+    """Reference a value-only ShaderLib as a namespace for GPU kernel calls.
+
+    Use the same module names as ShaderLib imports, such as ``.forces`` or
+    ``infernux.shader.lib.noise``. Relative names use this Python file as
+    their base. The compiler resolves the library and its imports at prepare.
+    Call exports with positional numeric values, for example
+    ``forces.damp(velocity)`` after ``forces = compute.library(".forces")``.
+    """
+    if not isinstance(module, str):
+        raise TypeError("inx.compute.library requires a ShaderLib module name")
+    name = module.lstrip(".")
+    level = len(module) - len(name)
+    if not all(part.isidentifier() for part in name.split(".")):
+        raise ValueError("Use a ShaderLib module name such as '.forces' or 'infernux.shader.lib.noise'")
+    return _LibraryReference(name, level, sys._getframe(1).f_code.co_filename)
 
 
 def index(domain: Buffer) -> int:
@@ -3687,6 +3716,6 @@ __all__ = [
     "ComputeExecutionError",
     "buffer", "Buffer", "BufferDescription", "Readback", "Statistics", "statistics", "transfer",
     "set_profiling_enabled",
-    "kernel", "Kernel", "function", "Function", "index", "atomic_add", "prepare", "prepare_continuation", "prepare_work", "Work", "launch",
+    "kernel", "Kernel", "function", "Function", "library", "index", "atomic_add", "prepare", "prepare_continuation", "prepare_work", "Work", "launch",
     "recording", "discard_pending", "bind_transform", "TransformBinding", "TransformPose",
 ]

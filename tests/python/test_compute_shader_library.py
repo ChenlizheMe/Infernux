@@ -1,0 +1,187 @@
+"""Exercise the same authored ShaderLib through graphics and numerical Slang."""
+import linecache
+import py_compile
+from importlib.machinery import SourcelessFileLoader
+from pathlib import Path
+from types import ModuleType
+
+import numpy as np
+import pytest
+
+from infernux import compute
+from infernux.application import Application
+from infernux._compiler import slang as frontend
+from infernux._compiler.shader import read_shader
+from infernux.engine.build.compute_aot import _gpu_buffer_descriptor
+from infernux.engine.game_builder import GameBuilder
+from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+from infernux.engine.project_context import (
+    set_runtime_asset_query, set_runtime_asset_resolver, using_project_root,
+)
+from infernux.lib import _Infernux
+
+
+KERNEL = '''import infernux as inx
+forces = inx.compute.library(".forces")
+
+@inx.compute.function
+def adjust(value):
+    return forces.damp(value)
+
+@inx.compute.kernel
+def solve(values):
+    i = inx.compute.index(values)
+    values[i] = adjust(values[i])
+'''
+
+LIBRARY = '''import infernux.shader as shader
+from . import physical as p, display as d
+
+def damp(value: float) -> float:
+    return p.scale(value) + d.scale(value)
+'''
+
+
+@pytest.fixture
+def project(tmp_path):
+    root = tmp_path / 'project'
+    scripts = root / 'Assets' / 'Scripts'
+    scripts.mkdir(parents=True)
+    (scripts / 'Work.py').write_text(KERNEL, encoding='utf-8')
+    (scripts / 'forces.shaderlib.py').write_text(LIBRARY, encoding='utf-8')
+    (scripts / 'physical.shaderlib.py').write_text(
+        'import infernux.shader as shader\ndef scale(value: float) -> float:\n    return value * 2.0\n',
+        encoding='utf-8',
+    )
+    (scripts / 'display.shaderlib.py').write_text(
+        'import infernux.shader as shader\ndef scale(value: float) -> float:\n    return value + 1.0\n',
+        encoding='utf-8',
+    )
+    return root, scripts
+
+
+def load_kernel(path):
+    module = ModuleType('Scripts.Work')
+    exec(compile(path.read_text(encoding='utf-8'), str(path), 'exec'), vars(module))
+    return module.solve
+
+
+def test_transitive_shaderlib_links_graphics_and_compute_targets(project):
+    root, scripts = project
+    preview = scripts / 'Preview.frag.py'
+    preview.write_text('''import infernux.shader as shader
+from .forces import damp
+
+class Preview(shader.fullscreen):
+    def main(self) -> shader.vec4:
+        return shader.vec4(damp(0.25))
+''', encoding='utf-8')
+    params = (_gpu_buffer_descriptor((4,), np.float32),)
+    declaration = load_kernel(scripts / 'Work.py')
+    with using_project_root(root):
+        compiled = read_shader(preview, 'test_shared_shaderlib').compile()
+        assert {program['target'] for program in compiled['targets']} == {'spirv', 'wgsl'}
+        for target in ('spirv', 'wgsl'):
+            artifact = frontend.compile_kernel(declaration.function, params, target=target)
+            assert artifact.target == target and artifact.tasks
+            assert [Path(row['path']).name for row in artifact.diagnostic_locations if row['role'] == 'library'] == [
+                'physical.shaderlib.py', 'display.shaderlib.py', 'forces.shaderlib.py',
+            ]
+            assert any('ShaderLib calls require a proven operation bound' in message
+                       for message in artifact.continuation.diagnostics)
+            if target == 'spirv':
+                primal = artifact
+                assert artifact.tasks[0].startswith(b'\x03\x02\x23\x07')
+            else:
+                assert b'@compute' in artifact.tasks[0]
+        leaf = scripts / 'physical.shaderlib.py'
+        leaf.write_text(leaf.read_text(encoding='utf-8').replace('2.0', '4.0'), encoding='utf-8')
+        changed = frontend.compile_kernel(declaration.function, params)
+    assert changed.identity != primal.identity and changed.tasks != primal.tasks
+
+
+@pytest.mark.parametrize(('leaf', 'code', 'path', 'line'), [
+    ('return shader.ddx(value)', 'author.stage', 'physical.shaderlib.py', 3),
+    ('return shader.frame_time()', 'author.stage', 'physical.shaderlib.py', 3),
+    ('return value', 'author.reference', 'Work.py', 6),
+])
+def test_shaderlib_errors_report_the_original_library_or_call(project, leaf, code, path, line):
+    root, scripts = project
+    work = scripts / 'Work.py'
+    if code == 'author.reference':
+        work.write_text(KERNEL.replace('forces.damp', 'forces.missing'), encoding='utf-8')
+    (scripts / 'physical.shaderlib.py').write_text(
+        f'import infernux.shader as shader\ndef scale(value: float) -> float:\n    {leaf}\n',
+        encoding='utf-8',
+    )
+    with using_project_root(root), pytest.raises(SyntaxError) as failure:
+        frontend.compile_kernel(load_kernel(work).function, (_gpu_buffer_descriptor((4,), np.float32),))
+    diagnostic, = failure.value.diagnostics
+    assert diagnostic['code'] == code and diagnostic['line'] == line
+    assert Path(diagnostic['path']) == scripts / path and diagnostic['end_column'] > diagnostic['column']
+
+
+def test_linked_shaderlib_native_diagnostic_maps_the_library_span(project):
+    root, scripts = project
+    leaf = scripts / 'physical.shaderlib.py'
+    leaf.write_text('''import infernux.shader as shader
+def scale(value: float) -> float:
+    return shader.vec2(value, value, value, value, value)
+''', encoding='utf-8')
+    with using_project_root(root), pytest.raises(_Infernux.ShaderCompilationError) as failure:
+        frontend.compile_kernel(load_kernel(scripts / 'Work.py').function, (_gpu_buffer_descriptor((4,), np.float32),))
+    assert any(Path(row['path']) == leaf and row['phase'] == 'compile' and row['severity'] == 'error'
+               and (row['line'], row['column']) == (3, 5) and row['end_column'] > 5
+               for row in failure.value.diagnostics), failure.value.diagnostics
+
+
+def test_cooked_project_shaderlib_resolves_through_player_assets(project, tmp_path, engine, monkeypatch):
+    root, scripts = project
+    data = tmp_path / 'Player' / 'Data'
+    builder = GameBuilder(str(root), str(tmp_path / 'Player'), game_name='ShaderLibTest')
+    builder.include_jit_runtime = False
+    authored_work = scripts / 'Work.py'
+    runtime_work = data / authored_work.relative_to(root)
+    runtime_work.parent.mkdir(parents=True)
+    runtime_work.write_text(builder._cook_compute_source(KERNEL), encoding='utf-8')
+    bytecode = py_compile.compile(str(runtime_work), cfile=str(runtime_work.with_suffix('.pyc')),
+                                  dfile=authored_work.relative_to(root).as_posix(), optimize=2, doraise=True)
+    runtime_work.unlink()
+    authored_work.unlink()
+    artifacts, records = [], []
+    for index, path in enumerate(sorted(scripts.glob('*.shaderlib.py'))):
+        source_path = path.relative_to(root).as_posix()
+        runtime_path = 'Library/Artifacts/Blob/' + source_path
+        cooked = data / runtime_path
+        cooked.parent.mkdir(parents=True, exist_ok=True)
+        payload = path.read_bytes()
+        cooked.write_bytes(payload)
+        path.unlink()
+        guid, artifact_id = f'{index:032x}', f'ShaderLib-{index}'
+        artifacts.append({'runtime_artifact_id': artifact_id, 'runtime_path': runtime_path,
+                          'asset_guid': guid, 'package': 'Content.inxpkg', 'content_bytes': len(payload)})
+        records.append({'guid': guid, 'runtime_path': source_path, 'primary_runtime_artifact_id': artifact_id,
+                        'runtime_artifact_ids': [artifact_id]})
+    catalog = PlayerRuntimeAssetCatalog.from_documents(str(data), {'artifacts': artifacts}, {'entries': records})
+    monkeypatch.setattr(Application, 'is_player', staticmethod(lambda: True))
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    values = compute.buffer(shape=4, dtype=np.float32, device='gpu', data=[0, 1, 2, 3])
+    module = ModuleType('Scripts.Work')
+    linecache.clearcache()
+    try:
+        with using_project_root(data):
+            set_runtime_asset_query(catalog.query_asset_guids)
+            set_runtime_asset_resolver(catalog.resolve_guid)
+            SourcelessFileLoader(module.__name__, bytecode).exec_module(module)
+            compute.launch(module.solve, (values,))
+        result = values.get_data()
+        try:
+            np.testing.assert_array_equal(result.numpy(), [1, 4, 7, 10])
+        finally:
+            result.close()
+    finally:
+        if hasattr(module, 'solve'):
+            module.solve._release_engine_resources()
+        values.close()
+        host._release_lease()
