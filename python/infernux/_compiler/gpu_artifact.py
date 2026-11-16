@@ -75,6 +75,10 @@ class CompilerArtifact:
     gradient_parameters: tuple[int, ...] = ()
     identity: str = ""
 
+    @property
+    def native_dispatch(self) -> bool:
+        return len(self.task_metadata) == 1 and self.task_metadata[0].get("task_type") == "native_dispatch"
+
     def range_bounds(self, params, *, begin=None, end=None, host=None, _validate_resources=True):
         from infernux.compute import Buffer
 
@@ -112,6 +116,20 @@ class CompilerArtifact:
     def validate_resources(self, params, size, *, host):
         from infernux.compute import Buffer
 
+        if self.native_dispatch:
+            layouts = self.argument_layout["parameters"]
+            if len(params) != len(layouts):
+                names = ", ".join(layout["name"] for layout in layouts)
+                raise ValueError(f"Slang compute parameters must supply GPU buffers in binding order ({names})")
+            for value, layout in zip(params, layouts, strict=True):
+                name, dtype = layout["name"], layout["dtype"]
+                if (not isinstance(value, Buffer) or value.device != "gpu" or value._dtype.scalar.name != dtype
+                        or value._dtype.lanes != 1 or len(value.shape) != 1):
+                    raise TypeError(f"Slang binding '{name}' requires a one-dimensional {dtype} GPU buffer")
+                value._require_open()
+                if value._byte_offset != 0 or value.nbytes != value._native.byte_size:
+                    raise ValueError(f"Slang binding '{name}' requires the full GPU buffer allocation")
+            return
         contract = self.continuation
         if not contract.eligible:
             return
@@ -159,6 +177,8 @@ class CompilerArtifact:
         gradients = {} if gradients is None else dict(gradients)
         if any(type(index) is not int for index in gradients) or set(gradients) != set(self.gradient_parameters):
             raise ValueError("Gradient bindings must exactly match the compiled gradient parameters")
+        if self.native_dispatch:
+            return b""
         layouts = tuple(self.argument_layout["parameters"])
         if bounds is not None:
             params = (*params, *bounds)

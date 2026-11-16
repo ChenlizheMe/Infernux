@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache, wraps
 from itertools import count
+from os import PathLike
 from queue import Empty, SimpleQueue
 import math
 import sys
@@ -2609,6 +2610,8 @@ class _KernelExecutable:
         for capability, required in artifact.required_capabilities.items():
             if required and not getattr(host, capability):
                 raise ComputeCapabilityError(f"this compute device cannot satisfy the program's {capability} requirement")
+        if artifact.native_dispatch:
+            artifact.validate_resources(params, None, host=host)
 
         self.artifact = artifact
         self.host = host
@@ -2715,7 +2718,9 @@ class _KernelExecutable:
         prepared = _PreparedLaunch(arguments, None, [])
         native = resources = None
         try:
-            prepared.argument_buffer = self.host.create_buffer(max(1, (len(prepared.arguments) + 3) // 4), "uint32")
+            native_dispatch = self.artifact.native_dispatch
+            if not native_dispatch:
+                prepared.argument_buffer = self.host.create_buffer(max(1, (len(prepared.arguments) + 3) // 4), "uint32")
             domain = params[self.artifact.domain_parameter]
             contract = self.artifact.continuation
             for native, bindings, threads_per_group in self.tasks:
@@ -2746,18 +2751,17 @@ class _KernelExecutable:
                             accesses.append("read_write")
                         else:
                             raise RuntimeError("GPU compiler omitted an external buffer access declaration")
-                        if contract.eligible:
-                            if index in contract.input_parameters:
-                                reads.append((position, value._byte_offset, value.nbytes))
-                            if index in contract.fully_written_output_parameters:
-                                first, last = bounds
-                                writes.append((position, value._byte_offset + first * value._dtype.itemsize,
-                                               (last - first) * value._dtype.itemsize))
+                        if native_dispatch or (contract.eligible and index in contract.input_parameters):
+                            reads.append((position, value._byte_offset, value.nbytes))
+                        if contract.eligible and index in contract.fully_written_output_parameters:
+                            first, last = bounds
+                            writes.append((position, value._byte_offset + first * value._dtype.itemsize,
+                                           (last - first) * value._dtype.itemsize))
                     else:
                         raise RuntimeError(f"Unsupported GPU compiler resource kind: {kind}")
                 count = domain.element_count if bounds is None else bounds[1] - bounds[0]
                 groups = (count + threads_per_group - 1) // threads_per_group
-                proof = (reads, writes) if contract.eligible else None
+                proof = (reads, writes) if contract.eligible or native_dispatch else None
                 prepared.dispatches.append((native, resources, accesses, b"", groups, 1, 1, proof))
             return prepared
         except Exception:
@@ -2791,7 +2795,7 @@ class _KernelExecutable:
 
 
 class Kernel:
-    """A GPU single-work-item declaration prepared or compiled on first launch."""
+    """A GPU declaration compiled by :func:`prepare` or on first launch."""
 
     def __init__(self, function) -> None:
         if not callable(function):
@@ -2806,6 +2810,7 @@ class Kernel:
 
     def _init_runtime(self):
         self.function = None
+        self._slang_source = None
         self._sealed_artifacts = None
         self._lowered_work_item = None
         self._inner_variants = {}
@@ -2832,6 +2837,15 @@ class Kernel:
         return declaration
 
     @classmethod
+    def _from_slang(cls, path, entry_point, domain, libraries):
+        declaration = object.__new__(cls)
+        declaration._init_runtime()
+        declaration._slang_source = (path, entry_point, domain, libraries)
+        declaration.__name__ = entry_point
+        declaration.__qualname__ = f"{path}::{entry_point}"
+        return declaration
+
+    @classmethod
     def _from_artifacts(cls, artifacts, identity):
         """A compiled program has contracts and code, without an author AST."""
         declaration = object.__new__(cls)
@@ -2849,6 +2863,8 @@ class Kernel:
         differentiated = autodiff_mode != "none" or bool(gradient_parameters)
         if differentiated and receiver_fields is not None:
             raise KernelCompilationError("Local differentiation requires a module-level or static kernel")
+        if differentiated and self._slang_source is not None:
+            raise KernelCompilationError(f"Native Slang entry '{self.__qualname__}' has no local differentiation contract")
         gradient_parameters = _compilation_request(params, autodiff_mode, gradient_parameters)
 
         buffers = [value for value in params if isinstance(value, Buffer)]
@@ -2890,9 +2906,11 @@ class Kernel:
             return executable
 
     def _compile_artifact(self, params, receiver_fields, autodiff_mode, gradient_parameters, target):
-        from infernux._compiler.slang import compile_kernel
+        from infernux._compiler.slang import compile_kernel, compile_slang_kernel
 
         try:
+            if self._slang_source is not None:
+                return compile_slang_kernel(*self._slang_source, params, target=target)
             return compile_kernel(
                 self.function, params, target=target, receiver_fields=receiver_fields,
                 autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters,
@@ -3057,8 +3075,37 @@ def _release_engine_resources() -> None:
         engine._infernux_compute_host = None
 
 
-def kernel(function) -> Kernel:
-    """Declare a GPU kernel; the function describes one logical work item."""
+def kernel(function, *, entry_point=None, domain=None, libraries=None) -> Kernel:
+    """Declare a Python work item or a compute entry in a project Slang asset.
+
+    For Slang, pass an ``Assets/.../file.slang`` path, an ``entry_point`` and the
+    name of the ``domain`` buffer. Pass one complete scalar GPU buffer per
+    reflected group-0 binding, in binding order. The domain's element count and
+    reflected ``[numthreads(x, 1, 1)]`` select the dispatch size. The shader
+    handles any tail and bounds its other buffer indices.
+
+    ``libraries`` maps Slang import names to project asset paths for the import
+    closure. Preparation reads their source through the project asset catalog.
+    Create a new declaration to prepare a new source revision.
+    """
+    if isinstance(function, (str, PathLike)):
+        from infernux.engine.path_utils import portable_relative_path
+
+        def asset_path(value):
+            path = portable_relative_path(value)
+            if not path.casefold().startswith("assets/") or not path.casefold().endswith(".slang"):
+                raise ValueError("Slang compute sources require a .slang file under Assets")
+            return path
+
+        if not isinstance(entry_point, str) or not entry_point or not isinstance(domain, str) or not domain:
+            raise TypeError("Slang compute kernels require an entry_point and a domain buffer name")
+        sources = dict(libraries) if libraries is not None else {}
+        if any(not isinstance(name, str) or not name.isidentifier() for name in sources):
+            raise ValueError("Slang compute library names must be module identifiers")
+        modules = tuple((name, asset_path(value)) for name, value in sorted(sources.items()))
+        return Kernel._from_slang(asset_path(function), entry_point, domain, modules)
+    if entry_point is not None or domain is not None or libraries is not None:
+        raise TypeError("entry_point, domain and libraries describe a project Slang kernel")
     if isinstance(function, staticmethod):
         raise TypeError(
             "@inx.compute.kernel received a staticmethod descriptor; put "
@@ -3156,6 +3203,8 @@ def prepare_continuation(declaration: Kernel, params):
     Later writers preserve that value through the common FIFO.
     """
     from ._work import Continuation
+    if isinstance(declaration, Kernel) and declaration._slang_source is not None:
+        raise TypeError(f"Native Slang entry '{declaration.__qualname__}' requires a whole dispatch; use prepare_work")
     return Continuation(declaration, params)
 
 
@@ -3228,9 +3277,11 @@ def _admit_work_arguments(host, updates) -> None:
 def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
     """Freeze finite ``(Kernel, params_tuple)`` operations without running them.
 
-    The contract is native GPU, fixed-shape scalar f32/i32/u32/i64 whole-domain work
-    with the compiler's shared row proof. ``private_buffers`` declares complete
-    allocations to clone; logical input/output mappings name their exact views.
+    Use fixed-shape native GPU work with a compiler row proof or a whole Slang
+    dispatch. Slang entries require initialized resources, including writable
+    bindings, through an input port or an earlier proven writer.
+    ``private_buffers`` declares allocations to clone; logical input/output
+    mappings name their exact views.
     External resources retain their actual owners and must have accepted
     producers. Their valid contents remain a caller/producer precondition.
 
@@ -3304,14 +3355,17 @@ def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_port
             if not isinstance(executable, _KernelExecutable) or int(executable.host.identity) != int(host.identity):
                 raise ComputeCapabilityError("compute work requires compiled kernels on the same native GPU host")
             artifact = executable.artifact
-            if not artifact.continuation.eligible or artifact.autodiff_mode != "none" or artifact.gradient_parameters:
+            ranged = artifact.continuation.eligible
+            if ((not ranged and not artifact.native_dispatch)
+                    or artifact.autodiff_mode != "none" or artifact.gradient_parameters):
                 diagnostics = "; ".join(artifact.continuation.diagnostics)
                 raise TypeError("compute work requires the shared forward row contract" +
                                 (": " + diagnostics if diagnostics else ""))
             domain_count = int(effective[artifact.domain_parameter].element_count)
             if domain_count <= 0:
                 raise ValueError("compute work execution domain must be positive")
-            updates, dispatches = executable.prepare(effective, begin=0, end=domain_count)
+            bounds = {"begin": 0, "end": domain_count} if ranged else {}
+            updates, dispatches = executable.prepare(effective, **bounds)
             for update in updates:
                 key = id(update[0])
                 if key not in updated:

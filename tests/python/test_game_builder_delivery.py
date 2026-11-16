@@ -134,6 +134,56 @@ def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path
     assert str(project).replace("\\", "/") not in json.dumps(records, ensure_ascii=False)
 
 
+def test_player_cooks_native_compute_sources_as_catalog_blobs(tmp_path):
+    from infernux.lib import ResourceType
+
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    source_root = project / "Assets" / "Kernels"
+    source_root.mkdir()
+    sources = {
+        "reduce.slang": ("a" * 32, b"import contribution;\n"),
+        "contribution.slang": ("b" * 32, b"import scale;\n"),
+        "scale.slang": ("c" * 32, b"public float scale(float x) { return 2.0 * x; }\n"),
+    }
+    entries = [_asset_index_entry(project, project / "Assets" / "Main.scene", "scene-guid", "", "Scene")]
+    for name, (guid, source) in sources.items():
+        path = source_root / name
+        path.write_bytes(source)
+        entry = _asset_index_entry(project, path, guid, "", "DefaultText")
+        entry["resource_type"] = int(ResourceType.DefaultText)
+        entry["metadata"]["metadata"] = {
+            "guid": {"type": "string", "value": guid},
+            "file_extension": {"type": "string", "value": ".slang"},
+            "file_path": {"type": "string", "value": path.relative_to(project).as_posix()},
+            "resource_type": {"type": "enum infernux::ResourceType", "value": "DefaultText"},
+        }
+        entries.append(entry)
+    _write_asset_index(project, entries)
+
+    final_dir = tmp_path / "dist"
+    builder._copy_game_data(str(final_dir))
+    builder._write_runtime_asset_records(str(final_dir))
+    data = final_dir / "Data"
+    records = json.loads((data / "Library" / "RuntimeAssetRecords.json").read_text(encoding="utf-8"))
+    by_guid = {record["guid"]: record for record in records["entries"]}
+    for name, (guid, source) in sources.items():
+        path = f"Library/Artifacts/Blob/{guid}.slang"
+        record = by_guid[guid]
+        assert record["runtime_path"] == f"Assets/Kernels/{name}"
+        assert record["runtime_artifacts"][0]["runtime_path"] == path
+        assert (data / path).read_bytes() == source
+
+    _write_player_executable(final_dir)
+    builder._organize_player_layout(str(final_dir))
+    builder._pack_content_archive(str(final_dir))
+    package = final_dir / "TestGame_Data" / builder._CONTENT_ARCHIVE_FILENAME
+    names = {item["path"] for item in read_manifest(package)["files"]}
+    assert not any(name.startswith("Assets/Kernels/") or name.endswith(".inxgpu") for name in names)
+    for guid, source in sources.values():
+        assert read_entry(package, f"Library/Artifacts/Blob/{guid}.slang") == source
+
+
 def test_cooked_python_component_includes_imported_project_helper(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)

@@ -717,16 +717,91 @@ def compile_kernel(function, params, *, target="spirv", receiver_fields=None, au
 
     plan = prepare_kernel(function, params, target=target, receiver_fields=receiver_fields, autodiff_mode=autodiff_mode,
                           gradient_parameters=gradient_parameters, _lowered=_lowered)
-    root = compiler_cache_root()
-    path = root / (plan.artifact_key + ".inxgpu")
     specialization = _specialization_identity(params, target=target, autodiff_mode=autodiff_mode, gradient_parameters=plan.gradient_parameters)
+
+    def emit():
+        compiled = _Infernux._compile_shader_program(plan.generated_source, plan.work_item.origin.path, "inx_kernel",
+                                                    libraries=plan.libraries, targets=[target], precise=True,
+                                                    source_ranges=plan.lowering.source_ranges)
+        return _artifact(compiled["targets"][0], plan.lowering, plan, params)
+
+    return _cached_artifact(plan.artifact_key, specialization, emit)
+
+
+def compile_slang_kernel(path, entry_point, domain, libraries, params, *, target):
+    from infernux.application import Application
+    from infernux.lib import _Infernux
+
+    source = Path(Application.asset_path(path)).read_text(encoding="utf-8-sig")
+    modules = tuple((name, asset, Path(Application.asset_path(asset)).read_text(encoding="utf-8-sig"))
+                    for name, asset in libraries)
+    specialization = _specialization_identity(params, target=target)
+    identity = (_CACHE_ABI, _Infernux._slang_version(), path, entry_point, domain,
+                source, modules, specialization, True)
+    key = hashlib.blake2b(json.dumps(identity).encode(), digest_size=16).hexdigest()
+
+    def emit():
+        result = _Infernux._compile_shader_program(source, path, "inx_kernel", libraries=modules,
+                                                  targets=[target], precise=True)["targets"][0]
+        return _slang_dispatch_artifact(result, path, entry_point, domain, modules, key)
+
+    return _cached_artifact(key, specialization, emit)
+
+
+def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):
+    entry = next((item for item in compiled["entries"] if item["name"] == entry_point), None)
+    if entry is None or entry["stage"] != "compute":
+        raise ValueError(f"Entry '{entry_point}' must be declared with [shader(\"compute\")]")
+    width, height, depth = entry["workgroup_size"]
+    if width <= 0 or height != 1 or depth != 1:
+        raise ValueError(f"Slang compute entry '{entry_point}' requires [numthreads(x, 1, 1)]")
+    if entry["root_constants"] is not None:
+        raise ValueError("Slang compute entry resources must use structured storage buffers")
+
+    resources = {(item["set"], item["binding"]): item for item in compiled["resources"]}
+    # ShaderProgramLayout.h reflects the scalar kind and the target element stride.
+    scalars = {2: "int32", 3: "uint32", 7: "float32"}
+    bindings, layouts, writes = [], [], []
+    for group, binding in sorted(entry["bindings"]):
+        resource = resources[group, binding]
+        value = resource["value"]
+        dtype = scalars.get(value["scalar"]) if value["kind"] == 0 else None
+        name = resource["name"]
+        if (group != 0 or resource["type"] != 1 or resource["count"] != 1
+                or dtype is None or resource["element_stride"] != 4):
+            raise ValueError(f"Slang binding '{name}' requires a scalar float32, int32 or uint32 structured buffer in group 0")
+        index = len(layouts)
+        read_only = resource["read_only"]
+        layouts.append({"kind": "external_buffer", "name": name, "dtype": dtype})
+        bindings.append({"binding": binding, "binding_type": "read_only_storage" if read_only else "storage",
+                         "resource_kind": "external_buffer", "argument_indices": [index],
+                         "access": 1 if read_only else 3})
+        if not read_only:
+            writes.append(index)
+    domain_index = next((index for index, layout in enumerate(layouts) if layout["name"] == domain), None)
+    if domain_index is None:
+        raise ValueError(f"Slang dispatch domain '{domain}' must name a reflected buffer of entry '{entry_point}'")
+
+    # An authored dispatch can use group barriers and arbitrary storage
+    # indexing. Reflect its accesses and require complete incoming contents.
+    contract = RangeContract(None, None, tuple(range(len(layouts))), tuple(writes), 0,
+        (f"Slang entry '{entry_point}' executes as a whole dispatch",), ())
+    metadata = {"entry_point": entry_point, "threads_per_group": width,
+                "buffer_bindings": bindings, "task_type": "native_dispatch"}
+    locations = ({"role": "entry", "path": path, "function": entry_point, "entry_point": entry_point, "line": 1, "column": 1},
+                 *({"role": "library", "path": asset, "line": 1, "column": 1} for _, asset, _ in modules))
+    return CompilerArtifact(compiled["target"], (entry["code"],), (metadata,), domain_index,
+        {"size": 0, "parameters": layouts}, {"shader_float32_preserve": compiled["target"] == "spirv"},
+        locations, contract, WORK_ITEM_FAST_MATH, identity=key)
+
+
+def _cached_artifact(key, specialization, emit):
+    root = compiler_cache_root()
+    path = root / (key + ".inxgpu")
     cached = _decode_artifact(path, specialization=specialization)
     if cached is not None:
         return cached
-    compiled = _Infernux._compile_shader_program(plan.generated_source, plan.work_item.origin.path, "inx_kernel",
-                                                libraries=plan.libraries, targets=[target], precise=True,
-                                                source_ranges=plan.lowering.source_ranges)
-    artifact = _artifact(compiled["targets"][0], plan.lowering, plan, params)
+    artifact = emit()
     root.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_bytes(_encode_artifact(artifact, specialization))
