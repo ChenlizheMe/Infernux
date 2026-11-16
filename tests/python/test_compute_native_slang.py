@@ -1,14 +1,22 @@
 """Project Slang entries use the public compute runtime and the cooked asset ABI."""
 
 from contextlib import ExitStack
+from importlib.machinery import SourcelessFileLoader
+import json
 from pathlib import Path
+import py_compile
+from types import ModuleType
 
 import numpy as np
 import pytest
 
 from infernux import compute
-from infernux.engine.build.compute_aot import _gpu_buffer_descriptor
-from infernux.engine.project_context import using_project_root
+from infernux.application import Application
+from infernux._compiler.gpu_artifact import _read_artifact
+from infernux.engine.build.compute_aot import _gpu_buffer_descriptor, stage_compute_artifacts
+from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+from infernux.engine.project_context import set_runtime_asset_query, set_runtime_asset_resolver, using_project_root
+from infernux.lib import _Infernux
 
 
 REDUCTION = '''import contribution;
@@ -43,6 +51,29 @@ void reduceRows(uint3 thread : SV_DispatchThreadID, uint3 group : SV_GroupID, ui
 '''
 
 LIBRARIES = {'contribution': 'Assets/Kernels/contribution.slang', 'scale_value': 'Assets/Kernels/scale_value.slang'}
+SOURCE_PATH = 'Assets/Kernels/reduce.slang'
+RUNTIME_ENTRY = REDUCTION + '''
+[shader("compute")]
+[numthreads(4, 1, 1)]
+void scaleRows(uint3 thread : SV_DispatchThreadID)
+{
+    uint count, stride;
+    values.GetDimensions(count, stride);
+    if (thread.x < count)
+        sums[thread.x] = forSum(values[thread.x]);
+}
+'''
+WORK_SOURCE = f'''from infernux import compute
+from infernux.compute import kernel as authored
+from pathlib import Path
+
+class Run:
+    reduce = authored(Path({SOURCE_PATH!r}), entry_point="reduceRows", domain="values", libraries={LIBRARIES!r})
+
+def prepare_work(values, sums):
+    return compute.prepare_work(((Run.reduce, (values, sums)),), private_buffers=(sums,),
+                                inputs={{"seed": sums}}, outputs={{"result": sums}})
+'''
 
 
 @compute.kernel
@@ -71,7 +102,7 @@ def project(tmp_path):
 
 
 def _declaration(*, entry_point='reduceRows', domain='values'):
-    return compute.kernel(Path('Assets/Kernels/reduce.slang'), entry_point=entry_point, domain=domain, libraries=LIBRARIES)
+    return compute.kernel(Path(SOURCE_PATH), entry_point=entry_point, domain=domain, libraries=LIBRARIES)
 
 
 @pytest.mark.parametrize('target', ['spirv', 'wgsl'])
@@ -147,3 +178,123 @@ def test_native_slang_kernel_launch_and_work_share_gpu_resources(project, engine
             compute.launch(kernel, (inputs, readonly))
         with pytest.raises(TypeError, match='whole dispatch'):
             compute.prepare_continuation(kernel, params)
+
+
+def _freeze_work_sources(project, data):
+    work = project / 'Assets/Scripts/Work.py'
+    work.parent.mkdir(parents=True)
+    work.write_text(WORK_SOURCE, encoding='utf-8')
+    (project / SOURCE_PATH).write_text(RUNTIME_ENTRY, encoding='utf-8')
+    for relative in (SOURCE_PATH, *LIBRARIES.values()):
+        destination = data / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((project / relative).read_bytes())
+    return work
+
+
+def _work_artifacts(data):
+    root = data / 'Library/Artifacts/Compute'
+    manifest = json.loads((root / 'AotManifest.json').read_text(encoding='utf-8'))
+    return [root / row['artifact'] for row in manifest['artifacts'] if row['function'] == 'Scripts.Work.Run.reduce']
+
+
+@pytest.mark.parametrize(('player', 'target'), [('Player/Windows', 'spirv'), ('Web/Player', 'wgsl')])
+def test_stage_slang_work_matches_the_frozen_closure_and_player_target(project, player, target):
+    data = project / 'build/Data'
+    work = _freeze_work_sources(project, data)
+    params = (_gpu_buffer_descriptor((67,), np.float32), _gpu_buffer_descriptor((17,), np.float32))
+    with using_project_root(project):
+        prepared = _declaration()._compile_artifact(params, None, 'none', (), 'spirv')
+        _declaration(entry_point='scaleRows')._compile_artifact(params, None, 'none', (), 'spirv')
+    work.write_text(WORK_SOURCE.replace('reduceRows', 'scaleRows'), encoding='utf-8')
+    leaf_path = LIBRARIES['scale_value']
+    new_leaf = 'public float scaleValue(float value) { return 3.0 * value; }\n'
+    (project / leaf_path).write_text(new_leaf, encoding='utf-8')
+
+    snapshots = {str(work): WORK_SOURCE}
+    result = stage_compute_artifacts(project, (work,), data, target=player, source_snapshots=snapshots)
+    path, = _work_artifacts(data)
+    header, selected = _read_artifact(path)
+    assert result.kernel_count == 1 and result.artifact_count == 4
+    assert selected.target == target and selected.native_dispatch
+    assert selected.task_metadata[0]['entry_point'] == 'reduceRows'
+    assert path.stem == selected.identity
+    assert json.loads(header['specialization'])['parameters'] == [['buffer', 'float32', 1]] * 2
+    assert (selected.identity == prepared.identity) == (target == 'spirv')
+
+    # A later build with changed imported bytes has no matching editor prepare.
+    (data / leaf_path).write_text(new_leaf, encoding='utf-8')
+    result = stage_compute_artifacts(project, (work,), data, target=player, source_snapshots=snapshots)
+    assert result.kernel_count == 1 and result.artifact_count == 3
+    assert not _work_artifacts(data) and not path.exists()
+
+
+def test_player_launches_the_prepared_slang_work_and_compiles_a_new_entry(project, engine, monkeypatch):
+    data = project / 'build/Data'
+    work = _freeze_work_sources(project, data)
+    author = ModuleType('Scripts.Work')
+    exec(compile(WORK_SOURCE, str(work), 'exec'), vars(author))
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    values = np.arange(68, dtype=np.float32) - 18
+    with ExitStack() as resources:
+        resources.callback(host._release_lease)
+        resources.callback(author.Run.reduce._release_engine_resources)
+        with using_project_root(project):
+            source = resources.enter_context(compute.buffer(shape=68, dtype=np.float32, device='gpu', data=values))
+            output = resources.enter_context(compute.buffer(shape=17, dtype=np.float32, device='gpu'))
+            prepared = author.prepare_work(source, output)
+            prepared.close()
+        stage_compute_artifacts(project, (work,), data, target='Player/Windows')
+        packed, = _work_artifacts(data)
+
+        # Player resolution uses the packaged Blob identities and Python bytecode.
+        artifacts, records = [], []
+        for index, relative in enumerate((SOURCE_PATH, *LIBRARIES.values())):
+            guid = f'{index:032x}'
+            path = f'Library/Artifacts/Blob/{guid}.slang'
+            destination = data / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            (data / relative).replace(destination)
+            artifacts.append({'runtime_artifact_id': guid, 'runtime_path': path, 'asset_guid': guid,
+                              'package': 'Content.inxpkg', 'content_bytes': destination.stat().st_size})
+            records.append({'guid': guid, 'runtime_path': relative, 'primary_runtime_artifact_id': guid,
+                            'runtime_artifact_ids': [guid]})
+        catalog = PlayerRuntimeAssetCatalog.from_documents(str(data), {'artifacts': artifacts}, {'entries': records})
+        bytecode = py_compile.compile(str(work), cfile=str(data / 'Work.pyc'), dfile='Assets/Scripts/Work.py', doraise=True)
+        player = ModuleType('Scripts.Work')
+        SourcelessFileLoader(player.__name__, bytecode).exec_module(player)
+        resources.callback(player.Run.reduce._release_engine_resources)
+
+        compile_program = _Infernux._compile_shader_program
+        calls = []
+
+        def record_compile(source, path, *args, **kwargs):
+            calls.append(path)
+            return compile_program(source, path, *args, **kwargs)
+
+        monkeypatch.setattr(_Infernux, '_compile_shader_program', record_compile)
+        monkeypatch.setattr(Application, 'is_player', staticmethod(lambda: True))
+        with using_project_root(data):
+            set_runtime_asset_resolver(catalog.resolve_guid)
+            set_runtime_asset_query(catalog.query_asset_guids)
+            try:
+                staged = player.prepare_work(source, output)
+                staged.close()
+                compute.launch(player.Run.reduce, (source, output))
+                assert player.Run.reduce._executable((source, output)).artifact.identity == packed.stem
+                with output.get_data() as result:
+                    np.testing.assert_array_equal(result.numpy(), 2 * values.reshape(17, 4).sum(axis=1))
+                assert not calls
+
+                cold = _declaration(entry_point='scaleRows')
+                resources.callback(cold._release_engine_resources)
+                scaled = resources.enter_context(compute.buffer(shape=68, dtype=np.float32, device='gpu'))
+                compute.prepare(cold, (source, scaled))
+                compute.launch(cold, (source, scaled))
+                with scaled.get_data() as result:
+                    np.testing.assert_array_equal(result.numpy(), 2 * values)
+                assert calls == [SOURCE_PATH]
+            finally:
+                set_runtime_asset_resolver(None)
+                set_runtime_asset_query(None)

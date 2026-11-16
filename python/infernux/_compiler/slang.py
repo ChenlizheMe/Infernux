@@ -728,24 +728,44 @@ def compile_kernel(function, params, *, target="spirv", receiver_fields=None, au
     return _cached_artifact(plan.artifact_key, specialization, emit)
 
 
+@dataclass(frozen=True, slots=True)
+class _SlangKernelSource:
+    path: str
+    entry_point: str
+    domain: str
+    source: str
+    modules: tuple[tuple[str, str, str], ...]
+
+    def artifact_key(self, specialization):
+        from infernux.lib import _Infernux
+
+        identity = (_CACHE_ABI, _Infernux._slang_version(), self.path, self.entry_point, self.domain,
+                    self.source, self.modules, specialization, True)
+        return hashlib.blake2b(json.dumps(identity).encode(), digest_size=16).hexdigest()
+
+    def compile(self, target, key):
+        from infernux.lib import _Infernux
+
+        result = _Infernux._compile_shader_program(self.source, self.path, "inx_kernel", libraries=self.modules,
+                                                  targets=[target], precise=True)["targets"][0]
+        return _slang_dispatch_artifact(result, self.path, self.entry_point, self.domain, self.modules, key)
+
+
+def _read_slang_kernel_source(path, entry_point, domain, libraries, *, read_source):
+    return _SlangKernelSource(path, entry_point, domain, read_source(path),
+                             tuple((name, asset, read_source(asset)) for name, asset in libraries))
+
+
 def compile_slang_kernel(path, entry_point, domain, libraries, params, *, target):
     from infernux.application import Application
-    from infernux.lib import _Infernux
 
-    source = Path(Application.asset_path(path)).read_text(encoding="utf-8-sig")
-    modules = tuple((name, asset, Path(Application.asset_path(asset)).read_text(encoding="utf-8-sig"))
-                    for name, asset in libraries)
+    def read_source(asset):
+        return Path(Application.asset_path(asset)).read_text(encoding="utf-8-sig")
+
+    source = _read_slang_kernel_source(path, entry_point, domain, libraries, read_source=read_source)
     specialization = _specialization_identity(params, target=target)
-    identity = (_CACHE_ABI, _Infernux._slang_version(), path, entry_point, domain,
-                source, modules, specialization, True)
-    key = hashlib.blake2b(json.dumps(identity).encode(), digest_size=16).hexdigest()
-
-    def emit():
-        result = _Infernux._compile_shader_program(source, path, "inx_kernel", libraries=modules,
-                                                  targets=[target], precise=True)["targets"][0]
-        return _slang_dispatch_artifact(result, path, entry_point, domain, modules, key)
-
-    return _cached_artifact(key, specialization, emit)
+    key = source.artifact_key(specialization)
+    return _cached_artifact(key, specialization, lambda: source.compile(target, key))
 
 
 def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):

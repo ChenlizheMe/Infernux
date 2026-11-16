@@ -71,7 +71,7 @@ def _engine_specializations():
     )
 
 
-def ensure_engine_compute_artifacts(project_root: str | Path) -> float:
+def ensure_engine_compute_artifacts(project_root: str | Path, *, target: str | None = None) -> float:
     """Compile every engine-owned Player compute specialization into Library."""
     from infernux._compiler.slang import compile_kernel
     from infernux.engine.project_context import using_project_root
@@ -80,7 +80,7 @@ def ensure_engine_compute_artifacts(project_root: str | Path) -> float:
     try:
         with using_project_root(project_root):
             for declaration, params in _engine_specializations():
-                compile_kernel(declaration.function, params)
+                compile_kernel(declaration.function, params, **({"target": target} if target else {}))
     except Exception as error:
         raise ComputeAotBuildError(
             f"Engine GPU AOT prewarm failed: {error}"
@@ -195,10 +195,14 @@ def declared_kernel_names(
     target: str = "Player/AOT",
     _source_snapshots: dict[Path, str] | None = None,
 ) -> tuple[str, ...]:
-    """Return runtime-qualified kernels in the selected Python closure."""
+    """Return runtime-qualified Python work items in the selected closure."""
+    return _inspect_kernels(source_paths, project_root, target, _source_snapshots)[0]
 
+
+def _inspect_kernels(source_paths, project_root, target, source_snapshots):
     root = Path(resolved_path(Path(project_root).expanduser()))
     names: set[str] = set()
+    native_names: set[str] = set()
     for source_path in sorted(
         (Path(resolved_path(Path(path).expanduser())) for path in source_paths),
         key=lambda value: value.as_posix().casefold(),
@@ -209,7 +213,7 @@ def declared_kernel_names(
         if not module_name:
             continue
         try:
-            source = (_source_snapshots[source_path] if _source_snapshots is not None
+            source = (source_snapshots[source_path] if source_snapshots is not None
                       else source_path.read_text(encoding="utf-8"))
             tree = ast.parse(source, filename=str(source_path))
         except (OSError, UnicodeError, SyntaxError) as error:
@@ -252,6 +256,19 @@ def declared_kernel_names(
             visit_FunctionDef = _visit_function
             visit_AsyncFunctionDef = _visit_function
 
+            def _visit_assignment(self, node):
+                call = node.value
+                if (not isinstance(call, ast.Call) or _attribute_name(call.func) not in decorators
+                        or any(is_function for _, is_function, _ in self.scope)
+                        or not {"entry_point", "domain"}.issubset(keyword.arg for keyword in call.keywords)):
+                    return
+                targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+                scope = [module_name, *(name for name, _, _ in self.scope)]
+                native_names.update(".".join((*scope, target.id)) for target in targets if isinstance(target, ast.Name))
+
+            visit_Assign = _visit_assignment
+            visit_AnnAssign = _visit_assignment
+
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
                 fields: set[str] = set()
                 for statement in node.body:
@@ -274,10 +291,10 @@ def declared_kernel_names(
                 self.scope.pop()
 
         Collector().visit(tree)
-    return tuple(sorted(names))
+    return tuple(sorted(names)), tuple(sorted(native_names))
 
 
-def _artifact_record(path: Path) -> tuple[tuple[str, ...], str]:
+def _artifact_record(path: Path):
     from infernux._compiler.gpu_artifact import _read_artifact
 
     try:
@@ -292,7 +309,7 @@ def _artifact_record(path: Path) -> tuple[tuple[str, ...], str]:
         )
         if not functions:
             raise ValueError("missing kernel identity")
-        return functions, header["specialization"]
+        return functions, header["specialization"], artifact
     except (KeyError, OSError, TypeError, UnicodeError, ValueError, RuntimeError) as error:
         raise ComputeAotBuildError(
             f"GPU AOT artifact is unreadable: {path}: {error}"
@@ -329,14 +346,17 @@ def _specialization_parameters(specialization: str) -> tuple:
     return params, {"target": identity["target"], "autodiff_mode": identity["autodiff_mode"], "gradient_parameters": gradients}
 
 
-def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: tuple[str, ...]):
+def _select_current_artifacts(root, data, snapshots, expected, native_names, *, shader_target):
     """Select only artifacts prepared from this build's current source closure.
 
     Candidate imports are private and never borrow the editor's published
     project modules. A same-named LKG function is not a valid build input.
     """
+    from infernux import compute
     from infernux._compiler import slang as frontend
-    from infernux._compiler.gpu_artifact import ArtifactAbiMismatchError, _specialization_identity
+    from infernux._compiler.gpu_artifact import (
+        ArtifactAbiMismatchError, _encode_artifact, _specialization_identity, parameter_key,
+    )
     from infernux._compiler.work_item import _parse_function_source, capture_function_source
     from infernux.engine.candidate_import import CandidateImportTransaction
     from infernux.components._component_registration import candidate_component_registration_scope
@@ -351,21 +371,31 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
 
     cache = root / "Library/Artifacts/Compute"
     specializations: dict[str, set[str]] = {name: set() for name in expected}
+    native_specializations: dict[tuple[str, str], set[str]] = {}
     for path in sorted(cache.glob("*.inxgpu")):
         try:
-            functions, specialization = _artifact_record(path)
+            functions, specialization, artifact = _artifact_record(path)
         except ComputeAotBuildError as error:
             # Historical ABIs cannot describe this build's current closure.
             # Missing contracts/corrupt current artifacts still fail strictly.
             if isinstance(error.__cause__, ArtifactAbiMismatchError):
                 continue
             raise
-        for name in set(functions).intersection(specializations):
-            specializations[name].add(specialization)
+        if artifact.native_dispatch:
+            entry = next(item for item in artifact.diagnostic_locations if item["role"] == "entry")
+            native_specializations.setdefault((entry["path"], entry["entry_point"]), set()).add(specialization)
+        elif shader_target is None or artifact.target == shader_target:
+            for name in set(functions).intersection(specializations):
+                specializations[name].add(specialization)
 
-    selected: dict[str, Path] = {}
+    selected: dict[str, Path | bytes] = {}
     manifest = []
     missing: set[str] = set()
+    declarations = set(expected)
+
+    def publish(name, specialization, filename, payload):
+        selected[filename] = payload
+        manifest.append({"function": name, "specialization": specialization, "artifact": filename})
 
     def select(function, params, *, target="spirv", bindings=None, autodiff_mode="none", gradient_parameters=()):
         name = f"{function.__module__}.{function.__qualname__}"
@@ -374,12 +404,54 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
         path = cache / f"{plan.artifact_key}.inxgpu"
         if not path.is_file():
             return False
-        functions, specialization = _artifact_record(path)
+        functions, specialization, _ = _artifact_record(path)
         if name not in functions or specialization != _specialization_identity(params, **request):
             raise ComputeAotBuildError(f"GPU AOT artifact identity disagrees with its source: {path}")
-        selected[path.name] = path
-        manifest.append({"function": name, "specialization": specialization, "artifact": path.name})
+        publish(name, specialization, path.name, path)
         return True
+
+    def select_native(name, declaration):
+        source_args = declaration._slang_source
+        candidates = native_specializations.get(source_args[:2])
+        if not candidates:
+            return False
+        target = shader_target or "spirv"
+
+        def read_source(asset):
+            return (data / asset).read_text(encoding="utf-8-sig")
+
+        try:
+            source = frontend._read_slang_kernel_source(*source_args, read_source=read_source)
+            for specialization in sorted(candidates, key=lambda value: (json.loads(value)["target"] != target, value)):
+                key = source.artifact_key(specialization)
+                warmed = cache / f"{key}.inxgpu"
+                if not warmed.is_file():
+                    continue
+                params, request = _specialization_parameters(specialization)
+                _, recorded, artifact = _artifact_record(warmed)
+                if recorded != specialization or artifact.identity != key or not artifact.native_dispatch:
+                    raise ValueError(f"cached Slang artifact identity disagrees with its source: {warmed}")
+                layout = tuple(("buffer", entry["dtype"], 1) for entry in artifact.argument_layout["parameters"])
+                if parameter_key(params) != layout:
+                    continue  # A failed editor binding may have compiled a cache entry before validation.
+
+                target_specialization = _specialization_identity(params, target=target)
+                target_key = source.artifact_key(target_specialization)
+                filename = f"{target_key}.inxgpu"
+                payload = selected.get(filename)
+                if payload is None:
+                    if request["target"] == target:
+                        payload = warmed
+                    else:
+                        target_artifact = source.compile(target, target_key)
+                        if target_artifact.argument_layout != artifact.argument_layout:
+                            raise ValueError(f"{target} bindings disagree with the prepared Slang buffer signature")
+                        payload = _encode_artifact(target_artifact, target_specialization)
+                publish(name, target_specialization, filename, payload)
+                return True
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
+            raise ComputeAotBuildError(f"GPU AOT cannot prepare Slang declaration {name}: {error}") from error
+        return False
 
     with using_project_root(root), candidate_component_registration_scope():
         broker = BuildSourceImports()
@@ -392,7 +464,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                 broker.register(module_name, str(path), source=embed_compute_sources(source))
                 modules[module_name] = path
             owners: dict[str, list[str]] = {}
-            for name in expected:
+            for name in sorted(declarations | set(native_names)):
                 module_name = max((module for module in modules if name.startswith(module + ".")), key=len)
                 owners.setdefault(module_name, []).append(name)
             for module_name, names in owners.items():
@@ -402,6 +474,17 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                            module.__dict__.get("__infernux_compute_sources__", {}).items()}
                 for name in names:
                     qualified = name[len(module_name) + 1:]
+                    if name in native_names:
+                        declaration = module
+                        for attribute in qualified.split("."):
+                            declaration = getattr(declaration, attribute, None)
+                        if isinstance(declaration, compute.Kernel) and declaration._slang_source is not None:
+                            declarations.add(name)
+                            if not select_native(name, declaration):
+                                missing.add(name)
+                            continue
+                        if name not in declarations:
+                            continue
                     record = sources.get(qualified)
                     if record is None:
                         raise ComputeAotBuildError(f"GPU AOT source is missing: {name}", missing=(name,))
@@ -438,11 +521,11 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                     if not matched:
                         missing.add(name)
             for declaration, params in _engine_specializations():
-                if not select(declaration.function, params):
+                if not select(declaration.function, params, target=shader_target or "spirv"):
                     missing.add(f"{declaration.function.__module__}.{declaration.function.__qualname__}")
         finally:
             broker.rollback()
-    return list(selected.values()), manifest, tuple(sorted(missing))
+    return selected, manifest, tuple(sorted(missing)), len(declarations)
 
 
 def stage_compute_artifacts(
@@ -455,10 +538,10 @@ def stage_compute_artifacts(
 ) -> ComputeAotResult:
     """Stage matching prewarmed kernels plus engine compute primitives.
 
-    The editor compiler cache is a build input, never a Player runtime cache.
-    The Player retains source metadata and its resident compiler. A new legal
-    signature prepares its own target program; only matching warmed programs
-    are copied from the editor cache.
+    A module or class-level Slang declaration takes its signature from an editor
+    prepare and its source closure from the staged assets. The collector can
+    compile that exact specialization for the Player's target. The Player also
+    retains the source and resident compiler for new legal configurations.
     """
 
     root = Path(resolved_path(Path(project_root).expanduser()))
@@ -470,24 +553,26 @@ def stage_compute_artifacts(
         snapshots = {Path(resolved_path(path)): source for path, source in source_snapshots.items()}
         if set(snapshots) != paths:
             raise ComputeAotBuildError("GPU AOT source snapshots disagree with the frozen Player closure")
-    expected = declared_kernel_names(source_paths, root, target=target, _source_snapshots=snapshots)
-    destination = (
-        Path(resolved_path(Path(data_directory).expanduser()))
-        / "Library"
-        / "Artifacts"
-        / "Compute"
-    )
-    if not expected:
+    expected, native_names = _inspect_kernels(source_paths, root, target, snapshots)
+    data = Path(resolved_path(Path(data_directory).expanduser()))
+    destination = data / "Library" / "Artifacts" / "Compute"
+    if not expected and not native_names:
         _clear_staged_gpu_artifacts(destination)
         return ComputeAotResult(0, 0)
 
-    engine_elapsed_ms = ensure_engine_compute_artifacts(root)
-    selected, manifest_records, runtime_kernels = _select_current_artifacts(root, snapshots, expected)
+    shader_target = "wgsl" if target == "Web/Player" else None
+    engine_elapsed_ms = ensure_engine_compute_artifacts(root, target=shader_target)
+    selected, manifest_records, runtime_kernels, kernel_count = _select_current_artifacts(
+        root, data, snapshots, expected, native_names, shader_target=shader_target,
+    )
 
     _clear_staged_gpu_artifacts(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    for artifact in selected:
-        shutil.copy2(artifact, destination / artifact.name)
+    for filename, payload in selected.items():
+        if isinstance(payload, Path):
+            shutil.copy2(payload, destination / filename)
+        else:
+            (destination / filename).write_bytes(payload)
     manifest_records.sort(key=lambda item: (item["function"], item["specialization"]))
     (destination / "AotManifest.json").write_text(
         json.dumps({"artifacts": manifest_records}, indent=2, sort_keys=True) + "\n",
@@ -496,10 +581,10 @@ def stage_compute_artifacts(
     )
     print(
         "INFERNUX_BUILD_GPU_AOT_READY "
-        f"target={target} project_kernels={len(expected)} artifacts={len(selected)} "
+        f"target={target} project_kernels={kernel_count} artifacts={len(selected)} "
         f"runtime_kernels={len(runtime_kernels)} engine_prewarm_ms={engine_elapsed_ms:.1f}"
     )
-    return ComputeAotResult(len(selected), len(expected))
+    return ComputeAotResult(len(selected), kernel_count)
 
 
 def _clear_staged_gpu_artifacts(destination: Path) -> None:
