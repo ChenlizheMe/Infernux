@@ -372,7 +372,7 @@ import infernux as inx
 
 selection = inx.rendergraph.RendererSelection(mask_material)
 parameters = inx.rendergraph.DrawParameterBlock()
-parameters.set_color("baseColor", (1.0, 0.2, 0.05, 1.0))
+parameters.set_color("base_color", (1.0, 0.2, 0.05, 1.0))
 selection.set(target_renderer, parameters=parameters)
 
 with graph.add_pass("SelectedMask") as p:
@@ -898,7 +898,7 @@ import infernux as inx
 
 selection = inx.rendergraph.RendererSelection(mask_material)
 parameters = inx.rendergraph.DrawParameterBlock()
-parameters.set_color("baseColor", (1.0, 0.2, 0.05, 1.0))
+parameters.set_color("base_color", (1.0, 0.2, 0.05, 1.0))
 selection.set(target_renderer, parameters=parameters)
 
 with graph.add_pass("SelectedMask") as p:

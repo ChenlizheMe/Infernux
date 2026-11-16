@@ -481,13 +481,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     @property
     def effect_stages(self):
         """Pipeline-declared EffectStages in topology order."""
-        if getattr(_Infernux, "__runtime_profile__", "") == "web-player":
-            from infernux.renderstack.forward_parameters import _WEB_EFFECT_STAGES
-
-            # Validate the selected backend pipeline without constructing the
-            # desktop RenderGraph or importing its native callbacks.
-            self.pipeline
-            return _WEB_EFFECT_STAGES
         return tuple(self._build_full_topology_probe().effect_stages)
 
     @property
@@ -604,10 +597,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         Returns:
             A mapping of ``{display_name: class}``.
         """
-        if _Infernux.__runtime_profile__ == "web-player":
-            # The Web host implements Default Forward directly. It cannot
-            # instantiate desktop callback pipelines from project modules.
-            return {}
         from infernux.renderstack.discovery import discover_pipelines
 
         return discover_pipelines()
@@ -1071,12 +1060,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         Unknown names are rejected so authored selection is never rewritten.
         The pipeline source file is also registered for hot-reload callbacks.
         """
-        if _Infernux.__runtime_profile__ == "web-player":
-            from infernux.renderstack.forward_parameters import DefaultForwardParameters
-
-            if self.pipeline_class_name != self.DEFAULT_PIPELINE_NAME:
-                raise RuntimeError("Web Player requires the Default Forward RenderStack pipeline")
-            return DefaultForwardParameters()
         import inspect
         from infernux.renderstack.default_forward_pipeline import (
             DefaultForwardPipeline,

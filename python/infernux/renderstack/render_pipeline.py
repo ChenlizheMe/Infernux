@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, TYPE_CHECKING
 
-from infernux.lib import RenderPipelineCallback
 from infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
 from infernux.renderstack.geometry_buffers import (
     GeometryBufferProviderContext,
@@ -73,7 +72,7 @@ _RESERVED_ATTRS = frozenset({
 })
 
 
-class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
+class RenderPipeline(SerializedFieldCollectorMixin):
     """
     Base class for scriptable render pipelines.
 
@@ -347,6 +346,15 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
                 self._defining_graph = None
         culling = context.cull()
         self.render_view(context, view, culling)
+
+    def prepare_world_ui(self, context) -> bool:
+        return True
+
+    def prepare_view_ui(self, context, view) -> bool:
+        return True
+
+    def collect_presentation_pose_objects(self):
+        return [], []
 
     def should_render_view(self, view) -> bool:
         """Decide whether *view* should be rendered this frame.

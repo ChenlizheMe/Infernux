@@ -33,7 +33,7 @@ class RenderPipeline:
     """Base class for scriptable render pipelines.
 
     The minimal subclass only needs ``define_topology()`` and optionally
-    ``render_camera()`` for per-camera custom logic.
+    ``render_view()`` for per-view custom logic.
 
     Exposable parameters:
         Use class-level attributes (plain values or ``serialized_field()``)
@@ -77,33 +77,37 @@ class RenderPipeline:
         sort_mode: str = ..., clear: bool = ...,
     ) -> PassResult: ...
 
-    def render(self, context: Any, camera: Any) -> None:
+    def prepare_world_ui(self, context: Any) -> bool: ...
+    def prepare_view_ui(self, context: Any, view: Any) -> bool: ...
+    def collect_presentation_pose_objects(self) -> tuple[list[Any], list[Any]]: ...
+
+    def render(self, context: Any, view: Any) -> None:
         """Render one camera through its dedicated context and RenderView.
 
         The base implementation builds the graph from ``define_topology()``,
-        filters the camera via ``should_render_camera()``, then calls
-        ``render_camera()``.
+        filters the view via ``should_render_view()``, then calls
+        ``render_view()``.
 
         Args:
             context: The render context provided by the engine.
-            camera: The camera owned by this render context.
+            view: The immutable view owned by this render context.
         """
         ...
 
-    def should_render_camera(self, camera: Any) -> bool:
-        """Decide whether *camera* should be rendered this frame.
+    def should_render_view(self, view: Any) -> bool:
+        """Decide whether *view* should be rendered this frame.
 
         Override to filter out specific cameras.  Returns ``True`` by default.
         """
         ...
 
-    def render_camera(self, context: Any, camera: Any, culling: Any) -> None:
-        """Per-camera render hook.
+    def render_view(self, context: Any, view: Any, culling: Any) -> None:
+        """Per-view render hook.
 
         Args:
             context: The render context provided by the engine.
-            camera: The current camera being rendered.
-            culling: Culling results from ``context.cull(camera)``.
+            view: The current immutable view being rendered.
+            culling: Culling results from ``context.cull()``.
         """
         ...
 

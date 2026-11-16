@@ -797,23 +797,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             "Project world position into current Scene View render target coordinates");
 
     // ========================================================================
-    // ScreenUIList enum and InxScreenUIRenderer bindings
+    // Desktop Screen UI submission. Common UI types are registered with RHI.
     // ========================================================================
-    py::enum_<ScreenUIList>(m, "ScreenUIList")
-        .value("Camera", ScreenUIList::Camera)
-        .value("Overlay", ScreenUIList::Overlay)
-        .value("World", ScreenUIList::World);
-
-    py::class_<UIShaderMaterialBinding>(m, "UIShaderMaterialBinding")
-        .def(py::init<>())
-        .def_readonly("material_guid", &UIShaderMaterialBinding::materialGuid)
-        .def_readonly("generation", &UIShaderMaterialBinding::generation)
-        .def_readonly("pipeline_key", &UIShaderMaterialBinding::pipelineKey)
-        .def_readonly("base_color", &UIShaderMaterialBinding::baseColor)
-        .def_readonly("alpha_clip_threshold", &UIShaderMaterialBinding::alphaClipThreshold)
-        .def_readonly("alpha_clip_enabled", &UIShaderMaterialBinding::alphaClipEnabled)
-        .def("is_valid", &UIShaderMaterialBinding::IsValid);
-
     py::class_<InxScreenUIRenderer::CommandPacket, std::shared_ptr<InxScreenUIRenderer::CommandPacket>>(
         m, "_UICommandPacket");
     NativeClass<InxScreenUIRenderer>(m, "InxScreenUIRenderer")
@@ -3396,6 +3381,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 if (pipeline.is_none()) {
                     r->SetRenderPipeline(nullptr);
                 } else {
+                    if (!py::isinstance<RenderPipelineCallback>(pipeline))
+                        pipeline = py::module_::import("infernux.renderstack._native_pipeline")
+                                       .attr("NativeRenderPipeline")(std::move(pipeline));
                     r->SetRenderPipeline(RetainPythonRenderable<RenderPipelineCallback>(std::move(pipeline)));
                 }
             },

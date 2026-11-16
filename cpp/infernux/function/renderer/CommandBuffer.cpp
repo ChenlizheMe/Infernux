@@ -13,7 +13,7 @@
 #include <cmath>
 #include <core/log/InxLog.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
-#include <function/renderer/shader/ShaderProgram.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
@@ -149,23 +149,23 @@ std::shared_ptr<const RendererParameterBlock> DrawParameterBlock::Capture(const 
     if (m_properties.empty() && m_buffers.empty())
         return nullptr;
 
-    const ShaderProgram *program = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
-    const auto validateBuffer = [program](const std::string &name, const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+    const auto &artifact = material.GetSelectedShaderArtifact();
+    const auto *variant = artifact ? artifact->FindVariant(ShaderCompileTarget::Forward) : nullptr;
+    const auto validateBuffer = [variant](const std::string &name, const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
         if (!buffer)
             throw std::invalid_argument("draw buffer '" + name + "' cannot be null");
-        // A newly-authored material may not have published its first Forward
-        // program yet. Preserve the binding and validate it when the renderer
-        // resolves the actual pass; never make Start-order determine whether
-        // a legitimate material/buffer configuration can be authored.
-        if (!program)
+        // A material can receive inputs before its author program is published.
+        // The actual device pass checks its binding contract at preparation.
+        if (!variant)
             return;
-        const auto binding =
-            std::find_if(program->GetDescriptorBindings().begin(), program->GetDescriptorBindings().end(),
-                         [&](const MergedDescriptorBinding &candidate) {
-                             return candidate.set == 0 && candidate.name == name &&
-                                    candidate.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                         });
-        if (binding == program->GetDescriptorBindings().end())
+        const auto hasBinding = [&name](const std::shared_ptr<const ShaderTargetCode> &target) {
+            return target && std::any_of(target->resources.begin(), target->resources.end(),
+                                         [&name](const ShaderResourceLayout &resource) {
+                                             return resource.set == 0 && resource.name == name &&
+                                                    resource.binding.type == rhi::BindingType::StorageBuffer;
+                                         });
+        };
+        if (!hasBinding(variant->vertexTarget) && !hasBinding(variant->fragmentTarget))
             throw std::invalid_argument("material shader has no storage buffer named '" + name + "'");
     };
 

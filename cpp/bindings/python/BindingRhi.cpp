@@ -1,4 +1,5 @@
 #include "BindingRegistration.h"
+#include <function/renderer/gui/UIRenderTypes.h>
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/rhi/RhiTypes.h>
@@ -19,6 +20,21 @@ namespace infernux
 
 void RegisterRhiBindings(py::module_ &m)
 {
+    py::enum_<ScreenUIList>(m, "ScreenUIList")
+        .value("Camera", ScreenUIList::Camera)
+        .value("Overlay", ScreenUIList::Overlay)
+        .value("World", ScreenUIList::World);
+
+    py::class_<UIShaderMaterialBinding>(m, "UIShaderMaterialBinding")
+        .def(py::init<>())
+        .def_readonly("material_guid", &UIShaderMaterialBinding::materialGuid)
+        .def_readonly("generation", &UIShaderMaterialBinding::generation)
+        .def_readonly("pipeline_key", &UIShaderMaterialBinding::pipelineKey)
+        .def_readonly("base_color", &UIShaderMaterialBinding::baseColor)
+        .def_readonly("alpha_clip_threshold", &UIShaderMaterialBinding::alphaClipThreshold)
+        .def_readonly("alpha_clip_enabled", &UIShaderMaterialBinding::alphaClipEnabled)
+        .def("is_valid", &UIShaderMaterialBinding::IsValid);
+
     py::enum_<rhi::PixelFormat>(m, "PixelFormat", "Backend-neutral pixel format")
         .value("UNDEFINED", rhi::PixelFormat::Undefined)
         .value("R8_UNORM", rhi::PixelFormat::R8UNorm)

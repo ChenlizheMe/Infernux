@@ -4,7 +4,7 @@
  *
  * These POD structures capture the render graph topology defined in Python,
  * allowing C++ to receive, compile, and execute the graph with automatic
- * Vulkan barrier insertion and transient resource management.
+ * backend resource transitions and transient resource management.
  *
  * Architecture:
  *   Python has "definition authority" — defines pass topology, resource

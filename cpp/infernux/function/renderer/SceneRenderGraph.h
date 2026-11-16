@@ -56,40 +56,6 @@ namespace infernux
 {
 struct RenderViewPlan;
 struct GameScreenAdmission;
-/// A capture of one submitted graph execution, not a mutable latest-value slot.
-struct GraphBufferCapture
-{
-    enum class Status
-    {
-        Pending,
-        Accepted,
-        Cancelled
-    };
-    Status status = Status::Pending;
-    std::string error;
-    std::vector<uint64_t> shape;
-    rhi::ComputeScalarType scalarType = rhi::ComputeScalarType::Float32;
-    uint64_t byteOffset = 0;
-    uint64_t storageByteSize = 0;
-    std::string storageClaim;
-    std::shared_ptr<rhi::ComputeBuffer> storageBuffer;
-    rhi::RenderViewId view = rhi::InvalidRenderViewId;
-    uint64_t generation = 0, occurrence = 0;
-    std::string name;
-    std::shared_ptr<rhi::ComputeBuffer> value;
-    bool selected = false;
-    // Actual execution contract, set when this capture is selected.
-    std::shared_ptr<const GameScreenAdmission> screenAdmission;
-    void Cancel(const std::string &reason)
-    {
-        if (status == Status::Pending) {
-            status = Status::Cancelled;
-            error = reason;
-            storageBuffer.reset();
-        }
-    }
-};
-
 class GraphFramePublication
 {
   public:
