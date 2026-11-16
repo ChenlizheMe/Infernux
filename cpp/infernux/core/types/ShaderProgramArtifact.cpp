@@ -148,6 +148,8 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
     const auto domain = static_cast<uint8_t>(artifact.domain);
     hash = AppendBytes(hash, &domain, sizeof(domain));
     hash = AppendString(hash, artifact.shadingModel);
+    hash = AppendBytes(hash, &artifact.deferredModel, sizeof(artifact.deferredModel));
+    hash = AppendBytes(hash, &artifact.receivesShadows, sizeof(artifact.receivesShadows));
     hash = AppendBytes(hash, &artifact.materialBufferSize, sizeof(artifact.materialBufferSize));
     const bool hasAlphaClipThreshold = artifact.alphaClipThresholdOffset.has_value();
     hash = AppendBytes(hash, &hasAlphaClipThreshold, sizeof(hasAlphaClipThreshold));

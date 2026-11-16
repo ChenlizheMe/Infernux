@@ -404,10 +404,7 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBi
         pipeline.colorFormats = {rhi::FromVkFormat(m_colorFormat)};
         break;
     case ShaderCompileTarget::GBuffer:
-        pipeline.colorFormats = {
-            rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA8UNorm,
-            rhi::PixelFormat::RGBA16SFloat, rhi::PixelFormat::RGBA32UInt,
-        };
+        pipeline.colorFormats.assign(kGBufferColorFormats.begin(), kGBufferColorFormats.end());
         pipeline.samples = rhi::SampleCount::One;
         break;
     case ShaderCompileTarget::Motion:

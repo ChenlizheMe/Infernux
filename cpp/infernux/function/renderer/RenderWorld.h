@@ -19,6 +19,7 @@ namespace infernux
 
 class SceneRenderExtractor;
 class SceneRenderBridge;
+class RenderSurfaceRecords;
 enum class CameraClearFlags;
 namespace rhi
 {
@@ -135,6 +136,11 @@ class RenderWorldFrame final
         return m_sourceFrame ? m_sourceFrame->DrawCalls() : m_drawCalls;
     }
 
+    [[nodiscard]] const std::shared_ptr<const RenderSurfaceRecords> &SurfaceRecords() const noexcept
+    {
+        return m_sourceFrame ? m_sourceFrame->SurfaceRecords() : m_surfaceRecords;
+    }
+
     [[nodiscard]] const RenderViewData &PrimaryView() const noexcept
     {
         return m_primaryView;
@@ -229,6 +235,7 @@ class RenderWorldFrame final
 
     std::vector<RenderProxy> m_proxies;
     DrawCallResult m_drawCalls;
+    std::shared_ptr<const RenderSurfaceRecords> m_surfaceRecords;
     RenderViewData m_primaryView;
     std::vector<RenderViewData> m_views;
     std::unordered_map<uint64_t, size_t> m_viewIndices;
@@ -266,6 +273,7 @@ class RenderWorldSnapshot final
         RenderWorldFrame &frame = BeginFrame(0, 0);
         frame.m_proxies.clear();
         frame.m_drawCalls = {};
+        frame.m_surfaceRecords.reset();
         frame.m_primaryView = {};
         frame.m_views.clear();
         frame.m_viewIndices.clear();

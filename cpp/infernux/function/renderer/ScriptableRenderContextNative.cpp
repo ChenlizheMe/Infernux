@@ -59,6 +59,7 @@ void ScriptableRenderContext::SetupNativeCameraProperties()
 {
     const auto &view = *m_cachedCameraView;
     if (m_graph && !m_recordedPlan) {
+        m_graph->SetSurfaceRecords(m_renderWorldOwner ? m_renderWorldOwner->SurfaceRecords() : nullptr);
         m_graph->SetCameraInvertCulling(view.invertCulling);
         m_graph->UpdateMainPassClearSettings(view.clearFlags, view.backgroundColor, view.dithering, view.stopNaNs);
     }

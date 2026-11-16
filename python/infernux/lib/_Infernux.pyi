@@ -2988,6 +2988,15 @@ class _GraphBufferInput:
     def value(self) -> _ComputeBuffer: ...
 
 
+class _GraphFrameBuffer(IntEnum):
+    NONE = 0
+    VIEW_LIGHTS = 1
+    WORLD_SURFACES = 2
+
+
+def _gbuffer_formats() -> list[PixelFormat]: ...
+
+
 class GraphBufferDesc:
     """Description of a transient or imported buffer in the Python-defined graph."""
 
@@ -2997,7 +3006,7 @@ class GraphBufferDesc:
     usage: int
     compute_buffer: Optional[_ComputeBuffer]
     input: Optional[_GraphBufferInput]
-    view_light_list: bool
+    frame_buffer: _GraphFrameBuffer
     work_binding: str
     work_slot: int
     export_layout: Optional[ComputeBufferDesc]

@@ -304,11 +304,10 @@ public InxSurfaceData inx_prepare_surface(InxSurfaceData surface, InxMeshInput i
 }
 public struct InxGBufferOutput
 {
-    public float4 albedo_alpha : SV_Target0;
-    public float4 normal_smoothness : SV_Target1;
-    public float4 material : SV_Target2;
-    public float4 emission : SV_Target3;
-    public uint4 metadata : SV_Target4;
+    public float4 albedo_metallic : SV_Target0;
+    public float4 oct_normal_roughness_ao : SV_Target1;
+    public float4 emission_specular : SV_Target2;
+    public uint2 surface : SV_Target3;
 };
 public static const uint INX_PBR_MODEL_ID =
 )slang" + std::to_string(ShadingModelId("PBR")) +
@@ -317,16 +316,21 @@ public static const uint INX_UNLIT_MODEL_ID = )slang" +
                                                std::to_string(ShadingModelId("Unlit")) + R"slang(u;
 public static const uint INX_TOON_MODEL_ID = )slang" +
                                                std::to_string(ShadingModelId("Toon")) + R"slang(u;
-public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, InxMeshInput input, uint model_id, bool receives_shadows)
+[ForceInline]
+public float2 inx_encode_surface_normal(float3 normal)
+{
+    normal /= abs(normal.x) + abs(normal.y) + abs(normal.z);
+    float2 sign_xy = float2(normal.x >= 0.0 ? 1.0 : -1.0, normal.y >= 0.0 ? 1.0 : -1.0);
+    return normal.z >= 0.0 ? normal.xy : (1.0 - abs(normal.yx)) * sign_xy;
+}
+public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, uint surface_id)
 {
     InxGBufferOutput result;
-    result.albedo_alpha = float4(surface.albedo, surface.alpha);
-    result.normal_smoothness = float4(surface.normal_ws * 0.5 + 0.5, surface.smoothness);
-    result.material = float4(saturate(surface.metallic), saturate(surface.occlusion),
-                             saturate(surface.specular_highlights), surface.shading_param0);
-    result.emission = float4(surface.emission, surface.shading_param1);
-    result.metadata = uint4(input.layer_mask, model_id,
-                            receives_shadows && (input.object_flags & 2u) == 0u ? 1u : 0u, input.surface_id);
+    result.albedo_metallic = float4(surface.albedo, saturate(surface.metallic));
+    result.oct_normal_roughness_ao = float4(inx_encode_surface_normal(surface.normal_ws),
+                                            saturate(1.0 - surface.smoothness), saturate(surface.occlusion));
+    result.emission_specular = float4(surface.emission, saturate(surface.specular_highlights));
+    result.surface = uint2(surface_id, f32tof16(surface.shading_param0) | (f32tof16(surface.shading_param1) << 16u));
     return result;
 }
 // Keep color and coverage lanes independently eliminable in every entry.

@@ -55,6 +55,7 @@ from infernux.lib import (
     _Infernux,
 )
 _SOURCE_REVISION_COUNTER = count(1)
+_GraphFrameBuffer = _Infernux._GraphFrameBuffer
 
 _PASS_TYPES = {
     "raster": (GraphPassType.RASTER, {
@@ -259,21 +260,25 @@ class BufferInput:
 class BufferHandle:
     """Opaque handle to a graph buffer."""
 
-    def __init__(self, name: str, byte_size: int, usage: int, *, view_light_list: bool = False):
+    def __init__(self, name: str, byte_size: int, usage: int):
         self.name = name
         self.byte_size = byte_size
         self.byte_offset = 0
         self.usage = usage
         self._imported_buffer = None
-        self.view_light_list = bool(view_light_list)
+        self._frame_buffer = _GraphFrameBuffer.NONE
         self._work_binding = None
         self._work_slot = 0
         self._export_layout = None
         self._export_shape = ()
 
     @property
+    def view_light_list(self) -> bool:
+        return self._frame_buffer == _GraphFrameBuffer.VIEW_LIGHTS
+
+    @property
     def _read_only(self) -> bool:
-        if self._imported_buffer is not None or self.view_light_list:
+        if self._imported_buffer is not None or self._frame_buffer != _GraphFrameBuffer.NONE:
             return True
         binding = self._work_binding
         if binding is None:
@@ -1537,11 +1542,17 @@ class RenderGraph:
         owner and byte range are resolved natively for the active camera frame;
         no transient or CPU mirror is allocated by the Python graph.
         """
-        resource_name = self._scoped_name(name)
-        if self._find_texture_exact(resource_name) is not None or self._find_buffer_exact(resource_name) is not None:
-            raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
-        handle = BufferHandle(resource_name, 16, int(GraphBufferUsage.STORAGE), view_light_list=True)
-        self._buffers.append(handle)
+        return self._create_frame_buffer(name, _GraphFrameBuffer.VIEW_LIGHTS)
+
+    def _create_world_surface_records(self) -> BufferHandle:
+        for buffer in self._buffers:
+            if buffer._frame_buffer == _GraphFrameBuffer.WORLD_SURFACES:
+                return buffer
+        return self._create_frame_buffer("surface_records", _GraphFrameBuffer.WORLD_SURFACES)
+
+    def _create_frame_buffer(self, name: str, source) -> BufferHandle:
+        handle = self.create_buffer(name, 16)
+        handle._frame_buffer = source
         return handle
 
     def export_buffer(self, buffer, *, shape=None, dtype=None) -> BufferHandle:
@@ -1556,7 +1567,8 @@ class RenderGraph:
         from infernux.lib import ComputeBufferDesc, ComputeScalarType
 
         handle = self.get_buffer(buffer.name if isinstance(buffer, BufferHandle) else str(buffer))
-        if handle is None or isinstance(buffer, BufferHandle) and handle is not buffer or handle.view_light_list:
+        if (handle is None or isinstance(buffer, BufferHandle) and handle is not buffer
+                or handle._frame_buffer != _GraphFrameBuffer.NONE):
             raise ValueError("export_buffer requires this graph's owned/imported numerical buffer")
         native = handle.compute_buffer
         if native is not None:
@@ -2360,7 +2372,7 @@ class RenderGraph:
                 bd.input = buffer._imported_buffer._native
             else:
                 bd.compute_buffer = buffer.compute_buffer
-            bd.view_light_list = buffer.view_light_list
+            bd.frame_buffer = buffer._frame_buffer
             bd.export_layout, bd.export_shape = buffer._export_layout, list(buffer._export_shape)
             if buffer._work_binding is not None:
                 bd.work_binding = buffer._work_binding.name

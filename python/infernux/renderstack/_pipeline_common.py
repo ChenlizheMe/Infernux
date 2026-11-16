@@ -12,13 +12,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from infernux.lib import EngineConfig
-    from infernux.rendergraph.graph import RenderGraph, RenderPassBuilder, TextureHandle
+    from infernux.rendergraph.graph import BufferHandle, RenderGraph, RenderPassBuilder, TextureHandle
 
 
 COLOR_TEXTURE = "color"
 DEPTH_TEXTURE = "depth"
 SHADOW_MAP_TEXTURE = "shadow_map"
 LIGHT_LIST_BUFFER = "light_list"
+SURFACE_RECORDS_BUFFER = "surface_records"
 MOTION_TEXTURE = "motion"
 MOTION_MSAA_TEXTURE = "_motion_msaa"
 NORMAL_TEXTURE = "normal"
@@ -29,9 +30,8 @@ AFTER_POST_PROCESS_POINT = "after_post_process"
 _GBUFFER_ATTACHMENTS = (
     ("base_color", "gbuffer_albedo", "albedo_tex"),
     ("surface_frame", "gbuffer_normal", "normal_tex"),
-    ("material", "gbuffer_material", "material_tex"),
     ("emission", "gbuffer_emission", "emission_tex"),
-    ("object", "gbuffer_object", "object_tex"),
+    ("surface", "gbuffer_surface", "surface_tex"),
 )
 
 POST_PROCESS_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE, NORMAL_TEXTURE}
@@ -96,29 +96,29 @@ def create_main_scene_targets(
     )
 
 
-def create_deferred_gbuffer(graph: RenderGraph) -> dict[str, TextureHandle]:
-    from infernux.rendergraph.graph import Format
+def create_deferred_gbuffer(graph: RenderGraph) -> dict[str, TextureHandle | BufferHandle]:
+    from infernux.lib import _Infernux
 
-    return {
-        semantic: graph.create_texture(
-            name, format=Format.RGBA32_UINT if semantic == "object" else Format.RGBA16_SFLOAT, samples=1,
-        )
-        for semantic, name, _ in _GBUFFER_ATTACHMENTS
+    attachments = {
+        semantic: graph.create_texture(name, format=format, samples=1)
+        for (semantic, name, _), format in zip(_GBUFFER_ATTACHMENTS, _Infernux._gbuffer_formats(), strict=True)
     }
+    return {**attachments, SURFACE_RECORDS_BUFFER: graph._create_world_surface_records()}
 
 
-def write_deferred_gbuffer(render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle]) -> None:
+def write_deferred_gbuffer(render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle | BufferHandle]) -> None:
     for slot, (semantic, _, _) in enumerate(_GBUFFER_ATTACHMENTS):
         render_pass.write_color(buffers[semantic], slot=slot)
 
 
 def draw_deferred_lighting(
-    render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle],
+    render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle | BufferHandle],
 ) -> None:
     render_pass.set_textures({
         **{port: buffers[semantic] for semantic, _, port in _GBUFFER_ATTACHMENTS},
         "depth_tex": buffers[DEPTH_TEXTURE],
     })
+    render_pass.set_buffer(SURFACE_RECORDS_BUFFER, buffers[SURFACE_RECORDS_BUFFER])
     render_pass.fullscreen_quad("infernux/internal/deferred_lighting")
 
 

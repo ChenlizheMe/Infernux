@@ -38,6 +38,12 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
                                : ShaderProgramDomain::Mesh;
     const bool surface = source.value("surface", false);
     result.shadingModel = surface ? source.at("shading_model").get<std::string>() : "";
+    if (surface) {
+        const auto &deferredModel = source.at("deferred_model");
+        if (!deferredModel.is_null())
+            result.deferredModel = ShadingModelId(deferredModel.get<std::string>());
+        result.receivesShadows = source.at("info").at("receive_shadows").get<bool>();
+    }
     result.compatibilitySignature =
         ComputeShaderProgramRevision(schema, source.at("domain").get<std::string>(), ShaderCompileTarget::Forward, 0);
     result.materialLayoutSignature = result.compatibilitySignature;

@@ -25,33 +25,31 @@ class ScalarSurface(shader.surface):
 """
 
 CONSUMER = """import infernux.shader as shader
+from infernux.shader.lib.surface import decode_model_scalars
 
 
 class ScalarConsumer(shader.fullscreen):
     shader_id = "tests/gbuffer/scalar_consumer"
     hidden = True
-    albedo_tex = shader.input("gbuffer_albedo", shader.Color2D)
-    material_tex = shader.input("gbuffer_material", shader.Color2D)
-    emission_tex = shader.input("gbuffer_emission", shader.Color2D)
-    object_tex = shader.input("gbuffer_object", shader.UInt2D)
+    surface_tex = shader.input("gbuffer_surface", shader.UInt2D)
+    surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
 
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
         pixel = shader.ivec2(ctx.position.xy)
-        surface_id = shader.load(self.object_tex, pixel, 0).w
-        if shader.load(self.albedo_tex, pixel, 0).a < 0.9:
-            if surface_id != 0:
-                return shader.vec4(1, 0, 1, 1)
+        packed = shader.load(self.surface_tex, pixel, 0)
+        surface_id = packed.x
+        if surface_id == 0:
             return shader.vec4(0, 0, 0, 1)
-        if surface_id == 0 or surface_id > 255:
+        record = self.surface_records[surface_id * 3]
+        if surface_id > 255 or record.x != 1 or record.y == 0 or record.z != 0:
             return shader.vec4(1, 0, 1, 1)
         coverage_id = shader.float(surface_id) / 255.0
-        scalar0 = shader.load(self.material_tex, pixel, 0).a
-        scalar1 = shader.load(self.emission_tex, pixel, 0).a
-        if scalar0 == 0.375 and scalar1 == 0.625:
+        scalars = decode_model_scalars(packed.y)
+        if scalars.x == 0.375 and scalars.y == 0.625:
             return shader.vec4(0, 1, 0, coverage_id)
-        if scalar0 == -2.25 and scalar1 == 4.5:
+        if scalars.x == -2.25 and scalars.y == 4.5:
             return shader.vec4(1, 0, 0, coverage_id)
-        if scalar0 == 0.0 and scalar1 == 0.0:
+        if scalars.x == 0.0 and scalars.y == 0.0:
             return shader.vec4(0, 0, 1, coverage_id)
         return shader.vec4(1, 0, 1, 1)
 """
@@ -66,24 +64,16 @@ class ScalarPipeline(DefaultDeferredPipeline):
         self.builds += 1
         if self.route == 'builtin':
             super().define_topology(g)
-            albedo = g.get_texture('gbuffer_albedo')
-            material = g.get_texture('gbuffer_material')
-            emission = g.get_texture('gbuffer_emission')
-            metadata = g.get_texture('gbuffer_object')
         else:
             builder = PipelineBuilder()
             builder.frame(hdr=True, msaa=1)
             builder.opaque().deferred(fallback=RenderPath.FORWARD_PLUS)
             compile_pipeline_definition(builder.build(), g, pipeline=self)
-            lighting, = [p for p in g._passes if p._action == 'fullscreen_quad' and p._shader_name == 'infernux/internal/deferred_lighting']
-            albedo = g.get_texture(lighting._input_bindings['albedo_tex'])
-            material = g.get_texture(lighting._input_bindings['material_tex'])
-            emission = g.get_texture(lighting._input_bindings['emission_tex'])
-            metadata = g.get_texture(lighting._input_bindings['object_tex'])
+        lighting, = [p for p in g._passes if p._action == 'fullscreen_quad' and p._shader_name == 'infernux/internal/deferred_lighting']
         target = g.get_texture('color')
         p=g.add_pass('CheckScalarStorage').write_color(target)
-        p.set_textures({'albedo_tex': albedo, 'material_tex': material,
-                        'emission_tex': emission, 'object_tex': metadata})
+        p.set_texture('surface_tex', g.get_texture(lighting._input_bindings['surface_tex']))
+        p.set_buffer('surface_records', g.get_buffer(lighting._input_bindings['surface_records']))
         p.fullscreen_quad('tests/gbuffer/scalar_consumer')
         g.set_output(target)
 

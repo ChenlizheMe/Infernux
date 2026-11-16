@@ -7,11 +7,10 @@ followed by a fullscreen lighting pass, then transparent forward pass.
 
 Private GBuffer layout (MRT)::
 
-    Slot 0 — Base Color         (RGBA16_SFLOAT)
-    Slot 1 — World Normals      (RGBA16_SFLOAT, alpha = smoothness)
-    Slot 2 — Material Params    (RGBA16_SFLOAT, alpha = shadingParam0)
-    Slot 3 — Emission           (RGBA16_SFLOAT)
-    Slot 4 — Object Metadata    (RGBA32_UINT: layer, model, receive shadows, surface ID)
+    Slot 0 — Base color and metallic (RGBA16_SFLOAT)
+    Slot 1 — Octahedral normal, roughness and AO (RGBA16_SFLOAT)
+    Slot 2 — Emission and specular strength (RGBA16_SFLOAT)
+    Slot 3 — Surface ID and two packed model scalars (RG32_UINT)
     Depth  — Scene depth        (D32_SFLOAT)
 
 The public ``normal`` PassResult is generated only when requested. Its RGB is
@@ -59,6 +58,7 @@ from infernux.renderstack._pipeline_common import (
     DEFERRED_LIGHTING_CLEAR_COLOR,
     NORMAL_TEXTURE,
     SHADOW_MAP_TEXTURE,
+    SURFACE_RECORDS_BUFFER,
     add_normal_buffer_pass,
     add_shadow_caster_pass,
     add_skybox_pass,
@@ -117,8 +117,8 @@ class DefaultDeferredPipeline(RenderPipeline):
 
     @geometry_buffer(NORMAL_TEXTURE, dependencies={DEPTH_TEXTURE})
     def _provide_deferred_normal(self, context):
-        # The GBuffer normal's alpha stores smoothness. Replaying the same
-        # visible geometry publishes the public normal's 0/1 coverage alpha.
+        # The material frame stores octahedral normals with roughness and AO.
+        # This provider publishes the display-oriented normal with coverage.
         return add_normal_buffer_pass(
             context.graph,
             source=context.source,
@@ -194,7 +194,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             graph.injection_point("after_gbuffer", resources=resources)
             graph.effects(
                 "after_gbuffer", scope="stage", display_name="After GBuffer",
-                inputs=resources, outputs=resources,
+                inputs=resources, outputs=resources - {SURFACE_RECORDS_BUFFER, LIGHT_LIST_BUFFER},
                 capabilities={"fullscreen", "multiple_render_targets"},
             )
             current = graph.current_pass_result

@@ -135,6 +135,11 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
     lighting = passes["DeferredLightingPass"]
     assert lighting._input_bindings["normal_tex"] == packed.name
     assert lighting._input_bindings["albedo_tex"] == authored_base_color.name
+    formats = tuple(graph.get_texture(name).format for name in passes["GBufferPass"]._write_colors.values())
+    assert formats == (Format.RGBA16_SFLOAT,) * 3 + (Format.RG32_UINT,)
+    surface_records = gbuffer.sample("surface_records")
+    assert lighting._input_bindings["surface_records"] == surface_records.name
+    assert (surface_records.name, "storage_read") in lighting._buffer_accesses
 
     first = passes["gbuffer/Normal"]
     assert first._material_filter == "deferred_compatible"

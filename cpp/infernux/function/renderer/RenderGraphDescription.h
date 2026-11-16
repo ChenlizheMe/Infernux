@@ -292,6 +292,14 @@ class GraphBufferInput final
     bool m_cycle = false;
 };
 
+enum class GraphFrameBuffer : uint8_t
+{
+    None,
+    ViewLights,
+    WorldSurfaces,
+    Count,
+};
+
 struct GraphBufferDesc
 {
     std::string name;
@@ -301,10 +309,12 @@ struct GraphBufferDesc
     std::shared_ptr<GraphBufferInput> input;           ///< Optional slot supplying the imported value.
     std::shared_ptr<rhi::ComputeBuffer> bufferAuthor;
     std::shared_ptr<GraphBufferInput> inputAuthor;
-    /// Bind the camera-local canonical light buffer for the active frame slot.
-    /// This resource is read-only and owned by SceneRenderGraph; it is not a
-    /// transient allocation or an imported author buffer.
-    bool viewLightList = false;
+    /// Read-only data owned by the renderer and bound for this View's execution.
+    GraphFrameBuffer frameBuffer = GraphFrameBuffer::None;
+    [[nodiscard]] bool HasFrameBuffer() const noexcept
+    {
+        return frameBuffer != GraphFrameBuffer::None;
+    }
     uint64_t byteOffset = 0; ///< Logical imported view; physical hazards cover the complete allocation.
     std::string workBinding;
     uint32_t workSlot = 0;

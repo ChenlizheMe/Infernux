@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <function/renderer/RenderInstanceHistory.h>
+#include <function/renderer/RenderSurfaceRecords.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDependencyGraph.h>
@@ -20,6 +22,27 @@ namespace infernux
 
 namespace
 {
+std::shared_ptr<const RenderSurfaceRecords> CaptureSurfaceRecords(const DrawCallResult &geometry)
+{
+    uint32_t lastSurface = 0;
+    for (const auto &draw : geometry.drawCalls)
+        lastSurface = std::max(lastSurface, draw.surfaceId);
+    std::vector<RenderSurfaceRecord> records(static_cast<size_t>(lastSurface) + 1);
+    for (const auto &draw : geometry.drawCalls) {
+        auto &record = records[draw.surfaceId];
+        const auto *material = draw.material.get();
+        const auto *program = material ? material->GetSelectedShaderArtifact().get() : nullptr;
+        const auto object = PackGPUObjectId(draw.objectId);
+        const auto mesh = PackGPUObjectId(draw.meshRuntimeVersion);
+        const auto content = PackGPUObjectId(material ? material->GetVersion() : 0);
+        record.lighting = {draw.layerMask, program ? program->deferredModel : 0u,
+                           draw.receivesShadows && program && program->receivesShadows ? 1u : 0u, 0u};
+        record.identity = {object.x, object.y, draw.identity.primitiveIndex, draw.materialSlot};
+        record.revisions = {mesh.x, mesh.y, content.x, content.y};
+    }
+    return std::make_shared<const RenderSurfaceRecords>(std::move(records));
+}
+
 struct InlineMeshSnapshot
 {
     std::vector<Vertex> vertices;
@@ -215,10 +238,17 @@ size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication
     const bool meshPublicationsChanged = CaptureMeshPublications(frame);
     CaptureMaterialPublications(frame);
     CaptureLighting(frame);
-    if (m_sourceContentRevision != contentRevision || m_materialPublicationsChanged || meshPublicationsChanged) {
+    const bool contentChanged =
+        m_sourceContentRevision != contentRevision || m_materialPublicationsChanged || meshPublicationsChanged;
+    if (contentChanged) {
         ++m_contentPublicationRevision;
         m_sourceContentRevision = contentRevision;
     }
+    if (!m_surfaceRecords || m_surfaceStructureRevision != currentVersion || contentChanged) {
+        m_surfaceRecords = CaptureSurfaceRecords(frame.m_drawCalls);
+        m_surfaceStructureRevision = currentVersion;
+    }
+    frame.m_surfaceRecords = m_surfaceRecords;
     frame.m_worldId = worldId;
     frame.m_structuralRevision = currentVersion;
     frame.m_transformRevision = transformRevision;

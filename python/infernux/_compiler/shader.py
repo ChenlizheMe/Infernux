@@ -359,7 +359,7 @@ _SURFACE_GBUFFER = """
 [shader("fragment")]
 InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsFrontFace)
 {
-    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input, INX_MODEL_ID, INX_RECEIVE_SHADOWS);
+    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input.surface_id);
 }
 """
 
@@ -498,7 +498,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                                     "        float3 previous_local = inx_skin_vertex(previous, skin, inx_bones).position;")
         code.append(passes)
         if model.deferred_model:
-            code.append(_SURFACE_GBUFFER.replace("INX_MODEL_ID", "INX_" + model.deferred_model.upper() + "_MODEL_ID"))
+            code.append(_SURFACE_GBUFFER)
     libraries = graph.sources()
     if model:
         libraries = (*libraries, ("inx_surface_model", model.path, model.source))

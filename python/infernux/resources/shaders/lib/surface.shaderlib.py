@@ -1,6 +1,18 @@
 import infernux.shader as shader
 
 
+def decode_octahedral_normal(encoded: shader.vec2) -> shader.vec3:
+    z = 1.0 - shader.abs(encoded.x) - shader.abs(encoded.y)
+    adjustment = shader.saturate(-z)
+    x = encoded.x + (-adjustment if encoded.x >= 0.0 else adjustment)
+    y = encoded.y + (-adjustment if encoded.y >= 0.0 else adjustment)
+    return shader.normalize(shader.vec3(x, y, z))
+
+
+def decode_model_scalars(bits: shader.uint) -> shader.vec2:
+    return shader.vec2(shader.f16_to_f32(bits & shader.uint(65535)), shader.f16_to_f32(bits >> 16))
+
+
 def texture_uv(ctx: shader.SurfaceContext, uv_set: int, transform: shader.vec4) -> shader.vec2:
     uv = ctx.uv1 if uv_set == 1 else ctx.uv0
     return uv * transform.xy + transform.zw

@@ -6,6 +6,7 @@ import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, SceneManager, Vector3
+from infernux.renderstack._pipeline_common import create_deferred_gbuffer, write_deferred_gbuffer
 
 
 SURFACE = '''import infernux.shader as shader
@@ -19,6 +20,7 @@ class Cutout(shader.surface):
 '''
 
 CONSUMER = '''import infernux.shader as shader
+from infernux.shader.lib.surface import decode_octahedral_normal
 class Compare(shader.fullscreen):
     color_tex = shader.input("color", shader.Color2D)
     normal_tex = shader.input("normal", shader.Color2D)
@@ -28,8 +30,9 @@ class Compare(shader.fullscreen):
     picking_tex = shader.input("picking", shader.UInt2D)
     albedo_tex = shader.input("albedo", shader.Color2D)
     gnormal_tex = shader.input("gnormal", shader.Color2D)
-    material_tex = shader.input("material", shader.Color2D)
-    metadata_tex = shader.input("metadata", shader.UInt2D)
+    emission_tex = shader.input("emission", shader.Color2D)
+    surface_tex = shader.input("surface", shader.UInt2D)
+    surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
     object_id = shader.parameter.uint()
 
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
@@ -42,27 +45,29 @@ class Compare(shader.fullscreen):
         picking = shader.load(self.picking_tex, p, 0)
         albedo = shader.load(self.albedo_tex, p, 0)
         gnormal = shader.load(self.gnormal_tex, p, 0)
-        material = shader.load(self.material_tex, p, 0)
-        metadata = shader.load(self.metadata_tex, p, 0)
+        emission = shader.load(self.emission_tex, p, 0)
+        surface = shader.load(self.surface_tex, p, 0)
         covered = color.a > 0.5
         identified = picking.x == self.object_id and picking.y == 0
         mismatch = covered != (normal.a > 0.5) or covered != (base.a > 0.5)
-        mismatch = mismatch or covered != (depth > 0.0) or covered != identified or covered != (albedo.a > 0.5)
+        mismatch = mismatch or covered != (depth > 0.0) or covered != identified or covered != (surface.x != 0)
         if covered:
             if mismatch:
                 return shader.vec4(1.0, 0.0625, 1.0, 1.0)
-            if shader.any(shader.abs(base - albedo) > 0.002):
+            if shader.any(shader.abs(base.rgb - albedo.rgb) > 0.002):
                 return shader.vec4(1.0, 0.125, 1.0, 1.0)
-            if shader.any(shader.abs(normal.rgb - gnormal.rgb) > 0.002):
+            if shader.any(shader.abs(normal.rgb - (decode_octahedral_normal(gnormal.xy) * 0.5 + 0.5)) > 0.002):
                 return shader.vec4(1.0, 0.1875, 1.0, 1.0)
-            if shader.abs(gnormal.a - 0.4) > 0.002:
+            if shader.abs(gnormal.z - 0.6) > 0.002:
                 return shader.vec4(1.0, 0.25, 1.0, 1.0)
-            if shader.any(shader.abs(material.rgb - shader.vec3(0.2, 0.8, 1.0)) > 0.002):
+            if shader.any(shader.abs(shader.vec3(albedo.a, gnormal.w, emission.a) - shader.vec3(0.2, 0.8, 1.0)) > 0.002):
                 return shader.vec4(1.0, 0.3125, 1.0, 1.0)
-            if metadata.x != 1 or metadata.y == 0 or metadata.z != 1 or metadata.w == 0:
+            metadata = self.surface_records[surface.x * 3]
+            identity = self.surface_records[surface.x * 3 + 1]
+            if metadata.x != 1 or metadata.y == 0 or metadata.z != 1 or identity.x != self.object_id:
                 return shader.vec4(1.0, 0.375, 1.0, 1.0)
         else:
-            mismatch = mismatch or shader.any(picking.xy != shader.uvec2(0)) or shader.any(metadata != shader.uvec4(0))
+            mismatch = mismatch or shader.any(picking.xy != shader.uvec2(0)) or shader.any(surface.xy != shader.uvec2(0))
         if mismatch:
             return shader.vec4(1.0, 0.0, 1.0, 1.0)
         if not covered:
@@ -100,16 +105,16 @@ class BuffersPipeline(inx.renderstack.RenderPipeline):
         outputs["picking_tex"] = picking
         gbuffer_depth = graph.create_texture("gbuffer_depth", format=fmt.D32_SFLOAT, samples=1)
         gbuffer = graph.add_pass("GBuffer").write_depth(gbuffer_depth).set_clear(color=(0, 0, 0, 0), depth=0.0)
-        for slot, name in enumerate(("albedo", "gnormal", "material", "emission", "metadata")):
-            texture = graph.create_texture(name, format=fmt.RGBA32_UINT if name == "metadata" else fmt.RGBA16_SFLOAT, samples=1)
-            gbuffer.write_color(texture, slot)
-            if name != "emission":
-                outputs[name + "_tex"] = texture
+        surface = create_deferred_gbuffer(graph)
+        write_deferred_gbuffer(gbuffer, surface)
+        outputs.update(albedo_tex=surface['base_color'], gnormal_tex=surface['surface_frame'],
+                       emission_tex=surface['emission'], surface_tex=surface['surface'])
         gbuffer.draw_renderers(material_pass="gbuffer")
         target = graph.create_texture("result", camera_target=True)
         compare = graph.add_pass("Compare").write_color(target)
         for name, texture in outputs.items():
             compare.set_texture(name, texture)
+        compare.set_buffer("surface_records", surface['surface_records'])
         compare.set_param("object_id", self.object_id).fullscreen_quad(self.consumer)
         graph.set_output(target)
 

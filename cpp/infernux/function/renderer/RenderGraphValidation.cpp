@@ -9,6 +9,7 @@
 #include <core/math/Intervals.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iterator>
 #include <limits>
@@ -108,7 +109,7 @@ void ValidateWorkDataflow(const RenderGraphDescription &graph,
         if (!buffer.workBinding.empty())
             continue;
         auto identity = buffer.computeBuffer ? importedIdentity(buffer.computeBuffer)
-                                             : Identity{nextIdentity++, buffer.viewLightList, false};
+                                             : Identity{nextIdentity++, buffer.HasFrameBuffer(), false};
         identity.work = buffer.exportLayout.has_value();
         identities.emplace(buffer.name, identity);
         if (buffer.computeBuffer)
@@ -542,7 +543,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
     }
     std::unordered_map<std::string, const GraphBufferDesc *> buffers;
     buffers.reserve(desc.buffers.size());
-    size_t viewLightListCount = 0;
+    std::array<bool, static_cast<size_t>(GraphFrameBuffer::Count)> frameBuffers{};
     for (const auto &buffer : desc.buffers) {
         if (buffer.name.empty() || textures.find(buffer.name) != textures.end()) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid or duplicate buffer name '", buffer.name, "'");
@@ -554,7 +555,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             return false;
         }
         const bool workBuffer = !buffer.workBinding.empty();
-        if (static_cast<unsigned>(buffer.computeBuffer != nullptr) + static_cast<unsigned>(buffer.viewLightList) +
+        if (static_cast<unsigned>(buffer.computeBuffer != nullptr) + static_cast<unsigned>(buffer.HasFrameBuffer()) +
                 static_cast<unsigned>(workBuffer) >
             1) {
             INXLOG_ERROR("Graph buffer has multiple storage sources: ", buffer.name);
@@ -591,19 +592,15 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                          buffer.name);
             return false;
         }
-        if (buffer.viewLightList) {
-            ++viewLightListCount;
-            if (buffer.computeBuffer || buffer.byteSize < sizeof(uint32_t) * 4 ||
+        if (buffer.HasFrameBuffer()) {
+            const auto index = static_cast<size_t>(buffer.frameBuffer);
+            if (index >= frameBuffers.size() || frameBuffers[index] || buffer.byteSize < sizeof(uint32_t) * 4 ||
                 buffer.usage != static_cast<uint32_t>(GraphBufferUsage::Storage)) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", buffer.name,
-                             "' must be a read-only storage resource with a 16-byte header");
+                INXLOG_ERROR("Invalid or duplicate renderer-owned frame buffer: ", buffer.name);
                 return false;
             }
+            frameBuffers[index] = true;
         }
-    }
-    if (viewLightListCount > 1) {
-        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: only one view light list is allowed");
-        return false;
     }
 
     std::unordered_set<std::string> passNames;
@@ -745,9 +742,8 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                              "' does not declare the required usage");
                 return false;
             }
-            if (buffer->second->viewLightList && access.type != GraphBufferAccessType::StorageRead) {
-                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", access.resource,
-                             "' is read-only");
+            if (buffer->second->HasFrameBuffer() && access.type != GraphBufferAccessType::StorageRead) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: frame buffer '", access.resource, "' is read-only");
                 return false;
             }
             if (buffer->second->computeBuffer && (access.type == GraphBufferAccessType::StorageWrite ||
@@ -827,7 +823,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                  (!texture.width || !texture.height || texture.sizeDivisor)) ||
                 (width && region.width > width) || (height && region.height > height) ||
                 command->copyBufferOffset > range.byteSize ||
-                !region.Fits(format, range.byteSize - command->copyBufferOffset) || range.viewLightList ||
+                !region.Fits(format, range.byteSize - command->copyBufferOffset) || range.HasFrameBuffer() ||
                 (toBuffer && range.computeBuffer) || !(range.usage & static_cast<uint32_t>(usage))) {
                 INXLOG_ERROR("Texture-buffer copy requires a packed color or depth layout and aligned buffer range: ",
                              pass.name);
@@ -1065,7 +1061,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             if (!buffer.exportLayout)
                 continue;
             const auto &layout = *buffer.exportLayout;
-            if (buffer.viewLightList || !layout.elementCount || layout.lanes == 0 || layout.lanes > 4 ||
+            if (buffer.HasFrameBuffer() || !layout.elementCount || layout.lanes == 0 || layout.lanes > 4 ||
                 layout.scalarType > rhi::ComputeScalarType::Int64 ||
                 layout.elementCount > (std::numeric_limits<uint64_t>::max)() / layout.GetElementStride())
                 throw std::invalid_argument("Buffer export requires an owned, valid numerical layout");

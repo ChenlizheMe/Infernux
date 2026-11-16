@@ -96,6 +96,8 @@ class SceneRenderExtractor final
     };
     std::unordered_map<const RendererParameterBlock *, ParameterPublication> m_parameterPublications;
     std::shared_ptr<const RenderLightingSource> m_lighting;
+    std::shared_ptr<const RenderSurfaceRecords> m_surfaceRecords;
+    uint64_t m_surfaceStructureRevision = 0;
     PrepareMaterial m_prepareMaterial;
     std::shared_ptr<InxMaterial> m_baseSkybox;
     std::unordered_map<const RenderPoseBuffer *, std::shared_ptr<const RenderPoseValue>> m_framePoseValues;

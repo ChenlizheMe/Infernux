@@ -296,7 +296,7 @@ void CheckViewLightListValidation()
     lightList.name = "light_list";
     lightList.byteSize = sizeof(uint32_t) * 4;
     lightList.usage = static_cast<uint32_t>(GraphBufferUsage::Storage);
-    lightList.viewLightList = true;
+    lightList.frameBuffer = GraphFrameBuffer::ViewLights;
     graph.buffers.push_back(lightList);
 
     GraphPassDesc pass;
@@ -327,7 +327,7 @@ void CheckViewLightListValidation()
     auto duplicate = graph;
     auto second = lightList;
     second.name = "second_light_list";
-    second.viewLightList = true;
+    second.frameBuffer = GraphFrameBuffer::ViewLights;
     duplicate.buffers.push_back(second);
     assert(!valid(duplicate));
 }

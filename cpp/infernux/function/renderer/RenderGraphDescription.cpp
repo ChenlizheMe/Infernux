@@ -87,7 +87,7 @@ bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
            (a.inputAuthor ? a.inputAuthor : a.input) == (b.inputAuthor ? b.inputAuthor : b.input) &&
            (a.input || (a.bufferAuthor ? a.bufferAuthor : a.computeBuffer) ==
                            (b.bufferAuthor ? b.bufferAuthor : b.computeBuffer)) &&
-           a.viewLightList == b.viewLightList && a.workBinding == b.workBinding && a.workSlot == b.workSlot &&
+           a.frameBuffer == b.frameBuffer && a.workBinding == b.workBinding && a.workSlot == b.workSlot &&
            a.exportLayout.has_value() == b.exportLayout.has_value() && a.exportShape == b.exportShape &&
            (!a.exportLayout || (a.exportLayout->elementCount == b.exportLayout->elementCount &&
                                 a.exportLayout->scalarType == b.exportLayout->scalarType &&

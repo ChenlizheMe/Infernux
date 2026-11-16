@@ -13,6 +13,7 @@
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
 #include "RenderGraphTransfer.h"
+#include "RenderSurfaceRecords.h"
 #include "RenderViewHistory.h"
 #include "RendererSelection.h"
 #include "SceneRenderGraph.h"
@@ -1356,6 +1357,25 @@ void ValidateFullscreenHistories(const FullscreenProgram &program, const Fullscr
     }
 }
 } // namespace
+
+void SceneRenderGraph::SetSurfaceRecords(std::shared_ptr<const RenderSurfaceRecords> records)
+{
+    if (m_worldSurfaceRecords == records)
+        return;
+    const bool hasSurfaceInput =
+        std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                    [](const auto &buffer) { return buffer.frameBuffer == GraphFrameBuffer::WorldSurfaces; });
+    bool rebound = false;
+    if (hasSurfaceInput && m_graphBuilt && !m_needsRebuild && m_worldSurfaceHandle.IsValid() && records) {
+        auto next = records->Acquire(m_vkCore->GetDeviceContext().GetRhiDevice());
+        rebound = m_renderGraph->RebindImportedBuffers(
+            {{m_worldSurfaceHandle, next->GetBuffer(), rhi::QueueRole::Graphics, false}});
+        if (rebound)
+            m_worldSurfaceBuffer = std::move(next);
+    }
+    m_worldSurfaceRecords = std::move(records);
+    m_needsRebuild |= hasSurfaceInput && !rebound;
+}
 
 bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
@@ -3511,20 +3531,12 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
 
     std::unordered_map<std::string, vk::ResourceHandle> customRTHandles;
     std::unordered_map<std::string, vk::ResourceHandle> bufferHandles;
-    std::array<vk::ResourceHandle, EngineConfig::kFrameSlotCapacity> viewLightListHandles{};
-    uint64_t viewLightListByteSize = 0;
-    const bool hasViewLightList = std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
-                                              [](const GraphBufferDesc &buffer) { return buffer.viewLightList; });
-    if (hasViewLightList) {
-        for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
-            const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
-            if (!lights.buffer.IsValid() || lights.capacityBytes < sizeof(uint32_t) * 4) {
-                INXLOG_ERROR("SceneRenderGraph: view light list is unavailable for frame slot ", frameIndex);
-                return;
-            }
-            viewLightListByteSize = std::max(viewLightListByteSize, lights.capacityBytes);
-        }
-    }
+    struct FrameBufferBinding
+    {
+        std::array<vk::ResourceHandle, EngineConfig::kFrameSlotCapacity> handles{};
+        uint64_t byteSize = 0;
+    };
+    std::array<FrameBufferBinding, static_cast<size_t>(GraphFrameBuffer::Count)> frameBufferBindings;
     if (!m_pythonGraphDesc.passes.empty() && !RegisterGraphTextures(m_width, m_height, assetTextures, customRTHandles))
         return;
     ImportTemporalHistoryResources(customRTHandles);
@@ -3534,23 +3546,37 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             texDescMap[tex.name] = &tex;
         }
 
-        // Import the canonical camera light upload once per frame slot. A
-        // fullscreen consumer selects the active slot at execution time,
-        // so descriptor bindings never retain another View's or frame's
-        // light data.
-        if (hasViewLightList) {
-            for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
-                const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
-                const std::string prefix = "View/LightList/Frame" + std::to_string(frameIndex);
-                m_renderGraph->AddComputePass(prefix, [&, frameIndex, prefix, lights](vk::PassBuilder &builder) {
-                    viewLightListHandles[frameIndex] =
-                        builder.ImportBuffer(prefix, lights.buffer, lights.capacityBytes);
-                    m_renderGraph->SetResourceInitialState(viewLightListHandles[frameIndex],
-                                                           rhi::TextureLayout::Undefined, rhi::Access::HostWrite,
-                                                           rhi::PipelineStage::Host);
-                    builder.ReadStorageBuffer(viewLightListHandles[frameIndex], rhi::PipelineStage::FragmentShader);
-                    return [](vk::RenderContext &) {};
-                });
+        const auto importFrameBuffer = [&](FrameBufferBinding &binding, uint32_t frameIndex, const std::string &name,
+                                           rhi::BufferHandle buffer, uint64_t byteSize) {
+            binding.byteSize = std::max(binding.byteSize, byteSize);
+            m_renderGraph->AddComputePass(name, [&, frameIndex, name, buffer, byteSize](vk::PassBuilder &builder) {
+                const auto handle = builder.ImportBuffer(name, buffer, byteSize);
+                binding.handles[frameIndex] = handle;
+                m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined, rhi::Access::HostWrite,
+                                                       rhi::PipelineStage::Host);
+                builder.ReadStorageBuffer(handle, rhi::PipelineStage::FragmentShader);
+                return [](vk::RenderContext &) {};
+            });
+        };
+        m_worldSurfaceBuffer.reset();
+        m_worldSurfaceHandle = {};
+        for (const auto &description : m_pythonGraphDesc.buffers) {
+            if (!description.HasFrameBuffer())
+                continue;
+            auto &binding = frameBufferBindings[static_cast<size_t>(description.frameBuffer)];
+            if (description.frameBuffer == GraphFrameBuffer::ViewLights) {
+                for (uint32_t frameIndex = 0; frameIndex < EngineConfig::kFrameSlotCapacity; ++frameIndex) {
+                    const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
+                    importFrameBuffer(binding, frameIndex, "View/LightList/Frame" + std::to_string(frameIndex),
+                                      lights.buffer, lights.capacityBytes);
+                }
+            } else {
+                if (!m_worldSurfaceRecords)
+                    throw std::runtime_error("Surface records require an acquired RenderWorld");
+                m_worldSurfaceBuffer = m_worldSurfaceRecords->Acquire(m_vkCore->GetDeviceContext().GetRhiDevice());
+                importFrameBuffer(binding, 0, "World/SurfaceRecords", m_worldSurfaceBuffer->GetBuffer(),
+                                  m_worldSurfaceBuffer->GetByteSize());
+                m_worldSurfaceHandle = binding.handles[0];
             }
         }
 
@@ -3590,8 +3616,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
 
         for (size_t index = 0; index < m_pythonGraphDesc.buffers.size(); ++index) {
             const auto &buffer = m_pythonGraphDesc.buffers[index];
-            if (buffer.viewLightList) {
-                bufferHandles[buffer.name] = viewLightListHandles[0];
+            if (buffer.HasFrameBuffer()) {
+                bufferHandles[buffer.name] = frameBufferBindings[static_cast<size_t>(buffer.frameBuffer)].handles[0];
                 continue;
             }
             if (const auto owner = ResolveGraphBufferOwner(buffer)) {
@@ -4639,8 +4665,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                          [&name](const GraphBufferDesc &item) { return item.name == name; });
                         if (description == m_pythonGraphDesc.buffers.end())
                             return;
+                        const auto &frameBinding = frameBufferBindings[static_cast<size_t>(description->frameBuffer)];
                         const uint64_t inputByteSize =
-                            description->viewLightList ? viewLightListByteSize : description->byteSize;
+                            description->HasFrameBuffer() ? frameBinding.byteSize : description->byteSize;
                         const auto &capabilities = m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilities();
                         const auto alignment = capabilities.limits.minStorageBufferOffsetAlignment;
                         const uint64_t bindingOffset = description->byteOffset - description->byteOffset % alignment;
@@ -4673,9 +4700,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         input.byteOffset = bindingOffset;
                         input.byteSize = bindingBytes;
                         input.dataByteOffset = static_cast<uint32_t>(dataOffset);
-                        input.frameLocal = description->viewLightList;
+                        input.frameLocal = description->frameBuffer == GraphFrameBuffer::ViewLights;
                         if (input.frameLocal)
-                            input.frameHandles = viewLightListHandles;
+                            input.frameHandles = frameBinding.handles;
                         fsReadInputs.push_back(input);
                         continue;
                     }

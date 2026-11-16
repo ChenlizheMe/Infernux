@@ -3,6 +3,7 @@
 #include <core/types/ShaderTypes.h>
 #include <function/renderer/rhi/RhiDescriptors.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -10,6 +11,13 @@
 
 namespace infernux
 {
+
+inline constexpr std::array kGBufferColorFormats{
+    rhi::PixelFormat::RGBA16SFloat,
+    rhi::PixelFormat::RGBA16SFloat,
+    rhi::PixelFormat::RGBA16SFloat,
+    rhi::PixelFormat::RG32UInt,
+};
 
 /// Immutable render-target contract for one material pass. It is deliberately
 /// backend-neutral so RenderGraph can key pipelines without leaking Vulkan

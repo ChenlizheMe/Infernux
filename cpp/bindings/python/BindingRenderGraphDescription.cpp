@@ -1,6 +1,7 @@
 #include "BindingRegistration.h"
 #include "MatrixPyBridge.h"
 #include "ShaderParameterPyBridge.h"
+#include <function/renderer/MaterialPassPipeline.h>
 #include <function/renderer/RenderGraphDescription.h>
 #include <function/renderer/RendererSelection.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
@@ -14,6 +15,7 @@ namespace infernux
 {
 void RegisterRenderGraphDescriptionBindings(py::module_ &m)
 {
+    m.def("_gbuffer_formats", [] { return kGBufferColorFormats; });
     // ========================================================================
     // RenderGraph topology binding types
     // ========================================================================
@@ -168,6 +170,11 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .def_property_readonly("_result_cycle", &GraphBufferInput::HasResultCycle)
         .def_property_readonly("value", &GraphBufferInput::GetValue);
 
+    py::enum_<GraphFrameBuffer>(m, "_GraphFrameBuffer")
+        .value("NONE", GraphFrameBuffer::None)
+        .value("VIEW_LIGHTS", GraphFrameBuffer::ViewLights)
+        .value("WORLD_SURFACES", GraphFrameBuffer::WorldSurfaces);
+
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())
         .def_readwrite("name", &GraphBufferDesc::name)
@@ -176,7 +183,7 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .def_readwrite("usage", &GraphBufferDesc::usage)
         .def_readwrite("compute_buffer", &GraphBufferDesc::computeBuffer)
         .def_readwrite("input", &GraphBufferDesc::input)
-        .def_readwrite("view_light_list", &GraphBufferDesc::viewLightList)
+        .def_readwrite("frame_buffer", &GraphBufferDesc::frameBuffer)
         .def_readwrite("work_binding", &GraphBufferDesc::workBinding)
         .def_readwrite("work_slot", &GraphBufferDesc::workSlot)
         .def_readwrite("export_layout", &GraphBufferDesc::exportLayout)

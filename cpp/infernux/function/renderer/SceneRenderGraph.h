@@ -56,6 +56,10 @@
 
 namespace infernux
 {
+namespace rhi
+{
+class BufferResource;
+}
 struct RenderViewPlan;
 struct GameScreenAdmission;
 class InxVkCoreModular;
@@ -659,6 +663,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// graph that still imports those retired buffers. Vulkan may recycle the
     /// same raw handle values, so handle equality cannot keep these views.
     void InvalidateParticleViews();
+    void SetSurfaceRecords(std::shared_ptr<const RenderSurfaceRecords> records);
 
     /// @brief Clear cached draw calls and camera state.
     ///
@@ -671,6 +676,9 @@ class SceneRenderGraph : public NativeLifetimeOwner
     {
         m_graphResults.Reset("render view scene was reset");
         ClearCachedViewSubmission();
+        m_worldSurfaceRecords.reset();
+        m_worldSurfaceBuffer.reset();
+        m_worldSurfaceHandle = {};
         InvalidateParticleViews();
         RetireWorkInstances();
         InvalidatePerViewShadowBindings();
@@ -1031,6 +1039,9 @@ class SceneRenderGraph : public NativeLifetimeOwner
     uint64_t m_cachedObjectBufferRevision = 0;
     uint64_t m_cachedParticleDrawRegistryRevision = 0;
     std::shared_ptr<const void> m_cachedRenderWorldOwner;
+    std::shared_ptr<const RenderSurfaceRecords> m_worldSurfaceRecords;
+    std::shared_ptr<const rhi::BufferResource> m_worldSurfaceBuffer;
+    vk::ResourceHandle m_worldSurfaceHandle;
     bool m_hasShadowCasterPass = false;
     // Shadow attachments belong to one camera graph and survive across graph
     // executions. Static scenes can therefore preserve the atlas until an
