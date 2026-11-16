@@ -5,6 +5,7 @@
 #include "ParticleGpuCuller.h"
 #include "ParticleGpuMigrator.h"
 #include "ParticleGpuOutputRenderer.h"
+#include "ParticleGpuPublicationStatus.h"
 #include "ParticleGpuRibbonTopology.h"
 #include "ParticleGpuSorter.h"
 #include "ParticleGpuSurfaceBinding.h"
@@ -297,13 +298,6 @@ struct GpuParticleDiagnosticSnapshot
     GpuParticleDiagnosticStatus status = GpuParticleDiagnosticStatus::Unknown;
     std::vector<GpuParticleEmitterDiagnostic> emitters;
     std::string error;
-};
-
-enum class GpuParticlePublicationStatus
-{
-    Published,
-    Pending,
-    Failed,
 };
 
 [[nodiscard]] std::string_view GpuParticleStateGatherShaderSource() noexcept;

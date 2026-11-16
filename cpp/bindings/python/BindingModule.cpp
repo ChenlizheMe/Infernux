@@ -2,10 +2,16 @@
 #include <core/config/EngineConfig.h>
 #include <core/log/InxLog.h>
 #include <function/renderer/ProfileConfig.h>
+#include <function/renderer/particle/ParticleGpuPublicationStatus.h>
 
 PYBIND11_MODULE(_Infernux, module)
 {
     using infernux::EngineConfig;
+    using infernux::particle::GpuParticlePublicationStatus;
+    pybind11::enum_<GpuParticlePublicationStatus>(module, "GpuParticlePublicationStatus")
+        .value("Published", GpuParticlePublicationStatus::Published)
+        .value("Pending", GpuParticlePublicationStatus::Pending)
+        .value("Failed", GpuParticlePublicationStatus::Failed);
     // ---- EngineConfig (centralised runtime configuration) ----
     pybind11::class_<EngineConfig>(module, "EngineConfig",
                                    "Centralised engine configuration singleton.\n"

@@ -599,11 +599,6 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
 {
     m.doc() = "Python bindings for Infernux";
 
-    py::enum_<particle::GpuParticlePublicationStatus>(m, "GpuParticlePublicationStatus")
-        .value("Published", particle::GpuParticlePublicationStatus::Published)
-        .value("Pending", particle::GpuParticlePublicationStatus::Pending)
-        .value("Failed", particle::GpuParticlePublicationStatus::Failed);
-
     using ParticleStateCapture = particle::GpuParticleStateCapture;
     py::class_<ParticleStateCapture, std::shared_ptr<ParticleStateCapture>>(m, "_GpuParticleStateCapture")
         .def_property_readonly("ready", &ParticleStateCapture::Ready)
