@@ -10,6 +10,7 @@ struct ShaderMaterialPreparation;
 struct ShaderStagePair;
 struct ShaderSourceModule;
 struct ShaderAuthorSource;
+class InxMaterial;
 
 /**
  * @brief Runtime preparation and publication for GPU author assets.
@@ -23,6 +24,9 @@ struct ShaderAuthorSource;
 class ShaderLoader final : public IAssetLoader
 {
   public:
+    /// Resolve the selected author pair and publish its immutable program and
+    /// defaults before scene extraction. Device creation is a separate step.
+    static void PrepareMaterial(InxMaterial &material);
     /// Worker-safe construction from an already frozen frontend snapshot.
     [[nodiscard]] static std::shared_ptr<ShaderAsset> CompileAuthorAsset(const ShaderSourceModule &source,
                                                                          const ShaderAuthorSource &prepared,

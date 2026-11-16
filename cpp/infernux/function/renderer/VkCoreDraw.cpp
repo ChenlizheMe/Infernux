@@ -46,13 +46,7 @@ namespace infernux
 namespace
 {
 
-struct alignas(16) ShadowPassParameters
-{
-    glm::vec4 lightVector{};
-    glm::vec4 bias{};
-};
-
-static_assert(sizeof(ShadowPassParameters) == 32);
+using lighting::ShadowPassParameters;
 
 VkIndexType ToVkIndexType(MeshIndexFormat format)
 {

@@ -43,6 +43,17 @@ if(INFERNUX_BUILD_TESTS)
         pybind11::embed
     )
 
+    infernux_add_native_test(infernux_scene_material_pass_vulkan_tests tests/native/SceneMaterialPassVulkanTests.cpp)
+    target_link_libraries(infernux_scene_material_pass_vulkan_tests PRIVATE infernux_runtime_test_support InfernuxShaderCompiler)
+    add_test(NAME infernux.scene_material_pass_vulkan COMMAND infernux_scene_material_pass_vulkan_tests)
+    set_tests_properties(infernux.scene_material_pass_vulkan PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
+
+    infernux_add_native_test(infernux_render_graph_schedule_tests tests/native/RenderGraphScheduleTests.cpp)
+    target_link_libraries(infernux_render_graph_schedule_tests PRIVATE InfernuxRenderCore)
+    add_test(NAME infernux.render_graph_schedule COMMAND infernux_render_graph_schedule_tests)
+
     infernux_add_native_test(infernux_path_tests
         tests/native/PathTests.cpp
     )

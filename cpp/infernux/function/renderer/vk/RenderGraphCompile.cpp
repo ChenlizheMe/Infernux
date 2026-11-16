@@ -134,69 +134,20 @@ void RenderGraph::IssuePipelineBarriers(VkCommandBuffer commandBuffer, VkPipelin
 // Pass Culling & Resource Lifetimes
 // ============================================================================
 
-void RenderGraph::CullPasses()
+bool RenderGraph::CompileSchedule()
 {
-    // Mark all passes as potentially culled
-    for (auto &pass : m_passes) {
-        pass.refCount = 0;
-        pass.culled = true;
-        pass.cullReason = PassCullReason::Unreachable;
-    }
-
-    // A resource version has exactly one producer. Build this once so both
-    // output rooting and backward propagation use the SSA-style handle rather
-    // than conflating every write to the same physical allocation.
-    std::unordered_map<ResourceHandle, uint32_t, ResourceHandleHash> producers;
-    for (uint32_t passId = 0; passId < m_passes.size(); ++passId) {
-        for (const auto &write : m_passes[passId].writes) {
-            producers.emplace(write.handle, passId);
+    std::vector<GraphSchedulePass> inputs(m_passes.size());
+    for (size_t id = 0; id < m_passes.size(); ++id) {
+        const auto &pass = m_passes[id];
+        auto &input = inputs[id];
+        input.sideEffect = pass.hasSideEffect;
+        for (const auto &write : pass.writes) {
+            input.writes.push_back(write.handle);
+            const auto &resource = m_resources[write.handle.id];
+            input.externalWrite |= resource.isExternal && !resource.graphLocalBuffer;
         }
-    }
-
-    // Find the pass that writes the selected output version.
-    std::queue<uint32_t> workQueue;
-    auto retainRoot = [&](uint32_t passId, PassCullReason reason) {
-        auto &pass = m_passes[passId];
-        if (pass.culled) {
-            pass.culled = false;
-            pass.refCount = 1;
-            pass.cullReason = reason;
-            workQueue.push(passId);
-        } else {
-            ++pass.refCount;
-            if (reason == PassCullReason::GraphOutput)
-                pass.cullReason = reason;
-        }
-    };
-
-    ResourceHandle root = m_output.IsValid() ? m_output : m_backbuffer;
-    auto rootProducer = producers.find(root);
-    if (rootProducer != producers.end())
-        retainRoot(rootProducer->second, PassCullReason::GraphOutput);
-
-    for (uint32_t passId = 0; passId < m_passes.size(); ++passId) {
-        const auto &pass = m_passes[passId];
-        if (pass.hasSideEffect) {
-            retainRoot(passId, PassCullReason::SideEffect);
-            continue;
-        }
-        const bool writesExternal = std::any_of(pass.writes.begin(), pass.writes.end(), [&](const auto &write) {
-            return write.handle.id < m_resources.size() && m_resources[write.handle.id].isExternal &&
-                   !m_resources[write.handle.id].graphLocalBuffer;
-        });
-        if (writesExternal)
-            retainRoot(passId, PassCullReason::ExternalWrite);
-    }
-
-    // Backward propagation
-    while (!workQueue.empty()) {
-        uint32_t passId = workQueue.front();
-        workQueue.pop();
-
-        const auto &pass = m_passes[passId];
-
-        // Find the exact producer of every version this pass reads.
         for (const auto &read : pass.reads) {
+            bool retain = true;
             if ((read.usage & ResourceUsage::VersionDependency) != ResourceUsage::None) {
                 const auto &texture = m_resources[read.handle.id].textureDesc;
                 if (pass.renderArea.width == texture.width && pass.renderArea.height == texture.height) {
@@ -204,24 +155,30 @@ void RenderGraph::CullPasses()
                         return output.IsValid() && output.id == read.handle.id &&
                                output.version == read.handle.version + 1;
                     };
-                    if ((pass.clearDepthEnabled && follows(pass.depthOutput)) ||
-                        (pass.clearColorEnabled &&
-                         std::any_of(pass.colorOutputs.begin(), pass.colorOutputs.end(), follows)))
-                        continue;
+                    retain = !((pass.clearDepthEnabled && follows(pass.depthOutput)) ||
+                               (pass.clearColorEnabled &&
+                                std::any_of(pass.colorOutputs.begin(), pass.colorOutputs.end(), follows)));
                 }
             }
-            auto producer = producers.find(read.handle);
-            if (producer == producers.end() || producer->second == passId)
-                continue;
-            auto &producerPass = m_passes[producer->second];
-            if (producerPass.culled) {
-                producerPass.culled = false;
-                producerPass.cullReason = PassCullReason::Dependency;
-                workQueue.push(producer->second);
-            }
-            producerPass.refCount++;
+            input.reads.push_back({read.handle, retain});
         }
     }
+    auto schedule =
+        CompileRenderGraphSchedule(inputs, m_output.IsValid() ? m_output : m_backbuffer, m_explicitPassDependencies);
+    m_executionOrder = std::move(schedule.order);
+    for (size_t id = 0; id < m_passes.size(); ++id) {
+        auto &pass = m_passes[id];
+        pass.cullReason = schedule.retention[id];
+        pass.culled = pass.cullReason == PassCullReason::Unreachable;
+        pass.refCount = schedule.references[id];
+        pass.dependsOn = std::move(schedule.dependencies[id]);
+    }
+    if (schedule.unresolved.empty())
+        return true;
+    INXLOG_ERROR("Render graph contains a dependency cycle; no passes will execute");
+    for (const auto id : schedule.unresolved)
+        INXLOG_ERROR("  unresolved pass [", id, "] '", m_passes[id].name, "'");
+    return false;
 }
 
 void RenderGraph::ComputeResourceLifetimes()
@@ -254,152 +211,6 @@ void RenderGraph::ComputeResourceLifetimes()
         for (const auto &write : pass.writes)
             record(write, true);
     }
-}
-
-// ============================================================================
-// Topological Sort (Kahn's Algorithm)
-// ============================================================================
-
-bool RenderGraph::TopologicalSort()
-{
-    m_executionOrder.clear();
-    for (auto &pass : m_passes)
-        pass.dependsOn.clear();
-
-    // Collect non-culled pass indices
-    std::vector<uint32_t> activePasses;
-    for (uint32_t i = 0; i < static_cast<uint32_t>(m_passes.size()); i++) {
-        if (!m_passes[i].culled) {
-            activePasses.push_back(i);
-        }
-    }
-
-    if (activePasses.empty()) {
-        return true;
-    }
-
-    // Build adjacency list: edge A→B means pass A must execute before pass B
-    // (A writes a resource that B reads)
-    std::unordered_map<uint32_t, std::vector<uint32_t>> adjacency; // passId → [dependent passes]
-    std::unordered_map<uint32_t, uint32_t> inDegree;
-
-    for (uint32_t passId : activePasses) {
-        adjacency[passId] = {};
-        inDegree[passId] = 0;
-    }
-
-    std::unordered_map<ResourceHandle, uint32_t, ResourceHandleHash> producers;
-    std::unordered_map<ResourceHandle, std::vector<uint32_t>, ResourceHandleHash> readers;
-    for (uint32_t writePassId : activePasses) {
-        const auto &writePass = m_passes[writePassId];
-        for (const auto &write : writePass.writes) {
-            producers.emplace(write.handle, writePassId);
-        }
-    }
-    for (uint32_t readPassId : activePasses) {
-        const auto &readPass = m_passes[readPassId];
-        for (const auto &read : readPass.reads) {
-            readers[read.handle].push_back(readPassId);
-            auto producer = producers.find(read.handle);
-            if (producer != producers.end() && producer->second != readPassId) {
-                adjacency[producer->second].push_back(readPassId);
-                m_passes[readPassId].dependsOn.push_back(producer->second);
-            }
-        }
-    }
-
-    // Multiple versions share one physical allocation. Readers of version N
-    // must complete before the producer of N+1 overwrites that allocation.
-    // This anti-dependency is what makes reading an older branch deterministic
-    // even when the newer write was declared first.
-    for (const auto &[version, versionReaders] : readers) {
-        if (version.version == std::numeric_limits<uint32_t>::max())
-            continue;
-        ResourceHandle nextVersion = version;
-        ++nextVersion.version;
-        auto nextProducer = producers.find(nextVersion);
-        if (nextProducer == producers.end())
-            continue;
-        for (uint32_t readerPassId : versionReaders) {
-            if (readerPassId != nextProducer->second) {
-                adjacency[readerPassId].push_back(nextProducer->second);
-                m_passes[nextProducer->second].dependsOn.push_back(readerPassId);
-            }
-        }
-    }
-
-    for (const auto &[later, earlier] : m_explicitPassDependencies) {
-        if (inDegree.find(later) == inDegree.end() || inDegree.find(earlier) == inDegree.end())
-            continue;
-        adjacency[earlier].push_back(later);
-        m_passes[later].dependsOn.push_back(earlier);
-    }
-
-    // Deduplicate edges
-    for (auto &[passId, deps] : adjacency) {
-        std::sort(deps.begin(), deps.end());
-        deps.erase(std::unique(deps.begin(), deps.end()), deps.end());
-    }
-    for (auto &pass : m_passes) {
-        std::sort(pass.dependsOn.begin(), pass.dependsOn.end());
-        pass.dependsOn.erase(std::unique(pass.dependsOn.begin(), pass.dependsOn.end()), pass.dependsOn.end());
-    }
-
-    // Recount in-degrees after dedup
-    for (uint32_t passId : activePasses) {
-        inDegree[passId] = 0;
-    }
-    for (const auto &[passId, deps] : adjacency) {
-        for (uint32_t dep : deps) {
-            inDegree[dep]++;
-        }
-    }
-
-    // Kahn's algorithm — use a priority queue to break ties by pass priority
-    // (lower declaration order = higher priority as tiebreaker)
-    auto cmp = [](const std::pair<int, uint32_t> &a, const std::pair<int, uint32_t> &b) {
-        return a.first > b.first; // min-heap on declaration order
-    };
-    std::priority_queue<std::pair<int, uint32_t>, std::vector<std::pair<int, uint32_t>>, decltype(cmp)> readyQueue(cmp);
-
-    for (uint32_t passId : activePasses) {
-        if (inDegree[passId] == 0) {
-            readyQueue.push({static_cast<int>(passId), passId});
-        }
-    }
-
-    while (!readyQueue.empty()) {
-        auto [priority, passId] = readyQueue.top();
-        readyQueue.pop();
-
-        m_executionOrder.push_back(passId);
-
-        for (uint32_t dep : adjacency[passId]) {
-            inDegree[dep]--;
-            if (inDegree[dep] == 0) {
-                readyQueue.push({static_cast<int>(dep), dep});
-            }
-        }
-    }
-
-    // Check for cycles
-    if (m_executionOrder.size() != activePasses.size()) {
-        INXLOG_ERROR("RenderGraph::TopologicalSort - Cycle detected! Sorted ", m_executionOrder.size(), " of ",
-                     activePasses.size(), " passes. Versioned graph compilation was rejected.");
-        for (uint32_t passId : activePasses) {
-            if (inDegree[passId] != 0) {
-                INXLOG_ERROR("  unresolved pass [", passId, "] '", m_passes[passId].name, "' has remaining in-degree ",
-                             inDegree[passId]);
-                for (const uint32_t predecessor : m_passes[passId].dependsOn) {
-                    if (predecessor < m_passes.size() && inDegree[predecessor] != 0)
-                        INXLOG_ERROR("    waits on unresolved [", predecessor, "] '", m_passes[predecessor].name, "'");
-                }
-            }
-        }
-        m_executionOrder.clear();
-        return false;
-    }
-    return true;
 }
 
 bool RenderGraph::CompileComputeRegions()

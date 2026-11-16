@@ -20,6 +20,15 @@ namespace infernux::lighting
 constexpr uint32_t MaxShadowViews = 64;
 constexpr uint32_t DirectionalCascadeCount = 4;
 
+/// Per-pass shader data shared by all raster backends. Keep this declaration
+/// in sync with InxShadowParameters in the compiler's geometry module.
+struct alignas(16) ShadowPassParameters
+{
+    glm::vec4 lightVector{};
+    glm::vec4 bias{};
+};
+static_assert(sizeof(ShadowPassParameters) == 32);
+
 struct ShadowDepthRange
 {
     float nearDepth = 0.0f;

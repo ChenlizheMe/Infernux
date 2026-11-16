@@ -1927,8 +1927,7 @@ bool RenderGraph::CompileExecutionOrder()
     m_compiled = false;
     if (m_passes.empty())
         return true;
-    CullPasses();
-    return TopologicalSort() && CompileComputeRegions();
+    return CompileSchedule() && CompileComputeRegions();
 }
 
 bool RenderGraph::Compile()

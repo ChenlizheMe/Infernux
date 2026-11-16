@@ -693,6 +693,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 
     friend class MaterialLoader;
+    friend class ShaderLoader;
     friend class Infernux;
     friend class InxVkCoreModular;
     void ReportShaderProgramError(const std::string &message);

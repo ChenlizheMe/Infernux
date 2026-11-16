@@ -66,6 +66,9 @@ struct InxCanonicalLight {
     uint4 metadata, identity_and_shadow;
 };
 [[vk::binding(0, 1)]] DepthTexture2D shadow_image;
+[__AttributeUsage(_AttributeTargets.Var)]
+struct InxNonFilteringSamplerAttribute {};
+[InxNonFilteringSampler]
 [[vk::binding(6, 1)]] SamplerState shadow_sampler;
 [[vk::binding(4, 1)]] ConstantBuffer<InxLightingData> lighting;
 [[vk::binding(1, 1)]] ByteAddressBuffer canonical_lights;

@@ -51,6 +51,7 @@
 #include <array>
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/RenderGraphIdentity.h>
+#include <function/renderer/RenderGraphSchedule.h>
 #include <function/renderer/RendererList.h>
 #include <function/renderer/rhi/ComputePassContext.h>
 #include <function/renderer/rhi/GpuRetirementQueue.h>
@@ -173,14 +174,7 @@ enum class PassType
     Present   ///< Final present pass
 };
 
-enum class PassCullReason
-{
-    Unreachable,
-    GraphOutput,
-    SideEffect,
-    ExternalWrite,
-    Dependency
-};
+using PassCullReason = GraphPassRetention;
 
 struct PassCompileInfo
 {
@@ -1211,14 +1205,11 @@ class RenderGraph
     /// consume the latest version; reads may keep referencing older versions.
     ResourceHandle AdvanceResourceVersion(ResourceHandle handle);
 
-    /// @brief Cull unused passes (from output backwards)
-    void CullPasses();
+    /// Compile live passes and versioned dependencies through the shared scheduler.
+    bool CompileSchedule();
 
     /// @brief Compute resource lifetimes
     void ComputeResourceLifetimes();
-
-    /// @brief Topological sort via Kahn's algorithm. Returns false for cycles.
-    bool TopologicalSort();
 
     /// Reuse or retain the backend-neutral dependency analysis for a graph
     /// structure. Per-frame values, callbacks, and native handles are excluded.

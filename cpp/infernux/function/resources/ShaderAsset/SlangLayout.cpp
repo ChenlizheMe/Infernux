@@ -282,6 +282,12 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
                 if (std::string_view(type->getName()) == "SamplerComparisonState" ||
                     (type->getResourceShape() & SLANG_TEXTURE_SHADOW_FLAG) != 0)
                     resource.binding.samplerType = rhi::SamplerBindingType::Comparison;
+                else if (auto *variable = layout->getBindingRangeLeafVariable(index)) {
+                    for (unsigned attribute = 0; attribute < variable->getUserAttributeCount(); ++attribute)
+                        if (std::string_view(variable->getUserAttributeByIndex(attribute)->getName()) ==
+                            "InxNonFilteringSampler")
+                            resource.binding.samplerType = rhi::SamplerBindingType::NonFiltering;
+                }
                 break;
             default:
                 throw std::runtime_error("Shader descriptor has no engine binding representation: " + resource.name);

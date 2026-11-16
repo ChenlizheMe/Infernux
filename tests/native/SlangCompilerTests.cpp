@@ -254,6 +254,20 @@ float4 shadow(float2 uv : TEXCOORD0) : SV_Target0
                     "Depth texture and comparison sampler lost their target binding types");
         }
 
+        const auto gatheredDepth = compiler.Compile({"depth_gather", "depth_gather.frag.py", R"(
+[__AttributeUsage(_AttributeTargets.Var)]
+struct InxNonFilteringSamplerAttribute {};
+DepthTexture2D sceneDepth;
+[InxNonFilteringSampler] SamplerState rawDepth;
+[shader("fragment")]
+float4 shadow(float2 uv : TEXCOORD0) : SV_Target0 { return sceneDepth.Gather(rawDepth, uv); }
+)"},
+                                                    {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : gatheredDepth.targets)
+            Require(target.resources.size() == 2 && target.resources[0].binding.depthRead &&
+                        target.resources[1].binding.samplerType == rhi::SamplerBindingType::NonFiltering,
+                    "Raw depth gather lost its non-filtering sampler contract");
+
         const auto blocks = compiler.Compile({"blocks", "blocks.compute.py", R"(
 struct Material { float3 tint; float weight; Texture2D<float4> image; SamplerState sampler; };
 struct Scene { float4x4 world; float2 offsets[3]; ParameterBlock<Material> material; };

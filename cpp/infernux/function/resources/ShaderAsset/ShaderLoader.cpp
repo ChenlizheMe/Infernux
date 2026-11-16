@@ -4,6 +4,7 @@
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetFormatRegistry.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
@@ -13,6 +14,50 @@
 #include <nlohmann/json.hpp>
 namespace infernux
 {
+void ShaderLoader::PrepareMaterial(InxMaterial &material)
+{
+    if (material.IsRenderPublication()) {
+        if (!material.GetSelectedShaderArtifact())
+            throw ShaderProgramSelectionError("Render publication has no prepared shader author contract");
+        return;
+    }
+    try {
+        auto &registry = AssetRegistry::Instance();
+        auto *database = registry.GetAssetDatabase();
+        const auto resolve = [database](const ShaderAssetReference &reference, const char *stage) {
+            if (!reference.guid.empty())
+                return reference.guid;
+            return reference.pathHint.empty() ? database->FindShaderGuidById(reference.shaderId, stage) : std::string{};
+        };
+        const auto fragmentGuid = resolve(material.GetFragShaderReference(), "fragment");
+        const auto vertexGuid = resolve(material.GetVertShaderReference(), "vertex");
+        const auto fragment = registry.LoadAsset<ShaderAsset>(fragmentGuid, ResourceType::Shader);
+        if (!fragment)
+            throw ShaderProgramSelectionError("Material fragment author is unavailable: " + fragmentGuid);
+        const auto vertex =
+            vertexGuid.empty() ? nullptr : registry.LoadAsset<ShaderAsset>(vertexGuid, ResourceType::Shader);
+        const auto prepared = PrepareMaterialProgram(fragment, vertex, material.GetShaderStages(), database);
+        if (!prepared->program)
+            throw ShaderProgramSelectionError(prepared->error);
+        if (material.m_selectedShaderArtifact != prepared->program) {
+            material.InvalidateShaderSelection();
+            material.SynchronizeShaderPropertyDefaults(*prepared->program);
+            const auto &meta = fragment->renderMeta;
+            material.ApplyShaderRenderMeta(meta.cullMode, meta.depthWrite, meta.depthTest, meta.blend, meta.queue,
+                                           meta.passTag, meta.stencil, meta.alphaClip);
+            material.m_selectedShaderArtifact = prepared->program;
+        }
+        material.m_shaderProgramDiagnostic.reset();
+    } catch (const ShaderProgramSelectionError &error) {
+        material.m_selectedShaderArtifact.reset();
+        material.ReportShaderProgramError(error.what());
+        throw;
+    } catch (...) {
+        material.InvalidateShaderSelection();
+        throw;
+    }
+}
+
 std::shared_ptr<const ShaderMaterialPreparation>
 ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment,
                                      const std::shared_ptr<ShaderAsset> &vertex, const ShaderStagePair &stages,
