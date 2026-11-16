@@ -1,10 +1,24 @@
 #include "JoltGpuProgramSources.h"
 
 #include <Jolt/GPU/PhysicsStages.h>
+#include <function/renderer/rhi/RhiComputeKernel.h>
 #include <infernux/physics/JoltGpuEmbeddedSources.h>
 
 namespace infernux
 {
+
+std::shared_ptr<rhi::ComputeKernel> PrepareJoltGpuKernel(rhi::ComputeHost &host, ShaderCodeTarget target,
+                                                         const ShaderEntryPointCode &entry,
+                                                         std::vector<rhi::ComputeBufferBinding> bindings)
+{
+    const bool spirv = target == ShaderCodeTarget::SpirV;
+    if (spirv && entry.code.size() % sizeof(uint32_t) != 0)
+        throw std::invalid_argument("Invalid SPIR-V extent for GPU physics entry " + entry.name);
+    const rhi::ShaderModuleDesc shader{spirv ? rhi::ShaderSourceLanguage::SpirV : rhi::ShaderSourceLanguage::Wgsl,
+                                       entry.code.data(), entry.code.size()};
+    return std::make_shared<rhi::ComputeKernel>(host, shader, entry.name, std::move(bindings), 0,
+                                                rhi::ComputeKernel::PipelineCreation::FirstDispatch);
+}
 
 ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program)
 {

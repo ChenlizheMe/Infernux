@@ -778,7 +778,6 @@ class PhysicsWorld
     PhysicsWorld(const PhysicsWorld &) = delete;
     PhysicsWorld &operator=(const PhysicsWorld &) = delete;
 
-    struct CompiledGpuPrograms;
     struct CpuServices;
     enum class Backend : uint8_t
     {
@@ -939,7 +938,6 @@ class PhysicsWorld
     std::unique_ptr<CpuServices> m_cpuServices;
     std::unique_ptr<rhi::ComputeHost> m_gpuHost;
     FrameWorkOwner *m_gpuWork = nullptr;
-    std::unique_ptr<CompiledGpuPrograms> m_gpuPrograms;
     std::unique_ptr<JoltGpuJoints> m_gpuJoints;
     std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;

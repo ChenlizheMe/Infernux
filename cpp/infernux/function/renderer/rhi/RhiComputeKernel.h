@@ -115,6 +115,11 @@ SubmitComputeBatchAndRead(ComputeHost &host, std::vector<ComputeBufferUpdate> up
 class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
 {
   public:
+    enum class PipelineCreation
+    {
+        Immediate,
+        FirstDispatch
+    };
     INFERNUX_RENDER_CORE_API ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size_t wordCount,
                                            uint32_t bufferBindingCount, uint32_t pushConstantBytes);
     INFERNUX_RENDER_CORE_API ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size_t wordCount,
@@ -124,8 +129,8 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
                                            uint32_t pushConstantBytes);
     INFERNUX_RENDER_CORE_API ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shader,
                                            const std::string &entryPoint,
-                                           std::vector<ComputeBufferBinding> bufferBindings,
-                                           uint32_t pushConstantBytes);
+                                           std::vector<ComputeBufferBinding> bufferBindings, uint32_t pushConstantBytes,
+                                           PipelineCreation creation = PipelineCreation::Immediate);
     INFERNUX_RENDER_CORE_API ~ComputeKernel();
 
     ComputeKernel(const ComputeKernel &) = delete;
@@ -281,7 +286,17 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
 
     ComputeHost m_host;
     BindingLayoutHandle m_layout;
+    struct DeferredPipeline
+    {
+        std::vector<uint32_t> code;
+        size_t byteSize;
+        ShaderSourceLanguage language;
+        bool widenReadOnlyStorage;
+        std::string entryPoint;
+    };
+    [[nodiscard]] bool BuildPipeline(const ShaderModuleDesc &shader, const std::string &entryPoint);
     ComputePipelineHandle m_pipeline;
+    std::optional<DeferredPipeline> m_deferredPipeline;
     std::vector<BindingGroupEntry> m_groups;
     std::vector<uint32_t> m_bufferBindings;
     std::vector<BindingType> m_bufferBindingTypes;

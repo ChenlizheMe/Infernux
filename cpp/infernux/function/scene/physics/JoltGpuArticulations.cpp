@@ -1,6 +1,7 @@
 #include "JoltGpuArticulations.h"
 #include "JoltGpuArticulationForest.h"
 #include "JoltGpuArticulationNumerics.h"
+#include "JoltGpuProgramSources.h"
 #include "JoltGpuSleepLayout.h"
 #include <algorithm>
 #include <array>
@@ -149,18 +150,7 @@ class JoltGpuArticulations::Impl
             if (mask != Masks[i] || code->bindings.size() != program.ports.size())
                 throw std::invalid_argument(
                     "GPU articulation control entry resource mask differs from actual artifact");
-            if (target.target == ShaderCodeTarget::SpirV) {
-                if (code->code.empty() || code->code.size() % 4u)
-                    throw std::invalid_argument("GPU articulation SPIR-V extent invalid");
-                std::vector<uint32_t> words(code->code.size() / 4u);
-                std::memcpy(words.data(), code->code.data(), code->code.size());
-                program.kernel = std::make_shared<rhi::ComputeKernel>(
-                    host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), code->name, std::move(bindings),
-                    0);
-            } else
-                program.kernel = std::make_shared<rhi::ComputeKernel>(
-                    host, rhi::ShaderModuleDesc::FromWgsl(code->code.data(), code->code.size()), code->name,
-                    std::move(bindings), 0);
+            program.kernel = PrepareJoltGpuKernel(host, target.target, *code, std::move(bindings));
         }
     }
     std::shared_ptr<rhi::ComputeBuffer> Allocate(uint64_t bytes)

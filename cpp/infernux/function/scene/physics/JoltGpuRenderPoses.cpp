@@ -1,4 +1,5 @@
 #include "JoltGpuRenderPoses.h"
+#include "JoltGpuProgramSources.h"
 
 #include <algorithm>
 #include <array>
@@ -126,21 +127,7 @@ JoltGpuRenderPoses::JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTarge
         }
         if (actual != required || code->bindings.size() != entry.ports.size())
             throw std::invalid_argument("Jolt GPU render-pose entry has an unexpected resource set");
-        if (target.target == ShaderCodeTarget::SpirV) {
-            if (code->code.empty() || code->code.size() % sizeof(uint32_t))
-                throw std::invalid_argument("Jolt GPU render-pose target contains invalid SPIR-V");
-            std::vector<uint32_t> words(code->code.size() / sizeof(uint32_t));
-            std::memcpy(words.data(), code->code.data(), code->code.size());
-            entry.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), code->name, std::move(bindings),
-                0);
-        } else if (target.target == ShaderCodeTarget::Wgsl) {
-            entry.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromWgsl(code->code.data(), code->code.size()), code->name,
-                std::move(bindings), 0);
-        } else {
-            throw std::invalid_argument("Unsupported GPU render-pose shader target");
-        }
+        entry.kernel = PrepareJoltGpuKernel(m_host, target.target, *code, std::move(bindings));
         return entry;
     };
     m_nodes = build("export_body_pose_nodes", (1u << Parameters) | (1u << Nodes) | (1u << States) | (1u << NodeModels));

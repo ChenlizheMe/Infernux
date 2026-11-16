@@ -1,4 +1,5 @@
 #include "JoltGpuQueries.h"
+#include "JoltGpuProgramSources.h"
 #include <function/renderer/particle/ParticleGpuCollisionScene.h>
 
 #include <algorithm>
@@ -491,19 +492,7 @@ JoltGpuQueries::JoltGpuQueries(rhi::ComputeHost &host, const ShaderTargetCode &t
         }
         if (actual != StagePorts[stage] || code->bindings.size() != program.ports.size())
             throw std::invalid_argument("Jolt GPU query entry differs from its shared phase resource set");
-        if (target.target == ShaderCodeTarget::SpirV) {
-            if (code->code.empty() || code->code.size() % sizeof(uint32_t))
-                throw std::invalid_argument("Jolt GPU query target contains invalid SPIR-V");
-            std::vector<uint32_t> words(code->code.size() / sizeof(uint32_t));
-            std::memcpy(words.data(), code->code.data(), code->code.size());
-            program.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), code->name, std::move(bindings),
-                0);
-        } else {
-            program.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromWgsl(code->code.data(), code->code.size()), code->name,
-                std::move(bindings), 0);
-        }
+        program.kernel = PrepareJoltGpuKernel(m_host, target.target, *code, std::move(bindings));
     }
 }
 

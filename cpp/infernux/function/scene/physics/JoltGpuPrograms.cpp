@@ -3,6 +3,7 @@
 #include <Jolt/Geometry/AABox.h>
 #include "JoltGpuArticulations.h"
 #include "JoltGpuGeometryStore.h"
+#include "JoltGpuProgramSources.h"
 #include "JoltGpuSleep.h"
 #include "JoltGpuSleepLayout.h"
 
@@ -1336,19 +1337,7 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
         if (actualResources != (definition.reads | definition.writes) || storageBindings > 8 || uniformBindings > 2)
             throw std::invalid_argument("Jolt GPU entry resources differ from the stage recipe");
 
-        if (target.target == ShaderCodeTarget::SpirV) {
-            if (code->code.empty() || code->code.size() % sizeof(uint32_t))
-                throw std::invalid_argument("Jolt GPU target contains invalid SPIR-V bytes");
-            std::vector<uint32_t> words(code->code.size() / sizeof(uint32_t));
-            std::memcpy(words.data(), code->code.data(), code->code.size());
-            entry.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), code->name, std::move(bindings),
-                0);
-        } else {
-            entry.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromWgsl(code->code.data(), code->code.size()), code->name,
-                std::move(bindings), 0);
-        }
+        entry.kernel = PrepareJoltGpuKernel(m_host, target.target, *code, std::move(bindings));
         m_entries[static_cast<size_t>(definition.stage)] = std::move(entry);
     }
     for (size_t i = 0; i < std::size(BodyBatchDefinitions); ++i) {
@@ -1402,19 +1391,7 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
         }
         if (actual != expected || storageBindings != 6 || uniformBindings != 1)
             throw std::invalid_argument("Body batch resources differ from its exact six-storage recipe");
-        if (target.target == ShaderCodeTarget::SpirV) {
-            if (code->code.empty() || code->code.size() % sizeof(uint32_t))
-                throw std::invalid_argument("Body batch contains invalid SPIR-V bytes");
-            std::vector<uint32_t> words(code->code.size() / sizeof(uint32_t));
-            std::memcpy(words.data(), code->code.data(), code->code.size());
-            entry.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), code->name, std::move(bindings),
-                0);
-        } else {
-            entry.kernel = std::make_shared<rhi::ComputeKernel>(
-                m_host, rhi::ShaderModuleDesc::FromWgsl(code->code.data(), code->code.size()), code->name,
-                std::move(bindings), 0);
-        }
+        entry.kernel = PrepareJoltGpuKernel(m_host, target.target, *code, std::move(bindings));
         m_bodyBatchEntries[i] = std::move(entry);
     }
 }

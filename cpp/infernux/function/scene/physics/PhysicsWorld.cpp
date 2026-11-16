@@ -459,11 +459,6 @@ JoltGpuStepParameters StepParameters(float dt, const glm::vec3 &gravity)
 }
 } // namespace
 
-struct PhysicsWorld::CompiledGpuPrograms
-{
-    ShaderTargetCode step, mutations, commands, broadphase, narrowphase, constraints, articulationCapture,
-        articulationDynamics;
-};
 struct PhysicsStaticBoundaryModel
 {
     PreparedCpuActor actor;
@@ -618,32 +613,19 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         domain.gpuCancelled = false;
         domain.queuedColliderPairs.reset();
     }
-    if (!m_gpuPrograms) {
-        auto p = std::make_unique<CompiledGpuPrograms>();
-        p->step = CompileProgram(*m_gpuHost, JoltGpuProgram::Step);
-        p->articulationCapture = CompileProgram(*m_gpuHost, JoltGpuProgram::ArticulationCapture);
-        p->articulationDynamics = CompileProgram(*m_gpuHost, JoltGpuProgram::ArticulationDynamics);
-        p->mutations = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyMutations);
-        p->commands = CompileProgram(*m_gpuHost, JoltGpuProgram::BodyCommands);
-        p->broadphase = CompileProgram(*m_gpuHost, JoltGpuProgram::Broadphase);
-        p->narrowphase = CompileProgram(*m_gpuHost, JoltGpuProgram::Narrowphase);
-        p->constraints = CompileProgram(*m_gpuHost, JoltGpuProgram::Constraints);
-        const auto target = CompileProgram(*m_gpuHost, JoltGpuProgram::Queries);
-        auto queries = std::make_unique<JoltGpuQueries>(*m_gpuHost, target);
-        auto joints = std::make_unique<JoltGpuJoints>(*m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::Joints));
-        auto rendering =
-            std::make_unique<JoltGpuRenderPoses>(*m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::RenderPoses));
-        m_gpuPrograms = std::move(p);
-        m_gpuQueries = std::move(queries);
-        m_gpuJoints = std::move(joints);
-        m_gpuRenderProgram = std::move(rendering);
-        m_gpuContactReports = std::make_unique<JoltGpuContactReports>(
-            *m_gpuHost, CompileProgram(*m_gpuHost, JoltGpuProgram::ContactReports));
-    }
     if (!m_gpuScene) {
-        m_gpuScene = std::make_unique<JoltGpuScene>(
-            *m_gpuHost, *m_gpuWork, m_gpuPrograms->step, m_gpuPrograms->mutations, m_gpuPrograms->commands,
-            m_gpuPrograms->broadphase, m_gpuPrograms->narrowphase, m_gpuPrograms->constraints, *m_gpuJoints,
+        auto &host = *m_gpuHost;
+        const auto compile = [&](JoltGpuProgram program) { return CompileProgram(host, program); };
+        auto queries = std::make_unique<JoltGpuQueries>(host, compile(JoltGpuProgram::Queries));
+        auto joints = std::make_unique<JoltGpuJoints>(host, compile(JoltGpuProgram::Joints));
+        auto rendering = std::make_unique<JoltGpuRenderPoses>(host, compile(JoltGpuProgram::RenderPoses));
+        auto reports = std::make_unique<JoltGpuContactReports>(host, compile(JoltGpuProgram::ContactReports));
+        const auto articulationCapture = compile(JoltGpuProgram::ArticulationCapture);
+        const auto articulationDynamics = compile(JoltGpuProgram::ArticulationDynamics);
+        auto scene = std::make_unique<JoltGpuScene>(
+            host, *m_gpuWork, compile(JoltGpuProgram::Step), compile(JoltGpuProgram::BodyMutations),
+            compile(JoltGpuProgram::BodyCommands), compile(JoltGpuProgram::Broadphase),
+            compile(JoltGpuProgram::Narrowphase), compile(JoltGpuProgram::Constraints), *joints,
             [this](RuntimeWorld &world) noexcept {
                 // A shared source can fail outside Step and outside this World's
                 // execution scope. Mark only the actual retained writer.
@@ -652,7 +634,12 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
                 world.simulation.pausedStepPending = false;
                 world.simulation.isPaused = true;
             },
-            &m_gpuPrograms->articulationCapture, &m_gpuPrograms->articulationDynamics);
+            &articulationCapture, &articulationDynamics);
+        m_gpuJoints = std::move(joints);
+        m_gpuQueries = std::move(queries);
+        m_gpuRenderProgram = std::move(rendering);
+        m_gpuContactReports = std::move(reports);
+        m_gpuScene = std::move(scene);
     }
     if (!m_gpuScene->RegisterPartition(domain.owner, InitialBodyCapacity))
         return false;
@@ -713,7 +700,6 @@ void PhysicsWorld::Shutdown()
     m_gpuRenderProgram.reset();
     m_gpuQueries.reset();
     m_gpuJoints.reset();
-    m_gpuPrograms.reset();
     m_cpuServices.reset();
     m_domains.clear();
     m_gpuHost.reset();

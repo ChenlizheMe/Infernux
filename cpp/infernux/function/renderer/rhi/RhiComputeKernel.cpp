@@ -61,7 +61,8 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size
 }
 
 ComputeKernel::ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shaderDesc, const std::string &entryPoint,
-                             std::vector<ComputeBufferBinding> bufferBindings, uint32_t pushConstantBytes)
+                             std::vector<ComputeBufferBinding> bufferBindings, uint32_t pushConstantBytes,
+                             PipelineCreation creation)
     : m_host(host), m_pushConstantBytes(pushConstantBytes)
 {
     if (!m_host.IsAlive())
@@ -92,26 +93,38 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shaderDe
         layoutDesc.entries[index].readOnlyStorage = bufferBindings[index].readOnlyStorage;
     }
     layoutDesc.entryCount = static_cast<uint32_t>(m_bufferBindings.size());
+    if (creation == PipelineCreation::FirstDispatch) {
+        if (!shaderDesc.code || !shaderDesc.byteSize)
+            throw std::invalid_argument("Compute kernel requires shader code");
+        const auto words = shaderDesc.byteSize / sizeof(uint32_t) + (shaderDesc.byteSize % sizeof(uint32_t) != 0);
+        m_deferredPipeline.emplace(DeferredPipeline{std::vector<uint32_t>(words), shaderDesc.byteSize,
+                                                    shaderDesc.language, shaderDesc.widenReadOnlyStorage, entryPoint});
+        std::memcpy(m_deferredPipeline->code.data(), shaderDesc.code, shaderDesc.byteSize);
+    }
     m_layout = host.device.CreateBindingLayout(layoutDesc);
     if (!m_layout.IsValid())
         throw std::runtime_error("Failed to create compute kernel binding layout");
+    if (!m_deferredPipeline && !BuildPipeline(shaderDesc, entryPoint)) {
+        host.device.Release(m_layout);
+        m_layout = {};
+        throw std::runtime_error("Failed to create compute kernel pipeline");
+    }
+}
 
-    const auto shader = host.device.CreateShaderModule(shaderDesc);
+bool ComputeKernel::BuildPipeline(const ShaderModuleDesc &shaderDesc, const std::string &entryPoint)
+{
+    const auto shader = m_host.device.CreateShaderModule(shaderDesc);
     if (shader.IsValid()) {
         ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
         pipelineDesc.entryPoint = entryPoint.c_str();
         pipelineDesc.bindingLayouts[0] = m_layout;
         pipelineDesc.bindingLayoutCount = 1;
-        pipelineDesc.pushConstantBytes = pushConstantBytes;
-        m_pipeline = host.device.CreateComputePipeline(pipelineDesc);
+        pipelineDesc.pushConstantBytes = m_pushConstantBytes;
+        m_pipeline = m_host.device.CreateComputePipeline(pipelineDesc);
     }
-    host.device.Release(shader);
-    if (!m_pipeline.IsValid()) {
-        host.device.Release(m_layout);
-        m_layout = {};
-        throw std::runtime_error("Failed to create compute kernel pipeline");
-    }
+    m_host.device.Release(shader);
+    return m_pipeline.IsValid();
 }
 
 ComputeKernel::~ComputeKernel()
@@ -173,7 +186,6 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
     }
     PreparedDispatch result;
     result.kernel = shared_from_this();
-    result.pipeline = m_pipeline;
     result.allocations.reserve(buffers.size());
     for (size_t index = 0; index < buffers.size(); ++index) {
         const auto &buffer = buffers[index];
@@ -183,6 +195,14 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
         result.allocations.push_back(buffer->GetAllocation());
         result.states.push_back(buffer->m_state);
     }
+    if (m_deferredPipeline) {
+        const auto &source = *m_deferredPipeline;
+        if (!BuildPipeline({source.language, source.code.data(), source.byteSize, source.widenReadOnlyStorage},
+                           source.entryPoint))
+            throw std::runtime_error("Failed to create compute kernel pipeline: " + source.entryPoint);
+        m_deferredPipeline.reset();
+    }
+    result.pipeline = m_pipeline;
     result.group = ResolveBindGroup(result.allocations);
     result.bufferAccesses = std::move(bufferAccesses);
     result.pushConstants = std::move(pushConstants);
@@ -219,7 +239,7 @@ void ComputeKernel::ValidateDispatch(const std::vector<ComputeBufferAccess> &buf
 {
     if (!m_host.IsAlive())
         throw std::runtime_error("Compute kernel device is retired");
-    if (!m_pipeline.IsValid())
+    if (!m_layout.IsValid())
         throw std::runtime_error("Compute kernel is closed");
     if (bufferAccesses.size() != m_bufferBindings.size())
         throw std::invalid_argument("Compute kernel buffer binding count does not match its compiled layout");
@@ -1225,6 +1245,7 @@ void ComputeKernel::Destroy() noexcept
     m_pending.clear();
     m_pipeline = {};
     m_layout = {};
+    m_deferredPipeline.reset();
 }
 
 namespace

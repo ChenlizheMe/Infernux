@@ -1,5 +1,6 @@
 #include "JoltGpuArticulationNumerics.h"
 #include <Jolt/GPU/ArticulationIntegrationTypes.h>
+#include "JoltGpuProgramSources.h"
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -240,20 +241,7 @@ class JoltGpuArticulationNumerics::Impl
                     ++expected;
             if (names.size() != expected || names.size() != e->bindings.size())
                 throw std::invalid_argument("Reduced numeric entry resource closure incomplete");
-            if (target.target == ShaderCodeTarget::SpirV) {
-                if (e->code.empty() || e->code.size() % 4u)
-                    throw std::invalid_argument("Reduced SPIR-V extent invalid");
-                std::vector<uint32_t> words(e->code.size() / 4);
-                std::memcpy(words.data(), e->code.data(), e->code.size());
-                p.kernel = std::make_shared<rhi::ComputeKernel>(
-                    host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), e->name, std::move(bindings),
-                    0);
-            } else if (target.target == ShaderCodeTarget::Wgsl)
-                p.kernel = std::make_shared<rhi::ComputeKernel>(
-                    host, rhi::ShaderModuleDesc::FromWgsl(e->code.data(), e->code.size()), e->name, std::move(bindings),
-                    0);
-            else
-                throw std::invalid_argument("Reduced numeric artifact target unsupported");
+            p.kernel = PrepareJoltGpuKernel(host, target.target, *e, std::move(bindings));
             programs.emplace(d.name, std::move(p));
         }
     }
