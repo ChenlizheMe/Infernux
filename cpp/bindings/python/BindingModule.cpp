@@ -121,12 +121,12 @@ PYBIND11_MODULE(_Infernux, module)
     infernux::RegisterSceneBindings(module);
     infernux::RegisterTagLayerBindings(module);
     infernux::RegisterRenderGraphBindings(module);
-    infernux::RegisterRenderPipelineBindings(module);
     infernux::RegisterInputBindings(module);
     infernux::RegisterPhysicsBindings(module);
     infernux::RegisterAudioBindings(module);
     infernux::RegisterBatchBindings(module);
 #endif
+    infernux::RegisterRenderPipelineBindings(module);
     infernux::RegisterCommandBufferBindings(module);
     infernux::RegisterCpuComputeBindings(module);
     infernux::RegisterRandomBindings(module);

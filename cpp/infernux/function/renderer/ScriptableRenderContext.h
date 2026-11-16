@@ -6,11 +6,11 @@
 #include "RenderGraphDescription.h"
 #include "RenderWorld.h"
 #include "RendererList.h"
-#include "gui/InxScreenUIRenderer.h"
+#include "gui/CompletedUISnapshot.h"
 #include <function/scene/Camera.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/RuntimeWorld.h>
-#include <function/scene/SceneSystem.h>
+#include <function/scene/SceneRenderer.h>
 
 #include <array>
 #include <cstdint>
@@ -24,6 +24,7 @@ namespace infernux
 
 // Forward declarations
 class InxVkCoreModular;
+class InxScreenUIRenderer;
 class SceneRenderGraph;
 class EditorGizmos;
 class EditorTools;
@@ -79,8 +80,8 @@ struct RenderViewPlan
     std::vector<DrawCall> draws;
     std::vector<RenderCommand> commands;
     RenderViewPlanState state = RenderViewPlanState::Pending;
-    InxScreenUIRenderer::Snapshot ui;
-    InxScreenUIRenderer::Snapshot worldUI;
+    CompletedUIFrame ui;
+    CompletedUIFrame worldUI;
 };
 
 // ============================================================================
@@ -109,6 +110,15 @@ struct EditorGizmosContext
     uint64_t selectedObjectId = 0;
     Scene *activeScene = nullptr;
     float iconDpiScale = 1.0f;
+};
+
+/// Services used only while authoring a completed view. No backend types cross this boundary.
+struct RenderViewCaptureServices
+{
+    SceneRenderer *culler = nullptr;
+    std::function<void(const std::shared_ptr<InxMaterial> &)> prepareMaterial;
+    std::function<std::shared_ptr<const FullscreenProgram>(const std::string &)> acquireProgram;
+    bool includeShadowCasters = true;
 };
 
 // ============================================================================
@@ -163,6 +173,10 @@ class ScriptableRenderContext
     static void ResetProfileSnapshot();
 #endif
 
+    /// Capture the same pipeline callback on any RHI backend.
+    ScriptableRenderContext(std::shared_ptr<const RenderWorldFrame> world, const RenderViewData &view,
+                            RenderViewCaptureServices services, bool completedWorld = false);
+
     /// UI capture on the actual immutable World, with no view/camera/projection.
     explicit ScriptableRenderContext(std::shared_ptr<const RenderWorldFrame> world);
     [[nodiscard]] bool IsWorldUICapture() const noexcept
@@ -173,7 +187,7 @@ class ScriptableRenderContext
     {
         return *m_renderWorldOwner;
     }
-    void SetWorldUISnapshot(InxScreenUIRenderer::Snapshot snapshot);
+    void SetWorldUISnapshot(CompletedUIFrame snapshot);
 
     ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
                             const EditorGizmosContext &gizmoCtx, std::shared_ptr<const RenderWorldFrame> world,
@@ -269,7 +283,7 @@ class ScriptableRenderContext
     {
         return m_captureCompletedWorld;
     }
-    void SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot);
+    void SetScreenUISnapshot(CompletedUIFrame snapshot);
     bool CaptureScreenUI(InxScreenUIRenderer &renderer);
     [[nodiscard]] bool UsesSharedSceneUI() const noexcept
     {
@@ -290,9 +304,28 @@ class ScriptableRenderContext
     void MarkSubmitted(uint64_t objectBindingIdentity, bool reusesObjectBindings);
     void SetupCameraProperties();
 
-    InxVkCoreModular *m_vkCore;
-    SceneRenderGraph *m_graph;
-    uint64_t m_draw;
+    struct Execution
+    {
+        void (*setup)(ScriptableRenderContext &);
+        bool (*apply)(ScriptableRenderContext &, const RenderGraphDescription &);
+        void (*update)(ScriptableRenderContext &, const std::vector<GraphParameterBlockUpdate> &);
+        void (*submit)(ScriptableRenderContext &, CullingResults &);
+        bool (*isCurrent)(const ScriptableRenderContext &, uint64_t);
+    };
+    static const Execution s_nativeExecution;
+    const Execution *m_execution = nullptr;
+    RenderViewCaptureServices m_captureServices;
+    void InitializeView(std::shared_ptr<const RenderWorldFrame> world, const RenderViewData &view, bool capture,
+                        bool completedWorld);
+    void SetupNativeCameraProperties();
+    bool ApplyNativeGraph(const RenderGraphDescription &desc);
+    void UpdateNativeParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
+    void SubmitNativeCulling(CullingResults &culling);
+    bool IsNativeGraphCurrent(uint64_t revision) const;
+
+    InxVkCoreModular *m_vkCore = nullptr;
+    SceneRenderGraph *m_graph = nullptr;
+    uint64_t m_draw = 0;
     EditorGizmosContext m_gizmoCtx;
 
     // Draw calls accumulated by DrawRenderers() (in submission order)

@@ -408,13 +408,7 @@ CameraDrawCallResult SceneRenderBridge::CullAndBuildForView(const RenderViewData
                                                             std::shared_ptr<const RenderWorldFrame> owner,
                                                             bool includeShadowDrawCalls)
 {
-    const RenderViewData *publishedView = owner ? owner->FindView(view.cameraId) : nullptr;
-    if (!publishedView)
-        return {};
-    if (owner->WorldId() != view.worldId || publishedView->worldId != view.worldId)
-        throw std::logic_error("Render view World owner does not match its published source");
-    m_sceneRenderer.WritableRenderWorld().SelectPublication(std::move(owner));
-    return m_sceneRenderer.BuildDrawCallsForCamera(view, includeShadowDrawCalls);
+    return m_sceneRenderer.CullAndBuildForView(view, std::move(owner), includeShadowDrawCalls);
 }
 
 const DrawCallResult &SceneRenderBridge::BuildDrawCalls()

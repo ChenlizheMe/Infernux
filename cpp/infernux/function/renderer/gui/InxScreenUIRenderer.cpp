@@ -493,30 +493,29 @@ struct InxScreenUIRenderer::CommandPacket::Data
 // One native renderer still owns the device and pipelines. A retained UI
 // publication owns its values and upload buffers; scoped selection lets the
 // established draw path consume them without replacing the editor's live data.
-struct InxScreenUIRenderer::CompletedSnapshot::Data
+struct CompletedUISnapshot::Data
 {
-    std::shared_ptr<const RenderWorldFrame> world;
-    TexturePublications textures;
+    InxScreenUIRenderer::TexturePublications textures;
     InxScreenUIRenderer *renderer = nullptr;
     std::array<ImDrawList *, 3> lists{};
     std::array<std::vector<UIShaderMaterialBinding>, 3> bindings;
-    std::array<std::vector<HDRColorRange>, 3> hdr;
-    std::vector<WorldElementSpan> worlds;
-    std::vector<ScreenElementSpan> screens;
+    std::array<std::vector<InxScreenUIRenderer::HDRColorRange>, 3> hdr;
+    std::vector<InxScreenUIRenderer::WorldElementSpan> worlds;
+    std::vector<InxScreenUIRenderer::ScreenElementSpan> screens;
     bool selective = false;
     bool enabled = true;
     bool commandCacheValid = false;
     uint32_t width = 0, height = 0;
     std::array<uint64_t, 3> revisions{1, 1, 1};
     std::array<uint64_t, 3> prepared{};
-    std::array<std::vector<GPUVertex>, 2> screenVertices;
+    std::array<std::vector<InxScreenUIRenderer::GPUVertex>, 2> screenVertices;
     std::array<std::vector<ImVec2>, 2> screenLocalPositions;
-    std::vector<WorldGPUVertex> worldVertices;
-    std::vector<std::array<ListBuffers, 3>> frameBuffers;
-    std::unordered_map<std::string, ResolvedMaterialProgram> programs;
-    std::unordered_map<std::string, std::shared_ptr<UIMaterialDescriptor>> descriptors;
+    std::vector<InxScreenUIRenderer::WorldGPUVertex> worldVertices;
+    std::vector<std::array<InxScreenUIRenderer::ListBuffers, 3>> frameBuffers;
+    std::unordered_map<std::string, InxScreenUIRenderer::ResolvedMaterialProgram> programs;
+    std::unordered_map<std::string, std::shared_ptr<InxScreenUIRenderer::UIMaterialDescriptor>> descriptors;
     std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> ownedPrograms;
-    std::unordered_map<std::string, std::array<RejectedMaterial, 2>> rejected;
+    std::unordered_map<std::string, std::array<InxScreenUIRenderer::RejectedMaterial, 2>> rejected;
     std::unordered_map<uint64_t, std::shared_ptr<rhi::RenderTexture>> renderTextures;
     std::unordered_map<rhi::RenderTexture *, std::shared_ptr<const rhi::RenderTextureGeneration>> generations;
     std::function<void(Data &)> retire;
@@ -531,14 +530,10 @@ struct InxScreenUIRenderer::CompletedSnapshot::Data
     }
 };
 
-InxScreenUIRenderer::CompletedSnapshot::CompletedSnapshot() : m_data(std::make_unique<Data>())
+CompletedUISnapshot::CompletedUISnapshot() : m_data(std::make_unique<Data>())
 {
 }
-InxScreenUIRenderer::CompletedSnapshot::~CompletedSnapshot() = default;
-const std::shared_ptr<const RenderWorldFrame> &InxScreenUIRenderer::CompletedSnapshot::World() const noexcept
-{
-    return m_data->world;
-}
+CompletedUISnapshot::~CompletedUISnapshot() = default;
 
 class InxScreenUIRenderer::SnapshotScope
 {
@@ -614,7 +609,7 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureWorldCommands(std::sha
         throw std::logic_error("Completed UI capture requires existing GPU resource owners");
     auto snapshot = std::shared_ptr<CompletedSnapshot>(new CompletedSnapshot());
     auto &data = *snapshot->m_data;
-    data.world = std::move(world);
+    snapshot->m_world = std::move(world);
     data.renderer = this;
     data.retire = [this](auto &resources) { RetireCompletedSnapshot(resources); };
     data.width = m_cachedWidth;

@@ -23,6 +23,7 @@
 #include "../RenderWorld.h"
 #include "../rhi/GpuRetirementQueue.h"
 #include "../rhi/RhiRenderTexture.h"
+#include "CompletedUISnapshot.h"
 #include "ScreenUITexturePublication.h"
 #include "UIRenderTypes.h"
 #include "WorldUIOcclusionPlan.h"
@@ -65,10 +66,11 @@ class TextGeometry;
 class InxScreenUIRenderer : public NativeLifetimeOwner
 {
     friend struct ScreenUIVulkanTestAccess;
+    friend class CompletedUISnapshot;
 
   public:
-    class CompletedSnapshot;
-    using Snapshot = std::shared_ptr<const CompletedSnapshot>;
+    using CompletedSnapshot = CompletedUISnapshot;
+    using Snapshot = CompletedUIFrame;
 
     InxScreenUIRenderer();
     ~InxScreenUIRenderer();
@@ -200,21 +202,6 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
 
       private:
         friend class InxScreenUIRenderer;
-        struct Data;
-        std::unique_ptr<Data> m_data;
-    };
-    // Completed CPU draw values plus publication-private GPU slot storage.
-    // Material descriptors/programs are resolved while the source World is
-    // installed; draw-time validation cannot consult the next simulation F.
-    class CompletedSnapshot
-    {
-      public:
-        ~CompletedSnapshot();
-        [[nodiscard]] const std::shared_ptr<const RenderWorldFrame> &World() const noexcept;
-
-      private:
-        friend class InxScreenUIRenderer;
-        CompletedSnapshot();
         struct Data;
         std::unique_ptr<Data> m_data;
     };

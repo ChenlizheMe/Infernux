@@ -2,7 +2,12 @@
 #include <function/renderer/CommandBuffer.h>
 #include <function/renderer/RenderGraphDescription.h>
 #include <function/renderer/ScriptableRenderContext.h>
+#if !defined(INFERNUX_PYBIND_WEB_PLAYER)
+#include <function/renderer/gui/InxScreenUIRenderer.h>
+#endif
 #include <function/renderer/rhi/RhiRenderTexture.h>
+#include <function/scene/GameObject.h>
+#include <function/scene/Scene.h>
 #include <function/scene/physics/PhysicsWorld.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -171,7 +176,9 @@ void RegisterRenderPipelineBindings(py::module_ &m)
                                [](const ScriptableRenderContext &c) { return c.UIWorld().CompletedWorldFrame(); })
         .def_property_readonly("_uses_shared_scene_ui", &ScriptableRenderContext::UsesSharedSceneUI)
         .def_property_readonly("_uses_published_world_ui", &ScriptableRenderContext::UsesPublishedWorldUI)
+#if !defined(INFERNUX_PYBIND_WEB_PLAYER)
         .def("capture_screen_ui", &ScriptableRenderContext::CaptureScreenUI, py::arg("renderer"))
+#endif
         .def("cull", &ScriptableRenderContext::Cull, py::return_value_policy::reference_internal,
              "Cull this context's retained RenderView") // RenderGraph-driven API
         .def("apply_graph", &ScriptableRenderContext::ApplyGraph, py::arg("description"),

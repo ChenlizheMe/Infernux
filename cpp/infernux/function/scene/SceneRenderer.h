@@ -106,6 +106,9 @@ class SceneRenderer
     [[nodiscard]] INFERNUX_RENDERER_RUNTIME_API CameraDrawCallResult
     BuildDrawCallsForCamera(const RenderViewData &camera, bool includeShadowDrawCalls);
 
+    [[nodiscard]] INFERNUX_RENDERER_RUNTIME_API CameraDrawCallResult CullAndBuildForView(
+        const RenderViewData &view, std::shared_ptr<const RenderWorldFrame> world, bool includeShadowDrawCalls);
+
     // ========================================================================
     // Settings
     // ========================================================================

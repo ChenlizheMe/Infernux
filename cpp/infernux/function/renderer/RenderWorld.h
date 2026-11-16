@@ -319,6 +319,8 @@ class RenderWorldSnapshot final
     friend class SceneRenderExtractor;
     friend class SceneRenderBridge;
 
+    friend class SceneRenderer;
+
     // Renderer selection borrows a producer's immutable publication. Borrowed
     // frames must never enter this selector's writable recycle pool.
     void SelectPublication(std::shared_ptr<const RenderWorldFrame> frame)

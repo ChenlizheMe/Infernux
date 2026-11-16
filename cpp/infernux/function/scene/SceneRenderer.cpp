@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -85,6 +86,17 @@ const DrawCallResult &SceneRenderer::BuildDrawCalls()
     m_profileSnapshot.drawCalls += static_cast<double>(result.drawCalls.size());
 #endif
     return result;
+}
+
+CameraDrawCallResult SceneRenderer::CullAndBuildForView(const RenderViewData &view,
+                                                        std::shared_ptr<const RenderWorldFrame> world,
+                                                        bool includeShadowDrawCalls)
+{
+    const auto *published = world ? world->FindView(view.cameraId) : nullptr;
+    if (!published || world->WorldId() != view.worldId || published->worldId != view.worldId)
+        throw std::invalid_argument("Render view requires its published World owner");
+    m_renderWorld.SelectPublication(std::move(world));
+    return BuildDrawCallsForCamera(view, includeShadowDrawCalls);
 }
 
 CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData &camera, bool includeShadowDrawCalls)
