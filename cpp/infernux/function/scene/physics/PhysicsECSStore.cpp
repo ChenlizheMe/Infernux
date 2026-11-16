@@ -90,7 +90,7 @@ PhysicsECSStore &PhysicsECSStore::Instance()
 uint32_t PhysicsECSStore::AllocateBodyIdentity()
 {
     if (m_nextBodyIdentity == UINT32_MAX)
-        throw std::overflow_error("GPU physics body identity space exhausted");
+        throw std::overflow_error("Physics body identity space exhausted");
     return m_nextBodyIdentity++;
 }
 

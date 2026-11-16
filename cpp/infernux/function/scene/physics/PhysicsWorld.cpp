@@ -269,17 +269,9 @@ ShaderTargetCode CompileProgram(rhi::ComputeHost &host, JoltGpuProgram program)
         throw std::runtime_error("Common compiler did not provide the requested GPU physics target");
     return std::move(compiled.targets.front());
 }
-PhysicsActorData &ActorForBody(JoltGpuScene &scene, uint32_t bodyId)
+Rigidbody &KinematicBody(const PhysicsActorData &actor)
 {
-    auto &store = PhysicsECSStore::Instance();
-    const auto handle = scene.FindActor(bodyId);
-    if (!store.IsValid(handle) || store.GetActor(handle).bodyId != bodyId)
-        throw std::invalid_argument("Physics body identity is invalid or retired");
-    return store.GetActor(handle);
-}
-Rigidbody &KinematicBody(JoltGpuScene &scene, uint32_t bodyId)
-{
-    auto *body = ActorForBody(scene, bodyId).rigidbody;
+    auto *body = actor.rigidbody;
     if (!body || !body->IsEnabled() || !body->IsKinematic())
         throw std::logic_error("Kinematic movement requires an enabled kinematic Rigidbody");
     return *body;
@@ -386,7 +378,7 @@ PhysicsWorld::~PhysicsWorld()
 void PhysicsWorld::RequireOwnerThread() const
 {
     if (m_ownerThreadId != std::thread::id{} && m_ownerThreadId != std::this_thread::get_id())
-        throw std::logic_error("GPU physics requires its engine owner thread");
+        throw std::logic_error("Physics requires its engine owner thread");
 }
 void PhysicsWorld::BindGpuServices(std::unique_ptr<rhi::ComputeHost> host, FrameWorkOwner *work)
 {
@@ -417,7 +409,7 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
     if (!m_initialized)
         throw std::logic_error("PhysicsWorld is not initialized");
     if (!m_gpuHost || !m_gpuWork)
-        throw std::runtime_error("Physics execution requires engine GPU compute services; CPU physics is unavailable");
+        throw std::runtime_error("GPU physics requires engine compute services");
     m_gpuHost->RequireAlive();
     if (domain.retiring)
         return false;
@@ -498,6 +490,7 @@ void PhysicsWorld::Shutdown()
         domain->requestedMotion.clear();
     }
     m_gpuScene.reset(); // Whole-engine teardown after all logical worlds stop.
+    m_bodyActors.clear();
     for (auto *domain : m_domains) {
         // The logical World can survive a complete engine shutdown/reinitialization.
         // Its cancelled writer belonged to the arena which has now been drained.
@@ -1190,6 +1183,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
                     return;
                 store.CancelBroadphaseAdd(world, actor.bodyId);
                 store.CancelBroadphaseRemove(world, actor.bodyId);
+                m_bodyActors.erase(actor.bodyId);
                 actor.bodyId = UINT32_MAX;
                 actor.bodyInBroadphase = false;
                 actor.jointEndpointBodyId = UINT32_MAX;
@@ -1423,7 +1417,7 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
     auto &store = PhysicsECSStore::Instance();
     const auto handle = store.FindActor(actor.owner);
     if (!store.IsValid(handle))
-        throw std::logic_error("GPU body creation requires an ECS actor");
+        throw std::logic_error("Physics body creation requires an ECS actor");
     if (!EnsureGpuReady(domain)) {
         store.QueueBodyCreation(handle);
         return UINT32_MAX;
@@ -1454,8 +1448,10 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
                             {PhysicsTargetReference(actor.owner->GetTransform()), actor.owner->GetID()}, true);
     actor.bodyId = allocation.bodyId;
     try {
+        m_bodyActors.emplace(allocation.bodyId, handle);
         m_gpuScene->StageActor(allocation.bodyId, std::move(*prepared));
     } catch (...) {
+        m_bodyActors.erase(allocation.bodyId);
         actor.bodyId = UINT32_MAX;
         m_gpuScene->StageRetire(allocation.bodyId);
         throw;
@@ -1465,10 +1461,11 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
 void PhysicsWorld::DestroyBody(uint32_t id)
 {
     RequireOwnerThread();
-    if (!m_gpuScene || m_gpuScene->FindBody(id).bodyId == UINT32_MAX)
+    if (!PhysicsECSStore::Instance().IsValid(FindBodyActor(id)))
         return;
     auto &domain = DomainForBody(id);
     m_gpuScene->StageRetire(id);
+    m_bodyActors.erase(id);
     if (m_gpuRenderProgram)
         domain.rendering.bindings.RetireBody(id);
     domain.requestedMotion.erase(id);
@@ -1477,7 +1474,7 @@ void PhysicsWorld::RefreshGpuActor(PhysicsDomain &domain, uint32_t id,
                                    const std::function<void(PreparedGpuActor &)> &edit)
 {
     RequireGpu(domain);
-    auto &actor = ActorForBody(*m_gpuScene, id);
+    auto &actor = ActorForBody(id);
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     auto prepared = PrepareJoltGpuActor(actor, m_gpuScene->FindBody(id).slot, 0);
     if (!prepared)
@@ -1550,7 +1547,7 @@ void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate
         return;
     for (const auto &u : updates) {
         RequireGpu(DomainForBody(u.bodyId));
-        (void)ActorForBody(*m_gpuScene, u.bodyId);
+        (void)ActorForBody(u.bodyId);
         (void)Vector(u.position);
         (void)Rotation(u.rotation);
     }
@@ -1583,7 +1580,7 @@ bool PhysicsWorld::IsBodyInBroadphase(uint32_t id) const
     RunControl(domain, {});
     if (m_gpuScene->FindBody(id).bodyId == UINT32_MAX)
         return false;
-    const auto &actor = ActorForBody(*m_gpuScene, id);
+    const auto &actor = ActorForBody(id);
     return actor.bodyInBroadphase && !actor.sceneSuspended;
 }
 void PhysicsWorld::SetBodyMotionType(uint32_t id, int type)
@@ -1750,7 +1747,7 @@ void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionStat
         RequireGpu(domain);
         if (domain.stepPending)
             throw std::logic_error("Physics reset requires completed fixed steps");
-        (void)ActorForBody(*m_gpuScene, s.bodyId);
+        (void)ActorForBody(s.bodyId);
         (void)Vector(s.position);
         (void)Rotation(s.rotation);
         (void)Vector(s.linearVelocity);
@@ -2424,11 +2421,9 @@ bool PhysicsWorld::Raycast(const glm::vec3 &origin, const glm::vec3 &direction, 
 
 Rigidbody *PhysicsWorld::FindRigidbodyByBodyId(uint32_t id) const
 {
-    if (!m_gpuScene || m_gpuScene->FindBody(id).bodyId == UINT32_MAX)
-        return nullptr;
     auto &store = PhysicsECSStore::Instance();
-    const auto handle = m_gpuScene->FindActor(id);
-    return store.IsValid(handle) && store.GetActor(handle).bodyId == id ? store.GetActor(handle).rigidbody : nullptr;
+    const auto handle = FindBodyActor(id);
+    return store.IsValid(handle) ? store.GetActor(handle).rigidbody : nullptr;
 }
 Collider *PhysicsWorld::FindColliderByBodyId(uint32_t id) const
 {
@@ -2699,21 +2694,21 @@ void PhysicsWorld::MoveBodyKinematic(uint32_t id, const glm::vec3 &position, con
 {
     auto &domain = DomainForBody(id);
     RequireGpu(domain);
-    (void)KinematicBody(*m_gpuScene, id);
+    (void)KinematicBody(ActorForBody(id));
     m_gpuScene->QueueCommand(id, MoveCommand(CommandMovePose, position, rotation, dt, maxSpeed));
 }
 void PhysicsWorld::MoveBodyKinematicPosition(uint32_t id, const glm::vec3 &position, float dt)
 {
     auto &domain = DomainForBody(id);
     RequireGpu(domain);
-    (void)KinematicBody(*m_gpuScene, id);
+    (void)KinematicBody(ActorForBody(id));
     m_gpuScene->QueueCommand(id, MoveCommand(CommandMovePosition, position, glm::quat(1, 0, 0, 0), dt));
 }
 void PhysicsWorld::MoveBodyKinematicRotation(uint32_t id, const glm::quat &rotation, float dt)
 {
     auto &domain = DomainForBody(id);
     RequireGpu(domain);
-    (void)KinematicBody(*m_gpuScene, id);
+    (void)KinematicBody(ActorForBody(id));
     m_gpuScene->QueueCommand(id, MoveCommand(CommandMoveRotation, glm::vec3(0), rotation, dt));
 }
 PhysicsTargetSource PhysicsWorld::MoveBodyKinematicAuthored(uint32_t id, const glm::vec3 &position,
@@ -2723,7 +2718,7 @@ PhysicsTargetSource PhysicsWorld::MoveBodyKinematicAuthored(uint32_t id, const g
 {
     auto &domain = DomainForBody(id);
     RequireGpu(domain);
-    auto &body = KinematicBody(*m_gpuScene, id);
+    auto &body = KinematicBody(ActorForBody(id));
     constexpr uint32_t positionChannel = static_cast<uint32_t>(PhysicsTargetChannels::Position);
     constexpr uint32_t rotationChannel = static_cast<uint32_t>(PhysicsTargetChannels::Rotation);
     if (channels == 0 || (channels & ~(positionChannel | rotationChannel)) != 0)
@@ -2745,7 +2740,7 @@ void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t id, const glm::vec3 &posi
 {
     auto &domain = DomainForBody(id);
     RequireGpu(domain);
-    const auto &actor = ActorForBody(*m_gpuScene, id);
+    const auto &actor = ActorForBody(id);
     if (actor.rigidbody && actor.rigidbody->IsEnabled())
         throw std::logic_error("Static movement requires a collider-only physics actor");
     auto command = MoveCommand(CommandMovePose, position, rotation, dt, kMaxTransformDriveSpeed);
@@ -3301,15 +3296,26 @@ PhysicsDomain &PhysicsWorld::DomainForActor(const PhysicsActorData &actor) const
         throw std::logic_error("Physics actor has no published RuntimeWorld owner");
     return *actor.runtimeWorld->physics;
 }
+PhysicsActorHandle PhysicsWorld::FindBodyActor(uint32_t bodyId) const noexcept
+{
+    const auto entry = m_bodyActors.find(bodyId);
+    if (entry == m_bodyActors.end())
+        return {};
+    const auto &store = PhysicsECSStore::Instance();
+    const auto handle = entry->second;
+    return store.IsValid(handle) && store.GetActor(handle).bodyId == bodyId ? handle : PhysicsActorHandle{};
+}
+PhysicsActorData &PhysicsWorld::ActorForBody(uint32_t bodyId) const
+{
+    auto &store = PhysicsECSStore::Instance();
+    const auto handle = FindBodyActor(bodyId);
+    if (!store.IsValid(handle))
+        throw std::invalid_argument("Physics body identity is invalid or retired");
+    return store.GetActor(handle);
+}
 PhysicsDomain &PhysicsWorld::DomainForBody(uint32_t bodyId) const
 {
-    if (!m_gpuScene)
-        throw std::logic_error("Physics body has no shared GPU directory");
-    const auto handle = m_gpuScene->FindActor(bodyId);
-    const auto &store = PhysicsECSStore::Instance();
-    if (!store.IsValid(handle))
-        throw std::logic_error("Physics body identity is retired");
-    return DomainForActor(store.GetActor(handle));
+    return DomainForActor(ActorForBody(bodyId));
 }
 PhysicsDomain &PhysicsWorld::DomainForComponent(const Component &component) const
 {

@@ -2,7 +2,7 @@
 
 /**
  * @file PhysicsWorld.h
- * @brief GPU-only Jolt scene facade using the shared engine compute runtime.
+ * @brief Shared physics world, body ownership and execution facade.
  *
  * Manages Jolt initialisation/shutdown, stepping, body management,
  * and raycast queries. Stepped by SceneManager's fixed-time accumulator.
@@ -234,7 +234,7 @@ struct RaycastHit
     glm::vec3 point{0.0f};               ///< World-space hit point
     glm::vec3 normal{0.0f};              ///< Surface normal at hit
     float distance = 0.0f;               ///< Distance from ray origin
-    uint32_t bodyId = 0xFFFFFFFF;        ///< Hit Jolt body id (index+sequence)
+    uint32_t bodyId = 0xFFFFFFFF;        ///< Stable engine body identity
     uint32_t subShapeId = 0;             ///< Jolt sub-shape identity inside the body
     uint32_t triangleIndex = 0xFFFFFFFF; ///< Cooked triangle index for non-convex mesh hits
     GameObject *gameObject = nullptr;    ///< Hit GameObject
@@ -826,6 +826,8 @@ class PhysicsWorld
 
     struct CompiledGpuPrograms;
     PhysicsDomain &CurrentDomain() const;
+    [[nodiscard]] PhysicsActorHandle FindBodyActor(uint32_t bodyId) const noexcept;
+    PhysicsActorData &ActorForBody(uint32_t bodyId) const;
     PhysicsDomain &DomainForBody(uint32_t bodyId) const;
     PhysicsDomain &DomainForActor(const PhysicsActorData &actor) const;
     PhysicsDomain &DomainForComponent(const Component &component) const;
@@ -896,6 +898,9 @@ class PhysicsWorld
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;
     std::unique_ptr<JoltGpuRenderPoses> m_gpuRenderProgram;
     std::unique_ptr<JoltGpuContactReports> m_gpuContactReports;
+    // Live component ownership is independent of a backend's numerical slots
+    // and immutable publications, which may outlive a retired component.
+    std::unordered_map<uint32_t, PhysicsActorHandle> m_bodyActors;
     std::unordered_set<PhysicsDomain *> m_domains;
 };
 
